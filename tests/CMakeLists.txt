@@ -20,6 +20,13 @@ add_executable(test_plm_reconstruction unit/test_plm_reconstruction.F90)
 target_link_libraries(test_plm_reconstruction PRIVATE pelef_core)
 add_test(NAME unit_plm_reconstruction COMMAND test_plm_reconstruction)
 
+add_executable(
+  test_pelec_plm_tracing
+  unit/test_pelec_plm_tracing.F90
+)
+target_link_libraries(test_pelec_plm_tracing PRIVATE pelef_core)
+add_test(NAME unit_pelec_plm_tracing COMMAND test_pelec_plm_tracing)
+
 add_executable(test_entropy_wave regression/test_entropy_wave.F90)
 target_link_libraries(test_entropy_wave PRIVATE pelef_core)
 add_test(NAME regression_entropy_wave_convergence COMMAND test_entropy_wave)
@@ -32,6 +39,16 @@ target_link_libraries(test_entropy_wave_pelec PRIVATE pelef_core)
 add_test(
   NAME regression_entropy_wave_pelec_convergence
   COMMAND test_entropy_wave_pelec
+)
+
+add_executable(
+  test_entropy_wave_pelec_plm
+  regression/test_entropy_wave_pelec_plm.F90
+)
+target_link_libraries(test_entropy_wave_pelec_plm PRIVATE pelef_core)
+add_test(
+  NAME regression_entropy_wave_pelec_plm_convergence
+  COMMAND test_entropy_wave_pelec_plm
 )
 
 set(SOD_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod")
@@ -136,6 +153,42 @@ set_tests_properties(
     DEPENDS regression_sod_pelec_run
 )
 
+set(SOD_PELEC_PLM_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod_pelec_plm")
+file(MAKE_DIRECTORY "${SOD_PELEC_PLM_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_sod_pelec_plm_run
+  COMMAND
+    $<TARGET_FILE:pelef>
+    "${PROJECT_SOURCE_DIR}/cases/sod/sod_pelec_plm.nml"
+)
+set_tests_properties(
+  regression_sod_pelec_plm_run
+  PROPERTIES
+    WORKING_DIRECTORY "${SOD_PELEC_PLM_WORK_DIRECTORY}"
+)
+
+add_test(
+  NAME regression_sod_pelec_plm_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/compare_sod.py"
+    --input "${SOD_PELEC_PLM_WORK_DIRECTORY}/sod_pelec_plm.csv"
+    --nx 400
+    --time 0.2
+    --gamma 1.4
+    --density-l1-max 1.6e-3
+    --pressure-l1-max 1.0e-3
+    --mass-error-max 2.0e-12
+    --energy-error-max 2.0e-12
+    --momentum-error-max 2.0e-12
+)
+set_tests_properties(
+  regression_sod_pelec_plm_compare
+  PROPERTIES
+    DEPENDS regression_sod_pelec_plm_run
+)
+
 set(SHU_OSHER_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shu_osher")
 file(MAKE_DIRECTORY "${SHU_OSHER_WORK_DIRECTORY}")
 
@@ -163,4 +216,40 @@ set_tests_properties(
   regression_shu_osher_compare
   PROPERTIES
     DEPENDS regression_shu_osher_run
+)
+
+set(
+  SHU_OSHER_PELEC_PLM_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/shu_osher_pelec_plm"
+)
+file(MAKE_DIRECTORY "${SHU_OSHER_PELEC_PLM_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_shu_osher_pelec_plm_run
+  COMMAND
+    $<TARGET_FILE:pelef>
+    "${PROJECT_SOURCE_DIR}/cases/shu_osher/shu_osher_pelec_plm.nml"
+)
+set_tests_properties(
+  regression_shu_osher_pelec_plm_run
+  PROPERTIES
+    WORKING_DIRECTORY "${SHU_OSHER_PELEC_PLM_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_shu_osher_pelec_plm_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_shu_osher.py"
+    --input
+    "${SHU_OSHER_PELEC_PLM_WORK_DIRECTORY}/shu_osher_pelec_plm.csv"
+    --density-squared-reference 112.78740201441508
+    --density-moment-reference -7.071310814334509
+    --signature-relative-tolerance 5.0e-6
+)
+set_tests_properties(
+  regression_shu_osher_pelec_plm_compare
+  PROPERTIES
+    DEPENDS regression_shu_osher_pelec_plm_run
 )
