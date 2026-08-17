@@ -1,66 +1,97 @@
 # PeleF architecture
 
-## Current scope
+## Executable split
 
-PeleF currently advances the one-dimensional compressible Euler equations on a uniform Cartesian mesh. The state layout remains `state(variable, cell)` with one conserved-state ghost cell on each side. Reconstruction builds a wider temporary primitive array when a method needs a larger stencil.
+PeleF currently exposes two serial uniform-grid drivers that share the EOS, state conversion, limiter, characteristic tracing, and Riemann modules.
 
 ```text
-namelist input
-    ↓
-problem selection: Sod | Shu-Osher | Sedov
-    ↓
-uniform mesh and conserved state
-    ↓
-boundary fill
-    ↓
-reconstruction dispatch
-    ├─ pcm
-    ├─ plm: componentwise primitive reconstruction + SSPRK2
-    └─ pelec_plm
-         ├─ order-2 or PeleC order-4 limited slopes
-         ├─ optional pressure/velocity shock flattening
-         ├─ characteristic projection
-         └─ u-c, u, u+c time tracing
-    ↓
-Riemann dispatch: Rusanov | qualified PeleC subset
-    ↓
-shared conservative face fluxes
-    ↓
-time update and physical-state gate
+pelef
+  └─ one-dimensional PCM / PLM / PeleC-style Godunov paths
+
+pelef2d
+  └─ two-dimensional periodic CTU-style Euler path
 ```
 
-## Replaceable numerical components
+The split keeps the verified one-dimensional implementation unchanged while multidimensional infrastructure is developed behind separate data layouts and regression gates.
 
-The application passes explicit selections through the driver to the finite-volume operator:
+## Shared state and physics
 
-- `reconstruction = "pcm" | "plm" | "pelec_plm"`;
-- `limiter = "minmod" | "mc"`;
-- `plm_order = 2 | 4`;
-- `use_flattening = .false. | .true.`;
-- `boundary_condition = "outflow" | "periodic"`;
-- `riemann_solver = "rusanov" | "pelec"`.
+Both drivers advance
 
-The new controls only affect `pelec_plm`. Existing inputs omit them and therefore retain the verified order-2, no-flattening behavior.
+```text
+(rho, rho*u, rho*v, rho*w, rho*E)
+```
 
-## Stencil ownership
+and use the same constant-`gamma` ideal-gas EOS. The primitive layout remains
 
-`reconstruction_pelec_plm_mod` owns the extended primitive stencil:
+```text
+(rho, u, v, w, p).
+```
 
-- order-2 slopes require cells `i-1:i+1`;
-- order-4 slopes require `i-2:i+2`;
-- flattening requires pressure and normal velocity through `i-3:i+3`.
+The 1D state is stored as `state(variable, cell)` with ghost cells. The 2D state is stored as `state(variable, i, j)` over interior periodic cells; periodic neighbor indices are resolved explicitly by the CTU operator.
 
-For periodic boundaries, these temporary primitive and slope values wrap. For outflow boundaries, exterior primitive values are constant extensions and boundary-adjacent slopes are suppressed. The conserved-state storage and existing boundary module therefore remain unchanged.
+## One-dimensional path
 
-## Time integration
+```text
+namelist
+  ↓
+Sod | Shu-Osher | Sedov initialization
+  ↓
+PCM | componentwise PLM | characteristic PeleC PLM
+  ↓
+Rusanov | qualified PeleC Riemann solver
+  ↓
+SSPRK2 or time-centered Godunov update
+  ↓
+physical-state, conservation, and problem-specific gates
+```
 
-`pcm` and componentwise `plm` form a method-of-lines spatial operator and use SSPRK2. `pelec_plm` constructs time-centered characteristic face states with `dt/dx`, so it uses a single conservative Godunov update. Mixing SSPRK2 with already traced states is intentionally rejected.
+The characteristic path supports order-2 or five-point order-4 slopes and optional shock flattening.
+
+## Two-dimensional path
+
+```text
+2D namelist and uniform Cartesian mesh
+  ↓
+periodic isentropic-vortex initialization
+  ↓
+primitive conversion and limited x/y slopes
+  ↓
+normal characteristic tracing
+  ├─ x: direct u-c, u, u+c tracing
+  └─ y: rotate (u,v), trace with the x kernel, rotate back
+  ↓
+provisional x/y Riemann fluxes
+  ↓
+half-step transverse conservative corrections
+  ├─ x-face states corrected by y-flux divergence
+  └─ y-face states corrected by x-flux divergence
+  ↓
+final x/y Riemann fluxes
+  ↓
+one unsplit conservative update
+  ↓
+positivity and periodic conservation gates
+```
+
+`directional_flux_mod` owns the x/y momentum rotation, so neither Riemann solver contains duplicated y-direction algebra. `ctu_2d_mod` owns reconstruction, provisional fluxes, transverse correction, final fluxes, and the update.
+
+## Transverse-correction safety
+
+Each normal predictor state is physical before transverse correction. If the full half-step transverse update would make density or pressure invalid, the correction is scaled along the line from the base face state to the proposed corrected state. A bounded bisection determines the largest accepted factor `theta` in `[0,1]`.
+
+The smooth isentropic-vortex regressions use `theta = 1` everywhere. The limiter exists as a defensive invariant for later stronger multidimensional cases.
+
+## Dimensional reduction
+
+A dedicated unit test repeats a one-dimensional periodic entropy wave across every y row, advances it with the 2D CTU operator, and compares it with the existing one-dimensional characteristic Godunov step at the same `dt`. The states agree to roundoff, verifying that transverse machinery vanishes for dimensionally reduced data.
 
 ## Design constraints
 
-1. Each algorithmic component has a direct unit or regression gate.
-2. Density and pressure failures are reported; no silent solver substitution is allowed.
-3. Rusanov and lower-order reconstruction remain selectable diagnostic baselines.
-4. One face flux is shared by neighboring cells, preserving finite-volume conservation.
-5. “PeleC-style” always denotes an explicitly documented subset, not whole-code parity.
-6. Future general-EOS, multispecies, multidimensional, AMR, and parallel layers must preserve the current component boundaries.
+1. Existing 1D baselines remain unchanged and selectable.
+2. Directional rotation is explicit and unit tested.
+3. One numerical flux is shared by both cells adjacent to each face.
+4. Periodic flux differences telescope, preserving all conserved integrals to roundoff.
+5. Invalid density or pressure is rejected or corrected only by an explicitly measured positivity factor.
+6. “PeleC-style” denotes a documented regular-grid subset, not full PeleC parity.
+7. Future multispecies, transport, AMR, EB, and parallel layers must preserve the current EOS and flux-dispatch boundaries.

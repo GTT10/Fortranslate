@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.5.0
+  VERSION 0.6.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -23,6 +23,7 @@ add_library(
   src/core/constants_mod.F90
   src/core/state_indices_mod.F90
   src/core/mesh_mod.F90
+  src/core/mesh_2d_mod.F90
   src/physics/eos_ideal_mod.F90
   src/hydro/state_conversion_mod.F90
   src/hydro/boundary_conditions_mod.F90
@@ -32,14 +33,20 @@ add_library(
   src/hydro/riemann_rusanov_mod.F90
   src/hydro/riemann_pelec_mod.F90
   src/hydro/riemann_flux_mod.F90
+  src/hydro/directional_flux_mod.F90
+  src/hydro/ctu_2d_mod.F90
   src/hydro/finite_volume_mod.F90
   src/driver/time_integrator_mod.F90
   src/driver/diagnostics_mod.F90
+  src/driver/diagnostics_2d_mod.F90
   src/driver/simulation_config_mod.F90
+  src/driver/simulation_config_2d_mod.F90
   src/problems/sod_problem_mod.F90
   src/problems/shu_osher_problem_mod.F90
   src/problems/sedov_problem_mod.F90
+  src/problems/isentropic_vortex_problem_mod.F90
   src/io/csv_io_mod.F90
+  src/io/csv_io_2d_mod.F90
 )
 
 set_target_properties(
@@ -79,7 +86,10 @@ endif()
 add_executable(pelef app/pelef.F90)
 target_link_libraries(pelef PRIVATE pelef_core)
 
-install(TARGETS pelef RUNTIME DESTINATION bin)
+add_executable(pelef2d app/pelef2d.F90)
+target_link_libraries(pelef2d PRIVATE pelef_core)
+
+install(TARGETS pelef pelef2d RUNTIME DESTINATION bin)
 
 if(PELEF_ENABLE_TESTS)
   include(CTest)
