@@ -2,9 +2,7 @@
 
 ## Current scope
 
-The current milestone is a serial one-dimensional finite-volume solver for the compressible Euler equations. It deliberately excludes AMR, chemistry, viscosity, particles, MPI, and accelerator support.
-
-The executable performs this path:
+The current milestone is a serial one-dimensional finite-volume solver for the compressible Euler equations. It excludes AMR, chemistry, viscosity, particles, MPI, embedded boundaries, and accelerator support.
 
 ```text
 namelist input
@@ -15,59 +13,54 @@ Sod or Shu-Osher initialization
     ↓
 boundary fill
     ↓
-PCM or PLM reconstruction
+reconstruction dispatch
+    ├─ pcm: cell averages
+    ├─ plm: componentwise primitive slopes
+    └─ pelec_plm: primitive slopes + characteristic wave tracing
     ↓
-Riemann-solver dispatch
+Riemann dispatch
     ├─ Rusanov
     └─ PeleC-style ideal-gas subset
     ↓
-finite-volume flux divergence
+conservative flux divergence
     ↓
-SSPRK2 update and physical-state gate
+time update
+    ├─ SSPRK2 for pcm/plm
+    └─ one time-centered Godunov update for pelec_plm
     ↓
-CSV output and independent regression tools
+physical-state gate, CSV output, independent regressions
 ```
 
 ## Layering
 
 - `src/core`: precision, constants, state indices, and mesh utilities.
-- `src/physics`: equation-of-state implementations independent of discretization.
-- `src/hydro`: state conversion, boundary conditions, slope limiting, reconstruction, Riemann solvers, dispatch, and finite-volume operators.
-- `src/driver`: configuration, timestep selection, integration, and diagnostics.
+- `src/physics`: EOS functions independent of discretization.
+- `src/hydro`: state conversion, boundaries, limiting, reconstruction, characteristic tracing, Riemann solvers, and finite-volume operators.
+- `src/driver`: configuration, timestep selection, integration dispatch, and diagnostics.
 - `src/problems`: problem-specific initial conditions.
-- `src/io`: output without coupling physics kernels to a file format.
+- `src/io`: output isolated from physics kernels.
 - `app`: executable assembly and problem selection only.
-- `tests`: unit and regression tests.
-- `tools`: independent comparison and parity utilities.
+- `tests`: algebraic, convergence, exact-solution, and deterministic regression gates.
+- `tools`: independent Python comparison utilities.
 
-Physics kernels operate on contiguous arrays and use no AMReX or PelePhysics data structures. The current state array is organized as `state(variable, cell)`, with one ghost cell at each domain boundary.
+The state array remains `state(variable, cell)` with one ghost cell on each side. Physics kernels use contiguous Fortran arrays and no AMReX or PelePhysics data structures.
 
 ## Replaceable numerical components
 
-The finite-volume operator receives names for the reconstruction, limiter, boundary condition, and Riemann solver. Dispatch is explicit:
-
-- `reconstruction = "pcm" | "plm"`;
+- `reconstruction = "pcm" | "plm" | "pelec_plm"`;
 - `limiter = "minmod" | "mc"`;
 - `boundary_condition = "outflow" | "periodic"`;
 - `riemann_solver = "rusanov" | "pelec"`.
 
-Unknown values fail configuration or flux evaluation. The code does not silently replace a failed selected solver with Rusanov; Rusanov is an explicit robustness baseline.
+Unknown selections fail explicitly. A selected PeleC-style component is never silently replaced with Rusanov or first order.
 
-## Boundary behavior
-
-The boundary layer owns ghost filling independently of reconstruction:
-
-- `outflow`: copy the nearest interior cell into each ghost cell and suppress boundary-adjacent PLM slopes;
-- `periodic`: wrap ghost states and the corresponding PLM slopes.
-
-Wrapping slopes as well as states is required to retain second-order convergence across the periodic interface.
+`pelec_plm` differs structurally from the method-of-lines paths because its interface states already include `dt/dx` characteristic tracing. The driver therefore uses one conservative Godunov update for that path instead of applying SSPRK2 to an already time-centered flux.
 
 ## Design constraints
 
-1. Numerical kernels remain independently testable without the application driver.
-2. Invalid density or pressure is reported rather than silently repaired.
-3. The finite-volume update remains conservative.
-4. Derived quantities such as pressure are computed through the EOS layer.
-5. First-order and Rusanov paths remain available after higher-order components are added.
-6. A subsystem is described as PeleC-compatible only for the tested subset explicitly documented.
-7. Future characteristic reconstruction, multidimensional, multispecies, AMR, and parallel layers must not require rewriting the current EOS or flux-dispatch APIs.
+1. Every numerical component must remain independently testable.
+2. Invalid density or pressure is rejected rather than silently repaired.
+3. Flux-divergence updates remain conservative.
+4. First-order, componentwise-PLM, and Rusanov baselines remain available for differential diagnosis.
+5. “PeleC-style” always names a documented and tested subset, not whole-solver parity.
+6. General EOS, multispecies, multidimensional, AMR, and parallel extensions must not require replacing the existing dispatch boundaries.

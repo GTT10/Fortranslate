@@ -17,7 +17,9 @@ cmake-build-*/
 sod.csv
 sod_plm.csv
 sod_pelec.csv
+sod_pelec_plm.csv
 shu_osher.csv
+shu_osher_pelec_plm.csv
 *.vtk
 *.vtu
 *.h5

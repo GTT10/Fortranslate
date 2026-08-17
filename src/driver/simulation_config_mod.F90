@@ -71,14 +71,14 @@ contains
     character(len=32) :: problem, reconstruction, limiter
     character(len=32) :: boundary_condition, riemann_solver
 
-    namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, gamma, &
-      output_file, problem, reconstruction, limiter, boundary_condition, &
-      riemann_solver
-    namelist /sod_problem/ discontinuity, rho_left, velocity_left, pressure_left, &
-      rho_right, velocity_right, pressure_right
-    namelist /shu_osher_problem/ shock_location, left_density, left_velocity, &
-      left_pressure, density_base, density_amplitude, density_wavenumber, &
-      velocity_right, pressure_right
+    namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, &
+      gamma, output_file, problem, reconstruction, limiter, &
+      boundary_condition, riemann_solver
+    namelist /sod_problem/ discontinuity, rho_left, velocity_left, &
+      pressure_left, rho_right, velocity_right, pressure_right
+    namelist /shu_osher_problem/ shock_location, left_density, &
+      left_velocity, left_pressure, density_base, density_amplitude, &
+      density_wavenumber, velocity_right, pressure_right
 
     config = simulation_config()
     sod = sod_config()
@@ -126,13 +126,9 @@ contains
     if (io_status /= 0) then
       close(unit)
       ok = .false.
-      write(message, '(a,1x,a)') "Could not read &simulation from:", trim(path)
+      write(message, '(a,1x,a)') &
+        "Could not read &simulation from:", trim(path)
       return
-    end if
-
-    if (trim(problem) == "shu_osher") then
-      velocity_right = shu_osher%right_velocity
-      pressure_right = shu_osher%right_pressure
     end if
 
     select case (trim(problem))
@@ -147,6 +143,8 @@ contains
       end if
 
     case ("shu_osher")
+      velocity_right = shu_osher%right_velocity
+      pressure_right = shu_osher%right_pressure
       read(unit, nml=shu_osher_problem, iostat=io_status)
       if (io_status /= 0) then
         close(unit)
@@ -215,7 +213,8 @@ contains
     end if
   end subroutine read_sod_configuration
 
-  pure subroutine validate_configuration_full(config, sod, shu_osher, ok, message)
+  pure subroutine validate_configuration_full( &
+      config, sod, shu_osher, ok, message)
     type(simulation_config), intent(in) :: config
     type(sod_config), intent(in) :: sod
     type(shu_osher_config), intent(in) :: shu_osher
@@ -240,7 +239,7 @@ contains
     else if (.not. valid_problem(config%problem)) then
       message = "problem must be sod or shu_osher"
     else if (.not. valid_reconstruction(config%reconstruction)) then
-      message = "reconstruction must be pcm or plm"
+      message = "reconstruction must be pcm, plm, or pelec_plm"
     else if (.not. valid_limiter(config%limiter)) then
       message = "limiter must be minmod or mc"
     else if (.not. valid_boundary_condition(config%boundary_condition)) then
@@ -262,6 +261,7 @@ contains
     type(sod_config), intent(in) :: sod
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+
     type(shu_osher_config) :: shu_osher
 
     shu_osher = shu_osher_config()
@@ -280,7 +280,8 @@ contains
       message = "discontinuity must lie inside the domain"
     else if (sod%rho_left <= 0.0_dp .or. sod%rho_right <= 0.0_dp) then
       message = "left and right densities must be positive"
-    else if (sod%pressure_left <= 0.0_dp .or. sod%pressure_right <= 0.0_dp) then
+    else if (sod%pressure_left <= 0.0_dp .or. &
+             sod%pressure_right <= 0.0_dp) then
       message = "left and right pressures must be positive"
     else
       ok = .true.
@@ -301,7 +302,8 @@ contains
     else if (shu_osher%left_density <= 0.0_dp .or. &
              shu_osher%left_pressure <= 0.0_dp) then
       message = "Shu-Osher left density and pressure must be positive"
-    else if (shu_osher%density_base <= abs(shu_osher%density_amplitude)) then
+    else if (shu_osher%density_base <= &
+             abs(shu_osher%density_amplitude)) then
       message = "Shu-Osher density_base must exceed abs(density_amplitude)"
     else if (shu_osher%density_wavenumber <= 0.0_dp) then
       message = "Shu-Osher density_wavenumber must be positive"
@@ -315,6 +317,7 @@ contains
 
   pure logical function valid_problem(name) result(valid)
     character(len=*), intent(in) :: name
+
     select case (trim(name))
     case ("sod", "shu_osher")
       valid = .true.
@@ -325,8 +328,9 @@ contains
 
   pure logical function valid_reconstruction(name) result(valid)
     character(len=*), intent(in) :: name
+
     select case (trim(name))
-    case ("pcm", "plm")
+    case ("pcm", "plm", "pelec_plm")
       valid = .true.
     case default
       valid = .false.
@@ -335,6 +339,7 @@ contains
 
   pure logical function valid_limiter(name) result(valid)
     character(len=*), intent(in) :: name
+
     select case (trim(name))
     case ("minmod", "mc")
       valid = .true.
@@ -345,6 +350,7 @@ contains
 
   pure logical function valid_boundary_condition(name) result(valid)
     character(len=*), intent(in) :: name
+
     select case (trim(name))
     case ("outflow", "periodic")
       valid = .true.
@@ -355,6 +361,7 @@ contains
 
   pure logical function valid_riemann_solver(name) result(valid)
     character(len=*), intent(in) :: name
+
     select case (trim(name))
     case ("rusanov", "pelec")
       valid = .true.

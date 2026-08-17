@@ -3,6 +3,7 @@ module finite_volume_mod
   use state_indices_mod, only: ncons
   use riemann_flux_mod, only: compute_riemann_flux_x
   use reconstruction_plm_mod, only: reconstruct_plm_faces
+  use reconstruction_pelec_plm_mod, only: reconstruct_pelec_plm_faces
   implicit none
   private
 
@@ -12,7 +13,7 @@ contains
 
   subroutine compute_euler_rhs( &
       conserved, nx, dx, gamma, rhs, ok, reconstruction, limiter, &
-      boundary_condition, riemann_solver)
+      boundary_condition, riemann_solver, dt)
     integer, intent(in) :: nx
     real(dp), intent(in) :: conserved(ncons, 0:nx + 1)
     real(dp), intent(in) :: dx, gamma
@@ -21,6 +22,7 @@ contains
     character(len=*), intent(in), optional :: reconstruction, limiter
     character(len=*), intent(in), optional :: boundary_condition
     character(len=*), intent(in), optional :: riemann_solver
+    real(dp), intent(in), optional :: dt
 
     real(dp), allocatable :: face_flux(:, :), left_faces(:, :), right_faces(:, :)
     character(len=32) :: reconstruction_name, limiter_name, boundary_name
@@ -58,6 +60,36 @@ contains
       allocate(right_faces(ncons, 0:nx))
       call reconstruct_plm_faces( &
         conserved, nx, gamma, limiter_name, boundary_name, &
+        left_faces, right_faces, reconstruction_ok)
+      if (.not. reconstruction_ok) then
+        ok = .false.
+        return
+      end if
+
+      do i = 0, nx
+        call compute_riemann_flux_x( &
+          left_faces(:, i), right_faces(:, i), gamma, riemann_name, &
+          face_flux(:, i), face_ok)
+        if (.not. face_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+
+    case ("pelec_plm")
+      if (.not. present(dt)) then
+        ok = .false.
+        return
+      end if
+      if (dt <= 0.0_dp .or. dx <= 0.0_dp) then
+        ok = .false.
+        return
+      end if
+
+      allocate(left_faces(ncons, 0:nx))
+      allocate(right_faces(ncons, 0:nx))
+      call reconstruct_pelec_plm_faces( &
+        conserved, nx, gamma, limiter_name, boundary_name, dt / dx, &
         left_faces, right_faces, reconstruction_ok)
       if (.not. reconstruction_ok) then
         ok = .false.

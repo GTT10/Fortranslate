@@ -9,6 +9,7 @@ module time_integrator_mod
   private
 
   public :: compute_cfl_timestep
+  public :: advance_hydro_step
   public :: advance_ssprk2
   public :: all_cells_physical
 
@@ -53,6 +54,40 @@ contains
     dt = cfl * dx / max_signal_speed
   end subroutine compute_cfl_timestep
 
+  subroutine advance_hydro_step( &
+      conserved, nx, dx, dt, gamma, ok, reconstruction, limiter, &
+      boundary_condition, riemann_solver)
+    integer, intent(in) :: nx
+    real(dp), intent(inout) :: conserved(ncons, 0:nx + 1)
+    real(dp), intent(in) :: dx, dt, gamma
+    logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: reconstruction, limiter
+    character(len=*), intent(in), optional :: boundary_condition
+    character(len=*), intent(in), optional :: riemann_solver
+
+    character(len=32) :: reconstruction_name, limiter_name, boundary_name
+    character(len=32) :: riemann_name
+
+    reconstruction_name = "pcm"
+    limiter_name = "mc"
+    boundary_name = "outflow"
+    riemann_name = "rusanov"
+    if (present(reconstruction)) reconstruction_name = trim(reconstruction)
+    if (present(limiter)) limiter_name = trim(limiter)
+    if (present(boundary_condition)) boundary_name = trim(boundary_condition)
+    if (present(riemann_solver)) riemann_name = trim(riemann_solver)
+
+    if (trim(reconstruction_name) == "pelec_plm") then
+      call advance_pelec_godunov( &
+        conserved, nx, dx, dt, gamma, ok, limiter_name, boundary_name, &
+        riemann_name)
+    else
+      call advance_ssprk2( &
+        conserved, nx, dx, dt, gamma, ok, reconstruction_name, limiter_name, &
+        boundary_name, riemann_name)
+    end if
+  end subroutine advance_hydro_step
+
   subroutine advance_ssprk2( &
       conserved, nx, dx, dt, gamma, ok, reconstruction, limiter, &
       boundary_condition, riemann_solver)
@@ -78,6 +113,11 @@ contains
     if (present(limiter)) limiter_name = trim(limiter)
     if (present(boundary_condition)) boundary_name = trim(boundary_condition)
     if (present(riemann_solver)) riemann_name = trim(riemann_solver)
+
+    if (trim(reconstruction_name) == "pelec_plm") then
+      ok = .false.
+      return
+    end if
 
     allocate(old_state(ncons, 0:nx + 1))
     allocate(stage_state(ncons, 0:nx + 1))
@@ -132,6 +172,53 @@ contains
     end if
     ok = all_cells_physical(conserved, nx, gamma)
   end subroutine advance_ssprk2
+
+  subroutine advance_pelec_godunov( &
+      conserved, nx, dx, dt, gamma, ok, limiter, boundary_condition, &
+      riemann_solver)
+    integer, intent(in) :: nx
+    real(dp), intent(inout) :: conserved(ncons, 0:nx + 1)
+    real(dp), intent(in) :: dx, dt, gamma
+    logical, intent(out) :: ok
+    character(len=*), intent(in) :: limiter, boundary_condition
+    character(len=*), intent(in) :: riemann_solver
+
+    real(dp), allocatable :: old_state(:, :), rhs(:, :)
+    logical :: rhs_ok, boundary_ok
+    integer :: i
+
+    allocate(old_state(ncons, 0:nx + 1))
+    allocate(rhs(ncons, nx))
+
+    call apply_boundary_conditions( &
+      conserved, nx, boundary_condition, boundary_ok)
+    if (.not. boundary_ok) then
+      ok = .false.
+      return
+    end if
+    old_state = conserved
+
+    call compute_euler_rhs( &
+      old_state, nx, dx, gamma, rhs, rhs_ok, &
+      reconstruction="pelec_plm", limiter=limiter, &
+      boundary_condition=boundary_condition, riemann_solver=riemann_solver, &
+      dt=dt)
+    if (.not. rhs_ok) then
+      ok = .false.
+      return
+    end if
+
+    do concurrent (i = 1:nx)
+      conserved(:, i) = old_state(:, i) + dt * rhs(:, i)
+    end do
+    call apply_boundary_conditions( &
+      conserved, nx, boundary_condition, boundary_ok)
+    if (.not. boundary_ok) then
+      ok = .false.
+      return
+    end if
+    ok = all_cells_physical(conserved, nx, gamma)
+  end subroutine advance_pelec_godunov
 
   pure logical function all_cells_physical(conserved, nx, gamma) result(all_physical)
     integer, intent(in) :: nx
