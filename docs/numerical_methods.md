@@ -2,7 +2,7 @@
 
 ## Governing equations
 
-The current solver advances the one-dimensional Euler system in conservative form,
+The current solver advances the one-dimensional Euler system
 
 \[
 \partial_t U + \partial_x F(U)=0,
@@ -10,108 +10,100 @@ The current solver advances the one-dimensional Euler system in conservative for
 U=(\rho,\rho u,\rho v,\rho w,\rho E)^T,
 \]
 
-with a constant-`gamma` ideal-gas closure.
+closed by a constant-`gamma` ideal gas.
 
-For cell `i`, the finite-volume operator is
+## Spatial update
+
+For cell `i`,
 
 \[
 \frac{dU_i}{dt}=-\frac{F_{i+1/2}-F_{i-1/2}}{\Delta x}.
 \]
 
-## Reconstruction
+The available Riemann fluxes are Rusanov and a single-species ideal-gas reduction of the star-state and wave-interpolation logic in PeleC `Source/Riemann.H`.
 
-`reconstruction = "pcm"` sends adjacent cell averages directly to the selected Riemann solver.
+## Reconstruction paths
 
-`reconstruction = "plm"` converts cell averages to primitive variables
+### `pcm`
+
+Adjacent cell averages are sent directly to the selected Riemann solver.
+
+### `plm`
+
+Primitive variables
 
 \[
-q=(\rho,u,v,w,p)^T,
+q=(\rho,u,v,w,p)^T
 \]
 
-computes a componentwise limited slope `s_i`, and forms
+are reconstructed componentwise with minmod or MC slopes. SSPRK2 supplies second-order time integration.
+
+### `pelec_plm`
+
+The same limited primitive slope is decomposed into the five one-dimensional characteristic families: left acoustic, contact, two shear waves, and right acoustic. With local sound speed `c`,
 
 \[
-q_{i+1/2}^{L}=q_i+\frac{1}{2}s_i,
+\alpha_- = \frac{\rho}{2c}\left(\frac{\Delta p}{\rho c}-\Delta u\right),
 \qquad
-q_{i-1/2}^{R}=q_i-\frac{1}{2}s_i.
-\]
-
-Available limiters are minmod and monotonized central (`mc`). Density and pressure slopes share a reduction factor if an extrapolated face approaches a configured physical floor. If primitive-to-conserved conversion still fails, the affected face falls back to the corresponding cell-centered state.
-
-## Riemann solver choices
-
-### Rusanov baseline
-
-The robust baseline is local Lax-Friedrichs/Rusanov,
-
-\[
-F^*=\frac{F(U_L)+F(U_R)}{2}
--\frac{1}{2}\max(|u_L|+c_L,|u_R|+c_R)(U_R-U_L).
-\]
-
-It remains selectable for differential diagnosis and future difficult-state tests.
-
-### PeleC-style approximate solver
-
-For the current ideal-gas, single-species subset, the acoustic impedances are
-
-\[
-Z_L=\rho_Lc_L,\qquad Z_R=\rho_Rc_R.
-\]
-
-The initial star estimates follow the corresponding PeleC `Source/Riemann.H` structure,
-
-\[
-p^*=\frac{Z_Rp_L+Z_Lp_R+Z_LZ_R(u_L-u_R)}{Z_L+Z_R},
+\alpha_+ = \frac{\rho}{2c}\left(\frac{\Delta p}{\rho c}+\Delta u\right),
 \]
 
 \[
-u^*=\frac{Z_Lu_L+Z_Ru_R+p_L-p_R}{Z_L+Z_R}.
+\alpha_0 = \Delta\rho-\frac{\Delta p}{c^2},
+\qquad
+\alpha_v=\Delta v,
+\qquad
+\alpha_w=\Delta w.
 \]
 
-The origin state is selected by the sign of `u*`, with stationary interfaces averaged. Star density is estimated by
+The inverse mapping is verified independently:
 
 \[
-\rho^*=\rho_o+\frac{p^*-p_o}{c_o^2}.
-\]
-
-PeleC-style inward and outward wave speeds then interpolate between the origin and star states, with shock replacement when `p* >= p_o`. The resulting interface state supplies mass, momentum, and total-energy fluxes.
-
-This implementation intentionally excludes the production solver's general PelePhysics EOS, species arrays, rotating-frame terms, and boundary scaling. It is therefore described as a verified reduction, not full `Source/Riemann.H` parity.
-
-## Time integration
-
-The semi-discrete operator is advanced by SSPRK2,
-
-\[
-U^{(1)}=U^n+\Delta t L(U^n),
+\Delta\rho=\alpha_-+\alpha_0+\alpha_+,
 \]
 
 \[
-U^{n+1}=\frac{1}{2}U^n+
-\frac{1}{2}\left(U^{(1)}+\Delta t L(U^{(1)})\right),
+\Delta u=\frac{c}{\rho}(\alpha_+-\alpha_-),
+\qquad
+\Delta p=c^2(\alpha_-+\alpha_+).
 \]
 
-with
+PeleC-style tracing then evolves these waves toward the two faces using speeds
 
 \[
-\Delta t=\mathrm{CFL}\min_i\frac{\Delta x}{|u_i|+c_i}.
+u-c,\qquad u,\qquad u+c
 \]
 
-## Current accuracy evidence
+and the current `dt/dx`. The resulting face states are passed to the selected Riemann solver. Because these states are already time-centered, the update is
 
-For a periodic entropy wave using PLM/MC and the PeleC-style solver, density L1 errors on 40, 80, and 160 cells are approximately `4.6967e-4`, `1.1084e-4`, and `2.5946e-5`; observed orders are `2.0831` and `2.0949`.
+\[
+U_i^{n+1}=U_i^n-\frac{\Delta t}{\Delta x}
+\left(F_{i+1/2}^{n+1/2}-F_{i-1/2}^{n+1/2}\right).
+\]
 
-For the 400-cell Sod case at `t = 0.2`:
+## Positivity and fallback
 
-| Method | Density L1 | Pressure L1 |
-|---|---:|---:|
-| PCM + Rusanov | `1.1952e-2` | `9.2441e-3` |
-| PLM/MC + Rusanov | `1.8907e-3` | `1.1981e-3` |
-| PLM/MC + PeleC-style | `1.3678e-3` | `8.0552e-4` |
+Density and pressure slopes share a reduction factor if either extrapolated face approaches its configured floor. Failed primitive-to-conserved conversion falls back to the corresponding cell average. A timestep is rejected if the final interior state is non-physical.
 
-The Shu-Osher case reaches `t = 1.8` on 800 cells with positive density and pressure, roundoff-scale integral-balance errors, and 21 detected extrema in the interaction window.
+## Boundary treatment
 
-## Remaining Godunov work
+- `outflow`: copy the nearest interior state; suppress boundary-adjacent slopes.
+- `periodic`: wrap both states and slopes.
 
-Characteristic-variable projection, characteristic tracing, flattening, multidimensional transverse corrections, PPM, and WENO remain unimplemented. Those are separate parity gates rather than implied by the Riemann-solver result.
+## Verified accuracy
+
+For periodic entropy-wave advection with `pelec_plm` and the PeleC-style Riemann solver:
+
+| Cells | Density L1 |
+|---:|---:|
+| 40 | `3.4863582e-4` |
+| 80 | `7.8837355e-5` |
+| 160 | `1.7751480e-5` |
+
+Observed orders are `2.1448` and `2.1509`.
+
+For 400-cell Sod at `t=0.2`, density and pressure L1 errors are `1.2178e-3` and `7.1822e-4`.
+
+## Scope limitation
+
+The current characteristic implementation excludes PeleC fourth-order slope construction, flattening, general-EOS internal-energy characteristics, species/passive-scalar tracing, EB-specific paths, rotation terms, and multidimensional transverse corrections.

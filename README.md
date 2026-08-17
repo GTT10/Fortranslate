@@ -9,24 +9,23 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 The current executable milestone provides:
 
 - serial one-dimensional compressible Euler equations;
-- constant-gamma ideal-gas EOS;
+- constant-`gamma` ideal-gas EOS;
 - conservative finite-volume updates;
-- selectable Rusanov or single-species PeleC-style approximate Riemann fluxes;
-- selectable piecewise-constant (`pcm`) or piecewise-linear (`plm`) reconstruction;
-- selectable minmod or monotonized-central (`mc`) slope limiting;
+- selectable Rusanov or qualified PeleC-style approximate Riemann fluxes;
+- selectable `pcm`, componentwise `plm`, or time-traced `pelec_plm` reconstruction;
+- minmod and monotonized-central (`mc`) limiting;
 - outflow and periodic ghost-cell boundaries;
-- SSPRK2 time integration;
+- SSPRK2 for `pcm`/`plm` and a single-stage time-centered Godunov update for `pelec_plm`;
 - selectable Sod and Shu-Osher problems;
-- smooth periodic entropy-wave convergence tests;
-- unit, exact-solution, deterministic-regression, conservation, and CI gates.
+- smooth-convergence, exact-solution, deterministic-regression, conservation, and CI gates.
 
-The PLM implementation is componentwise in primitive variables. The PeleC-style Riemann solver is a constant-`gamma`, single-species reduction of the acoustic star-state and wave-interpolation logic in `Source/Riemann.H`. These are verified intermediate components, not claims of complete PeleC Godunov parity.
+`pelec_plm` implements the one-dimensional, single-species, constant-`gamma` characteristic projection and wave tracing corresponding to the core structure of PeleC `Source/PLM.H`. It is intentionally qualified: fourth-order slopes, flattening, general-EOS terms, species tracing, embedded boundaries, and multidimensional transverse corrections are not implemented yet.
 
-AMR, chemistry, diffusion, MPI, embedded boundaries, LES, and spray are planned but are not implemented yet.
+AMR, chemistry, diffusion, MPI, embedded boundaries, LES, and spray remain planned work.
 
 ## Build and test
 
-Requirements: CMake 3.23 or newer, a Fortran 2018 compiler, and Python 3 for regression comparisons.
+Requirements: CMake 3.23 or newer, a Fortran 2018 compiler, and Python 3.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,7 +33,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-With Ninja installed, the provided presets can be used:
+With Ninja installed:
 
 ```bash
 cmake --preset debug
@@ -42,7 +41,7 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-## Run the hydro cases
+## Run representative cases
 
 First-order Rusanov baseline:
 
@@ -51,31 +50,32 @@ First-order Rusanov baseline:
 python3 tools/compare_sod.py --input sod.csv
 ```
 
-PLM/MC with Rusanov:
-
-```bash
-./build/pelef cases/sod/sod_plm.nml
-python3 tools/compare_sod.py \
-  --input sod_plm.csv \
-  --density-l1-max 4e-3 \
-  --pressure-l1-max 3e-3
-```
-
-PLM/MC with the PeleC-style approximate Riemann solver:
+Componentwise PLM with the PeleC-style Riemann solver:
 
 ```bash
 ./build/pelef cases/sod/sod_pelec.nml
-python3 tools/compare_sod.py \
-  --input sod_pelec.csv \
-  --density-l1-max 2e-3 \
-  --pressure-l1-max 1.5e-3
+python3 tools/compare_sod.py --input sod_pelec.csv
 ```
 
-Shu-Osher shock-density-wave interaction:
+PeleC-style characteristic tracing and Riemann solver:
 
 ```bash
-./build/pelef cases/shu_osher/shu_osher.nml
-python3 tools/check_shu_osher.py --input shu_osher.csv
+./build/pelef cases/sod/sod_pelec_plm.nml
+python3 tools/compare_sod.py \
+  --input sod_pelec_plm.csv \
+  --density-l1-max 1.6e-3 \
+  --pressure-l1-max 1.0e-3
+```
+
+Shu-Osher with characteristic tracing:
+
+```bash
+./build/pelef cases/shu_osher/shu_osher_pelec_plm.nml
+python3 tools/check_shu_osher.py \
+  --input shu_osher_pelec_plm.csv \
+  --density-squared-reference 112.78740201441508 \
+  --density-moment-reference -7.071310814334509 \
+  --signature-relative-tolerance 5e-6
 ```
 
 When using the debug preset, the executable path is `build/debug/pelef`.
