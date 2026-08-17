@@ -306,3 +306,74 @@ set_tests_properties(
   PROPERTIES
     DEPENDS regression_sedov_run
 )
+
+add_executable(
+  test_directional_flux_2d
+  unit/test_directional_flux_2d.F90
+)
+target_link_libraries(test_directional_flux_2d PRIVATE pelef_core)
+add_test(NAME unit_directional_flux_2d COMMAND test_directional_flux_2d)
+
+add_executable(
+  test_ctu_transverse_correction
+  unit/test_ctu_transverse_correction.F90
+)
+target_link_libraries(test_ctu_transverse_correction PRIVATE pelef_core)
+add_test(
+  NAME unit_ctu_transverse_correction
+  COMMAND test_ctu_transverse_correction
+)
+
+add_executable(
+  test_isentropic_vortex_2d
+  regression/test_isentropic_vortex_2d.F90
+)
+target_link_libraries(test_isentropic_vortex_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_isentropic_vortex_2d_convergence
+  COMMAND test_isentropic_vortex_2d
+)
+set_tests_properties(
+  regression_isentropic_vortex_2d_convergence
+  PROPERTIES
+    TIMEOUT 180
+)
+
+set(VORTEX_2D_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/isentropic_vortex_2d")
+file(MAKE_DIRECTORY "${VORTEX_2D_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_isentropic_vortex_2d_run
+  COMMAND
+    $<TARGET_FILE:pelef2d>
+    "${PROJECT_SOURCE_DIR}/cases/isentropic_vortex/vortex.nml"
+)
+set_tests_properties(
+  regression_isentropic_vortex_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${VORTEX_2D_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_isentropic_vortex_2d_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_isentropic_vortex.py"
+    --input "${VORTEX_2D_WORK_DIRECTORY}/isentropic_vortex.csv"
+)
+set_tests_properties(
+  regression_isentropic_vortex_2d_compare
+  PROPERTIES
+    DEPENDS regression_isentropic_vortex_2d_run
+)
+
+add_executable(
+  test_ctu_dimensional_reduction
+  unit/test_ctu_dimensional_reduction.F90
+)
+target_link_libraries(test_ctu_dimensional_reduction PRIVATE pelef_core)
+add_test(
+  NAME unit_ctu_dimensional_reduction
+  COMMAND test_ctu_dimensional_reduction
+)

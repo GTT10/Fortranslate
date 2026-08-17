@@ -2,21 +2,26 @@
 
 ## Governing equations
 
-The current solver advances
+PeleF advances the compressible Euler system
 
 \[
-\partial_t U + \partial_x F(U)=0,
+\partial_t U + \partial_x F(U) + \partial_y G(U)=0,
 \qquad
 U=(\rho,\rho u,\rho v,\rho w,\rho E)^T,
 \]
 
-with a constant-`gamma` ideal-gas closure.
+with a constant-`gamma` ideal-gas closure. The y term is omitted by the one-dimensional driver.
 
-## PeleC limited slopes
+## One-dimensional Godunov components
 
-For cell values `q_{i-2},...,q_{i+2}`, define the centered differences and monotonized bounds used in PeleC. With order 2, the neighboring limited slopes are zero and the returned slope reduces to the limited centered expression.
+The 1D implementation retains PCM, componentwise primitive PLM, and a qualified PeleC-style characteristic PLM path. The characteristic path supports:
 
-With order 4, limited neighboring slopes `d_{i-1}` and `d_{i+1}` are first constructed, then
+- `u-c`, `u`, `u+c` wave tracing;
+- order-2 or PeleC five-point order-4 limited slopes;
+- optional pressure/normal-velocity shock flattening;
+- Rusanov or the qualified single-species PeleC-style Riemann solver.
+
+For order 4, neighboring limited slopes enter
 
 \[
 d_{\mathrm{temp}}=
@@ -24,74 +29,126 @@ d_{\mathrm{temp}}=
 -\frac{1}{6}\left(d_{i-1}+d_{i+1}\right),
 \]
 
-and
+and the final slope is bounded by the local monotonicity constraint and multiplied by the flattening coefficient.
+
+## Directional flux rotation
+
+The two-dimensional solver reuses the x-direction Riemann interface for y faces. A y-normal state is rotated by exchanging x and y momentum,
 
 \[
-d_i=f_i\,\operatorname{sign}(d_{\mathrm{cen}})
-\min\left(d_{\mathrm{lim}},|d_{\mathrm{temp}}|\right).
+(\rho,\rho u,\rho v,\rho w,\rho E)
+\mapsto
+(\rho,\rho v,\rho u,\rho w,\rho E),
 \]
 
-Here `f_i` is the flattening coefficient. `plm_order=2` and `plm_order=4` are both retained for differential testing.
+then passed to the x solver. The returned momentum-flux components are exchanged again. This gives a single tested Riemann implementation per solver rather than duplicated directional code.
 
-## Shock flattening
+## Two-dimensional normal prediction
 
-The implemented flattening coefficient follows the regular-cell one-dimensional PeleC logic. It uses pressure values through `i+3`, normal velocity through `i+1`, and the constants
+For each cell, limited primitive slopes are computed independently in x and y. Density and pressure slopes are reduced if either extrapolated face approaches its configured floor.
 
-```text
-shock threshold = 0.33
-zcut1           = 0.75
-zcut2           = 0.85
-```
+The x slope is projected and traced with the existing characteristic kernel. For y, primitive velocity components are rotated, traced with the same kernel using `dt/dy`, and rotated back. These predictors contain the normal half-time evolution but not the transverse flux divergence.
 
-A pressure jump is flattened only when it is sufficiently strong and the local velocity field is compressive. A second, pressure-jump-directed shifted test is combined with the local test. The result is
+## CTU-style transverse correction
 
-[[
-f_i=1-\max(\chi z,\chi_2 z_2),
-\qquad 0\le f_i\le 1.
+Let `F_hat` and `G_hat` be provisional Riemann fluxes from the normal predictor states. The left state on an x face is corrected with the transverse flux divergence of its originating cell,
+
+\[
+U^{*}_{L,i+1/2,j}
+=
+U^{n+1/2}_{L,i+1/2,j}
+-
+\frac{\Delta t}{2\Delta y}
+\left(
+\widehat G_{i,j+1/2}-\widehat G_{i,j-1/2}
+\right).
 \]
 
-Smooth regions return one. A strong compressive step may return zero. Expansion waves are not flattened.
+The right x-face state uses the corresponding divergence in cell `i+1`. The lower and upper states on a y face are corrected analogously with provisional x fluxes,
 
-## Characteristic tracing
+\[
+U^{*}_{B,i,j+1/2}
+=
+U^{n+1/2}_{B,i,j+1/2}
+-
+\frac{\Delta t}{2\Delta x}
+\left(
+\widehat F_{i+1/2,j}-\widehat F_{i-1/2,j}
+\right).
+\]
 
-Primitive slopes are projected into left acoustic, contact, two shear, and right acoustic waves. The waves are traced with speeds `u-c`, `u`, and `u+c` over the current `dt/dx`, and then transformed back into time-centered interface states. Invalid reconstructed states fall back to the corresponding cell-centered state.
+Final Riemann fluxes are evaluated from the corrected states. The conservative update is
 
-## Sedov-type strong-blast case
+\[
+U^{n+1}_{i,j}=U^n_{i,j}
+-
+\frac{\Delta t}{\Delta x}
+\left(F_{i+1/2,j}-F_{i-1/2,j}\right)
+-
+\frac{\Delta t}{\Delta y}
+\left(G_{i,j+1/2}-G_{i,j-1/2}\right).
+\]
 
-The regression domain is `[0,1]` with a blast centered at `0.5`. Density is initially uniform. Pressure is `100` inside radius `0.0125` and `1e-5` outside. The simulation advances to `t=0.02` on 800 cells with fourth-order characteristic PLM and flattening.
+This is a regular-grid two-dimensional CTU-style subset. It does not yet include PeleC source-term coupling, embedded boundaries, 3D double-transverse terms, or AMR synchronization.
 
-This is a symmetric planar blast, not the spherical analytic Sedov-Taylor similarity problem. It is used as a strong-shock verification gate for:
+## Positivity scaling of transverse corrections
 
-- finite and positive states;
-- reflection symmetry of density and pressure;
-- antisymmetry of velocity;
-- mass, momentum, and energy conservation;
-- shock-radius and field-signature stability.
+If a full transverse correction would produce non-positive density or pressure, PeleF seeks
 
-## Verified results
+\[
+U(\theta)=U_{\mathrm{base}}+\theta\,\Delta U,
+\qquad 0\le\theta\le1,
+\]
 
-The fourth-order periodic entropy-wave test gives density L1 errors
+and accepts the largest physical `theta` found by bisection. Smooth-vortex tests accept `theta=1` everywhere.
+
+## Two-dimensional CFL condition
+
+The unsplit timestep uses
+
+\[
+\Delta t=
+\frac{\mathrm{CFL}}
+{\max_{i,j}\left[
+(|u|+c)/\Delta x+(|v|+c)/\Delta y
+\right]}.
+\]
+
+## Isentropic vortex
+
+The periodic analytical test superimposes a vortex of strength `beta` on a uniform flow. With displacement `(x_bar,y_bar)` from the translated periodic vortex center,
+
+\[
+\delta u=-\frac{\beta}{2\pi}y_{\!bar}
+\exp\left(\frac{1-r^2}{2}\right),
+\qquad
+\delta v=\frac{\beta}{2\pi}x_{\!bar}
+\exp\left(\frac{1-r^2}{2}\right),
+\]
+
+\[
+\delta T=-\frac{(\gamma-1)\beta^2}{8\gamma\pi^2}
+\exp(1-r^2).
+\]
+
+Density and pressure follow the isentropic relation. The exact solution is the initial vortex translated by the base velocity through the periodic domain.
+
+## Verified multidimensional results
+
+With the PeleC-style Riemann solver, MC slopes, and transverse correction enabled:
 
 ```text
-nx=40    3.5852193457e-4
-nx=80    7.9925449806e-5
-nx=160   1.7613156678e-5
+24 x 24   density L1 = 2.5862222302e-3
+48 x 48   density L1 = 5.3334803639e-4
+96 x 96   density L1 = 1.1010295208e-4
+
+observed order:
+24 -> 48  2.2776971
+48 -> 96  2.2762241
 ```
 
-with observed orders `2.1653` and `2.1820`. The overall scheme remains second order in time, as expected.
-
-The 800-cell blast completes in 1052 steps. Representative final metrics are:
-
-```text
-minimum density       1.4352255263e-1
-maximum density       5.0001945148
-minimum pressure      1.0e-5
-maximum pressure      1.3654133597e1
-shock radius          1.31875e-1
-mass error            1.58e-14
-energy error           3.29e-14
-```
+At `48 x 48`, disabling the transverse correction increases density L1 error to `1.1493796865e-3`. Periodic mass, both momentum components, and total energy remain conserved to approximately `6e-14`.
 
 ## Scope limitations
 
-The implementation does not yet include fourth-order multidimensional stencils, embedded-boundary slope fallbacks, general-EOS internal-energy characteristic amplitudes, species/passive-scalar tracing, rotating frames, or transverse Godunov corrections.
+The current 2D path is serial, periodic, single-species, inviscid, constant-`gamma`, and uniform-grid. General-EOS internal-energy characteristics, species/passive-scalar transport, physical wall/inflow boundaries, PPM/WENO, embedded boundaries, AMR, MPI, diffusion, chemistry, and spray remain future work.

@@ -1,0 +1,27 @@
+&simulation_2d
+  nx = 64
+  ny = 64
+  max_steps = 100000
+  x_min = 0.0
+  x_max = 10.0
+  y_min = 0.0
+  y_max = 10.0
+  final_time = 1.0
+  cfl = 0.4
+  gamma = 1.4
+  output_file = "isentropic_vortex.csv"
+  limiter = "mc"
+  boundary_condition = "periodic"
+  riemann_solver = "pelec"
+  use_transverse_correction = .true.
+/
+
+&isentropic_vortex
+  center_x = 5.0
+  center_y = 5.0
+  strength = 5.0
+  base_density = 1.0
+  base_pressure = 1.0
+  base_velocity_x = 1.0
+  base_velocity_y = 1.0
+/

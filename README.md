@@ -6,19 +6,30 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The current `0.5.0` milestone provides a serial one-dimensional solver for the compressible Euler equations with a constant-`gamma` ideal-gas EOS.
+The `0.6.0` milestone contains two serial uniform-grid executables.
 
-Available numerical components:
+### `pelef`: one-dimensional Euler solver
 
-- reconstruction: `pcm`, componentwise primitive `plm`, or time-traced characteristic `pelec_plm`;
-- PLM slope order for `pelec_plm`: `plm_order = 2` or `4`;
-- optional PeleC pressure/velocity shock flattening with `use_flattening = .true.`;
-- slope limiter: `minmod` or monotonized-central (`mc`);
-- Riemann solver: `rusanov` or the documented single-species PeleC-style subset;
-- boundaries: `outflow` or `periodic`;
-- problems: Sod, Shu-Osher, and a symmetric planar Sedov-type blast.
+- constant-`gamma` ideal-gas EOS;
+- `pcm`, componentwise primitive `plm`, and time-traced characteristic `pelec_plm` reconstruction;
+- order-2 or PeleC-style five-point order-4 limited slopes;
+- optional pressure/velocity shock flattening;
+- Rusanov or qualified single-species PeleC-style Riemann fluxes;
+- outflow and periodic boundaries;
+- Sod, Shu-Osher, and symmetric planar Sedov-type regressions.
 
-The fourth-order slope and flattening formulas follow the corresponding one-dimensional regular-cell logic in PeleC `Source/PLM.H` and `Source/Godunov.H`. General-EOS terms, species tracing, embedded boundaries, and multidimensional transverse corrections are not yet implemented.
+### `pelef2d`: two-dimensional Euler scaffold
+
+- uniform Cartesian mesh with periodic boundaries;
+- shared five-component conserved state `(rho, rho*u, rho*v, rho*w, rho*E)`;
+- x/y directional Riemann fluxes through an explicit momentum rotation;
+- limited primitive slopes and normal characteristic tracing in both directions;
+- conservative half-step transverse flux corrections;
+- positivity-preserving scaling of transverse corrections when required;
+- one unsplit conservative CTU-style update;
+- periodic isentropic-vortex analytical and convergence regressions.
+
+The two-dimensional implementation is a qualified regular-grid subset. It does not yet include PeleC multidimensional source terms, embedded boundaries, 3D double-transverse corrections, AMR, chemistry, transport, or species arrays.
 
 ## Build and test
 
@@ -40,21 +51,29 @@ ctest --preset debug
 
 ## Representative runs
 
-Characteristic PLM with the qualified PeleC-style Riemann solver:
+One-dimensional characteristic PLM:
 
 ```bash
 ./build/pelef cases/sod/sod_pelec_plm.nml
 python3 tools/compare_sod.py --input sod_pelec_plm.csv
 ```
 
-Fourth-order characteristic PLM with flattening on the strong-blast case:
+Strong-blast regression with order-4 slopes and flattening:
 
 ```bash
 ./build/pelef cases/sedov/sedov.nml
 python3 tools/check_sedov.py --input sedov.csv
 ```
 
-The Sedov regression checks positivity, reflection symmetry, integral conservation, shock location, and pinned field signatures.
+Two-dimensional periodic isentropic vortex:
+
+```bash
+./build/pelef2d cases/isentropic_vortex/vortex.nml
+python3 tools/check_isentropic_vortex.py \
+  --input isentropic_vortex.csv
+```
+
+The 2D convergence test uses 24, 48, and 96 cells per direction. The observed density orders are approximately `2.278` and `2.276`. At 48 cells, enabling the transverse correction reduces density L1 error from approximately `1.149e-3` to `5.333e-4`.
 
 ## Project records
 

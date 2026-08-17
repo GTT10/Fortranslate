@@ -21,6 +21,7 @@ sod_pelec_plm.csv
 shu_osher.csv
 shu_osher_pelec_plm.csv
 sedov.csv
+isentropic_vortex.csv
 *.vtk
 *.vtu
 *.h5
