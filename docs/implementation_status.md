@@ -3,7 +3,7 @@
 ## Phase 0 — infrastructure
 
 - [x] CMake and GNU Fortran builds
-- [x] Debug bounds/FPE checks
+- [x] Debug bounds and floating-point checks
 - [x] CTest and GitHub Actions
 - [x] architecture, mapping, parity, and design-decision records
 
@@ -13,59 +13,52 @@
 - [x] constant-`gamma` ideal-gas EOS
 - [x] primitive/conserved conversion
 - [x] outflow and periodic boundaries
-- [x] Rusanov flux
-- [x] conservative flux divergence and CFL control
-- [x] SSPRK2
+- [x] Rusanov flux and conservative divergence
+- [x] CFL control and SSPRK2
 - [x] Sod exact-solution regression
 - [x] entropy-wave convergence regression
 - [x] Shu-Osher deterministic regression
-- [ ] Sedov regression
-- [ ] isentropic-vortex regression
+- [x] symmetric planar Sedov-type strong-blast regression
+- [ ] multidimensional isentropic-vortex regression
 
 ## Phase 2 — higher-order Godunov path
 
 - [x] selectable PCM baseline
 - [x] componentwise primitive PLM
 - [x] minmod and MC limiters
-- [x] positivity scaling and first-order face fallback
 - [x] selectable Rusanov/PeleC-style Riemann solver
-- [x] qualified single-species constant-`gamma` PeleC Riemann subset
-- [x] characteristic-variable projection and inverse mapping
-- [x] qualified one-dimensional PeleC characteristic tracing
+- [x] characteristic projection and inverse mapping
+- [x] one-dimensional PeleC characteristic tracing
 - [x] dedicated time-centered conservative Godunov update
-- [x] characteristic tracing unit tests
-- [x] characteristic entropy-wave convergence gate
-- [x] characteristic Sod exact-solution gate
-- [x] characteristic Shu-Osher signature and conservation gate
-- [ ] PeleC fourth-order slope option
-- [ ] flattening
+- [x] PeleC order-2 and order-4 limited slopes
+- [x] pressure/velocity shock flattening
+- [x] flattening unit gates for smooth, compressive, and expansive data
+- [x] fourth-order-stencil smooth convergence gate
+- [x] strong-shock positivity, symmetry, conservation, and signature gate
 - [ ] general-EOS/internal-energy characteristic terms
-- [ ] multispecies/passive-scalar tracing
+- [ ] multispecies and passive-scalar tracing
 - [ ] multidimensional transverse corrections
 - [ ] PPM
 - [ ] WENO
 
-## Verified characteristic-PLM results
+## Current verified strong-shock metrics
 
-GNU Fortran 14.2 Debug build with bounds and floating-point traps:
+GNU Fortran Debug run, 800 cells, `t=0.02`:
 
-| Test | Result |
+| Metric | Result |
 |---|---:|
-| Entropy wave, 40 cells, density L1 | `3.4864e-4` |
-| Entropy wave, 80 cells, density L1 | `7.8837e-5` |
-| Entropy wave, 160 cells, density L1 | `1.7751e-5` |
-| Observed order, 40→80 | `2.1448` |
-| Observed order, 80→160 | `2.1509` |
-| Sod density L1 | `1.2178e-3` |
-| Sod pressure L1 | `7.1822e-4` |
-| Shu-Osher minimum density | `8.0000e-1` |
-| Shu-Osher maximum density | `4.6137` |
-| Shu-Osher interaction-window extrema | `19` |
-| Shu-Osher mass-balance error | `8.17e-14` |
-| Shu-Osher energy-balance error | `5.12e-13` |
-
-GitHub Actions Debug and Release jobs pass the complete test suite.
+| Completed steps | `1052` |
+| Minimum density | `1.4352255e-1` |
+| Maximum density | `5.0001945` |
+| Minimum pressure | `1.0e-5` |
+| Maximum pressure | `1.3654134e1` |
+| Shock radius | `1.31875e-1` |
+| Mass-balance error | `1.58e-14` |
+| Momentum-balance error | `3.94e-33` |
+| Energy-balance error | `3.29e-14` |
+| Density/pressure symmetry error | `0` |
+| Velocity antisymmetry error | `0` |
 
 ## Next implementation slice
 
-Add PeleC-compatible fourth-order limited slopes and a separately testable shock-flattening coefficient. Retain second-order MC slopes as the baseline, then add a Sedov regression before extending the characteristic state to general EOS or multispecies variables.
+Introduce a two-dimensional uniform Cartesian Euler scaffold and transverse Godunov corrections while retaining all one-dimensional baselines. Use a periodic isentropic vortex to verify multidimensional convergence before adding AMR or reacting-flow physics.

@@ -19,6 +19,8 @@ module reconstruction_pelec_plm_mod
   public :: primitive_slope_to_characteristics
   public :: characteristics_to_primitive_slope
   public :: trace_primitive_characteristics
+  public :: pelec_limited_slope
+  public :: pelec_flattening_coefficient
 
 contains
 
@@ -183,9 +185,162 @@ contains
     ok = .true.
   end subroutine trace_primitive_characteristics
 
+  pure subroutine pelec_limited_slope( &
+      qm2, qm, qc, qp, qp2, flat, order, slope, ok)
+    real(dp), intent(in) :: qm2, qm, qc, qp, qp2, flat
+    integer, intent(in) :: order
+    real(dp), intent(out) :: slope
+    logical, intent(out) :: ok
+
+    real(dp) :: dlft, drgt, dcen, dfm, dfp
+    real(dp) :: dlim, dsgn, dtemp
+
+    slope = 0.0_dp
+    ok = .false.
+    if (order /= 2 .and. order /= 4) return
+    if (flat < 0.0_dp .or. flat > 1.0_dp) return
+
+    dfm = 0.0_dp
+    dfp = 0.0_dp
+    if (order == 4) then
+      dlft = qm - qm2
+      drgt = qc - qm
+      dcen = 0.5_dp * (dlft + drgt)
+      dsgn = sign(1.0_dp, dcen)
+      if (dlft * drgt >= 0.0_dp) then
+        dlim = 2.0_dp * min(abs(dlft), abs(drgt))
+      else
+        dlim = 0.0_dp
+      end if
+      dfm = dsgn * min(dlim, abs(dcen))
+
+      dlft = qp - qc
+      drgt = qp2 - qp
+      dcen = 0.5_dp * (dlft + drgt)
+      dsgn = sign(1.0_dp, dcen)
+      if (dlft * drgt >= 0.0_dp) then
+        dlim = 2.0_dp * min(abs(dlft), abs(drgt))
+      else
+        dlim = 0.0_dp
+      end if
+      dfp = dsgn * min(dlim, abs(dcen))
+    end if
+
+    dlft = qc - qm
+    drgt = qp - qc
+    dcen = 0.5_dp * (dlft + drgt)
+    dsgn = sign(1.0_dp, dcen)
+    if (dlft * drgt >= 0.0_dp) then
+      dlim = 2.0_dp * min(abs(dlft), abs(drgt))
+    else
+      dlim = 0.0_dp
+    end if
+
+    dtemp = (4.0_dp / 3.0_dp) * dcen - (dfp + dfm) / 6.0_dp
+    slope = flat * dsgn * min(dlim, abs(dtemp))
+    ok = .true.
+  end subroutine pelec_limited_slope
+
+  pure real(dp) function pelec_flattening_coefficient( &
+      primitive, nx, cell, boundary_condition) result(flat)
+    integer, intent(in) :: nx, cell
+    real(dp), intent(in) :: primitive(:, -2:)
+    character(len=*), intent(in) :: boundary_condition
+
+    real(dp), parameter :: small_pressure = 1.0e-200_dp
+    real(dp), parameter :: shock_threshold = 0.33_dp
+    real(dp), parameter :: zcut1 = 0.75_dp
+    real(dp), parameter :: zcut2 = 0.85_dp
+    real(dp), parameter :: inverse_zcut_width = 1.0_dp / (zcut2 - zcut1)
+
+    real(dp) :: pressure_minus, pressure_plus
+    real(dp) :: pressure_minus2, pressure_plus2
+    real(dp) :: velocity_minus, velocity_plus
+    real(dp) :: pressure_jump, denominator, zeta, z
+    real(dp) :: compression_test, minimum_pressure, chi
+    real(dp) :: shifted_pressure_minus, shifted_pressure_plus
+    real(dp) :: shifted_pressure_minus2, shifted_pressure_plus2
+    real(dp) :: shifted_velocity_minus, shifted_velocity_plus
+    real(dp) :: zeta_shifted, z_shifted, chi_shifted
+    integer :: shift_direction
+
+    flat = 1.0_dp
+    if (cell < 1 .or. cell > nx) return
+
+    select case (trim(boundary_condition))
+    case ("outflow")
+      if (cell < 3 .or. cell > nx - 2) return
+    case ("periodic")
+      continue
+    case default
+      return
+    end select
+
+    pressure_minus = primitive(qp, cell - 1)
+    pressure_plus = primitive(qp, cell + 1)
+    velocity_minus = primitive(qu, cell - 1)
+    velocity_plus = primitive(qu, cell + 1)
+    pressure_minus2 = primitive(qp, cell - 2)
+    pressure_plus2 = primitive(qp, cell + 2)
+
+    pressure_jump = pressure_plus - pressure_minus
+    if (pressure_jump > 0.0_dp) then
+      shift_direction = 1
+    else
+      shift_direction = -1
+    end if
+
+    denominator = max(small_pressure, abs(pressure_plus2 - pressure_minus2))
+    zeta = abs(pressure_jump) / denominator
+    z = min(1.0_dp, max(0.0_dp, inverse_zcut_width * (zeta - zcut1)))
+
+    if (velocity_minus - velocity_plus >= 0.0_dp) then
+      compression_test = 1.0_dp
+    else
+      compression_test = 0.0_dp
+    end if
+    minimum_pressure = max( &
+      small_pressure, min(pressure_plus, pressure_minus))
+    if (abs(pressure_jump) / minimum_pressure > shock_threshold) then
+      chi = compression_test
+    else
+      chi = 0.0_dp
+    end if
+
+    shifted_pressure_plus = primitive(qp, cell + 1 - shift_direction)
+    shifted_pressure_minus = primitive(qp, cell - 1 - shift_direction)
+    shifted_velocity_plus = primitive(qu, cell + 1 - shift_direction)
+    shifted_velocity_minus = primitive(qu, cell - 1 - shift_direction)
+    shifted_pressure_plus2 = primitive(qp, cell + 2 - shift_direction)
+    shifted_pressure_minus2 = primitive(qp, cell - 2 - shift_direction)
+
+    pressure_jump = shifted_pressure_plus - shifted_pressure_minus
+    denominator = max( &
+      small_pressure, abs(shifted_pressure_plus2 - shifted_pressure_minus2))
+    zeta_shifted = abs(pressure_jump) / denominator
+    z_shifted = min(1.0_dp, max(0.0_dp, &
+      inverse_zcut_width * (zeta_shifted - zcut1)))
+
+    if (shifted_velocity_minus - shifted_velocity_plus >= 0.0_dp) then
+      compression_test = 1.0_dp
+    else
+      compression_test = 0.0_dp
+    end if
+    minimum_pressure = max( &
+      small_pressure, min(shifted_pressure_plus, shifted_pressure_minus))
+    if (abs(pressure_jump) / minimum_pressure > shock_threshold) then
+      chi_shifted = compression_test
+    else
+      chi_shifted = 0.0_dp
+    end if
+
+    flat = 1.0_dp - max(chi_shifted * z_shifted, chi * z)
+    flat = min(1.0_dp, max(0.0_dp, flat))
+  end function pelec_flattening_coefficient
+
   subroutine reconstruct_pelec_plm_faces( &
       conserved, nx, gamma, limiter, boundary_condition, dtdx, &
-      left_faces, right_faces, ok)
+      left_faces, right_faces, ok, slope_order, use_flattening)
     integer, intent(in) :: nx
     real(dp), intent(in) :: conserved(ncons, 0:nx + 1)
     real(dp), intent(in) :: gamma, dtdx
@@ -193,36 +348,65 @@ contains
     real(dp), intent(out) :: left_faces(ncons, 0:nx)
     real(dp), intent(out) :: right_faces(ncons, 0:nx)
     logical, intent(out) :: ok
+    integer, intent(in), optional :: slope_order
+    logical, intent(in), optional :: use_flattening
 
     real(dp), allocatable :: primitive(:, :), slopes(:, :)
     real(dp), allocatable :: cell_left(:, :), cell_right(:, :)
-    real(dp) :: theta
-    logical :: cell_ok, limiter_ok, trace_ok, left_ok, right_ok
+    real(dp) :: theta, flat
+    integer :: order
+    logical :: flattening_enabled
+    logical :: cell_ok, limiter_ok, trace_ok, left_ok, right_ok, slope_ok
     integer :: i, component
 
-    allocate(primitive(nprim, 0:nx + 1))
-    allocate(slopes(nprim, 0:nx + 1))
+    allocate(primitive(nprim, -2:nx + 3))
+    allocate(slopes(nprim, -2:nx + 3))
     allocate(cell_left(nprim, 0:nx + 1))
     allocate(cell_right(nprim, 0:nx + 1))
 
     left_faces = 0.0_dp
     right_faces = 0.0_dp
+    primitive = 0.0_dp
     slopes = 0.0_dp
     ok = .false.
     if (dtdx < 0.0_dp) return
 
-    do i = 0, nx + 1
+    order = 2
+    flattening_enabled = .false.
+    if (present(slope_order)) order = slope_order
+    if (present(use_flattening)) flattening_enabled = use_flattening
+    if (order /= 2 .and. order /= 4) return
+
+    do i = 1, nx
       call conserved_to_primitive(conserved(:, i), gamma, primitive(:, i), cell_ok)
       if (.not. cell_ok) return
     end do
+    call fill_primitive_ghosts(primitive, nx, boundary_condition, cell_ok)
+    if (.not. cell_ok) return
 
     do i = 1, nx
+      flat = 1.0_dp
+      if (flattening_enabled) then
+        flat = pelec_flattening_coefficient( &
+          primitive, nx, i, boundary_condition)
+      end if
+
       do component = 1, nprim
-        call limited_slope( &
-          primitive(component, i) - primitive(component, i - 1), &
-          primitive(component, i + 1) - primitive(component, i), &
-          limiter, slopes(component, i), limiter_ok)
-        if (.not. limiter_ok) return
+        if (order == 4) then
+          call pelec_limited_slope( &
+            primitive(component, i - 2), primitive(component, i - 1), &
+            primitive(component, i), primitive(component, i + 1), &
+            primitive(component, i + 2), flat, order, &
+            slopes(component, i), slope_ok)
+          if (.not. slope_ok) return
+        else
+          call limited_slope( &
+            primitive(component, i) - primitive(component, i - 1), &
+            primitive(component, i + 1) - primitive(component, i), &
+            limiter, slopes(component, i), limiter_ok)
+          if (.not. limiter_ok) return
+          slopes(component, i) = flat * slopes(component, i)
+        end if
       end do
 
       theta = min( &
@@ -231,18 +415,8 @@ contains
       slopes(:, i) = theta * slopes(:, i)
     end do
 
-    select case (trim(boundary_condition))
-    case ("outflow")
-      slopes(:, 0) = 0.0_dp
-      slopes(:, nx + 1) = 0.0_dp
-      slopes(:, 1) = 0.0_dp
-      slopes(:, nx) = 0.0_dp
-    case ("periodic")
-      slopes(:, 0) = slopes(:, nx)
-      slopes(:, nx + 1) = slopes(:, 1)
-    case default
-      return
-    end select
+    call fill_slope_ghosts(slopes, nx, boundary_condition, cell_ok)
+    if (.not. cell_ok) return
 
     do i = 0, nx + 1
       call trace_primitive_characteristics( &
@@ -266,6 +440,67 @@ contains
 
     ok = .true.
   end subroutine reconstruct_pelec_plm_faces
+
+  pure subroutine fill_primitive_ghosts( &
+      primitive, nx, boundary_condition, ok)
+    integer, intent(in) :: nx
+    real(dp), intent(inout) :: primitive(nprim, -2:nx + 3)
+    character(len=*), intent(in) :: boundary_condition
+    logical, intent(out) :: ok
+    integer :: i, wrapped
+
+    select case (trim(boundary_condition))
+    case ("outflow")
+      do i = -2, 0
+        primitive(:, i) = primitive(:, 1)
+      end do
+      do i = nx + 1, nx + 3
+        primitive(:, i) = primitive(:, nx)
+      end do
+      ok = .true.
+    case ("periodic")
+      do i = -2, 0
+        wrapped = 1 + modulo(i - 1, nx)
+        primitive(:, i) = primitive(:, wrapped)
+      end do
+      do i = nx + 1, nx + 3
+        wrapped = 1 + modulo(i - 1, nx)
+        primitive(:, i) = primitive(:, wrapped)
+      end do
+      ok = .true.
+    case default
+      ok = .false.
+    end select
+  end subroutine fill_primitive_ghosts
+
+  pure subroutine fill_slope_ghosts(slopes, nx, boundary_condition, ok)
+    integer, intent(in) :: nx
+    real(dp), intent(inout) :: slopes(nprim, -2:nx + 3)
+    character(len=*), intent(in) :: boundary_condition
+    logical, intent(out) :: ok
+    integer :: i, wrapped
+
+    select case (trim(boundary_condition))
+    case ("outflow")
+      slopes(:, -2:0) = 0.0_dp
+      slopes(:, nx + 1:nx + 3) = 0.0_dp
+      slopes(:, 1) = 0.0_dp
+      slopes(:, nx) = 0.0_dp
+      ok = .true.
+    case ("periodic")
+      do i = -2, 0
+        wrapped = 1 + modulo(i - 1, nx)
+        slopes(:, i) = slopes(:, wrapped)
+      end do
+      do i = nx + 1, nx + 3
+        wrapped = 1 + modulo(i - 1, nx)
+        slopes(:, i) = slopes(:, wrapped)
+      end do
+      ok = .true.
+    case default
+      ok = .false.
+    end select
+  end subroutine fill_slope_ghosts
 
   pure real(dp) function positivity_scale(center, slope, lower_bound) result(theta)
     real(dp), intent(in) :: center, slope, lower_bound

@@ -13,7 +13,7 @@ contains
 
   subroutine compute_euler_rhs( &
       conserved, nx, dx, gamma, rhs, ok, reconstruction, limiter, &
-      boundary_condition, riemann_solver, dt)
+      boundary_condition, riemann_solver, dt, plm_order, use_flattening)
     integer, intent(in) :: nx
     real(dp), intent(in) :: conserved(ncons, 0:nx + 1)
     real(dp), intent(in) :: dx, gamma
@@ -23,10 +23,14 @@ contains
     character(len=*), intent(in), optional :: boundary_condition
     character(len=*), intent(in), optional :: riemann_solver
     real(dp), intent(in), optional :: dt
+    integer, intent(in), optional :: plm_order
+    logical, intent(in), optional :: use_flattening
 
     real(dp), allocatable :: face_flux(:, :), left_faces(:, :), right_faces(:, :)
     character(len=32) :: reconstruction_name, limiter_name, boundary_name
     character(len=32) :: riemann_name
+    integer :: slope_order
+    logical :: flattening_enabled
     logical :: face_ok, reconstruction_ok
     integer :: i
 
@@ -34,10 +38,14 @@ contains
     limiter_name = "mc"
     boundary_name = "outflow"
     riemann_name = "rusanov"
+    slope_order = 2
+    flattening_enabled = .false.
     if (present(reconstruction)) reconstruction_name = trim(reconstruction)
     if (present(limiter)) limiter_name = trim(limiter)
     if (present(boundary_condition)) boundary_name = trim(boundary_condition)
     if (present(riemann_solver)) riemann_name = trim(riemann_solver)
+    if (present(plm_order)) slope_order = plm_order
+    if (present(use_flattening)) flattening_enabled = use_flattening
 
     allocate(face_flux(ncons, 0:nx))
     rhs = 0.0_dp
@@ -85,12 +93,17 @@ contains
         ok = .false.
         return
       end if
+      if (slope_order /= 2 .and. slope_order /= 4) then
+        ok = .false.
+        return
+      end if
 
       allocate(left_faces(ncons, 0:nx))
       allocate(right_faces(ncons, 0:nx))
       call reconstruct_pelec_plm_faces( &
         conserved, nx, gamma, limiter_name, boundary_name, dt / dx, &
-        left_faces, right_faces, reconstruction_ok)
+        left_faces, right_faces, reconstruction_ok, &
+        slope_order=slope_order, use_flattening=flattening_enabled)
       if (.not. reconstruction_ok) then
         ok = .false.
         return

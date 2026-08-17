@@ -27,6 +27,16 @@ add_executable(
 target_link_libraries(test_pelec_plm_tracing PRIVATE pelef_core)
 add_test(NAME unit_pelec_plm_tracing COMMAND test_pelec_plm_tracing)
 
+add_executable(
+  test_pelec_fourth_order_flattening
+  unit/test_pelec_fourth_order_flattening.F90
+)
+target_link_libraries(test_pelec_fourth_order_flattening PRIVATE pelef_core)
+add_test(
+  NAME unit_pelec_fourth_order_flattening
+  COMMAND test_pelec_fourth_order_flattening
+)
+
 add_executable(test_entropy_wave regression/test_entropy_wave.F90)
 target_link_libraries(test_entropy_wave PRIVATE pelef_core)
 add_test(NAME regression_entropy_wave_convergence COMMAND test_entropy_wave)
@@ -49,6 +59,16 @@ target_link_libraries(test_entropy_wave_pelec_plm PRIVATE pelef_core)
 add_test(
   NAME regression_entropy_wave_pelec_plm_convergence
   COMMAND test_entropy_wave_pelec_plm
+)
+
+add_executable(
+  test_entropy_wave_pelec_plm4
+  regression/test_entropy_wave_pelec_plm4.F90
+)
+target_link_libraries(test_entropy_wave_pelec_plm4 PRIVATE pelef_core)
+add_test(
+  NAME regression_entropy_wave_pelec_plm4_convergence
+  COMMAND test_entropy_wave_pelec_plm4
 )
 
 set(SOD_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod")
@@ -252,4 +272,37 @@ set_tests_properties(
   regression_shu_osher_pelec_plm_compare
   PROPERTIES
     DEPENDS regression_shu_osher_pelec_plm_run
+)
+
+set(SEDOV_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sedov")
+file(MAKE_DIRECTORY "${SEDOV_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_sedov_run
+  COMMAND
+    $<TARGET_FILE:pelef>
+    "${PROJECT_SOURCE_DIR}/cases/sedov/sedov.nml"
+)
+set_tests_properties(
+  regression_sedov_run
+  PROPERTIES
+    WORKING_DIRECTORY "${SEDOV_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_sedov_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_sedov.py"
+    --input "${SEDOV_WORK_DIRECTORY}/sedov.csv"
+    --density-squared-reference 1.4513811919127926
+    --pressure-integral-reference 2.0606157390942492
+    --shock-radius-reference 0.13187500000000002
+    --signature-relative-tolerance 5.0e-6
+)
+set_tests_properties(
+  regression_sedov_compare
+  PROPERTIES
+    DEPENDS regression_sedov_run
 )

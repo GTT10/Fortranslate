@@ -18,6 +18,8 @@ module simulation_config_mod
     character(len=32) :: limiter = "mc"
     character(len=32) :: boundary_condition = "outflow"
     character(len=32) :: riemann_solver = "rusanov"
+    integer :: plm_order = 2
+    logical :: use_flattening = .false.
   end type simulation_config
 
   type, public :: sod_config
@@ -42,6 +44,15 @@ module simulation_config_mod
     real(dp) :: right_pressure = 1.0_dp
   end type shu_osher_config
 
+  type, public :: sedov_config
+    real(dp) :: blast_center = 0.5_dp
+    real(dp) :: blast_radius = 0.0125_dp
+    real(dp) :: ambient_density = 1.0_dp
+    real(dp) :: ambient_pressure = 1.0e-5_dp
+    real(dp) :: blast_pressure = 100.0_dp
+    real(dp) :: initial_velocity = 0.0_dp
+  end type sedov_config
+
   public :: read_configuration
   public :: read_sod_configuration
   public :: validate_configuration
@@ -53,36 +64,44 @@ module simulation_config_mod
 
 contains
 
-  subroutine read_configuration(path, config, sod, shu_osher, ok, message)
+  subroutine read_configuration( &
+      path, config, sod, shu_osher, sedov, ok, message)
     character(len=*), intent(in) :: path
     type(simulation_config), intent(out) :: config
     type(sod_config), intent(out) :: sod
     type(shu_osher_config), intent(out) :: shu_osher
+    type(sedov_config), intent(out) :: sedov
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
 
-    integer :: nx, max_steps, unit, io_status
+    integer :: nx, max_steps, unit, io_status, plm_order
     real(dp) :: x_min, x_max, final_time, cfl, gamma
     real(dp) :: discontinuity, rho_left, velocity_left, pressure_left
     real(dp) :: rho_right, velocity_right, pressure_right
     real(dp) :: shock_location, left_density, left_velocity, left_pressure
     real(dp) :: density_base, density_amplitude, density_wavenumber
+    real(dp) :: blast_center, blast_radius, ambient_density
+    real(dp) :: ambient_pressure, blast_pressure, initial_velocity
+    logical :: use_flattening
     character(len=512) :: output_file
     character(len=32) :: problem, reconstruction, limiter
     character(len=32) :: boundary_condition, riemann_solver
 
     namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, &
       gamma, output_file, problem, reconstruction, limiter, &
-      boundary_condition, riemann_solver
+      boundary_condition, riemann_solver, plm_order, use_flattening
     namelist /sod_problem/ discontinuity, rho_left, velocity_left, &
       pressure_left, rho_right, velocity_right, pressure_right
     namelist /shu_osher_problem/ shock_location, left_density, &
       left_velocity, left_pressure, density_base, density_amplitude, &
       density_wavenumber, velocity_right, pressure_right
+    namelist /sedov_problem/ blast_center, blast_radius, ambient_density, &
+      ambient_pressure, blast_pressure, initial_velocity
 
     config = simulation_config()
     sod = sod_config()
     shu_osher = shu_osher_config()
+    sedov = sedov_config()
 
     nx = config%nx
     max_steps = config%max_steps
@@ -97,6 +116,8 @@ contains
     limiter = config%limiter
     boundary_condition = config%boundary_condition
     riemann_solver = config%riemann_solver
+    plm_order = config%plm_order
+    use_flattening = config%use_flattening
 
     discontinuity = sod%discontinuity
     rho_left = sod%rho_left
@@ -113,6 +134,13 @@ contains
     density_base = shu_osher%density_base
     density_amplitude = shu_osher%density_amplitude
     density_wavenumber = shu_osher%density_wavenumber
+
+    blast_center = sedov%blast_center
+    blast_radius = sedov%blast_radius
+    ambient_density = sedov%ambient_density
+    ambient_pressure = sedov%ambient_pressure
+    blast_pressure = sedov%blast_pressure
+    initial_velocity = sedov%initial_velocity
 
     open(newunit=unit, file=trim(path), status="old", action="read", &
       iostat=io_status)
@@ -154,6 +182,16 @@ contains
         return
       end if
 
+    case ("sedov")
+      read(unit, nml=sedov_problem, iostat=io_status)
+      if (io_status /= 0) then
+        close(unit)
+        ok = .false.
+        write(message, '(a,1x,a)') &
+          "Could not read &sedov_problem from:", trim(path)
+        return
+      end if
+
     case default
       close(unit)
       ok = .false.
@@ -175,6 +213,8 @@ contains
     config%limiter = trim(limiter)
     config%boundary_condition = trim(boundary_condition)
     config%riemann_solver = trim(riemann_solver)
+    config%plm_order = plm_order
+    config%use_flattening = use_flattening
 
     sod%discontinuity = discontinuity
     sod%rho_left = rho_left
@@ -194,7 +234,15 @@ contains
     shu_osher%right_velocity = velocity_right
     shu_osher%right_pressure = pressure_right
 
-    call validate_configuration_full(config, sod, shu_osher, ok, message)
+    sedov%blast_center = blast_center
+    sedov%blast_radius = blast_radius
+    sedov%ambient_density = ambient_density
+    sedov%ambient_pressure = ambient_pressure
+    sedov%blast_pressure = blast_pressure
+    sedov%initial_velocity = initial_velocity
+
+    call validate_configuration_full( &
+      config, sod, shu_osher, sedov, ok, message)
   end subroutine read_configuration
 
   subroutine read_sod_configuration(path, config, sod, ok, message)
@@ -205,8 +253,10 @@ contains
     character(len=*), intent(out) :: message
 
     type(shu_osher_config) :: shu_osher
+    type(sedov_config) :: sedov
 
-    call read_configuration(path, config, sod, shu_osher, ok, message)
+    call read_configuration( &
+      path, config, sod, shu_osher, sedov, ok, message)
     if (ok .and. trim(config%problem) /= "sod") then
       ok = .false.
       message = "Input does not select problem = sod"
@@ -214,10 +264,11 @@ contains
   end subroutine read_sod_configuration
 
   pure subroutine validate_configuration_full( &
-      config, sod, shu_osher, ok, message)
+      config, sod, shu_osher, sedov, ok, message)
     type(simulation_config), intent(in) :: config
     type(sod_config), intent(in) :: sod
     type(shu_osher_config), intent(in) :: shu_osher
+    type(sedov_config), intent(in) :: sedov
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
 
@@ -236,8 +287,10 @@ contains
       message = "gamma must be greater than 1"
     else if (config%max_steps <= 0) then
       message = "max_steps must be positive"
+    else if (config%plm_order /= 2 .and. config%plm_order /= 4) then
+      message = "plm_order must be 2 or 4"
     else if (.not. valid_problem(config%problem)) then
-      message = "problem must be sod or shu_osher"
+      message = "problem must be sod, shu_osher, or sedov"
     else if (.not. valid_reconstruction(config%reconstruction)) then
       message = "reconstruction must be pcm, plm, or pelec_plm"
     else if (.not. valid_limiter(config%limiter)) then
@@ -252,6 +305,8 @@ contains
         call validate_sod(config, sod, ok, message)
       case ("shu_osher")
         call validate_shu_osher(config, shu_osher, ok, message)
+      case ("sedov")
+        call validate_sedov(config, sedov, ok, message)
       end select
     end if
   end subroutine validate_configuration_full
@@ -263,9 +318,12 @@ contains
     character(len=*), intent(out) :: message
 
     type(shu_osher_config) :: shu_osher
+    type(sedov_config) :: sedov
 
     shu_osher = shu_osher_config()
-    call validate_configuration_full(config, sod, shu_osher, ok, message)
+    sedov = sedov_config()
+    call validate_configuration_full( &
+      config, sod, shu_osher, sedov, ok, message)
   end subroutine validate_configuration_sod
 
   pure subroutine validate_sod(config, sod, ok, message)
@@ -315,11 +373,38 @@ contains
     end if
   end subroutine validate_shu_osher
 
+  pure subroutine validate_sedov(config, sedov, ok, message)
+    type(simulation_config), intent(in) :: config
+    type(sedov_config), intent(in) :: sedov
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    ok = .false.
+    if (sedov%blast_center <= config%x_min .or. &
+        sedov%blast_center >= config%x_max) then
+      message = "blast_center must lie inside the domain"
+    else if (sedov%blast_radius <= 0.0_dp) then
+      message = "blast_radius must be positive"
+    else if (sedov%blast_center - sedov%blast_radius <= config%x_min .or. &
+             sedov%blast_center + sedov%blast_radius >= config%x_max) then
+      message = "blast region must lie inside the domain"
+    else if (sedov%ambient_density <= 0.0_dp) then
+      message = "ambient_density must be positive"
+    else if (sedov%ambient_pressure <= 0.0_dp) then
+      message = "ambient_pressure must be positive"
+    else if (sedov%blast_pressure <= sedov%ambient_pressure) then
+      message = "blast_pressure must exceed ambient_pressure"
+    else
+      ok = .true.
+      message = ""
+    end if
+  end subroutine validate_sedov
+
   pure logical function valid_problem(name) result(valid)
     character(len=*), intent(in) :: name
 
     select case (trim(name))
-    case ("sod", "shu_osher")
+    case ("sod", "shu_osher", "sedov")
       valid = .true.
     case default
       valid = .false.

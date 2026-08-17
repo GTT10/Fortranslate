@@ -1,0 +1,26 @@
+&simulation
+  nx = 800
+  max_steps = 30000
+  x_min = 0.0
+  x_max = 1.0
+  final_time = 0.02
+  cfl = 0.18
+  gamma = 1.4
+  output_file = "sedov.csv"
+  problem = "sedov"
+  reconstruction = "pelec_plm"
+  limiter = "mc"
+  plm_order = 4
+  use_flattening = .true.
+  boundary_condition = "outflow"
+  riemann_solver = "pelec"
+/
+
+&sedov_problem
+  blast_center = 0.5
+  blast_radius = 0.0125
+  ambient_density = 1.0
+  ambient_pressure = 1.0e-5
+  blast_pressure = 100.0
+  initial_velocity = 0.0
+/
