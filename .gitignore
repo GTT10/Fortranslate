@@ -1,0 +1,29 @@
+# Build products
+build/
+cmake-build-*/
+
+# Fortran compiler artifacts
+*.mod
+*.smod
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Generated simulation output
+sod.csv
+*.vtk
+*.vtu
+*.h5
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store

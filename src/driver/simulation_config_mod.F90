@@ -1,0 +1,142 @@
+module simulation_config_mod
+  use precision_mod, only: dp
+  use constants_mod, only: default_gamma
+  implicit none
+  private
+
+  type, public :: simulation_config
+    integer :: nx = 400
+    integer :: max_steps = 100000
+    real(dp) :: x_min = 0.0_dp
+    real(dp) :: x_max = 1.0_dp
+    real(dp) :: final_time = 0.2_dp
+    real(dp) :: cfl = 0.45_dp
+    real(dp) :: gamma = default_gamma
+    character(len=512) :: output_file = "sod.csv"
+  end type simulation_config
+
+  type, public :: sod_config
+    real(dp) :: discontinuity = 0.5_dp
+    real(dp) :: rho_left = 1.0_dp
+    real(dp) :: velocity_left = 0.0_dp
+    real(dp) :: pressure_left = 1.0_dp
+    real(dp) :: rho_right = 0.125_dp
+    real(dp) :: velocity_right = 0.0_dp
+    real(dp) :: pressure_right = 0.1_dp
+  end type sod_config
+
+  public :: read_sod_configuration
+  public :: validate_configuration
+
+contains
+
+  subroutine read_sod_configuration(path, config, sod, ok, message)
+    character(len=*), intent(in) :: path
+    type(simulation_config), intent(out) :: config
+    type(sod_config), intent(out) :: sod
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    integer :: nx, max_steps, unit, io_status
+    real(dp) :: x_min, x_max, final_time, cfl, gamma
+    real(dp) :: discontinuity, rho_left, velocity_left, pressure_left
+    real(dp) :: rho_right, velocity_right, pressure_right
+    character(len=512) :: output_file
+    namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, gamma, output_file
+    namelist /sod_problem/ discontinuity, rho_left, velocity_left, pressure_left, &
+      rho_right, velocity_right, pressure_right
+
+    nx = config%nx
+    max_steps = config%max_steps
+    x_min = config%x_min
+    x_max = config%x_max
+    final_time = config%final_time
+    cfl = config%cfl
+    gamma = config%gamma
+    output_file = config%output_file
+
+    discontinuity = sod%discontinuity
+    rho_left = sod%rho_left
+    velocity_left = sod%velocity_left
+    pressure_left = sod%pressure_left
+    rho_right = sod%rho_right
+    velocity_right = sod%velocity_right
+    pressure_right = sod%pressure_right
+
+    open(newunit=unit, file=trim(path), status="old", action="read", iostat=io_status)
+    if (io_status /= 0) then
+      ok = .false.
+      write(message, '(a,1x,a)') "Could not open input file:", trim(path)
+      return
+    end if
+
+    read(unit, nml=simulation, iostat=io_status)
+    if (io_status /= 0) then
+      close(unit)
+      ok = .false.
+      write(message, '(a,1x,a)') "Could not read &simulation from:", trim(path)
+      return
+    end if
+
+    read(unit, nml=sod_problem, iostat=io_status)
+    close(unit)
+    if (io_status /= 0) then
+      ok = .false.
+      write(message, '(a,1x,a)') "Could not read &sod_problem from:", trim(path)
+      return
+    end if
+
+    config%nx = nx
+    config%max_steps = max_steps
+    config%x_min = x_min
+    config%x_max = x_max
+    config%final_time = final_time
+    config%cfl = cfl
+    config%gamma = gamma
+    config%output_file = trim(output_file)
+
+    sod%discontinuity = discontinuity
+    sod%rho_left = rho_left
+    sod%velocity_left = velocity_left
+    sod%pressure_left = pressure_left
+    sod%rho_right = rho_right
+    sod%velocity_right = velocity_right
+    sod%pressure_right = pressure_right
+
+    call validate_configuration(config, sod, ok, message)
+  end subroutine read_sod_configuration
+
+  pure subroutine validate_configuration(config, sod, ok, message)
+    type(simulation_config), intent(in) :: config
+    type(sod_config), intent(in) :: sod
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    ok = .false.
+    message = ""
+
+    if (config%nx < 10) then
+      message = "nx must be at least 10"
+    else if (config%x_max <= config%x_min) then
+      message = "x_max must be greater than x_min"
+    else if (config%final_time <= 0.0_dp) then
+      message = "final_time must be positive"
+    else if (config%cfl <= 0.0_dp .or. config%cfl > 1.0_dp) then
+      message = "cfl must be in (0, 1]"
+    else if (config%gamma <= 1.0_dp) then
+      message = "gamma must be greater than 1"
+    else if (config%max_steps <= 0) then
+      message = "max_steps must be positive"
+    else if (sod%discontinuity <= config%x_min .or. &
+             sod%discontinuity >= config%x_max) then
+      message = "discontinuity must lie inside the domain"
+    else if (sod%rho_left <= 0.0_dp .or. sod%rho_right <= 0.0_dp) then
+      message = "left and right densities must be positive"
+    else if (sod%pressure_left <= 0.0_dp .or. sod%pressure_right <= 0.0_dp) then
+      message = "left and right pressures must be positive"
+    else
+      ok = .true.
+    end if
+  end subroutine validate_configuration
+
+end module simulation_config_mod
