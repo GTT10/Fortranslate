@@ -1,0 +1,27 @@
+&simulation
+  nx = 800
+  max_steps = 20000
+  x_min = -5.0
+  x_max = 5.0
+  final_time = 1.8
+  cfl = 0.25
+  gamma = 1.4
+  output_file = "shu_osher.csv"
+  problem = "shu_osher"
+  reconstruction = "plm"
+  limiter = "mc"
+  boundary_condition = "outflow"
+  riemann_solver = "pelec"
+/
+
+&shu_osher_problem
+  shock_location = -4.0
+  left_density = 3.857143
+  left_velocity = 2.629369
+  left_pressure = 10.33333
+  density_base = 1.0
+  density_amplitude = 0.2
+  density_wavenumber = 5.0
+  velocity_right = 0.0
+  pressure_right = 1.0
+/

@@ -4,36 +4,43 @@
 
 PeleF uses four distinct gates:
 
-1. **Unit verification** checks algebraic kernels such as EOS conversion, limiter behavior, linear reconstruction, and flux consistency.
+1. **Unit verification** checks algebraic kernels such as EOS conversion, reconstruction, flux consistency, and solver dispatch.
 2. **Analytical verification** compares against exact or manufactured solutions where available.
 3. **Reference parity** compares against a pinned PeleC case and configuration.
 4. **Conservation verification** checks integral balances including known boundary fluxes.
 
-The current milestone implements levels 1, 2, and 4. Direct PeleC numerical parity is deferred until a reproducible PeleC reference dataset is pinned in `reference/`.
+The current milestone implements levels 1, 2, and 4 for Sod and the entropy wave. Shu-Osher uses unit, deterministic-signature, positivity, oscillation-retention, and boundary-balance gates. Direct PeleC field parity remains deferred until a reproducible reference artifact is pinned in `reference/`.
 
-## Sod acceptance criteria
+## Sod acceptance
 
-For the canonical 400-cell case at `t = 0.2`, both reconstruction paths require:
+For the canonical 400-cell case at `t = 0.2`, every solver path must produce finite positive states and conservative integral balances. The PLM/MC/PeleC-style path additionally requires:
 
-- all values finite;
-- positive density and pressure;
-- total mass error at most `2e-12`;
-- total energy error at most `2e-12`;
-- total momentum agreement with the integrated boundary-pressure impulse to `2e-12`.
+- density L1 error against the exact Riemann solution at most `2e-3`;
+- pressure L1 error at most `1.5e-3`;
+- mass and energy errors at most `2e-12`;
+- momentum agreement with the integrated boundary-pressure impulse to `2e-12`.
 
-The piecewise-constant baseline permits density and pressure L1 errors up to `3e-2`. The PLM/MC path has tightened limits of `4e-3` and `3e-3`, respectively. These tighter limits prevent a silent fallback of the entire second-order path to first order.
-
-The expected momentum is not zero. Before waves reach the domain edges, the fixed left and right exterior states exert a net pressure impulse
+Before waves reach the domain edges, expected momentum change is
 
 \[
 \Delta P_x=(p_L-p_R)t.
 \]
 
-## Smooth convergence gate
+## Smooth convergence acceptance
 
-A periodic entropy wave with constant pressure and velocity is advanced to `t = 0.1` on 40, 80, and 160 cells. The density L1 convergence order must be at least `1.8` on both refinement pairs. The verified orders are approximately `2.05` and `2.09`.
+The periodic entropy-wave test runs 40, 80, and 160 cells. Both the Rusanov and PeleC-style PLM paths must show observed density-L1 order of at least `1.8` across each refinement pair.
 
-Periodic verification wraps both ghost-cell states and PLM slopes. Wrapping only the states introduces a first-order defect at the periodic interface and is therefore explicitly covered by the convergence test.
+## Shu-Osher acceptance
+
+The 800-cell `t = 1.8` regression requires:
+
+- finite, positive density and pressure;
+- mass, momentum, and energy balances including fixed boundary fluxes;
+- sufficient maximum density and interaction-window density range;
+- at least 15 local extrema in the interaction window;
+- pinned density-squared and weighted-density integral signatures.
+
+The two signatures detect broad field changes without storing a large generated reference file. They are regression evidence, not proof of exactness or direct PeleC parity.
 
 ## Reference data policy
 

@@ -16,6 +16,8 @@ cmake-build-*/
 # Generated simulation output
 sod.csv
 sod_plm.csv
+sod_pelec.csv
+shu_osher.csv
 *.vtk
 *.vtu
 *.h5

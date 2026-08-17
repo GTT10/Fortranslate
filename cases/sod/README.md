@@ -7,18 +7,16 @@ Canonical one-dimensional Sod Riemann problem:
 | Left, `x < 0.5` | 1.0 | 0.0 | 1.0 |
 | Right, `x >= 0.5` | 0.125 | 0.0 | 0.1 |
 
-Both supplied runs use `gamma = 1.4`, 400 uniform cells, CFL `0.45`, and final time `t = 0.2`.
+All supplied runs use `gamma = 1.4`, 400 uniform cells, CFL `0.45`, and final time `t = 0.2`.
 
-## Piecewise-constant baseline
+## Piecewise-constant Rusanov baseline
 
 ```bash
 ./build/pelef cases/sod/sod.nml
 python3 tools/compare_sod.py --input sod.csv
 ```
 
-This preserves the original first-order Rusanov regression baseline.
-
-## Piecewise-linear reconstruction
+## PLM/MC with Rusanov
 
 ```bash
 ./build/pelef cases/sod/sod_plm.nml
@@ -28,4 +26,14 @@ python3 tools/compare_sod.py \
   --pressure-l1-max 3e-3
 ```
 
-The PLM case reconstructs primitive variables with the monotonized-central limiter. In the verified GNU Fortran 14.2 Debug run, the density and pressure L1 errors were approximately `1.891e-3` and `1.198e-3`, respectively, while maintaining positive density and pressure and conservative integral balances.
+## PLM/MC with the PeleC-style solver
+
+```bash
+./build/pelef cases/sod/sod_pelec.nml
+python3 tools/compare_sod.py \
+  --input sod_pelec.csv \
+  --density-l1-max 2e-3 \
+  --pressure-l1-max 1.5e-3
+```
+
+The verified GNU Fortran 14.2 Debug run produced density and pressure L1 errors of approximately `1.3678e-3` and `8.0552e-4`, respectively, while retaining positive states and roundoff-scale integral-balance errors.
