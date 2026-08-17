@@ -6,10 +6,10 @@
   final_time = 0.2
   cfl = 0.45
   gamma = 1.4
-  reconstruction = "pcm"
+  reconstruction = "plm"
   limiter = "mc"
   boundary_condition = "outflow"
-  output_file = "sod.csv"
+  output_file = "sod_plm.csv"
 /
 
 &sod_problem

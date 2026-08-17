@@ -3,7 +3,7 @@ module time_integrator_mod
   use state_indices_mod, only: ncons, nprim, qrho, qu, qp
   use state_conversion_mod, only: conserved_to_primitive, state_is_physical
   use eos_ideal_mod, only: ideal_gas_sound_speed
-  use boundary_conditions_mod, only: apply_outflow_boundaries
+  use boundary_conditions_mod, only: apply_boundary_conditions
   use finite_volume_mod, only: compute_euler_rhs
   implicit none
   private
@@ -52,23 +52,40 @@ contains
     dt = cfl * dx / max_signal_speed
   end subroutine compute_cfl_timestep
 
-  subroutine advance_ssprk2(conserved, nx, dx, dt, gamma, ok)
+  subroutine advance_ssprk2( &
+      conserved, nx, dx, dt, gamma, ok, reconstruction, limiter, boundary_condition)
     integer, intent(in) :: nx
     real(dp), intent(inout) :: conserved(ncons, 0:nx + 1)
     real(dp), intent(in) :: dx, dt, gamma
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: reconstruction, limiter, boundary_condition
+
     real(dp), allocatable :: old_state(:, :), stage_state(:, :), rhs(:, :)
-    logical :: rhs_ok
+    character(len=32) :: reconstruction_name, limiter_name, boundary_name
+    logical :: rhs_ok, boundary_ok
     integer :: i
+
+    reconstruction_name = "pcm"
+    limiter_name = "mc"
+    boundary_name = "outflow"
+    if (present(reconstruction)) reconstruction_name = trim(reconstruction)
+    if (present(limiter)) limiter_name = trim(limiter)
+    if (present(boundary_condition)) boundary_name = trim(boundary_condition)
 
     allocate(old_state(ncons, 0:nx + 1))
     allocate(stage_state(ncons, 0:nx + 1))
     allocate(rhs(ncons, nx))
 
-    call apply_outflow_boundaries(conserved, nx)
+    call apply_boundary_conditions(conserved, nx, boundary_name, boundary_ok)
+    if (.not. boundary_ok) then
+      ok = .false.
+      return
+    end if
     old_state = conserved
 
-    call compute_euler_rhs(old_state, nx, dx, gamma, rhs, rhs_ok)
+    call compute_euler_rhs( &
+      old_state, nx, dx, gamma, rhs, rhs_ok, &
+      reconstruction_name, limiter_name, boundary_name)
     if (.not. rhs_ok) then
       ok = .false.
       return
@@ -78,14 +95,20 @@ contains
     do concurrent (i = 1:nx)
       stage_state(:, i) = old_state(:, i) + dt * rhs(:, i)
     end do
-    call apply_outflow_boundaries(stage_state, nx)
+    call apply_boundary_conditions(stage_state, nx, boundary_name, boundary_ok)
+    if (.not. boundary_ok) then
+      ok = .false.
+      return
+    end if
 
     if (.not. all_cells_physical(stage_state, nx, gamma)) then
       ok = .false.
       return
     end if
 
-    call compute_euler_rhs(stage_state, nx, dx, gamma, rhs, rhs_ok)
+    call compute_euler_rhs( &
+      stage_state, nx, dx, gamma, rhs, rhs_ok, &
+      reconstruction_name, limiter_name, boundary_name)
     if (.not. rhs_ok) then
       ok = .false.
       return
@@ -95,7 +118,11 @@ contains
       conserved(:, i) = 0.5_dp * old_state(:, i) + &
         0.5_dp * (stage_state(:, i) + dt * rhs(:, i))
     end do
-    call apply_outflow_boundaries(conserved, nx)
+    call apply_boundary_conditions(conserved, nx, boundary_name, boundary_ok)
+    if (.not. boundary_ok) then
+      ok = .false.
+      return
+    end if
     ok = all_cells_physical(conserved, nx, gamma)
   end subroutine advance_ssprk2
 

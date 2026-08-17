@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -26,6 +26,8 @@ add_library(
   src/physics/eos_ideal_mod.F90
   src/hydro/state_conversion_mod.F90
   src/hydro/boundary_conditions_mod.F90
+  src/hydro/slope_limiter_mod.F90
+  src/hydro/reconstruction_plm_mod.F90
   src/hydro/riemann_rusanov_mod.F90
   src/hydro/finite_volume_mod.F90
   src/driver/time_integrator_mod.F90

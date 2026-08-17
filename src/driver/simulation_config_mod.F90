@@ -13,6 +13,9 @@ module simulation_config_mod
     real(dp) :: cfl = 0.45_dp
     real(dp) :: gamma = default_gamma
     character(len=512) :: output_file = "sod.csv"
+    character(len=32) :: reconstruction = "pcm"
+    character(len=32) :: limiter = "mc"
+    character(len=32) :: boundary_condition = "outflow"
   end type simulation_config
 
   type, public :: sod_config
@@ -42,7 +45,9 @@ contains
     real(dp) :: discontinuity, rho_left, velocity_left, pressure_left
     real(dp) :: rho_right, velocity_right, pressure_right
     character(len=512) :: output_file
-    namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, gamma, output_file
+    character(len=32) :: reconstruction, limiter, boundary_condition
+    namelist /simulation/ nx, max_steps, x_min, x_max, final_time, cfl, gamma, &
+      output_file, reconstruction, limiter, boundary_condition
     namelist /sod_problem/ discontinuity, rho_left, velocity_left, pressure_left, &
       rho_right, velocity_right, pressure_right
 
@@ -54,6 +59,9 @@ contains
     cfl = config%cfl
     gamma = config%gamma
     output_file = config%output_file
+    reconstruction = config%reconstruction
+    limiter = config%limiter
+    boundary_condition = config%boundary_condition
 
     discontinuity = sod%discontinuity
     rho_left = sod%rho_left
@@ -94,6 +102,9 @@ contains
     config%cfl = cfl
     config%gamma = gamma
     config%output_file = trim(output_file)
+    config%reconstruction = trim(reconstruction)
+    config%limiter = trim(limiter)
+    config%boundary_condition = trim(boundary_condition)
 
     sod%discontinuity = discontinuity
     sod%rho_left = rho_left
@@ -127,6 +138,12 @@ contains
       message = "gamma must be greater than 1"
     else if (config%max_steps <= 0) then
       message = "max_steps must be positive"
+    else if (.not. valid_reconstruction(config%reconstruction)) then
+      message = "reconstruction must be pcm or plm"
+    else if (.not. valid_limiter(config%limiter)) then
+      message = "limiter must be minmod or mc"
+    else if (.not. valid_boundary_condition(config%boundary_condition)) then
+      message = "boundary_condition must be outflow or periodic"
     else if (sod%discontinuity <= config%x_min .or. &
              sod%discontinuity >= config%x_max) then
       message = "discontinuity must lie inside the domain"
@@ -138,5 +155,38 @@ contains
       ok = .true.
     end if
   end subroutine validate_configuration
+
+  pure logical function valid_reconstruction(name) result(valid)
+    character(len=*), intent(in) :: name
+
+    select case (trim(name))
+    case ("pcm", "plm")
+      valid = .true.
+    case default
+      valid = .false.
+    end select
+  end function valid_reconstruction
+
+  pure logical function valid_limiter(name) result(valid)
+    character(len=*), intent(in) :: name
+
+    select case (trim(name))
+    case ("minmod", "mc")
+      valid = .true.
+    case default
+      valid = .false.
+    end select
+  end function valid_limiter
+
+  pure logical function valid_boundary_condition(name) result(valid)
+    character(len=*), intent(in) :: name
+
+    select case (trim(name))
+    case ("outflow", "periodic")
+      valid = .true.
+    case default
+      valid = .false.
+    end select
+  end function valid_boundary_condition
 
 end module simulation_config_mod
