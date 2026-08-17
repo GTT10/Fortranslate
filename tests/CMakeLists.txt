@@ -8,6 +8,10 @@ add_executable(test_rusanov unit/test_rusanov.F90)
 target_link_libraries(test_rusanov PRIVATE pelef_core)
 add_test(NAME unit_rusanov COMMAND test_rusanov)
 
+add_executable(test_pelec_riemann unit/test_pelec_riemann.F90)
+target_link_libraries(test_pelec_riemann PRIVATE pelef_core)
+add_test(NAME unit_pelec_riemann COMMAND test_pelec_riemann)
+
 add_executable(test_slope_limiter unit/test_slope_limiter.F90)
 target_link_libraries(test_slope_limiter PRIVATE pelef_core)
 add_test(NAME unit_slope_limiter COMMAND test_slope_limiter)
@@ -19,6 +23,16 @@ add_test(NAME unit_plm_reconstruction COMMAND test_plm_reconstruction)
 add_executable(test_entropy_wave regression/test_entropy_wave.F90)
 target_link_libraries(test_entropy_wave PRIVATE pelef_core)
 add_test(NAME regression_entropy_wave_convergence COMMAND test_entropy_wave)
+
+add_executable(
+  test_entropy_wave_pelec
+  regression/test_entropy_wave_pelec.F90
+)
+target_link_libraries(test_entropy_wave_pelec PRIVATE pelef_core)
+add_test(
+  NAME regression_entropy_wave_pelec_convergence
+  COMMAND test_entropy_wave_pelec
+)
 
 set(SOD_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod")
 file(MAKE_DIRECTORY "${SOD_WORK_DIRECTORY}")
@@ -86,4 +100,67 @@ set_tests_properties(
   regression_sod_plm_compare
   PROPERTIES
     DEPENDS regression_sod_plm_run
+)
+
+set(SOD_PELEC_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod_pelec")
+file(MAKE_DIRECTORY "${SOD_PELEC_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_sod_pelec_run
+  COMMAND $<TARGET_FILE:pelef> "${PROJECT_SOURCE_DIR}/cases/sod/sod_pelec.nml"
+)
+set_tests_properties(
+  regression_sod_pelec_run
+  PROPERTIES
+    WORKING_DIRECTORY "${SOD_PELEC_WORK_DIRECTORY}"
+)
+
+add_test(
+  NAME regression_sod_pelec_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/compare_sod.py"
+    --input "${SOD_PELEC_WORK_DIRECTORY}/sod_pelec.csv"
+    --nx 400
+    --time 0.2
+    --gamma 1.4
+    --density-l1-max 2.0e-3
+    --pressure-l1-max 1.5e-3
+    --mass-error-max 2.0e-12
+    --energy-error-max 2.0e-12
+    --momentum-error-max 2.0e-12
+)
+set_tests_properties(
+  regression_sod_pelec_compare
+  PROPERTIES
+    DEPENDS regression_sod_pelec_run
+)
+
+set(SHU_OSHER_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shu_osher")
+file(MAKE_DIRECTORY "${SHU_OSHER_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_shu_osher_run
+  COMMAND
+    $<TARGET_FILE:pelef>
+    "${PROJECT_SOURCE_DIR}/cases/shu_osher/shu_osher.nml"
+)
+set_tests_properties(
+  regression_shu_osher_run
+  PROPERTIES
+    WORKING_DIRECTORY "${SHU_OSHER_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_shu_osher_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_shu_osher.py"
+    --input "${SHU_OSHER_WORK_DIRECTORY}/shu_osher.csv"
+)
+set_tests_properties(
+  regression_shu_osher_compare
+  PROPERTIES
+    DEPENDS regression_shu_osher_run
 )
