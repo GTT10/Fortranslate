@@ -1,27 +1,24 @@
 # Fortranslate / PeleF
 
-PeleF is an independent Modern Fortran reimplementation of selected numerical algorithms and capabilities from PeleC. It is not a mechanical C++ syntax translation and is not an official Pele Suite project.
+PeleF is an independent Modern Fortran reimplementation of selected numerical algorithms and capabilities from PeleC. It is not a mechanical C++ translation and is not an official Pele Suite project.
 
 Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The current executable milestone provides:
+The current `0.5.0` milestone provides a serial one-dimensional solver for the compressible Euler equations with a constant-`gamma` ideal-gas EOS.
 
-- serial one-dimensional compressible Euler equations;
-- constant-`gamma` ideal-gas EOS;
-- conservative finite-volume updates;
-- selectable Rusanov or qualified PeleC-style approximate Riemann fluxes;
-- selectable `pcm`, componentwise `plm`, or time-traced `pelec_plm` reconstruction;
-- minmod and monotonized-central (`mc`) limiting;
-- outflow and periodic ghost-cell boundaries;
-- SSPRK2 for `pcm`/`plm` and a single-stage time-centered Godunov update for `pelec_plm`;
-- selectable Sod and Shu-Osher problems;
-- smooth-convergence, exact-solution, deterministic-regression, conservation, and CI gates.
+Available numerical components:
 
-`pelec_plm` implements the one-dimensional, single-species, constant-`gamma` characteristic projection and wave tracing corresponding to the core structure of PeleC `Source/PLM.H`. It is intentionally qualified: fourth-order slopes, flattening, general-EOS terms, species tracing, embedded boundaries, and multidimensional transverse corrections are not implemented yet.
+- reconstruction: `pcm`, componentwise primitive `plm`, or time-traced characteristic `pelec_plm`;
+- PLM slope order for `pelec_plm`: `plm_order = 2` or `4`;
+- optional PeleC pressure/velocity shock flattening with `use_flattening = .true.`;
+- slope limiter: `minmod` or monotonized-central (`mc`);
+- Riemann solver: `rusanov` or the documented single-species PeleC-style subset;
+- boundaries: `outflow` or `periodic`;
+- problems: Sod, Shu-Osher, and a symmetric planar Sedov-type blast.
 
-AMR, chemistry, diffusion, MPI, embedded boundaries, LES, and spray remain planned work.
+The fourth-order slope and flattening formulas follow the corresponding one-dimensional regular-cell logic in PeleC `Source/PLM.H` and `Source/Godunov.H`. General-EOS terms, species tracing, embedded boundaries, and multidimensional transverse corrections are not yet implemented.
 
 ## Build and test
 
@@ -41,44 +38,23 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-## Run representative cases
+## Representative runs
 
-First-order Rusanov baseline:
-
-```bash
-./build/pelef cases/sod/sod.nml
-python3 tools/compare_sod.py --input sod.csv
-```
-
-Componentwise PLM with the PeleC-style Riemann solver:
-
-```bash
-./build/pelef cases/sod/sod_pelec.nml
-python3 tools/compare_sod.py --input sod_pelec.csv
-```
-
-PeleC-style characteristic tracing and Riemann solver:
+Characteristic PLM with the qualified PeleC-style Riemann solver:
 
 ```bash
 ./build/pelef cases/sod/sod_pelec_plm.nml
-python3 tools/compare_sod.py \
-  --input sod_pelec_plm.csv \
-  --density-l1-max 1.6e-3 \
-  --pressure-l1-max 1.0e-3
+python3 tools/compare_sod.py --input sod_pelec_plm.csv
 ```
 
-Shu-Osher with characteristic tracing:
+Fourth-order characteristic PLM with flattening on the strong-blast case:
 
 ```bash
-./build/pelef cases/shu_osher/shu_osher_pelec_plm.nml
-python3 tools/check_shu_osher.py \
-  --input shu_osher_pelec_plm.csv \
-  --density-squared-reference 112.78740201441508 \
-  --density-moment-reference -7.071310814334509 \
-  --signature-relative-tolerance 5e-6
+./build/pelef cases/sedov/sedov.nml
+python3 tools/check_sedov.py --input sedov.csv
 ```
 
-When using the debug preset, the executable path is `build/debug/pelef`.
+The Sedov regression checks positivity, reflection symmetry, integral conservation, shock location, and pinned field signatures.
 
 ## Project records
 

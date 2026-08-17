@@ -2,29 +2,57 @@
 
 ## Verification levels
 
-1. **Unit verification**: algebraic identities, projection inverses, flux consistency, and invalid-selection rejection.
-2. **Analytical verification**: exact Riemann solutions and smooth convergence.
-3. **Deterministic regression**: pinned field signatures for problems without a compact exact solution.
-4. **Reference parity**: comparison to a pinned PeleC build and output dataset.
-5. **Conservation verification**: integral balances including known boundary fluxes.
+PeleF uses four gates:
 
-The current milestone implements levels 1, 2, 3, and 5. Direct PeleC dataset parity remains pending a pinned upstream executable configuration and reference artifact.
+1. unit verification of algebraic kernels;
+2. analytical or manufactured-solution verification;
+3. parity against a pinned PeleC reference case when available;
+4. conservation and deterministic field-signature verification.
 
-## Characteristic-PLM gates
+Visual agreement is supplementary and never the sole acceptance criterion.
 
-- primitive-slope to characteristic-wave projection and exact inverse;
-- isolated acoustic-wave synthesis;
-- zero-Courant face-state identity;
-- contact/shear preservation of normal velocity and pressure;
-- rejection of invalid negative `dt/dx`;
-- periodic entropy-wave order greater than `1.7` on two refinement pairs;
-- 400-cell Sod density L1 at most `1.6e-3` and pressure L1 at most `1.0e-3`;
+## Fourth-order slope and flattening gates
+
+The slope unit test checks:
+
+- exact reconstruction of linear data with the five-point order-4 stencil;
+- the expected PeleC order-2 expression;
+- zero slope at a discrete extremum;
+- direct multiplication by the flattening coefficient;
+- rejection of unsupported orders.
+
+The flattening test checks:
+
+- coefficient one for smooth data;
+- coefficient zero for a strong compressive pressure step;
+- coefficient one for the same pressure step in expansion.
+
+## Smooth-convergence gate
+
+The periodic entropy wave is run at 40, 80, and 160 cells with order-4 characteristic PLM and no flattening. Both refinement pairs must show at least order 1.9. The observed orders are approximately 2.17 and 2.18; time integration limits the complete method to second order.
+
+## Strong-shock gate
+
+The planar Sedov-type regression verifies:
+
+- all CSV values finite;
 - positive density and pressure;
-- roundoff-scale Sod integral balances;
-- Shu-Osher positivity, oscillation retention, extrema count, boundary-flux balances, and pinned density signatures.
+- exact discrete reflection symmetry within tolerance;
+- mass, momentum, and energy errors below `2e-10`;
+- sufficiently strong compression and pressure peaks;
+- shock radius within a pinned interval;
+- density-squared and pressure integrals within a `5e-6` relative tolerance.
 
-## Reference data policy
+Pinned signatures for the current 800-cell case are:
 
-Future PeleC reference artifacts must record upstream commit SHA, exact inputs, compiler and build options, EOS/mechanism, output variable definitions, output time, and comparison-tool version. Reference data must not be regenerated merely to make a failing test pass.
+```text
+density-squared integral = 1.4513811919127926
+pressure integral        = 2.0606157390942492
+shock radius             = 0.131875
+```
 
-The current deterministic signatures are implementation-regression gates, not evidence that the entire Fortran result is numerically identical to PeleC.
+The checker accepts explicit replacement references on its command line, but reference changes must be reviewed and explained rather than silently regenerated.
+
+## Non-regression policy
+
+New higher-order or PeleC-style options do not replace old paths. Existing PCM, componentwise PLM, order-2 characteristic PLM, and Rusanov cases continue to run in CI so regressions can be localized to reconstruction, flux evaluation, or time integration.

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.4.0
+  VERSION 0.5.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -38,6 +38,7 @@ add_library(
   src/driver/simulation_config_mod.F90
   src/problems/sod_problem_mod.F90
   src/problems/shu_osher_problem_mod.F90
+  src/problems/sedov_problem_mod.F90
   src/io/csv_io_mod.F90
 )
 
