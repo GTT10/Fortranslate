@@ -38,7 +38,8 @@ contains
         dt = 0.0_dp
         return
       end if
-      sound_speed = ideal_gas_sound_speed(primitive(qrho), primitive(qp), gamma)
+      sound_speed = ideal_gas_sound_speed( &
+        primitive(qrho), primitive(qp), gamma)
       signal_speed = abs(primitive(qu)) + sound_speed
       max_signal_speed = max(max_signal_speed, signal_speed)
     end do
@@ -53,24 +54,30 @@ contains
   end subroutine compute_cfl_timestep
 
   subroutine advance_ssprk2( &
-      conserved, nx, dx, dt, gamma, ok, reconstruction, limiter, boundary_condition)
+      conserved, nx, dx, dt, gamma, ok, reconstruction, limiter, &
+      boundary_condition, riemann_solver)
     integer, intent(in) :: nx
     real(dp), intent(inout) :: conserved(ncons, 0:nx + 1)
     real(dp), intent(in) :: dx, dt, gamma
     logical, intent(out) :: ok
-    character(len=*), intent(in), optional :: reconstruction, limiter, boundary_condition
+    character(len=*), intent(in), optional :: reconstruction, limiter
+    character(len=*), intent(in), optional :: boundary_condition
+    character(len=*), intent(in), optional :: riemann_solver
 
     real(dp), allocatable :: old_state(:, :), stage_state(:, :), rhs(:, :)
     character(len=32) :: reconstruction_name, limiter_name, boundary_name
+    character(len=32) :: riemann_name
     logical :: rhs_ok, boundary_ok
     integer :: i
 
     reconstruction_name = "pcm"
     limiter_name = "mc"
     boundary_name = "outflow"
+    riemann_name = "rusanov"
     if (present(reconstruction)) reconstruction_name = trim(reconstruction)
     if (present(limiter)) limiter_name = trim(limiter)
     if (present(boundary_condition)) boundary_name = trim(boundary_condition)
+    if (present(riemann_solver)) riemann_name = trim(riemann_solver)
 
     allocate(old_state(ncons, 0:nx + 1))
     allocate(stage_state(ncons, 0:nx + 1))
@@ -84,8 +91,8 @@ contains
     old_state = conserved
 
     call compute_euler_rhs( &
-      old_state, nx, dx, gamma, rhs, rhs_ok, &
-      reconstruction_name, limiter_name, boundary_name)
+      old_state, nx, dx, gamma, rhs, rhs_ok, reconstruction_name, &
+      limiter_name, boundary_name, riemann_name)
     if (.not. rhs_ok) then
       ok = .false.
       return
@@ -107,8 +114,8 @@ contains
     end if
 
     call compute_euler_rhs( &
-      stage_state, nx, dx, gamma, rhs, rhs_ok, &
-      reconstruction_name, limiter_name, boundary_name)
+      stage_state, nx, dx, gamma, rhs, rhs_ok, reconstruction_name, &
+      limiter_name, boundary_name, riemann_name)
     if (.not. rhs_ok) then
       ok = .false.
       return
