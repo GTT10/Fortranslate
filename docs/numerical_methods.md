@@ -97,7 +97,7 @@ If a full transverse correction would produce non-positive density or pressure, 
 
 \[
 U(\theta)=U_{\mathrm{base}}+\theta\,\Delta U,
-\qquad 0\le\theta\le1,
+\qquad 0\leq\theta\le1,
 \]
 
 and accepts the largest physical `theta` found by bisection. Smooth-vortex tests accept `theta=1` everywhere.
@@ -162,3 +162,102 @@ F_(rho Y_k) = F_rho * Y_k^upwind
 ```
 
 with the final species used as a deterministic closure component so the sum of species fluxes equals the mass flux to roundoff. In 1D, mass fractions are traced with the contact-wave velocity. In 2D, species face states receive the same CTU transverse half-step correction as the hydro face states. Cell updates are accepted only when species densities remain non-negative and their sum matches total density.
+
+## NASA7 species thermodynamics
+
+For each species, the active seven-coefficient interval gives
+
+\[
+\frac{c_p^\circ}{R}=a_1+a_2T+a_3T^2+a_4T^3+a_5T^4,
+\]
+
+\[
+\frac{h^\circ}{RT}=a_1+\frac{a_2T}{2}+\frac{a_3T^2}{3}
++\frac{a_4T^3}{4}+\frac{a_5T^4}{5}+\frac{a_6}{T},
+\]
+
+\[
+\frac{s^\circ}{R}=a_1\ln T+a_2T+\frac{a_3T^2}{2}
++\frac{a_4T^3}{3}+\frac{a_5T^4}{4}+a_7.
+\]
+
+Molar values are converted to mass-specific values with the species molecular weight. Internal energy and constant-volume heat capacity follow
+
+\[
+u=h-R_kT,\qquad c_v=c_p-R_k.
+\]
+
+The returned entropy is the mass-weighted standard-state species contribution; a pressure-dependent ideal-mixing entropy term is not yet included.
+
+## Ideal-gas mixture properties
+
+For mass fractions `Y_k`,
+
+\[
+\frac{1}{W_{mix}}=\sum_k\frac{Y_k}{W_k},
+\qquad R_{mix}=\frac{R_u}{W_{mix}}.
+\]
+
+Mass-specific caloric properties are weighted directly,
+
+\[
+c_p=\sum_kY_kc_{p,k},\quad
+c_v=\sum_kY_kc_{v,k},\quad
+h=\sum_kY_kh_k,\quad
+u=\sum_kY_ku_k,
+\]
+
+with `gamma = cp/cv`. Pressure, density, and the frozen-composition sound speed are
+
+\[
+p=\rho R_{mix}T,
+\qquad
+\rho=\frac{p}{R_{mix}T},
+\qquad
+c=\sqrt{\gamma R_{mix}T}.
+\]
+
+These functions are currently verified independently and are not yet used by the hydro Riemann solvers.
+
+## Internal-energy temperature inversion
+
+The inversion solves
+
+\[
+f(T)=u(Y,T)-u_{target}=0
+\]
+
+inside the common NASA7 validity interval. The algorithm first evaluates both bracket endpoints. Each iteration attempts
+
+\[
+T_{new}=T-\frac{f(T)}{c_v(Y,T)}.
+\]
+
+A non-finite or out-of-bracket Newton candidate is replaced with the bracket midpoint. Targets outside the endpoint energy interval are rejected.
+
+## Toy constant-volume reactor
+
+The verification reaction is
+
+```text
+A -> B
+```
+
+with equal molecular weights and first-order rate
+
+\[
+\dot Y_A=-k(T)Y_A,\qquad
+\dot Y_B=+k(T)Y_A,
+\]
+
+\[
+k(T)=AT^b\exp(-T_a/T).
+\]
+
+Composition is integrated with classical RK4. In adiabatic mode, every RK stage solves
+
+\[
+u(Y^{stage},T^{stage})=u(Y^0,T^0),
+\]
+
+so the rate and heat release use a stage-consistent temperature. In isothermal mode, the analytical solution `Y_A(t)=Y_A(0) exp(-kt)` is used as a unit gate.

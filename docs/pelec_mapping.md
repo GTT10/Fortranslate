@@ -6,7 +6,9 @@ This table maps responsibilities, not source lines.
 |---|---|---|
 | `Source/main.cpp` | `app/pelef.F90`, `app/pelef2d.F90` | Separate serial 1D and 2D drivers |
 | `Source/IndexDefines.H` | `src/core/state_indices_mod.F90` | Base single-species state indices |
-| PelePhysics ideal-gas calls | `src/physics/eos_ideal_mod.F90` | Constant-`gamma` ideal gas |
+| PelePhysics constant-`gamma` calls | `src/physics/eos_ideal_mod.F90` | Existing hydro closure |
+| PelePhysics species thermodynamics | `nasa7_thermo_mod`, `thermo_database_mod` | NASA7 H2/O2/H2O/N2 subset verified |
+| PelePhysics mixture EOS/caloric properties | `mixture_thermo_mod` | Independent ideal-gas mixture layer verified; hydro coupling pending |
 | AMReX mesh/geometry responsibility | `mesh_mod`, `mesh_2d_mod` | Uniform 1D and Cartesian 2D meshes |
 | AMReX boundary fill | `boundary_conditions_mod` and periodic index wrapping in `ctu_2d_mod` | 1D outflow/periodic and 2D periodic subset |
 | `Source/Riemann.H` LF path | `riemann_rusanov_mod` | Independent Rusanov implementation |
@@ -22,11 +24,12 @@ This table maps responsibilities, not source lines.
 | `Exec/RegTests/Shu-Osher` | `cases/shu_osher`, `tools/check_shu_osher.py` | Deterministic shock-wave gate |
 | `Exec/RegTests/Sedov` | `cases/sedov`, `tools/check_sedov.py` | Independent planar strong-blast gate |
 | multidimensional smooth verification | `cases/isentropic_vortex`, `test_isentropic_vortex_2d`, `check_isentropic_vortex.py` | Analytical 2D convergence and app gate |
-| `Exec/RegTests/MultiSpecSod` | future multispecies state and case | Not started |
+| `Exec/RegTests/MultiSpecSod` | `cases/multispec_sod`, `check_multispec_sod.py` | Passive multispecies regression implemented |
 | `Source/PPM.*` | future `reconstruction_ppm_mod` | Not started |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
 | `Source/Diffusion.*` | future `src/diffusion/` | Not started |
-| `Source/React.cpp` | future `src/chemistry/` | Not started |
+| `Source/React.cpp` reactor-source responsibility | `isomerization_reactor_mod`, `app/pelef0d.F90` | Toy constant-volume scaffold only; detailed parity not claimed |
+| mechanism parsing/code generation | future `src/chemistry/` and `tools/` | Not started |
 | `Source/PeleCAmr.*` | future `src/amr/` | Not started |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |

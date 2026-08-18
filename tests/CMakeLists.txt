@@ -457,3 +457,46 @@ set_tests_properties(
   regression_multispec_sod_compare
   PROPERTIES DEPENDS regression_multispec_sod_run
 )
+
+add_executable(test_nasa7_thermo unit/test_nasa7_thermo.F90)
+target_link_libraries(test_nasa7_thermo PRIVATE pelef_core)
+add_test(NAME unit_nasa7_thermo COMMAND test_nasa7_thermo)
+
+add_executable(test_mixture_thermo unit/test_mixture_thermo.F90)
+target_link_libraries(test_mixture_thermo PRIVATE pelef_core)
+add_test(NAME unit_mixture_thermo COMMAND test_mixture_thermo)
+
+add_executable(
+  test_isomerization_reactor
+  unit/test_isomerization_reactor.F90
+)
+target_link_libraries(test_isomerization_reactor PRIVATE pelef_core)
+add_test(NAME unit_isomerization_reactor COMMAND test_isomerization_reactor)
+
+set(ZERO_D_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zero_d_isomerization")
+file(MAKE_DIRECTORY "${ZERO_D_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_zero_d_isomerization_run
+  COMMAND
+    $<TARGET_FILE:pelef0d>
+    "${PROJECT_SOURCE_DIR}/cases/zero_d_isomerization/reactor.nml"
+)
+set_tests_properties(
+  regression_zero_d_isomerization_run
+  PROPERTIES
+    WORKING_DIRECTORY "${ZERO_D_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_zero_d_isomerization_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_zero_d_isomerization.py"
+    --input "${ZERO_D_WORK_DIRECTORY}/zero_d_isomerization.csv"
+)
+set_tests_properties(
+  regression_zero_d_isomerization_compare
+  PROPERTIES DEPENDS regression_zero_d_isomerization_run
+)

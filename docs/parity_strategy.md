@@ -81,3 +81,25 @@ Pinned numerical signatures may be updated only with an explained numerical-meth
 ## Multispecies parity gates
 
 The passive-species milestone is accepted only when MultiSpecSod reproduces the existing Sod hydrodynamics, each species mass is conserved, `sum_k rho*Y_k` follows `rho`, and 1D/2D smooth species waves converge at approximately second order. A y-uniform 2D multispecies update must reduce to the verified 1D update to roundoff.
+
+## Thermodynamics gates
+
+NASA7 tests pin independently calculated mass-specific values for H2 at 300 K and O2 at 1500 K, exercising the low- and high-temperature coefficient intervals. Each state also verifies the identities
+
+```text
+cp - cv = R_k
+h - u   = R_k T.
+```
+
+A fixed O2/N2 mass mixture pins molecular weight, gas constant, `cp`, `cv`, `gamma`, enthalpy, internal energy, pressure, density, and frozen sound speed. Internal energies generated at 300, 1200, and 2500 K must invert back to their source temperatures. Invalid composition and energy outside the common NASA7 range must fail.
+
+The coefficient source and exact upstream file revision are recorded in the implementation PR. Direct Cantera runtime parity is deferred until a real reaction mechanism is present.
+
+## Zero-dimensional reactor gates
+
+The reactor layer has two independent gates:
+
+1. an isothermal constant-rate case compared with `Y_A(t)=exp(-kt)`;
+2. an adiabatic exothermic case requiring mass-fraction closure, monotone reactant consumption, monotone heating, and fixed specific internal energy.
+
+The application-level Python checker reads only the emitted CSV and independently enforces the time interval, positivity, closure, monotonicity, final-temperature signature, reaction completion, and energy-error bound. The synthetic reaction is not used as evidence of detailed-chemistry parity.
