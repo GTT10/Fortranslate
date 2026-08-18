@@ -10,7 +10,7 @@ PeleF advances the compressible Euler system
 U=(\rho,\rho u,\rho v,\rho w,\rho E)^T,
 \]
 
-with a constant-`gamma` ideal-gas closure. The y term is omitted by the one-dimensional driver.
+with a constant-`gamma` ideal-gas closure. The y term is omitted by the one-dimensional driver. The current NASA7 and chemistry layers are not yet used by these fluxes.
 
 ## One-dimensional Godunov components
 
@@ -31,27 +31,11 @@ d_{\mathrm{temp}}=
 
 and the final slope is bounded by the local monotonicity constraint and multiplied by the flattening coefficient.
 
-## Directional flux rotation
+## Two-dimensional CTU-style update
 
-The two-dimensional solver reuses the x-direction Riemann interface for y faces. A y-normal state is rotated by exchanging x and y momentum,
+The 2D solver rotates y-normal states into the x-normal Riemann interface, computes independent normal predictions, evaluates provisional fluxes, applies transverse half-step flux differences, recomputes final face fluxes, and performs one unsplit conservative update.
 
-\[
-(\rho,\rho u,\rho v,\rho w,\rho E)
-\mapsto
-(\rho,\rho v,\rho u,\rho w,\rho E),
-\]
-
-then passed to the x solver. The returned momentum-flux components are exchanged again. This gives a single tested Riemann implementation per solver rather than duplicated directional code.
-
-## Two-dimensional normal prediction
-
-For each cell, limited primitive slopes are computed independently in x and y. Density and pressure slopes are reduced if either extrapolated face approaches its configured floor.
-
-The x slope is projected and traced with the existing characteristic kernel. For y, primitive velocity components are rotated, traced with the same kernel using `dt/dy`, and rotated back. These predictors contain the normal half-time evolution but not the transverse flux divergence.
-
-## CTU-style transverse correction
-
-Let `F_hat` and `G_hat` be provisional Riemann fluxes from the normal predictor states. The left state on an x face is corrected with the transverse flux divergence of its originating cell,
+For example, the left state on an x face is corrected by
 
 \[
 U^{*}_{L,i+1/2,j}
@@ -64,104 +48,25 @@ U^{n+1/2}_{L,i+1/2,j}
 \right).
 \]
 
-The right x-face state uses the corresponding divergence in cell `i+1`. The lower and upper states on a y face are corrected analogously with provisional x fluxes,
+If a full correction would produce non-positive density or pressure, the correction is scaled by the largest physical `0 <= theta <= 1` found by bisection.
 
-\[
-U^{*}_{B,i,j+1/2}
-=
-U^{n+1/2}_{B,i,j+1/2}
--
-\frac{\Delta t}{2\Delta x}
-\left(
-\widehat F_{i+1/2,j}-\widehat F_{i-1/2,j}
-\right).
-\]
-
-Final Riemann fluxes are evaluated from the corrected states. The conservative update is
-
-\[
-U^{n+1}_{i,j}=U^n_{i,j}
--
-\frac{\Delta t}{\Delta x}
-\left(F_{i+1/2,j}-F_{i-1/2,j}\right)
--
-\frac{\Delta t}{\Delta y}
-\left(G_{i,j+1/2}-G_{i,j-1/2}\right).
-\]
-
-This is a regular-grid two-dimensional CTU-style subset. It does not yet include PeleC source-term coupling, embedded boundaries, 3D double-transverse terms, or AMR synchronization.
-
-## Positivity scaling of transverse corrections
-
-If a full transverse correction would produce non-positive density or pressure, PeleF seeks
-
-\[
-U(\theta)=U_{\mathrm{base}}+\theta\,\Delta U,
-\qquad 0\leq\theta\le1,
-\]
-
-and accepts the largest physical `theta` found by bisection. Smooth-vortex tests accept `theta=1` everywhere.
-
-## Two-dimensional CFL condition
-
-The unsplit timestep uses
+The 2D timestep is
 
 \[
 \Delta t=
 \frac{\mathrm{CFL}}
-{\max_{i,j}\left[
-(|u|+c)/\Delta x+(|v|+c)/\Delta y
-\right]}.
+{\max_{i,j}\left[(|u|+c)/\Delta x+(|v|+c)/\Delta y\right]}.
 \]
-
-## Isentropic vortex
-
-The periodic analytical test superimposes a vortex of strength `beta` on a uniform flow. With displacement `(x_bar,y_bar)` from the translated periodic vortex center,
-
-\[
-\delta u=-\frac{\beta}{2\pi}y_{\!bar}
-\exp\left(\frac{1-r^2}{2}\right),
-\qquad
-\delta v=\frac{\beta}{2\pi}x_{\!bar}
-\exp\left(\frac{1-r^2}{2}\right),
-\]
-
-\[
-\delta T=-\frac{(\gamma-1)\beta^2}{8\gamma\pi^2}
-\exp(1-r^2).
-\]
-
-Density and pressure follow the isentropic relation. The exact solution is the initial vortex translated by the base velocity through the periodic domain.
-
-## Verified multidimensional results
-
-With the PeleC-style Riemann solver, MC slopes, and transverse correction enabled:
-
-```text
-24 x 24   density L1 = 2.5862222302e-3
-48 x 48   density L1 = 5.3334803639e-4
-96 x 96   density L1 = 1.1010295208e-4
-
-observed order:
-24 -> 48  2.2776971
-48 -> 96  2.2762241
-```
-
-At `48 x 48`, disabling the transverse correction increases density L1 error to `1.1493796865e-3`. Periodic mass, both momentum components, and total energy remain conserved to approximately `6e-14`.
-
-## Scope limitations
-
-The current 2D path is serial, periodic, single-species, inviscid, constant-`gamma`, and uniform-grid. General-EOS internal-energy characteristics, species/passive-scalar transport, physical wall/inflow boundaries, PPM/WENO, embedded boundaries, AMR, MPI, diffusion, chemistry, and spray remain future work.
 
 ## Passive multispecies transport
 
-For each species, PeleF advances `rho*Y_k` conservatively. The interface flux is
+For each passive species, PeleF advances `rho*Y_k` conservatively. The interface flux is
 
-```text
-F_(rho Y_k) = F_rho * Y_k^upwind
-```
+\[
+F_{\rho Y_k}=F_\rho Y_k^{\mathrm{upwind}},
+\]
 
-with the final species used as a deterministic closure component so the sum of species fluxes equals the mass flux to roundoff. In 1D, mass fractions are traced with the contact-wave velocity. In 2D, species face states receive the same CTU transverse half-step correction as the hydro face states. Cell updates are accepted only when species densities remain non-negative and their sum matches total density.
+with a deterministic closure component so that the species flux sum equals the mass flux to roundoff. In 1D, mass fractions are traced with the contact-wave velocity. In 2D, species face states receive the same CTU transverse correction as the hydro face states.
 
 ## NASA7 species thermodynamics
 
@@ -187,15 +92,13 @@ Molar values are converted to mass-specific values with the species molecular we
 u=h-R_kT,\qquad c_v=c_p-R_k.
 \]
 
-The returned entropy is the mass-weighted standard-state species contribution; a pressure-dependent ideal-mixing entropy term is not yet included.
-
 ## Ideal-gas mixture properties
 
 For mass fractions `Y_k`,
 
 \[
-\frac{1}{W_{mix}}=\sum_k\frac{Y_k}{W_k},
-\qquad R_{mix}=\frac{R_u}{W_{mix}}.
+\frac{1}{W_{\mathrm{mix}}}=\sum_k\frac{Y_k}{W_k},
+\qquad R_{\mathrm{mix}}=\frac{R_u}{W_{\mathrm{mix}}}.
 \]
 
 Mass-specific caloric properties are weighted directly,
@@ -210,54 +113,137 @@ u=\sum_kY_ku_k,
 with `gamma = cp/cv`. Pressure, density, and the frozen-composition sound speed are
 
 \[
-p=\rho R_{mix}T,
+p=\rho R_{\mathrm{mix}}T,
 \qquad
-\rho=\frac{p}{R_{mix}T},
+\rho=\frac{p}{R_{\mathrm{mix}}T},
 \qquad
-c=\sqrt{\gamma R_{mix}T}.
+c=\sqrt{\gamma R_{\mathrm{mix}}T}.
 \]
 
-These functions are currently verified independently and are not yet used by the hydro Riemann solvers.
+The temperature inversion solves `u(Y,T)=u_target` inside the common NASA7 validity interval using Newton updates with mixture `cv` and a bisection fallback.
 
-## Internal-energy temperature inversion
+## Elementary reaction representation
 
-The inversion solves
+Each reaction stores reactant and product stoichiometric vectors,
 
 \[
-f(T)=u(Y,T)-u_{target}=0
+\nu'_{k,r},\qquad \nu''_{k,r},
 \]
 
-inside the common NASA7 validity interval. The algorithm first evaluates both bracket endpoints. Each iteration attempts
+an Arrhenius triplet `(A,b,E_a)`, and a reversible flag. The forward rate constant is
 
 \[
-T_{new}=T-\frac{f(T)}{c_v(Y,T)}.
+k_{f,r}=A_rT^{b_r}\exp\left(-\frac{E_{a,r}}{R_uT}\right).
 \]
 
-A non-finite or out-of-bracket Newton candidate is replaced with the bracket midpoint. Targets outside the endpoint energy interval are rejected.
+Molar concentrations in `kmol/m^3` are recovered from density and mass fractions:
 
-## Toy constant-volume reactor
+\[
+C_k=\frac{\rho Y_k}{W_k}.
+\]
 
-The verification reaction is
+The forward progress rate is
+
+\[
+q_{f,r}=k_{f,r}\prod_k C_k^{\nu'_{k,r}}.
+\]
+
+## Reverse rates and equilibrium constants
+
+NASA7 standard-state Gibbs functions give
+
+\[
+\frac{\Delta g_r^\circ}{R_uT}
+=
+\sum_k(\nu''_{k,r}-\nu'_{k,r})
+\left(\frac{h_k^\circ}{R_uT}-\frac{s_k^\circ}{R_u}\right).
+\]
+
+With `Delta nu_r = sum_k(nu''-nu')`, the concentration equilibrium constant is
+
+\[
+K_{c,r}
+=
+\exp\left(-\frac{\Delta g_r^\circ}{R_uT}\right)
+\left(\frac{p^\circ}{R_uT}\right)^{\Delta\nu_r}.
+\]
+
+The reverse constant and progress rate are
+
+\[
+k_{r,r}=\frac{k_{f,r}}{K_{c,r}},
+\qquad
+q_{r,r}=k_{r,r}\prod_k C_k^{\nu''_{k,r}}.
+\]
+
+The net progress and species production rates are
+
+\[
+q_r=q_{f,r}-q_{r,r},
+\qquad
+\dot\omega_k=\sum_r(\nu''_{k,r}-\nu'_{k,r})q_r,
+\]
+
+and the constant-volume composition equation is
+
+\[
+\frac{dY_k}{dt}=\frac{W_k\dot\omega_k}{\rho}.
+\]
+
+## Generated mechanism subset
+
+`tools/generate_elementary_mechanism.py` reads a normalized JSON mechanism and writes a Fortran module containing fixed species indices, reaction stoichiometry, SI Arrhenius parameters, and a production-rate wrapper. CI regenerates the module and requires exact agreement with the committed source.
+
+The current H2/O2 subset contains four reversible elementary reactions:
 
 ```text
-A -> B
+O + H2  <=> H + OH
+H + O2  <=> O + OH
+OH + H2 <=> H + H2O
+2 OH    <=> O + H2O
 ```
 
-with equal molecular weights and first-order rate
+H2, H, O, O2, OH, H2O, and N2 are present. N2 is inert because no third-body reactions are included yet.
+
+## Adaptive constant-volume reactor
+
+The H2/O2 reactor uses explicit RK4 with step doubling:
+
+1. one full RK4 step of size `dt`;
+2. two RK4 half steps;
+3. a scaled norm of the state difference estimates local error;
+4. the two-half-step result is accepted when the error is within tolerance;
+5. the next step is expanded or contracted within configured bounds.
+
+At every RK stage, temperature is recovered from
 
 \[
-\dot Y_A=-k(T)Y_A,\qquad
-\dot Y_B=+k(T)Y_A,
+u(Y^{\mathrm{stage}},T^{\mathrm{stage}})=u(Y^0,T^0),
 \]
 
-\[
-k(T)=AT^b\exp(-T_a/T).
-\]
+so the rate evaluation and adiabatic energy constraint are stage consistent. Trial states are rejected when composition loses positivity or closure.
 
-Composition is integrated with classical RK4. In adiabatic mode, every RK stage solves
+This explicit integrator is suitable only for the current verification subset. A stiff integrator and Jacobian are required before using a complete combustion mechanism.
 
-\[
-u(Y^{stage},T^{stage})=u(Y^0,T^0),
-\]
+## Verified H2/O2 parity
 
-so the rate and heat release use a stage-consistent temperature. In isothermal mode, the analytical solution `Y_A(t)=Y_A(0) exp(-kt)` is used as a unit gate.
+The live Cantera gate separates two comparisons:
+
+- trajectory parity: temperature, pressure, and all species at each output time;
+- kinetic-kernel parity: Cantera production rates evaluated at the exact PeleF `(T,rho,Y)` state.
+
+For the current case, the maximum absolute differences are:
+
+```text
+temperature              1.61e-6 K
+pressure                 1.36e-4 Pa
+species mass fraction    1.70e-11
+production rate          3.55e-12 kmol/(m^3 s)
+final temperature        3.69e-9 K
+```
+
+The production-rate maximum is an almost cancelled OH net source near `2.5e-8 kmol/(m^3 s)`, so parity uses both a relative tolerance and a `5e-12 kmol/(m^3 s)` absolute floor.
+
+## Scope limitations
+
+The code remains serial and uniform-grid. Chemistry currently lacks third-body efficiencies, falloff/Troe/SRI forms, mechanism-file parsing, Jacobians, stiff integration, full H2/O2 chemistry, hydrocarbon mechanisms, diffusion, and coupling to the flow solver.

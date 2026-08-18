@@ -33,22 +33,24 @@ program test_mixture_thermo
     cp, cv, gamma, enthalpy, internal_energy, entropy, ok)
   if (.not. ok) error stop "Mixture property evaluation failed"
 
-  call assert_close(molecular_weight, 28.850334_dp, 2.0e-12_dp, "Wmix")
   call assert_close( &
-    gas_constant, 288.1929414804432_dp, 2.0e-12_dp, "Rmix")
-  call assert_close(cp, 1182.5018900939492_dp, 2.0e-12_dp, "cp")
-  call assert_close(cv, 894.308948613506_dp, 2.0e-12_dp, "cv")
-  call assert_close(gamma, 1.3222521053012428_dp, 2.0e-12_dp, "gamma")
+    molecular_weight, 28.85067068107281_dp, 2.0e-12_dp, "Wmix")
   call assert_close( &
-    enthalpy, 986641.1625680961_dp, 2.0e-12_dp, "enthalpy")
+    gas_constant, 288.18957833128849_dp, 2.0e-12_dp, "Rmix")
+  call assert_close(cp, 1182.4886092588142_dp, 2.0e-12_dp, "cp")
+  call assert_close(cv, 894.29903092752579_dp, 2.0e-12_dp, "cv")
+  call assert_close(gamma, 1.3222519183906434_dp, 2.0e-12_dp, "gamma")
   call assert_close( &
-    internal_energy, 640809.6327915643_dp, 2.0e-12_dp, "internal energy")
+    enthalpy, 986630.08716612426_dp, 2.0e-12_dp, "enthalpy")
+  call assert_close( &
+    internal_energy, 640802.59316857834_dp, 2.0e-12_dp, &
+    "internal energy")
 
   pressure = mixture_pressure( &
     species, mass_fractions, 1.2_dp, 1200.0_dp, ok)
   if (.not. ok) error stop "Mixture pressure evaluation failed"
   call assert_close( &
-    pressure, 414997.83573183825_dp, 2.0e-12_dp, "pressure")
+    pressure, 414992.99279705540_dp, 2.0e-12_dp, "pressure")
 
   density = mixture_density( &
     species, mass_fractions, pressure, 1200.0_dp, ok)
@@ -59,7 +61,7 @@ program test_mixture_thermo
     species, mass_fractions, 1200.0_dp, ok)
   if (.not. ok) error stop "Mixture sound-speed evaluation failed"
   call assert_close( &
-    sound_speed, 676.2222033670358_dp, 2.0e-12_dp, "sound speed")
+    sound_speed, 676.21820987790932_dp, 2.0e-12_dp, "sound speed")
 
   do i = 1, size(temperatures)
     target_temperature = temperatures(i)

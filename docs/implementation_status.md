@@ -29,7 +29,7 @@
 ## Phase 3 — composition-dependent thermodynamics
 
 - [x] NASA7 species record and polynomial evaluation
-- [x] molecular-weight database subset for H2, O2, H2O, and N2
+- [x] molecular-weight database subset for H2, H, O, O2, OH, H2O, and N2
 - [x] mixture molecular weight and gas constant
 - [x] mixture `cp`, `cv`, `gamma`, enthalpy, and internal energy
 - [x] ideal-gas pressure/density and frozen sound speed
@@ -38,36 +38,55 @@
 - [ ] couple mixture thermodynamics into hydro state conversion and Riemann solvers
 - [ ] composition-dependent hydro CFL and characteristic relations
 
-## Phase 4 — zero-dimensional reaction scaffold
+## Phase 4 — zero-dimensional chemistry
 
-- [x] Arrhenius first-order mass-conserving reaction object
-- [x] isothermal RK4 integration and analytical solution gate
-- [x] adiabatic constant-volume stage-wise `e -> T` coupling
-- [x] energy, composition, monotonicity, and application-level CSV gates
-- [ ] general reaction stoichiometry and production-rate kernel
-- [ ] reversible rates and equilibrium constants
-- [ ] mechanism parser/code generator
+- [x] synthetic first-order isomerization gate
+- [x] arbitrary elementary reactant/product stoichiometry
+- [x] reversible Arrhenius rates and NASA7 equilibrium constants
+- [x] concentrations, progress rates, production rates, and `dY/dt`
+- [x] normalized JSON-to-Fortran mechanism generator
+- [x] committed generated-source cleanliness test
+- [x] adaptive explicit RK4 constant-volume reactor
+- [x] stage-wise adiabatic `e -> T` coupling
+- [x] seven-species, four-reaction H2/O2/N2 subset
+- [x] structural mass, element, positivity, closure, and energy gates
+- [x] live Cantera 3.2 trajectory and production-rate parity
+- [ ] third-body efficiencies
+- [ ] pressure falloff and Troe/SRI forms
+- [ ] direct Cantera/CHEMKIN YAML parser
 - [ ] analytic or generated Jacobian
-- [ ] stiff integrator and Cantera parity
-- [ ] detailed combustion mechanism
+- [ ] stiff integration through CVODE or an equivalent solver
+- [ ] complete H2/O2 mechanism
+- [ ] detailed hydrocarbon mechanism
+- [ ] chemistry coupling to the flow solver
 
-## Verified `0.8.0` results
+## Verified `0.9.0` results
 
-GNU Fortran 14.2 Debug build with bounds and floating-point traps:
+GNU Fortran builds and the live Cantera 3.2 reference gate:
 
 | Gate | Result |
 |---|---:|
-| Complete Debug suite | `44/44` passed |
-| NASA7 H2 `cp` at 300 K | `14311.7571456761 J/(kg K)` |
-| NASA7 O2 `cp` at 1500 K | `1143.02005736187 J/(kg K)` |
-| Air-subset `Wmix` | `28.850334 kg/kmol` |
-| Air-subset `gamma` at 1200 K | `1.32225210530124` |
-| Air-subset frozen sound speed at 1200 K | `676.222203367036 m/s` |
-| 0D final temperature | `1839.99999999720 K` |
-| 0D final reactant fraction | `2.13e-110` |
-| Maximum 0D relative energy error | `9.38e-12` |
-| Maximum 0D composition closure error | `1.11e-16` |
+| Complete Debug suite | `50/50` passed |
+| Complete Release suite | `50/50` passed |
+| Generated mechanism cleanliness | passed |
+| H2/O2 accepted adaptive steps | `751` |
+| H2/O2 output rows | `101` |
+| Initial temperature | `1200 K` |
+| Final temperature | `1332.56148597839 K` |
+| Final pressure | `112518.160472301 Pa` |
+| Maximum relative internal-energy error | `9.92e-12` |
+| Maximum composition-closure error | `2.22e-16` |
+| Maximum H inventory drift | `4.51e-17` |
+| Maximum O inventory drift | `1.91e-17` |
+| Maximum instantaneous mass-source residual | `7.11e-13` |
+| Cantera maximum temperature difference | `1.61e-6 K` |
+| Cantera maximum pressure difference | `1.36e-4 Pa` |
+| Cantera maximum species mass-fraction difference | `1.70e-11` |
+| Cantera maximum production-rate difference | `3.55e-12 kmol/(m^3 s)` |
+| PeleF/Cantera final-temperature difference | `3.69e-9 K` |
+
+The production-rate maximum occurs in an almost cancelled OH net source of approximately `2.5e-8 kmol/(m^3 s)`; the absolute comparison floor is therefore `5e-12 kmol/(m^3 s)` while the relative tolerance remains active for non-cancelled rates.
 
 ## Next implementation slice
 
-Add a mechanism representation and source-code generator for arbitrary elementary Arrhenius reactions, then validate a real constant-volume H2/O2 reactor against Cantera before coupling chemistry to the multidimensional flow solver.
+Add third-body and falloff/Troe reaction forms, generate an analytic or semi-generated Jacobian, and connect a stiff integrator. Then expand from the four-reaction subset to a complete small H2/O2 mechanism before attempting chemistry-flow coupling.

@@ -2,16 +2,17 @@
 
 ## Verification levels
 
-PeleF uses four gates:
+PeleF uses five gates:
 
 1. unit verification of algebraic kernels;
 2. analytical or manufactured-solution verification;
-3. parity against a pinned PeleC reference case when available;
-4. conservation and deterministic field-signature verification.
+3. parity against a pinned external implementation when available;
+4. conservation and element-balance verification;
+5. deterministic application-level output checks.
 
 Visual agreement is supplementary and never the sole acceptance criterion.
 
-## One-dimensional gates
+## Hydro gates
 
 The existing suite retains independent checks for:
 
@@ -23,83 +24,96 @@ The existing suite retains independent checks for:
 - smooth entropy-wave convergence;
 - Sod exact-solution error;
 - Shu-Osher oscillation retention and field signatures;
-- planar Sedov-type positivity, symmetry, conservation, and shock location.
+- planar Sedov-type positivity, symmetry, conservation, and shock location;
+- 2D directional flux rotation, CTU transverse corrections, dimensional reduction, and isentropic-vortex convergence.
 
-Higher-order options never replace the lower-order baselines in CI.
+Higher-order options never replace lower-order baselines in CI.
 
-## Two-dimensional algebraic gates
-
-Directional flux verification checks that:
-
-- rotating y-normal states to the x solver and rotating fluxes back is an exact involution;
-- analytical y-direction Euler fluxes are recovered;
-- equal-state Rusanov and PeleC-style y fluxes equal the physical flux.
-
-The transverse-correction unit test checks:
-
-- zero transverse divergence leaves a face state unchanged;
-- a physical correction is applied without scaling;
-- an excessive correction is reduced to a physical state with `0 < theta < 1`;
-- invalid negative correction scales are rejected.
-
-## Dimensional-reduction gate
-
-A periodic entropy wave that varies only in x is repeated across y. One 2D CTU step is compared with the existing 1D characteristic Godunov step using the same timestep. Agreement to roundoff demonstrates that:
-
-- y-direction flux divergence vanishes;
-- transverse corrections do not contaminate dimensionally reduced flow;
-- directional rotation preserves transverse momentum consistently.
-
-## Isentropic-vortex convergence gate
-
-The periodic isentropic vortex is run at `24 x 24`, `48 x 48`, and `96 x 96`. Both density refinement pairs must show at least order `1.8`. Current observed orders are approximately `2.278` and `2.276`.
-
-The test also requires all periodic conserved integrals to remain within `2e-10`; current errors are approximately `6e-14`.
-
-A differential run at `48 x 48` disables the transverse correction. The corrected solution must have density L1 error below 65% of the uncorrected error. Current values are:
-
-```text
-with transverse correction       5.3334803639e-4
-without transverse correction    1.1493796865e-3
-```
-
-This prevents the transverse path from existing only nominally while having no measurable multidimensional effect.
-
-## Application-level 2D gate
-
-`pelef2d` runs the 64² vortex case from a namelist and writes CSV. An independent Python checker recomputes the translated analytical solution and verifies:
-
-- density, pressure, and both velocity L1 errors;
-- positive density and pressure;
-- periodic mass, x-momentum, y-momentum, and energy conservation;
-- the expected number of grid rows and finite output values.
-
-## Reference-data policy
-
-Pinned numerical signatures may be updated only with an explained numerical-method change. Analytical thresholds and conservation limits must not be relaxed merely to accept a regression. Future direct PeleC comparisons must record upstream commit SHA, input, build options, variable definitions, and comparison time.
-
-## Multispecies parity gates
+## Multispecies gates
 
 The passive-species milestone is accepted only when MultiSpecSod reproduces the existing Sod hydrodynamics, each species mass is conserved, `sum_k rho*Y_k` follows `rho`, and 1D/2D smooth species waves converge at approximately second order. A y-uniform 2D multispecies update must reduce to the verified 1D update to roundoff.
 
 ## Thermodynamics gates
 
-NASA7 tests pin independently calculated mass-specific values for H2 at 300 K and O2 at 1500 K, exercising the low- and high-temperature coefficient intervals. Each state also verifies the identities
+NASA7 tests pin mass-specific values on both coefficient intervals and verify
 
 ```text
 cp - cv = R_k
 h - u   = R_k T.
 ```
 
-A fixed O2/N2 mass mixture pins molecular weight, gas constant, `cp`, `cv`, `gamma`, enthalpy, internal energy, pressure, density, and frozen sound speed. Internal energies generated at 300, 1200, and 2500 K must invert back to their source temperatures. Invalid composition and energy outside the common NASA7 range must fail.
+A fixed O2/N2 mass mixture pins molecular weight, gas constant, `cp`, `cv`, `gamma`, enthalpy, internal energy, pressure, density, and frozen sound speed. Internal energies generated at 300, 1200, and 2500 K must invert back to their source temperatures. Invalid composition and out-of-range energy must fail.
 
-The coefficient source and exact upstream file revision are recorded in the implementation PR. Direct Cantera runtime parity is deferred until a real reaction mechanism is present.
+Species molecular weights are aligned with the pinned Cantera 3.2 elemental data used by the runtime parity gate.
 
-## Zero-dimensional reactor gates
+## Elementary-kinetics unit gates
 
-The reactor layer has two independent gates:
+The general reaction layer verifies:
 
-1. an isothermal constant-rate case compared with `Y_A(t)=exp(-kt)`;
-2. an adiabatic exothermic case requiring mass-fraction closure, monotone reactant consumption, monotone heating, and fixed specific internal energy.
+- Arrhenius evaluation in SI units;
+- valid and invalid stoichiometric records;
+- reversible equilibrium constants from NASA7 Gibbs functions;
+- forward, reverse, and net progress rates;
+- production-rate assembly from net stoichiometry;
+- total mass and H/O atom conservation of instantaneous source terms;
+- conversion from molar production rates to `dY/dt`.
 
-The application-level Python checker reads only the emitted CSV and independently enforces the time interval, positivity, closure, monotonicity, final-temperature signature, reaction completion, and energy-error bound. The synthetic reaction is not used as evidence of detailed-chemistry parity.
+The generated H2/O2 module must regenerate byte-for-byte from `mechanisms/h2o2_elementary.json`.
+
+## H2/O2 structural reactor gate
+
+The application-level checker reads only the emitted CSV and independently enforces:
+
+- strictly increasing output times and the requested final time;
+- constant density;
+- finite, non-negative mass fractions;
+- mass-fraction closure;
+- fixed specific internal energy;
+- H and O atom inventories;
+- unchanged inert N2;
+- instantaneous mass and atom conservation of production rates;
+- non-trivial temperature and composition evolution.
+
+## Live Cantera parity
+
+CI installs Cantera 3.2.0 and loads `mechanisms/h2o2_elementary_cantera.yaml`, which describes the same seven species and four reversible reactions as the generated Fortran subset.
+
+Two comparisons are intentionally separated.
+
+### Trajectory comparison
+
+Cantera advances an `IdealGasReactor` from the PeleF initial state using tight solver tolerances. At each PeleF output time, temperature, pressure, and all seven species mass fractions are compared.
+
+### Exact-state production-rate comparison
+
+At each PeleF output row, Cantera is reset to the exact PeleF `(T,rho,Y)` state. Its `net_production_rates` are then compared with the generated Fortran kernel. This prevents integration-history differences from being misidentified as kinetic-rate errors.
+
+Current maximum absolute differences are:
+
+```text
+temperature              1.6066e-6 K
+pressure                 1.3566e-4 Pa
+species mass fraction    1.6967e-11
+production rate          3.5527e-12 kmol/(m^3 s)
+final temperature        3.6921e-9 K
+```
+
+The state relative tolerance is `2e-5`, with an absolute floor of `2e-11`. The rate relative tolerance is `2e-8`, with an absolute floor of `5e-12 kmol/(m^3 s)` to handle nearly cancelled net rates. Thresholds may be changed only with an explained units, data, or numerical-method change.
+
+## Reference-data policy
+
+Every external comparison must record:
+
+- upstream repository and commit SHA;
+- source mechanism files;
+- units and any conversion into SI;
+- species ordering and molecular weights;
+- initial state and reactor model;
+- solver tolerances;
+- comparison variables and times.
+
+Pinned numerical signatures may be updated only with an explained method or data change. Conservation limits must not be relaxed merely to accept a regression.
+
+## Scope of the evidence
+
+The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. It does not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, or chemistry-coupled CFD.

@@ -500,3 +500,82 @@ set_tests_properties(
   regression_zero_d_isomerization_compare
   PROPERTIES DEPENDS regression_zero_d_isomerization_run
 )
+
+add_executable(
+  test_elementary_kinetics
+  unit/test_elementary_kinetics.F90
+)
+target_link_libraries(test_elementary_kinetics PRIVATE pelef_core)
+add_test(NAME unit_elementary_kinetics COMMAND test_elementary_kinetics)
+
+add_executable(
+  test_constant_volume_h2o2
+  unit/test_constant_volume_h2o2.F90
+)
+target_link_libraries(test_constant_volume_h2o2 PRIVATE pelef_core)
+add_test(NAME unit_constant_volume_h2o2 COMMAND test_constant_volume_h2o2)
+set_tests_properties(unit_constant_volume_h2o2 PROPERTIES TIMEOUT 180)
+
+add_test(
+  NAME generated_h2o2_mechanism_clean
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_generated_mechanism.py"
+    --generator "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
+    --input "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_elementary.json"
+    --committed
+    "${PROJECT_SOURCE_DIR}/src/generated/h2o2_elementary_mechanism_mod.F90"
+)
+
+set(H2O2_ZERO_D_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zero_d_h2o2")
+file(MAKE_DIRECTORY "${H2O2_ZERO_D_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_zero_d_h2o2_run
+  COMMAND
+    $<TARGET_FILE:pelef0d_h2o2>
+    "${PROJECT_SOURCE_DIR}/cases/zero_d_h2o2/reactor.nml"
+)
+set_tests_properties(
+  regression_zero_d_h2o2_run
+  PROPERTIES
+    WORKING_DIRECTORY "${H2O2_ZERO_D_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_zero_d_h2o2_structure
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_zero_d_h2o2.py"
+    --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2.csv"
+)
+set_tests_properties(
+  regression_zero_d_h2o2_structure
+  PROPERTIES DEPENDS regression_zero_d_h2o2_run
+)
+
+if(PELEF_ENABLE_CANTERA_REFERENCE)
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c "import cantera"
+    RESULT_VARIABLE PELEF_CANTERA_IMPORT_RESULT
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(NOT PELEF_CANTERA_IMPORT_RESULT EQUAL 0)
+    message(FATAL_ERROR "PELEF_ENABLE_CANTERA_REFERENCE requires Python Cantera")
+  endif()
+  add_test(
+    NAME regression_zero_d_h2o2_cantera
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/compare_h2o2_cantera.py"
+      --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2.csv"
+      --mechanism
+      "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_elementary_cantera.yaml"
+  )
+  set_tests_properties(
+    regression_zero_d_h2o2_cantera
+    PROPERTIES DEPENDS regression_zero_d_h2o2_run TIMEOUT 180
+  )
+endif()

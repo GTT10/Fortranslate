@@ -19,6 +19,8 @@ module mixture_thermo_mod
   public :: mixture_density
   public :: mixture_sound_speed
   public :: temperature_from_internal_energy
+  public :: mass_fractions_from_mole_fractions
+  public :: mole_fractions_from_mass_fractions
 
 contains
 
@@ -282,5 +284,82 @@ contains
     if (present(iterations)) iterations = &
       temperature_inversion_max_iterations
   end subroutine temperature_from_internal_energy
+
+  subroutine mass_fractions_from_mole_fractions( &
+      species, mole_fractions, mass_fractions, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: mole_fractions(:)
+    real(dp), intent(out) :: mass_fractions(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: denominator
+    integer :: i
+
+    mass_fractions = 0.0_dp
+    ok = size(species) > 0 .and. &
+      size(mole_fractions) == size(species) .and. &
+      size(mass_fractions) == size(species)
+    if (.not. ok) return
+    if (any(.not. ieee_is_finite(mole_fractions))) then
+      ok = .false.
+      return
+    end if
+    if (any(mole_fractions < -mixture_composition_tolerance) .or. &
+        abs(sum(mole_fractions) - 1.0_dp) > &
+          mixture_composition_tolerance) then
+      ok = .false.
+      return
+    end if
+
+    denominator = 0.0_dp
+    do i = 1, size(species)
+      if (.not. valid_nasa7_species(species(i))) then
+        ok = .false.
+        return
+      end if
+      denominator = denominator + max(0.0_dp, mole_fractions(i)) * &
+        species(i)%molecular_weight
+    end do
+    if (denominator <= 0.0_dp) then
+      ok = .false.
+      return
+    end if
+    do i = 1, size(species)
+      mass_fractions(i) = max(0.0_dp, mole_fractions(i)) * &
+        species(i)%molecular_weight / denominator
+    end do
+    ok = valid_mixture_composition(species, mass_fractions)
+  end subroutine mass_fractions_from_mole_fractions
+
+  subroutine mole_fractions_from_mass_fractions( &
+      species, mass_fractions, mole_fractions, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: mass_fractions(:)
+    real(dp), intent(out) :: mole_fractions(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: denominator
+    integer :: i
+
+    mole_fractions = 0.0_dp
+    ok = size(mole_fractions) == size(species) .and. &
+      valid_mixture_composition(species, mass_fractions)
+    if (.not. ok) return
+    denominator = 0.0_dp
+    do i = 1, size(species)
+      denominator = denominator + max(0.0_dp, mass_fractions(i)) / &
+        species(i)%molecular_weight
+    end do
+    if (denominator <= 0.0_dp) then
+      ok = .false.
+      return
+    end if
+    do i = 1, size(species)
+      mole_fractions(i) = max(0.0_dp, mass_fractions(i)) / &
+        species(i)%molecular_weight / denominator
+    end do
+    ok = all(ieee_is_finite(mole_fractions)) .and. &
+      abs(sum(mole_fractions) - 1.0_dp) <= mixture_composition_tolerance
+  end subroutine mole_fractions_from_mass_fractions
 
 end module mixture_thermo_mod
