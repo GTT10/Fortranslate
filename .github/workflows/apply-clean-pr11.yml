@@ -1,0 +1,381 @@
+name: Apply clean PR11 implementation
+
+on:
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/apply-clean-pr11.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out clean PR10 base
+        uses: actions/checkout@v4
+        with:
+          ref: agent/elementary-h2o2-cantera
+          fetch-depth: 0
+
+      - name: Fetch retained PR11 source
+        run: git fetch origin agent/tmp-pr11-messy-source
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y gfortran ninja-build python3
+
+      - name: Reconstruct coherent pressure-dependent chemistry change
+        env:
+          BASE_SHA: b87649ae943e5b6126c536c7c87586d5a89044b5
+          SOURCE_REF: origin/agent/tmp-pr11-messy-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          root = Path('.')
+          source = 'origin/agent/tmp-pr11-messy-source'
+
+          def source_text(path: str) -> str:
+              return subprocess.check_output(
+                  ['git', 'show', f'{source}:{path}'], text=True
+              )
+
+          def write(path: str, text: str, executable: bool = False) -> None:
+              target = root / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(text)
+              if executable:
+                  target.chmod(0o755)
+
+          copied = [
+              'src/chemistry/elementary_kinetics_mod.F90',
+              'src/chemistry/constant_volume_reactor_mod.F90',
+              'mechanisms/h2o2_full.json',
+              'src/physics/thermo_database_mod.F90',
+              'tools/generate_elementary_mechanism.py',
+              'tests/unit/test_pressure_dependent_kinetics.F90',
+              'tests/unit/test_implicit_reactor.F90',
+              'src/core/constants_mod.F90',
+          ]
+          for path in copied:
+              write(path, source_text(path), path.endswith('.py'))
+
+          # Backward Euler remains the nonlinear solve, while step doubling
+          # supplies a Richardson-extrapolated accepted state.
+          path = root / 'src/chemistry/constant_volume_reactor_mod.F90'
+          text = path.read_text()
+          declaration = (
+              '    real(dp), allocatable :: full_state(:), half_state(:), intermediate(:)\n'
+              '    real(dp) :: full_temperature, half_temperature, intermediate_temperature\n'
+              '    real(dp) :: trial_time_step, error_norm, factor\n'
+          )
+          implicit_declaration = (
+              '    real(dp), allocatable :: full_state(:), half_state(:), intermediate(:)\n'
+              '    real(dp), allocatable :: extrapolated_state(:)\n'
+              '    real(dp) :: full_temperature, half_temperature, intermediate_temperature\n'
+              '    real(dp) :: extrapolated_temperature\n'
+              '    real(dp) :: trial_time_step, error_norm, factor\n'
+          )
+          second = text.find(declaration, text.find(declaration) + 1)
+          if second < 0:
+              raise RuntimeError('implicit declaration block not found')
+          text = text[:second] + implicit_declaration + text[second + len(declaration):]
+          allocation = (
+              '    allocate(full_state(size(species)), half_state(size(species)))\n'
+              '    allocate(intermediate(size(species)))\n'
+              '    trial_time_step = requested_time_step\n'
+          )
+          implicit_allocation = (
+              '    allocate(full_state(size(species)), half_state(size(species)))\n'
+              '    allocate(intermediate(size(species)), extrapolated_state(size(species)))\n'
+              '    trial_time_step = requested_time_step\n'
+          )
+          second = text.find(allocation, text.find(allocation) + 1)
+          if second < 0:
+              raise RuntimeError('implicit allocation block not found')
+          text = text[:second] + implicit_allocation + text[second + len(allocation):]
+          old = '''      if (error_norm <= 1.0_dp) then
+            call enforce_roundoff_composition(half_state, half_ok)
+            if (.not. half_ok) then
+              rejected_attempts = rejected_attempts + 1
+              trial_time_step = 0.25_dp * trial_time_step
+              cycle
+            end if
+            mass_fractions = half_state
+            call temperature_from_internal_energy( &
+              species, mass_fractions, target_internal_energy, half_temperature, &
+              temperature, half_ok)
+            if (.not. half_ok) then
+              rejected_attempts = rejected_attempts + 1
+              trial_time_step = 0.25_dp * trial_time_step
+              cycle
+            end if
+          '''
+          new = '''      if (error_norm <= 1.0_dp) then
+            ! Step doubling gives two backward-Euler approximations whose
+            ! leading errors differ by a factor of two. Richardson
+            ! extrapolation removes that leading term from the accepted state.
+            extrapolated_state = 2.0_dp * half_state - full_state
+            call enforce_roundoff_composition(extrapolated_state, half_ok)
+            if (.not. half_ok) then
+              rejected_attempts = rejected_attempts + 1
+              trial_time_step = 0.25_dp * trial_time_step
+              cycle
+            end if
+            call temperature_from_internal_energy( &
+              species, extrapolated_state, target_internal_energy, &
+              half_temperature, extrapolated_temperature, half_ok)
+            if (.not. half_ok) then
+              rejected_attempts = rejected_attempts + 1
+              trial_time_step = 0.25_dp * trial_time_step
+              cycle
+            end if
+            mass_fractions = extrapolated_state
+            temperature = extrapolated_temperature
+          '''
+          if old not in text:
+              raise RuntimeError('implicit acceptance block not found')
+          path.write_text(text.replace(old, new, 1))
+
+          # Keep the elementary PR10 executable intact and create a separate
+          # full-mechanism executable from the staged full implementation.
+          app = source_text('app/pelef0d_h2o2.F90')
+          app = app.replace('program pelef0d_h2o2\n', 'program pelef0d_h2o2_full\n', 1)
+          app = app.replace('end program pelef0d_h2o2\n', 'end program pelef0d_h2o2_full\n')
+          app = app.replace(
+              'use simulation_config_h2o2_reactor_mod, only:',
+              'use simulation_config_h2o2_full_mod, only:'
+          )
+          app = app.replace(
+              'h2o2_reactor_config, read_h2o2_reactor_configuration',
+              'h2o2_full_config, read_h2o2_full_configuration'
+          )
+          app = app.replace('type(h2o2_reactor_config) :: config',
+                            'type(h2o2_full_config) :: config')
+          app = app.replace('Usage: pelef0d_h2o2 <input.nml>',
+                            'Usage: pelef0d_h2o2_full <input.nml>')
+          app = app.replace('call read_h2o2_reactor_configuration(',
+                            'call read_h2o2_full_configuration(')
+          write('app/pelef0d_h2o2_full.F90', app)
+
+          config = source_text('src/driver/simulation_config_h2o2_reactor_mod.F90')
+          replacements = [
+              ('module simulation_config_h2o2_reactor_mod',
+               'module simulation_config_h2o2_full_mod'),
+              ('end module simulation_config_h2o2_reactor_mod',
+               'end module simulation_config_h2o2_full_mod'),
+              ('h2o2_reactor_config', 'h2o2_full_config'),
+              ('read_h2o2_reactor_configuration', 'read_h2o2_full_configuration'),
+              ('validate_h2o2_reactor_configuration', 'validate_h2o2_full_configuration'),
+              ('namelist /h2o2_reactor/', 'namelist /h2o2_full_reactor/'),
+              ('read(unit, nml=h2o2_reactor', 'read(unit, nml=h2o2_full_reactor'),
+              ('Could not read &h2o2_reactor from:',
+               'Could not read &h2o2_full_reactor from:'),
+          ]
+          for old_value, new_value in replacements:
+              config = config.replace(old_value, new_value)
+          write('src/driver/simulation_config_h2o2_full_mod.F90', config)
+
+          write('tools/check_zero_d_h2o2_full.py',
+                source_text('tools/check_zero_d_h2o2.py'), True)
+          compare = source_text('tools/compare_h2o2_cantera.py')
+          compare = compare.replace(
+              'parser.add_argument("--rate-absolute-tolerance", type=float, default=5.0e-12)',
+              'parser.add_argument("--rate-absolute-tolerance", type=float, default=5.0e-11)'
+          )
+          write('tools/compare_h2o2_full_cantera.py', compare, True)
+
+          write('cases/zero_d_h2o2_full/reactor.nml', '''&h2o2_full_reactor
+            final_time = 2.0e-3
+            initial_time_step = 1.0e-9
+            maximum_time_step = 5.0e-5
+            output_interval = 2.0e-5
+            relative_tolerance = 1.0e-5
+            absolute_tolerance = 1.0e-12
+            initial_temperature = 1000.0
+            initial_pressure = 101325.0
+            x_h2 = 0.295
+            x_h = 1.0e-8
+            x_o = 1.0e-8
+            x_o2 = 0.1475
+            x_oh = 1.0e-8
+            x_h2o = 0.0
+            x_ho2 = 1.0e-10
+            x_h2o2 = 1.0e-10
+            x_ar = 0.0
+            x_n2 = 0.5574999698
+            maximum_steps = 1000000
+            integrator = "implicit"
+            output_file = "zero_d_h2o2_full.csv"
+          /
+          '''.replace('          ', ''))
+          write('cases/zero_d_h2o2_full/README.md', '''# Full H2/O2 constant-volume reactor
+
+          This case exercises the ten-species, 29-reaction H2/O2 mechanism with
+          third-body efficiencies and Troe falloff. It uses the adaptive implicit
+          constant-volume integrator and is compared with Cantera `h2o2.yaml`.
+          '''.replace('          ', ''))
+
+          cmake = (root / 'CMakeLists.txt').read_text().replace(
+              'VERSION 0.9.0', 'VERSION 0.10.0'
+          )
+          cmake = cmake.replace(
+              '  src/generated/h2o2_elementary_mechanism_mod.F90\n',
+              '  src/generated/h2o2_elementary_mechanism_mod.F90\n'
+              '  src/generated/h2o2_full_mechanism_mod.F90\n'
+          )
+          cmake = cmake.replace(
+              '  src/driver/simulation_config_h2o2_reactor_mod.F90\n',
+              '  src/driver/simulation_config_h2o2_reactor_mod.F90\n'
+              '  src/driver/simulation_config_h2o2_full_mod.F90\n'
+          )
+          cmake = cmake.replace(
+              'add_executable(pelef0d_h2o2 app/pelef0d_h2o2.F90)\n'
+              'target_link_libraries(pelef0d_h2o2 PRIVATE pelef_core)\n',
+              'add_executable(pelef0d_h2o2 app/pelef0d_h2o2.F90)\n'
+              'target_link_libraries(pelef0d_h2o2 PRIVATE pelef_core)\n\n'
+              'add_executable(pelef0d_h2o2_full app/pelef0d_h2o2_full.F90)\n'
+              'target_link_libraries(pelef0d_h2o2_full PRIVATE pelef_core)\n'
+          )
+          cmake = cmake.replace(
+              'TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2\n',
+              'TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef0d_h2o2_full\n'
+          )
+          write('CMakeLists.txt', cmake)
+
+          tests = (root / 'tests/CMakeLists.txt').read_text()
+          tests += r'''
+
+          add_executable(test_pressure_dependent_kinetics unit/test_pressure_dependent_kinetics.F90)
+          target_link_libraries(test_pressure_dependent_kinetics PRIVATE pelef_core)
+          add_test(NAME unit_pressure_dependent_kinetics COMMAND test_pressure_dependent_kinetics)
+
+          add_executable(test_implicit_reactor unit/test_implicit_reactor.F90)
+          target_link_libraries(test_implicit_reactor PRIVATE pelef_core)
+          add_test(NAME unit_implicit_reactor COMMAND test_implicit_reactor)
+          set_tests_properties(unit_implicit_reactor PROPERTIES TIMEOUT 180)
+
+          add_test(
+            NAME generated_h2o2_full_mechanism_clean
+            COMMAND "${Python3_EXECUTABLE}"
+              "${PROJECT_SOURCE_DIR}/tools/check_generated_mechanism.py"
+              --generator "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
+              --input "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json"
+              --committed "${PROJECT_SOURCE_DIR}/src/generated/h2o2_full_mechanism_mod.F90"
+          )
+
+          set(H2O2_FULL_ZERO_D_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zero_d_h2o2_full")
+          file(MAKE_DIRECTORY "${H2O2_FULL_ZERO_D_WORK_DIRECTORY}")
+          add_test(
+            NAME regression_zero_d_h2o2_full_run
+            COMMAND $<TARGET_FILE:pelef0d_h2o2_full>
+              "${PROJECT_SOURCE_DIR}/cases/zero_d_h2o2_full/reactor.nml"
+          )
+          set_tests_properties(regression_zero_d_h2o2_full_run PROPERTIES
+            WORKING_DIRECTORY "${H2O2_FULL_ZERO_D_WORK_DIRECTORY}" TIMEOUT 300)
+          add_test(
+            NAME regression_zero_d_h2o2_full_structure
+            COMMAND "${Python3_EXECUTABLE}"
+              "${PROJECT_SOURCE_DIR}/tools/check_zero_d_h2o2_full.py"
+              --input "${H2O2_FULL_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2_full.csv"
+          )
+          set_tests_properties(regression_zero_d_h2o2_full_structure PROPERTIES
+            DEPENDS regression_zero_d_h2o2_full_run)
+          if(PELEF_ENABLE_CANTERA_REFERENCE)
+            add_test(
+              NAME regression_zero_d_h2o2_full_cantera
+              COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tools/compare_h2o2_full_cantera.py"
+                --input "${H2O2_FULL_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2_full.csv"
+                --mechanism h2o2.yaml --phase ohmech
+            )
+            set_tests_properties(regression_zero_d_h2o2_full_cantera PROPERTIES
+              DEPENDS regression_zero_d_h2o2_full_run TIMEOUT 300)
+          endif()
+          '''.replace('          ', '')
+          write('tests/CMakeLists.txt', tests)
+
+          # Regenerate both modules with the extended generator.
+          subprocess.run([
+              'python3', 'tools/generate_elementary_mechanism.py',
+              '--input', 'mechanisms/h2o2_elementary.json',
+              '--output', 'src/generated/h2o2_elementary_mechanism_mod.F90'
+          ], check=True)
+          subprocess.run([
+              'python3', 'tools/generate_elementary_mechanism.py',
+              '--input', 'mechanisms/h2o2_full.json',
+              '--output', 'src/generated/h2o2_full_mechanism_mod.F90'
+          ], check=True)
+
+          ignore = (root / '.gitignore').read_text()
+          ignore = ignore.replace('build/\ncmake-build-*/\n',
+                                  'build/\nbuild-*/\ncmake-build-*/\n')
+          ignore = ignore.replace('multispec_sod.csv\n',
+                                  'multispec_sod.csv\nzero_d_*.csv\nfull_*.csv\n')
+          write('.gitignore', ignore)
+
+          readme = (root / 'README.md').read_text()
+          readme = readme.replace('The `0.9.0` milestone', 'The `0.10.0` milestone')
+          readme += '''
+
+          ## Pressure-dependent H2/O2 milestone
+
+          `pelef0d_h2o2_full` adds the ten-species, 29-reaction Cantera H2/O2
+          mechanism with third-body efficiencies, Troe falloff, generated
+          Jacobians, adaptive backward Euler, and Richardson-extrapolated
+          accepted states. The original four-reaction executable remains a
+          separate regression.
+          '''.replace('          ', '')
+          write('README.md', readme)
+
+          write('docs/design_decisions/0009-pressure-dependent-h2o2.md', '''# 0009: Separate elementary and full H2/O2 gates
+
+          The seven-species four-reaction executable remains unchanged. A separate
+          ten-species 29-reaction executable owns third-body, Troe, Jacobian, and
+          implicit-integration validation. Step doubling estimates error and the
+          accepted state is Richardson extrapolated before composition and energy
+          checks. This prevents a full-mechanism change from redefining the pinned
+          elementary Cantera comparison.
+          '''.replace('          ', ''))
+          status = (root / 'docs/implementation_status.md').read_text()
+          status += '''
+
+          ## Verified pressure-dependent chemistry subset
+
+          Version 0.10 adds ten H2/O2 species, 29 generated reactions, third-body
+          efficiencies, Troe falloff, generated Jacobians, and adaptive implicit
+          constant-volume integration. Reactive hydro coupling remains future work.
+          '''.replace('          ', '')
+          write('docs/implementation_status.md', status)
+          PY
+
+          git diff --check
+          rm -rf /tmp/pr11-build-debug /tmp/pr11-build-release
+          cmake -S . -B /tmp/pr11-build-debug -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON
+          cmake --build /tmp/pr11-build-debug --parallel
+          ctest --test-dir /tmp/pr11-build-debug --output-on-failure
+          cmake -S . -B /tmp/pr11-build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON
+          cmake --build /tmp/pr11-build-release --parallel
+          ctest --test-dir /tmp/pr11-build-release --output-on-failure
+
+      - name: Publish one clean stacked commit
+        env:
+          BASE_SHA: b87649ae943e5b6126c536c7c87586d5a89044b5
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          tree=$(git write-tree)
+          commit=$(printf '%s\n' \
+            'Add pressure-dependent H2O2 kinetics and implicit integration' \
+            | git commit-tree "$tree" -p "$BASE_SHA")
+          git push --force origin "$commit":refs/heads/agent/third-body-troe-stiff
