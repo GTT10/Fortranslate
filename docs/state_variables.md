@@ -1,6 +1,6 @@
 # State variables
 
-## Conserved state
+## Conserved hydro state
 
 Both the one-dimensional and two-dimensional solvers advance five Euler conserved variables using Fortran-native one-based indices:
 
@@ -12,29 +12,7 @@ Both the one-dimensional and two-dimensional solvers advance five Euler conserve
 | `IMZ = 4` | `rho*w` | z-momentum density |
 | `IET = 5` | `rho*E` | total-energy density |
 
-The transverse momentum components were retained from the first one-dimensional milestone and are now used directly by the 2D directional flux and CTU operators.
-
-## Array layouts
-
-The verified 1D drivers use
-
-```fortran
-state(variable, 0:nx+1)
-```
-
-with one conserved ghost cell on each side. Wider reconstruction stencils are built in temporary primitive arrays.
-
-The periodic 2D driver uses
-
-```fortran
-state(variable, 1:nx, 1:ny)
-```
-
-for interior cells only. Periodic neighbors are obtained with wrapped indices, and one shared flux is stored for each right and upper cell face.
-
-## Reserved base-state positions
-
-`IEI = 6` and `ITEM = 7` reserve planned base-state positions for internal-energy density and temperature. They are derived quantities and are not independently advanced in the constant-`gamma` solver.
+The verified 1D drivers use `state(variable,0:nx+1)`. The periodic 2D driver uses `state(variable,1:nx,1:ny)` and wrapped neighbor indices.
 
 ## Primitive state
 
@@ -48,7 +26,7 @@ for interior cells only. Periodic neighbors are obtained with wrapped indices, a
 
 For a y-normal Riemann problem, `QU` and `QV` are exchanged before calling the x-direction solver and exchanged again on return.
 
-## Runtime multispecies layout
+## Runtime passive-multispecies layout
 
 The passive multispecies path uses
 
@@ -59,19 +37,42 @@ The passive multispecies path uses
 8:7+nspecies     rho*Y_1 ... rho*Y_N
 ```
 
-`multispecies_nvar(nspecies) = 7 + nspecies`, and `species_component(k) = 7 + k`. Positions 6 and 7 are synchronized from the conserved hydro prefix after every update and are never evolved by an independent flux. The five-variable hydro layout remains unchanged for existing single-species solvers.
-
-Every accepted multispecies state must satisfy non-negative species densities and
+Positions 6 and 7 are synchronized from the conserved hydro prefix and are not independently evolved. Every accepted state must satisfy non-negative species densities and
 
 ```text
 sum_k rho*Y_k = rho
 ```
 
-within a scaled tolerance. Invalid closure is rejected rather than silently renormalizing the cell state. Face mass fractions are bounded and normalized before constructing species fluxes.
+within a scaled tolerance.
 
+## Thermodynamics and chemistry composition state
 
-## Thermodynamics-only composition state
+NASA7 and reactor modules use an explicit mass-fraction vector
 
-The NASA7 and zero-dimensional reactor modules do not reuse the hydro-derived temperature proxy. They take an explicit mass-fraction vector `Y(:)` and temperature, or recover temperature from a target specific internal energy. Species molecular weights and polynomial records live outside the conserved flow array.
+```fortran
+Y(nspecies)
+```
 
-This separation is intentional: the `0.8.0` thermodynamics evidence does not imply that the current constant-`gamma` hydro fluxes are composition dependent. A later general-EOS hydro milestone must replace the derived pressure, sound-speed, and temperature path explicitly and add new conservation/parity gates.
+with a separate scalar temperature and density. The H2/O2 generated subset fixes the ordering
+
+```text
+1 H2
+2 H
+3 O
+4 O2
+5 OH
+6 H2O
+7 N2
+```
+
+and associates each entry with a NASA7 record and molecular weight. Concentrations and production rates use
+
+```text
+C_k        kmol/m^3
+wdot_k     kmol/(m^3 s)
+dY_k/dt    1/s
+```
+
+The reaction record stores two runtime stoichiometric vectors of length `nspecies` plus an Arrhenius triplet and reversible flag. Reactor density is fixed by the initial `(T,p,Y)` state; temperature is derived from the fixed specific internal energy rather than advanced as an independent ODE component.
+
+This separation is intentional: `0.9.0` chemistry evidence does not imply that current hydro pressure, sound speed, or temperature are composition dependent.

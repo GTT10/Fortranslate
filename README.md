@@ -6,12 +6,12 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.8.0` milestone contains four serial executables.
+The `0.9.0` milestone contains five serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
 - constant-`gamma` ideal-gas EOS;
-- `pcm`, componentwise primitive `plm`, and time-traced characteristic `pelec_plm` reconstruction;
+- PCM, componentwise primitive PLM, and time-traced characteristic PLM;
 - order-2 or PeleC-style five-point order-4 limited slopes;
 - optional pressure/velocity shock flattening;
 - Rusanov or qualified single-species PeleC-style Riemann fluxes;
@@ -20,7 +20,7 @@ The `0.8.0` milestone contains four serial executables.
 
 ### `pelef2d`: two-dimensional Euler scaffold
 
-- uniform Cartesian mesh with periodic boundaries;
+- uniform periodic Cartesian mesh;
 - x/y directional Riemann fluxes through explicit momentum rotation;
 - limited primitive slopes and normal characteristic tracing;
 - CTU-style transverse half-step corrections with positivity scaling;
@@ -35,20 +35,28 @@ The `0.8.0` milestone contains four serial executables.
 - one-dimensional characteristic tracing and two-dimensional CTU transport;
 - MultiSpecSod and periodic species-wave regressions.
 
-This hydro path remains passive and constant-`gamma`: composition does not yet change the flux-level pressure, heat capacity, sound speed, or temperature.
+This hydro path remains passive and constant-`gamma`: composition does not yet alter flux-level pressure, heat capacity, sound speed, or temperature.
 
-### `pelef0d`: thermodynamics and reactor verification
+### `pelef0d`: thermodynamics and toy-reactor verification
 
 - species molecular weights and NASA7 thermodynamic polynomials;
 - mass-based mixture molecular weight, gas constant, `cp`, `cv`, `gamma`, enthalpy, internal energy, and frozen sound speed;
 - ideal-gas pressure/density conversion;
 - bracketed Newton/bisection inversion from specific internal energy to temperature;
-- a constant-volume two-species isomerization reactor;
+- a synthetic constant-volume two-species isomerization reactor;
 - isothermal analytical and adiabatic energy-conservation gates.
 
-The built-in H2, O2, H2O, and N2 coefficients are a small verified subset of the Cantera GRI-Mech/air data. The reactor mechanism is deliberately synthetic and is not a detailed combustion model.
+### `pelef0d_h2o2`: generated elementary H2/O2 kinetics
 
-AMR, embedded boundaries, diffusion, detailed chemistry, mechanism parsing, MPI, accelerator execution, LES, and spray remain future work.
+- runtime elementary-reaction records with arbitrary reactant/product stoichiometry;
+- reversible Arrhenius rates and NASA7 equilibrium constants;
+- molar concentrations, progress rates, production rates, and mass-fraction source terms;
+- JSON-to-Fortran mechanism generation with a committed-source cleanliness gate;
+- an adaptive explicit RK4 constant-volume, adiabatic reactor;
+- a seven-species, four-reaction H2/O2/N2 subset selected from Cantera `h2o2.yaml`;
+- live trajectory and exact-state production-rate comparison against Cantera 3.2.
+
+The H2/O2 case is a deliberately limited elementary subset. Third-body, falloff, Troe, stiff integration, a complete combustion mechanism, and chemistry-flow coupling are not implemented yet.
 
 ## Build and test
 
@@ -60,7 +68,18 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-With Ninja installed:
+To enable the live Cantera reference gate:
+
+```bash
+python3 -m pip install cantera==3.2.0
+cmake -S . -B build-cantera \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+cmake --build build-cantera --parallel
+ctest --test-dir build-cantera --output-on-failure
+```
+
+With Ninja installed, the provided presets can be used for the ordinary suite:
 
 ```bash
 cmake --preset debug
@@ -91,12 +110,27 @@ Passive two-species Sod problem:
 python3 tools/check_multispec_sod.py --input multispec_sod.csv
 ```
 
-Adiabatic zero-dimensional isomerization reactor:
+Synthetic adiabatic isomerization reactor:
 
 ```bash
 ./build/pelef0d cases/zero_d_isomerization/reactor.nml
 python3 tools/check_zero_d_isomerization.py \
   --input zero_d_isomerization.csv
+```
+
+Elementary H2/O2 constant-volume reactor:
+
+```bash
+./build/pelef0d_h2o2 cases/zero_d_h2o2/reactor.nml
+python3 tools/check_zero_d_h2o2.py --input zero_d_h2o2.csv
+```
+
+With Cantera installed, the same CSV can be compared directly:
+
+```bash
+python3 tools/compare_h2o2_cantera.py \
+  --input zero_d_h2o2.csv \
+  --mechanism mechanisms/h2o2_elementary_cantera.yaml
 ```
 
 ## Project records
