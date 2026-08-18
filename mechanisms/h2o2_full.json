@@ -1,0 +1,581 @@
+{
+  "description": "Full 29-reaction H2/O2 subset normalized from Cantera h2o2.yaml at commit 11a2381011cb6d42e61cc4c195e0f920864bf8d3",
+  "module_name": "h2o2_full_mechanism_mod",
+  "loader_name": "load_h2o2_full_mechanism",
+  "kernel_name": "h2o2_full_production_rates",
+  "jacobian_name": "h2o2_full_mass_fraction_jacobian",
+  "symbol_prefix": "h2o2_full",
+  "species": [
+    "H2",
+    "H",
+    "O",
+    "O2",
+    "OH",
+    "H2O",
+    "HO2",
+    "H2O2",
+    "AR",
+    "N2"
+  ],
+  "reactions": [
+    {
+      "equation": "2 O + M <=> O2 + M",
+      "type": "three-body",
+      "reactants": {
+        "O": 2
+      },
+      "products": {
+        "O2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 120000000000.0,
+        "b": -1.0,
+        "Ea": 0.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "H2": 2.4,
+        "H2O": 15.4,
+        "AR": 0.83
+      }
+    },
+    {
+      "equation": "O + H + M <=> OH + M",
+      "type": "three-body",
+      "reactants": {
+        "O": 1,
+        "H": 1
+      },
+      "products": {
+        "OH": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 500000000000.0,
+        "b": -1.0,
+        "Ea": 0.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "H2": 2.0,
+        "H2O": 6.0,
+        "AR": 0.7
+      }
+    },
+    {
+      "equation": "O + H2 <=> H + OH",
+      "type": "elementary",
+      "reactants": {
+        "O": 1,
+        "H2": 1
+      },
+      "products": {
+        "H": 1,
+        "OH": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 38.7,
+        "b": 2.7,
+        "Ea": 26191840.0
+      }
+    },
+    {
+      "equation": "O + HO2 <=> OH + O2",
+      "type": "elementary",
+      "reactants": {
+        "O": 1,
+        "HO2": 1
+      },
+      "products": {
+        "OH": 1,
+        "O2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 20000000000.0,
+        "b": 0,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "O + H2O2 <=> OH + HO2",
+      "type": "elementary",
+      "reactants": {
+        "O": 1,
+        "H2O2": 1
+      },
+      "products": {
+        "OH": 1,
+        "HO2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 9630.0,
+        "b": 2.0,
+        "Ea": 16736000.0
+      }
+    },
+    {
+      "equation": "H + O2 + M <=> HO2 + M",
+      "type": "three-body",
+      "reactants": {
+        "H": 1,
+        "O2": 1
+      },
+      "products": {
+        "HO2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 2800000000000.0,
+        "b": -0.86,
+        "Ea": 0.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "O2": 0.0,
+        "H2O": 0.0,
+        "N2": 0.0,
+        "AR": 0.0
+      }
+    },
+    {
+      "equation": "H + 2 O2 <=> HO2 + O2",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "O2": 2
+      },
+      "products": {
+        "HO2": 1,
+        "O2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 20800000000000.0,
+        "b": -1.24,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "H + O2 + H2O <=> HO2 + H2O",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "O2": 1,
+        "H2O": 1
+      },
+      "products": {
+        "HO2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 11260000000000.0,
+        "b": -0.76,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "H + O2 + N2 <=> HO2 + N2",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "O2": 1,
+        "N2": 1
+      },
+      "products": {
+        "HO2": 1,
+        "N2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 26000000000000.0,
+        "b": -1.24,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "H + O2 + AR <=> HO2 + AR",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "O2": 1,
+        "AR": 1
+      },
+      "products": {
+        "HO2": 1,
+        "AR": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 700000000000.0,
+        "b": -0.8,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "H + O2 <=> O + OH",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "O2": 1
+      },
+      "products": {
+        "O": 1,
+        "OH": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 26500000000000.0,
+        "b": -0.6707,
+        "Ea": 71299544.0
+      }
+    },
+    {
+      "equation": "2 H + M <=> H2 + M",
+      "type": "three-body",
+      "reactants": {
+        "H": 2
+      },
+      "products": {
+        "H2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 1000000000000.0,
+        "b": -1.0,
+        "Ea": 0.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "H2": 0.0,
+        "H2O": 0.0,
+        "AR": 0.63
+      }
+    },
+    {
+      "equation": "2 H + H2 <=> 2 H2",
+      "type": "elementary",
+      "reactants": {
+        "H": 2,
+        "H2": 1
+      },
+      "products": {
+        "H2": 2
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 90000000000.0,
+        "b": -0.6,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "2 H + H2O <=> H2 + H2O",
+      "type": "elementary",
+      "reactants": {
+        "H": 2,
+        "H2O": 1
+      },
+      "products": {
+        "H2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 60000000000000.0,
+        "b": -1.25,
+        "Ea": 0.0
+      }
+    },
+    {
+      "equation": "H + OH + M <=> H2O + M",
+      "type": "three-body",
+      "reactants": {
+        "H": 1,
+        "OH": 1
+      },
+      "products": {
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 2.2e+16,
+        "b": -2.0,
+        "Ea": 0.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "H2": 0.73,
+        "H2O": 3.65,
+        "AR": 0.38
+      }
+    },
+    {
+      "equation": "H + HO2 <=> O + H2O",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "HO2": 1
+      },
+      "products": {
+        "O": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 3970000000.0,
+        "b": 0,
+        "Ea": 2807464.0
+      }
+    },
+    {
+      "equation": "H + HO2 <=> O2 + H2",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "HO2": 1
+      },
+      "products": {
+        "O2": 1,
+        "H2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 44800000000.0,
+        "b": 0,
+        "Ea": 4468512.0
+      }
+    },
+    {
+      "equation": "H + HO2 <=> 2 OH",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "HO2": 1
+      },
+      "products": {
+        "OH": 2
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 84000000000.0,
+        "b": 0,
+        "Ea": 2656840.0
+      }
+    },
+    {
+      "equation": "H + H2O2 <=> HO2 + H2",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "H2O2": 1
+      },
+      "products": {
+        "HO2": 1,
+        "H2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 12100.0,
+        "b": 2.0,
+        "Ea": 21756800.0
+      }
+    },
+    {
+      "equation": "H + H2O2 <=> OH + H2O",
+      "type": "elementary",
+      "reactants": {
+        "H": 1,
+        "H2O2": 1
+      },
+      "products": {
+        "OH": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 10000000000.0,
+        "b": 0,
+        "Ea": 15062400.0
+      }
+    },
+    {
+      "equation": "OH + H2 <=> H + H2O",
+      "type": "elementary",
+      "reactants": {
+        "OH": 1,
+        "H2": 1
+      },
+      "products": {
+        "H": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 216000.0,
+        "b": 1.51,
+        "Ea": 14351120.0
+      }
+    },
+    {
+      "equation": "2 OH (+M) <=> H2O2 (+M)",
+      "type": "falloff",
+      "reactants": {
+        "OH": 2
+      },
+      "products": {
+        "H2O2": 1
+      },
+      "reversible": true,
+      "low_rate": {
+        "A": 2300000000000.0,
+        "b": -0.9,
+        "Ea": -7112800.0
+      },
+      "high_rate": {
+        "A": 74000000000.0,
+        "b": -0.37,
+        "Ea": 0.0
+      },
+      "troe": {
+        "A": 0.7346,
+        "T3": 94.0,
+        "T1": 1756.0,
+        "T2": 5182.0
+      },
+      "default_efficiency": 1.0,
+      "efficiencies": {
+        "H2": 2.0,
+        "H2O": 6.0,
+        "AR": 0.7
+      }
+    },
+    {
+      "equation": "2 OH <=> O + H2O",
+      "type": "elementary",
+      "reactants": {
+        "OH": 2
+      },
+      "products": {
+        "O": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 35.7,
+        "b": 2.4,
+        "Ea": -8828240.0
+      }
+    },
+    {
+      "equation": "OH + HO2 <=> O2 + H2O [1]",
+      "type": "elementary",
+      "reactants": {
+        "OH": 1,
+        "HO2": 1
+      },
+      "products": {
+        "O2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 14500000000.0,
+        "b": 0,
+        "Ea": -2092000.0
+      }
+    },
+    {
+      "equation": "OH + H2O2 <=> HO2 + H2O [1]",
+      "type": "elementary",
+      "reactants": {
+        "OH": 1,
+        "H2O2": 1
+      },
+      "products": {
+        "HO2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 2000000000.0,
+        "b": 0,
+        "Ea": 1786568.0
+      }
+    },
+    {
+      "equation": "OH + H2O2 <=> HO2 + H2O [2]",
+      "type": "elementary",
+      "reactants": {
+        "OH": 1,
+        "H2O2": 1
+      },
+      "products": {
+        "HO2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 1700000000000000.0,
+        "b": 0,
+        "Ea": 123051440.0
+      }
+    },
+    {
+      "equation": "2 HO2 <=> O2 + H2O2 [1]",
+      "type": "elementary",
+      "reactants": {
+        "HO2": 2
+      },
+      "products": {
+        "O2": 1,
+        "H2O2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 130000000.0,
+        "b": 0,
+        "Ea": -6819920.0
+      }
+    },
+    {
+      "equation": "2 HO2 <=> O2 + H2O2 [2]",
+      "type": "elementary",
+      "reactants": {
+        "HO2": 2
+      },
+      "products": {
+        "O2": 1,
+        "H2O2": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 420000000000.0,
+        "b": 0,
+        "Ea": 50208000.0
+      }
+    },
+    {
+      "equation": "OH + HO2 <=> O2 + H2O [2]",
+      "type": "elementary",
+      "reactants": {
+        "OH": 1,
+        "HO2": 1
+      },
+      "products": {
+        "O2": 1,
+        "H2O": 1
+      },
+      "reversible": true,
+      "arrhenius": {
+        "A": 5000000000000.0,
+        "b": 0,
+        "Ea": 72508720.0
+      }
+    }
+  ]
+}

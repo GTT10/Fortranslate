@@ -11,6 +11,7 @@ module thermo_database_mod
 
   public :: load_gri30_thermo_subset
   public :: load_h2o2_elementary_thermo
+  public :: load_h2o2_full_thermo
   public :: load_toy_isomerization_thermo
 
 contains
@@ -43,6 +44,25 @@ contains
     ok = all_valid(species)
   end subroutine load_h2o2_elementary_thermo
 
+  subroutine load_h2o2_full_thermo(species, ok)
+    type(nasa7_species), allocatable, intent(out) :: species(:)
+    logical, intent(out) :: ok
+
+    ! Order matches mechanisms/h2o2_full.json and Cantera h2o2.yaml.
+    allocate(species(10))
+    call set_h2(species(1))
+    call set_h(species(2))
+    call set_o(species(3))
+    call set_o2(species(4))
+    call set_oh(species(5))
+    call set_h2o(species(6))
+    call set_ho2(species(7))
+    call set_h2o2(species(8))
+    call set_ar(species(9))
+    call set_n2(species(10))
+    ok = all_valid(species)
+  end subroutine load_h2o2_full_thermo
+
   subroutine load_toy_isomerization_thermo(species, ok)
     type(nasa7_species), allocatable, intent(out) :: species(:)
     logical, intent(out) :: ok
@@ -72,7 +92,10 @@ contains
 
     valid = size(species) > 0
     do i = 1, size(species)
-      valid = valid .and. valid_nasa7_species(species(i))
+      if (.not. valid_nasa7_species(species(i))) then
+        valid = .false.
+        return
+      end if
     end do
   end function all_valid
 
@@ -183,6 +206,55 @@ contains
       -9.70419870e-11_dp, 1.68200992e-14_dp, -3.00042971e4_dp, &
       4.96677010_dp ]
   end subroutine set_h2o
+
+  subroutine set_ho2(species)
+    type(nasa7_species), intent(out) :: species
+
+    species%name = "HO2"
+    species%molecular_weight = 33.006_dp
+    species%temperature_min = 200.0_dp
+    species%temperature_mid = 1000.0_dp
+    species%temperature_max = 3500.0_dp
+    species%low_coefficients = [ &
+      4.30179801_dp, -4.74912051e-3_dp, 2.11582891e-5_dp, &
+      -2.42763894e-8_dp, 9.29225124e-12_dp, 294.80804_dp, &
+      3.71666245_dp ]
+    species%high_coefficients = [ &
+      4.01721090_dp, 2.23982013e-3_dp, -6.33658150e-7_dp, &
+      1.14246370e-10_dp, -1.07908535e-14_dp, 111.856713_dp, &
+      3.78510215_dp ]
+  end subroutine set_ho2
+
+  subroutine set_h2o2(species)
+    type(nasa7_species), intent(out) :: species
+
+    species%name = "H2O2"
+    species%molecular_weight = 34.014_dp
+    species%temperature_min = 200.0_dp
+    species%temperature_mid = 1000.0_dp
+    species%temperature_max = 3500.0_dp
+    species%low_coefficients = [ &
+      4.27611269_dp, -5.42822417e-4_dp, 1.67335701e-5_dp, &
+      -2.15770813e-8_dp, 8.62454363e-12_dp, -1.77025821e4_dp, &
+      3.43505074_dp ]
+    species%high_coefficients = [ &
+      4.16500285_dp, 4.90831694e-3_dp, -1.90139225e-6_dp, &
+      3.71185986e-10_dp, -2.87908305e-14_dp, -1.78617877e4_dp, &
+      2.91615662_dp ]
+  end subroutine set_h2o2
+
+  subroutine set_ar(species)
+    type(nasa7_species), intent(out) :: species
+
+    species%name = "AR"
+    species%molecular_weight = 39.950_dp
+    species%temperature_min = 300.0_dp
+    species%temperature_mid = 1000.0_dp
+    species%temperature_max = 5000.0_dp
+    species%low_coefficients = [ &
+      2.5_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, -745.375_dp, 4.366_dp ]
+    species%high_coefficients = species%low_coefficients
+  end subroutine set_ar
 
   subroutine set_n2(species)
     type(nasa7_species), intent(out) :: species

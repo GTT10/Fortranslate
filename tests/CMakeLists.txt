@@ -548,7 +548,7 @@ add_test(
   COMMAND
     "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tools/check_zero_d_h2o2.py"
-    --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2.csv"
+    --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2_full.csv"
 )
 set_tests_properties(
   regression_zero_d_h2o2_structure
@@ -570,12 +570,41 @@ if(PELEF_ENABLE_CANTERA_REFERENCE)
     COMMAND
       "${Python3_EXECUTABLE}"
       "${PROJECT_SOURCE_DIR}/tools/compare_h2o2_cantera.py"
-      --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2.csv"
-      --mechanism
-      "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_elementary_cantera.yaml"
+      --input "${H2O2_ZERO_D_WORK_DIRECTORY}/zero_d_h2o2_full.csv"
+      --mechanism h2o2.yaml
+      --phase ohmech
   )
   set_tests_properties(
     regression_zero_d_h2o2_cantera
     PROPERTIES DEPENDS regression_zero_d_h2o2_run TIMEOUT 180
   )
 endif()
+
+add_executable(
+  test_pressure_dependent_kinetics
+  unit/test_pressure_dependent_kinetics.F90
+)
+target_link_libraries(test_pressure_dependent_kinetics PRIVATE pelef_core)
+add_test(
+  NAME unit_pressure_dependent_kinetics
+  COMMAND test_pressure_dependent_kinetics
+)
+
+add_executable(
+  test_implicit_reactor
+  unit/test_implicit_reactor.F90
+)
+target_link_libraries(test_implicit_reactor PRIVATE pelef_core)
+add_test(NAME unit_implicit_reactor COMMAND test_implicit_reactor)
+set_tests_properties(unit_implicit_reactor PROPERTIES TIMEOUT 180)
+
+add_test(
+  NAME generated_h2o2_full_mechanism_clean
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_generated_mechanism.py"
+    --generator "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
+    --input "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json"
+    --committed
+    "${PROJECT_SOURCE_DIR}/src/generated/h2o2_full_mechanism_mod.F90"
+)

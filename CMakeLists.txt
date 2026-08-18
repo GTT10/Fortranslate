@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.9.0
+  VERSION 0.10.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -32,6 +32,7 @@ add_library(
   src/physics/mixture_thermo_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
   src/generated/h2o2_elementary_mechanism_mod.F90
+  src/generated/h2o2_full_mechanism_mod.F90
   src/chemistry/constant_volume_reactor_mod.F90
   src/chemistry/isomerization_reactor_mod.F90
   src/hydro/state_conversion_mod.F90

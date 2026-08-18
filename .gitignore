@@ -35,3 +35,5 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+zero_d_*.csv

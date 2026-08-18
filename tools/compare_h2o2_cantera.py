@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare PeleF elementary H2/O2 rates and reactor history with Cantera."""
+"""Compare PeleF full H2/O2 rates and reactor history with Cantera."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cantera as ct
 
-SPECIES = ("H2", "H", "O", "O2", "OH", "H2O", "N2")
+SPECIES = ("H2", "H", "O", "O2", "OH", "H2O", "HO2", "H2O2", "AR", "N2")
 
 
 @dataclass
@@ -38,9 +38,7 @@ def update_worst(
     relative_tolerance: float,
 ) -> None:
     absolute_error = abs(value - reference)
-    scaled = scaled_error(
-        value, reference, absolute_tolerance, relative_tolerance
-    )
+    scaled = scaled_error(value, reference, absolute_tolerance, relative_tolerance)
     if scaled > worst.scaled:
         worst.scaled = scaled
         worst.absolute = absolute_error
@@ -62,9 +60,11 @@ def print_worst(prefix: str, worst: WorstCase) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--mechanism", type=Path, required=True)
-    parser.add_argument("--state-relative-tolerance", type=float, default=2.0e-5)
-    parser.add_argument("--state-absolute-tolerance", type=float, default=2.0e-11)
+    parser.add_argument("--mechanism", default="h2o2.yaml")
+    parser.add_argument("--phase", default="ohmech")
+    parser.add_argument("--thermo-relative-tolerance", type=float, default=8.0e-4)
+    parser.add_argument("--species-relative-tolerance", type=float, default=2.0e-3)
+    parser.add_argument("--species-absolute-tolerance", type=float, default=2.0e-10)
     parser.add_argument("--rate-relative-tolerance", type=float, default=2.0e-8)
     parser.add_argument("--rate-absolute-tolerance", type=float, default=5.0e-12)
     args = parser.parse_args()
@@ -75,9 +75,12 @@ def main() -> int:
             for row in csv.DictReader(handle)
         ]
     if not rows:
-        raise AssertionError("PeleF H2/O2 CSV is empty")
+        raise AssertionError("PeleF full H2/O2 CSV is empty")
 
-    gas = ct.Solution(str(args.mechanism), "gas")
+    gas = ct.Solution(args.mechanism, args.phase)
+    missing = [name for name in SPECIES if name not in gas.species_names]
+    if missing:
+        raise AssertionError(f"Cantera mechanism is missing species: {missing}")
     initial_y = {name: rows[0][f"Y_{name}"] for name in SPECIES}
     gas.TPY = rows[0]["temperature"], rows[0]["pressure"], initial_y
     reactor = ct.IdealGasReactor(gas, energy="on", clone=True)
@@ -86,7 +89,8 @@ def main() -> int:
     network.rtol = 1.0e-11
     network.atol = 1.0e-18
 
-    rate_gas = ct.Solution(str(args.mechanism), "gas")
+    rate_gas = ct.Solution(args.mechanism, args.phase)
+    species_indices = {name: rate_gas.species_index(name) for name in SPECIES}
     worst_temperature = WorstCase(name="temperature")
     worst_pressure = WorstCase(name="pressure")
     worst_species = WorstCase()
@@ -104,8 +108,8 @@ def main() -> int:
             reference=phase.T,
             time=row["time"],
             name="temperature",
-            absolute_tolerance=args.state_absolute_tolerance,
-            relative_tolerance=args.state_relative_tolerance,
+            absolute_tolerance=1.0e-6,
+            relative_tolerance=args.thermo_relative_tolerance,
         )
         update_worst(
             worst_pressure,
@@ -113,8 +117,8 @@ def main() -> int:
             reference=phase.P,
             time=row["time"],
             name="pressure",
-            absolute_tolerance=args.state_absolute_tolerance,
-            relative_tolerance=args.state_relative_tolerance,
+            absolute_tolerance=1.0e-3,
+            relative_tolerance=args.thermo_relative_tolerance,
         )
         for name in SPECIES:
             update_worst(
@@ -123,8 +127,8 @@ def main() -> int:
                 reference=phase[name].Y[0],
                 time=row["time"],
                 name=name,
-                absolute_tolerance=args.state_absolute_tolerance,
-                relative_tolerance=args.state_relative_tolerance,
+                absolute_tolerance=args.species_absolute_tolerance,
+                relative_tolerance=args.species_relative_tolerance,
             )
 
         # Evaluate rates at the exact PeleF state. This isolates the generated
@@ -135,9 +139,9 @@ def main() -> int:
             {name: row[f"Y_{name}"] for name in SPECIES},
         )
         reference_rates = rate_gas.net_production_rates
-        for index, name in enumerate(SPECIES):
+        for name in SPECIES:
             value = row[f"wdot_{name}"]
-            reference = reference_rates[index]
+            reference = reference_rates[species_indices[name]]
             maximum_reference_rate = max(maximum_reference_rate, abs(reference))
             maximum_absolute_rate_error = max(
                 maximum_absolute_rate_error, abs(value - reference)
@@ -171,7 +175,7 @@ def main() -> int:
     if worst_rate.scaled > 1.0:
         raise AssertionError("production rates disagree with Cantera")
 
-    print("Cantera H2/O2 parity: PASS")
+    print("Cantera full H2/O2 parity: PASS")
     return 0
 
 

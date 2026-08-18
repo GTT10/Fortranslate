@@ -2,17 +2,19 @@ program pelef0d_h2o2
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
-  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use thermo_database_mod, only: load_h2o2_full_thermo
   use mixture_thermo_mod, only: &
     mass_fractions_from_mole_fractions, mixture_density, mixture_pressure
   use elementary_kinetics_mod, only: &
     elementary_reaction, elementary_production_rates
-  use h2o2_elementary_mechanism_mod, only: &
-    h2o2_nspecies, h2o2_h2_index, h2o2_h_index, h2o2_o_index, &
-    h2o2_o2_index, h2o2_oh_index, h2o2_h2o_index, h2o2_n2_index, &
-    load_h2o2_elementary_mechanism
+  use h2o2_full_mechanism_mod, only: &
+    h2o2_full_nspecies, h2o2_full_h2_index, h2o2_full_h_index, &
+    h2o2_full_o_index, h2o2_full_o2_index, h2o2_full_oh_index, &
+    h2o2_full_h2o_index, h2o2_full_ho2_index, h2o2_full_h2o2_index, &
+    h2o2_full_ar_index, h2o2_full_n2_index, load_h2o2_full_mechanism
   use constant_volume_reactor_mod, only: &
-    reactor_specific_internal_energy, advance_constant_volume_adaptive
+    reactor_specific_internal_energy, advance_constant_volume_adaptive, &
+    advance_constant_volume_implicit_adaptive
   use simulation_config_h2o2_reactor_mod, only: &
     h2o2_reactor_config, read_h2o2_reactor_configuration
   implicit none
@@ -20,9 +22,9 @@ program pelef0d_h2o2
   type(h2o2_reactor_config) :: config
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
-  real(dp) :: mole_fractions(h2o2_nspecies)
-  real(dp) :: mass_fractions(h2o2_nspecies)
-  real(dp) :: molar_production_rates(h2o2_nspecies)
+  real(dp) :: mole_fractions(h2o2_full_nspecies)
+  real(dp) :: mass_fractions(h2o2_full_nspecies)
+  real(dp) :: molar_production_rates(h2o2_full_nspecies)
   real(dp) :: temperature, density, target_internal_energy, current_energy
   real(dp) :: pressure, relative_energy_error, closure_error
   real(dp) :: time, requested_dt, accepted_dt, next_dt, next_output
@@ -30,6 +32,8 @@ program pelef0d_h2o2
   character(len=1024) :: input_path, message
   logical :: ok
   integer :: argument_count, unit, io_status, step, output_count
+  integer :: step_newton_iterations, step_rejections
+  integer :: total_newton_iterations, total_rejections
 
   argument_count = command_argument_count()
   if (argument_count /= 1) then
@@ -43,14 +47,14 @@ program pelef0d_h2o2
     write(*, '(a)') trim(message)
     error stop 2
   end if
-  call load_h2o2_elementary_thermo(species, ok)
-  if (.not. ok) error stop "Failed to load H2/O2 thermodynamics"
-  call load_h2o2_elementary_mechanism(reactions, ok)
-  if (.not. ok) error stop "Failed to load generated H2/O2 mechanism"
+  call load_h2o2_full_thermo(species, ok)
+  if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
+  call load_h2o2_full_mechanism(reactions, ok)
+  if (.not. ok) error stop "Failed to load generated full H2/O2 mechanism"
 
   mole_fractions = [ &
     config%x_h2, config%x_h, config%x_o, config%x_o2, config%x_oh, &
-    config%x_h2o, config%x_n2 ]
+    config%x_h2o, config%x_ho2, config%x_h2o2, config%x_ar, config%x_n2 ]
   call mass_fractions_from_mole_fractions( &
     species, mole_fractions, mass_fractions, ok)
   if (.not. ok) error stop "Failed to convert initial mole fractions"
@@ -69,11 +73,12 @@ program pelef0d_h2o2
   write(unit, '(a)') &
     "time,temperature,pressure,density,specific_internal_energy," // &
     "relative_energy_error,closure_error,Y_H2,Y_H,Y_O,Y_O2,Y_OH," // &
-    "Y_H2O,Y_N2,wdot_H2,wdot_H,wdot_O,wdot_O2,wdot_OH,wdot_H2O," // &
-    "wdot_N2"
+    "Y_H2O,Y_HO2,Y_H2O2,Y_AR,Y_N2,wdot_H2,wdot_H,wdot_O," // &
+    "wdot_O2,wdot_OH,wdot_H2O,wdot_HO2,wdot_H2O2,wdot_AR,wdot_N2"
 
-  write(*, '(a)') "PeleF " // pelef_version // " elementary H2/O2"
+  write(*, '(a)') "PeleF " // pelef_version // " full H2/O2"
   write(*, '(a,1x,a)') "Input:", trim(input_path)
+  write(*, '(a,1x,a)') "Integrator:", trim(config%integrator)
   write(*, '(a,es24.16)') "Constant density: ", density
 
   time = 0.0_dp
@@ -81,6 +86,8 @@ program pelef0d_h2o2
   next_output = 0.0_dp
   step = 0
   output_count = 0
+  total_newton_iterations = 0
+  total_rejections = 0
   time_tolerance = 50.0_dp * epsilon(1.0_dp) * &
     max(1.0_dp, config%final_time)
 
@@ -94,7 +101,7 @@ program pelef0d_h2o2
     requested_dt = min(requested_dt, config%maximum_time_step)
     requested_dt = min(requested_dt, config%final_time - time)
     requested_dt = min(requested_dt, next_output - time)
-    if (requested_dt <= 0.0_dp) then
+    if (requested_dt <= time_tolerance) then
       time = next_output
       call write_reactor_row()
       if (next_output >= config%final_time - time_tolerance) exit
@@ -103,10 +110,21 @@ program pelef0d_h2o2
       cycle
     end if
 
-    call advance_constant_volume_adaptive( &
-      species, reactions, density, target_internal_energy, requested_dt, &
-      config%relative_tolerance, config%absolute_tolerance, mass_fractions, &
-      temperature, accepted_dt, next_dt, ok)
+    if (trim(config%integrator) == "implicit") then
+      call advance_constant_volume_implicit_adaptive( &
+        species, reactions, density, target_internal_energy, requested_dt, &
+        config%relative_tolerance, config%absolute_tolerance, mass_fractions, &
+        temperature, accepted_dt, next_dt, step_newton_iterations, &
+        step_rejections, ok)
+      total_newton_iterations = total_newton_iterations + &
+        step_newton_iterations
+      total_rejections = total_rejections + step_rejections
+    else
+      call advance_constant_volume_adaptive( &
+        species, reactions, density, target_internal_energy, requested_dt, &
+        config%relative_tolerance, config%absolute_tolerance, mass_fractions, &
+        temperature, accepted_dt, next_dt, ok)
+    end if
     if (.not. ok) error stop "Adaptive H2/O2 reactor step failed"
     time = time + accepted_dt
     requested_dt = min(config%maximum_time_step, next_dt)
@@ -127,9 +145,14 @@ program pelef0d_h2o2
   if (.not. ok) error stop "Failed to evaluate final H2/O2 energy"
   relative_energy_error = abs(current_energy - target_internal_energy) / &
     max(1.0_dp, abs(target_internal_energy))
+  pressure = mixture_pressure( &
+    species, mass_fractions, density, temperature, ok)
+  if (.not. ok) error stop "Failed to evaluate final H2/O2 pressure"
 
   write(*, '(a,i0)') "Completed steps: ", step
   write(*, '(a,i0)') "Output rows: ", output_count
+  write(*, '(a,i0)') "Newton iterations: ", total_newton_iterations
+  write(*, '(a,i0)') "Rejected attempts: ", total_rejections
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Final temperature: ", temperature
   write(*, '(a,es24.16)') "Final pressure: ", pressure
@@ -155,17 +178,26 @@ contains
     write(unit, '(*(es25.16e3,:,","))') &
       time, temperature, pressure, density, current_energy, &
       relative_energy_error, closure_error, &
-      mass_fractions(h2o2_h2_index), mass_fractions(h2o2_h_index), &
-      mass_fractions(h2o2_o_index), mass_fractions(h2o2_o2_index), &
-      mass_fractions(h2o2_oh_index), mass_fractions(h2o2_h2o_index), &
-      mass_fractions(h2o2_n2_index), &
-      molar_production_rates(h2o2_h2_index), &
-      molar_production_rates(h2o2_h_index), &
-      molar_production_rates(h2o2_o_index), &
-      molar_production_rates(h2o2_o2_index), &
-      molar_production_rates(h2o2_oh_index), &
-      molar_production_rates(h2o2_h2o_index), &
-      molar_production_rates(h2o2_n2_index)
+      mass_fractions(h2o2_full_h2_index), &
+      mass_fractions(h2o2_full_h_index), &
+      mass_fractions(h2o2_full_o_index), &
+      mass_fractions(h2o2_full_o2_index), &
+      mass_fractions(h2o2_full_oh_index), &
+      mass_fractions(h2o2_full_h2o_index), &
+      mass_fractions(h2o2_full_ho2_index), &
+      mass_fractions(h2o2_full_h2o2_index), &
+      mass_fractions(h2o2_full_ar_index), &
+      mass_fractions(h2o2_full_n2_index), &
+      molar_production_rates(h2o2_full_h2_index), &
+      molar_production_rates(h2o2_full_h_index), &
+      molar_production_rates(h2o2_full_o_index), &
+      molar_production_rates(h2o2_full_o2_index), &
+      molar_production_rates(h2o2_full_oh_index), &
+      molar_production_rates(h2o2_full_h2o_index), &
+      molar_production_rates(h2o2_full_ho2_index), &
+      molar_production_rates(h2o2_full_h2o2_index), &
+      molar_production_rates(h2o2_full_ar_index), &
+      molar_production_rates(h2o2_full_n2_index)
     output_count = output_count + 1
   end subroutine write_reactor_row
 

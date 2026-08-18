@@ -4,23 +4,27 @@ module simulation_config_h2o2_reactor_mod
   private
 
   type, public :: h2o2_reactor_config
-    real(dp) :: final_time = 2.0e-4_dp
-    real(dp) :: initial_time_step = 1.0e-9_dp
-    real(dp) :: maximum_time_step = 2.0e-6_dp
-    real(dp) :: output_interval = 2.0e-6_dp
-    real(dp) :: relative_tolerance = 1.0e-8_dp
-    real(dp) :: absolute_tolerance = 1.0e-14_dp
-    real(dp) :: initial_temperature = 1200.0_dp
+    real(dp) :: final_time = 2.0e-3_dp
+    real(dp) :: initial_time_step = 1.0e-8_dp
+    real(dp) :: maximum_time_step = 5.0e-5_dp
+    real(dp) :: output_interval = 2.0e-5_dp
+    real(dp) :: relative_tolerance = 1.0e-5_dp
+    real(dp) :: absolute_tolerance = 1.0e-12_dp
+    real(dp) :: initial_temperature = 1000.0_dp
     real(dp) :: initial_pressure = 101325.0_dp
     real(dp) :: x_h2 = 0.295_dp
-    real(dp) :: x_h = 1.0e-6_dp
-    real(dp) :: x_o = 1.0e-6_dp
+    real(dp) :: x_h = 1.0e-8_dp
+    real(dp) :: x_o = 1.0e-8_dp
     real(dp) :: x_o2 = 0.1475_dp
-    real(dp) :: x_oh = 1.0e-6_dp
+    real(dp) :: x_oh = 1.0e-8_dp
     real(dp) :: x_h2o = 0.0_dp
-    real(dp) :: x_n2 = 0.557497_dp
-    integer :: maximum_steps = 2000000
-    character(len=512) :: output_file = "zero_d_h2o2.csv"
+    real(dp) :: x_ho2 = 1.0e-10_dp
+    real(dp) :: x_h2o2 = 1.0e-10_dp
+    real(dp) :: x_ar = 0.0_dp
+    real(dp) :: x_n2 = 0.5574999698_dp
+    integer :: maximum_steps = 500000
+    character(len=24) :: integrator = "implicit"
+    character(len=512) :: output_file = "zero_d_h2o2_full.csv"
   end type h2o2_reactor_config
 
   public :: read_h2o2_reactor_configuration
@@ -37,14 +41,17 @@ contains
     real(dp) :: final_time, initial_time_step, maximum_time_step
     real(dp) :: output_interval, relative_tolerance, absolute_tolerance
     real(dp) :: initial_temperature, initial_pressure
-    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2
+    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o
+    real(dp) :: x_ho2, x_h2o2, x_ar, x_n2
     integer :: maximum_steps, unit, io_status
+    character(len=24) :: integrator
     character(len=512) :: output_file
 
     namelist /h2o2_reactor/ final_time, initial_time_step, maximum_time_step, &
       output_interval, relative_tolerance, absolute_tolerance, &
       initial_temperature, initial_pressure, x_h2, x_h, x_o, x_o2, x_oh, &
-      x_h2o, x_n2, maximum_steps, output_file
+      x_h2o, x_ho2, x_h2o2, x_ar, x_n2, maximum_steps, integrator, &
+      output_file
 
     config = h2o2_reactor_config()
     final_time = config%final_time
@@ -61,8 +68,12 @@ contains
     x_o2 = config%x_o2
     x_oh = config%x_oh
     x_h2o = config%x_h2o
+    x_ho2 = config%x_ho2
+    x_h2o2 = config%x_h2o2
+    x_ar = config%x_ar
     x_n2 = config%x_n2
     maximum_steps = config%maximum_steps
+    integrator = config%integrator
     output_file = config%output_file
 
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -95,8 +106,12 @@ contains
     config%x_o2 = x_o2
     config%x_oh = x_oh
     config%x_h2o = x_h2o
+    config%x_ho2 = x_ho2
+    config%x_h2o2 = x_h2o2
+    config%x_ar = x_ar
     config%x_n2 = x_n2
     config%maximum_steps = maximum_steps
+    config%integrator = trim(adjustl(integrator))
     config%output_file = trim(output_file)
     call validate_h2o2_reactor_configuration(config, ok, message)
   end subroutine read_h2o2_reactor_configuration
@@ -111,7 +126,8 @@ contains
     ok = .false.
     message = ""
     mole_fraction_sum = config%x_h2 + config%x_h + config%x_o + &
-      config%x_o2 + config%x_oh + config%x_h2o + config%x_n2
+      config%x_o2 + config%x_oh + config%x_h2o + config%x_ho2 + &
+      config%x_h2o2 + config%x_ar + config%x_n2
     if (config%final_time <= 0.0_dp) then
       message = "final_time must be positive"
     else if (config%initial_time_step <= 0.0_dp .or. &
@@ -129,12 +145,16 @@ contains
     else if (config%initial_pressure <= 0.0_dp) then
       message = "initial_pressure must be positive"
     else if (min(config%x_h2, config%x_h, config%x_o, config%x_o2, &
-             config%x_oh, config%x_h2o, config%x_n2) < 0.0_dp) then
+             config%x_oh, config%x_h2o, config%x_ho2, config%x_h2o2, &
+             config%x_ar, config%x_n2) < 0.0_dp) then
       message = "mole fractions must be non-negative"
     else if (abs(mole_fraction_sum - 1.0_dp) > 1.0e-12_dp) then
       message = "mole fractions must sum to one"
     else if (config%maximum_steps < 1) then
       message = "maximum_steps must be positive"
+    else if (trim(config%integrator) /= "implicit" .and. &
+             trim(config%integrator) /= "explicit") then
+      message = "integrator must be implicit or explicit"
     else
       ok = .true.
     end if
