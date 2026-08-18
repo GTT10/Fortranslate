@@ -1,0 +1,56 @@
+name: Apply third-body implementation
+
+on:
+  push:
+    branches:
+      - agent/third-body-troe-stiff
+    paths:
+      - .github/workflows/apply-third-body-impl.yml
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/apply-third-body-impl.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-implementation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/third-body-troe-stiff
+          fetch-depth: 0
+
+      - name: Decode and apply implementation
+        shell: bash
+        run: |
+          cat tools/third-body-impl.part00 \
+              tools/third-body-impl.part01 \
+              tools/third-body-impl.part02 \
+              tools/third-body-impl.part03 \
+              tools/third-body-impl.part04 \
+              tools/third-body-impl.part05 \
+            | base64 --decode > /tmp/third-body-impl.tar.xz
+          echo "e03880e10cbed1464040d2e1f92be66fecb6292f40551e801822b0faefe5cb6a  /tmp/third-body-impl.tar.xz" \
+            | sha256sum --check --strict
+          tar -xJf /tmp/third-body-impl.tar.xz -C .
+          git checkout HEAD -- .github/workflows
+          rm tools/third-body-impl.part00 \
+             tools/third-body-impl.part01 \
+             tools/third-body-impl.part02 \
+             tools/third-body-impl.part03 \
+             tools/third-body-impl.part04 \
+             tools/third-body-impl.part05
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add third-body Troe kinetics and stiff H2O2 integration"
+          git push origin HEAD:agent/third-body-troe-stiff
