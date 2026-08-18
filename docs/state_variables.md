@@ -68,3 +68,10 @@ sum_k rho*Y_k = rho
 ```
 
 within a scaled tolerance. Invalid closure is rejected rather than silently renormalizing the cell state. Face mass fractions are bounded and normalized before constructing species fluxes.
+
+
+## Thermodynamics-only composition state
+
+The NASA7 and zero-dimensional reactor modules do not reuse the hydro-derived temperature proxy. They take an explicit mass-fraction vector `Y(:)` and temperature, or recover temperature from a target specific internal energy. Species molecular weights and polynomial records live outside the conserved flow array.
+
+This separation is intentional: the `0.8.0` thermodynamics evidence does not imply that the current constant-`gamma` hydro fluxes are composition dependent. A later general-EOS hydro milestone must replace the derived pressure, sound-speed, and temperature path explicitly and add new conservation/parity gates.

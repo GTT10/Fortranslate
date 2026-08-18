@@ -1,0 +1,13 @@
+&reactor
+  final_time = 0.2
+  time_step = 5.0e-5
+  density = 1.0
+  initial_temperature = 700.0
+  initial_reactant_fraction = 0.95
+  pre_exponential = 2.0e4
+  temperature_exponent = 0.0
+  activation_temperature = 5000.0
+  adiabatic = .true.
+  output_stride = 20
+  output_file = "zero_d_isomerization.csv"
+/

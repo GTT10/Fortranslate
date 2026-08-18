@@ -3,91 +3,71 @@
 ## Phase 0 — infrastructure
 
 - [x] CMake and GNU Fortran builds
-- [x] Debug bounds and floating-point checks
+- [x] Debug bounds and floating-point traps
 - [x] CTest and GitHub Actions
 - [x] architecture, mapping, parity, and design-decision records
 
-## Phase 1 — minimal Euler solver
+## Phase 1 — uniform-grid Euler core
 
-- [x] one-dimensional uniform mesh
-- [x] constant-`gamma` ideal-gas EOS
-- [x] primitive/conserved conversion
-- [x] outflow and periodic 1D boundaries
-- [x] Rusanov flux and conservative divergence
-- [x] CFL control and SSPRK2
-- [x] Sod exact-solution regression
-- [x] entropy-wave convergence regression
-- [x] Shu-Osher deterministic regression
-- [x] symmetric planar Sedov-type strong-blast regression
+- [x] one-dimensional constant-`gamma` Euler solver
+- [x] Rusanov and qualified PeleC-style Riemann solvers
+- [x] componentwise and characteristic PLM
+- [x] order-2/order-4 limited slopes and shock flattening
+- [x] Sod, Shu-Osher, and planar Sedov-type regressions
+- [x] two-dimensional periodic CTU-style scaffold
+- [x] directional flux rotation and transverse corrections
+- [x] isentropic-vortex convergence and dimensional reduction
 
-## Phase 2 — higher-order Godunov path
+## Phase 2 — passive multispecies transport
 
-- [x] selectable PCM baseline
-- [x] componentwise primitive PLM
-- [x] minmod and MC limiters
-- [x] selectable Rusanov/PeleC-style Riemann solver
-- [x] characteristic projection and inverse mapping
-- [x] one-dimensional PeleC characteristic tracing
-- [x] PeleC order-2 and order-4 limited slopes
-- [x] pressure/velocity shock flattening
-- [x] dedicated time-centered conservative 1D Godunov update
-- [x] two-dimensional uniform Cartesian state and mesh scaffold
-- [x] x/y directional flux rotation
-- [x] normal characteristic tracing in both directions
-- [x] provisional multidimensional fluxes
-- [x] conservative half-step transverse flux corrections
-- [x] positivity scaling for transverse corrections
-- [x] unsplit conservative 2D update
-- [x] dimensional-reduction parity with the 1D solver
-- [x] periodic isentropic-vortex analytical regression
-- [x] multidimensional second-order convergence gate
-- [ ] physical 2D wall, inflow, and outflow boundaries
-- [ ] general-EOS/internal-energy characteristic terms
-- [ ] PPM
-- [ ] WENO
-- [ ] 3D double-transverse corrections
+- [x] runtime species layout with conserved `rho*Y_k`
+- [x] positivity and species-closure validation
+- [x] species flux closure against the shared mass flux
+- [x] 1D characteristic and 2D CTU species transport
+- [x] MultiSpecSod and periodic species-wave regressions
 
-## Verified 2D results
+## Phase 3 — composition-dependent thermodynamics
 
-GNU Fortran Debug build with bounds and floating-point traps:
+- [x] NASA7 species record and polynomial evaluation
+- [x] molecular-weight database subset for H2, O2, H2O, and N2
+- [x] mixture molecular weight and gas constant
+- [x] mixture `cp`, `cv`, `gamma`, enthalpy, and internal energy
+- [x] ideal-gas pressure/density and frozen sound speed
+- [x] bracketed Newton/bisection `e -> T` inversion
+- [x] reference-value tests on both NASA7 coefficient intervals
+- [ ] couple mixture thermodynamics into hydro state conversion and Riemann solvers
+- [ ] composition-dependent hydro CFL and characteristic relations
 
-| Test | Result |
+## Phase 4 — zero-dimensional reaction scaffold
+
+- [x] Arrhenius first-order mass-conserving reaction object
+- [x] isothermal RK4 integration and analytical solution gate
+- [x] adiabatic constant-volume stage-wise `e -> T` coupling
+- [x] energy, composition, monotonicity, and application-level CSV gates
+- [ ] general reaction stoichiometry and production-rate kernel
+- [ ] reversible rates and equilibrium constants
+- [ ] mechanism parser/code generator
+- [ ] analytic or generated Jacobian
+- [ ] stiff integrator and Cantera parity
+- [ ] detailed combustion mechanism
+
+## Verified `0.8.0` results
+
+GNU Fortran 14.2 Debug build with bounds and floating-point traps:
+
+| Gate | Result |
 |---|---:|
-| Vortex density L1, `24 x 24` | `2.5862222e-3` |
-| Vortex density L1, `48 x 48` | `5.3334804e-4` |
-| Vortex density L1, `96 x 96` | `1.1010295e-4` |
-| Observed order, 24→48 | `2.2777` |
-| Observed order, 48→96 | `2.2762` |
-| 48² density L1 without transverse correction | `1.1493797e-3` |
-| Maximum periodic conservation error | `5.68e-14` |
-| Minimum transverse positivity factor | `1.0` |
-
-The complete Debug and Release suites contain 39 tests and pass without failures.
-
-## Phase 3 — multispecies advection
-
-- [x] configurable runtime species count and state indexing
-- [x] conserved species densities `rho*Y_k`
-- [x] checked species-density/mass-fraction conversion
-- [x] species positivity and closure validation
-- [x] species face fluxes satisfying `sum_k F_(rho Y_k) = F_rho`
-- [x] one-dimensional passive characteristic tracing
-- [x] two-dimensional CTU species transport and transverse correction
-- [x] multispecies dimensional-reduction gate
-- [x] one-dimensional MultiSpecSod regression
-- [x] periodic 1D and diagonal 2D species-wave convergence gates
-- [ ] composition-dependent ideal-gas thermodynamics
-- [ ] species diffusion
-- [ ] reaction sources
-
-## Verified multispecies results
-
-- Debug: `39/39` tests passed.
-- Release: `39/39` tests passed.
-- Diagonal 2D species wave at `40 x 40`: `Y1` L1 error `4.8354e-4` with transverse correction versus `1.1204e-3` without it.
-- The 2D species-wave observed orders are `1.8869` and `1.9940`.
-- Species closure and conservation errors remain at roundoff scale.
+| Complete Debug suite | `44/44` passed |
+| NASA7 H2 `cp` at 300 K | `14311.7571456761 J/(kg K)` |
+| NASA7 O2 `cp` at 1500 K | `1143.02005736187 J/(kg K)` |
+| Air-subset `Wmix` | `28.850334 kg/kmol` |
+| Air-subset `gamma` at 1200 K | `1.32225210530124` |
+| Air-subset frozen sound speed at 1200 K | `676.222203367036 m/s` |
+| 0D final temperature | `1839.99999999720 K` |
+| 0D final reactant fraction | `2.13e-110` |
+| Maximum 0D relative energy error | `9.38e-12` |
+| Maximum 0D composition closure error | `1.11e-16` |
 
 ## Next implementation slice
 
-Add species molecular weights and NASA-polynomial thermodynamics, composition-dependent ideal-gas pressure and sound speed, and a bracketed `e -> T` inversion. Validate these independently before coupling a zero-dimensional reaction source or replacing the constant-`gamma` hydro closure.
+Add a mechanism representation and source-code generator for arbitrary elementary Arrhenius reactions, then validate a real constant-volume H2/O2 reactor against Cantera before coupling chemistry to the multidimensional flow solver.
