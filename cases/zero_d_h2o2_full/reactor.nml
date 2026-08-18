@@ -1,0 +1,24 @@
+&h2o2_full_reactor
+  final_time = 2.0e-3
+  output_interval = 2.0e-5
+  initial_time_step = 1.0e-9
+  minimum_time_step = 1.0e-14
+  maximum_time_step = 2.0e-5
+  relative_tolerance = 2.0e-7
+  absolute_tolerance = 1.0e-12
+  maximum_steps = 500000
+  maximum_newton_iterations = 16
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  x_h2 = 2.0
+  x_h = 1.0e-6
+  x_o = 1.0e-12
+  x_o2 = 1.0
+  x_oh = 1.0e-12
+  x_h2o = 0.0
+  x_ho2 = 0.0
+  x_h2o2 = 0.0
+  x_ar = 0.0
+  x_n2 = 3.0
+  output_file = "zero_d_h2o2_full.csv"
+/
