@@ -77,3 +77,7 @@ This prevents the transverse path from existing only nominally while having no m
 ## Reference-data policy
 
 Pinned numerical signatures may be updated only with an explained numerical-method change. Analytical thresholds and conservation limits must not be relaxed merely to accept a regression. Future direct PeleC comparisons must record upstream commit SHA, input, build options, variable definitions, and comparison time.
+
+## Multispecies parity gates
+
+The passive-species milestone is accepted only when MultiSpecSod reproduces the existing Sod hydrodynamics, each species mass is conserved, `sum_k rho*Y_k` follows `rho`, and 1D/2D smooth species waves converge at approximately second order. A y-uniform 2D multispecies update must reduce to the verified 1D update to roundoff.

@@ -48,6 +48,23 @@ for interior cells only. Periodic neighbors are obtained with wrapped indices, a
 
 For a y-normal Riemann problem, `QU` and `QV` are exchanged before calling the x-direction solver and exchanged again on return.
 
-## Planned multispecies extension
+## Runtime multispecies layout
 
-Phase 3 will append conserved species densities `rho*Y_k` after the current Euler state. The five-variable layout must remain the zero-species specialization so existing hydro kernels and regressions continue to compile and run unchanged.
+The passive multispecies path uses
+
+```text
+1:5              rho, rho*u, rho*v, rho*w, rho*E
+6                derived rho*e
+7                derived temperature proxy
+8:7+nspecies     rho*Y_1 ... rho*Y_N
+```
+
+`multispecies_nvar(nspecies) = 7 + nspecies`, and `species_component(k) = 7 + k`. Positions 6 and 7 are synchronized from the conserved hydro prefix after every update and are never evolved by an independent flux. The five-variable hydro layout remains unchanged for existing single-species solvers.
+
+Every accepted multispecies state must satisfy non-negative species densities and
+
+```text
+sum_k rho*Y_k = rho
+```
+
+within a scaled tolerance. Invalid closure is rejected rather than silently renormalizing the cell state. Face mass fractions are bounded and normalized before constructing species fluxes.

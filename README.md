@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.6.0` milestone contains two serial uniform-grid executables.
+The `0.7.0` milestone contains three serial uniform-grid executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -29,7 +29,18 @@ The `0.6.0` milestone contains two serial uniform-grid executables.
 - one unsplit conservative CTU-style update;
 - periodic isentropic-vortex analytical and convergence regressions.
 
-The two-dimensional implementation is a qualified regular-grid subset. It does not yet include PeleC multidimensional source terms, embedded boundaries, 3D double-transverse corrections, AMR, chemistry, transport, or species arrays.
+### `pelef_ms`: passive multispecies Euler solver
+
+- runtime species count with conserved `rho*Y_k` components;
+- checked mass-fraction conversion, positivity, and `sum_k rho*Y_k = rho` closure;
+- species fluxes tied exactly to the shared mass flux;
+- one-dimensional characteristic tracing and two-dimensional CTU transport;
+- MultiSpecSod and diagonal periodic species-wave regressions;
+- derived internal-energy-density and temperature consistency checks.
+
+The multispecies milestone remains passive and constant-`gamma`: composition does not yet alter molecular weight, heat capacity, pressure, sound speed, or temperature.
+
+The two-dimensional implementation is a qualified regular-grid subset. It does not yet include PeleC multidimensional source terms, embedded boundaries, 3D double-transverse corrections, AMR, chemistry, or molecular transport.
 
 ## Build and test
 
@@ -71,6 +82,13 @@ Two-dimensional periodic isentropic vortex:
 ./build/pelef2d cases/isentropic_vortex/vortex.nml
 python3 tools/check_isentropic_vortex.py \
   --input isentropic_vortex.csv
+```
+
+Passive two-species Sod problem:
+
+```bash
+./build/pelef_ms cases/multispec_sod/multispec_sod.nml
+python3 tools/check_multispec_sod.py --input multispec_sod.csv
 ```
 
 The 2D convergence test uses 24, 48, and 96 cells per direction. The observed density orders are approximately `2.278` and `2.276`. At 48 cells, enabling the transverse correction reduces density L1 error from approximately `1.149e-3` to `5.333e-4`.

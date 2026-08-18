@@ -62,17 +62,32 @@ GNU Fortran Debug build with bounds and floating-point traps:
 | Maximum periodic conservation error | `5.68e-14` |
 | Minimum transverse positivity factor | `1.0` |
 
-The complete Debug and Release suites contain 31 tests and pass without failures.
+The complete Debug and Release suites contain 39 tests and pass without failures.
 
 ## Phase 3 — multispecies advection
 
-- [ ] configurable species count and state indexing
-- [ ] conserved species densities `rho*Y_k`
-- [ ] species fluxes through all Riemann paths
-- [ ] positivity and normalization handling
-- [ ] one-dimensional MultiSpecSod regression
-- [ ] two-dimensional passive/species dimensional-reduction gate
+- [x] configurable runtime species count and state indexing
+- [x] conserved species densities `rho*Y_k`
+- [x] checked species-density/mass-fraction conversion
+- [x] species positivity and closure validation
+- [x] species face fluxes satisfying `sum_k F_(rho Y_k) = F_rho`
+- [x] one-dimensional passive characteristic tracing
+- [x] two-dimensional CTU species transport and transverse correction
+- [x] multispecies dimensional-reduction gate
+- [x] one-dimensional MultiSpecSod regression
+- [x] periodic 1D and diagonal 2D species-wave convergence gates
+- [ ] composition-dependent ideal-gas thermodynamics
+- [ ] species diffusion
+- [ ] reaction sources
+
+## Verified multispecies results
+
+- Debug: `39/39` tests passed.
+- Release: `39/39` tests passed.
+- Diagonal 2D species wave at `40 x 40`: `Y1` L1 error `4.8354e-4` with transverse correction versus `1.1204e-3` without it.
+- The 2D species-wave observed orders are `1.8869` and `1.9940`.
+- Species closure and conservation errors remain at roundoff scale.
 
 ## Next implementation slice
 
-Introduce multispecies conserved-state infrastructure and non-reacting species advection. Preserve the current five-variable Euler kernel as the zero-species specialization, then add a MultiSpecSod parity case before NASA thermodynamics or chemistry is attempted.
+Add species molecular weights and NASA-polynomial thermodynamics, composition-dependent ideal-gas pressure and sound speed, and a bracketed `e -> T` inversion. Validate these independently before coupling a zero-dimensional reaction source or replacing the constant-`gamma` hydro closure.
