@@ -1,0 +1,30 @@
+name: Export multispecies source
+
+on:
+  push:
+    branches:
+      - agent/tmp-export-multispecies
+    paths:
+      - .github/workflows/export-multispecies-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Create source archive
+        shell: bash
+        run: |
+          tar --exclude=.git -czf /tmp/fortranslate-multispecies-source.tar.gz .
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: fortranslate-multispecies-source
+          path: /tmp/fortranslate-multispecies-source.tar.gz
+          retention-days: 1
