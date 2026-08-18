@@ -152,3 +152,13 @@ At `48 x 48`, disabling the transverse correction increases density L1 error to 
 ## Scope limitations
 
 The current 2D path is serial, periodic, single-species, inviscid, constant-`gamma`, and uniform-grid. General-EOS internal-energy characteristics, species/passive-scalar transport, physical wall/inflow boundaries, PPM/WENO, embedded boundaries, AMR, MPI, diffusion, chemistry, and spray remain future work.
+
+## Passive multispecies transport
+
+For each species, PeleF advances `rho*Y_k` conservatively. The interface flux is
+
+```text
+F_(rho Y_k) = F_rho * Y_k^upwind
+```
+
+with the final species used as a deterministic closure component so the sum of species fluxes equals the mass flux to roundoff. In 1D, mass fractions are traced with the contact-wave velocity. In 2D, species face states receive the same CTU transverse half-step correction as the hydro face states. Cell updates are accepted only when species densities remain non-negative and their sum matches total density.

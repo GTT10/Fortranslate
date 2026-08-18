@@ -377,3 +377,83 @@ add_test(
   NAME unit_ctu_dimensional_reduction
   COMMAND test_ctu_dimensional_reduction
 )
+
+add_executable(test_multispecies_state unit/test_multispecies_state.F90)
+target_link_libraries(test_multispecies_state PRIVATE pelef_core)
+add_test(NAME unit_multispecies_state COMMAND test_multispecies_state)
+
+add_executable(test_multispecies_flux unit/test_multispecies_flux.F90)
+target_link_libraries(test_multispecies_flux PRIVATE pelef_core)
+add_test(NAME unit_multispecies_flux COMMAND test_multispecies_flux)
+
+add_executable(
+  test_multispecies_reconstruction
+  unit/test_multispecies_reconstruction.F90
+)
+target_link_libraries(test_multispecies_reconstruction PRIVATE pelef_core)
+add_test(
+  NAME unit_multispecies_reconstruction
+  COMMAND test_multispecies_reconstruction
+)
+
+add_executable(
+  test_multispecies_ctu_dimensional_reduction
+  unit/test_multispecies_ctu_dimensional_reduction.F90
+)
+target_link_libraries(test_multispecies_ctu_dimensional_reduction PRIVATE pelef_core)
+add_test(
+  NAME unit_multispecies_ctu_dimensional_reduction
+  COMMAND test_multispecies_ctu_dimensional_reduction
+)
+
+add_executable(
+  test_multispecies_entropy_wave
+  regression/test_multispecies_entropy_wave.F90
+)
+target_link_libraries(test_multispecies_entropy_wave PRIVATE pelef_core)
+add_test(
+  NAME regression_multispecies_entropy_wave
+  COMMAND test_multispecies_entropy_wave
+)
+
+add_executable(
+  test_multispecies_advection_2d
+  regression/test_multispecies_advection_2d.F90
+)
+target_link_libraries(test_multispecies_advection_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_multispecies_advection_2d
+  COMMAND test_multispecies_advection_2d
+)
+set_tests_properties(
+  regression_multispecies_advection_2d
+  PROPERTIES TIMEOUT 180
+)
+
+set(MULTISPEC_SOD_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/multispec_sod")
+file(MAKE_DIRECTORY "${MULTISPEC_SOD_WORK_DIRECTORY}")
+
+add_test(
+  NAME regression_multispec_sod_run
+  COMMAND
+    $<TARGET_FILE:pelef_ms>
+    "${PROJECT_SOURCE_DIR}/cases/multispec_sod/multispec_sod.nml"
+)
+set_tests_properties(
+  regression_multispec_sod_run
+  PROPERTIES
+    WORKING_DIRECTORY "${MULTISPEC_SOD_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+
+add_test(
+  NAME regression_multispec_sod_compare
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_multispec_sod.py"
+    --input "${MULTISPEC_SOD_WORK_DIRECTORY}/multispec_sod.csv"
+)
+set_tests_properties(
+  regression_multispec_sod_compare
+  PROPERTIES DEPENDS regression_multispec_sod_run
+)

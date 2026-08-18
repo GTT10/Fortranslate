@@ -95,3 +95,7 @@ A dedicated unit test repeats a one-dimensional periodic entropy wave across eve
 5. Invalid density or pressure is rejected or corrected only by an explicitly measured positivity factor.
 6. “PeleC-style” denotes a documented regular-grid subset, not full PeleC parity.
 7. Future multispecies, transport, AMR, EB, and parallel layers must preserve the current EOS and flux-dispatch boundaries.
+
+## Multispecies extension boundary
+
+`multispecies_state_mod` owns the dynamic state layout and composition checks. `multispecies_flux_mod` and `reconstruction_multispecies_mod` add passive face transport without changing the existing five-variable Riemann APIs. The 2D hydro CTU routine may optionally return its provisional/final face states, fluxes, and positivity factors through `ctu_face_data_2d`; `ctu_multispecies_2d_mod` consumes that data so species and total-mass updates use identical face mass fluxes.

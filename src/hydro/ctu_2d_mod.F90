@@ -14,6 +14,25 @@ module ctu_2d_mod
   implicit none
   private
 
+  type, public :: ctu_face_data_2d
+    real(dp), allocatable :: x_left_base(:, :, :)
+    real(dp), allocatable :: x_right_base(:, :, :)
+    real(dp), allocatable :: y_lower_base(:, :, :)
+    real(dp), allocatable :: y_upper_base(:, :, :)
+    real(dp), allocatable :: x_left_final(:, :, :)
+    real(dp), allocatable :: x_right_final(:, :, :)
+    real(dp), allocatable :: y_lower_final(:, :, :)
+    real(dp), allocatable :: y_upper_final(:, :, :)
+    real(dp), allocatable :: provisional_x_flux(:, :, :)
+    real(dp), allocatable :: provisional_y_flux(:, :, :)
+    real(dp), allocatable :: final_x_flux(:, :, :)
+    real(dp), allocatable :: final_y_flux(:, :, :)
+    real(dp), allocatable :: theta_x_left(:, :)
+    real(dp), allocatable :: theta_x_right(:, :)
+    real(dp), allocatable :: theta_y_lower(:, :)
+    real(dp), allocatable :: theta_y_upper(:, :)
+  end type ctu_face_data_2d
+
   public :: compute_cfl_timestep_2d
   public :: advance_ctu_2d
   public :: all_cells_physical_2d
@@ -80,7 +99,7 @@ contains
 
   subroutine advance_ctu_2d( &
       conserved, nx, ny, dx, dy, dt, gamma, limiter, riemann_solver, &
-      use_transverse_correction, ok, minimum_transverse_theta)
+      use_transverse_correction, ok, minimum_transverse_theta, face_data)
     integer, intent(in) :: nx, ny
     real(dp), intent(inout) :: conserved(ncons, nx, ny)
     real(dp), intent(in) :: dx, dy, dt, gamma
@@ -88,6 +107,7 @@ contains
     logical, intent(in) :: use_transverse_correction
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: minimum_transverse_theta
+    type(ctu_face_data_2d), intent(out), optional :: face_data
 
     real(dp), allocatable :: primitive(:, :, :)
     real(dp), allocatable :: slope_x(:, :, :), slope_y(:, :, :)
@@ -127,6 +147,25 @@ contains
     allocate(provisional_y_flux(ncons, nx, ny))
     allocate(final_x_flux(ncons, nx, ny), final_y_flux(ncons, nx, ny))
     allocate(new_state(ncons, nx, ny))
+
+    if (present(face_data)) then
+      allocate(face_data%x_left_base(ncons, nx, ny))
+      allocate(face_data%x_right_base(ncons, nx, ny))
+      allocate(face_data%y_lower_base(ncons, nx, ny))
+      allocate(face_data%y_upper_base(ncons, nx, ny))
+      allocate(face_data%x_left_final(ncons, nx, ny))
+      allocate(face_data%x_right_final(ncons, nx, ny))
+      allocate(face_data%y_lower_final(ncons, nx, ny))
+      allocate(face_data%y_upper_final(ncons, nx, ny))
+      allocate(face_data%provisional_x_flux(ncons, nx, ny))
+      allocate(face_data%provisional_y_flux(ncons, nx, ny))
+      allocate(face_data%final_x_flux(ncons, nx, ny))
+      allocate(face_data%final_y_flux(ncons, nx, ny))
+      allocate(face_data%theta_x_left(nx, ny))
+      allocate(face_data%theta_x_right(nx, ny))
+      allocate(face_data%theta_y_lower(nx, ny))
+      allocate(face_data%theta_y_upper(nx, ny))
+    end if
 
     slope_x = 0.0_dp
     slope_y = 0.0_dp
@@ -246,6 +285,15 @@ contains
       end do
     end do
 
+    if (present(face_data)) then
+      face_data%x_left_base = x_left_base
+      face_data%x_right_base = x_right_base
+      face_data%y_lower_base = y_lower_base
+      face_data%y_upper_base = y_upper_base
+      face_data%provisional_x_flux = provisional_x_flux
+      face_data%provisional_y_flux = provisional_y_flux
+    end if
+
     local_minimum_theta = 1.0_dp
     do j = 1, ny
       jm = periodic_index(j - 1, ny)
@@ -304,6 +352,17 @@ contains
         local_minimum_theta = min(local_minimum_theta, theta_x_left, &
           theta_x_right, theta_y_lower, theta_y_upper)
 
+        if (present(face_data)) then
+          face_data%x_left_final(:, i, j) = x_left
+          face_data%x_right_final(:, i, j) = x_right
+          face_data%y_lower_final(:, i, j) = y_lower
+          face_data%y_upper_final(:, i, j) = y_upper
+          face_data%theta_x_left(i, j) = theta_x_left
+          face_data%theta_x_right(i, j) = theta_x_right
+          face_data%theta_y_lower(i, j) = theta_y_lower
+          face_data%theta_y_upper(i, j) = theta_y_upper
+        end if
+
         call compute_riemann_flux_x( &
           x_left, x_right, gamma, riemann_solver, final_x_flux(:, i, j), &
           face_ok)
@@ -321,6 +380,11 @@ contains
         end if
       end do
     end do
+
+    if (present(face_data)) then
+      face_data%final_x_flux = final_x_flux
+      face_data%final_y_flux = final_y_flux
+    end if
 
     do j = 1, ny
       jm = periodic_index(j - 1, ny)

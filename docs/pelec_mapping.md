@@ -33,3 +33,13 @@ This table maps responsibilities, not source lines.
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 
 A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current Riemann, characteristic, flattening, and transverse-correction rows remain qualified because general EOS, species, embedded boundaries, source terms, AMR, and 3D behavior are outside their tested scope.
+
+## Multispecies responsibility mapping
+
+| PeleC responsibility | PeleF implementation | Status |
+|---|---|---|
+| species conserved-state block | `src/core/multispecies_state_mod.F90` | passive runtime layout verified |
+| passive/species Godunov fluxes | `src/hydro/multispecies_flux_mod.F90` | mass-flux closure verified |
+| species PLM tracing | `src/hydro/reconstruction_multispecies_mod.F90` | 1D contact-wave subset verified |
+| multidimensional species update | `src/hydro/ctu_multispecies_2d_mod.F90` | periodic CTU subset verified |
+| `Exec/RegTests/MultiSpecSod` responsibility | `cases/multispec_sod`, `tools/check_multispec_sod.py` | independent regression implemented |
