@@ -1,0 +1,126 @@
+name: Apply third-body build wiring
+
+on:
+  push:
+    branches:
+      - agent/third-body-troe-stiff
+    paths:
+      - .github/workflows/apply-third-body-build.yml
+
+permissions:
+  contents: write
+
+jobs:
+  wire-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/third-body-troe-stiff
+          fetch-depth: 0
+
+      - name: Patch build and tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cmake = Path('CMakeLists.txt')
+          text = cmake.read_text()
+          text = text.replace('VERSION 0.9.0', 'VERSION 0.10.0')
+          anchor = '  src/chemistry/constant_volume_reactor_mod.F90\n'
+          addition = '''  src/chemistry/pressure_dependent_kinetics_mod.F90
+  src/physics/h2o2_full_thermo_mod.F90
+  src/generated/h2o2_full_mechanism_mod.F90
+  src/chemistry/full_reactor_rhs_mod.F90
+  src/generated/h2o2_full_jacobian_mod.F90
+  src/chemistry/implicit_reactor_mod.F90
+'''
+          if addition not in text:
+              text = text.replace(anchor, anchor + addition)
+          anchor = '  src/driver/simulation_config_h2o2_reactor_mod.F90\n'
+          addition = '  src/driver/simulation_config_h2o2_full_mod.F90\n'
+          if addition not in text:
+              text = text.replace(anchor, anchor + addition)
+          executable = '''add_executable(pelef0d_h2o2_full app/pelef0d_h2o2_full.F90)
+target_link_libraries(pelef0d_h2o2_full PRIVATE pelef_core)
+
+'''
+          if executable not in text:
+              text = text.replace('install(\n', executable + 'install(\n', 1)
+          text = text.replace(
+              'TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2',
+              'TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef0d_h2o2_full',
+          )
+          cmake.write_text(text)
+
+          constants = Path('src/core/constants_mod.F90')
+          constants.write_text(constants.read_text().replace('0.9.0', '0.10.0'))
+
+          tests = Path('tests/CMakeLists.txt')
+          test_text = tests.read_text()
+          block = r'''
+
+add_executable(
+  test_pressure_dependent_kinetics
+  unit/test_pressure_dependent_kinetics.F90
+)
+target_link_libraries(test_pressure_dependent_kinetics PRIVATE pelef_core)
+add_test(
+  NAME unit_pressure_dependent_kinetics
+  COMMAND test_pressure_dependent_kinetics
+)
+
+add_executable(
+  test_full_h2o2_jacobian
+  unit/test_full_h2o2_jacobian.F90
+)
+target_link_libraries(test_full_h2o2_jacobian PRIVATE pelef_core)
+add_test(
+  NAME unit_full_h2o2_jacobian
+  COMMAND test_full_h2o2_jacobian
+)
+
+add_executable(
+  test_implicit_h2o2_reactor
+  unit/test_implicit_h2o2_reactor.F90
+)
+target_link_libraries(test_implicit_h2o2_reactor PRIVATE pelef_core)
+add_test(
+  NAME unit_implicit_h2o2_reactor
+  COMMAND test_implicit_h2o2_reactor
+)
+
+add_test(
+  NAME regression_zero_d_h2o2_full_run
+  COMMAND $<TARGET_FILE:pelef0d_h2o2_full>
+    ${PROJECT_SOURCE_DIR}/cases/zero_d_h2o2_full/reactor.nml
+)
+set_tests_properties(
+  regression_zero_d_h2o2_full_run
+  PROPERTIES WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+)
+'''
+          if 'unit_pressure_dependent_kinetics' not in test_text:
+              tests.write_text(test_text + block)
+
+          ignore = Path('.gitignore')
+          ignore_text = ignore.read_text()
+          if 'zero_d_h2o2_full.csv' not in ignore_text:
+              ignore.write_text(ignore_text + '\nzero_d_h2o2_full.csv\n')
+
+          marker = Path('tools/third_body_stage_marker.txt')
+          if marker.exists():
+              marker.unlink()
+          PY
+
+      - name: Commit build wiring
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CMakeLists.txt tests/CMakeLists.txt src/core/constants_mod.F90 .gitignore
+          git add -u tools/third_body_stage_marker.txt || true
+          git commit -m "Wire third-body, Troe, Jacobian, and implicit reactor"
+          git push origin HEAD:agent/third-body-troe-stiff
