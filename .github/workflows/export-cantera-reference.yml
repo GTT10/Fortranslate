@@ -6,6 +6,11 @@ on:
       - agent/third-body-troe-stiff
     paths:
       - .github/workflows/export-cantera-reference.yml
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/export-cantera-reference.yml
 
 permissions:
   contents: read
