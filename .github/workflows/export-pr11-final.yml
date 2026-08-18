@@ -1,0 +1,23 @@
+name: Export PR11 final source
+
+on:
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/export-pr11-final.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tar --exclude=.git -czf /tmp/pr11-final.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr11-final-source
+          path: /tmp/pr11-final.tar.gz
+          retention-days: 1
