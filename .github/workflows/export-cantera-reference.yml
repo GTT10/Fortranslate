@@ -1,0 +1,71 @@
+name: Export Cantera reference trajectory
+
+on:
+  push:
+    branches:
+      - agent/third-body-troe-stiff
+    paths:
+      - .github/workflows/export-cantera-reference.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cantera
+        run: python3 -m pip install --break-system-packages cantera==3.2.0
+      - name: Generate reference trajectory
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv
+          import cantera as ct
+
+          names = ("H2", "H", "O", "O2", "OH", "H2O", "HO2", "H2O2", "AR", "N2")
+          x = {
+              "H2": 0.295,
+              "H": 1.0e-8,
+              "O": 1.0e-8,
+              "O2": 0.1475,
+              "OH": 1.0e-8,
+              "H2O": 0.0,
+              "HO2": 1.0e-10,
+              "H2O2": 1.0e-10,
+              "AR": 0.0,
+              "N2": 0.5574999698,
+          }
+          gas = ct.Solution("h2o2.yaml", "ohmech")
+          gas.TPX = 1000.0, 101325.0, x
+          reactor = ct.IdealGasReactor(gas, energy="on", clone=True)
+          reactor.volume = 1.0
+          network = ct.ReactorNet([reactor])
+          network.rtol = 1.0e-12
+          network.atol = 1.0e-20
+
+          with open("cantera_h2o2_reference.csv", "w", newline="", encoding="utf-8") as handle:
+              fieldnames = ["time", "temperature", "pressure", "density"] + [f"Y_{n}" for n in names]
+              writer = csv.DictWriter(handle, fieldnames=fieldnames)
+              writer.writeheader()
+              for index in range(101):
+                  time = index * 2.0e-5
+                  if time > 0.0:
+                      network.advance(time)
+                  phase = reactor.phase
+                  row = {
+                      "time": time,
+                      "temperature": phase.T,
+                      "pressure": phase.P,
+                      "density": phase.density,
+                  }
+                  row.update({f"Y_{n}": phase[n].Y[0] for n in names})
+                  writer.writerow(row)
+          print(ct.__version__, reactor.phase.T, reactor.phase.P)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cantera-h2o2-reference
+          path: cantera_h2o2_reference.csv
+          retention-days: 1
