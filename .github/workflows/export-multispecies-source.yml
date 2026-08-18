@@ -6,6 +6,11 @@ on:
       - agent/tmp-export-multispecies
     paths:
       - .github/workflows/export-multispecies-source.yml
+  pull_request:
+    branches:
+      - agent/uniform-2d-ctu-vortex
+    paths:
+      - .github/workflows/export-multispecies-source.yml
 
 permissions:
   contents: read
