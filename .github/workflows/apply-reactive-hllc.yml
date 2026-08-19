@@ -1,0 +1,68 @@
+name: Publish reactive general-EOS Riemann milestone
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-reactive-hllc
+    paths:
+      - .github/workflows/apply-reactive-hllc.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-reactive-hllc
+          fetch-depth: 0
+
+      - name: Install Fortran toolchain
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          gfortran ninja-build python3
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          cat tools/reactive-hllc-payload.part00 \
+              tools/reactive-hllc-payload.part01 \
+              tools/reactive-hllc-payload.part02 \
+              tools/reactive-hllc-payload.part03 \
+              tools/reactive-hllc-payload.part04 \
+            | base64 --decode > /tmp/reactive-hllc.patch.gz
+          echo "d5724e36a3f5cfa1874ad7d61d45440f5e02278e54357034b60cd2da59af6484  /tmp/reactive-hllc.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/reactive-hllc.patch.gz > /tmp/reactive-hllc.patch
+
+      - name: Reconstruct implementation branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin agent/elementary-h2o2-cantera
+          git switch --create agent/reactive-1d-general-eos-riemann \
+            origin/agent/elementary-h2o2-cantera
+          git am /tmp/reactive-hllc.patch
+
+      - name: Verify Debug
+        shell: bash
+        run: |
+          cmake -S . -B build-debug -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON
+          cmake --build build-debug --parallel
+          ctest --test-dir build-debug --output-on-failure --parallel 4
+
+      - name: Verify Release
+        shell: bash
+        run: |
+          cmake -S . -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON
+          cmake --build build-release --parallel
+          ctest --test-dir build-release --output-on-failure --parallel 4
+
+      - name: Publish final branch
+        run: git push origin HEAD:agent/reactive-1d-general-eos-riemann
