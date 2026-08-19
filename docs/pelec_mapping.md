@@ -25,11 +25,11 @@ This table maps responsibilities, not source lines.
 | `Exec/RegTests/Shu-Osher` | `cases/shu_osher`, `tools/check_shu_osher.py` | Deterministic shock-wave gate |
 | `Exec/RegTests/Sedov` | `cases/sedov`, `tools/check_sedov.py` | Independent planar strong-blast gate |
 | `Exec/RegTests/MultiSpecSod` | `cases/multispec_sod`, `check_multispec_sod.py` | Passive multispecies regression implemented |
-| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod` | General elementary subset and 0D coupling verified |
-| PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
-| reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
-| stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
-| third-body/falloff chemistry | future kinetics extensions | Not started |
+| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod` | Elementary, third-body, Troe, and implicit 0D coupling verified |
+| PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_*_mechanism_mod.F90` | Elementary and full normalized-JSON generation with cleanliness gates |
+| reversible pressure-dependent chemistry | NASA7 equilibrium constants, third-body efficiencies, and Troe falloff | Full 29-reaction Cantera parity implemented |
+| stiff reactor integration | dense backward Euler/Newton with adaptive step doubling | Verification implementation complete; CVODE/sparse path pending |
+| third-body/falloff chemistry | `elementary_kinetics_mod` | Third-body and Troe falloff implemented; SRI pending |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
 | `Source/PPM.*` | future `reconstruction_ppm_mod` | Not started |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
@@ -39,4 +39,4 @@ This table maps responsibilities, not source lines.
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 
-A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, or chemistry-coupled flow.
+A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers the complete small Cantera H2/O2 mechanism and a dense constant-volume implicit solver, not a general PelePhysics parser, production-scale sparse integrator, hydrocarbon mechanism, or chemistry-coupled flow.

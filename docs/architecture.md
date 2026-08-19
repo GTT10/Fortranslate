@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes five serial verification drivers over shared numerical and physical-property modules.
+PeleF exposes six serial verification drivers over shared numerical and physical-property modules.
 
 ```text
 pelef
@@ -18,7 +18,10 @@ pelef0d
   └─ NASA7 mixture thermodynamics and a synthetic isomerization reactor
 
 pelef0d_h2o2
-  └─ generated reversible elementary kinetics and an H2/O2 reactor
+  └─ generated reversible elementary kinetics and a seven-species H2/O2 reactor
+
+pelef0d_h2o2_full
+  └─ pressure-dependent ten-species H2/O2 chemistry and an implicit reactor
 ```
 
 The split prevents an unverified general-EOS or chemistry path from silently changing the already pinned constant-`gamma` hydro results.
@@ -76,7 +79,29 @@ pelef0d_h2o2
   └─ CSV history, structural checker, and Cantera parity
 ```
 
-The normalized JSON file is the authoring format for the current generated subset. The generated Fortran source is committed, and CI regenerates it into a temporary file and requires byte-for-byte agreement. The companion Cantera YAML expresses the same species and four reactions for an independent runtime reference.
+Two normalized JSON mechanisms are retained. `h2o2_elementary.json` generates the fast seven-species/four-reaction gate. `h2o2_full.json` generates the ten-species/29-reaction mechanism, including third-body efficiency vectors and Troe parameters. Both generated Fortran modules are committed, and CI regenerates them into temporary files and requires byte-for-byte agreement. The elementary companion YAML and Cantera's pinned `h2o2.yaml` provide independent runtime references.
+
+The full reactor path is:
+
+```text
+h2o2_full_mechanism_mod
+        ↓
+elementary_kinetics_mod
+  ├─ elementary and third-body rates
+  ├─ reduced-pressure and Troe falloff rates
+  ├─ reverse rates from NASA7 equilibrium constants
+  └─ analytic fixed-temperature production Jacobian
+        ↓
+constant_volume_reactor_mod
+  ├─ constant-energy reduced Jacobian
+  ├─ dense backward Euler/Newton solve
+  ├─ line search and positivity rejection
+  ├─ step-doubling error estimate
+  └─ Richardson-extrapolated accepted state
+        ↓
+pelef0d_h2o2_full
+  └─ CSV history, structural gate, and live Cantera parity
+```
 
 ## Zero-dimensional reactor paths
 
@@ -86,7 +111,7 @@ The synthetic reactor remains a small algebraic gate:
 A -> B
 ```
 
-The H2/O2 reactor is the first physical chemistry gate. It uses seven species and four reversible elementary reactions. Both reactors are adiabatic and constant volume when energy coupling is enabled; temperature is recovered from the same fixed initial specific internal energy at every accepted or trial stage.
+The seven-species H2/O2 reactor is the fast physical chemistry gate. The full reactor adds HO2, H2O2, and Ar and evaluates all 29 reactions from the pinned Cantera mechanism. All reactor paths are adiabatic and constant volume when energy coupling is enabled; temperature is recovered from the same fixed initial specific internal energy at every trial, Newton, and accepted state.
 
 ## One- and two-dimensional hydro paths
 
@@ -105,5 +130,7 @@ The existing hydro architecture remains unchanged:
 5. Reverse rates are derived from the same NASA7 records used by the reactor energy equation.
 6. Generated mechanism source must be reproducible from the committed normalized mechanism input.
 7. Production-rate parity is evaluated at the exact PeleF state, separately from trajectory parity, so kinetic-kernel errors are not confused with integrator divergence.
-8. Explicit RK4 evidence is limited to this non-stiff verification case; it is not a substitute for a stiff chemistry integrator.
-9. General-EOS hydro coupling must receive its own Riemann, CFL, and conservation regressions.
+8. The explicit RK4 path remains the fast elementary-subset reference; the full mechanism uses a separate dense implicit path.
+9. Richardson extrapolation is accepted only when the extrapolated composition remains inside the physical simplex; otherwise the verified two-half-step state is retained.
+10. The in-tree dense implicit solver is a verification implementation, not a replacement for CVODE, sparse Jacobians, or production-scale chemistry integration.
+11. General-EOS hydro coupling must receive its own Riemann, CFL, and conservation regressions.

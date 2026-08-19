@@ -2,36 +2,85 @@
   "module_name": "h2o2_elementary_mechanism_mod",
   "loader_name": "load_h2o2_elementary_mechanism",
   "kernel_name": "h2o2_elementary_production_rates",
-  "species": ["H2", "H", "O", "O2", "OH", "H2O", "N2"],
+  "species": [
+    "H2",
+    "H",
+    "O",
+    "O2",
+    "OH",
+    "H2O",
+    "N2"
+  ],
   "source": "Cantera h2o2.yaml reactions 3, 11, 21, and 23; SI conversion uses m, kmol, s, and J/kmol.",
   "reactions": [
     {
       "equation": "O + H2 <=> H + OH",
-      "reactants": {"H2": 1.0, "O": 1.0},
-      "products": {"H": 1.0, "OH": 1.0},
+      "reactants": {
+        "H2": 1.0,
+        "O": 1.0
+      },
+      "products": {
+        "H": 1.0,
+        "OH": 1.0
+      },
       "reversible": true,
-      "arrhenius": {"A": 38.7, "b": 2.7, "Ea": 26191840.0}
+      "arrhenius": {
+        "A": 38.7,
+        "b": 2.7,
+        "Ea": 26191840.0
+      }
     },
     {
       "equation": "H + O2 <=> O + OH",
-      "reactants": {"H": 1.0, "O2": 1.0},
-      "products": {"O": 1.0, "OH": 1.0},
+      "reactants": {
+        "H": 1.0,
+        "O2": 1.0
+      },
+      "products": {
+        "O": 1.0,
+        "OH": 1.0
+      },
       "reversible": true,
-      "arrhenius": {"A": 2.65e13, "b": -0.6707, "Ea": 71299544.0}
+      "arrhenius": {
+        "A": 26500000000000.0,
+        "b": -0.6707,
+        "Ea": 71299544.0
+      }
     },
     {
       "equation": "OH + H2 <=> H + H2O",
-      "reactants": {"H2": 1.0, "OH": 1.0},
-      "products": {"H": 1.0, "H2O": 1.0},
+      "reactants": {
+        "H2": 1.0,
+        "OH": 1.0
+      },
+      "products": {
+        "H": 1.0,
+        "H2O": 1.0
+      },
       "reversible": true,
-      "arrhenius": {"A": 2.16e5, "b": 1.51, "Ea": 14351120.0}
+      "arrhenius": {
+        "A": 216000.0,
+        "b": 1.51,
+        "Ea": 14351120.0
+      }
     },
     {
       "equation": "2 OH <=> O + H2O",
-      "reactants": {"OH": 2.0},
-      "products": {"O": 1.0, "H2O": 1.0},
+      "reactants": {
+        "OH": 2.0
+      },
+      "products": {
+        "O": 1.0,
+        "H2O": 1.0
+      },
       "reversible": true,
-      "arrhenius": {"A": 35.7, "b": 2.4, "Ea": -8828240.0}
+      "arrhenius": {
+        "A": 35.7,
+        "b": 2.4,
+        "Ea": -8828240.0
+      }
     }
-  ]
+  ],
+  "symbol_prefix": "h2o2",
+  "jacobian_name": "h2o2_elementary_mass_fraction_jacobian"
 }

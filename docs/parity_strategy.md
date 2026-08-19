@@ -46,74 +46,75 @@ A fixed O2/N2 mass mixture pins molecular weight, gas constant, `cp`, `cv`, `gam
 
 Species molecular weights are aligned with the pinned Cantera 3.2 elemental data used by the runtime parity gate.
 
-## Elementary-kinetics unit gates
+## Chemistry-kernel gates
 
-The general reaction layer verifies:
+The shared reaction layer verifies:
 
-- Arrhenius evaluation in SI units;
+- SI Arrhenius evaluation;
 - valid and invalid stoichiometric records;
 - reversible equilibrium constants from NASA7 Gibbs functions;
-- forward, reverse, and net progress rates;
-- production-rate assembly from net stoichiometry;
-- total mass and H/O atom conservation of instantaneous source terms;
-- conversion from molar production rates to `dY/dt`.
+- elementary, third-body, and falloff progress rates;
+- collider efficiencies and Troe broadening;
+- production-rate and mass-fraction-source assembly;
+- instantaneous mass and H/O atom conservation;
+- analytic Jacobians against independent centered finite differences.
 
-The generated H2/O2 module must regenerate byte-for-byte from `mechanisms/h2o2_elementary.json`.
+Both generated H2/O2 modules must regenerate byte-for-byte from their normalized JSON inputs.
 
-## H2/O2 structural reactor gate
+## Reactor structural gates
 
-The application-level checker reads only the emitted CSV and independently enforces:
+The application-level checkers read only emitted CSV files and independently enforce:
 
 - strictly increasing output times and the requested final time;
 - constant density;
-- finite, non-negative mass fractions;
-- mass-fraction closure;
+- finite, non-negative mass fractions and closure;
 - fixed specific internal energy;
 - H and O atom inventories;
-- unchanged inert N2;
+- unchanged inert species;
 - instantaneous mass and atom conservation of production rates;
 - non-trivial temperature and composition evolution.
 
+The implicit unit gates also require Newton convergence, physical line-search states, a positive accepted step, and agreement of the reduced constant-energy Jacobian with finite differences.
+
 ## Live Cantera parity
 
-CI installs Cantera 3.2.0 and loads `mechanisms/h2o2_elementary_cantera.yaml`, which describes the same seven species and four reversible reactions as the generated Fortran subset.
+CI installs Cantera 3.2.0 and maintains two independent gates.
 
-Two comparisons are intentionally separated.
+### Elementary subset
 
-### Trajectory comparison
+The seven-species/four-reaction companion YAML is compared at tight tolerances. This remains the fast high-precision rate and explicit-integrator regression.
 
-Cantera advances an `IdealGasReactor` from the PeleF initial state using tight solver tolerances. At each PeleF output time, temperature, pressure, and all seven species mass fractions are compared.
+### Full pressure-dependent mechanism
 
-### Exact-state production-rate comparison
+Cantera loads its pinned `h2o2.yaml` `ohmech` phase. The PeleF and Cantera reactors begin from the same temperature, pressure, and ten-species composition and are sampled at the same 101 output times. Temperature, pressure, and every species mass fraction are compared.
 
-At each PeleF output row, Cantera is reset to the exact PeleF `(T,rho,Y)` state. Its `net_production_rates` are then compared with the generated Fortran kernel. This prevents integration-history differences from being misidentified as kinetic-rate errors.
+At every PeleF output row, a separate Cantera phase is reset to the exact PeleF `(T,rho,Y)` state and its `net_production_rates` are compared with the Fortran kernel. This separates kinetic-kernel error from integration-history error.
 
-Current maximum absolute differences are:
+Current full-mechanism trajectory differences are approximately:
 
 ```text
-temperature              1.6066e-6 K
-pressure                 1.3566e-4 Pa
-species mass fraction    1.6967e-11
-production rate          3.5527e-12 kmol/(m^3 s)
-final temperature        3.6921e-9 K
+maximum temperature difference      4.59e-3 K
+maximum pressure difference         3.72e-1 Pa
+maximum species relative difference < 1.0e-5
+final-temperature difference        7.18e-5 K
 ```
 
-The state relative tolerance is `2e-5`, with an absolute floor of `2e-11`. The rate relative tolerance is `2e-8`, with an absolute floor of `5e-12 kmol/(m^3 s)` to handle nearly cancelled net rates. Thresholds may be changed only with an explained units, data, or numerical-method change.
+The full trajectory relative tolerances are `5e-5` for temperature/pressure and `2e-4` for species. Production rates use `2e-8` relative tolerance and a `1e-10 kmol/(m^3 s)` absolute floor for nearly cancelled net sources. Thresholds may change only with an explained units, mechanism-data, or numerical-method change.
 
 ## Reference-data policy
 
-Every external comparison must record:
+Every external comparison records:
 
 - upstream repository and commit SHA;
-- source mechanism files;
-- units and any conversion into SI;
+- source mechanism and phase;
+- units and SI conversions;
 - species ordering and molecular weights;
 - initial state and reactor model;
 - solver tolerances;
-- comparison variables and times.
+- comparison variables and sample times.
 
-Pinned numerical signatures may be updated only with an explained method or data change. Conservation limits must not be relaxed merely to accept a regression.
+Pinned numerical signatures may be updated only with an explained method or data change. Conservation limits are never relaxed merely to accept a regression.
 
 ## Scope of the evidence
 
-The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. It does not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, or chemistry-coupled CFD.
+The current evidence establishes zero-dimensional parity for the complete small Cantera H2/O2 mechanism and the implemented elementary/third-body/Troe forms. It does not establish general PelePhysics parser parity, SRI/chemically activated reactions, production-scale sparse stiff integration, hydrocarbon chemistry, or chemistry-coupled CFD.
