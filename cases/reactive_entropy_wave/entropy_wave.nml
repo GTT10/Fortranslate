@@ -1,0 +1,25 @@
+&reactive_1d
+  nx = 160
+  x_lower = 0.0
+  x_upper = 1.0
+  final_time = 1.0e-3
+  cfl = 0.40
+  maximum_steps = 5000
+  problem = "entropy_wave"
+  reconstruction = "characteristic_plm"
+  limiter = "mc"
+  boundary_condition = "periodic"
+  chemistry_enabled = .false.
+  initial_temperature = 1200.0
+  initial_pressure = 101325.0
+  initial_velocity = 1000.0
+  density_wave_amplitude = 0.10
+  x_h2 = 0.0
+  x_h = 0.0
+  x_o = 0.0
+  x_o2 = 0.0
+  x_oh = 0.0
+  x_h2o = 0.0
+  x_n2 = 1.0
+  output_file = "reactive_entropy_wave.csv"
+/

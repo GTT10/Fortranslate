@@ -2,38 +2,31 @@
 
 ## Executable split
 
-PeleF exposes five serial verification drivers over shared numerical and physical-property modules.
+PeleF exposes six serial verification drivers over shared numerical and physical-property modules.
 
 ```text
 pelef
-  └─ one-dimensional PCM / PLM / PeleC-style Godunov paths
+  └─ one-dimensional constant-gamma PCM / PLM / PeleC-style paths
 
 pelef2d
-  └─ two-dimensional periodic CTU-style Euler path
+  └─ two-dimensional periodic constant-gamma CTU-style Euler path
 
 pelef_ms
-  └─ passive runtime-multispecies transport over the 1D/2D hydro core
+  └─ passive runtime-multispecies transport over the constant-gamma core
 
 pelef0d
   └─ NASA7 mixture thermodynamics and a synthetic isomerization reactor
 
 pelef0d_h2o2
   └─ generated reversible elementary kinetics and an H2/O2 reactor
+
+pelef_reactive_1d
+  └─ NASA7 general-EOS reactive Euler with characteristic PLM and Strang splitting
 ```
 
-The split prevents an unverified general-EOS or chemistry path from silently changing the already pinned constant-`gamma` hydro results.
+The established constant-`gamma` solvers remain intact as regression baselines. Composition-dependent flow is introduced through a separate driver and modules so a general-EOS change cannot silently alter earlier results.
 
-## Hydro state and physics boundary
-
-The verified hydro prefix is
-
-```text
-(rho, rho*u, rho*v, rho*w, rho*E).
-```
-
-The multispecies path appends conserved `rho*Y_k` components. Its hydrodynamic pressure and sound speed still come from the original constant-`gamma` EOS. NASA7 and chemistry modules remain an explicit, independent layer until a later general-EOS hydro milestone adds new Riemann, characteristic, CFL, and conservation evidence.
-
-## Thermodynamics layer
+## Shared thermodynamics and chemistry
 
 ```text
 thermo_database_mod
@@ -43,17 +36,11 @@ nasa7_thermo_mod
   └─ species cp, cv, h, u, and standard-state entropy
         ↓
 mixture_thermo_mod
-  ├─ mass-based mixture molecular weight and gas constant
+  ├─ mixture molecular weight and gas constant
   ├─ mixture cp, cv, gamma, h, and u
   ├─ ideal-gas pressure, density, and frozen sound speed
-  └─ safeguarded e -> T inversion
-```
+  └─ safeguarded e(Y,T) -> T inversion
 
-`temperature_from_internal_energy` uses the common NASA7 validity interval of all participating species. Newton updates use mixture `cv`; any step leaving the current bracket is replaced by bisection.
-
-## Generated elementary-kinetics path
-
-```text
 mechanisms/h2o2_elementary.json
         ↓
 tools/generate_elementary_mechanism.py
@@ -61,49 +48,93 @@ tools/generate_elementary_mechanism.py
 src/generated/h2o2_elementary_mechanism_mod.F90
         ↓
 elementary_kinetics_mod
-  ├─ arbitrary stoichiometric vectors
-  ├─ forward Arrhenius rate
-  ├─ NASA7 equilibrium constant and reverse rate
-  ├─ progress rates
-  └─ species molar production rates
         ↓
 constant_volume_reactor_mod
-  ├─ dY/dt from W_k * wdot_k / rho
-  ├─ adaptive RK4 step doubling
-  └─ stage-wise e(Y,T) = e_initial inversion
-        ↓
-pelef0d_h2o2
-  └─ CSV history, structural checker, and Cantera parity
 ```
 
-The normalized JSON file is the authoring format for the current generated subset. The generated Fortran source is committed, and CI regenerates it into a temporary file and requires byte-for-byte agreement. The companion Cantera YAML expresses the same species and four reactions for an independent runtime reference.
+The normalized JSON file is the authoring format for the current generated reaction subset. CI regenerates the committed Fortran module and requires byte-for-byte equality.
 
-## Zero-dimensional reactor paths
+## Reactive one-dimensional path
 
-The synthetic reactor remains a small algebraic gate:
+The reactive state is stored as
 
 ```text
-A -> B
+state(variable, 0:nx+1)
 ```
 
-The H2/O2 reactor is the first physical chemistry gate. It uses seven species and four reversible elementary reactions. Both reactors are adiabatic and constant volume when energy coupling is enabled; temperature is recovered from the same fixed initial specific internal energy at every accepted or trial stage.
+with the conserved layout
 
-## One- and two-dimensional hydro paths
+```text
+rho, rho*u, rho*v, rho*w, rho*E, rho*Y_1 ... rho*Y_N.
+```
 
-The existing hydro architecture remains unchanged:
+Temperature is a synchronized derived field, not an independently evolved conserved variable.
 
-- 1D: PCM, componentwise PLM, or characteristic PLM; Rusanov or qualified PeleC Riemann; SSPRK2 or time-centered Godunov update.
-- 2D: directional rotation, provisional fluxes, transverse half-step corrections, final Riemann fluxes, and one unsplit conservative update.
-- Multispecies: species fluxes consume the same face mass flux as hydro and satisfy `sum_k F_(rho Y_k) = F_rho`.
+```text
+state + temperature guess
+        ↓
+reactive_conserved_to_primitive
+  ├─ recover Y from rho*Y
+  ├─ remove kinetic energy from rho*E
+  ├─ solve u(Y,T) = e_target
+  ├─ evaluate p(Y,rho,T)
+  └─ evaluate frozen sound speed
+        ↓
+reconstruction / Riemann / CFL
+```
+
+Hydrodynamic responsibilities are separated as follows:
+
+```text
+reactive_primitive_to_conserved
+reactive_conserved_to_primitive
+        ↓
+frozen-composition characteristic slope limiting
+        ↓
+MUSCL-Hancock face prediction
+        ↓
+general-EOS Rusanov flux
+        ↓
+conservative finite-volume update
+```
+
+Species face fluxes are corrected so their sum equals the total mass flux to roundoff.
+
+## Reaction-flow coupling
+
+The first coupled integrator uses Strang splitting:
+
+```text
+reaction(dt/2)
+      ↓
+hydro(dt)
+      ↓
+reaction(dt/2)
+```
+
+Each cell reaction solve holds density, all momentum components, and total-energy density fixed. Composition changes are written back to `rho*Y_k`, and temperature is recovered from the unchanged specific internal energy. This avoids adding a separate heat-release source on top of formation-energy-inclusive NASA7 internal energy.
+
+## Verification separation
+
+The architecture retains independent gates for:
+
+1. constant-`gamma` hydro;
+2. passive multispecies transport;
+3. NASA7 thermodynamics;
+4. zero-dimensional elementary chemistry;
+5. composition-dependent reactive hydro;
+6. reaction-flow splitting.
+
+The homogeneous reactive field must reduce to independent zero-dimensional cell chemistry. The nonuniform hotspot must create finite pressure and velocity responses while preserving global mass, momentum, and total energy.
 
 ## Design constraints
 
-1. Constant-`gamma` hydro baselines remain isolated from NASA7 thermodynamics and chemistry.
-2. NASA7 records carry explicit validity bounds and molecular weights.
-3. Invalid composition, temperature, stoichiometry, or unbracketed internal energy fails explicitly.
-4. Formation-energy offsets are retained in `h` and `u`.
-5. Reverse rates are derived from the same NASA7 records used by the reactor energy equation.
-6. Generated mechanism source must be reproducible from the committed normalized mechanism input.
-7. Production-rate parity is evaluated at the exact PeleF state, separately from trajectory parity, so kinetic-kernel errors are not confused with integrator divergence.
-8. Explicit RK4 evidence is limited to this non-stiff verification case; it is not a substitute for a stiff chemistry integrator.
-9. General-EOS hydro coupling must receive its own Riemann, CFL, and conservation regressions.
+1. Lower-order and constant-`gamma` baselines remain active in CI.
+2. Invalid density, pressure, composition, temperature, or energy inversion fails explicitly.
+3. Formation-energy offsets are retained in `h` and `u`.
+4. Reverse rates use the same NASA7 records as the energy equation.
+5. Species fluxes close exactly to the shared mass flux.
+6. Chemistry does not independently modify `rhoE` in the adiabatic constant-volume substep.
+7. The current characteristic basis assumes frozen composition across each acoustic solve.
+8. Rusanov remains the robustness baseline until a general-EOS PeleC-style Riemann solver is separately verified.
+9. The current four-reaction chemistry subset is not a complete H2/O2 mechanism.

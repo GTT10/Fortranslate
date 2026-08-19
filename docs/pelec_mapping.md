@@ -4,11 +4,11 @@ This table maps responsibilities, not source lines.
 
 | PeleC reference | PeleF implementation | Status |
 |---|---|---|
-| `Source/main.cpp` | `app/pelef.F90`, `app/pelef2d.F90` | Separate serial 1D and 2D drivers |
+| `Source/main.cpp` | `app/pelef.F90`, `app/pelef2d.F90`, `app/pelef_reactive_1d.F90` | Separate constant-gamma and reactive serial drivers |
 | `Source/IndexDefines.H` | `src/core/state_indices_mod.F90` | Base single-species state indices |
 | PelePhysics constant-`gamma` calls | `src/physics/eos_ideal_mod.F90` | Existing hydro closure |
 | PelePhysics species thermodynamics | `nasa7_thermo_mod`, `thermo_database_mod` | NASA7 H2/H/O/O2/OH/H2O/N2 subset verified |
-| PelePhysics mixture EOS/caloric properties | `mixture_thermo_mod` | Independent ideal-gas mixture layer verified; hydro coupling pending |
+| PelePhysics mixture EOS/caloric properties | `mixture_thermo_mod`, `reactive_1d_mod` | NASA7 ideal-gas-mixture layer coupled to the qualified reactive 1D path |
 | AMReX mesh/geometry responsibility | `mesh_mod`, `mesh_2d_mod` | Uniform 1D and Cartesian 2D meshes |
 | AMReX boundary fill | `boundary_conditions_mod` and periodic wrapping in `ctu_2d_mod` | 1D outflow/periodic and 2D periodic subset |
 | `Source/Riemann.H` LF path | `riemann_rusanov_mod` | Independent Rusanov implementation |
@@ -25,9 +25,10 @@ This table maps responsibilities, not source lines.
 | `Exec/RegTests/Shu-Osher` | `cases/shu_osher`, `tools/check_shu_osher.py` | Deterministic shock-wave gate |
 | `Exec/RegTests/Sedov` | `cases/sedov`, `tools/check_sedov.py` | Independent planar strong-blast gate |
 | `Exec/RegTests/MultiSpecSod` | `cases/multispec_sod`, `check_multispec_sod.py` | Passive multispecies regression implemented |
-| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod` | General elementary subset and 0D coupling verified |
+| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod` | Four-reaction 0D chemistry and Strang-split 1D cell coupling verified |
 | PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
 | reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
+| reactive hydro state/flux path | `reactive_1d_mod`, `pelef_reactive_1d` | NASA7 conversion, Rusanov flux, characteristic PLM, and Strang splitting verified |
 | stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
 | third-body/falloff chemistry | future kinetics extensions | Not started |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
@@ -39,4 +40,4 @@ This table maps responsibilities, not source lines.
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 
-A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, or chemistry-coupled flow.
+A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, molecular transport, or multidimensional chemistry-coupled flow.

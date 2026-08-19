@@ -35,8 +35,11 @@
 - [x] ideal-gas pressure/density and frozen sound speed
 - [x] bracketed Newton/bisection `e -> T` inversion
 - [x] reference-value tests on both NASA7 coefficient intervals
-- [ ] couple mixture thermodynamics into hydro state conversion and Riemann solvers
-- [ ] composition-dependent hydro CFL and characteristic relations
+- [x] qualified 1D conserved/primitive conversion using NASA7 mixture thermodynamics
+- [x] composition-dependent 1D CFL and Rusanov signal speeds
+- [x] frozen-composition characteristic relations
+- [ ] general-EOS PeleC-style Riemann parity
+- [ ] multidimensional general-EOS hydro
 
 ## Phase 4 — zero-dimensional chemistry
 
@@ -58,35 +61,50 @@
 - [ ] stiff integration through CVODE or an equivalent solver
 - [ ] complete H2/O2 mechanism
 - [ ] detailed hydrocarbon mechanism
-- [ ] chemistry coupling to the flow solver
 
-## Verified `0.9.0` results
+## Phase 5 — one-dimensional reactive flow
 
-GNU Fortran builds and the live Cantera 3.2 reference gate:
+- [x] conserved `rho*Y_k` state coupled to NASA7 thermodynamics
+- [x] temperature recovery from conserved total energy
+- [x] general-EOS physical and Rusanov fluxes
+- [x] exact species-flux closure to total mass flux
+- [x] PCM lower-order baseline
+- [x] frozen-composition characteristic PLM with MC/minmod limiting
+- [x] composition-dependent CFL timestep
+- [x] periodic and outflow boundaries
+- [x] cell-local adiabatic constant-volume chemistry
+- [x] reaction-hydro-reaction Strang splitting
+- [x] homogeneous-field reduction to the 0D reactor
+- [x] smooth entropy-wave second-order convergence
+- [x] nonuniform reactive-hotspot structural regression
+- [x] high-resolution hotspot comparison against PCM
+- [ ] pressure-dependent/full H2/O2 chemistry in CFD
+- [ ] molecular transport
+- [ ] multidimensional reactive flow
+
+## Verified `0.10.0` local results
 
 | Gate | Result |
 |---|---:|
-| Complete Debug suite | `50/50` passed |
-| Complete Release suite | `50/50` passed |
-| Generated mechanism cleanliness | passed |
-| H2/O2 accepted adaptive steps | `751` |
-| H2/O2 output rows | `101` |
-| Initial temperature | `1200 K` |
-| Final temperature | `1332.56148597839 K` |
-| Final pressure | `112518.160472301 Pa` |
-| Maximum relative internal-energy error | `9.92e-12` |
-| Maximum composition-closure error | `2.22e-16` |
-| Maximum H inventory drift | `4.51e-17` |
-| Maximum O inventory drift | `1.91e-17` |
-| Maximum instantaneous mass-source residual | `7.11e-13` |
-| Cantera maximum temperature difference | `1.61e-6 K` |
-| Cantera maximum pressure difference | `1.36e-4 Pa` |
-| Cantera maximum species mass-fraction difference | `1.70e-11` |
-| Cantera maximum production-rate difference | `3.55e-12 kmol/(m^3 s)` |
-| PeleF/Cantera final-temperature difference | `3.69e-9 K` |
+| Complete Debug suite | `55/55` passed |
+| Complete Release suite | `55/55` passed |
+| Reactive entropy-wave density L1, 40 cells | `1.51594309e-4` |
+| Reactive entropy-wave density L1, 80 cells | `3.43297270e-5` |
+| Reactive entropy-wave density L1, 160 cells | `7.01334896e-6` |
+| Observed order, 40 to 80 | `2.142685` |
+| Observed order, 80 to 160 | `2.291283` |
+| Hotspot completed steps | `475` |
+| Hotspot maximum conservation error | `2.03e-16` |
+| Hotspot pressure span | `1.0382765e3 Pa` |
+| Hotspot maximum velocity magnitude | `2.2117421e1 m/s` |
+| Hotspot temperature interval | `1328.97 to 1545.46 K` |
+| Hotspot PLM normalized L1, 32 cells | `6.22861249e-2` |
+| Hotspot PLM normalized L1, 64 cells | `1.46900072e-2` |
+| Hotspot PCM normalized L1, 32 cells | `2.02487281e-1` |
+| Hotspot PCM normalized L1, 64 cells | `1.54357039e-1` |
 
-The production-rate maximum occurs in an almost cancelled OH net source of approximately `2.5e-8 kmol/(m^3 s)`; the absolute comparison floor is therefore `5e-12 kmol/(m^3 s)` while the relative tolerance remains active for non-cancelled rates.
+The existing `0.9.0` Cantera trajectory and exact-state production-rate comparisons remain active when `PELEF_ENABLE_CANTERA_REFERENCE=ON`.
 
 ## Next implementation slice
 
-Add third-body and falloff/Troe reaction forms, generate an analytic or semi-generated Jacobian, and connect a stiff integrator. Then expand from the four-reaction subset to a complete small H2/O2 mechanism before attempting chemistry-flow coupling.
+Move the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the verified Strang-split flow interface. Keep the four-reaction path as a regression baseline. After that, add molecular viscosity, thermal conduction, and species diffusion before extending reactive flow to two dimensions.

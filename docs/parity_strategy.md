@@ -114,6 +114,25 @@ Every external comparison must record:
 
 Pinned numerical signatures may be updated only with an explained method or data change. Conservation limits must not be relaxed merely to accept a regression.
 
+## Reactive one-dimensional gates
+
+The composition-dependent flow path is accepted only when all of the following remain active:
+
+- primitive-to-conserved-to-primitive recovery with nonzero three-component velocity;
+- equal-state physical/Rusanov flux identity;
+- exact equality between summed species flux and total mass flux;
+- homogeneous hydro update equal to zero;
+- homogeneous Strang-split field equal to independent zero-dimensional cell chemistry;
+- global mass, three momenta, and total-energy conservation;
+- density, pressure, temperature, and species positivity;
+- mass-fraction closure;
+- smooth entropy-wave convergence above order 1.75 on both refinement intervals;
+- nonuniform reactive-hotspot generation of finite pressure and velocity responses.
+
+The hotspot also uses a numerical-reference gate. A 128-cell characteristic-PLM result is restricted onto 32- and 64-cell meshes. At both resolutions, characteristic PLM must have less than 75 percent of the corresponding PCM error, and refinement must reduce the PLM error by at least 30 percent.
+
+This reference is a discretization comparison, not an external physical validation. It establishes that the new high-order path improves on its first-order baseline for the same thermodynamics, reaction model, splitting, and boundary conditions.
+
 ## Scope of the evidence
 
-The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. It does not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, or chemistry-coupled CFD.
+The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, molecular transport, or multidimensional reacting CFD.

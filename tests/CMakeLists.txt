@@ -579,3 +579,64 @@ if(PELEF_ENABLE_CANTERA_REFERENCE)
     PROPERTIES DEPENDS regression_zero_d_h2o2_run TIMEOUT 180
   )
 endif()
+
+add_executable(test_reactive_general_eos unit/test_reactive_general_eos.F90)
+target_link_libraries(test_reactive_general_eos PRIVATE pelef_core)
+add_test(NAME unit_reactive_general_eos COMMAND test_reactive_general_eos)
+
+add_executable(
+  test_reactive_uniform_reduction
+  unit/test_reactive_uniform_reduction.F90
+)
+target_link_libraries(test_reactive_uniform_reduction PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_uniform_reduction
+  COMMAND test_reactive_uniform_reduction
+)
+set_tests_properties(unit_reactive_uniform_reduction PROPERTIES TIMEOUT 180)
+
+add_executable(
+  test_reactive_entropy_wave
+  regression/test_reactive_entropy_wave.F90
+)
+target_link_libraries(test_reactive_entropy_wave PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_entropy_wave
+  COMMAND test_reactive_entropy_wave
+)
+set_tests_properties(regression_reactive_entropy_wave PROPERTIES TIMEOUT 180)
+
+set(REACTIVE_HOTSPOT_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot")
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot/hotspot.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_run
+  PROPERTIES WORKING_DIRECTORY "${REACTIVE_HOTSPOT_WORK_DIRECTORY}" TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_hotspot_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot.py"
+    --input "${REACTIVE_HOTSPOT_WORK_DIRECTORY}/reactive_hotspot.csv"
+)
+set_tests_properties(
+  regression_reactive_hotspot_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_run
+)
+
+add_executable(
+  test_reactive_hotspot_reference
+  regression/test_reactive_hotspot_reference.F90
+)
+target_link_libraries(test_reactive_hotspot_reference PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_hotspot_reference
+  COMMAND test_reactive_hotspot_reference
+)
+set_tests_properties(regression_reactive_hotspot_reference PROPERTIES TIMEOUT 240)
