@@ -11,7 +11,7 @@ on:
       - agent/elementary-h2o2-cantera
     paths:
       - .github/workflows/apply-pr11-clean.yml
-      - tools/pr11-clean.part03b
+      - tools/pr11-clean.part02c
 
 permissions:
   contents: write
@@ -32,9 +32,8 @@ jobs:
           cat tools/pr11-clean.part00 \
               tools/pr11-clean.part01 \
               tools/pr11-clean.part02 \
-              tools/pr11-clean.part02b \
-              tools/pr11-clean.part03a \
-              tools/pr11-clean.part03b \
+              tools/pr11-clean.part02c \
+              tools/pr11-clean.part03 \
             | base64 --decode > /tmp/pr11-clean.tar.gz
           echo "64fc61787dcf2b0d165b6b0f761123ea1e21eb853834d602199e39e78b284e88  /tmp/pr11-clean.tar.gz" \
             | sha256sum --check --strict
@@ -43,6 +42,7 @@ jobs:
                 tools/pr11-clean.part01 \
                 tools/pr11-clean.part02 \
                 tools/pr11-clean.part02b \
+                tools/pr11-clean.part02c \
                 tools/pr11-clean.part03 \
                 tools/pr11-clean.part03a \
                 tools/pr11-clean.part03b
