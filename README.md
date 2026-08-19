@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.9.0` milestone contains five serial verification executables.
+The `0.12.0` milestone contains six serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -35,7 +35,7 @@ The `0.9.0` milestone contains five serial verification executables.
 - one-dimensional characteristic tracing and two-dimensional CTU transport;
 - MultiSpecSod and periodic species-wave regressions.
 
-This hydro path remains passive and constant-`gamma`: composition does not yet alter flux-level pressure, heat capacity, sound speed, or temperature.
+This older passive path intentionally retains the constant-`gamma` hydro baseline.
 
 ### `pelef0d`: thermodynamics and toy-reactor verification
 
@@ -56,7 +56,22 @@ This hydro path remains passive and constant-`gamma`: composition does not yet a
 - a seven-species, four-reaction H2/O2/N2 subset selected from Cantera `h2o2.yaml`;
 - live trajectory and exact-state production-rate comparison against Cantera 3.2.
 
-The H2/O2 case is a deliberately limited elementary subset. Third-body, falloff, Troe, stiff integration, a complete combustion mechanism, and chemistry-flow coupling are not implemented yet.
+### `pelef_reactive_1d`: general-EOS reactive Euler solver
+
+- conserved state `(rho, rho*u, rho*v, rho*w, rho*E, rho*Y_k)`;
+- NASA7 composition-dependent pressure, temperature, heat capacities, ratio of specific heats, and frozen sound speed;
+- safeguarded conserved-to-primitive recovery through `e(Y,T) -> T` inversion;
+- PCM, frozen-composition characteristic PLM, or monotone primitive PPM reconstruction;
+- selectable Rusanov or general-EOS HLLC flux with species-flux closure;
+- SSPRK3 time integration for the semidiscrete PPM path;
+- periodic or outflow boundaries;
+- cell-local adiabatic constant-volume chemistry;
+- reaction-hydro-reaction Strang splitting;
+- homogeneous-reactor reduction, smooth density/composition-wave convergence,
+  discontinuous material-contact resolution, monotone PPM convergence, and
+  nonuniform reactive-hotspot regressions.
+
+The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
 ## Build and test
 
@@ -110,14 +125,6 @@ Passive two-species Sod problem:
 python3 tools/check_multispec_sod.py --input multispec_sod.csv
 ```
 
-Synthetic adiabatic isomerization reactor:
-
-```bash
-./build/pelef0d cases/zero_d_isomerization/reactor.nml
-python3 tools/check_zero_d_isomerization.py \
-  --input zero_d_isomerization.csv
-```
-
 Elementary H2/O2 constant-volume reactor:
 
 ```bash
@@ -125,12 +132,34 @@ Elementary H2/O2 constant-volume reactor:
 python3 tools/check_zero_d_h2o2.py --input zero_d_h2o2.csv
 ```
 
-With Cantera installed, the same CSV can be compared directly:
+Reactive one-dimensional hotspot with characteristic PLM:
 
 ```bash
-python3 tools/compare_h2o2_cantera.py \
-  --input zero_d_h2o2.csv \
-  --mechanism mechanisms/h2o2_elementary_cantera.yaml
+./build/pelef_reactive_1d cases/reactive_hotspot/hotspot.nml
+python3 tools/check_reactive_hotspot.py --input reactive_hotspot.csv
+```
+
+The same case with monotone PPM and HLLC:
+
+```bash
+./build/pelef_reactive_1d cases/reactive_hotspot/hotspot_ppm.nml
+python3 tools/check_reactive_hotspot.py --input reactive_hotspot_ppm.csv
+```
+
+Smooth general-EOS entropy wave:
+
+```bash
+./build/pelef_reactive_1d \
+  cases/reactive_entropy_wave/entropy_wave.nml
+```
+
+General-EOS H2/N2 composition wave with HLLC:
+
+```bash
+./build/pelef_reactive_1d \
+  cases/reactive_composition_wave/composition_wave.nml
+python3 tools/check_reactive_composition_wave.py \
+  --input reactive_composition_wave.csv
 ```
 
 ## Project records

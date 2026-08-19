@@ -10,7 +10,7 @@ PeleF advances the compressible Euler system
 U=(\rho,\rho u,\rho v,\rho w,\rho E)^T,
 \]
 
-with a constant-`gamma` ideal-gas closure. The y term is omitted by the one-dimensional driver. The current NASA7 and chemistry layers are not yet used by these fluxes.
+The established `pelef` and `pelef2d` paths use a constant-`gamma` ideal-gas closure. The separate `pelef_reactive_1d` path appends species densities and closes pressure, temperature, and sound speed with NASA7 ideal-gas-mixture thermodynamics.
 
 ## One-dimensional Godunov components
 
@@ -244,6 +244,265 @@ final temperature        3.69e-9 K
 
 The production-rate maximum is an almost cancelled OH net source near `2.5e-8 kmol/(m^3 s)`, so parity uses both a relative tolerance and a `5e-12 kmol/(m^3 s)` absolute floor.
 
+## General-EOS reactive conserved state
+
+The reactive one-dimensional driver advances
+
+\[
+U=\left(\rho,\rho u,\rho v,\rho w,\rho E,
+\rho Y_1,\ldots,\rho Y_N\right)^T.
+\]
+
+For each cell, the specific internal energy is recovered from
+
+\[
+e=\frac{\rho E}{\rho}
+-\frac{1}{2}\left(u^2+v^2+w^2\right).
+\]
+
+The nonlinear equation
+
+\[
+u(Y,T)=e
+\]
+
+is then solved in the shared NASA7 validity interval. Pressure and frozen-composition sound speed follow from
+
+\[
+p=\rho R_{\mathrm{mix}}(Y)T,
+\qquad
+c=\sqrt{\gamma(Y,T)\frac{p}{\rho}}.
+\]
+
+The inverse conversion reconstructs total energy with the full NASA7 internal energy, including formation-energy offsets.
+
+## Frozen-composition characteristic PLM
+
+The current reactive high-order path reconstructs
+
+\[
+q=(\rho,u,v,w,p,Y_1,\ldots,Y_N)^T.
+\]
+
+For the hydrodynamic prefix, differences are projected onto five frozen-composition waves with speeds
+
+```text
+u-c, u, u, u, u+c.
+```
+
+The acoustic and contact strengths use the local mixture sound speed:
+
+\[
+\alpha_- = \frac{\rho}{2c}
+\left(\frac{\Delta p}{\rho c}-\Delta u\right),
+\qquad
+\alpha_+ = \frac{\rho}{2c}
+\left(\frac{\Delta p}{\rho c}+\Delta u\right),
+\]
+
+\[
+\alpha_0=\Delta\rho-\frac{\Delta p}{c^2}.
+\]
+
+Each characteristic difference is limited with minmod or MC. Species mass fractions are limited componentwise and traced at the contact-wave speed `u`. A MUSCL-Hancock prediction forms time-centered face states,
+
+\[
+q_{L/R}^{n+1/2}
+=q_i\mp\frac{1}{2}\Delta q_i
+-\frac{\Delta t}{2\Delta x}A_i\Delta q_i.
+\]
+
+Density, pressure, and mass-fraction slopes are scaled before tracing when an unlimited face would leave the physical interval. Face mass fractions are normalized, and invalid faces fall back to the cell-centered state.
+
+This is a qualified ideal-gas-mixture, frozen-composition basis. It is not yet the complete general-EOS characteristic treatment used through PelePhysics.
+
+## Reactive approximate Riemann fluxes and timestep
+
+The physical flux is
+
+\[
+F(U)=\left(
+\rho u,
+\rho u^2+p,
+\rho uv,
+\rho uw,
+(\rho E+p)u,
+\rho uY_k
+\right)^T.
+\]
+
+The robustness baseline is the local Lax--Friedrichs/Rusanov flux,
+
+\[
+\widehat F_{\mathrm{Rusanov}}=
+\frac{F_L+F_R}{2}
+-\frac{a_{\max}}{2}(U_R-U_L),
+\qquad
+a_{\max}=\max(|u_L|+c_L,|u_R|+c_R).
+\]
+
+The selectable contact-resolving path is HLLC. Conservative Davis wave bounds
+are evaluated from the thermodynamic sound speed on each side,
+
+\[
+S_L=\min(u_L-c_L,u_R-c_R),
+\qquad
+S_R=\max(u_L+c_L,u_R+c_R).
+\]
+
+The contact speed is
+
+\[
+S_M=
+\frac{
+ p_R-p_L
+ +\rho_Lu_L(S_L-u_L)
+ -\rho_Ru_R(S_R-u_R)
+}{
+ \rho_L(S_L-u_L)-\rho_R(S_R-u_R)
+}.
+\]
+
+For side \(K\in\{L,R\}\), the HLLC star density and energy density are
+
+\[
+\rho_K^*=\rho_K\frac{S_K-u_K}{S_K-S_M},
+\]
+
+\[
+(\rho E)_K^*=
+\frac{
+ (S_K-u_K)(\rho E)_K-p_Ku_K+p^*S_M
+}{S_K-S_M}.
+\]
+
+Tangential velocities and mass fractions remain frozen across the corresponding
+outer wave. Every candidate star state is checked by the NASA7
+conserved-to-primitive inversion before its flux is accepted. No silent
+Rusanov fallback is used for an invalid selected HLLC state.
+
+For both solvers, the last species flux is assigned from the total mass flux
+minus the preceding species fluxes, enforcing
+
+\[
+\sum_k F_{\rho Y_k}=F_\rho.
+\]
+
+The timestep uses the maximum composition-dependent signal speed,
+
+\[
+\Delta t=\mathrm{CFL}
+\frac{\Delta x}{\max_i(|u_i|+c_i)}.
+\]
+
+## Strang-split reaction-flow coupling
+
+A complete step is
+
+\[
+U^n
+\xrightarrow{R(\Delta t/2)}U^{(1)}
+\xrightarrow{H(\Delta t)}U^{(2)}
+\xrightarrow{R(\Delta t/2)}U^{n+1}.
+\]
+
+During `R`, each cell retains `rho`, all momenta, and `rhoE`. The constant-volume reactor changes `Y`; temperature is recovered from the unchanged internal energy after every accepted chemistry substep. During `H`, all conserved components, including `rho*Y_k`, are updated by the finite-volume flux divergence.
+
+A homogeneous periodic field is required to reduce to the independent zero-dimensional reactor. A nonuniform temperature hotspot tests the coupled generation and propagation of pressure and velocity disturbances.
+
+## Reactive-flow numerical evidence
+
+The periodic pure-N2 entropy wave on 40, 80, and 160 cells gives density L1 errors
+
+```text
+1.51594309e-4
+3.43297270e-5
+7.01334896e-6
+```
+
+and observed orders `2.142685` and `2.291283`.
+
+For the 30 microsecond H2/O2 hotspot regression, the 64-cell solution remains positive and produces
+
+```text
+pressure span       1.0382765e3 Pa
+maximum |u|         2.2117421e1 m/s
+temperature range   1328.97 to 1545.46 K
+```
+
+A separate 128-cell characteristic-PLM solution is used as a restricted reference at 8 microseconds. The combined normalized L1 errors are
+
+```text
+                 32 cells       64 cells
+characteristic PLM  6.2286e-2      1.4690e-2
+PCM                 2.0249e-1      1.5436e-1
+```
+
+so refinement reduces the PLM error, and PLM materially outperforms the first-order baseline at both resolutions.
+
+## General-EOS HLLC numerical evidence
+
+A periodic H2/N2 composition wave couples changing molecular weight to density
+while retaining uniform pressure and temperature. HLLC with characteristic PLM
+gives H2 mass-fraction L1 errors
+
+```text
+40 cells     2.73882775e-5
+80 cells     6.85214336e-6
+160 cells    1.65453783e-6
+```
+
+with observed orders `1.998931` and `2.050127`. The corresponding 160-cell
+relative density L1 error is `1.55234844e-5`.
+
+A discontinuous moving material contact is also tested with identical pressure
+and velocity but different H2/N2 composition. At 200 cells, the H2
+mass-fraction L1 errors are
+
+```text
+HLLC       1.14269289e-4
+Rusanov    1.87834655e-4
+```
+
+so HLLC reduces the contact error by a factor of `1.6438`. On the smooth
+composition wave, Rusanov happens to have a smaller 80-cell H2 error; the tests
+do not assert that HLLC is uniformly superior. The HLLC claim is limited to
+contact resolution and its independently verified second-order smooth-wave
+behavior.
+
+The HLLC hotspot case remains positive and conservative while producing a
+pressure span of approximately `1.3780e3 Pa` and a maximum velocity magnitude
+of approximately `2.0841e1 m/s`.
+
 ## Scope limitations
 
-The code remains serial and uniform-grid. Chemistry currently lacks third-body efficiencies, falloff/Troe/SRI forms, mechanism-file parsing, Jacobians, stiff integration, full H2/O2 chemistry, hydrocarbon mechanisms, diffusion, and coupling to the flow solver.
+The code remains serial and uniform-grid. Reactive CFD currently uses only the seven-species, four-reaction elementary
+subset, selectable Rusanov/HLLC fluxes, and a frozen-composition
+characteristic basis. It lacks third-body/falloff chemistry, a stiff cell integrator, species diffusion, viscosity, thermal conduction, a complete mechanism, general-EOS PeleC Riemann parity, multidimensional reactive flow, AMR, MPI, and accelerators.
+
+## Monotone reactive PPM
+
+The optional reactive PPM path reconstructs the general-EOS primitive vector
+
+\[
+q=(\rho,u,v,w,p,Y_1,\ldots,Y_N)^T.
+\]
+
+For a face between cells \(i\) and \(i+1\), the initial fourth-order candidate
+is
+
+\[
+q_{i+1/2}=\frac{7}{12}(q_i+q_{i+1})
+-\frac{1}{12}(q_{i-1}+q_{i+2}).
+\]
+
+Each component is first restricted to the range spanned by the two adjacent
+cells. The left and right edge values in a cell are then constrained so that a
+cell-center extremum becomes constant and excessive parabolic curvature is
+removed. Density and pressure retain their physical floors; species edges are
+bounded and normalized before conversion back to conserved variables.
+
+Unlike the time-traced characteristic PLM path, this PPM reconstruction is used
+as a semidiscrete spatial operator and advanced with the three-stage SSPRK3
+scheme. Rusanov and HLLC remain independent flux choices. This is a monotone
+primitive PPM subset, not yet PeleC's full characteristic PPM algorithm.
