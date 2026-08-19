@@ -6,6 +6,12 @@ on:
       - agent/tmp-publish-pr11-clean
     paths:
       - .github/workflows/apply-pr11-clean.yml
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/apply-pr11-clean.yml
+      - tools/pr11-clean.part03
 
 permissions:
   contents: write
