@@ -45,48 +45,53 @@
 - [x] reversible Arrhenius rates and NASA7 equilibrium constants
 - [x] concentrations, progress rates, production rates, and `dY/dt`
 - [x] normalized JSON-to-Fortran mechanism generator
-- [x] committed generated-source cleanliness test
+- [x] committed generated-source cleanliness tests
 - [x] adaptive explicit RK4 constant-volume reactor
 - [x] stage-wise adiabatic `e -> T` coupling
 - [x] seven-species, four-reaction H2/O2/N2 subset
+- [x] third-body efficiencies
+- [x] Lindemann reduced-pressure falloff
+- [x] Troe broadening
+- [x] duplicate reactions
+- [x] analytic fixed-temperature production and mass-fraction Jacobians
+- [x] reduced constant-energy reactor Jacobian
+- [x] dense backward Euler/Newton integration with line search
+- [x] adaptive step doubling and Richardson extrapolation
+- [x] ten-species, 29-reaction H2/O2/Ar/N2 mechanism
 - [x] structural mass, element, positivity, closure, and energy gates
-- [x] live Cantera 3.2 trajectory and production-rate parity
-- [ ] third-body efficiencies
-- [ ] pressure falloff and Troe/SRI forms
+- [x] live Cantera 3.2 trajectory and exact-state production-rate parity
+- [ ] SRI and chemically activated reaction forms
 - [ ] direct Cantera/CHEMKIN YAML parser
-- [ ] analytic or generated Jacobian
-- [ ] stiff integration through CVODE or an equivalent solver
-- [ ] complete H2/O2 mechanism
+- [ ] sparse Jacobian and sparse linear solve
+- [ ] CVODE/ARKODE integration
 - [ ] detailed hydrocarbon mechanism
 - [ ] chemistry coupling to the flow solver
 
-## Verified `0.9.0` results
+## Verified `0.10.0` results
 
-GNU Fortran builds and the live Cantera 3.2 reference gate:
+The ordinary suite contains 55 tests. Enabling the live Cantera reference adds the elementary and full-mechanism parity tests.
 
 | Gate | Result |
 |---|---:|
-| Complete Debug suite | `50/50` passed |
-| Complete Release suite | `50/50` passed |
-| Generated mechanism cleanliness | passed |
-| H2/O2 accepted adaptive steps | `751` |
-| H2/O2 output rows | `101` |
-| Initial temperature | `1200 K` |
-| Final temperature | `1332.56148597839 K` |
-| Final pressure | `112518.160472301 Pa` |
-| Maximum relative internal-energy error | `9.92e-12` |
+| Local Debug suite | `55/55` passed |
+| Local Release suite | `55/55` passed |
+| Generated elementary/full mechanism cleanliness | passed |
+| Full H2/O2 output rows | `101` |
+| Full H2/O2 accepted implicit steps | `5461` |
+| Full H2/O2 final temperature | `2906.522001 K` |
+| Full H2/O2 final pressure | `262444.241 Pa` |
+| Maximum relative internal-energy error | `9.53e-12` |
 | Maximum composition-closure error | `2.22e-16` |
-| Maximum H inventory drift | `4.51e-17` |
-| Maximum O inventory drift | `1.91e-17` |
-| Maximum instantaneous mass-source residual | `7.11e-13` |
-| Cantera maximum temperature difference | `1.61e-6 K` |
-| Cantera maximum pressure difference | `1.36e-4 Pa` |
-| Cantera maximum species mass-fraction difference | `1.70e-11` |
-| Cantera maximum production-rate difference | `3.55e-12 kmol/(m^3 s)` |
-| PeleF/Cantera final-temperature difference | `3.69e-9 K` |
+| Maximum H inventory drift | `8.19e-16` |
+| Maximum O inventory drift | `5.52e-16` |
+| Maximum instantaneous mass-source residual | `4.68e-14` |
+| Cantera-reference maximum temperature difference | `4.59e-3 K` |
+| Cantera-reference maximum pressure difference | `3.72e-1 Pa` |
+| Cantera-reference maximum species relative difference | `< 1.0e-5` |
+| PeleF/Cantera final-temperature difference | `7.18e-5 K` |
 
-The production-rate maximum occurs in an almost cancelled OH net source of approximately `2.5e-8 kmol/(m^3 s)`; the absolute comparison floor is therefore `5e-12 kmol/(m^3 s)` while the relative tolerance remains active for non-cancelled rates.
+The trajectory figures above use a pinned Cantera 3.2 constant-volume reference at the same 101 output times. The live CI gate also compares production rates at the exact PeleF `(T,rho,Y)` state so time-integration error is not confused with rate-kernel error.
 
 ## Next implementation slice
 
-Add third-body and falloff/Troe reaction forms, generate an analytic or semi-generated Jacobian, and connect a stiff integrator. Then expand from the four-reaction subset to a complete small H2/O2 mechanism before attempting chemistry-flow coupling.
+Couple NASA7 thermodynamics and the full chemistry source into a separate one-dimensional conservative-flow path. Begin with a first-order general-EOS Rusanov baseline and Strang splitting, then add general-EOS PLM/Godunov reconstruction and a non-uniform reacting-wave regression.

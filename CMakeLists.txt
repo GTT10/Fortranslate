@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.9.0
+  VERSION 0.10.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -29,9 +29,11 @@ add_library(
   src/physics/eos_ideal_mod.F90
   src/physics/nasa7_thermo_mod.F90
   src/physics/thermo_database_mod.F90
+  src/physics/h2o2_full_thermo_mod.F90
   src/physics/mixture_thermo_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
   src/generated/h2o2_elementary_mechanism_mod.F90
+  src/generated/h2o2_full_mechanism_mod.F90
   src/chemistry/constant_volume_reactor_mod.F90
   src/chemistry/isomerization_reactor_mod.F90
   src/hydro/state_conversion_mod.F90
@@ -59,6 +61,7 @@ add_library(
   src/driver/simulation_config_multispecies_mod.F90
   src/driver/simulation_config_reactor_mod.F90
   src/driver/simulation_config_h2o2_reactor_mod.F90
+  src/driver/simulation_config_h2o2_full_mod.F90
   src/problems/sod_problem_mod.F90
   src/problems/shu_osher_problem_mod.F90
   src/problems/sedov_problem_mod.F90
@@ -118,8 +121,11 @@ target_link_libraries(pelef0d PRIVATE pelef_core)
 add_executable(pelef0d_h2o2 app/pelef0d_h2o2.F90)
 target_link_libraries(pelef0d_h2o2 PRIVATE pelef_core)
 
+add_executable(pelef0d_h2o2_full app/pelef0d_h2o2_full.F90)
+target_link_libraries(pelef0d_h2o2_full PRIVATE pelef_core)
+
 install(
-  TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2
+  TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef0d_h2o2_full
   RUNTIME DESTINATION bin
 )
 

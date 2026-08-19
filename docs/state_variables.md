@@ -53,7 +53,7 @@ NASA7 and reactor modules use an explicit mass-fraction vector
 Y(nspecies)
 ```
 
-with a separate scalar temperature and density. The H2/O2 generated subset fixes the ordering
+with a separate scalar temperature and density. The fast H2/O2 subset fixes the ordering
 
 ```text
 1 H2
@@ -65,6 +65,21 @@ with a separate scalar temperature and density. The H2/O2 generated subset fixes
 7 N2
 ```
 
+The full pressure-dependent mechanism uses
+
+```text
+1 H2
+2 H
+3 O
+4 O2
+5 OH
+6 H2O
+7 HO2
+8 H2O2
+9 AR
+10 N2
+```
+
 and associates each entry with a NASA7 record and molecular weight. Concentrations and production rates use
 
 ```text
@@ -73,6 +88,6 @@ wdot_k     kmol/(m^3 s)
 dY_k/dt    1/s
 ```
 
-The reaction record stores two runtime stoichiometric vectors of length `nspecies` plus an Arrhenius triplet and reversible flag. Reactor density is fixed by the initial `(T,p,Y)` state; temperature is derived from the fixed specific internal energy rather than advanced as an independent ODE component.
+The reaction record stores two runtime stoichiometric vectors, a reaction-kind tag, high- and low-pressure Arrhenius records, a third-body efficiency vector, optional Troe parameters, and a reversible flag. Reactor density is fixed by the initial `(T,p,Y)` state; temperature is derived from the fixed specific internal energy rather than advanced as an independent ODE component.
 
-This separation is intentional: `0.9.0` chemistry evidence does not imply that current hydro pressure, sound speed, or temperature are composition dependent.
+This separation is intentional: `0.10.0` chemistry evidence does not imply that current hydro pressure, sound speed, or temperature are composition dependent.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.9.0` milestone contains five serial verification executables.
+The `0.10.0` milestone contains six serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -56,7 +56,20 @@ This hydro path remains passive and constant-`gamma`: composition does not yet a
 - a seven-species, four-reaction H2/O2/N2 subset selected from Cantera `h2o2.yaml`;
 - live trajectory and exact-state production-rate comparison against Cantera 3.2.
 
-The H2/O2 case is a deliberately limited elementary subset. Third-body, falloff, Troe, stiff integration, a complete combustion mechanism, and chemistry-flow coupling are not implemented yet.
+The seven-species case remains a deliberately limited elementary subset and is retained as a fast, high-precision kinetics regression.
+
+### `pelef0d_h2o2_full`: pressure-dependent full H2/O2 verification
+
+- ten species and all 29 reactions from Cantera `h2o2.yaml`;
+- elementary, third-body, duplicate, and Troe falloff reaction forms;
+- species-specific third-body efficiencies;
+- analytic concentration and mass-fraction Jacobian assembly;
+- reduced constant-energy reactor Jacobian including the temperature-composition coupling;
+- safeguarded backward Euler/Newton solves with adaptive step doubling;
+- Richardson extrapolation of accepted steps;
+- structural conservation checks and live Cantera 3.2 trajectory/rate parity.
+
+The implicit solver is a dense in-tree verification integrator, not CVODE. Direct Cantera/CHEMKIN parsing, sparse linear algebra, hydrocarbon mechanisms, and chemistry-flow coupling remain future work.
 
 ## Build and test
 
@@ -132,6 +145,16 @@ python3 tools/compare_h2o2_cantera.py \
   --input zero_d_h2o2.csv \
   --mechanism mechanisms/h2o2_elementary_cantera.yaml
 ```
+
+Full pressure-dependent H2/O2 reactor:
+
+```bash
+./build/pelef0d_h2o2_full cases/zero_d_h2o2_full/reactor.nml
+python3 tools/check_zero_d_h2o2_full.py \
+  --input zero_d_h2o2_full.csv
+```
+
+The live full-mechanism Cantera comparison is enabled through `PELEF_ENABLE_CANTERA_REFERENCE`.
 
 ## Project records
 

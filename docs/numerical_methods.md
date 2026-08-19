@@ -190,60 +190,93 @@ and the constant-volume composition equation is
 \frac{dY_k}{dt}=\frac{W_k\dot\omega_k}{\rho}.
 \]
 
-## Generated mechanism subset
+## Generated mechanism families
 
-`tools/generate_elementary_mechanism.py` reads a normalized JSON mechanism and writes a Fortran module containing fixed species indices, reaction stoichiometry, SI Arrhenius parameters, and a production-rate wrapper. CI regenerates the module and requires exact agreement with the committed source.
+`tools/generate_elementary_mechanism.py` reads normalized JSON and writes a Fortran module containing fixed species indices, stoichiometry, reaction kinds, SI Arrhenius parameters, third-body efficiencies, and Troe parameters. CI regenerates both committed modules and requires byte-for-byte agreement.
 
-The current H2/O2 subset contains four reversible elementary reactions:
+The fast subset contains four reversible elementary reactions over H2, H, O, O2, OH, H2O, and N2. The full mechanism contains H2, H, O, O2, OH, H2O, HO2, H2O2, Ar, and N2 with all 29 reactions from the pinned Cantera `h2o2.yaml`, including duplicate, third-body, and Troe falloff reactions.
 
-```text
-O + H2  <=> H + OH
-H + O2  <=> O + OH
-OH + H2 <=> H + H2O
-2 OH    <=> O + H2O
-```
+## Third-body and falloff rates
 
-H2, H, O, O2, OH, H2O, and N2 are present. N2 is inert because no third-body reactions are included yet.
-
-## Adaptive constant-volume reactor
-
-The H2/O2 reactor uses explicit RK4 with step doubling:
-
-1. one full RK4 step of size `dt`;
-2. two RK4 half steps;
-3. a scaled norm of the state difference estimates local error;
-4. the two-half-step result is accepted when the error is within tolerance;
-5. the next step is expanded or contracted within configured bounds.
-
-At every RK stage, temperature is recovered from
+For a third-body reaction, the effective collider concentration is
 
 \[
-u(Y^{\mathrm{stage}},T^{\mathrm{stage}})=u(Y^0,T^0),
+[M]_{\mathrm{eff}}=\sum_k\alpha_k C_k.
 \]
 
-so the rate evaluation and adiabatic energy constraint are stage consistent. Trial states are rejected when composition loses positivity or closure.
+For falloff reactions,
 
-This explicit integrator is suitable only for the current verification subset. A stiff integrator and Jacobian are required before using a complete combustion mechanism.
+\[
+P_r=\frac{k_0[M]_{\mathrm{eff}}}{k_\infty},
+\qquad
+k_{\mathrm{L}}=k_\infty\frac{P_r}{1+P_r}.
+\]
 
-## Verified H2/O2 parity
+When Troe broadening is enabled,
 
-The live Cantera gate separates two comparisons:
+\[
+F_{\mathrm{cent}}=(1-a)e^{-T/T_3}+ae^{-T/T_1}+e^{-T_2/T},
+\]
 
-- trajectory parity: temperature, pressure, and all species at each output time;
-- kinetic-kernel parity: Cantera production rates evaluated at the exact PeleF `(T,rho,Y)` state.
+and the standard logarithmic Troe formula produces `F`. The effective forward constant is `k_L F`. The same effective forward constant is divided by the NASA7 concentration equilibrium constant for the reverse reaction.
 
-For the current case, the maximum absolute differences are:
+## Chemistry Jacobians
+
+The production-rate kernel differentiates concentration products and pressure-dependent rate constants analytically with respect to species concentrations. Conversion to a fixed-temperature mass-fraction Jacobian uses
+
+\[
+\frac{\partial \dot Y_i}{\partial Y_j}
+=\frac{W_i}{W_j}\frac{\partial \dot\omega_i}{\partial C_j}.
+\]
+
+The constant-energy reactor eliminates the final mass fraction through closure. Its reduced Jacobian includes the temperature response
+
+\[
+\frac{\partial T}{\partial Y_j}
+=-\frac{u_j-u_N}{c_v},
+\]
+
+combined with a centered temperature derivative of the reaction source. The generated full-mechanism module supplies a size-checked wrapper around this shared Jacobian assembly.
+
+## Implicit constant-volume reactor
+
+The full mechanism solves backward Euler steps:
+
+\[
+R(Y^{n+1})=Y^{n+1}-Y^n-\Delta t\,\dot Y(Y^{n+1},T^{n+1})=0,
+\]
+
+subject to
+
+\[
+u(Y^{n+1},T^{n+1})=u_0.
+\]
+
+Newton corrections use a dense pivoted linear solve and a backtracking line search. Trial states outside the composition simplex, outside the NASA7 temperature interval, or without decreasing residual are rejected.
+
+Adaptive control compares one full backward Euler step with two half steps. Since backward Euler is first order, the accepted candidate is
+
+\[
+Y_{\mathrm{R}}=2Y_{h/2,h/2}-Y_h.
+\]
+
+This Richardson extrapolation cancels the leading local error. When the extrapolated state is not physical, the verified two-half-step state is retained. Temperature is then recovered again from the fixed internal energy.
+
+The seven-species subset continues to use adaptive explicit RK4. Retaining both paths separates the pressure-dependent/stiff implementation from the earlier elementary-kinetics gate.
+
+## Verified full H2/O2 parity
+
+The 1000 K, 1 atm, adiabatic constant-volume case is emitted at 101 fixed times through 2 ms. Against the pinned Cantera 3.2 reference, the current maximum trajectory differences are approximately:
 
 ```text
-temperature              1.61e-6 K
-pressure                 1.36e-4 Pa
-species mass fraction    1.70e-11
-production rate          3.55e-12 kmol/(m^3 s)
-final temperature        3.69e-9 K
+temperature              4.59e-3 K
+pressure                 3.72e-1 Pa
+species relative error   < 1.0e-5
+final temperature        7.18e-5 K
 ```
 
-The production-rate maximum is an almost cancelled OH net source near `2.5e-8 kmol/(m^3 s)`, so parity uses both a relative tolerance and a `5e-12 kmol/(m^3 s)` absolute floor.
+The live CI gate separately resets Cantera to every exact PeleF `(T,rho,Y)` state and compares molar production rates. Near-cancelled net rates use an absolute floor of `1e-10 kmol/(m^3 s)` in addition to the relative tolerance.
 
 ## Scope limitations
 
-The code remains serial and uniform-grid. Chemistry currently lacks third-body efficiencies, falloff/Troe/SRI forms, mechanism-file parsing, Jacobians, stiff integration, full H2/O2 chemistry, hydrocarbon mechanisms, diffusion, and coupling to the flow solver.
+The code remains serial and uniform-grid. The full chemistry path still lacks SRI and chemically activated forms, direct Cantera/CHEMKIN parsing, sparse Jacobians, CVODE/ARKODE, hydrocarbon mechanisms, molecular diffusion, and chemistry coupling to the flow solver. The dense in-tree implicit solver is a verification implementation for small mechanisms.
