@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/tmp-publish-reactive-ppm
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
 
 permissions:
   contents: write
