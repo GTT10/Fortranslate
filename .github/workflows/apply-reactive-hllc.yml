@@ -6,6 +6,11 @@ on:
       - agent/tmp-publish-reactive-hllc
     paths:
       - .github/workflows/apply-reactive-hllc.yml
+  pull_request:
+    branches:
+      - agent/elementary-h2o2-cantera
+    paths:
+      - .github/workflows/apply-reactive-hllc.yml
 
 permissions:
   contents: write
