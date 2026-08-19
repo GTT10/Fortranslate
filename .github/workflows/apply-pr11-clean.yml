@@ -1,0 +1,47 @@
+name: Apply clean PR11 implementation
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-pr11-clean
+    paths:
+      - .github/workflows/apply-pr11-clean.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-clean-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-pr11-clean
+          fetch-depth: 0
+
+      - name: Decode and apply verified source bundle
+        shell: bash
+        run: |
+          cat tools/pr11-clean.part00 \
+              tools/pr11-clean.part01 \
+              tools/pr11-clean.part02 \
+              tools/pr11-clean.part03 \
+            | base64 --decode > /tmp/pr11-clean.tar.gz
+          echo "64fc61787dcf2b0d165b6b0f761123ea1e21eb853834d602199e39e78b284e88  /tmp/pr11-clean.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/pr11-clean.tar.gz -C .
+          rm tools/pr11-clean.part00 \
+             tools/pr11-clean.part01 \
+             tools/pr11-clean.part02 \
+             tools/pr11-clean.part03
+          git diff --check
+
+      - name: Commit reconstructed implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add full pressure-dependent H2O2 chemistry and implicit reactor"
+          git push origin HEAD:agent/tmp-publish-pr11-clean
