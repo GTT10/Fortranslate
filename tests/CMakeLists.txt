@@ -579,3 +579,174 @@ if(PELEF_ENABLE_CANTERA_REFERENCE)
     PROPERTIES DEPENDS regression_zero_d_h2o2_run TIMEOUT 180
   )
 endif()
+
+add_executable(test_reactive_general_eos unit/test_reactive_general_eos.F90)
+target_link_libraries(test_reactive_general_eos PRIVATE pelef_core)
+add_test(NAME unit_reactive_general_eos COMMAND test_reactive_general_eos)
+
+add_executable(test_reactive_hllc unit/test_reactive_hllc.F90)
+target_link_libraries(test_reactive_hllc PRIVATE pelef_core)
+add_test(NAME unit_reactive_hllc COMMAND test_reactive_hllc)
+
+add_executable(test_reactive_ppm unit/test_reactive_ppm.F90)
+target_link_libraries(test_reactive_ppm PRIVATE pelef_core)
+add_test(NAME unit_reactive_ppm COMMAND test_reactive_ppm)
+
+add_executable(
+  test_reactive_ppm_convergence
+  regression/test_reactive_ppm_convergence.F90
+)
+target_link_libraries(test_reactive_ppm_convergence PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_ppm_convergence
+  COMMAND test_reactive_ppm_convergence
+)
+set_tests_properties(
+  regression_reactive_ppm_convergence
+  PROPERTIES TIMEOUT 240
+)
+
+add_executable(
+  test_reactive_uniform_reduction
+  unit/test_reactive_uniform_reduction.F90
+)
+target_link_libraries(test_reactive_uniform_reduction PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_uniform_reduction
+  COMMAND test_reactive_uniform_reduction
+)
+set_tests_properties(unit_reactive_uniform_reduction PROPERTIES TIMEOUT 180)
+
+add_executable(
+  test_reactive_entropy_wave
+  regression/test_reactive_entropy_wave.F90
+)
+target_link_libraries(test_reactive_entropy_wave PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_entropy_wave
+  COMMAND test_reactive_entropy_wave
+)
+set_tests_properties(regression_reactive_entropy_wave PROPERTIES TIMEOUT 180)
+
+add_executable(
+  test_reactive_composition_wave
+  regression/test_reactive_composition_wave.F90
+)
+target_link_libraries(test_reactive_composition_wave PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_composition_wave
+  COMMAND test_reactive_composition_wave
+)
+set_tests_properties(
+  regression_reactive_composition_wave
+  PROPERTIES TIMEOUT 180
+)
+
+set(
+  REACTIVE_COMPOSITION_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_composition_wave"
+)
+file(MAKE_DIRECTORY "${REACTIVE_COMPOSITION_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_composition_wave_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_composition_wave/composition_wave.nml"
+)
+set_tests_properties(
+  regression_reactive_composition_wave_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_COMPOSITION_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_composition_wave_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_composition_wave.py"
+    --input
+    "${REACTIVE_COMPOSITION_WORK_DIRECTORY}/reactive_composition_wave.csv"
+)
+set_tests_properties(
+  regression_reactive_composition_wave_check
+  PROPERTIES DEPENDS regression_reactive_composition_wave_run
+)
+
+add_executable(
+  test_reactive_material_contact
+  regression/test_reactive_material_contact.F90
+)
+target_link_libraries(test_reactive_material_contact PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_material_contact
+  COMMAND test_reactive_material_contact
+)
+set_tests_properties(
+  regression_reactive_material_contact
+  PROPERTIES TIMEOUT 180
+)
+
+set(REACTIVE_HOTSPOT_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot")
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot/hotspot.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_run
+  PROPERTIES WORKING_DIRECTORY "${REACTIVE_HOTSPOT_WORK_DIRECTORY}" TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_hotspot_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot.py"
+    --input "${REACTIVE_HOTSPOT_WORK_DIRECTORY}/reactive_hotspot.csv"
+)
+set_tests_properties(
+  regression_reactive_hotspot_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_run
+)
+
+set(
+  REACTIVE_HOTSPOT_HLLC_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot_hllc"
+)
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_HLLC_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_hllc_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot/hotspot_hllc.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_hllc_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_HOTSPOT_HLLC_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_hotspot_hllc_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot.py"
+    --input
+    "${REACTIVE_HOTSPOT_HLLC_WORK_DIRECTORY}/reactive_hotspot_hllc.csv"
+)
+set_tests_properties(
+  regression_reactive_hotspot_hllc_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_hllc_run
+)
+
+add_executable(
+  test_reactive_hotspot_reference
+  regression/test_reactive_hotspot_reference.F90
+)
+target_link_libraries(test_reactive_hotspot_reference PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_hotspot_reference
+  COMMAND test_reactive_hotspot_reference
+)
+set_tests_properties(regression_reactive_hotspot_reference PROPERTIES TIMEOUT 240)
