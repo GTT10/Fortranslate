@@ -1,0 +1,43 @@
+name: Apply reactive PPM implementation
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-reactive-ppm
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/reactive-1d-general-eos-ppm
+          fetch-depth: 0
+
+      - name: Decode and apply verified patch
+        shell: bash
+        run: |
+          cat tools/reactive-ppm.part00 \
+              tools/reactive-ppm.part01 \
+              tools/reactive-ppm.part02 \
+              tools/reactive-ppm.part03 \
+              tools/reactive-ppm.part04 \
+              tools/reactive-ppm.part05 \
+              tools/reactive-ppm.part06 \
+            | base64 --decode > /tmp/reactive-ppm.patch.gz
+          echo "f3585d9b36f385fc92d70b6e72fc69709f37a3e65139c73b5491c227b5efa1c7  /tmp/reactive-ppm.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/reactive-ppm.patch.gz > /tmp/reactive-ppm.patch
+          git apply --index /tmp/reactive-ppm.patch
+
+      - name: Commit and publish implementation
+        shell: bash
+        run: |
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git commit -m "Add reactive 1D general-EOS PLM, HLLC, and PPM"
+          git push origin HEAD:agent/reactive-1d-general-eos-ppm
