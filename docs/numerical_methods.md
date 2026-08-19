@@ -316,7 +316,7 @@ Density, pressure, and mass-fraction slopes are scaled before tracing when an un
 
 This is a qualified ideal-gas-mixture, frozen-composition basis. It is not yet the complete general-EOS characteristic treatment used through PelePhysics.
 
-## Reactive Rusanov flux and timestep
+## Reactive approximate Riemann fluxes and timestep
 
 The physical flux is
 
@@ -331,16 +331,87 @@ F(U)=\left(
 \right)^T.
 \]
 
-The interface flux is
+Three interface solvers are selectable.
+
+### Rusanov robustness baseline
 
 \[
-\widehat F=rac{F_L+F_R}{2}
+\widehat F=\frac{F_L+F_R}{2}
 -\frac{a_{\max}}{2}(U_R-U_L),
 \qquad
 a_{\max}=\max(|u_L|+c_L,|u_R|+c_R).
 \]
 
-The last species flux is assigned from the total mass flux minus the preceding species fluxes, enforcing
+This path is deliberately diffusive but provides the broadest fallback-free
+positivity baseline.
+
+### Frozen-composition HLLC
+
+The outer signal estimates are
+
+\[
+S_L=\min(u_L-c_L,u_R-c_R),
+\qquad
+S_R=\max(u_L+c_L,u_R+c_R).
+\]
+
+The contact speed follows from the Rankine--Hugoniot balance,
+
+\[
+S_M=
+\frac{p_R-p_L+\rho_Lu_L(S_L-u_L)-\rho_Ru_R(S_R-u_R)}
+{\rho_L(S_L-u_L)-\rho_R(S_R-u_R)}.
+\]
+
+For side \(K\), the star density and total-energy density are
+
+\[
+\rho_K^*=\rho_K\frac{S_K-u_K}{S_K-S_M},
+\]
+
+\[
+(\rho E)_K^*=\frac{(S_K-u_K)(\rho E)_K-p_Ku_K+p^*S_M}
+{S_K-S_M}.
+\]
+
+Species retain the upwind mass fractions in the star state. Every constructed
+star state is passed back through the NASA7 conserved-to-primitive conversion;
+an invalid density, composition, pressure, or temperature fails explicitly.
+
+### Qualified PeleC-style acoustic solver
+
+The mixture extension of the verified constant-`gamma` acoustic path uses
+left and right acoustic impedances
+
+\[
+Z_L=\rho_Lc_L,\qquad Z_R=\rho_Rc_R,
+\]
+
+and estimates
+
+\[
+p^*=\frac{Z_Rp_L+Z_Lp_R+Z_LZ_R(u_L-u_R)}{Z_L+Z_R},
+\]
+
+\[
+u^*=\frac{Z_Lu_L+Z_Ru_R+p_L-p_R}{Z_L+Z_R}.
+\]
+
+Composition and transverse velocities are selected from the upwind origin
+state. The density correction uses the local frozen sound speed,
+
+\[
+\rho^*=\rho_o+\frac{p^*-p_o}{c_o^2},
+\]
+
+followed by the same shock/rarefaction wave interpolation structure as the
+qualified constant-`gamma` PeleC solver. The interpolated primitive state is
+converted through NASA7 thermodynamics before its physical flux is returned.
+This is an independently tested frozen-composition extension, not a claim of
+complete PelePhysics general-EOS `Riemann.H` parity.
+
+For all three solvers, the last species flux is assigned from the total mass
+flux minus the preceding species fluxes, enforcing
 
 \[
 \sum_k F_{\rho Y_k}=F_\rho.
@@ -370,34 +441,66 @@ A homogeneous periodic field is required to reduce to the independent zero-dimen
 
 ## Reactive-flow numerical evidence
 
-The periodic pure-N2 entropy wave on 40, 80, and 160 cells gives density L1 errors
+The periodic pure-N2 entropy wave on 40, 80, and 160 cells remains
+second-order for both principal differential baselines:
 
 ```text
-1.51594309e-4
-3.43297270e-5
-7.01334896e-6
+Rusanov density L1   1.51594309e-4  3.43297270e-5  7.01334896e-6
+observed order       2.142685       2.291283
+
+PeleC-style L1       2.60649336e-4  6.65586207e-5  1.58222336e-5
+observed order       1.969413       2.072672
 ```
 
-and observed orders `2.142685` and `2.291283`.
-
-For the 30 microsecond H2/O2 hotspot regression, the 64-cell solution remains positive and produces
+A moving H2/N2 material slab at constant pressure and velocity isolates
+contact diffusion:
 
 ```text
-pressure span       1.0382765e3 Pa
-maximum |u|         2.2117421e1 m/s
-temperature range   1328.97 to 1545.46 K
+HLLC normalized L1        1.60341180e-3
+PeleC-style normalized L1 1.60340932e-3
+Rusanov normalized L1     2.69219027e-3
+maximum conservation error < 2.9e-15
 ```
 
-A separate 128-cell characteristic-PLM solution is used as a restricted reference at 8 microseconds. The combined normalized L1 errors are
+The unit gate additionally requires exact stationary-contact fluxes and a
+finite pressure-jump acoustic solve with the correct propagation direction.
+
+For the nonuniform reactive hotspot, a 128-cell PeleC-style solution at
+8 microseconds is restricted to coarser meshes. The combined normalized L1
+errors are
 
 ```text
-                 32 cells       64 cells
-characteristic PLM  6.2286e-2      1.4690e-2
-PCM                 2.0249e-1      1.5436e-1
+PeleC-style PLM, 32 cells  6.29718880e-3
+PeleC-style PLM, 64 cells  7.47693937e-4
+HLLC PLM, 64 cells         7.47810364e-4
+Rusanov PLM, 64 cells      1.65550023e-2
+PCM + Rusanov, 64 cells    1.53857298e-1
 ```
 
-so refinement reduces the PLM error, and PLM materially outperforms the first-order baseline at both resolutions.
+Thus the high-resolution contact-resolving fluxes reduce the 64-cell hotspot
+error by about a factor of 22 relative to PLM+Rusanov, while the reconstruction
+upgrade from PCM+Rusanov to PeleC-style PLM+flux reduces it by more than two
+orders of magnitude.
+
+The standalone 30 microsecond PeleC-style hotspot remains positive and gives
+
+```text
+minimum density       1.80684849e-1 kg/m^3
+minimum pressure      1.11238608e5 Pa
+minimum temperature   1328.65396 K
+maximum temperature   1567.84113 K
+maximum |u|           2.08410265e1 m/s
+pressure span          1.37800689e3 Pa
+closure error          2.22044605e-16
+conservation error     4.05678024e-16
+```
 
 ## Scope limitations
 
-The code remains serial and uniform-grid. Reactive CFD currently uses only the seven-species, four-reaction elementary subset, Rusanov fluxes, and a frozen-composition characteristic basis. It lacks third-body/falloff chemistry, a stiff cell integrator, species diffusion, viscosity, thermal conduction, a complete mechanism, general-EOS PeleC Riemann parity, multidimensional reactive flow, AMR, MPI, and accelerators.
+The code remains serial and uniform-grid. Reactive CFD currently uses only the
+seven-species, four-reaction elementary subset and a frozen-composition
+characteristic basis with selectable Rusanov, HLLC, or qualified PeleC-style
+fluxes. It lacks third-body/falloff chemistry, a stiff cell integrator, species
+diffusion, viscosity, thermal conduction, a complete mechanism, fully coupled
+general-EOS characteristic/Riemann parity, reactive PPM, multidimensional
+reactive flow, AMR, MPI, and accelerators.

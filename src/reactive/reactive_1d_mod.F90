@@ -30,11 +30,16 @@ module reactive_1d_mod
   public :: reactive_species_component, reactive_mass_fraction_component
   public :: reactive_primitive_to_conserved
   public :: reactive_conserved_to_primitive
+  public :: reactive_physical_flux_x
   public :: reactive_rusanov_flux_x
+  public :: reactive_hllc_flux_x
+  public :: reactive_pelec_flux_x
+  public :: compute_reactive_riemann_flux_x
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
   public :: trace_reactive_characteristics
   public :: initialize_reactive_1d
+  public :: reactive_cfl_timestep
   public :: advance_reactive_hydro
   public :: advance_reactive_chemistry
   public :: advance_reactive_strang
@@ -279,6 +284,305 @@ contains
         reactive_species_component(nspecies - 1)))
     ok = .true.
   end subroutine reactive_rusanov_flux_x
+
+  subroutine reactive_hllc_flux_x( &
+      species, left_state, right_state, left_temperature_guess, &
+      right_temperature_guess, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: left_state(:), right_state(:)
+    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: fl(:), fr(:), ql(:), qr(:), star(:), qstar(:)
+    real(dp) :: tl, tr, cl, cr, tstar, cstar
+    real(dp) :: rho_l, rho_r, u_l, u_r, p_l, p_r
+    real(dp) :: s_l, s_r, s_m, denominator, p_star_l, p_star_r, p_star
+    logical :: left_ok, right_ok, star_ok
+    integer :: nspecies, nvar
+
+    nspecies = size(species)
+    nvar = reactive_nvar(nspecies)
+    flux = 0.0_dp
+    ok = .false.
+    if (size(left_state) /= nvar .or. size(right_state) /= nvar .or. &
+        size(flux) /= nvar) return
+
+    allocate(fl(nvar), fr(nvar), star(nvar))
+    allocate(ql(reactive_nprim(nspecies)), qr(reactive_nprim(nspecies)))
+    allocate(qstar(reactive_nprim(nspecies)))
+    call reactive_physical_flux_x( &
+      species, left_state, left_temperature_guess, fl, tl, cl, ql, left_ok)
+    call reactive_physical_flux_x( &
+      species, right_state, right_temperature_guess, fr, tr, cr, qr, right_ok)
+    if (.not. (left_ok .and. right_ok)) return
+
+    rho_l = ql(1)
+    rho_r = qr(1)
+    u_l = ql(2)
+    u_r = qr(2)
+    p_l = ql(5)
+    p_r = qr(5)
+    s_l = min(u_l - cl, u_r - cr)
+    s_r = max(u_l + cl, u_r + cr)
+    if (.not. (ieee_is_finite(s_l) .and. ieee_is_finite(s_r))) return
+    if (s_l >= 0.0_dp) then
+      flux = fl
+      ok = .true.
+      return
+    else if (s_r <= 0.0_dp) then
+      flux = fr
+      ok = .true.
+      return
+    end if
+
+    denominator = rho_l * (s_l - u_l) - rho_r * (s_r - u_r)
+    if (abs(denominator) <= 100.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, rho_l * abs(s_l - u_l), rho_r * abs(s_r - u_r))) return
+    s_m = (p_r - p_l + rho_l * u_l * (s_l - u_l) - &
+      rho_r * u_r * (s_r - u_r)) / denominator
+    if (.not. ieee_is_finite(s_m)) return
+    if (s_m <= s_l .or. s_m >= s_r) return
+
+    p_star_l = p_l + rho_l * (s_l - u_l) * (s_m - u_l)
+    p_star_r = p_r + rho_r * (s_r - u_r) * (s_m - u_r)
+    p_star = 0.5_dp * (p_star_l + p_star_r)
+    if (.not. ieee_is_finite(p_star) .or. p_star <= pressure_floor) return
+
+    if (s_m >= 0.0_dp) then
+      call build_reactive_hllc_star( &
+        left_state, ql, s_l, s_m, p_star, nspecies, star, star_ok)
+      if (.not. star_ok) return
+      call reactive_conserved_to_primitive( &
+        species, star, tl, qstar, tstar, cstar, star_ok)
+      if (.not. star_ok) return
+      flux = fl + s_l * (star - left_state)
+    else
+      call build_reactive_hllc_star( &
+        right_state, qr, s_r, s_m, p_star, nspecies, star, star_ok)
+      if (.not. star_ok) return
+      call reactive_conserved_to_primitive( &
+        species, star, tr, qstar, tstar, cstar, star_ok)
+      if (.not. star_ok) return
+      flux = fr + s_r * (star - right_state)
+    end if
+    flux(reactive_species_component(nspecies)) = flux(irho) - &
+      sum(flux(reactive_species_component(1): &
+        reactive_species_component(nspecies - 1)))
+    ok = all(ieee_is_finite(flux))
+  end subroutine reactive_hllc_flux_x
+
+  subroutine reactive_pelec_flux_x( &
+      species, left_state, right_state, left_temperature_guess, &
+      right_temperature_guess, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: left_state(:), right_state(:)
+    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: ql(:), qr(:), qorigin(:), qstar(:), qinterface(:)
+    real(dp), allocatable :: origin_state(:), star_state(:), interface_state(:)
+    real(dp), allocatable :: checked_primitive(:)
+    real(dp) :: tl, tr, cl, cr, torigin, tstar, tinterface
+    real(dp) :: corigin, cstar, cinterface
+    real(dp) :: impedance_l, impedance_r, pressure_star, velocity_star
+    real(dp) :: density_increment, wave_out, wave_in, shock_speed
+    real(dp) :: speed_difference, interpolation_fraction
+    real(dp) :: stationary_threshold, regularization, average_sound_speed
+    real(dp) :: dummy_temperature, dummy_sound
+    logical :: left_ok, right_ok, local_ok, stationary_interface
+    integer :: nspecies, nvar, nprimitive, k, component
+
+    nspecies = size(species)
+    nvar = reactive_nvar(nspecies)
+    nprimitive = reactive_nprim(nspecies)
+    flux = 0.0_dp
+    ok = .false.
+    if (size(left_state) /= nvar .or. size(right_state) /= nvar .or. &
+        size(flux) /= nvar) return
+
+    allocate(ql(nprimitive), qr(nprimitive), qorigin(nprimitive))
+    allocate(qstar(nprimitive), qinterface(nprimitive), checked_primitive(nprimitive))
+    allocate(origin_state(nvar), star_state(nvar), interface_state(nvar))
+    call reactive_conserved_to_primitive( &
+      species, left_state, left_temperature_guess, ql, tl, cl, left_ok)
+    call reactive_conserved_to_primitive( &
+      species, right_state, right_temperature_guess, qr, tr, cr, right_ok)
+    if (.not. (left_ok .and. right_ok)) return
+
+    impedance_l = max(tiny(1.0_dp), ql(1) * cl)
+    impedance_r = max(tiny(1.0_dp), qr(1) * cr)
+    pressure_star = max(pressure_floor, &
+      ((impedance_r * ql(5) + impedance_l * qr(5)) + &
+       impedance_l * impedance_r * (ql(2) - qr(2))) / &
+      (impedance_l + impedance_r))
+    velocity_star = &
+      ((impedance_l * ql(2) + impedance_r * qr(2)) + &
+       (ql(5) - qr(5))) / (impedance_l + impedance_r)
+    if (.not. (ieee_is_finite(pressure_star) .and. &
+        ieee_is_finite(velocity_star))) return
+
+    stationary_threshold = sqrt(epsilon(1.0_dp)) * &
+      max(1.0_dp, abs(ql(2)), abs(qr(2)), cl, cr)
+    stationary_interface = abs(velocity_star) <= stationary_threshold
+    if (stationary_interface) then
+      velocity_star = 0.0_dp
+      qorigin(1:5) = 0.5_dp * (ql(1:5) + qr(1:5))
+      do k = 1, nspecies
+        component = reactive_mass_fraction_component(k)
+        qorigin(component) = 0.5_dp * (ql(component) + qr(component))
+      end do
+      call normalize_reactive_mass_fractions(qorigin, nspecies, local_ok)
+      if (.not. local_ok) return
+    else if (velocity_star > 0.0_dp) then
+      qorigin = ql
+    else
+      qorigin = qr
+    end if
+
+    call reactive_primitive_to_conserved( &
+      species, qorigin, origin_state, torigin, corigin, local_ok)
+    if (.not. local_ok) return
+    density_increment = (pressure_star - qorigin(5)) / (corigin * corigin)
+    qstar = qorigin
+    qstar(1) = qorigin(1) + density_increment
+    qstar(2) = velocity_star
+    qstar(5) = pressure_star
+    if (qstar(1) <= density_floor) return
+    call reactive_primitive_to_conserved( &
+      species, qstar, star_state, tstar, cstar, local_ok)
+    if (.not. local_ok) return
+
+    wave_out = corigin - sign(1.0_dp, velocity_star) * qorigin(2)
+    wave_in = cstar - sign(1.0_dp, velocity_star) * velocity_star
+    shock_speed = 0.5_dp * (wave_in + wave_out)
+    if (pressure_star >= qorigin(5)) then
+      wave_out = shock_speed
+      wave_in = shock_speed
+    end if
+
+    average_sound_speed = 0.5_dp * (cl + cr)
+    regularization = sqrt(epsilon(1.0_dp)) * max(1.0_dp, average_sound_speed)
+    if (abs(wave_out - wave_in) < regularization) then
+      speed_difference = sign(regularization, wave_out - wave_in)
+    else
+      speed_difference = wave_out - wave_in
+    end if
+    interpolation_fraction = max(0.0_dp, min(1.0_dp, &
+      0.5_dp * (1.0_dp + (wave_out + wave_in) / speed_difference)))
+    qinterface = interpolation_fraction * qstar + &
+      (1.0_dp - interpolation_fraction) * qorigin
+    if (wave_out < 0.0_dp) qinterface = qorigin
+    if (wave_in >= 0.0_dp) qinterface = qstar
+    call normalize_reactive_mass_fractions(qinterface, nspecies, local_ok)
+    if (.not. local_ok) return
+    if (qinterface(1) <= density_floor .or. &
+        qinterface(5) <= pressure_floor) return
+
+    call reactive_primitive_to_conserved( &
+      species, qinterface, interface_state, tinterface, cinterface, local_ok)
+    if (.not. local_ok) return
+    call reactive_physical_flux_x( &
+      species, interface_state, tinterface, flux, dummy_temperature, &
+      dummy_sound, checked_primitive, local_ok)
+    if (.not. local_ok) return
+    ok = all(ieee_is_finite(flux))
+  end subroutine reactive_pelec_flux_x
+
+  pure subroutine normalize_reactive_mass_fractions(q, nspecies, ok)
+    real(dp), intent(inout) :: q(:)
+    integer, intent(in) :: nspecies
+    logical, intent(out) :: ok
+    real(dp) :: total
+    integer :: k, component
+
+    total = 0.0_dp
+    ok = .false.
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      if (.not. ieee_is_finite(q(component)) .or. q(component) < -1.0e-12_dp) return
+      q(component) = max(0.0_dp, q(component))
+      total = total + q(component)
+    end do
+    if (total <= tiny(1.0_dp)) return
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      q(component) = q(component) / total
+    end do
+    ok = .true.
+  end subroutine normalize_reactive_mass_fractions
+
+  subroutine build_reactive_hllc_star( &
+      state, primitive, wave_speed, contact_speed, star_pressure, &
+      nspecies, star, ok)
+    real(dp), intent(in) :: state(:), primitive(:)
+    real(dp), intent(in) :: wave_speed, contact_speed, star_pressure
+    integer, intent(in) :: nspecies
+    real(dp), intent(out) :: star(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: rho, u, v, w, pressure, denominator, factor, rho_star
+    integer :: k
+
+    star = 0.0_dp
+    ok = .false.
+    rho = primitive(1)
+    u = primitive(2)
+    v = primitive(3)
+    w = primitive(4)
+    pressure = primitive(5)
+    denominator = wave_speed - contact_speed
+    if (abs(denominator) <= 100.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(wave_speed), abs(contact_speed))) return
+    factor = (wave_speed - u) / denominator
+    rho_star = rho * factor
+    if (.not. ieee_is_finite(rho_star) .or. rho_star <= density_floor) return
+
+    star(irho) = rho_star
+    star(imx) = rho_star * contact_speed
+    star(imy) = rho_star * v
+    star(imz) = rho_star * w
+    star(iet) = ((wave_speed - u) * state(iet) - pressure * u + &
+      star_pressure * contact_speed) / denominator
+    do k = 1, nspecies - 1
+      star(reactive_species_component(k)) = rho_star * &
+        primitive(reactive_mass_fraction_component(k))
+    end do
+    star(reactive_species_component(nspecies)) = rho_star - &
+      sum(star(reactive_species_component(1): &
+        reactive_species_component(nspecies - 1)))
+    ok = all(ieee_is_finite(star)) .and. star(iet) > 0.0_dp
+  end subroutine build_reactive_hllc_star
+
+  subroutine compute_reactive_riemann_flux_x( &
+      species, left_state, right_state, left_temperature_guess, &
+      right_temperature_guess, solver, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: left_state(:), right_state(:)
+    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+
+    select case (trim(solver))
+    case ("rusanov")
+      call reactive_rusanov_flux_x( &
+        species, left_state, right_state, left_temperature_guess, &
+        right_temperature_guess, flux, ok)
+    case ("hllc")
+      call reactive_hllc_flux_x( &
+        species, left_state, right_state, left_temperature_guess, &
+        right_temperature_guess, flux, ok)
+    case ("pelec")
+      call reactive_pelec_flux_x( &
+        species, left_state, right_state, left_temperature_guess, &
+        right_temperature_guess, flux, ok)
+    case default
+      flux = 0.0_dp
+      ok = .false.
+    end select
+  end subroutine compute_reactive_riemann_flux_x
 
   pure subroutine reactive_difference_to_characteristics( &
       center, difference, sound_speed, characteristic, ok)
@@ -600,12 +904,12 @@ contains
 
   subroutine advance_reactive_hydro( &
       species, state, temperature, nx, dx, dt, reconstruction, limiter, &
-      boundary, ok)
+      riemann_solver, boundary, ok)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
     real(dp), intent(in) :: dx, dt
-    character(len=*), intent(in) :: reconstruction, limiter, boundary
+    character(len=*), intent(in) :: reconstruction, limiter, riemann_solver, boundary
     logical, intent(out) :: ok
     real(dp), allocatable :: lf(:, :), rf(:, :), flux(:, :), updated(:, :)
     real(dp), allocatable :: lt(:), rt(:), q(:)
@@ -624,7 +928,8 @@ contains
       limiter, boundary, dt / dx, lf, rf, lt, rt, local_ok)
     if (.not. local_ok) return
     do i = 0, nx
-      call reactive_rusanov_flux_x(species, lf(:, i), rf(:, i), lt(i), rt(i), &
+      call compute_reactive_riemann_flux_x( &
+        species, lf(:, i), rf(:, i), lt(i), rt(i), riemann_solver, &
         flux(:, i), local_ok)
       if (.not. local_ok) return
     end do
@@ -692,13 +997,13 @@ contains
 
   subroutine advance_reactive_strang( &
       species, reactions, state, temperature, nx, dx, dt, reconstruction, &
-      limiter, boundary, chemistry_enabled, rtol, atol, ok)
+      limiter, riemann_solver, boundary, chemistry_enabled, rtol, atol, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
     real(dp), intent(in) :: dx, dt, rtol, atol
-    character(len=*), intent(in) :: reconstruction, limiter, boundary
+    character(len=*), intent(in) :: reconstruction, limiter, riemann_solver, boundary
     logical, intent(in) :: chemistry_enabled
     logical, intent(out) :: ok
     logical :: local_ok
@@ -710,7 +1015,7 @@ contains
       if (.not. local_ok) return
     end if
     call advance_reactive_hydro(species, state, temperature, nx, dx, dt, &
-      reconstruction, limiter, boundary, local_ok)
+      reconstruction, limiter, riemann_solver, boundary, local_ok)
     if (.not. local_ok) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
@@ -823,7 +1128,8 @@ contains
       dt = min(dt, config%final_time - time)
       call advance_reactive_strang(species, reactions, state, temperature, &
         config%nx, dx, dt, config%reconstruction, config%limiter, &
-        config%boundary_condition, config%chemistry_enabled, &
+        config%riemann_solver, config%boundary_condition, &
+        config%chemistry_enabled, &
         config%chemistry_relative_tolerance, config%chemistry_absolute_tolerance, &
         local_ok)
       if (.not. local_ok) then

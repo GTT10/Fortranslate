@@ -13,7 +13,7 @@ program test_reactive_hotspot_reference
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: reference_state(:, :), reference_temperature(:)
-  real(dp) :: plm_error(2), pcm_error(2)
+  real(dp) :: pelec_error(2), hllc_error, rusanov_error, pcm_error
   real(dp) :: dx, time, initial_integrals(5), final_integrals(5)
   logical :: ok
   integer :: steps
@@ -23,36 +23,45 @@ program test_reactive_hotspot_reference
   call load_h2o2_elementary_mechanism(reactions, ok)
   if (.not. ok) error stop "Failed to load hotspot-reference mechanism"
 
-  call run_case(128, "characteristic_plm", reference_state, &
+  call run_case(128, "characteristic_plm", "pelec", reference_state, &
     reference_temperature, dx, time, steps, initial_integrals, &
     final_integrals, ok)
   if (.not. ok) error stop "Reactive hotspot reference run failed"
 
-  call compare_grid(32, "characteristic_plm", reference_state, &
-    reference_temperature, plm_error(1))
-  call compare_grid(64, "characteristic_plm", reference_state, &
-    reference_temperature, plm_error(2))
-  call compare_grid(32, "pcm", reference_state, reference_temperature, &
-    pcm_error(1))
-  call compare_grid(64, "pcm", reference_state, reference_temperature, &
-    pcm_error(2))
+  call compare_grid(32, "characteristic_plm", "pelec", reference_state, &
+    reference_temperature, pelec_error(1))
+  call compare_grid(64, "characteristic_plm", "pelec", reference_state, &
+    reference_temperature, pelec_error(2))
+  call compare_grid(64, "characteristic_plm", "hllc", reference_state, &
+    reference_temperature, hllc_error)
+  call compare_grid(64, "characteristic_plm", "rusanov", reference_state, &
+    reference_temperature, rusanov_error)
+  call compare_grid(64, "pcm", "rusanov", reference_state, &
+    reference_temperature, pcm_error)
 
-  write(*, '(a,2(1x,es16.8))') "hotspot PLM normalized L1:", plm_error
-  write(*, '(a,2(1x,es16.8))') "hotspot PCM normalized L1:", pcm_error
-  if (plm_error(2) >= 0.70_dp * plm_error(1)) then
-    error stop "Reactive hotspot PLM did not improve under refinement"
+  write(*, '(a,2(1x,es16.8))') "hotspot PeleC normalized L1:", pelec_error
+  write(*, '(a,1x,es16.8)') "hotspot HLLC normalized L1:", hllc_error
+  write(*, '(a,1x,es16.8)') "hotspot Rusanov normalized L1:", rusanov_error
+  write(*, '(a,1x,es16.8)') "hotspot PCM normalized L1:", pcm_error
+  if (pelec_error(2) >= 0.70_dp * pelec_error(1)) then
+    error stop "Reactive hotspot PeleC PLM did not improve under refinement"
   end if
-  if (plm_error(1) >= 0.75_dp * pcm_error(1) .or. &
-      plm_error(2) >= 0.75_dp * pcm_error(2)) then
-    error stop "Reactive characteristic PLM did not beat PCM"
+  if (pelec_error(2) >= 0.90_dp * rusanov_error) then
+    error stop "Reactive PeleC flux did not improve hotspot accuracy"
+  end if
+  if (hllc_error >= 0.95_dp * rusanov_error) then
+    error stop "Reactive HLLC flux did not improve hotspot accuracy"
+  end if
+  if (pelec_error(2) >= 0.75_dp * pcm_error) then
+    error stop "Reactive PeleC characteristic PLM did not beat PCM"
   end if
   write(*, '(a)') "test_reactive_hotspot_reference: PASS"
 
 contains
 
-  subroutine set_config(nx, reconstruction, config)
+  subroutine set_config(nx, reconstruction, solver, config)
     integer, intent(in) :: nx
-    character(len=*), intent(in) :: reconstruction
+    character(len=*), intent(in) :: reconstruction, solver
     type(reactive_1d_config), intent(out) :: config
 
     config = reactive_1d_config()
@@ -65,6 +74,7 @@ contains
     config%problem = "reactive_hotspot"
     config%reconstruction = trim(reconstruction)
     config%limiter = "mc"
+    config%riemann_solver = trim(solver)
     config%boundary_condition = "periodic"
     config%chemistry_enabled = .true.
     config%chemistry_relative_tolerance = 2.0e-7_dp
@@ -84,10 +94,10 @@ contains
     config%x_n2 = 0.55643_dp
   end subroutine set_config
 
-  subroutine run_case(nx, reconstruction, state, temperature, dx, time, &
+  subroutine run_case(nx, reconstruction, solver, state, temperature, dx, time, &
       steps, initial_integrals, final_integrals, run_ok)
     integer, intent(in) :: nx
-    character(len=*), intent(in) :: reconstruction
+    character(len=*), intent(in) :: reconstruction, solver
     real(dp), allocatable, intent(out) :: state(:, :), temperature(:)
     real(dp), intent(out) :: dx, time
     integer, intent(out) :: steps
@@ -95,14 +105,14 @@ contains
     logical, intent(out) :: run_ok
     type(reactive_1d_config) :: config
 
-    call set_config(nx, reconstruction, config)
+    call set_config(nx, reconstruction, solver, config)
     call simulate_reactive_1d(species, reactions, config, state, temperature, &
       dx, time, steps, initial_integrals, final_integrals, run_ok)
   end subroutine run_case
 
-  subroutine compare_grid(nx, reconstruction, reference, reference_t, error)
+  subroutine compare_grid(nx, reconstruction, solver, reference, reference_t, error)
     integer, intent(in) :: nx
-    character(len=*), intent(in) :: reconstruction
+    character(len=*), intent(in) :: reconstruction, solver
     real(dp), intent(in) :: reference(:, 0:), reference_t(0:)
     real(dp), intent(out) :: error
     real(dp), allocatable :: state(:, :), temperature(:)
@@ -114,7 +124,7 @@ contains
     logical :: run_ok, local_ok
     integer :: steps_local, ratio, cell, fine, first, last, k
 
-    call run_case(nx, reconstruction, state, temperature, dx_local, &
+    call run_case(nx, reconstruction, solver, state, temperature, dx_local, &
       time_local, steps_local, initial_local, final_local, run_ok)
     if (.not. run_ok) error stop "Reactive hotspot comparison run failed"
     ratio = 128 / nx

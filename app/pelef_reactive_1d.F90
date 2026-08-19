@@ -45,6 +45,7 @@ program pelef_reactive_1d
   write(*, '(a)') "PeleF " // pelef_version // " reactive 1D"
   write(*, '(a,1x,a)') "Problem:", trim(config%problem)
   write(*, '(a,1x,a)') "Reconstruction:", trim(config%reconstruction)
+  write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
   write(*, '(a,i0)') "Completed steps: ", steps
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Maximum conservation error: ", &

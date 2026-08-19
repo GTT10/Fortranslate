@@ -584,6 +584,23 @@ add_executable(test_reactive_general_eos unit/test_reactive_general_eos.F90)
 target_link_libraries(test_reactive_general_eos PRIVATE pelef_core)
 add_test(NAME unit_reactive_general_eos COMMAND test_reactive_general_eos)
 
+add_executable(test_reactive_riemann unit/test_reactive_riemann.F90)
+target_link_libraries(test_reactive_riemann PRIVATE pelef_core)
+add_test(NAME unit_reactive_riemann COMMAND test_reactive_riemann)
+
+add_executable(
+  test_reactive_contact_advection
+  regression/test_reactive_contact_advection.F90
+)
+target_link_libraries(test_reactive_contact_advection PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_contact_advection
+  COMMAND test_reactive_contact_advection
+)
+set_tests_properties(
+  regression_reactive_contact_advection PROPERTIES TIMEOUT 180
+)
+
 add_executable(
   test_reactive_uniform_reduction
   unit/test_reactive_uniform_reduction.F90
@@ -640,3 +657,33 @@ add_test(
   COMMAND test_reactive_hotspot_reference
 )
 set_tests_properties(regression_reactive_hotspot_reference PROPERTIES TIMEOUT 240)
+
+set(
+  REACTIVE_HOTSPOT_PELEC_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot_pelec"
+)
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_PELEC_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_pelec_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot/hotspot_pelec.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_pelec_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_HOTSPOT_PELEC_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_hotspot_pelec_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot.py"
+    --input
+    "${REACTIVE_HOTSPOT_PELEC_WORK_DIRECTORY}/reactive_hotspot_pelec.csv"
+)
+set_tests_properties(
+  regression_reactive_hotspot_pelec_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_pelec_run
+)

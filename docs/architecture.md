@@ -93,7 +93,7 @@ frozen-composition characteristic slope limiting
         ↓
 MUSCL-Hancock face prediction
         ↓
-general-EOS Rusanov flux
+selectable general-EOS Rusanov / HLLC / PeleC-style acoustic flux
         ↓
 conservative finite-volume update
 ```
@@ -136,5 +136,5 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
 5. Species fluxes close exactly to the shared mass flux.
 6. Chemistry does not independently modify `rhoE` in the adiabatic constant-volume substep.
 7. The current characteristic basis assumes frozen composition across each acoustic solve.
-8. Rusanov remains the robustness baseline until a general-EOS PeleC-style Riemann solver is separately verified.
+8. Rusanov remains the robustness baseline; HLLC and the qualified PeleC-style acoustic solver are selected explicitly and retain independent contact/acoustic gates.
 9. The current four-reaction chemistry subset is not a complete H2/O2 mechanism.

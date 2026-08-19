@@ -13,6 +13,7 @@ module simulation_config_reactive_1d_mod
     character(len=32) :: problem = "reactive_hotspot"
     character(len=32) :: reconstruction = "characteristic_plm"
     character(len=32) :: limiter = "mc"
+    character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: boundary_condition = "periodic"
     logical :: chemistry_enabled = .true.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -51,14 +52,15 @@ contains
     real(dp) :: density_wave_amplitude, hotspot_temperature_rise
     real(dp) :: hotspot_center, hotspot_width
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2
-    character(len=32) :: problem, reconstruction, limiter
+    character(len=32) :: problem, reconstruction, limiter, riemann_solver
     character(len=32) :: boundary_condition
     character(len=256) :: output_file
     logical :: chemistry_enabled
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
-      reconstruction, limiter, boundary_condition, chemistry_enabled, &
+      reconstruction, limiter, riemann_solver, boundary_condition, &
+      chemistry_enabled, &
       chemistry_relative_tolerance, chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity, &
       density_wave_amplitude, hotspot_temperature_rise, hotspot_center, &
@@ -74,6 +76,7 @@ contains
     problem = config%problem
     reconstruction = config%reconstruction
     limiter = config%limiter
+    riemann_solver = config%riemann_solver
     boundary_condition = config%boundary_condition
     chemistry_enabled = config%chemistry_enabled
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -142,6 +145,13 @@ contains
       message = "Unknown reactive 1D limiter"
       return
     end if
+    if (trim(riemann_solver) /= "rusanov" .and. &
+        trim(riemann_solver) /= "hllc" .and. &
+        trim(riemann_solver) /= "pelec") then
+      ok = .false.
+      message = "Unknown reactive 1D Riemann solver"
+      return
+    end if
     if (trim(boundary_condition) /= "periodic" .and. &
         trim(boundary_condition) /= "outflow") then
       ok = .false.
@@ -158,6 +168,7 @@ contains
     config%problem = trim(problem)
     config%reconstruction = trim(reconstruction)
     config%limiter = trim(limiter)
+    config%riemann_solver = trim(riemann_solver)
     config%boundary_condition = trim(boundary_condition)
     config%chemistry_enabled = chemistry_enabled
     config%chemistry_relative_tolerance = chemistry_relative_tolerance

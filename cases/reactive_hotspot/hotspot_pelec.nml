@@ -8,7 +8,7 @@
   problem = "reactive_hotspot"
   reconstruction = "characteristic_plm"
   limiter = "mc"
-  riemann_solver = "rusanov"
+  riemann_solver = "pelec"
   boundary_condition = "periodic"
   chemistry_enabled = .true.
   chemistry_relative_tolerance = 2.0e-7
@@ -26,5 +26,5 @@
   x_oh = 1.0e-5
   x_h2o = 0.0
   x_n2 = 0.55643
-  output_file = "reactive_hotspot.csv"
+  output_file = "reactive_hotspot_pelec.csv"
 /

@@ -67,6 +67,8 @@
 - [x] conserved `rho*Y_k` state coupled to NASA7 thermodynamics
 - [x] temperature recovery from conserved total energy
 - [x] general-EOS physical and Rusanov fluxes
+- [x] frozen-composition HLLC flux
+- [x] qualified frozen-composition PeleC-style acoustic flux
 - [x] exact species-flux closure to total mass flux
 - [x] PCM lower-order baseline
 - [x] frozen-composition characteristic PLM with MC/minmod limiting
@@ -78,33 +80,43 @@
 - [x] smooth entropy-wave second-order convergence
 - [x] nonuniform reactive-hotspot structural regression
 - [x] high-resolution hotspot comparison against PCM
+- [x] moving material-contact comparison among Rusanov, HLLC, and PeleC-style fluxes
+- [x] stationary-contact and finite acoustic-jump Riemann gates
 - [ ] pressure-dependent/full H2/O2 chemistry in CFD
 - [ ] molecular transport
 - [ ] multidimensional reactive flow
 
-## Verified `0.10.0` local results
+## Verified `0.11.0` local results
 
 | Gate | Result |
 |---|---:|
-| Complete Debug suite | `55/55` passed |
-| Complete Release suite | `55/55` passed |
+| Complete Debug suite | `59/59` passed |
+| Complete Release suite | `59/59` passed |
 | Reactive entropy-wave density L1, 40 cells | `1.51594309e-4` |
 | Reactive entropy-wave density L1, 80 cells | `3.43297270e-5` |
 | Reactive entropy-wave density L1, 160 cells | `7.01334896e-6` |
+| PeleC-flux reactive entropy-wave density L1, 160 cells | `1.58222336e-5` |
+| Reactive material-contact normalized L1, HLLC | `1.60341180e-3` |
+| Reactive material-contact normalized L1, PeleC-style | `1.60340932e-3` |
+| Reactive material-contact normalized L1, Rusanov | `2.69219027e-3` |
+| Reactive hotspot normalized L1, 64-cell PeleC-style | `7.47693937e-4` |
+| Reactive hotspot normalized L1, 64-cell HLLC | `7.47810364e-4` |
+| Reactive hotspot normalized L1, 64-cell Rusanov | `1.65550023e-2` |
 | Observed order, 40 to 80 | `2.142685` |
 | Observed order, 80 to 160 | `2.291283` |
-| Hotspot completed steps | `475` |
-| Hotspot maximum conservation error | `2.03e-16` |
-| Hotspot pressure span | `1.0382765e3 Pa` |
-| Hotspot maximum velocity magnitude | `2.2117421e1 m/s` |
-| Hotspot temperature interval | `1328.97 to 1545.46 K` |
-| Hotspot PLM normalized L1, 32 cells | `6.22861249e-2` |
-| Hotspot PLM normalized L1, 64 cells | `1.46900072e-2` |
-| Hotspot PCM normalized L1, 32 cells | `2.02487281e-1` |
-| Hotspot PCM normalized L1, 64 cells | `1.54357039e-1` |
+| Rusanov hotspot completed steps | `475` |
+| PeleC-style hotspot completed steps | `477` |
+| Rusanov hotspot maximum conservation error | `2.03e-16` |
+| PeleC-style hotspot maximum conservation error | `4.06e-16` |
+| Rusanov hotspot pressure span | `1.0382765e3 Pa` |
+| PeleC-style hotspot pressure span | `1.3780069e3 Pa` |
+| Rusanov hotspot maximum velocity magnitude | `2.2117421e1 m/s` |
+| PeleC-style hotspot maximum velocity magnitude | `2.0841026e1 m/s` |
+| Rusanov hotspot temperature interval | `1328.97 to 1545.46 K` |
+| PeleC-style hotspot temperature interval | `1328.65 to 1567.84 K` |
 
 The existing `0.9.0` Cantera trajectory and exact-state production-rate comparisons remain active when `PELEF_ENABLE_CANTERA_REFERENCE=ON`.
 
 ## Next implementation slice
 
-Move the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the verified Strang-split flow interface. Keep the four-reaction path as a regression baseline. After that, add molecular viscosity, thermal conduction, and species diffusion before extending reactive flow to two dimensions.
+Add reactive PPM and a fuller general-EOS characteristic treatment while retaining Rusanov, HLLC, and the qualified PeleC-style acoustic solver as differential baselines. Then move the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the verified Strang-split flow interface before adding molecular viscosity, thermal conduction, and species diffusion.

@@ -8,6 +8,7 @@
   problem = "entropy_wave"
   reconstruction = "characteristic_plm"
   limiter = "mc"
+  riemann_solver = "rusanov"
   boundary_condition = "periodic"
   chemistry_enabled = .false.
   initial_temperature = 1200.0

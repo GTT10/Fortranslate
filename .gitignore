@@ -1,5 +1,6 @@
 # Build products
 build/
+build-*/
 cmake-build-*/
 
 # Fortran compiler artifacts
@@ -23,6 +24,8 @@ shu_osher_pelec_plm.csv
 sedov.csv
 isentropic_vortex.csv
 multispec_sod.csv
+zero_d_*.csv
+reactive_*.csv
 *.vtk
 *.vtu
 *.h5

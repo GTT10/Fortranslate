@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.10.0` milestone contains six serial verification executables.
+The `0.11.0` milestone contains six serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -62,13 +62,13 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
 - NASA7 composition-dependent pressure, temperature, heat capacities, ratio of specific heats, and frozen sound speed;
 - safeguarded conserved-to-primitive recovery through `e(Y,T) -> T` inversion;
 - PCM or frozen-composition characteristic PLM reconstruction;
-- Rusanov flux with species-flux closure;
+- selectable Rusanov, HLLC, or qualified PeleC-style acoustic fluxes with species-flux closure;
 - periodic or outflow boundaries;
 - cell-local adiabatic constant-volume chemistry;
 - reaction-hydro-reaction Strang splitting;
-- homogeneous-reactor reduction, smooth entropy-wave convergence, and nonuniform reactive-hotspot regressions.
+- homogeneous-reactor reduction, smooth entropy-wave convergence, material-contact advection, and nonuniform reactive-hotspot regressions.
 
-The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
+The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection, HLLC wave estimates, and PeleC-style acoustic solve use a frozen-composition ideal-gas-mixture approximation. They are independently tested intermediate algorithms, not full PeleC/PelePhysics general-EOS parity.
 
 ## Build and test
 
@@ -129,12 +129,14 @@ Elementary H2/O2 constant-volume reactor:
 python3 tools/check_zero_d_h2o2.py --input zero_d_h2o2.csv
 ```
 
-Reactive one-dimensional hotspot:
+Reactive one-dimensional hotspot with the qualified PeleC-style acoustic flux:
 
 ```bash
-./build/pelef_reactive_1d cases/reactive_hotspot/hotspot.nml
-python3 tools/check_reactive_hotspot.py --input reactive_hotspot.csv
+./build/pelef_reactive_1d cases/reactive_hotspot/hotspot_pelec.nml
+python3 tools/check_reactive_hotspot.py --input reactive_hotspot_pelec.csv
 ```
+
+The reactive namelist accepts `riemann_solver = "rusanov"`, `"hllc"`, or `"pelec"`.
 
 Smooth general-EOS entropy wave:
 

@@ -13,7 +13,8 @@ program test_reactive_entropy_wave
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   integer, parameter :: grids(3) = [40, 80, 160]
-  real(dp) :: errors(3), orders(2), base_density
+  real(dp) :: rusanov_errors(3), pelec_errors(3)
+  real(dp) :: rusanov_orders(2), pelec_orders(2), base_density
   logical :: ok
   integer :: i
 
@@ -30,24 +31,38 @@ program test_reactive_entropy_wave
   if (.not. ok) error stop "Failed to compute entropy-wave density"
 
   do i = 1, 3
-    call run_grid(grids(i), errors(i))
+    call run_grid(grids(i), "rusanov", rusanov_errors(i))
+    call run_grid(grids(i), "pelec", pelec_errors(i))
   end do
-  orders(1) = log(errors(1) / errors(2)) / log(2.0_dp)
-  orders(2) = log(errors(2) / errors(3)) / log(2.0_dp)
-  write(*, '(a,3(1x,es16.8))') "reactive entropy-wave L1:", errors
-  write(*, '(a,2(1x,f10.6))') "observed orders:", orders
-  if (minval(orders) < 1.75_dp) then
+  rusanov_orders(1) = log(rusanov_errors(1) / rusanov_errors(2)) / log(2.0_dp)
+  rusanov_orders(2) = log(rusanov_errors(2) / rusanov_errors(3)) / log(2.0_dp)
+  pelec_orders(1) = log(pelec_errors(1) / pelec_errors(2)) / log(2.0_dp)
+  pelec_orders(2) = log(pelec_errors(2) / pelec_errors(3)) / log(2.0_dp)
+
+  write(*, '(a,3(1x,es16.8))') &
+    "reactive entropy-wave Rusanov L1:", rusanov_errors
+  write(*, '(a,2(1x,f10.6))') "Rusanov observed orders:", rusanov_orders
+  write(*, '(a,3(1x,es16.8))') &
+    "reactive entropy-wave PeleC L1:", pelec_errors
+  write(*, '(a,2(1x,f10.6))') "PeleC observed orders:", pelec_orders
+
+  if (minval(rusanov_orders) < 1.75_dp .or. &
+      minval(pelec_orders) < 1.75_dp) then
     error stop "Reactive characteristic PLM lost second-order convergence"
   end if
-  if (errors(3) > 1.0e-5_dp) then
-    error stop "Reactive entropy-wave error is too large"
+  if (rusanov_errors(3) > 1.0e-5_dp) then
+    error stop "Reactive Rusanov entropy-wave error is too large"
+  end if
+  if (pelec_errors(3) > 2.0e-5_dp) then
+    error stop "Reactive PeleC entropy-wave error is too large"
   end if
   write(*, '(a)') "test_reactive_entropy_wave: PASS"
 
 contains
 
-  subroutine run_grid(nx, l1_error)
+  subroutine run_grid(nx, riemann_solver, l1_error)
     integer, intent(in) :: nx
+    character(len=*), intent(in) :: riemann_solver
     real(dp), intent(out) :: l1_error
     type(reactive_1d_config) :: config
     real(dp), allocatable :: state(:, :), temperature(:)
@@ -65,6 +80,7 @@ contains
     config%problem = "entropy_wave"
     config%reconstruction = "characteristic_plm"
     config%limiter = "mc"
+    config%riemann_solver = trim(riemann_solver)
     config%boundary_condition = "periodic"
     config%chemistry_enabled = .false.
     config%initial_temperature = 1200.0_dp

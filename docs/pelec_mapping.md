@@ -12,7 +12,7 @@ This table maps responsibilities, not source lines.
 | AMReX mesh/geometry responsibility | `mesh_mod`, `mesh_2d_mod` | Uniform 1D and Cartesian 2D meshes |
 | AMReX boundary fill | `boundary_conditions_mod` and periodic wrapping in `ctu_2d_mod` | 1D outflow/periodic and 2D periodic subset |
 | `Source/Riemann.H` LF path | `riemann_rusanov_mod` | Independent Rusanov implementation |
-| `Source/Riemann.H` acoustic solver | `riemann_pelec_mod` | Qualified single-species ideal-gas subset |
+| `Source/Riemann.H` acoustic solver | `riemann_pelec_mod`, `reactive_1d_mod::reactive_pelec_flux_x` | Qualified constant-gamma and frozen-composition mixture subsets |
 | Direction-dependent flux assembly | `directional_flux_mod` | x/y momentum rotation and y fluxes verified |
 | `Source/PLM.H` characteristic projection/tracing | `reconstruction_pelec_plm_mod` | Qualified 1D regular-cell subset |
 | `Source/PLM.H::plm_slope` | `pelec_limited_slope` | Order 2 and 4 formulas verified |
@@ -28,7 +28,7 @@ This table maps responsibilities, not source lines.
 | `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod` | Four-reaction 0D chemistry and Strang-split 1D cell coupling verified |
 | PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
 | reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
-| reactive hydro state/flux path | `reactive_1d_mod`, `pelef_reactive_1d` | NASA7 conversion, Rusanov flux, characteristic PLM, and Strang splitting verified |
+| reactive hydro state/flux path | `reactive_1d_mod`, `pelef_reactive_1d` | NASA7 conversion, Rusanov/HLLC/PeleC-style fluxes, characteristic PLM, and Strang splitting verified |
 | stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
 | third-body/falloff chemistry | future kinetics extensions | Not started |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |

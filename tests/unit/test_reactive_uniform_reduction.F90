@@ -29,6 +29,7 @@ program test_reactive_uniform_reduction
   config%boundary_condition = "periodic"
   config%reconstruction = "characteristic_plm"
   config%limiter = "mc"
+  config%riemann_solver = "rusanov"
   config%initial_temperature = 1200.0_dp
   config%initial_pressure = 101325.0_dp
   config%initial_velocity = 0.0_dp
@@ -42,7 +43,8 @@ program test_reactive_uniform_reduction
   dt = 1.0e-5_dp
 
   call advance_reactive_strang(species, reactions, state, temperature, &
-    config%nx, dx, dt, "characteristic_plm", "mc", "periodic", .true., &
+    config%nx, dx, dt, "characteristic_plm", "mc", "rusanov", &
+    "periodic", .true., &
     2.0e-7_dp, 1.0e-12_dp, ok)
   if (.not. ok) error stop "Uniform Strang step failed"
   call advance_reactive_chemistry(species, reactions, reference, &

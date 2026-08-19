@@ -127,7 +127,10 @@ The composition-dependent flow path is accepted only when all of the following r
 - density, pressure, temperature, and species positivity;
 - mass-fraction closure;
 - smooth entropy-wave convergence above order 1.75 on both refinement intervals;
-- nonuniform reactive-hotspot generation of finite pressure and velocity responses.
+- stationary and moving material contacts for HLLC/PeleC contact resolution;
+- a finite pressure-jump acoustic interface for flux direction and positivity;
+- nonuniform reactive-hotspot generation of finite pressure and velocity responses;
+- restricted high-resolution hotspot comparisons separating reconstruction and Riemann diffusion.
 
 The hotspot also uses a numerical-reference gate. A 128-cell characteristic-PLM result is restricted onto 32- and 64-cell meshes. At both resolutions, characteristic PLM must have less than 75 percent of the corresponding PCM error, and refinement must reduce the PLM error by at least 30 percent.
 
@@ -135,4 +138,4 @@ This reference is a discretization comparison, not an external physical validati
 
 ## Scope of the evidence
 
-The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, molecular transport, or multidimensional reacting CFD.
+The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset. The `pelec` flux is checked against contact/acoustic invariants and convergence data, but is not claimed to reproduce every branch of PeleC/PelePhysics `Riemann.H`. These gates do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, molecular transport, or multidimensional reacting CFD.
