@@ -1,0 +1,43 @@
+name: Apply reactive 2D characteristic PPM implementation
+
+on:
+  pull_request:
+    branches:
+      - agent/reactive-general-eos-2d-ctu
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out payload branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-reactive-2d-characteristic-ppm
+          fetch-depth: 0
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          cat tools/reactive2d_charppm.part00 \
+              tools/reactive2d_charppm.part01 \
+              tools/reactive2d_charppm.part02 \
+              tools/reactive2d_charppm.part03 \
+            | base64 --decode > /tmp/reactive2d-charppm.patch.gz
+          echo "863d4b5401e961ef32e8d38baed764da316e1cd23bf0d09f84a266bcd9f46478  /tmp/reactive2d-charppm.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/reactive2d-charppm.patch.gz \
+            > /tmp/reactive2d-charppm.patch
+
+      - name: Apply and publish implementation
+        shell: bash
+        run: |
+          git fetch origin agent/reactive-2d-characteristic-ppm
+          git switch --force-create agent/reactive-2d-characteristic-ppm \
+            origin/agent/reactive-2d-characteristic-ppm
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git am /tmp/reactive2d-charppm.patch
+          git push origin HEAD:agent/reactive-2d-characteristic-ppm
