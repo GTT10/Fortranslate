@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/tmp-publish-reactive-2d-ctu
+  pull_request:
+    branches:
+      - agent/reactive-characteristic-ppm
 
 permissions:
   contents: write
