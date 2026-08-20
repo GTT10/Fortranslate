@@ -474,12 +474,6 @@ The HLLC hotspot case remains positive and conservative while producing a
 pressure span of approximately `1.3780e3 Pa` and a maximum velocity magnitude
 of approximately `2.0841e1 m/s`.
 
-## Scope limitations
-
-The code remains serial and uniform-grid. Reactive CFD currently uses only the seven-species, four-reaction elementary
-subset, selectable Rusanov/HLLC fluxes, and a frozen-composition
-characteristic basis. It lacks third-body/falloff chemistry, a stiff cell integrator, species diffusion, viscosity, thermal conduction, a complete mechanism, general-EOS PeleC Riemann parity, multidimensional reactive flow, AMR, MPI, and accelerators.
-
 ## Monotone reactive PPM
 
 The optional reactive PPM path reconstructs the general-EOS primitive vector
@@ -505,4 +499,144 @@ bounded and normalized before conversion back to conserved variables.
 Unlike the time-traced characteristic PLM path, this PPM reconstruction is used
 as a semidiscrete spatial operator and advanced with the three-stage SSPRK3
 scheme. Rusanov and HLLC remain independent flux choices. This is a monotone
-primitive PPM subset, not yet PeleC's full characteristic PPM algorithm.
+primitive PPM subset.  It remains available as an independent comparison path
+after addition of the separate time-traced `characteristic_ppm` algorithm.
+
+## Time-traced reactive characteristic PPM
+
+`reconstruction = "characteristic_ppm"` is a separate normal-predictor path;
+it does not replace the semidiscrete componentwise `ppm` baseline.  For every
+primitive component, the five-cell stencil is reconstructed with the van-Leer
+limited edge formula used by PeleC `PPM.H`.  A cell parabola with center value
+`q_c` and edge values `q_-`, `q_+` is represented through
+
+\[
+q_6 = 6q_c-3(q_-+q_+).
+\]
+
+For a characteristic speed \(\lambda\),
+\(\sigma=|\lambda|\Delta t/\Delta x\).  The average swept toward the right
+edge is
+
+\[
+I_+(\lambda)=
+\begin{cases}
+q_+, & \lambda\le 0,\\
+q_+-\frac{\sigma}{2}
+\left[q_+-q_--\left(1-\frac{2\sigma}{3}\right)q_6\right],
+& \lambda>0,
+\end{cases}
+\]
+
+and the corresponding average swept toward the left edge is
+
+\[
+I_-(\lambda)=
+\begin{cases}
+q_-+\frac{\sigma}{2}
+\left[q_+-q_-+\left(1-\frac{2\sigma}{3}\right)q_6\right],
+& \lambda\le 0,\\
+q_-, & \lambda>0.
+\end{cases}
+\]
+
+These integrals are evaluated for `u-c`, `u`, and `u+c`.  Species mass
+fractions and transverse velocities use the middle-wave integral.  Density,
+normal velocity, and pressure use the same frozen-composition acoustic/contact
+projection as the characteristic PLM path, with the fastest wave moving toward
+the face selected as the reference state.  Internal energy is not independently
+traced in this qualified subset; the final face energy and temperature are
+recovered from density, pressure, and normalized composition through the NASA7
+EOS.
+
+The reconstruction is already time-centered, so it advances with one
+conservative Godunov update rather than the SSPRK3 loop used by the semidiscrete
+componentwise PPM path.  A profile is rejected when the local characteristic
+Courant number exceeds one.
+
+### Reactive shock flattening
+
+The optional `ppm_shock_flattening` detector is the one-dimensional regular-cell
+formula from PeleC `Godunov.H`.  It combines a pressure-jump ratio, compression
+of the normal velocity, and a shifted neighboring detector.  The resulting
+coefficient
+
+\[
+f_i=1-\max(\chi_i z_i,\chi_{i+s}z_{i+s}),\qquad 0\le f_i\le1,
+\]
+
+blends each reconstructed edge toward its cell-center value before the
+parabolic monotonicity constraint.  Smooth regions and expansions retain
+`f=1`; the strong-compression unit stencil reaches `f=0`.
+
+### Bounded contact steepening
+
+The optional `ppm_contact_steepening` detector follows the
+Colella--Woodward-style density/pressure criteria: a density jump must dominate
+the pressure jump, neighboring density curvatures must change sign, and the
+relative density change must exceed one percent.  Its canonical coefficient is
+
+\[
+\eta=\max\left[0,\min\left(1,
+20(\widetilde\eta-0.05)\right)\right],
+\qquad
+\widetilde\eta=-\frac{\Delta^2\rho_+-\Delta^2\rho_-}
+{6\Delta\rho}.
+\]
+
+Density and mass-fraction edges are blended toward neighboring MC face values
+and clipped to the adjacent-cell range.  The current general-EOS HLLC subset
+caps the applied strength at `0.5`; full-strength simultaneous density and
+composition steepening can over-compress the material interface before a
+complete PeleC/PelePhysics characteristic system is available.
+
+### Characteristic-PPM numerical evidence
+
+The smooth entropy-wave density L1 errors on 32, 64, and 128 cells are
+
+```text
+2.49716040e-4
+4.88601959e-5
+9.87993492e-6
+```
+
+with observed orders `2.353557` and `2.306086`.  The corresponding H2
+mass-fraction errors for the smooth composition wave are
+
+```text
+3.31512363e-5
+7.50581812e-6
+1.45326368e-6
+```
+
+with observed orders `2.142981` and `2.368713`.
+
+For the 200-cell moving material contact,
+
+```text
+componentwise PPM + HLLC             8.75871389e-5
+characteristic PPM + HLLC            7.35878653e-5
+characteristic PPM + bounded steepening 2.50998077e-5
+```
+
+in H2 mass-fraction L1 error.  The periodic pressure-ratio-three shock test
+remains positive and conservative with or without flattening, produces no
+pressure overshoot outside the initial extrema, and records a nonzero
+flattened/unflattened state difference of `8.08412674e1` in its normalized
+state-sum signature.
+
+On the smooth reacting hotspot, the 32/64-cell characteristic-PPM errors against
+the restricted 128-cell characteristic-PLM reference are `6.00777009e-2` and
+`3.07014574e-2`.  This is convergent and far below PCM, but it is not lower than
+the existing characteristic-PLM or semidiscrete componentwise-PPM error for
+that particular Gaussian case.  The regression records this limitation rather
+than treating the new path as universally superior.
+
+## Scope limitations
+
+The code remains serial and uniform-grid. Reactive CFD currently uses only the
+seven-species, four-reaction elementary subset, selectable Rusanov/HLLC fluxes,
+and qualified frozen-composition PLM/PPM characteristic bases. It lacks
+third-body/falloff chemistry, a stiff cell integrator, species diffusion,
+viscosity, thermal conduction, a complete mechanism, full general-EOS PeleC
+Riemann/PPM parity, multidimensional reactive flow, AMR, MPI, and accelerators.

@@ -607,6 +607,36 @@ set_tests_properties(
 )
 
 add_executable(
+  test_reactive_characteristic_ppm_convergence
+  regression/test_reactive_characteristic_ppm_convergence.F90
+)
+target_link_libraries(
+  test_reactive_characteristic_ppm_convergence PRIVATE pelef_core
+)
+add_test(
+  NAME regression_reactive_characteristic_ppm_convergence
+  COMMAND test_reactive_characteristic_ppm_convergence
+)
+set_tests_properties(
+  regression_reactive_characteristic_ppm_convergence
+  PROPERTIES TIMEOUT 240
+)
+
+add_executable(
+  test_reactive_ppm_shock
+  regression/test_reactive_ppm_shock.F90
+)
+target_link_libraries(test_reactive_ppm_shock PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_ppm_shock
+  COMMAND test_reactive_ppm_shock
+)
+set_tests_properties(
+  regression_reactive_ppm_shock
+  PROPERTIES TIMEOUT 240
+)
+
+add_executable(
   test_reactive_uniform_reduction
   unit/test_reactive_uniform_reduction.F90
 )
@@ -738,6 +768,36 @@ add_test(
 set_tests_properties(
   regression_reactive_hotspot_hllc_check
   PROPERTIES DEPENDS regression_reactive_hotspot_hllc_run
+)
+
+set(
+  REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot_characteristic_ppm"
+)
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_characteristic_ppm_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot/hotspot_characteristic_ppm.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_characteristic_ppm_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_WORK_DIRECTORY}"
+    TIMEOUT 180
+)
+add_test(
+  NAME regression_reactive_hotspot_characteristic_ppm_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot.py"
+    --input
+    "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_WORK_DIRECTORY}/reactive_hotspot_characteristic_ppm.csv"
+)
+set_tests_properties(
+  regression_reactive_hotspot_characteristic_ppm_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_characteristic_ppm_run
 )
 
 add_executable(

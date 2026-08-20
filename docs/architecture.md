@@ -21,7 +21,7 @@ pelef0d_h2o2
   └─ generated reversible elementary kinetics and an H2/O2 reactor
 
 pelef_reactive_1d
-  └─ NASA7 general-EOS reactive Euler with characteristic PLM and Strang splitting
+  └─ NASA7 general-EOS reactive Euler with PLM/PPM, HLLC, and Strang splitting
 ```
 
 The established constant-`gamma` solvers remain intact as regression baselines. Composition-dependent flow is introduced through a separate driver and modules so a general-EOS change cannot silently alter earlier results.
@@ -89,9 +89,13 @@ Hydrodynamic responsibilities are separated as follows:
 reactive_primitive_to_conserved
 reactive_conserved_to_primitive
         ↓
-frozen-composition characteristic slope limiting
-        ↓
-MUSCL-Hancock face prediction
+reconstruction selector
+  ├─ PCM
+  ├─ characteristic PLM + MUSCL-Hancock tracing
+  ├─ componentwise monotone PPM + SSPRK3
+  └─ characteristic PPM profile integration
+       ├─ optional contact steepening
+       └─ optional shock flattening
         ↓
 general-EOS Rusanov or HLLC flux
         ↓
@@ -140,7 +144,25 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
    contact-resolving general-EOS intermediate; it is not labeled as PeleC
    Riemann parity.
 9. The current four-reaction chemistry subset is not a complete H2/O2 mechanism.
+10. Contact steepening is explicitly bounded to half of the canonical detector
+    strength until a complete general-EOS PPM/HLLC characteristic system is
+    available.
 
 ## Reactive PPM path
 
-`reactive_1d_mod` now keeps PCM, characteristic PLM, and monotone primitive PPM as separate reconstruction paths. PPM uses a wider explicitly filled stencil and SSPRK3, while the Riemann solver remains selected independently.
+`reactive_1d_mod` keeps four independently selectable paths:
+
+- `pcm`, the first-order robustness baseline;
+- `characteristic_plm`, the frozen-composition MUSCL-Hancock path;
+- `ppm`, the semidiscrete componentwise monotone path advanced by SSPRK3;
+- `characteristic_ppm`, a time-centered normal predictor using PeleC's
+  five-point parabolic reconstruction and `u-c`, `u`, `u+c` profile
+  integration.
+
+The characteristic PPM path carries species and transverse velocities on the
+middle wave, projects density/normal velocity/pressure over the frozen mixture
+acoustic basis, and converts the final face state through the NASA7 EOS. Its
+one-dimensional shock-flattening coefficient follows PeleC `Godunov.H`.
+Contact steepening is a separate Colella--Woodward-style detector applied to
+density and species only. Both controls are opt-in and are rejected by the
+configuration reader for other reconstruction modes.

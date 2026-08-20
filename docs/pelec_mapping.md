@@ -32,7 +32,7 @@ This table maps responsibilities, not source lines.
 | stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
 | third-body/falloff chemistry | future kinetics extensions | Not started |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
-| `Source/PPM.*` | future `reconstruction_ppm_mod` | Not started |
+| `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod` characteristic PPM path | Five-point reconstruction and `u-c/u/u+c` profile integration verified for a 1D frozen-composition mixture subset |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
 | `Source/Diffusion.*` | future `src/diffusion/` | Not started |
 | `Source/PeleCAmr.*` | future `src/amr/` | Not started |
@@ -44,4 +44,7 @@ A row is called implemented only when its Fortran subsystem has an automated num
 
 | PeleC responsibility | PeleF current mapping | Qualification |
 |---|---|---|
-| regular-cell PPM edge interpolation and monotonicity | `reactive_1d_mod` reactive PPM path | primitive, one-dimensional, general-EOS mixture subset; no full characteristic integration yet |
+| regular-cell PPM edge interpolation and monotonicity | `reactive_1d_mod` componentwise and characteristic PPM paths | primitive, one-dimensional, general-EOS mixture subset |
+| `PPM.cpp` normal characteristic tracing | `reactive_1d_mod` `characteristic_ppm` path | density/normal velocity/pressure frozen-composition projection; species and transverse velocities on the middle wave |
+| `Godunov.H::flatten` | `reactive_ppm_flattening_coefficient` | One-dimensional regular-cell pressure/compression detector verified |
+| Colella--Woodward contact steepening | `reactive_ppm_contact_steepening_factor` | Separate bounded density/species subset; not a claim that current PeleC enables this option |

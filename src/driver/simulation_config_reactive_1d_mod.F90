@@ -16,6 +16,8 @@ module simulation_config_reactive_1d_mod
     character(len=32) :: limiter = "mc"
     character(len=32) :: boundary_condition = "periodic"
     logical :: chemistry_enabled = .true.
+    logical :: ppm_contact_steepening = .false.
+    logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
     real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
     real(dp) :: initial_temperature = 1200.0_dp
@@ -58,12 +60,14 @@ contains
     character(len=32) :: boundary_condition
     character(len=256) :: output_file
     logical :: chemistry_enabled
+    logical :: ppm_contact_steepening, ppm_shock_flattening
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
       reconstruction, riemann_solver, limiter, boundary_condition, &
-      chemistry_enabled, &
-      chemistry_relative_tolerance, chemistry_absolute_tolerance, &
+      chemistry_enabled, ppm_contact_steepening, &
+      ppm_shock_flattening, chemistry_relative_tolerance, &
+      chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity, &
       density_wave_amplitude, composition_wave_amplitude, &
       hotspot_temperature_rise, hotspot_center, hotspot_width, x_h2, x_h, &
@@ -82,6 +86,8 @@ contains
     limiter = config%limiter
     boundary_condition = config%boundary_condition
     chemistry_enabled = config%chemistry_enabled
+    ppm_contact_steepening = config%ppm_contact_steepening
+    ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
     chemistry_absolute_tolerance = config%chemistry_absolute_tolerance
     initial_temperature = config%initial_temperature
@@ -148,9 +154,16 @@ contains
     end if
     if (trim(reconstruction) /= "pcm" .and. &
         trim(reconstruction) /= "characteristic_plm" .and. &
-        trim(reconstruction) /= "ppm") then
+        trim(reconstruction) /= "ppm" .and. &
+        trim(reconstruction) /= "characteristic_ppm") then
       ok = .false.
       message = "Unknown reactive 1D reconstruction"
+      return
+    end if
+    if ((ppm_contact_steepening .or. ppm_shock_flattening) .and. &
+        trim(reconstruction) /= "characteristic_ppm") then
+      ok = .false.
+      message = "Reactive PPM steepening/flattening requires characteristic_ppm"
       return
     end if
     if (trim(riemann_solver) /= "rusanov" .and. &
@@ -183,6 +196,8 @@ contains
     config%limiter = trim(limiter)
     config%boundary_condition = trim(boundary_condition)
     config%chemistry_enabled = chemistry_enabled
+    config%ppm_contact_steepening = ppm_contact_steepening
+    config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
     config%chemistry_absolute_tolerance = chemistry_absolute_tolerance
     config%initial_temperature = initial_temperature

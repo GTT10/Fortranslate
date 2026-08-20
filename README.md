@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.12.0` milestone contains six serial verification executables.
+The `0.13.0` milestone contains six serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -61,15 +61,21 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
 - conserved state `(rho, rho*u, rho*v, rho*w, rho*E, rho*Y_k)`;
 - NASA7 composition-dependent pressure, temperature, heat capacities, ratio of specific heats, and frozen sound speed;
 - safeguarded conserved-to-primitive recovery through `e(Y,T) -> T` inversion;
-- PCM, frozen-composition characteristic PLM, or monotone primitive PPM reconstruction;
+- PCM, frozen-composition characteristic PLM, monotone primitive PPM, or
+  time-traced frozen-composition characteristic PPM reconstruction;
 - selectable Rusanov or general-EOS HLLC flux with species-flux closure;
-- SSPRK3 time integration for the semidiscrete PPM path;
+- SSPRK3 time integration for the semidiscrete primitive-PPM path;
+- PeleC-style parabolic profile integration over the `u-c`, `u`, and `u+c`
+  waves for characteristic PPM;
+- optional PeleC one-dimensional shock flattening and bounded
+  Colella--Woodward contact steepening on characteristic PPM;
 - periodic or outflow boundaries;
 - cell-local adiabatic constant-volume chemistry;
 - reaction-hydro-reaction Strang splitting;
 - homogeneous-reactor reduction, smooth density/composition-wave convergence,
-  discontinuous material-contact resolution, monotone PPM convergence, and
-  nonuniform reactive-hotspot regressions.
+  discontinuous material-contact resolution, primitive/characteristic PPM
+  convergence, periodic strong-shock flattening, and nonuniform
+  reactive-hotspot regressions.
 
 The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
@@ -144,6 +150,16 @@ The same case with monotone PPM and HLLC:
 ```bash
 ./build/pelef_reactive_1d cases/reactive_hotspot/hotspot_ppm.nml
 python3 tools/check_reactive_hotspot.py --input reactive_hotspot_ppm.csv
+```
+
+The time-traced characteristic PPM path with the optional contact and shock
+detectors enabled:
+
+```bash
+./build/pelef_reactive_1d \
+  cases/reactive_hotspot/hotspot_characteristic_ppm.nml
+python3 tools/check_reactive_hotspot.py \
+  --input reactive_hotspot_characteristic_ppm.csv
 ```
 
 Smooth general-EOS entropy wave:

@@ -71,6 +71,10 @@
 - [x] PCM lower-order baseline
 - [x] frozen-composition characteristic PLM with MC/minmod limiting
 - [x] monotone primitive PPM with fourth-order face interpolation and SSPRK3
+- [x] PeleC-style five-point characteristic PPM profile integration
+- [x] species/transverse-velocity tracing on the middle wave
+- [x] optional PeleC one-dimensional shock flattening
+- [x] optional bounded Colella--Woodward contact steepening
 - [x] composition-dependent CFL timestep
 - [x] periodic and outflow boundaries
 - [x] cell-local adiabatic constant-volume chemistry
@@ -81,6 +85,9 @@
 - [x] discontinuous material-contact HLLC/Rusanov comparison
 - [x] PPM/PLM material-contact resolution comparison
 - [x] smooth PPM entropy/composition-wave convergence
+- [x] smooth characteristic-PPM entropy/composition-wave convergence
+- [x] characteristic-PPM/contact-steepening material-interface comparison
+- [x] periodic reactive-mixture shock-flattening regression
 - [x] nonuniform reactive-hotspot structural regression
 - [x] nonuniform reactive-hotspot HLLC application regression
 - [x] high-resolution hotspot comparison against PCM
@@ -88,12 +95,14 @@
 - [ ] molecular transport
 - [ ] multidimensional reactive flow
 
-## Verified `0.12.0` local results
+## Verified `0.13.0` results
 
 | Gate | Result |
 |---|---:|
-| Complete Debug suite | `62/62` passed |
-| Complete Release suite | `62/62` passed |
+| Complete local Debug suite without optional Cantera | `68/68` passed |
+| Complete local Release suite without optional Cantera | `68/68` passed |
+| GitHub Actions Debug with Cantera | `69/69` target gate |
+| GitHub Actions Release with Cantera | `69/69` target gate |
 | Reactive entropy-wave density L1, 40 cells | `1.51594309e-4` |
 | Reactive entropy-wave density L1, 80 cells | `3.43297270e-5` |
 | Reactive entropy-wave density L1, 160 cells | `7.01334896e-6` |
@@ -123,13 +132,30 @@
 | PPM composition-wave H2 L1, 64 cells | `7.19623593e-6` |
 | PPM composition-wave H2 L1, 128 cells | `1.61225051e-6` |
 | PPM composition-wave observed orders | `2.126636`, `2.158167` |
+| Characteristic-PPM entropy-wave density L1, 32 cells | `2.49716040e-4` |
+| Characteristic-PPM entropy-wave density L1, 64 cells | `4.88601959e-5` |
+| Characteristic-PPM entropy-wave density L1, 128 cells | `9.87993492e-6` |
+| Characteristic-PPM entropy-wave observed orders | `2.353557`, `2.306086` |
+| Characteristic-PPM composition-wave H2 L1, 32 cells | `3.31512363e-5` |
+| Characteristic-PPM composition-wave H2 L1, 64 cells | `7.50581812e-6` |
+| Characteristic-PPM composition-wave H2 L1, 128 cells | `1.45326368e-6` |
+| Characteristic-PPM composition-wave observed orders | `2.142981`, `2.368713` |
 | Material-contact HLLC H2 L1 | `1.14269289e-4` |
 | Material-contact PPM/HLLC H2 L1 | `8.75871389e-5` |
+| Material-contact characteristic-PPM/HLLC H2 L1 | `7.35878653e-5` |
+| Material-contact bounded-steepening H2 L1 | `2.50998077e-5` |
 | Material-contact Rusanov H2 L1 | `1.87834655e-4` |
 | Material-contact HLLC improvement factor | `1.6438` |
+| Periodic shock pressure overshoot | `0` |
+| Periodic shock flattening state-difference signature | `8.08412674e1` |
+| Hotspot characteristic-PPM normalized L1, 32 cells | `6.00777009e-2` |
+| Hotspot characteristic-PPM normalized L1, 64 cells | `3.07014574e-2` |
 
 The existing `0.9.0` Cantera trajectory and exact-state production-rate comparisons remain active when `PELEF_ENABLE_CANTERA_REFERENCE=ON`.
 
 ## Next implementation slice
 
-Extend the monotone PPM path with characteristic integration, contact steepening, and shock flattening. Then move the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the Strang-split flow interface. Molecular viscosity, thermal conduction, and species diffusion remain prerequisites for multidimensional reacting flow.
+Move the pressure-dependent complete H2/O2 mechanism and an implicit cell
+reactor onto the Strang-split flow interface.  Then add molecular viscosity,
+thermal conduction, and species diffusion before extending the reactive solver
+to the existing two-dimensional CTU scaffold.
