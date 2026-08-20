@@ -101,8 +101,8 @@
 |---|---:|
 | Complete local Debug suite without optional Cantera | `68/68` passed |
 | Complete local Release suite without optional Cantera | `68/68` passed |
-| GitHub Actions Debug with Cantera | `69/69` target gate |
-| GitHub Actions Release with Cantera | `69/69` target gate |
+| GitHub Actions Debug with Cantera | `69/69` passed |
+| GitHub Actions Release with Cantera | `69/69` passed |
 | Reactive entropy-wave density L1, 40 cells | `1.51594309e-4` |
 | Reactive entropy-wave density L1, 80 cells | `3.43297270e-5` |
 | Reactive entropy-wave density L1, 160 cells | `7.01334896e-6` |
