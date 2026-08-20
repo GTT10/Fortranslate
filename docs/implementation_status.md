@@ -42,6 +42,7 @@
 - [x] periodic two-dimensional general-EOS CTU hydro
 - [x] directional general-EOS HLLC with momentum rotation
 - [x] full-state transverse correction with EOS positivity limiting
+- [x] time-traced characteristic PPM normal prediction in x and y
 
 ## Phase 4 — zero-dimensional chemistry
 
@@ -103,28 +104,66 @@
 - [x] periodic uniform Cartesian reactive state and temperature field
 - [x] x/y directional Rusanov and HLLC fluxes
 - [x] frozen-composition characteristic PLM in both directions
+- [x] time-traced frozen-composition characteristic PPM in both directions
+- [x] optional PeleC shock flattening on both normal predictors
+- [x] optional bounded contact steepening on both normal predictors
 - [x] conservative provisional/final CTU face fluxes
 - [x] full-state transverse correction with bisection positivity limiting
 - [x] species closure preserved through the same correction as mass and energy
 - [x] composition-dependent two-dimensional CFL timestep
 - [x] cell-local chemistry and Strang splitting
 - [x] exact oblique entropy-wave convergence
+- [x] exact oblique composition-wave convergence
 - [x] transverse-correction signature and no-degradation gate
-- [x] one-dimensional dimensional-reduction gate
+- [x] x-normal and y-normal one-dimensional dimensional-reduction gates
+- [x] characteristic-PPM cell-level flattening/steepening signatures
+- [x] oblique pressure-ratio-three shock positivity/flattening regression
+- [x] two-dimensional material-contact sharpening regression
 - [x] periodic reactive-mixture vortex regression
 - [x] two-dimensional reacting-hotspot application regression
+- [x] characteristic-PPM two-dimensional reacting-hotspot regression
 - [ ] physical wall, inflow, and outflow boundaries
-- [ ] multidimensional characteristic PPM and transverse PPM tracing
+- [ ] complete PeleC multidimensional PPM transverse/corner tracing
 - [ ] molecular transport
+
+## Verified `0.15.0` results
+
+| Gate | Result |
+|---|---:|
+| Complete local Debug suite without optional Cantera | `80/80` passed |
+| Complete local Release suite without optional Cantera | `80/80` passed |
+| GitHub Actions Debug with Cantera | `81/81` target gate |
+| GitHub Actions Release with Cantera | `81/81` target gate |
+| Characteristic-PPM diagonal density L1, 16 x 16 | `1.44130250e-4` |
+| Characteristic-PPM diagonal density L1, 32 x 32 | `3.80399208e-5` |
+| Characteristic-PPM diagonal density L1, 64 x 64 | `9.10858005e-6` |
+| Characteristic-PPM density observed orders | `1.921787`, `2.062216` |
+| 32 x 32 density L1 without CTU correction | `4.33952478e-5` |
+| Characteristic-PPM H2 L1, 16 x 16 | `3.74405262e-5` |
+| Characteristic-PPM H2 L1, 32 x 32 | `9.88530404e-6` |
+| Characteristic-PPM H2 L1, 64 x 64 | `2.36662586e-6` |
+| Characteristic-PPM H2 observed orders | `1.921243`, `2.062454` |
+| x/y 1D dimensional-reduction relative difference | below `3e-12` |
+| 2D material-contact H2 L1 without steepening | `2.65683522e-4` |
+| 2D material-contact H2 L1 with bounded steepening | `1.66701302e-4` |
+| Oblique 2D shock pressure overshoot | `0` |
+| Oblique 2D shock flattening state-difference signature | `1.55397791e2` |
+| Characteristic-PPM 2D hotspot completed steps | `59` |
+| Characteristic-PPM 2D hotspot maximum conservation error | `2.40e-15` |
+| Characteristic-PPM 2D hotspot pressure span | `2.82161 Pa` |
+| Characteristic-PPM 2D hotspot maximum velocity | `6.91813e-3 m/s` |
+| Characteristic-PPM 2D hotspot temperature span | `2.44044e2 K` |
+| Characteristic-PPM 2D hotspot maximum H2O mass fraction | `1.53117e-4` |
+| Characteristic-PPM 2D hotspot maximum OH mass fraction | `1.58377e-5` |
 
 ## Verified `0.14.0` results
 
 | Gate | Result |
 |---|---:|
 | Complete local Release suite without optional Cantera | `74/74` passed |
-| New reactive-2D Debug tests | `6/6` passed |
-| GitHub Actions Debug with Cantera | `75/75` target gate |
-| GitHub Actions Release with Cantera | `75/75` target gate |
+| Complete local Debug suite without optional Cantera | `74/74` passed |
+| GitHub Actions Debug with Cantera | `75/75` passed |
+| GitHub Actions Release with Cantera | `75/75` passed |
 | Diagonal-wave density L1, 12 x 12 | `2.09551654e-4` |
 | Diagonal-wave density L1, 24 x 24 | `7.15524055e-5` |
 | Diagonal-wave density L1, 48 x 48 | `1.61190312e-5` |
@@ -201,4 +240,10 @@ The existing `0.9.0` Cantera trajectory and exact-state production-rate comparis
 
 ## Next implementation slice
 
-Add multidimensional characteristic PPM normal prediction and transverse PPM corrections to the reactive 2D path. In parallel, introduce mixture viscosity, thermal conduction, and species diffusion before moving the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the CFD interface.
+Introduce mixture viscosity, thermal conductivity, and mixture-averaged species
+diffusion as a separately verifiable parabolic operator. Start with one-dimensional
+periodic diffusion and flame-profile reductions, then connect the same transport
+closure to the two-dimensional reactive solver. Physical wall, inflow, and outflow
+boundaries follow before AMR. Complete PeleC multidimensional PPM corner coupling
+remains a later parity task rather than being conflated with the verified normal
+predictor plus conservative CTU correction.

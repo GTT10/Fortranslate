@@ -25,15 +25,15 @@ This table maps responsibilities, not source lines.
 | `Exec/RegTests/Shu-Osher` | `cases/shu_osher`, `tools/check_shu_osher.py` | Deterministic shock-wave gate |
 | `Exec/RegTests/Sedov` | `cases/sedov`, `tools/check_sedov.py` | Independent planar strong-blast gate |
 | `Exec/RegTests/MultiSpecSod` | `cases/multispec_sod`, `check_multispec_sod.py` | Passive multispecies regression implemented |
-| reactive multidimensional Godunov/CTU responsibility | `reactive_2d_mod`, `pelef_reactive_2d` | Periodic regular-grid characteristic-PLM normal predictor, full-state transverse correction, and 1D reduction verified |
+| reactive multidimensional Godunov/CTU responsibility | `reactive_2d_mod`, `pelef_reactive_2d` | Periodic regular-grid PCM/characteristic-PLM/characteristic-PPM normal predictors, full-state transverse correction, and x/y reduction verified |
 | `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod`, `reactive_2d_mod` | Four-reaction 0D chemistry and Strang-split 1D/2D cell coupling verified |
 | PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
 | reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
-| reactive hydro state/flux path | `reactive_1d_mod`, `reactive_2d_mod`, `pelef_reactive_1d`, `pelef_reactive_2d` | NASA7 conversion, directional Rusanov/HLLC, characteristic PLM, CTU, and Strang splitting verified |
+| reactive hydro state/flux path | `reactive_1d_mod`, `reactive_2d_mod`, `pelef_reactive_1d`, `pelef_reactive_2d` | NASA7 conversion, directional Rusanov/HLLC, PLM/PPM normal prediction, CTU, and Strang splitting verified |
 | stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
 | third-body/falloff chemistry | future kinetics extensions | Not started |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
-| `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod` characteristic PPM path | Five-point reconstruction and `u-c/u/u+c` profile integration verified for a 1D frozen-composition mixture subset |
+| `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod`, `reactive_2d_mod` characteristic PPM paths | Five-point reconstruction and `u-c/u/u+c` profile integration verified in 1D and as x/y normal predictors before 2D CTU correction |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
 | `Source/Diffusion.*` | future `src/diffusion/` | Not started |
 | `Source/PeleCAmr.*` | future `src/amr/` | Not started |
@@ -45,7 +45,7 @@ A row is called implemented only when its Fortran subsystem has an automated num
 
 | PeleC responsibility | PeleF current mapping | Qualification |
 |---|---|---|
-| regular-cell PPM edge interpolation and monotonicity | `reactive_1d_mod` componentwise and characteristic PPM paths | primitive, one-dimensional, general-EOS mixture subset |
-| `PPM.cpp` normal characteristic tracing | `reactive_1d_mod` `characteristic_ppm` path | density/normal velocity/pressure frozen-composition projection; species and transverse velocities on the middle wave |
+| regular-cell PPM edge interpolation and monotonicity | `reactive_1d_mod` and `reactive_2d_mod` characteristic PPM paths | general-EOS mixture normal predictors in 1D and both 2D coordinate directions |
+| `PPM.cpp` normal characteristic tracing | `reactive_1d_mod` and `reactive_2d_mod` `characteristic_ppm` paths | density/normal velocity/pressure frozen-composition projection; species and transverse velocities on the middle wave; 2D uses direction rotation |
 | `Godunov.H::flatten` | `reactive_ppm_flattening_coefficient` | One-dimensional regular-cell pressure/compression detector verified |
 | Colella--Woodward contact steepening | `reactive_ppm_contact_steepening_factor` | Separate bounded density/species subset; not a claim that current PeleC enables this option |

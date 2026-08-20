@@ -41,6 +41,7 @@ module reactive_1d_mod
   public :: reactive_ppm_flattening_coefficient
   public :: reactive_ppm_contact_steepening_factor
   public :: reactive_ppm_apply_contact_steepening
+  public :: build_characteristic_ppm_states
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
   public :: characteristic_limited_slope

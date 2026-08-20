@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.14.0` milestone contains seven serial verification executables.
+The `0.15.0` milestone contains seven serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -83,13 +83,22 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
 - uniform periodic Cartesian mesh with the same conserved reactive state as the 1D path;
 - composition-dependent NASA7 pressure, temperature, heat capacities, and frozen sound speed;
 - directional general-EOS Rusanov or HLLC fluxes through explicit momentum rotation;
-- frozen-composition characteristic PLM in both coordinate directions;
+- PCM, frozen-composition characteristic PLM, or time-traced
+  frozen-composition characteristic PPM in both coordinate directions;
+- optional bounded contact steepening and PeleC-style shock flattening on the
+  characteristic-PPM normal predictor;
 - provisional face fluxes, conservative CTU transverse half-step corrections, and EOS-based positivity scaling;
 - species, momentum, and total energy corrected together so `sum(rho*Y_k)=rho` remains coupled to the hydro update;
 - cell-local chemistry with reaction--hydro--reaction Strang splitting;
-- exact diagonal entropy-wave convergence, one-dimensional reduction, periodic vortex, and reacting-hotspot regressions.
+- exact diagonal density/composition-wave convergence, x/y one-dimensional
+  reduction, material-contact sharpening, oblique strong-shock flattening,
+  periodic vortex, and reacting-hotspot regressions.
 
-This first reactive 2D slice is periodic and supports PCM or characteristic PLM. Multidimensional PPM tracing and physical inflow/wall/outflow boundaries are not yet included.
+This reactive 2D slice is periodic. The characteristic-PPM path performs the
+PeleC-style normal parabolic predictor in each coordinate direction and then
+uses the existing conservative CTU transverse correction. Complete PeleC
+multidimensional PPM corner coupling and physical inflow/wall/outflow
+boundaries are not yet included.
 
 The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
@@ -200,11 +209,29 @@ python3 tools/check_reactive_hotspot_2d.py \
   --input reactive_hotspot_2d.csv --nx 24 --ny 24
 ```
 
+The same two-dimensional hotspot with characteristic PPM and the optional
+contact/shock controls enabled:
+
+```bash
+./build/pelef_reactive_2d \
+  cases/reactive_hotspot_2d/hotspot_characteristic_ppm.nml
+python3 tools/check_reactive_hotspot_2d.py \
+  --input reactive_hotspot_characteristic_ppm_2d.csv --nx 24 --ny 24
+```
+
 Oblique exact entropy-wave transport through the same 2D path:
 
 ```bash
 ./build/pelef_reactive_2d \
   cases/reactive_diagonal_wave_2d/diagonal_wave.nml
+```
+
+Oblique constant-pressure H2/N2 composition transport through the
+characteristic-PPM/CTU path:
+
+```bash
+./build/pelef_reactive_2d \
+  cases/reactive_diagonal_wave_2d/diagonal_composition_ppm.nml
 ```
 
 ## Project records

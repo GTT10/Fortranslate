@@ -19,6 +19,8 @@ module simulation_config_reactive_2d_mod
     character(len=32) :: limiter = "mc"
     logical :: use_transverse_correction = .true.
     logical :: chemistry_enabled = .false.
+    logical :: ppm_contact_steepening = .false.
+    logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
     real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
     real(dp) :: initial_temperature = 1000.0_dp
@@ -26,6 +28,7 @@ module simulation_config_reactive_2d_mod
     real(dp) :: initial_velocity_x = 300.0_dp
     real(dp) :: initial_velocity_y = 200.0_dp
     real(dp) :: density_wave_amplitude = 0.08_dp
+    real(dp) :: composition_wave_amplitude = 0.04_dp
     real(dp) :: vortex_strength = 45.0_dp
     real(dp) :: vortex_center_x = 0.005_dp
     real(dp) :: vortex_center_y = 0.005_dp
@@ -59,7 +62,8 @@ contains
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: initial_temperature, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y
-    real(dp) :: density_wave_amplitude, vortex_strength
+    real(dp) :: density_wave_amplitude, composition_wave_amplitude
+    real(dp) :: vortex_strength
     real(dp) :: vortex_center_x, vortex_center_y, vortex_radius
     real(dp) :: hotspot_temperature_rise, hotspot_center_x
     real(dp) :: hotspot_center_y, hotspot_width
@@ -67,13 +71,16 @@ contains
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=256) :: output_file
     logical :: use_transverse_correction, chemistry_enabled
+    logical :: ppm_contact_steepening, ppm_shock_flattening
     namelist /reactive_2d/ &
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
       use_transverse_correction, chemistry_enabled, &
+      ppm_contact_steepening, ppm_shock_flattening, &
       chemistry_relative_tolerance, chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity_x, &
-      initial_velocity_y, density_wave_amplitude, vortex_strength, &
+      initial_velocity_y, density_wave_amplitude, &
+      composition_wave_amplitude, vortex_strength, &
       vortex_center_x, vortex_center_y, vortex_radius, &
       hotspot_temperature_rise, hotspot_center_x, hotspot_center_y, &
       hotspot_width, x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, output_file
@@ -94,6 +101,8 @@ contains
     limiter = config%limiter
     use_transverse_correction = config%use_transverse_correction
     chemistry_enabled = config%chemistry_enabled
+    ppm_contact_steepening = config%ppm_contact_steepening
+    ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
     chemistry_absolute_tolerance = config%chemistry_absolute_tolerance
     initial_temperature = config%initial_temperature
@@ -101,6 +110,7 @@ contains
     initial_velocity_x = config%initial_velocity_x
     initial_velocity_y = config%initial_velocity_y
     density_wave_amplitude = config%density_wave_amplitude
+    composition_wave_amplitude = config%composition_wave_amplitude
     vortex_strength = config%vortex_strength
     vortex_center_x = config%vortex_center_x
     vortex_center_y = config%vortex_center_y
@@ -140,6 +150,7 @@ contains
       cfl > 0.0_dp .and. cfl <= 0.8_dp .and. initial_temperature > 0.0_dp .and. &
       initial_pressure > 0.0_dp .and. density_wave_amplitude >= 0.0_dp .and. &
       density_wave_amplitude < 0.9_dp .and. vortex_radius > 0.0_dp .and. &
+      composition_wave_amplitude >= 0.0_dp .and. &
       hotspot_width > 0.0_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
@@ -149,6 +160,7 @@ contains
       return
     end if
     if (trim(problem) /= "diagonal_wave" .and. &
+        trim(problem) /= "diagonal_composition_wave" .and. &
         trim(problem) /= "reactive_vortex" .and. &
         trim(problem) /= "reactive_hotspot" .and. &
         trim(problem) /= "uniform_reactor") then
@@ -156,10 +168,23 @@ contains
       message = "Unknown reactive 2D problem"
       return
     end if
-    if (trim(reconstruction) /= "pcm" .and. &
-        trim(reconstruction) /= "characteristic_plm") then
+    if (trim(problem) == "diagonal_composition_wave" .and. &
+        composition_wave_amplitude > min(x_h2, x_n2)) then
       ok = .false.
-      message = "Reactive 2D supports pcm or characteristic_plm"
+      message = "Reactive 2D composition-wave amplitude exceeds H2/N2 base fraction"
+      return
+    end if
+    if (trim(reconstruction) /= "pcm" .and. &
+        trim(reconstruction) /= "characteristic_plm" .and. &
+        trim(reconstruction) /= "characteristic_ppm") then
+      ok = .false.
+      message = "Reactive 2D supports pcm, characteristic_plm, or characteristic_ppm"
+      return
+    end if
+    if ((ppm_contact_steepening .or. ppm_shock_flattening) .and. &
+        trim(reconstruction) /= "characteristic_ppm") then
+      ok = .false.
+      message = "Reactive 2D PPM controls require characteristic_ppm"
       return
     end if
     if (trim(riemann_solver) /= "rusanov" .and. &
@@ -189,6 +214,8 @@ contains
     config%limiter = trim(limiter)
     config%use_transverse_correction = use_transverse_correction
     config%chemistry_enabled = chemistry_enabled
+    config%ppm_contact_steepening = ppm_contact_steepening
+    config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
     config%chemistry_absolute_tolerance = chemistry_absolute_tolerance
     config%initial_temperature = initial_temperature
@@ -196,6 +223,7 @@ contains
     config%initial_velocity_x = initial_velocity_x
     config%initial_velocity_y = initial_velocity_y
     config%density_wave_amplitude = density_wave_amplitude
+    config%composition_wave_amplitude = composition_wave_amplitude
     config%vortex_strength = vortex_strength
     config%vortex_center_x = vortex_center_x
     config%vortex_center_y = vortex_center_y
