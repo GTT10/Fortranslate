@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.13.0
+  VERSION 0.14.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -31,7 +31,9 @@ add_library(
   src/physics/thermo_database_mod.F90
   src/physics/mixture_thermo_mod.F90
   src/driver/simulation_config_reactive_1d_mod.F90
+  src/driver/simulation_config_reactive_2d_mod.F90
   src/reactive/reactive_1d_mod.F90
+  src/reactive/reactive_2d_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
   src/generated/h2o2_elementary_mechanism_mod.F90
   src/chemistry/constant_volume_reactor_mod.F90
@@ -123,8 +125,12 @@ target_link_libraries(pelef0d_h2o2 PRIVATE pelef_core)
 add_executable(pelef_reactive_1d app/pelef_reactive_1d.F90)
 target_link_libraries(pelef_reactive_1d PRIVATE pelef_core)
 
+add_executable(pelef_reactive_2d app/pelef_reactive_2d.F90)
+target_link_libraries(pelef_reactive_2d PRIVATE pelef_core)
+
 install(
   TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef_reactive_1d
+    pelef_reactive_2d
   RUNTIME DESTINATION bin
 )
 

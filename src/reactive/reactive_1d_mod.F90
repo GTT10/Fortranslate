@@ -43,6 +43,7 @@ module reactive_1d_mod
   public :: reactive_ppm_apply_contact_steepening
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
+  public :: characteristic_limited_slope
   public :: trace_reactive_characteristics
   public :: initialize_reactive_1d
   public :: advance_reactive_hydro

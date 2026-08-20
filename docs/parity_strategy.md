@@ -138,7 +138,7 @@ This reference is a discretization comparison, not an external physical validati
 
 ## Scope of the evidence
 
-The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, molecular transport, or multidimensional reacting CFD.
+The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, molecular transport, or multidimensional PPM/transport parity. The periodic 2D CTU subset is qualified separately below.
 
 ## Reactive PPM gates
 
@@ -173,3 +173,20 @@ The characteristic-PPM hotspot is not required to beat characteristic PLM or
 componentwise PPM.  Its present value is algorithmic parity of the normal PPM
 predictor and sharper contact resolution; full general-EOS characteristic
 energy tracing remains outside the claim.
+
+
+## Reactive two-dimensional CTU gates
+
+The periodic general-EOS CTU path is accepted only while all of the following remain active:
+
+- equal-state y-direction HLLC flux has the correct normal/tangential momentum placement;
+- the sum of species fluxes equals the y mass flux;
+- a y-uniform 2D step agrees with the 1D characteristic-PLM/HLLC update to roundoff;
+- the oblique constant-pressure entropy wave converges on 12, 24, and 48 square grids;
+- the transverse correction has a measurable signature and does not materially degrade the 24-square result;
+- all corrected face states and final cells recover positive density, pressure, temperature, and closed composition through the NASA7 EOS;
+- global mass, both in-plane momenta, out-of-plane momentum, and total energy remain conservative;
+- a periodic velocity vortex remains positive and preserves its nontrivial velocity/pressure signature;
+- the reacting 2D hotspot produces OH and H2O, a finite pressure/velocity response, and roundoff-scale composition closure.
+
+The oblique wave is an exact advected entropy wave. The Gaussian velocity vortex is only a structural regression and is not presented as an analytic steady solution. The current CTU claim covers characteristic PLM normal prediction and conservative transverse correction; it does not cover multidimensional PeleC PPM tracing, physical boundaries, viscosity, heat conduction, or species diffusion.

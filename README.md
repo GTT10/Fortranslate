@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.13.0` milestone contains six serial verification executables.
+The `0.14.0` milestone contains seven serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -76,6 +76,20 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
   discontinuous material-contact resolution, primitive/characteristic PPM
   convergence, periodic strong-shock flattening, and nonuniform
   reactive-hotspot regressions.
+
+
+### `pelef_reactive_2d`: general-EOS reactive CTU solver
+
+- uniform periodic Cartesian mesh with the same conserved reactive state as the 1D path;
+- composition-dependent NASA7 pressure, temperature, heat capacities, and frozen sound speed;
+- directional general-EOS Rusanov or HLLC fluxes through explicit momentum rotation;
+- frozen-composition characteristic PLM in both coordinate directions;
+- provisional face fluxes, conservative CTU transverse half-step corrections, and EOS-based positivity scaling;
+- species, momentum, and total energy corrected together so `sum(rho*Y_k)=rho` remains coupled to the hydro update;
+- cell-local chemistry with reaction--hydro--reaction Strang splitting;
+- exact diagonal entropy-wave convergence, one-dimensional reduction, periodic vortex, and reacting-hotspot regressions.
+
+This first reactive 2D slice is periodic and supports PCM or characteristic PLM. Multidimensional PPM tracing and physical inflow/wall/outflow boundaries are not yet included.
 
 The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
@@ -176,6 +190,21 @@ General-EOS H2/N2 composition wave with HLLC:
   cases/reactive_composition_wave/composition_wave.nml
 python3 tools/check_reactive_composition_wave.py \
   --input reactive_composition_wave.csv
+```
+
+Reactive two-dimensional hotspot with CTU and HLLC:
+
+```bash
+./build/pelef_reactive_2d cases/reactive_hotspot_2d/hotspot.nml
+python3 tools/check_reactive_hotspot_2d.py \
+  --input reactive_hotspot_2d.csv --nx 24 --ny 24
+```
+
+Oblique exact entropy-wave transport through the same 2D path:
+
+```bash
+./build/pelef_reactive_2d \
+  cases/reactive_diagonal_wave_2d/diagonal_wave.nml
 ```
 
 ## Project records

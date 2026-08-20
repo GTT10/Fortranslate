@@ -1,0 +1,217 @@
+module simulation_config_reactive_2d_mod
+  use precision_mod, only: dp
+  implicit none
+  private
+
+  type, public :: reactive_2d_config
+    integer :: nx = 32
+    integer :: ny = 32
+    integer :: maximum_steps = 200000
+    real(dp) :: x_lower = 0.0_dp
+    real(dp) :: x_upper = 0.01_dp
+    real(dp) :: y_lower = 0.0_dp
+    real(dp) :: y_upper = 0.01_dp
+    real(dp) :: final_time = 5.0e-6_dp
+    real(dp) :: cfl = 0.30_dp
+    character(len=32) :: problem = "diagonal_wave"
+    character(len=32) :: reconstruction = "characteristic_plm"
+    character(len=32) :: riemann_solver = "hllc"
+    character(len=32) :: limiter = "mc"
+    logical :: use_transverse_correction = .true.
+    logical :: chemistry_enabled = .false.
+    real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
+    real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
+    real(dp) :: initial_temperature = 1000.0_dp
+    real(dp) :: initial_pressure = 101325.0_dp
+    real(dp) :: initial_velocity_x = 300.0_dp
+    real(dp) :: initial_velocity_y = 200.0_dp
+    real(dp) :: density_wave_amplitude = 0.08_dp
+    real(dp) :: vortex_strength = 45.0_dp
+    real(dp) :: vortex_center_x = 0.005_dp
+    real(dp) :: vortex_center_y = 0.005_dp
+    real(dp) :: vortex_radius = 0.0015_dp
+    real(dp) :: hotspot_temperature_rise = 250.0_dp
+    real(dp) :: hotspot_center_x = 0.005_dp
+    real(dp) :: hotspot_center_y = 0.005_dp
+    real(dp) :: hotspot_width = 0.0012_dp
+    real(dp) :: x_h2 = 0.29570_dp
+    real(dp) :: x_h = 1.0e-5_dp
+    real(dp) :: x_o = 1.0e-5_dp
+    real(dp) :: x_o2 = 0.14784_dp
+    real(dp) :: x_oh = 1.0e-5_dp
+    real(dp) :: x_h2o = 0.0_dp
+    real(dp) :: x_n2 = 0.55643_dp
+    character(len=256) :: output_file = "reactive_2d.csv"
+  end type reactive_2d_config
+
+  public :: read_reactive_2d_configuration
+
+contains
+
+  subroutine read_reactive_2d_configuration(path, config, ok, message)
+    character(len=*), intent(in) :: path
+    type(reactive_2d_config), intent(out) :: config
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    integer :: nx, ny, maximum_steps, unit, status
+    real(dp) :: x_lower, x_upper, y_lower, y_upper, final_time, cfl
+    real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
+    real(dp) :: initial_temperature, initial_pressure
+    real(dp) :: initial_velocity_x, initial_velocity_y
+    real(dp) :: density_wave_amplitude, vortex_strength
+    real(dp) :: vortex_center_x, vortex_center_y, vortex_radius
+    real(dp) :: hotspot_temperature_rise, hotspot_center_x
+    real(dp) :: hotspot_center_y, hotspot_width
+    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, mole_sum
+    character(len=32) :: problem, reconstruction, riemann_solver, limiter
+    character(len=256) :: output_file
+    logical :: use_transverse_correction, chemistry_enabled
+    namelist /reactive_2d/ &
+      nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
+      final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
+      use_transverse_correction, chemistry_enabled, &
+      chemistry_relative_tolerance, chemistry_absolute_tolerance, &
+      initial_temperature, initial_pressure, initial_velocity_x, &
+      initial_velocity_y, density_wave_amplitude, vortex_strength, &
+      vortex_center_x, vortex_center_y, vortex_radius, &
+      hotspot_temperature_rise, hotspot_center_x, hotspot_center_y, &
+      hotspot_width, x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, output_file
+
+    config = reactive_2d_config()
+    nx = config%nx
+    ny = config%ny
+    maximum_steps = config%maximum_steps
+    x_lower = config%x_lower
+    x_upper = config%x_upper
+    y_lower = config%y_lower
+    y_upper = config%y_upper
+    final_time = config%final_time
+    cfl = config%cfl
+    problem = config%problem
+    reconstruction = config%reconstruction
+    riemann_solver = config%riemann_solver
+    limiter = config%limiter
+    use_transverse_correction = config%use_transverse_correction
+    chemistry_enabled = config%chemistry_enabled
+    chemistry_relative_tolerance = config%chemistry_relative_tolerance
+    chemistry_absolute_tolerance = config%chemistry_absolute_tolerance
+    initial_temperature = config%initial_temperature
+    initial_pressure = config%initial_pressure
+    initial_velocity_x = config%initial_velocity_x
+    initial_velocity_y = config%initial_velocity_y
+    density_wave_amplitude = config%density_wave_amplitude
+    vortex_strength = config%vortex_strength
+    vortex_center_x = config%vortex_center_x
+    vortex_center_y = config%vortex_center_y
+    vortex_radius = config%vortex_radius
+    hotspot_temperature_rise = config%hotspot_temperature_rise
+    hotspot_center_x = config%hotspot_center_x
+    hotspot_center_y = config%hotspot_center_y
+    hotspot_width = config%hotspot_width
+    x_h2 = config%x_h2
+    x_h = config%x_h
+    x_o = config%x_o
+    x_o2 = config%x_o2
+    x_oh = config%x_oh
+    x_h2o = config%x_h2o
+    x_n2 = config%x_n2
+    output_file = config%output_file
+
+    message = ""
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      iostat=status)
+    if (status /= 0) then
+      ok = .false.
+      message = "Could not open reactive 2D input"
+      return
+    end if
+    read(unit, nml=reactive_2d, iostat=status)
+    close(unit)
+    if (status /= 0) then
+      ok = .false.
+      message = "Could not parse reactive 2D namelist"
+      return
+    end if
+
+    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_n2
+    ok = nx >= 4 .and. ny >= 4 .and. maximum_steps >= 1 .and. &
+      x_upper > x_lower .and. y_upper > y_lower .and. final_time > 0.0_dp .and. &
+      cfl > 0.0_dp .and. cfl <= 0.8_dp .and. initial_temperature > 0.0_dp .and. &
+      initial_pressure > 0.0_dp .and. density_wave_amplitude >= 0.0_dp .and. &
+      density_wave_amplitude < 0.9_dp .and. vortex_radius > 0.0_dp .and. &
+      hotspot_width > 0.0_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
+      chemistry_absolute_tolerance > 0.0_dp .and. &
+      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
+      abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+    if (.not. ok) then
+      message = "Invalid reactive 2D configuration"
+      return
+    end if
+    if (trim(problem) /= "diagonal_wave" .and. &
+        trim(problem) /= "reactive_vortex" .and. &
+        trim(problem) /= "reactive_hotspot" .and. &
+        trim(problem) /= "uniform_reactor") then
+      ok = .false.
+      message = "Unknown reactive 2D problem"
+      return
+    end if
+    if (trim(reconstruction) /= "pcm" .and. &
+        trim(reconstruction) /= "characteristic_plm") then
+      ok = .false.
+      message = "Reactive 2D supports pcm or characteristic_plm"
+      return
+    end if
+    if (trim(riemann_solver) /= "rusanov" .and. &
+        trim(riemann_solver) /= "hllc") then
+      ok = .false.
+      message = "Unknown reactive 2D Riemann solver"
+      return
+    end if
+    if (trim(limiter) /= "minmod" .and. trim(limiter) /= "mc") then
+      ok = .false.
+      message = "Unknown reactive 2D limiter"
+      return
+    end if
+
+    config%nx = nx
+    config%ny = ny
+    config%maximum_steps = maximum_steps
+    config%x_lower = x_lower
+    config%x_upper = x_upper
+    config%y_lower = y_lower
+    config%y_upper = y_upper
+    config%final_time = final_time
+    config%cfl = cfl
+    config%problem = trim(problem)
+    config%reconstruction = trim(reconstruction)
+    config%riemann_solver = trim(riemann_solver)
+    config%limiter = trim(limiter)
+    config%use_transverse_correction = use_transverse_correction
+    config%chemistry_enabled = chemistry_enabled
+    config%chemistry_relative_tolerance = chemistry_relative_tolerance
+    config%chemistry_absolute_tolerance = chemistry_absolute_tolerance
+    config%initial_temperature = initial_temperature
+    config%initial_pressure = initial_pressure
+    config%initial_velocity_x = initial_velocity_x
+    config%initial_velocity_y = initial_velocity_y
+    config%density_wave_amplitude = density_wave_amplitude
+    config%vortex_strength = vortex_strength
+    config%vortex_center_x = vortex_center_x
+    config%vortex_center_y = vortex_center_y
+    config%vortex_radius = vortex_radius
+    config%hotspot_temperature_rise = hotspot_temperature_rise
+    config%hotspot_center_x = hotspot_center_x
+    config%hotspot_center_y = hotspot_center_y
+    config%hotspot_width = hotspot_width
+    config%x_h2 = x_h2
+    config%x_h = x_h
+    config%x_o = x_o
+    config%x_o2 = x_o2
+    config%x_oh = x_oh
+    config%x_h2o = x_h2o
+    config%x_n2 = x_n2
+    config%output_file = trim(output_file)
+  end subroutine read_reactive_2d_configuration
+
+end module simulation_config_reactive_2d_mod
