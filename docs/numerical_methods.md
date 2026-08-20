@@ -834,3 +834,11 @@ a stiff coupled cell integrator, two-dimensional transport, Soret/multicomponent
 transport, a complete mechanism, full general-EOS PeleC Riemann/PPM parity,
 complete multidimensional PPM corner tracing, physical boundaries, AMR, MPI,
 and accelerators.
+
+
+## Two-dimensional molecular transport
+
+The 0.17.0 path uses the Newtonian stress tensor, Fourier heat conduction, and
+mixture-averaged species fluxes with optional barodiffusion. A correction
+velocity enforces zero net diffusive mass flux and species enthalpies contribute
+to total-energy transport. SSPRK2 advances the diffusion operator.

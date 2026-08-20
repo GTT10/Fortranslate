@@ -266,3 +266,9 @@ one-dimensional shock-flattening coefficient follows PeleC `Godunov.H`.
 Contact steepening is a separate Colella--Woodward-style detector applied to
 density and species only. Both controls are opt-in and are rejected by the
 configuration reader for other reconstruction modes.
+
+
+## Reactive two-dimensional molecular transport
+
+`reactive_transport_2d_mod` evaluates x/y face transport fluxes and advances
+their conservative divergence independently of the CTU hydro operator.

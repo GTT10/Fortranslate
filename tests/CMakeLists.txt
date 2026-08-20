@@ -1076,3 +1076,60 @@ set_tests_properties(
   regression_reactive_transport_1d_check
   PROPERTIES DEPENDS regression_reactive_transport_1d_run
 )
+
+
+add_executable(
+  test_reactive_transport_2d
+  unit/test_reactive_transport_2d.F90
+)
+target_link_libraries(test_reactive_transport_2d PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_transport_2d
+  COMMAND test_reactive_transport_2d
+)
+
+add_executable(
+  test_reactive_transport_2d_regression
+  regression/test_reactive_transport_2d.F90
+)
+target_link_libraries(test_reactive_transport_2d_regression PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_transport_2d
+  COMMAND test_reactive_transport_2d_regression
+)
+set_tests_properties(
+  regression_reactive_transport_2d
+  PROPERTIES TIMEOUT 300
+)
+
+set(
+  REACTIVE_TRANSPORT_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_transport_2d"
+)
+file(MAKE_DIRECTORY "${REACTIVE_TRANSPORT_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_transport_2d_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_transport_2d/transport_hotspot.nml"
+)
+set_tests_properties(
+  regression_reactive_transport_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_TRANSPORT_2D_WORK_DIRECTORY}"
+    TIMEOUT 480
+)
+add_test(
+  NAME regression_reactive_transport_2d_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot_2d.py"
+    --input
+    "${REACTIVE_TRANSPORT_2D_WORK_DIRECTORY}/reactive_transport_hotspot_2d.csv"
+    --nx 20
+    --ny 20
+)
+set_tests_properties(
+  regression_reactive_transport_2d_check
+  PROPERTIES DEPENDS regression_reactive_transport_2d_run
+)

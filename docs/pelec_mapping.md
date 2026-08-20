@@ -51,3 +51,9 @@ A row is called implemented only when its Fortran subsystem has an automated num
 | `PPM.cpp` normal characteristic tracing | `reactive_1d_mod` and `reactive_2d_mod` `characteristic_ppm` paths | density/normal velocity/pressure frozen-composition projection; species and transverse velocities on the middle wave; 2D uses direction rotation |
 | `Godunov.H::flatten` | `reactive_ppm_flattening_coefficient` | One-dimensional regular-cell pressure/compression detector verified |
 | Colella--Woodward contact steepening | `reactive_ppm_contact_steepening_factor` | Separate bounded density/species subset; not a claim that current PeleC enables this option |
+
+
+| PeleC/PelePhysics transport path | PeleF 0.17.0 |
+|---|---|
+| `Diffusion.cpp` coefficient/flux/divergence workflow | `reactive_transport_2d_mod` |
+| `Diffterm.H` stress, Fourier, species enthalpy flux | directional face-flux kernels |

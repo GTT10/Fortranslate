@@ -242,3 +242,10 @@ following remain active:
 The Cantera gate is a qualification comparison, not an exact-parity claim. The
 allowed envelope reflects the deliberately excluded polar and internal-mode
 transport corrections.
+
+
+## 0.17.0 transport parity gates
+
+The two-dimensional transport path must reduce to the qualified one-dimensional
+operator, converge at second order for a periodic shear wave, smooth species and
+thermal waves conservatively, and keep the reacting hotspot positive.

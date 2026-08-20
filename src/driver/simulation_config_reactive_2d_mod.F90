@@ -19,6 +19,12 @@ module simulation_config_reactive_2d_mod
     character(len=32) :: limiter = "mc"
     logical :: use_transverse_correction = .true.
     logical :: chemistry_enabled = .false.
+    logical :: transport_enabled = .false.
+    logical :: viscosity_enabled = .true.
+    logical :: thermal_conduction_enabled = .true.
+    logical :: species_diffusion_enabled = .true.
+    logical :: barodiffusion_enabled = .true.
+    real(dp) :: transport_cfl = 0.35_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -60,6 +66,7 @@ contains
     integer :: nx, ny, maximum_steps, unit, status
     real(dp) :: x_lower, x_upper, y_lower, y_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
+    real(dp) :: transport_cfl
     real(dp) :: initial_temperature, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
@@ -71,11 +78,16 @@ contains
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=256) :: output_file
     logical :: use_transverse_correction, chemistry_enabled
+    logical :: transport_enabled, viscosity_enabled
+    logical :: thermal_conduction_enabled, species_diffusion_enabled
+    logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
     namelist /reactive_2d/ &
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
-      use_transverse_correction, chemistry_enabled, &
+      use_transverse_correction, chemistry_enabled, transport_enabled, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, transport_cfl, &
       ppm_contact_steepening, ppm_shock_flattening, &
       chemistry_relative_tolerance, chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity_x, &
@@ -101,6 +113,12 @@ contains
     limiter = config%limiter
     use_transverse_correction = config%use_transverse_correction
     chemistry_enabled = config%chemistry_enabled
+    transport_enabled = config%transport_enabled
+    viscosity_enabled = config%viscosity_enabled
+    thermal_conduction_enabled = config%thermal_conduction_enabled
+    species_diffusion_enabled = config%species_diffusion_enabled
+    barodiffusion_enabled = config%barodiffusion_enabled
+    transport_cfl = config%transport_cfl
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -151,12 +169,19 @@ contains
       initial_pressure > 0.0_dp .and. density_wave_amplitude >= 0.0_dp .and. &
       density_wave_amplitude < 0.9_dp .and. vortex_radius > 0.0_dp .and. &
       composition_wave_amplitude >= 0.0_dp .and. &
-      hotspot_width > 0.0_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
+      hotspot_width > 0.0_dp .and. transport_cfl > 0.0_dp .and. &
+      transport_cfl <= 0.5_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
     if (.not. ok) then
       message = "Invalid reactive 2D configuration"
+      return
+    end if
+    if (transport_enabled .and. .not. (viscosity_enabled .or. &
+        thermal_conduction_enabled .or. species_diffusion_enabled)) then
+      ok = .false.
+      message = "Reactive 2D transport requires an enabled process"
       return
     end if
     if (trim(problem) /= "diagonal_wave" .and. &
@@ -214,6 +239,12 @@ contains
     config%limiter = trim(limiter)
     config%use_transverse_correction = use_transverse_correction
     config%chemistry_enabled = chemistry_enabled
+    config%transport_enabled = transport_enabled
+    config%viscosity_enabled = viscosity_enabled
+    config%thermal_conduction_enabled = thermal_conduction_enabled
+    config%species_diffusion_enabled = species_diffusion_enabled
+    config%barodiffusion_enabled = barodiffusion_enabled
+    config%transport_cfl = transport_cfl
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
