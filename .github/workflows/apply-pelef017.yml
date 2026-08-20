@@ -1,0 +1,43 @@
+name: Apply PeleF 0.17.0 reactive 2D transport
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-reactive-2d-transport
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out payload branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-reactive-2d-transport
+          fetch-depth: 0
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          cat tools/pelef017.part00 tools/pelef017.part01 \
+            | base64 --decode > /tmp/pelef017.patch.gz
+          echo "f1c758bbda3d2940e70b0eee34c2ea386a889637839d754e15bba8749b7f6b78  /tmp/pelef017.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/pelef017.patch.gz > /tmp/pelef017.patch
+          echo "1461030b9712482c1c3764dd91cdb4facf62bf3e9ff911052d335186fa991f8c  /tmp/pelef017.patch" \
+            | sha256sum --check --strict
+
+      - name: Apply and publish implementation
+        shell: bash
+        run: |
+          git fetch origin agent/reactive-2d-molecular-transport
+          git switch --force-create agent/reactive-2d-molecular-transport \
+            origin/agent/reactive-2d-molecular-transport
+          test "$(git rev-parse HEAD)" = "87344b2a42f8459af47ed2bb75da2cdc2a88db20"
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git am /tmp/pelef017.patch
+          git diff --check HEAD^
+          git push origin HEAD:agent/reactive-2d-molecular-transport
