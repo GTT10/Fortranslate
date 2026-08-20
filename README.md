@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.15.0` milestone contains seven serial verification executables.
+The `0.16.0` milestone contains eight serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -56,6 +56,21 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
 - a seven-species, four-reaction H2/O2/N2 subset selected from Cantera `h2o2.yaml`;
 - live trajectory and exact-state production-rate comparison against Cantera 3.2.
 
+
+### `pelef_transport_probe`: dilute-gas transport verification
+
+- Lennard-Jones transport records for H2, H, O, O2, OH, H2O, and N2;
+- Chapman--Enskog pure viscosities and binary diffusion coefficients;
+- Wilke mixture viscosity;
+- modified-Eucken pure conductivity and Mathur mixture conductivity;
+- mixture-averaged species diffusion coefficients;
+- live qualification against Cantera 3.2 at four temperature, pressure, and
+  composition states.
+
+This is a deliberately qualified ideal-gas subset. It does not yet reproduce
+PelePhysics polynomial transport fits, polar corrections, Soret diffusion,
+multicomponent diffusion, or bulk viscosity.
+
 ### `pelef_reactive_1d`: general-EOS reactive Euler solver
 
 - conserved state `(rho, rho*u, rho*v, rho*w, rho*E, rho*Y_k)`;
@@ -71,7 +86,10 @@ This older passive path intentionally retains the constant-`gamma` hydro baselin
   Colella--Woodward contact steepening on characteristic PPM;
 - periodic or outflow boundaries;
 - cell-local adiabatic constant-volume chemistry;
-- reaction-hydro-reaction Strang splitting;
+- optional shear viscosity, Fourier heat conduction, mixture-averaged species
+  diffusion, barodiffusion, correction velocity, and species-enthalpy flux;
+- explicit SSPRK2 transport with a parabolic timestep gate;
+- symmetric reaction--transport--hydro--transport--reaction splitting;
 - homogeneous-reactor reduction, smooth density/composition-wave convergence,
   discontinuous material-contact resolution, primitive/characteristic PPM
   convergence, periodic strong-shock flattening, and nonuniform
@@ -199,6 +217,23 @@ General-EOS H2/N2 composition wave with HLLC:
   cases/reactive_composition_wave/composition_wave.nml
 python3 tools/check_reactive_composition_wave.py \
   --input reactive_composition_wave.csv
+```
+
+
+Dilute-gas transport coefficient probe:
+
+```bash
+./build/pelef_transport_probe transport_probe.csv
+python3 tools/compare_transport_cantera.py --input transport_probe.csv
+```
+
+Periodic one-dimensional molecular-transport pulse:
+
+```bash
+./build/pelef_reactive_1d \
+  cases/reactive_transport_1d/transport_pulse.nml
+python3 tools/check_reactive_transport_1d.py \
+  --input reactive_transport_pulse.csv --nx 96
 ```
 
 Reactive two-dimensional hotspot with CTU and HLLC:

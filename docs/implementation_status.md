@@ -95,7 +95,10 @@
 - [x] nonuniform reactive-hotspot HLLC application regression
 - [x] high-resolution hotspot comparison against PCM
 - [ ] pressure-dependent/full H2/O2 chemistry in CFD
-- [ ] molecular transport
+- [x] qualified dilute-gas molecular transport in 1D
+- [x] viscous, conductive, barodiffusive, correction-velocity, and enthalpy fluxes
+- [x] explicit SSPRK2 transport and parabolic timestep gate
+- [x] periodic transport-pulse and analytical shear-wave regressions
 - [x] periodic two-dimensional reactive CTU flow
 
 ## Phase 6 — two-dimensional reactive flow
@@ -125,6 +128,50 @@
 - [ ] physical wall, inflow, and outflow boundaries
 - [ ] complete PeleC multidimensional PPM transverse/corner tracing
 - [ ] molecular transport
+
+
+## Phase 7 — molecular transport
+
+- [x] seven-species Lennard-Jones transport database pinned to Cantera
+- [x] Chapman--Enskog pure viscosity and binary diffusion
+- [x] Wilke mixture viscosity
+- [x] modified-Eucken pure conductivity and Mathur mixture conductivity
+- [x] mixture-averaged species diffusion
+- [x] one-dimensional Newtonian viscous stresses and viscous energy work
+- [x] Fourier heat conduction
+- [x] mole-fraction diffusion with optional barodiffusion
+- [x] correction velocity enforcing zero net diffusive mass flux
+- [x] species-enthalpy diffusion contribution to total-energy flux
+- [x] explicit SSPRK2 transport advance and parabolic CFL limit
+- [x] symmetric chemistry/transport/hydro operator composition
+- [x] Cantera 3.2 coefficient qualification probe
+- [x] second-order viscous shear-wave convergence
+- [x] species and temperature smoothing with periodic conservation
+- [ ] Soret and Dufour effects
+- [ ] multicomponent Stefan--Maxwell diffusion
+- [ ] full PelePhysics polynomial/polar transport parity
+- [ ] molecular transport in the reactive 2D CTU path
+
+## Verified `0.16.0` results
+
+| Gate | Result |
+|---|---:|
+| Complete local Debug suite without optional Cantera | `86/86` passed |
+| Complete local Release suite without optional Cantera | `86/86` passed |
+| GitHub Actions Debug with Cantera | `87/87` target gate |
+| GitHub Actions Release with Cantera | `87/87` target gate |
+| Viscous shear-wave density grids | `32`, `64`, `128` |
+| Viscous shear-wave transverse-velocity L1 | `2.352743e-6`, `5.849738e-7`, `1.460204e-7` |
+| Viscous shear-wave observed orders | `2.007900`, `2.002202` |
+| 1000 K stoichiometric mixture viscosity | `4.19833898e-5 Pa s` |
+| 1000 K stoichiometric mixture conductivity | `1.24288597e-1 W/(m K)` |
+| 1000 K H2/O2/N2 mixture diffusion coefficients | `8.12964482e-4`, `1.98336193e-4`, `1.80234445e-4 m2/s` |
+| 96-cell transport-pulse steps | `297` |
+| Transport-pulse H2 range reduction | `5.27325851e-3` to `5.10182280e-3` |
+| Transport-pulse maximum species-mass error | `1.57e-15` |
+| Transport-pulse maximum conservation error | `1.73e-18` |
+| Transport-pulse pressure span | `29.0691 Pa` |
+| Transport-pulse maximum velocity | `6.28770e-2 m/s` |
 
 ## Verified `0.15.0` results
 
@@ -240,10 +287,9 @@ The existing `0.9.0` Cantera trajectory and exact-state production-rate comparis
 
 ## Next implementation slice
 
-Introduce mixture viscosity, thermal conductivity, and mixture-averaged species
-diffusion as a separately verifiable parabolic operator. Start with one-dimensional
-periodic diffusion and flame-profile reductions, then connect the same transport
-closure to the two-dimensional reactive solver. Physical wall, inflow, and outflow
-boundaries follow before AMR. Complete PeleC multidimensional PPM corner coupling
-remains a later parity task rather than being conflated with the verified normal
-predictor plus conservative CTU correction.
+Extend the qualified one-dimensional viscous, conductive, and species-diffusion
+fluxes to the reactive two-dimensional solver. Add directional stress/heat/species
+fluxes, a two-dimensional parabolic timestep gate, periodic dimensional reduction,
+and transport-enabled vortex/hotspot regressions before physical wall, inflow, and
+outflow boundaries. Complete PeleC multidimensional PPM corner coupling remains a
+separate parity task.

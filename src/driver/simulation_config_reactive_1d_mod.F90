@@ -16,6 +16,12 @@ module simulation_config_reactive_1d_mod
     character(len=32) :: limiter = "mc"
     character(len=32) :: boundary_condition = "periodic"
     logical :: chemistry_enabled = .true.
+    logical :: transport_enabled = .false.
+    logical :: viscosity_enabled = .true.
+    logical :: thermal_conduction_enabled = .true.
+    logical :: species_diffusion_enabled = .true.
+    logical :: barodiffusion_enabled = .true.
+    real(dp) :: transport_cfl = 0.40_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -51,6 +57,7 @@ contains
     integer :: nx, maximum_steps, unit, status
     real(dp) :: x_lower, x_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
+    real(dp) :: transport_cfl
     real(dp) :: initial_temperature, initial_pressure, initial_velocity
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
     real(dp) :: hotspot_temperature_rise
@@ -60,12 +67,17 @@ contains
     character(len=32) :: boundary_condition
     character(len=256) :: output_file
     logical :: chemistry_enabled
+    logical :: transport_enabled, viscosity_enabled
+    logical :: thermal_conduction_enabled, species_diffusion_enabled
+    logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
       reconstruction, riemann_solver, limiter, boundary_condition, &
-      chemistry_enabled, ppm_contact_steepening, &
+      chemistry_enabled, transport_enabled, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, transport_cfl, ppm_contact_steepening, &
       ppm_shock_flattening, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity, &
@@ -86,6 +98,12 @@ contains
     limiter = config%limiter
     boundary_condition = config%boundary_condition
     chemistry_enabled = config%chemistry_enabled
+    transport_enabled = config%transport_enabled
+    viscosity_enabled = config%viscosity_enabled
+    thermal_conduction_enabled = config%thermal_conduction_enabled
+    species_diffusion_enabled = config%species_diffusion_enabled
+    barodiffusion_enabled = config%barodiffusion_enabled
+    transport_cfl = config%transport_cfl
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -131,6 +149,7 @@ contains
       density_wave_amplitude < 0.9_dp .and. hotspot_width > 0.0_dp .and. &
       composition_wave_amplitude >= 0.0_dp .and. &
       chemistry_relative_tolerance > 0.0_dp .and. &
+      transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
@@ -196,6 +215,12 @@ contains
     config%limiter = trim(limiter)
     config%boundary_condition = trim(boundary_condition)
     config%chemistry_enabled = chemistry_enabled
+    config%transport_enabled = transport_enabled
+    config%viscosity_enabled = viscosity_enabled
+    config%thermal_conduction_enabled = thermal_conduction_enabled
+    config%species_diffusion_enabled = species_diffusion_enabled
+    config%barodiffusion_enabled = barodiffusion_enabled
+    config%transport_cfl = transport_cfl
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance

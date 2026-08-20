@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes seven serial verification drivers over shared numerical and physical-property modules.
+PeleF exposes eight serial verification drivers over shared numerical and physical-property modules.
 
 ```text
 pelef
@@ -19,6 +19,9 @@ pelef0d
 
 pelef0d_h2o2
   └─ generated reversible elementary kinetics and an H2/O2 reactor
+
+pelef_transport_probe
+  └─ qualified dilute-gas mixture transport coefficients
 
 pelef_reactive_1d
   └─ NASA7 general-EOS reactive Euler with PLM/PPM, HLLC, and Strang splitting
@@ -56,6 +59,33 @@ constant_volume_reactor_mod
 ```
 
 The normalized JSON file is the authoring format for the current generated reaction subset. CI regenerates the committed Fortran module and requires byte-for-byte equality.
+
+
+## Shared molecular transport
+
+```text
+transport_database_mod
+  └─ pinned Lennard-Jones records for the seven-species subset
+        ↓
+mixture_transport_mod
+  ├─ Chapman--Enskog pure viscosity
+  ├─ Wilke mixture viscosity
+  ├─ modified-Eucken / Mathur thermal conductivity
+  ├─ Chapman--Enskog binary diffusion
+  └─ mixture-averaged species diffusion
+        ↓
+reactive_diffusive_flux_x
+  ├─ Newtonian viscous stress and viscous work
+  ├─ Fourier heat flux
+  ├─ mole-fraction and optional pressure diffusion driving forces
+  ├─ correction velocity enforcing sum(j_k) = 0
+  └─ species-enthalpy diffusion energy flux
+```
+
+Transport data are pinned to the same Cantera `h2o2.yaml` provenance as the
+current thermodynamics/chemistry subset. The implemented coefficient model is
+a dilute ideal-gas subset, not the full PelePhysics generated polynomial
+transport layer.
 
 ## Reactive one-dimensional path
 
@@ -103,9 +133,15 @@ reconstruction selector
 general-EOS Rusanov or HLLC flux
         ↓
 conservative finite-volume update
+
+optional transport branch
+  ├─ face-centered viscous / conductive / species fluxes
+  ├─ explicit SSPRK2 diffusion update
+  └─ parabolic dx^2 / diffusivity timestep gate
 ```
 
-Species face fluxes are corrected so their sum equals the total mass flux to roundoff.
+Advective species face fluxes close to the total mass flux. Diffusive species
+fluxes use a correction velocity so their sum is zero to roundoff.
 
 ## Reactive two-dimensional CTU path
 
@@ -158,12 +194,18 @@ tracing remains intentionally outside the current claim.
 
 ## Reaction-flow coupling
 
-The first coupled integrator uses Strang splitting:
+With molecular transport disabled, the coupled integrator retains the
+reaction--hydro--reaction Strang sequence. With transport enabled, the symmetric
+composition is:
 
 ```text
 reaction(dt/2)
       ↓
+transport(dt/2)
+      ↓
 hydro(dt)
+      ↓
+transport(dt/2)
       ↓
 reaction(dt/2)
 ```
@@ -180,7 +222,8 @@ The architecture retains independent gates for:
 4. zero-dimensional elementary chemistry;
 5. composition-dependent reactive hydro;
 6. reaction-flow splitting;
-7. reactive two-dimensional CTU and dimensional reduction.
+7. reactive two-dimensional CTU and dimensional reduction;
+8. one-dimensional molecular transport and Cantera coefficient qualification.
 
 The homogeneous reactive field must reduce to independent zero-dimensional cell chemistry. The nonuniform hotspot must create finite pressure and velocity responses while preserving global mass, momentum, and total energy.
 
@@ -200,6 +243,10 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
 10. Contact steepening is explicitly bounded to half of the canonical detector
     strength until a complete general-EOS PPM/HLLC characteristic system is
     available.
+11. The present transport layer excludes Soret, Dufour, multicomponent Stefan--
+    Maxwell diffusion, polar corrections, and bulk viscosity.
+12. Molecular transport is qualified only on the periodic one-dimensional
+    reactive path; the two-dimensional CTU path remains inviscid.
 
 ## Reactive PPM path
 
