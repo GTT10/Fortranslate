@@ -127,7 +127,7 @@
 - [x] characteristic-PPM two-dimensional reacting-hotspot regression
 - [ ] physical wall, inflow, and outflow boundaries
 - [ ] complete PeleC multidimensional PPM transverse/corner tracing
-- [ ] molecular transport
+- [x] molecular transport
 
 
 ## Phase 7 — molecular transport
@@ -150,7 +150,7 @@
 - [ ] Soret and Dufour effects
 - [ ] multicomponent Stefan--Maxwell diffusion
 - [ ] full PelePhysics polynomial/polar transport parity
-- [ ] molecular transport in the reactive 2D CTU path
+- [x] molecular transport in the reactive 2D CTU path
 
 ## Verified `0.16.0` results
 
@@ -293,3 +293,20 @@ fluxes, a two-dimensional parabolic timestep gate, periodic dimensional reductio
 and transport-enabled vortex/hotspot regressions before physical wall, inflow, and
 outflow boundaries. Complete PeleC multidimensional PPM corner coupling remains a
 separate parity task.
+
+
+## Verified `0.17.0` results
+
+| Gate | Result |
+|---|---:|
+| Local Debug suite | `90/90` passed |
+| Local Release suite | `90/90` passed |
+| 2D shear-wave L1, 16 x 16 | `2.603378e-6` |
+| 2D shear-wave L1, 32 x 32 | `6.316041e-7` |
+| 2D shear-wave L1, 64 x 64 | `1.563289e-7` |
+| Observed shear-wave orders | `2.043293`, `2.014436` |
+| Reacting transport-hotspot steps | `49` |
+| Reacting transport-hotspot conservation error | `1.33063574e-15` |
+| Reacting transport-hotspot pressure span | `8.34842515 Pa` |
+| Reacting transport-hotspot maximum speed | `9.62290759e-2 m/s` |
+| Reacting transport-hotspot temperature span | `2.40627606e2 K` |

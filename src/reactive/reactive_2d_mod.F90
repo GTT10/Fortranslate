@@ -7,6 +7,9 @@ module reactive_2d_mod
   use mixture_thermo_mod, only: &
     mass_fractions_from_mole_fractions, mixture_density
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
+  use reactive_transport_2d_mod, only: &
+    reactive_transport_timestep_2d, advance_reactive_transport_2d
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive
   use simulation_config_reactive_2d_mod, only: reactive_2d_config
   use reactive_1d_mod, only: &
@@ -773,7 +776,10 @@ contains
       species, reactions, state, temperature, nx, ny, dx, dy, dt, &
       reconstruction, limiter, riemann_solver, use_transverse_correction, &
       chemistry_enabled, rtol, atol, ok, minimum_transverse_theta, &
-      ppm_contact_steepening, ppm_shock_flattening)
+      ppm_contact_steepening, ppm_shock_flattening, transport, &
+      transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, &
+      minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
@@ -785,29 +791,68 @@ contains
     real(dp), intent(out), optional :: minimum_transverse_theta
     logical, intent(in), optional :: ppm_contact_steepening
     logical, intent(in), optional :: ppm_shock_flattening
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    logical, intent(in), optional :: transport_enabled, viscosity_enabled
+    logical, intent(in), optional :: thermal_conduction_enabled
+    logical, intent(in), optional :: species_diffusion_enabled
+    logical, intent(in), optional :: barodiffusion_enabled
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     logical :: local_ok, use_contact_steepening, use_shock_flattening
-    real(dp) :: theta
+    logical :: use_transport, use_viscosity, use_conduction, use_diffusion
+    logical :: use_barodiffusion
+    real(dp) :: theta, transport_theta, stage_transport_theta
 
     ok = .false.
     theta = 1.0_dp
+    transport_theta = 1.0_dp
     use_contact_steepening = .false.
     use_shock_flattening = .false.
+    use_transport = .false.
+    use_viscosity = .true.
+    use_conduction = .true.
+    use_diffusion = .true.
+    use_barodiffusion = .true.
     if (present(ppm_contact_steepening)) &
       use_contact_steepening = ppm_contact_steepening
     if (present(ppm_shock_flattening)) &
       use_shock_flattening = ppm_shock_flattening
+    if (present(transport_enabled)) use_transport = transport_enabled
+    if (present(viscosity_enabled)) use_viscosity = viscosity_enabled
+    if (present(thermal_conduction_enabled)) &
+      use_conduction = thermal_conduction_enabled
+    if (present(species_diffusion_enabled)) &
+      use_diffusion = species_diffusion_enabled
+    if (present(barodiffusion_enabled)) &
+      use_barodiffusion = barodiffusion_enabled
+    if (use_transport .and. .not. present(transport)) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, state, temperature, nx, ny, 0.5_dp * dt, &
         rtol, atol, local_ok)
       if (.not. local_ok) return
     end if
+    if (use_transport) then
+      call advance_reactive_transport_2d( &
+        species, transport, state, temperature, nx, ny, dx, dy, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
     call advance_reactive_hydro_2d( &
       species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
       limiter, riemann_solver, use_transverse_correction, local_ok, theta, &
       use_contact_steepening, use_shock_flattening)
     if (.not. local_ok) return
+    if (use_transport) then
+      call advance_reactive_transport_2d( &
+        species, transport, state, temperature, nx, ny, dx, dy, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, state, temperature, nx, ny, 0.5_dp * dt, &
@@ -815,6 +860,8 @@ contains
       if (.not. local_ok) return
     end if
     if (present(minimum_transverse_theta)) minimum_transverse_theta = theta
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = transport_theta
     ok = .true.
   end subroutine advance_reactive_strang_2d
 
@@ -1035,7 +1082,7 @@ contains
   subroutine simulate_reactive_2d( &
       species, reactions, config, state, temperature, dx, dy, time, steps, &
       initial_integrals, final_integrals, minimum_transverse_theta, &
-      base_density, ok)
+      base_density, ok, transport, minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_2d_config), intent(in) :: config
@@ -1045,8 +1092,11 @@ contains
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     real(dp), intent(out) :: minimum_transverse_theta, base_density
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(out), optional :: minimum_transport_theta
 
-    real(dp) :: dt, step_theta
+    real(dp) :: dt, step_theta, transport_dt, maximum_diffusivity
+    real(dp) :: step_transport_theta, local_minimum_transport_theta
     logical :: local_ok
 
     call initialize_reactive_2d( &
@@ -1060,6 +1110,11 @@ contains
     time = 0.0_dp
     steps = 0
     minimum_transverse_theta = 1.0_dp
+    local_minimum_transport_theta = 1.0_dp
+    if (config%transport_enabled .and. .not. present(transport)) then
+      ok = .false.
+      return
+    end if
     do while (time < config%final_time)
       if (steps >= config%maximum_steps) then
         ok = .false.
@@ -1072,24 +1127,54 @@ contains
         ok = .false.
         return
       end if
+      if (config%transport_enabled) then
+        call reactive_transport_timestep_2d( &
+          species, transport, state, temperature, config%nx, config%ny, &
+          dx, dy, config%transport_cfl, config%viscosity_enabled, &
+          config%thermal_conduction_enabled, config%species_diffusion_enabled, &
+          transport_dt, maximum_diffusivity, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        dt = min(dt, transport_dt)
+      end if
       dt = min(dt, config%final_time - time)
-      call advance_reactive_strang_2d( &
+      if (config%transport_enabled) then
+        call advance_reactive_strang_2d( &
+          species, reactions, state, temperature, config%nx, config%ny, &
+          dx, dy, dt, config%reconstruction, config%limiter, &
+          config%riemann_solver, config%use_transverse_correction, &
+          config%chemistry_enabled, config%chemistry_relative_tolerance, &
+          config%chemistry_absolute_tolerance, local_ok, step_theta, &
+          config%ppm_contact_steepening, config%ppm_shock_flattening, &
+          transport, config%transport_enabled, config%viscosity_enabled, &
+          config%thermal_conduction_enabled, config%species_diffusion_enabled, &
+          config%barodiffusion_enabled, step_transport_theta)
+      else
+        call advance_reactive_strang_2d( &
         species, reactions, state, temperature, config%nx, config%ny, &
         dx, dy, dt, config%reconstruction, config%limiter, &
         config%riemann_solver, config%use_transverse_correction, &
         config%chemistry_enabled, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, local_ok, step_theta, &
         config%ppm_contact_steepening, config%ppm_shock_flattening)
+        step_transport_theta = 1.0_dp
+      end if
       if (.not. local_ok) then
         ok = .false.
         return
       end if
       minimum_transverse_theta = min(minimum_transverse_theta, step_theta)
+      local_minimum_transport_theta = min( &
+        local_minimum_transport_theta, step_transport_theta)
       time = time + dt
       steps = steps + 1
     end do
     call reactive_integrals_2d( &
       state, config%nx, config%ny, dx, dy, final_integrals)
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = local_minimum_transport_theta
     ok = .true.
   end subroutine simulate_reactive_2d
 

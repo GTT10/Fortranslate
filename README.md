@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.16.0` milestone contains eight serial verification executables.
+The `0.17.0` milestone contains eight serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -107,7 +107,8 @@ multicomponent diffusion, or bulk viscosity.
   characteristic-PPM normal predictor;
 - provisional face fluxes, conservative CTU transverse half-step corrections, and EOS-based positivity scaling;
 - species, momentum, and total energy corrected together so `sum(rho*Y_k)=rho` remains coupled to the hydro update;
-- cell-local chemistry with reaction--hydro--reaction Strang splitting;
+- cell-local chemistry with symmetric reaction--transport--hydro--transport--reaction splitting;
+- optional x/y Newtonian viscosity, Fourier conduction, mixture-averaged species diffusion, barodiffusion, correction velocity, and species-enthalpy flux;
 - exact diagonal density/composition-wave convergence, x/y one-dimensional
   reduction, material-contact sharpening, oblique strong-shock flattening,
   periodic vortex, and reacting-hotspot regressions.
@@ -279,3 +280,12 @@ characteristic-PPM/CTU path:
 - [Parity strategy](docs/parity_strategy.md)
 - [Implementation status](docs/implementation_status.md)
 - [Design decisions](docs/design_decisions/)
+
+
+### PeleF 0.17.0 two-dimensional transport example
+
+```bash
+./build/pelef_reactive_2d cases/reactive_transport_2d/transport_hotspot.nml
+python3 tools/check_reactive_hotspot_2d.py \
+  --input reactive_transport_hotspot_2d.csv --nx 20 --ny 20
+```
