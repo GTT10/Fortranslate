@@ -13,7 +13,8 @@ program test_reactive_hotspot_reference
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: reference_state(:, :), reference_temperature(:)
-  real(dp) :: plm_error(2), ppm_error(2), pcm_error(2)
+  real(dp) :: plm_error(2), ppm_error(2), characteristic_ppm_error(2)
+  real(dp) :: pcm_error(2)
   real(dp) :: dx, time, initial_integrals(5), final_integrals(5)
   logical :: ok
   integer :: steps
@@ -36,6 +37,10 @@ program test_reactive_hotspot_reference
     ppm_error(1))
   call compare_grid(64, "ppm", reference_state, reference_temperature, &
     ppm_error(2))
+  call compare_grid(32, "characteristic_ppm", reference_state, &
+    reference_temperature, characteristic_ppm_error(1))
+  call compare_grid(64, "characteristic_ppm", reference_state, &
+    reference_temperature, characteristic_ppm_error(2))
   call compare_grid(32, "pcm", reference_state, reference_temperature, &
     pcm_error(1))
   call compare_grid(64, "pcm", reference_state, reference_temperature, &
@@ -43,6 +48,8 @@ program test_reactive_hotspot_reference
 
   write(*, '(a,2(1x,es16.8))') "hotspot PLM normalized L1:", plm_error
   write(*, '(a,2(1x,es16.8))') "hotspot PPM normalized L1:", ppm_error
+  write(*, '(a,2(1x,es16.8))') &
+    "hotspot characteristic PPM normalized L1:", characteristic_ppm_error
   write(*, '(a,2(1x,es16.8))') "hotspot PCM normalized L1:", pcm_error
   if (plm_error(2) >= 0.70_dp * plm_error(1)) then
     error stop "Reactive hotspot PLM did not improve under refinement"
@@ -57,6 +64,14 @@ program test_reactive_hotspot_reference
   if (ppm_error(1) >= 0.80_dp * pcm_error(1) .or. &
       ppm_error(2) >= 0.80_dp * pcm_error(2)) then
     error stop "Reactive PPM did not beat PCM on the hotspot"
+  end if
+  if (characteristic_ppm_error(2) >= &
+      0.55_dp * characteristic_ppm_error(1)) then
+    error stop "Reactive characteristic PPM hotspot error did not decrease"
+  end if
+  if (characteristic_ppm_error(1) >= 0.80_dp * pcm_error(1) .or. &
+      characteristic_ppm_error(2) >= 0.80_dp * pcm_error(2)) then
+    error stop "Reactive characteristic PPM did not beat PCM on the hotspot"
   end if
   write(*, '(a)') "test_reactive_hotspot_reference: PASS"
 

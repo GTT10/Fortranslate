@@ -11,7 +11,7 @@ module reactive_1d_mod
     mass_fractions_from_mole_fractions
   use elementary_kinetics_mod, only: elementary_reaction
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive
-  use slope_limiter_mod, only: limited_slope
+  use slope_limiter_mod, only: limited_slope, minmod3
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   implicit none
   private
@@ -24,6 +24,7 @@ module reactive_1d_mod
   integer, parameter, public :: reactive_wave_plus = 5
   integer, parameter :: max_chemistry_substeps = 100000
   real(dp), parameter :: species_tolerance = 5.0e-11_dp
+  real(dp), parameter :: contact_steepening_cap = 0.5_dp
   real(dp), parameter :: pi = acos(-1.0_dp)
 
   public :: reactive_nvar, reactive_nprim
@@ -35,6 +36,11 @@ module reactive_1d_mod
   public :: reactive_riemann_flux_x
   public :: reactive_ppm_interface_value
   public :: reactive_ppm_monotone_edges
+  public :: reactive_ppm_reconstruct_five
+  public :: reactive_ppm_integrate_profile
+  public :: reactive_ppm_flattening_coefficient
+  public :: reactive_ppm_contact_steepening_factor
+  public :: reactive_ppm_apply_contact_steepening
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
   public :: trace_reactive_characteristics
@@ -622,6 +628,208 @@ contains
     end if
   end subroutine reactive_ppm_monotone_edges
 
+  pure subroutine reactive_ppm_reconstruct_five( &
+      stencil, flattening, left_edge, right_edge)
+    real(dp), intent(in) :: stencil(5), flattening
+    real(dp), intent(out) :: left_edge, right_edge
+    real(dp) :: dsl, dsr, dsc, slope_left, slope_right, flat
+
+    flat = max(0.0_dp, min(1.0_dp, flattening))
+
+    dsl = 2.0_dp * (stencil(2) - stencil(1))
+    dsr = 2.0_dp * (stencil(3) - stencil(2))
+    slope_left = 0.0_dp
+    if (dsl * dsr > 0.0_dp) then
+      dsc = 0.5_dp * (stencil(3) - stencil(1))
+      slope_left = sign(min(abs(dsc), min(abs(dsl), abs(dsr))), dsc)
+    end if
+
+    dsl = 2.0_dp * (stencil(3) - stencil(2))
+    dsr = 2.0_dp * (stencil(4) - stencil(3))
+    slope_right = 0.0_dp
+    if (dsl * dsr > 0.0_dp) then
+      dsc = 0.5_dp * (stencil(4) - stencil(2))
+      slope_right = sign(min(abs(dsc), min(abs(dsl), abs(dsr))), dsc)
+    end if
+
+    left_edge = 0.5_dp * (stencil(3) + stencil(2)) - &
+      (slope_right - slope_left) / 6.0_dp
+    left_edge = max(min(stencil(3), stencil(2)), &
+      min(max(stencil(3), stencil(2)), left_edge))
+
+    dsl = 2.0_dp * (stencil(3) - stencil(2))
+    dsr = 2.0_dp * (stencil(4) - stencil(3))
+    slope_left = 0.0_dp
+    if (dsl * dsr > 0.0_dp) then
+      dsc = 0.5_dp * (stencil(4) - stencil(2))
+      slope_left = sign(min(abs(dsc), min(abs(dsl), abs(dsr))), dsc)
+    end if
+
+    dsl = 2.0_dp * (stencil(4) - stencil(3))
+    dsr = 2.0_dp * (stencil(5) - stencil(4))
+    slope_right = 0.0_dp
+    if (dsl * dsr > 0.0_dp) then
+      dsc = 0.5_dp * (stencil(5) - stencil(3))
+      slope_right = sign(min(abs(dsc), min(abs(dsl), abs(dsr))), dsc)
+    end if
+
+    right_edge = 0.5_dp * (stencil(4) + stencil(3)) - &
+      (slope_right - slope_left) / 6.0_dp
+    right_edge = max(min(stencil(4), stencil(3)), &
+      min(max(stencil(4), stencil(3)), right_edge))
+
+    left_edge = flat * left_edge + (1.0_dp - flat) * stencil(3)
+    right_edge = flat * right_edge + (1.0_dp - flat) * stencil(3)
+    call reactive_ppm_monotone_edges(stencil(3), left_edge, right_edge)
+  end subroutine reactive_ppm_reconstruct_five
+
+  pure subroutine reactive_ppm_integrate_profile( &
+      left_edge, right_edge, center, velocity, sound_speed, dtdx, &
+      integral_right, integral_left, ok)
+    real(dp), intent(in) :: left_edge, right_edge, center
+    real(dp), intent(in) :: velocity, sound_speed, dtdx
+    real(dp), intent(out) :: integral_right(3), integral_left(3)
+    logical, intent(out) :: ok
+    real(dp) :: speeds(3), speed, sigma, s6
+    integer :: wave
+
+    integral_right = 0.0_dp
+    integral_left = 0.0_dp
+    ok = .false.
+    if (sound_speed <= 0.0_dp .or. dtdx < 0.0_dp) return
+    speeds = [velocity - sound_speed, velocity, velocity + sound_speed]
+    if (maxval(abs(speeds)) * dtdx > 1.0_dp + 50.0_dp * epsilon(1.0_dp)) &
+      return
+    s6 = 6.0_dp * center - 3.0_dp * (left_edge + right_edge)
+    do wave = 1, 3
+      speed = speeds(wave)
+      sigma = abs(speed) * dtdx
+      if (speed <= 0.0_dp) then
+        integral_right(wave) = right_edge
+        integral_left(wave) = left_edge + 0.5_dp * sigma * &
+          (right_edge - left_edge + &
+            (1.0_dp - 2.0_dp * sigma / 3.0_dp) * s6)
+      else
+        integral_right(wave) = right_edge - 0.5_dp * sigma * &
+          (right_edge - left_edge - &
+            (1.0_dp - 2.0_dp * sigma / 3.0_dp) * s6)
+        integral_left(wave) = left_edge
+      end if
+    end do
+    ok = all(ieee_is_finite(integral_right)) .and. &
+      all(ieee_is_finite(integral_left))
+  end subroutine reactive_ppm_integrate_profile
+
+  pure real(dp) function reactive_ppm_flattening_coefficient( &
+      pressure, velocity) result(flattening)
+    real(dp), intent(in) :: pressure(-3:3), velocity(-3:3)
+    real(dp), parameter :: shock_threshold = 0.33_dp
+    real(dp), parameter :: zcut1 = 0.75_dp
+    real(dp), parameter :: zcut2 = 0.85_dp
+    real(dp) :: dp_jump, denominator, zeta, z, z2
+    real(dp) :: shifted_plus, shifted_minus, shifted_plus2, shifted_minus2
+    real(dp) :: shifted_uplus, shifted_uminus, minimum_pressure
+    real(dp) :: chi, chi2, compression
+    integer :: shift
+
+    flattening = 1.0_dp
+    if (any(pressure <= pressure_floor) .or. &
+        any(.not. ieee_is_finite(pressure)) .or. &
+        any(.not. ieee_is_finite(velocity))) return
+
+    dp_jump = pressure(1) - pressure(-1)
+    shift = merge(1, -1, dp_jump > 0.0_dp)
+    denominator = max(tiny(1.0_dp), abs(pressure(2) - pressure(-2)))
+    zeta = abs(dp_jump) / denominator
+    z = max(0.0_dp, min(1.0_dp, &
+      (zeta - zcut1) / (zcut2 - zcut1)))
+    compression = merge(1.0_dp, 0.0_dp, velocity(-1) - velocity(1) >= 0.0_dp)
+    minimum_pressure = max(pressure_floor, min(pressure(1), pressure(-1)))
+    chi = merge(compression, 0.0_dp, &
+      abs(dp_jump) / minimum_pressure > shock_threshold)
+
+    shifted_plus = pressure(1 - shift)
+    shifted_minus = pressure(-(1 + shift))
+    shifted_uplus = velocity(1 - shift)
+    shifted_uminus = velocity(-(1 + shift))
+    shifted_plus2 = pressure(2 - shift)
+    shifted_minus2 = pressure(-(2 + shift))
+    dp_jump = shifted_plus - shifted_minus
+    denominator = max(tiny(1.0_dp), abs(shifted_plus2 - shifted_minus2))
+    zeta = abs(dp_jump) / denominator
+    z2 = max(0.0_dp, min(1.0_dp, &
+      (zeta - zcut1) / (zcut2 - zcut1)))
+    compression = merge(1.0_dp, 0.0_dp, &
+      shifted_uminus - shifted_uplus >= 0.0_dp)
+    minimum_pressure = max(pressure_floor, min(shifted_plus, shifted_minus))
+    chi2 = merge(compression, 0.0_dp, &
+      abs(dp_jump) / minimum_pressure > shock_threshold)
+
+    flattening = 1.0_dp - max(chi * z, chi2 * z2)
+    flattening = max(0.0_dp, min(1.0_dp, flattening))
+  end function reactive_ppm_flattening_coefficient
+
+  pure real(dp) function reactive_ppm_contact_steepening_factor( &
+      density, pressure, gamma_effective) result(eta)
+    real(dp), intent(in) :: density(-2:2), pressure(-2:2)
+    real(dp), intent(in) :: gamma_effective
+    real(dp), parameter :: contact_k0 = 0.1_dp
+    real(dp), parameter :: eta1 = 20.0_dp
+    real(dp), parameter :: eta2 = 0.05_dp
+    real(dp), parameter :: density_threshold = 0.01_dp
+    real(dp) :: d1rho, d2rho_minus, d2rho_plus
+    real(dp) :: minimum_density, minimum_pressure, eta_tilde
+    logical :: contact_check, curvature_check, change_check
+
+    eta = 0.0_dp
+    if (gamma_effective <= 0.0_dp .or. any(density <= density_floor) .or. &
+        any(pressure <= pressure_floor)) return
+    d1rho = density(1) - density(-1)
+    d2rho_minus = density(0) - 2.0_dp * density(-1) + density(-2)
+    d2rho_plus = density(2) - 2.0_dp * density(1) + density(0)
+    minimum_density = max(density_floor, min(density(1), density(-1)))
+    minimum_pressure = max(pressure_floor, min(pressure(1), pressure(-1)))
+    contact_check = gamma_effective * contact_k0 * abs(d1rho) * &
+      minimum_pressure >= abs(pressure(1) - pressure(-1)) * minimum_density
+    curvature_check = d2rho_plus * d2rho_minus <= 0.0_dp
+    change_check = abs(d1rho) >= density_threshold * minimum_density
+    if (.not. (contact_check .and. curvature_check .and. change_check)) return
+    if (abs(d1rho) <= tiny(1.0_dp)) return
+    eta_tilde = -(d2rho_plus - d2rho_minus) / (6.0_dp * d1rho)
+    eta = max(0.0_dp, min(1.0_dp, eta1 * (eta_tilde - eta2)))
+  end function reactive_ppm_contact_steepening_factor
+
+  pure subroutine reactive_ppm_apply_contact_steepening( &
+      stencil, eta, left_edge, right_edge)
+    real(dp), intent(in) :: stencil(-2:2), eta
+    real(dp), intent(inout) :: left_edge, right_edge
+    real(dp) :: slope_minus, slope_plus, left_mc, right_mc, strength
+
+    strength = max(0.0_dp, min(1.0_dp, eta))
+    slope_minus = minmod3( &
+      0.5_dp * ((stencil(-1) - stencil(-2)) + &
+        (stencil(0) - stencil(-1))), &
+      2.0_dp * (stencil(-1) - stencil(-2)), &
+      2.0_dp * (stencil(0) - stencil(-1)))
+    slope_plus = minmod3( &
+      0.5_dp * ((stencil(1) - stencil(0)) + &
+        (stencil(2) - stencil(1))), &
+      2.0_dp * (stencil(1) - stencil(0)), &
+      2.0_dp * (stencil(2) - stencil(1)))
+    left_mc = stencil(-1) + 0.5_dp * slope_minus
+    right_mc = stencil(1) - 0.5_dp * slope_plus
+    left_mc = max(min(stencil(-1), stencil(0)), &
+      min(max(stencil(-1), stencil(0)), left_mc))
+    right_mc = max(min(stencil(0), stencil(1)), &
+      min(max(stencil(0), stencil(1)), right_mc))
+    left_edge = (1.0_dp - strength) * left_edge + strength * left_mc
+    right_edge = (1.0_dp - strength) * right_edge + strength * right_mc
+    left_edge = max(min(stencil(-1), stencil(0)), &
+      min(max(stencil(-1), stencil(0)), left_edge))
+    right_edge = max(min(stencil(0), stencil(1)), &
+      min(max(stencil(0), stencil(1)), right_edge))
+  end subroutine reactive_ppm_apply_contact_steepening
+
   pure integer function extended_cell_index(index, nx, boundary) result(source)
     integer, intent(in) :: index, nx
     character(len=*), intent(in) :: boundary
@@ -635,6 +843,278 @@ contains
       source = 0
     end select
   end function extended_cell_index
+
+  subroutine build_characteristic_ppm_states( &
+      species, center, sound_speed, integral_right, integral_left, &
+      left_state, right_state, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: center(:), sound_speed
+    real(dp), intent(in) :: integral_right(:, :), integral_left(:, :)
+    real(dp), intent(out) :: left_state(:), right_state(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: reference(:), dummy_conserved(:)
+    real(dp) :: rho_ref, u_ref, p_ref, c_ref, t_ref
+    real(dp) :: dum, dpm, drho, dp0, dup, dpp
+    real(dp) :: alpham, alpha0, alphap, c2, u
+    logical :: local_ok
+    integer :: nspecies, nprimitive, k, component
+
+    left_state = 0.0_dp
+    right_state = 0.0_dp
+    ok = .false.
+    nspecies = size(species)
+    nprimitive = reactive_nprim(nspecies)
+    if (size(center) /= nprimitive .or. size(left_state) /= nprimitive .or. &
+        size(right_state) /= nprimitive) return
+    if (size(integral_right, 1) /= nprimitive .or. &
+        size(integral_left, 1) /= nprimitive .or. &
+        size(integral_right, 2) /= 3 .or. &
+        size(integral_left, 2) /= 3 .or. sound_speed <= 0.0_dp) return
+
+    allocate(reference(nprimitive), dummy_conserved(reactive_nvar(nspecies)))
+    u = center(2)
+
+    left_state = integral_left(:, 2)
+    reference = integral_left(:, 1)
+    call sanitize_primitive(reference, center, nspecies)
+    call reactive_primitive_to_conserved( &
+      species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    if (.not. local_ok) return
+    rho_ref = reference(1)
+    u_ref = reference(2)
+    p_ref = reference(5)
+    c2 = c_ref * c_ref
+    dum = u_ref - integral_left(2, 1)
+    dpm = p_ref - integral_left(5, 1)
+    drho = rho_ref - integral_left(1, 2)
+    dp0 = p_ref - integral_left(5, 2)
+    dup = u_ref - integral_left(2, 3)
+    dpp = p_ref - integral_left(5, 3)
+    alpham = 0.5_dp * (dpm / (rho_ref * c_ref) - dum) * rho_ref / c_ref
+    alphap = 0.5_dp * (dpp / (rho_ref * c_ref) + dup) * rho_ref / c_ref
+    alpha0 = drho - dp0 / c2
+    if (u - sound_speed > 0.0_dp) then
+      alpham = 0.0_dp
+    else
+      alpham = -alpham
+    end if
+    if (u + sound_speed > 0.0_dp) then
+      alphap = 0.0_dp
+    else
+      alphap = -alphap
+    end if
+    if (u > 0.0_dp) then
+      alpha0 = 0.0_dp
+    else
+      alpha0 = -alpha0
+    end if
+    left_state(1) = rho_ref + alpham + alpha0 + alphap
+    left_state(2) = u_ref + (alphap - alpham) * c_ref / rho_ref
+    left_state(3) = integral_left(3, 2)
+    left_state(4) = integral_left(4, 2)
+    left_state(5) = p_ref + (alpham + alphap) * c2
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      left_state(component) = integral_left(component, 2)
+    end do
+    call sanitize_primitive(left_state, center, nspecies)
+
+    right_state = integral_right(:, 2)
+    reference = integral_right(:, 3)
+    call sanitize_primitive(reference, center, nspecies)
+    call reactive_primitive_to_conserved( &
+      species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    if (.not. local_ok) return
+    rho_ref = reference(1)
+    u_ref = reference(2)
+    p_ref = reference(5)
+    c2 = c_ref * c_ref
+    dum = u_ref - integral_right(2, 1)
+    dpm = p_ref - integral_right(5, 1)
+    drho = rho_ref - integral_right(1, 2)
+    dp0 = p_ref - integral_right(5, 2)
+    dup = u_ref - integral_right(2, 3)
+    dpp = p_ref - integral_right(5, 3)
+    alpham = 0.5_dp * (dpm / (rho_ref * c_ref) - dum) * rho_ref / c_ref
+    alphap = 0.5_dp * (dpp / (rho_ref * c_ref) + dup) * rho_ref / c_ref
+    alpha0 = drho - dp0 / c2
+    if (u - sound_speed > 0.0_dp) then
+      alpham = -alpham
+    else
+      alpham = 0.0_dp
+    end if
+    if (u + sound_speed > 0.0_dp) then
+      alphap = -alphap
+    else
+      alphap = 0.0_dp
+    end if
+    if (u > 0.0_dp) then
+      alpha0 = -alpha0
+    else
+      alpha0 = 0.0_dp
+    end if
+    right_state(1) = rho_ref + alpham + alpha0 + alphap
+    right_state(2) = u_ref + (alphap - alpham) * c_ref / rho_ref
+    right_state(3) = integral_right(3, 2)
+    right_state(4) = integral_right(4, 2)
+    right_state(5) = p_ref + (alpham + alphap) * c2
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      right_state(component) = integral_right(component, 2)
+    end do
+    call sanitize_primitive(right_state, center, nspecies)
+    ok = all(ieee_is_finite(left_state)) .and. &
+      all(ieee_is_finite(right_state))
+  end subroutine build_characteristic_ppm_states
+
+  subroutine reconstruct_characteristic_ppm_faces( &
+      species, state, temperature, nx, boundary, dtdx, &
+      use_contact_steepening, use_shock_flattening, left_faces, right_faces, &
+      left_t, right_t, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(in) :: dtdx
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    real(dp), intent(out) :: left_faces(:, 0:), right_faces(:, 0:)
+    real(dp), intent(out) :: left_t(0:), right_t(0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: q(:, :), cell_left(:, :), cell_right(:, :)
+    real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
+    real(dp), allocatable :: edge_left(:), edge_right(:), sound_speed(:)
+    real(dp) :: stencil(5), contact_stencil(-2:2)
+    real(dp) :: density_stencil(-2:2), pressure_stencil(-2:2)
+    real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
+    real(dp) :: flattening, eta, gamma_effective, dummy_c, local_t
+    real(dp) :: profile_right(3), profile_left(3)
+    logical :: local_ok
+    integer :: nspecies, nprimitive, i, j, component, k, source, lc, rc
+
+    ok = .false.
+    if (dtdx < 0.0_dp) return
+    nspecies = size(species)
+    nprimitive = reactive_nprim(nspecies)
+    allocate(q(nprimitive, -3:nx + 3), sound_speed(1:nx))
+    allocate(cell_left(nprimitive, 1:nx), cell_right(nprimitive, 1:nx))
+    allocate(integral_right(nprimitive, 3), integral_left(nprimitive, 3))
+    allocate(edge_left(nprimitive), edge_right(nprimitive))
+
+    do i = 1, nx
+      call reactive_conserved_to_primitive( &
+        species, state(:, i), temperature(i), q(:, i), local_t, &
+        sound_speed(i), local_ok)
+      if (.not. local_ok) return
+    end do
+    do i = -3, nx + 3
+      if (i >= 1 .and. i <= nx) cycle
+      source = extended_cell_index(i, nx, boundary)
+      if (source == 0) return
+      q(:, i) = q(:, source)
+    end do
+
+    do i = 1, nx
+      flattening = 1.0_dp
+      if (use_shock_flattening) then
+        do j = -3, 3
+          pressure_wide(j) = q(5, i + j)
+          velocity_wide(j) = q(2, i + j)
+        end do
+        flattening = reactive_ppm_flattening_coefficient( &
+          pressure_wide, velocity_wide)
+      end if
+      do component = 1, nprimitive
+        stencil = q(component, i - 2:i + 2)
+        call reactive_ppm_reconstruct_five( &
+          stencil, flattening, edge_left(component), edge_right(component))
+      end do
+
+      if (use_contact_steepening .and. flattening > 0.999_dp) then
+        do j = -2, 2
+          density_stencil(j) = q(1, i + j)
+          pressure_stencil(j) = q(5, i + j)
+        end do
+        gamma_effective = sound_speed(i)**2 * q(1, i) / q(5, i)
+        ! This subset bounds the canonical Colella--Woodward detector at
+        ! half strength.  Full-strength density and composition steepening
+        ! can over-compress a material interface when coupled to the current
+        ! frozen-composition HLLC star-state construction.
+        eta = min(contact_steepening_cap, &
+          reactive_ppm_contact_steepening_factor( &
+          density_stencil, pressure_stencil, gamma_effective))
+        if (eta > 0.0_dp) then
+          call reactive_ppm_apply_contact_steepening( &
+            density_stencil, eta, edge_left(1), edge_right(1))
+          do k = 1, nspecies
+            component = reactive_mass_fraction_component(k)
+            do j = -2, 2
+              contact_stencil(j) = q(component, i + j)
+            end do
+            call reactive_ppm_apply_contact_steepening( &
+              contact_stencil, eta, edge_left(component), &
+              edge_right(component))
+          end do
+        end if
+      end if
+
+      call sanitize_primitive(edge_left, q(:, i), nspecies)
+      call sanitize_primitive(edge_right, q(:, i), nspecies)
+      do component = 1, nprimitive
+        call reactive_ppm_integrate_profile( &
+          edge_left(component), edge_right(component), q(component, i), &
+          q(2, i), sound_speed(i), dtdx, profile_right, profile_left, local_ok)
+        if (.not. local_ok) return
+        integral_right(component, :) = profile_right
+        integral_left(component, :) = profile_left
+      end do
+      call build_characteristic_ppm_states( &
+        species, q(:, i), sound_speed(i), integral_right, integral_left, &
+        cell_left(:, i), cell_right(:, i), local_ok)
+      if (.not. local_ok) return
+    end do
+
+    do j = 0, nx
+      if (j == 0) then
+        if (trim(boundary) == "periodic") then
+          lc = nx
+          rc = 1
+        else
+          call reactive_primitive_to_conserved( &
+            species, q(:, 1), left_faces(:, j), left_t(j), dummy_c, local_ok)
+          if (.not. local_ok) return
+          right_faces(:, j) = left_faces(:, j)
+          right_t(j) = left_t(j)
+          cycle
+        end if
+      else if (j == nx) then
+        if (trim(boundary) == "periodic") then
+          lc = nx
+          rc = 1
+        else
+          call reactive_primitive_to_conserved( &
+            species, q(:, nx), left_faces(:, j), left_t(j), dummy_c, local_ok)
+          if (.not. local_ok) return
+          right_faces(:, j) = left_faces(:, j)
+          right_t(j) = left_t(j)
+          cycle
+        end if
+      else
+        lc = j
+        rc = j + 1
+      end if
+      call reactive_primitive_to_conserved( &
+        species, cell_right(:, lc), left_faces(:, j), left_t(j), dummy_c, &
+        local_ok)
+      if (.not. local_ok) return
+      call reactive_primitive_to_conserved( &
+        species, cell_left(:, rc), right_faces(:, j), right_t(j), dummy_c, &
+        local_ok)
+      if (.not. local_ok) return
+    end do
+    ok = .true.
+  end subroutine reconstruct_characteristic_ppm_faces
 
   subroutine reconstruct_ppm_faces( &
       species, state, temperature, nx, boundary, left_faces, right_faces, &
@@ -733,12 +1213,14 @@ contains
 
   subroutine reconstruct_faces( &
       species, state, temperature, nx, reconstruction, limiter, boundary, &
-      dtdx, left_faces, right_faces, left_t, right_t, ok)
+      dtdx, use_contact_steepening, use_shock_flattening, left_faces, &
+      right_faces, left_t, right_t, ok)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
     character(len=*), intent(in) :: reconstruction, limiter, boundary
     real(dp), intent(in) :: dtdx
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
     real(dp), intent(out) :: left_faces(:, 0:), right_faces(:, 0:)
     real(dp), intent(out) :: left_t(0:), right_t(0:)
     logical, intent(out) :: ok
@@ -766,6 +1248,13 @@ contains
       call reconstruct_ppm_faces( &
         species, state, temperature, nx, boundary, left_faces, right_faces, &
         left_t, right_t, ok)
+      return
+    end if
+    if (trim(reconstruction) == "characteristic_ppm") then
+      call reconstruct_characteristic_ppm_faces( &
+        species, state, temperature, nx, boundary, dtdx, &
+        use_contact_steepening, use_shock_flattening, left_faces, &
+        right_faces, left_t, right_t, ok)
       return
     end if
     if (trim(reconstruction) /= "characteristic_plm") return
@@ -913,13 +1402,15 @@ contains
 
   subroutine reactive_hydro_euler_update( &
       species, input_state, input_temperature, nx, dx, dt, reconstruction, &
-      limiter, boundary, riemann_solver, output_state, output_temperature, ok)
+      limiter, boundary, riemann_solver, use_contact_steepening, &
+      use_shock_flattening, output_state, output_temperature, ok)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: input_state(:, 0:), input_temperature(0:)
     integer, intent(in) :: nx
     real(dp), intent(in) :: dx, dt
     character(len=*), intent(in) :: reconstruction, limiter, boundary
     character(len=*), intent(in) :: riemann_solver
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
     real(dp), intent(out) :: output_state(:, 0:), output_temperature(0:)
     logical, intent(out) :: ok
 
@@ -941,10 +1432,12 @@ contains
     allocate(lf(nvar, 0:nx), rf(nvar, 0:nx), flux(nvar, 0:nx))
     allocate(lt(0:nx), rt(0:nx), q(reactive_nprim(size(species))))
     predictor_dtdx = 0.0_dp
-    if (trim(reconstruction) == "characteristic_plm") predictor_dtdx = dt / dx
+    if (trim(reconstruction) == "characteristic_plm" .or. &
+        trim(reconstruction) == "characteristic_ppm") predictor_dtdx = dt / dx
     call reconstruct_faces( &
       species, work_state, work_temperature, nx, reconstruction, limiter, &
-      boundary, predictor_dtdx, lf, rf, lt, rt, local_ok)
+      boundary, predictor_dtdx, use_contact_steepening, &
+      use_shock_flattening, lf, rf, lt, rt, local_ok)
     if (.not. local_ok) return
     do i = 0, nx
       call reactive_riemann_flux_x( &
@@ -969,7 +1462,8 @@ contains
 
   subroutine advance_reactive_hydro( &
       species, state, temperature, nx, dx, dt, reconstruction, limiter, &
-      boundary, ok, riemann_solver)
+      boundary, ok, riemann_solver, ppm_contact_steepening, &
+      ppm_shock_flattening)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -977,6 +1471,8 @@ contains
     character(len=*), intent(in) :: reconstruction, limiter, boundary
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: riemann_solver
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
 
     real(dp), allocatable :: initial_state(:, :), initial_temperature(:)
     real(dp), allocatable :: stage1_state(:, :), stage1_temperature(:)
@@ -985,13 +1481,19 @@ contains
     real(dp), allocatable :: euler3_state(:, :), euler3_temperature(:)
     real(dp), allocatable :: q(:)
     real(dp) :: local_t, c, temperature_guess
-    logical :: local_ok
+    logical :: local_ok, use_contact_steepening, use_shock_flattening
     integer :: nvar, i
     character(len=32) :: selected_solver
 
     ok = .false.
     selected_solver = "rusanov"
     if (present(riemann_solver)) selected_solver = trim(riemann_solver)
+    use_contact_steepening = .false.
+    use_shock_flattening = .false.
+    if (present(ppm_contact_steepening)) &
+      use_contact_steepening = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) &
+      use_shock_flattening = ppm_shock_flattening
     nvar = reactive_nvar(size(species))
     allocate(initial_state(nvar, 0:nx + 1), initial_temperature(0:nx + 1))
     allocate(stage1_state(nvar, 0:nx + 1), stage1_temperature(0:nx + 1))
@@ -1001,7 +1503,8 @@ contains
     if (trim(reconstruction) /= "ppm") then
       call reactive_hydro_euler_update( &
         species, initial_state, initial_temperature, nx, dx, dt, &
-        reconstruction, limiter, boundary, selected_solver, stage1_state, &
+        reconstruction, limiter, boundary, selected_solver, &
+        use_contact_steepening, use_shock_flattening, stage1_state, &
         stage1_temperature, ok)
       if (ok) then
         state = stage1_state
@@ -1018,14 +1521,15 @@ contains
     ! SSPRK3 stage 1: U1 = U^n + dt L(U^n).
     call reactive_hydro_euler_update( &
       species, initial_state, initial_temperature, nx, dx, dt, "ppm", &
-      limiter, boundary, selected_solver, stage1_state, stage1_temperature, &
-      local_ok)
+      limiter, boundary, selected_solver, use_contact_steepening, &
+      use_shock_flattening, stage1_state, stage1_temperature, local_ok)
     if (.not. local_ok) return
 
     ! SSPRK3 stage 2: U2 = 3/4 U^n + 1/4 (U1 + dt L(U1)).
     call reactive_hydro_euler_update( &
       species, stage1_state, stage1_temperature, nx, dx, dt, "ppm", limiter, &
-      boundary, selected_solver, euler2_state, euler2_temperature, local_ok)
+      boundary, selected_solver, use_contact_steepening, &
+      use_shock_flattening, euler2_state, euler2_temperature, local_ok)
     if (.not. local_ok) return
     stage2_state = initial_state
     stage2_temperature = initial_temperature
@@ -1046,7 +1550,8 @@ contains
     ! SSPRK3 stage 3: U^{n+1} = 1/3 U^n + 2/3 (U2 + dt L(U2)).
     call reactive_hydro_euler_update( &
       species, stage2_state, stage2_temperature, nx, dx, dt, "ppm", limiter, &
-      boundary, selected_solver, euler3_state, euler3_temperature, local_ok)
+      boundary, selected_solver, use_contact_steepening, &
+      use_shock_flattening, euler3_state, euler3_temperature, local_ok)
     if (.not. local_ok) return
     state = initial_state
     temperature = initial_temperature
@@ -1116,7 +1621,8 @@ contains
 
   subroutine advance_reactive_strang( &
       species, reactions, state, temperature, nx, dx, dt, reconstruction, &
-      limiter, boundary, chemistry_enabled, rtol, atol, ok, riemann_solver)
+      limiter, boundary, chemistry_enabled, rtol, atol, ok, riemann_solver, &
+      ppm_contact_steepening, ppm_shock_flattening)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
@@ -1126,19 +1632,28 @@ contains
     logical, intent(in) :: chemistry_enabled
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: riemann_solver
-    logical :: local_ok
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
+    logical :: local_ok, use_contact_steepening, use_shock_flattening
     character(len=32) :: selected_solver
 
     ok = .false.
     selected_solver = "rusanov"
     if (present(riemann_solver)) selected_solver = trim(riemann_solver)
+    use_contact_steepening = .false.
+    use_shock_flattening = .false.
+    if (present(ppm_contact_steepening)) &
+      use_contact_steepening = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) &
+      use_shock_flattening = ppm_shock_flattening
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
         nx, 0.5_dp * dt, rtol, atol, boundary, local_ok)
       if (.not. local_ok) return
     end if
     call advance_reactive_hydro(species, state, temperature, nx, dx, dt, &
-      reconstruction, limiter, boundary, local_ok, selected_solver)
+      reconstruction, limiter, boundary, local_ok, selected_solver, &
+      use_contact_steepening, use_shock_flattening)
     if (.not. local_ok) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
@@ -1271,7 +1786,8 @@ contains
         config%nx, dx, dt, config%reconstruction, config%limiter, &
         config%boundary_condition, config%chemistry_enabled, &
         config%chemistry_relative_tolerance, config%chemistry_absolute_tolerance, &
-        local_ok, config%riemann_solver)
+        local_ok, config%riemann_solver, config%ppm_contact_steepening, &
+        config%ppm_shock_flattening)
       if (.not. local_ok) then
         ok = .false.; return
       end if

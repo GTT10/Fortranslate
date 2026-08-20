@@ -11,3 +11,11 @@ The selectable general-EOS HLLC path can be exercised with:
 ./build/pelef_reactive_1d \
   cases/reactive_hotspot/hotspot_hllc.nml
 ```
+
+The time-traced characteristic PPM path, including the optional bounded
+contact-steepening and PeleC shock-flattening detectors, can be exercised with:
+
+```bash
+./build/pelef_reactive_1d \
+  cases/reactive_hotspot/hotspot_characteristic_ppm.nml
+```

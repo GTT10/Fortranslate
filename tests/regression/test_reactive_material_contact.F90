@@ -12,16 +12,26 @@ program test_reactive_material_contact
 
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: hllc_error, ppm_error, rusanov_error, improvement
+  real(dp) :: characteristic_ppm_error, steepened_ppm_error
   logical :: ok
 
   call load_h2o2_elementary_thermo(species, ok)
   if (.not. ok) error stop "Failed to load material-contact thermodynamics"
-  call run_contact("characteristic_plm", "hllc", hllc_error)
-  call run_contact("ppm", "hllc", ppm_error)
-  call run_contact("characteristic_plm", "rusanov", rusanov_error)
+  call run_contact("characteristic_plm", "hllc", .false., .false., hllc_error)
+  call run_contact("ppm", "hllc", .false., .false., ppm_error)
+  call run_contact("characteristic_ppm", "hllc", .false., .false., &
+    characteristic_ppm_error)
+  call run_contact("characteristic_ppm", "hllc", .true., .false., &
+    steepened_ppm_error)
+  call run_contact("characteristic_plm", "rusanov", .false., .false., &
+    rusanov_error)
   improvement = rusanov_error / hllc_error
   write(*, '(a,1x,es16.8)') "HLLC material-contact Y_H2 L1:", hllc_error
   write(*, '(a,1x,es16.8)') "PPM HLLC material-contact Y_H2 L1:", ppm_error
+  write(*, '(a,1x,es16.8)') "Characteristic PPM contact Y_H2 L1:", &
+    characteristic_ppm_error
+  write(*, '(a,1x,es16.8)') "Steepened characteristic PPM Y_H2 L1:", &
+    steepened_ppm_error
   write(*, '(a,1x,es16.8)') "Rusanov material-contact Y_H2 L1:", rusanov_error
   write(*, '(a,1x,f10.4)') "HLLC material-contact improvement:", improvement
   if (improvement < 1.20_dp) then
@@ -30,12 +40,20 @@ program test_reactive_material_contact
   if (ppm_error >= 0.90_dp * hllc_error) then
     error stop "Reactive PPM did not sharpen the material contact"
   end if
+  if (characteristic_ppm_error >= 0.95_dp * ppm_error) then
+    error stop "Characteristic PPM did not improve the material contact"
+  end if
+  if (steepened_ppm_error >= 0.60_dp * characteristic_ppm_error) then
+    error stop "Contact steepening did not materially sharpen the contact"
+  end if
   write(*, '(a)') "test_reactive_material_contact: PASS"
 
 contains
 
-  subroutine run_contact(reconstruction, solver, l1_error)
+  subroutine run_contact(reconstruction, solver, contact_steepening, &
+      shock_flattening, l1_error)
     character(len=*), intent(in) :: reconstruction, solver
+    logical, intent(in) :: contact_steepening, shock_flattening
     real(dp), intent(out) :: l1_error
     integer, parameter :: nx = 200
     real(dp), parameter :: x_lower = 0.0_dp
@@ -91,7 +109,8 @@ contains
       dt = min(dt, final_time - time)
       call advance_reactive_hydro( &
         species, state, temperature, nx, dx, dt, reconstruction, &
-        "mc", "outflow", local_ok, solver)
+        "mc", "outflow", local_ok, solver, contact_steepening, &
+        shock_flattening)
       if (.not. local_ok) error stop "Material-contact hydro step failed"
       time = time + dt
       step = step + 1

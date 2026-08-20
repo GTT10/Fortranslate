@@ -46,6 +46,11 @@ program pelef_reactive_1d
   write(*, '(a,1x,a)') "Problem:", trim(config%problem)
   write(*, '(a,1x,a)') "Reconstruction:", trim(config%reconstruction)
   write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
+  if (trim(config%reconstruction) == "characteristic_ppm") then
+    write(*, '(a,l2)') "PPM contact steepening: ", &
+      config%ppm_contact_steepening
+    write(*, '(a,l2)') "PPM shock flattening: ", config%ppm_shock_flattening
+  end if
   write(*, '(a,i0)') "Completed steps: ", steps
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Maximum conservation error: ", &

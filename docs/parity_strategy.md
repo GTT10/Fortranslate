@@ -143,3 +143,33 @@ The current Cantera gate establishes parity only for four reversible elementary 
 ## Reactive PPM gates
 
 The PPM path is compared separately on smooth entropy/composition waves, a moving material contact, and a reacting hotspot. The acceptance criteria require monotonic convergence, conservation, positivity, and sharper material-contact resolution; they do not require PPM to beat characteristic PLM on every smooth problem.
+
+## Reactive characteristic-PPM gates
+
+The time-traced `characteristic_ppm` path remains distinct from the
+semidiscrete componentwise `ppm` path.  It is accepted only when:
+
+- five-point reconstruction reproduces linear data and full flattening returns
+  the cell center;
+- parabolic profile integrals match pinned `u-c`, `u`, and `u+c` reference
+  values and reject a characteristic Courant number above one;
+- the shock detector returns one in smooth/expanding data and zero for the
+  canonical strong compression stencil;
+- the contact detector is inactive for pressure jumps and active for the
+  canonical density-only contact;
+- smooth entropy and composition waves exceed second order on both refinement
+  intervals;
+- the unsteepened characteristic-PPM material-contact error is lower than the
+  componentwise-PPM error;
+- bounded contact steepening reduces the characteristic-PPM material-contact
+  error by at least 40 percent;
+- a periodic pressure-ratio-three shock remains positive and conservative,
+  stays inside the initial pressure extrema, and changes when flattening is
+  enabled;
+- the reacting hotspot remains positive, conservative, and generates finite
+  pressure and velocity disturbances.
+
+The characteristic-PPM hotspot is not required to beat characteristic PLM or
+componentwise PPM.  Its present value is algorithmic parity of the normal PPM
+predictor and sharper contact resolution; full general-EOS characteristic
+energy tracing remains outside the claim.
