@@ -24,7 +24,8 @@ jobs:
       - name: Decode and verify patch
         shell: bash
         run: |
-          cat tools/reactive2d.part00 \
+          cat tools/reactive2d.part00a \
+              tools/reactive2d.part00b \
               tools/reactive2d.part01 \
               tools/reactive2d.part02 \
               tools/reactive2d.part03 \
