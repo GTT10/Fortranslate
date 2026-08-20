@@ -35,13 +35,15 @@ This table maps responsibilities, not source lines.
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
 | `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod`, `reactive_2d_mod` characteristic PPM paths | Five-point reconstruction and `u-c/u/u+c` profile integration verified in 1D and as x/y normal predictors before 2D CTU correction |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
-| `Source/Diffusion.*` | future `src/diffusion/` | Not started |
+| PelePhysics `Source/Transport/Simple.H` | `transport_database_mod`, `mixture_transport_mod`, `pelef_transport_probe` | Qualified dilute ideal-gas subset: Chapman--Enskog/Wilke/Mathur/mixture-averaged diffusion |
+| PeleC `Source/Diffterm.H`, `Source/Diffusion.cpp` | `reactive_diffusive_flux_x`, `advance_reactive_transport` | Periodic 1D viscous, conductive, barodiffusive, correction-velocity, and enthalpy-flux subset verified |
+| `Source/Diffusion.*` multidimensional/EB responsibility | future 2D/AMR diffusion modules | Not started |
 | `Source/PeleCAmr.*` | future `src/amr/` | Not started |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 
-A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, molecular transport, or multidimensional chemistry-coupled flow.
+A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, full transport parity, or multidimensional diffusive flow.
 
 | PeleC responsibility | PeleF current mapping | Qualification |
 |---|---|---|

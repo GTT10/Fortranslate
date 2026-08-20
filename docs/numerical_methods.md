@@ -722,12 +722,115 @@ steps. It retains a maximum conservation error of `2.40e-15`, produces a
 `2.82161 Pa` pressure span and `6.91813e-3 m/s` maximum speed, and maintains
 roundoff-scale composition closure.
 
+
+## Qualified dilute-gas molecular transport
+
+The current seven-species transport database stores Lennard--Jones well depth
+`epsilon/k_B`, collision diameter `sigma`, geometry, dipole, polarizability, and
+rotational-relaxation provenance. The active 0.16.0 subset uses the nonpolar
+dilute-gas collision integrals
+
+```text
+Omega_mu(T*) = 1.16145/T*^0.14874
+             + 0.52487/exp(0.77320 T*)
+             + 2.16178/exp(2.43787 T*)
+
+Omega_D(T*)  = 1.06036/T*^0.15610
+             + 0.19300/exp(0.47635 T*)
+             + 1.03587/exp(1.52996 T*)
+             + 1.76474/exp(3.89411 T*)
+```
+
+with Chapman--Enskog pure viscosity
+
+```text
+mu_k = 2.6693e-6 sqrt(W_k T) / (sigma_k^2 Omega_mu)
+```
+
+and binary diffusion
+
+```text
+D_kj = 1.8580e-7 T^(3/2) sqrt(1/W_k + 1/W_j)
+       / (p_atm sigma_kj^2 Omega_D).
+```
+
+Wilke's rule mixes viscosity. Pure conductivity uses a modified Eucken
+relation, and the mixture conductivity is the arithmetic/harmonic Mathur mean.
+The mass-based mixture-averaged diffusion coefficient is
+
+```text
+D_k = (1 - Y_k) / sum_(j != k) X_j / D_kj.
+```
+
+Trace regularization prevents singular pure-component denominators without
+changing resolved compositions. These formulas are compared against Cantera at
+four representative states, but are not labeled full PelePhysics transport
+parity because the current implementation omits generated polynomial fits,
+polar corrections, and detailed rotational/vibrational conductivity.
+
+## One-dimensional reactive diffusion flux
+
+At each face the adjacent conserved states are converted through the NASA7 EOS.
+Transport coefficients are evaluated at arithmetic face temperature, pressure,
+density, and composition. For an x-normal face, the viscous stresses are
+
+```text
+tau_xx = 4/3 mu du/dx
+tau_xy = mu dv/dx
+tau_xz = mu dw/dx.
+```
+
+The conservative diffusive momentum flux is `-tau`. The energy flux contains
+viscous work and Fourier conduction,
+
+```text
+F_E,visc+cond = -(tau_xx u + tau_xy v + tau_xz w) - lambda dT/dx.
+```
+
+The preliminary ideal-mixture species flux follows the PeleC/PelePhysics form
+
+```text
+j_k* = -rho D_k [dX_k/dx + (X_k - Y_k) d(ln p)/dx].
+```
+
+A correction velocity is applied through
+
+```text
+j_k = j_k* - Y_k sum_j(j_j*),
+```
+
+then the final species is assigned the roundoff closure residual so
+`sum_k(j_k)=0`. Species enthalpy transport is added to total energy as
+`sum_k h_k j_k`. Soret, Dufour, and multicomponent diffusion are excluded.
+
+The diffusion operator is advanced with explicit SSPRK2. Its timestep is
+limited by the largest active kinematic viscosity, thermal diffusivity, or
+species diffusion coefficient,
+
+```text
+dt_transport = C_transport dx^2 / max(4 mu/(3 rho), lambda/(rho cv), D_k),
+C_transport <= 0.5.
+```
+
+When chemistry and transport are both active, the symmetric composition is
+
+```text
+reaction(dt/2) -> transport(dt/2) -> hydro(dt)
+               -> transport(dt/2) -> reaction(dt/2).
+```
+
+The analytical transverse-shear diffusion wave verifies second-order spatial
+and temporal behavior. Separate periodic species and temperature waves verify
+smoothing, positivity, species closure, and conservative flux divergence.
+
 ## Scope limitations
 
 The code remains serial and uniform-grid. Reactive CFD currently uses only the
 seven-species, four-reaction elementary subset, selectable Rusanov/HLLC fluxes,
-and qualified frozen-composition PLM/PPM characteristic bases. It lacks
-third-body/falloff chemistry, a stiff cell integrator, species diffusion,
-viscosity, thermal conduction, a complete mechanism, full general-EOS PeleC
-Riemann/PPM parity, complete multidimensional PPM corner tracing, physical
-boundaries, AMR, MPI, and accelerators.
+and qualified frozen-composition PLM/PPM characteristic bases. Molecular
+viscosity, Fourier conduction, and mixture-averaged species diffusion are
+qualified only in 1D. The code still lacks third-body/falloff chemistry in CFD,
+a stiff coupled cell integrator, two-dimensional transport, Soret/multicomponent
+transport, a complete mechanism, full general-EOS PeleC Riemann/PPM parity,
+complete multidimensional PPM corner tracing, physical boundaries, AMR, MPI,
+and accelerators.

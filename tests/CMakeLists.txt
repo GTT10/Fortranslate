@@ -980,3 +980,99 @@ set_tests_properties(
   regression_reactive_ppm_shock_2d
   PROPERTIES TIMEOUT 300
 )
+
+
+add_executable(
+  test_mixture_transport
+  unit/test_mixture_transport.F90
+)
+target_link_libraries(test_mixture_transport PRIVATE pelef_core)
+add_test(
+  NAME unit_mixture_transport
+  COMMAND test_mixture_transport
+)
+
+add_executable(
+  test_reactive_diffusive_flux
+  unit/test_reactive_diffusive_flux.F90
+)
+target_link_libraries(test_reactive_diffusive_flux PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_diffusive_flux
+  COMMAND test_reactive_diffusive_flux
+)
+
+add_executable(
+  test_reactive_transport_1d
+  regression/test_reactive_transport_1d.F90
+)
+target_link_libraries(test_reactive_transport_1d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_transport_1d
+  COMMAND test_reactive_transport_1d
+)
+set_tests_properties(
+  regression_reactive_transport_1d
+  PROPERTIES TIMEOUT 300
+)
+
+set(
+  TRANSPORT_PROBE_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/transport_probe"
+)
+file(MAKE_DIRECTORY "${TRANSPORT_PROBE_WORK_DIRECTORY}")
+add_test(
+  NAME regression_transport_probe_run
+  COMMAND
+    $<TARGET_FILE:pelef_transport_probe>
+    "${TRANSPORT_PROBE_WORK_DIRECTORY}/transport_probe.csv"
+)
+set_tests_properties(
+  regression_transport_probe_run
+  PROPERTIES WORKING_DIRECTORY "${TRANSPORT_PROBE_WORK_DIRECTORY}"
+)
+if(PELEF_ENABLE_CANTERA_REFERENCE)
+  add_test(
+    NAME regression_transport_cantera
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/compare_transport_cantera.py"
+      --input
+      "${TRANSPORT_PROBE_WORK_DIRECTORY}/transport_probe.csv"
+  )
+  set_tests_properties(
+    regression_transport_cantera
+    PROPERTIES DEPENDS regression_transport_probe_run
+  )
+endif()
+
+set(
+  REACTIVE_TRANSPORT_1D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_transport_1d"
+)
+file(MAKE_DIRECTORY "${REACTIVE_TRANSPORT_1D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_transport_1d_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_transport_1d/transport_pulse.nml"
+)
+set_tests_properties(
+  regression_reactive_transport_1d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_TRANSPORT_1D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_transport_1d_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_transport_1d.py"
+    --input
+    "${REACTIVE_TRANSPORT_1D_WORK_DIRECTORY}/reactive_transport_pulse.csv"
+    --nx 96
+)
+set_tests_properties(
+  regression_reactive_transport_1d_check
+  PROPERTIES DEPENDS regression_reactive_transport_1d_run
+)

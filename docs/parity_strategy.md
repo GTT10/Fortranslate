@@ -138,7 +138,7 @@ This reference is a discretization comparison, not an external physical validati
 
 ## Scope of the evidence
 
-The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, molecular transport, or multidimensional PPM/transport parity. The periodic 2D CTU subset is qualified separately below.
+The current Cantera gate establishes parity only for four reversible elementary reactions without third-body or falloff effects. The reactive-flow tests establish numerical coupling and reduction properties for that same subset; they do not establish parity for Cantera's complete `h2o2.yaml`, a stiff mechanism, PelePhysics chemistry integration, full PelePhysics transport, or multidimensional PPM/transport parity. The periodic 2D CTU subset is qualified separately below.
 
 ## Reactive PPM gates
 
@@ -213,3 +213,32 @@ parabolic predictor in each coordinate direction followed by the already
 qualified conservative full-state CTU half-step correction. It does not claim
 complete PeleC multidimensional PPM transverse/corner tracing, physical
 boundaries, viscosity, heat conduction, or species diffusion.
+
+
+## Molecular-transport gates
+
+The one-dimensional transport milestone is accepted only while all of the
+following remain active:
+
+- the seven transport records match the thermodynamic species order and retain
+  the pinned Cantera Lennard--Jones values;
+- pure viscosity, binary-diffusion symmetry, and inverse-pressure scaling are
+  fixed unit tests;
+- representative mixture viscosity, conductivity, and H2/O2/N2 diffusion
+  coefficients are pinned;
+- a live Cantera 3.2 probe bounds the known difference between the qualified
+  dilute-gas subset and Cantera's mixture-averaged transport model;
+- equal left/right states produce zero diffusive flux;
+- transverse velocity gradients generate the expected Newtonian shear flux;
+- a temperature gradient produces the expected Fourier energy flux;
+- diffusive species fluxes sum to zero after correction velocity;
+- species enthalpy flux is included in total energy;
+- a periodic analytical shear wave converges at second order;
+- periodic species and thermal waves smooth while conserving species masses and
+  total energy;
+- the coupled application remains positive, closed, conservative, and exhibits
+  deterministic pressure/velocity signatures.
+
+The Cantera gate is a qualification comparison, not an exact-parity claim. The
+allowed envelope reflects the deliberately excluded polar and internal-mode
+transport corrections.

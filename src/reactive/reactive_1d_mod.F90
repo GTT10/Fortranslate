@@ -3,13 +3,15 @@ module reactive_1d_mod
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mixture_mass_properties, &
     mixture_specific_gas_constant, mixture_pressure, mixture_density, &
     mixture_sound_speed, temperature_from_internal_energy, &
-    mass_fractions_from_mole_fractions
+    mass_fractions_from_mole_fractions, mole_fractions_from_mass_fractions
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
+  use mixture_transport_mod, only: mixture_transport_coefficients
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive
   use slope_limiter_mod, only: limited_slope, minmod3
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
@@ -48,6 +50,9 @@ module reactive_1d_mod
   public :: trace_reactive_characteristics
   public :: initialize_reactive_1d
   public :: advance_reactive_hydro
+  public :: reactive_diffusive_flux_x
+  public :: reactive_transport_timestep
+  public :: advance_reactive_transport
   public :: advance_reactive_chemistry
   public :: advance_reactive_strang
   public :: simulate_reactive_1d
@@ -1402,6 +1407,339 @@ contains
     ok = dt > 0.0_dp
   end subroutine reactive_cfl_timestep
 
+
+  subroutine reactive_diffusive_flux_x( &
+      species, transport, left_state, right_state, left_temperature_guess, &
+      right_temperature_guess, dx, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, flux, ok, face_viscosity, face_conductivity, &
+      face_diffusion)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: left_state(:), right_state(:)
+    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    real(dp), intent(in) :: dx
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+    real(dp), intent(out), optional :: face_viscosity, face_conductivity
+    real(dp), intent(out), optional :: face_diffusion(:)
+
+    real(dp), allocatable :: qleft(:), qright(:), yleft(:), yright(:)
+    real(dp), allocatable :: yface(:), xleft(:), xright(:), xface(:)
+    real(dp), allocatable :: diffusion(:), raw_species_flux(:)
+    real(dp), allocatable :: species_flux(:), hleft(:), hright(:)
+    real(dp) :: tleft, tright, cleft, cright, tface, pface, rhoface
+    real(dp) :: viscosity, conductivity, dudx, dvdx, dwdx, dtdx
+    real(dp) :: tau_xx, tau_xy, tau_xz, dlnpdx, correction_flux
+    real(dp) :: cp, cv, internal_energy, entropy
+    logical :: local_ok
+    integer :: nspecies, k
+
+    flux = 0.0_dp
+    ok = .false.
+    if (present(face_viscosity)) face_viscosity = 0.0_dp
+    if (present(face_conductivity)) face_conductivity = 0.0_dp
+    if (present(face_diffusion)) face_diffusion = 0.0_dp
+    nspecies = size(species)
+    if (size(transport) /= nspecies .or. &
+        size(left_state) /= reactive_nvar(nspecies) .or. &
+        size(right_state) /= reactive_nvar(nspecies) .or. &
+        size(flux) /= reactive_nvar(nspecies) .or. dx <= 0.0_dp) return
+    if (present(face_diffusion)) then
+      if (size(face_diffusion) /= nspecies) return
+    end if
+    if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
+        species_diffusion_enabled)) then
+      ok = .true.
+      return
+    end if
+
+    allocate(qleft(reactive_nprim(nspecies)), qright(reactive_nprim(nspecies)))
+    allocate(yleft(nspecies), yright(nspecies), yface(nspecies))
+    allocate(xleft(nspecies), xright(nspecies), xface(nspecies))
+    allocate(diffusion(nspecies), raw_species_flux(nspecies))
+    allocate(species_flux(nspecies), hleft(nspecies), hright(nspecies))
+
+    call reactive_conserved_to_primitive( &
+      species, left_state, left_temperature_guess, qleft, tleft, cleft, &
+      local_ok)
+    if (.not. local_ok) return
+    call reactive_conserved_to_primitive( &
+      species, right_state, right_temperature_guess, qright, tright, cright, &
+      local_ok)
+    if (.not. local_ok) return
+    do k = 1, nspecies
+      yleft(k) = qleft(reactive_mass_fraction_component(k))
+      yright(k) = qright(reactive_mass_fraction_component(k))
+    end do
+    yface = 0.5_dp * (yleft + yright)
+    if (sum(yface) <= 0.0_dp) return
+    yface = max(0.0_dp, yface)
+    yface = yface / sum(yface)
+    tface = 0.5_dp * (tleft + tright)
+    pface = 0.5_dp * (qleft(5) + qright(5))
+    rhoface = 0.5_dp * (qleft(1) + qright(1))
+    call mixture_transport_coefficients( &
+      species, transport, yface, tface, pface, viscosity, conductivity, &
+      diffusion, local_ok)
+    if (.not. local_ok) return
+    if (present(face_viscosity)) face_viscosity = viscosity
+    if (present(face_conductivity)) face_conductivity = conductivity
+    if (present(face_diffusion)) face_diffusion = diffusion
+
+    dudx = (qright(2) - qleft(2)) / dx
+    dvdx = (qright(3) - qleft(3)) / dx
+    dwdx = (qright(4) - qleft(4)) / dx
+    dtdx = (tright - tleft) / dx
+    tau_xx = 0.0_dp
+    tau_xy = 0.0_dp
+    tau_xz = 0.0_dp
+    if (viscosity_enabled) then
+      tau_xx = (4.0_dp / 3.0_dp) * viscosity * dudx
+      tau_xy = viscosity * dvdx
+      tau_xz = viscosity * dwdx
+      flux(imx) = -tau_xx
+      flux(imy) = -tau_xy
+      flux(imz) = -tau_xz
+      flux(iet) = -(tau_xx * 0.5_dp * (qleft(2) + qright(2)) + &
+        tau_xy * 0.5_dp * (qleft(3) + qright(3)) + &
+        tau_xz * 0.5_dp * (qleft(4) + qright(4)))
+    end if
+    if (thermal_conduction_enabled) flux(iet) = flux(iet) - conductivity * dtdx
+
+    if (species_diffusion_enabled) then
+      call mole_fractions_from_mass_fractions( &
+        species, yleft, xleft, local_ok)
+      if (.not. local_ok) return
+      call mole_fractions_from_mass_fractions( &
+        species, yright, xright, local_ok)
+      if (.not. local_ok) return
+      xface = 0.5_dp * (xleft + xright)
+      xface = xface / sum(xface)
+      dlnpdx = 0.0_dp
+      if (barodiffusion_enabled) then
+        dlnpdx = (qright(5) - qleft(5)) / (dx * pface)
+      end if
+      do k = 1, nspecies
+        raw_species_flux(k) = -rhoface * diffusion(k) * &
+          ((xright(k) - xleft(k)) / dx + &
+            (xface(k) - yface(k)) * dlnpdx)
+      end do
+      correction_flux = sum(raw_species_flux)
+      species_flux = raw_species_flux - yface * correction_flux
+      if (nspecies > 1) then
+        species_flux(nspecies) = -sum(species_flux(1:nspecies - 1))
+      else
+        species_flux(1) = 0.0_dp
+      end if
+      do k = 1, nspecies
+        flux(reactive_species_component(k)) = species_flux(k)
+        call nasa7_mass_properties( &
+          species(k), tleft, cp, cv, hleft(k), internal_energy, entropy, &
+          local_ok)
+        if (.not. local_ok) return
+        call nasa7_mass_properties( &
+          species(k), tright, cp, cv, hright(k), internal_energy, entropy, &
+          local_ok)
+        if (.not. local_ok) return
+      end do
+      flux(iet) = flux(iet) + sum(0.5_dp * (hleft + hright) * species_flux)
+    end if
+    flux(irho) = 0.0_dp
+    ok = all(ieee_is_finite(flux))
+  end subroutine reactive_diffusive_flux_x
+
+  subroutine reactive_transport_timestep( &
+      species, transport, state, temperature, nx, dx, transport_cfl, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, dt, maximum_diffusivity, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, transport_cfl
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled
+    real(dp), intent(out) :: dt, maximum_diffusivity
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: q(:), y(:), diffusion(:)
+    real(dp) :: local_t, sound_speed, viscosity, conductivity
+    real(dp) :: molecular_weight, gas_constant, cp, cv, gamma
+    real(dp) :: enthalpy, energy, entropy, rho, candidate
+    logical :: local_ok
+    integer :: i, k, nspecies
+
+    dt = 0.0_dp
+    maximum_diffusivity = 0.0_dp
+    ok = .false.
+    nspecies = size(species)
+    if (size(transport) /= nspecies .or. nx < 1 .or. dx <= 0.0_dp .or. &
+        transport_cfl <= 0.0_dp .or. transport_cfl > 0.5_dp) return
+    if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
+        species_diffusion_enabled)) then
+      dt = huge(1.0_dp)
+      ok = .true.
+      return
+    end if
+    allocate(q(reactive_nprim(nspecies)), y(nspecies), diffusion(nspecies))
+    do i = 1, nx
+      call reactive_conserved_to_primitive( &
+        species, state(:, i), temperature(i), q, local_t, sound_speed, local_ok)
+      if (.not. local_ok) return
+      rho = q(1)
+      do k = 1, nspecies
+        y(k) = q(reactive_mass_fraction_component(k))
+      end do
+      call mixture_transport_coefficients( &
+        species, transport, y, local_t, q(5), viscosity, conductivity, &
+        diffusion, local_ok)
+      if (.not. local_ok) return
+      call mixture_mass_properties( &
+        species, y, local_t, molecular_weight, gas_constant, cp, cv, gamma, &
+        enthalpy, energy, entropy, local_ok)
+      if (.not. local_ok .or. rho <= 0.0_dp .or. cv <= 0.0_dp) return
+      if (viscosity_enabled) then
+        candidate = (4.0_dp / 3.0_dp) * viscosity / rho
+        maximum_diffusivity = max(maximum_diffusivity, candidate)
+      end if
+      if (thermal_conduction_enabled) then
+        candidate = conductivity / (rho * cv)
+        maximum_diffusivity = max(maximum_diffusivity, candidate)
+      end if
+      if (species_diffusion_enabled) then
+        maximum_diffusivity = max(maximum_diffusivity, maxval(diffusion))
+      end if
+    end do
+    if (maximum_diffusivity <= 0.0_dp) then
+      dt = huge(1.0_dp)
+    else
+      dt = transport_cfl * dx * dx / maximum_diffusivity
+    end if
+    ok = ieee_is_finite(dt) .and. dt > 0.0_dp .and. &
+      ieee_is_finite(maximum_diffusivity)
+  end subroutine reactive_transport_timestep
+
+  subroutine reactive_transport_euler_update( &
+      species, transport, input_state, input_temperature, nx, dx, dt, &
+      boundary, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, output_state, &
+      output_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: input_state(:, 0:), input_temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: boundary
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    real(dp), intent(out) :: output_state(:, 0:), output_temperature(0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: work_state(:, :), work_temperature(:)
+    real(dp), allocatable :: flux(:, :), q(:)
+    real(dp) :: local_t, sound_speed
+    logical :: local_ok
+    integer :: i, nvar
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    allocate(work_state(nvar, 0:nx + 1), work_temperature(0:nx + 1))
+    allocate(flux(nvar, 0:nx), q(reactive_nprim(size(species))))
+    work_state = input_state
+    work_temperature = input_temperature
+    call fill_ghosts(work_state, work_temperature, nx, boundary, local_ok)
+    if (.not. local_ok) return
+    do i = 0, nx
+      call reactive_diffusive_flux_x( &
+        species, transport, work_state(:, i), work_state(:, i + 1), &
+        work_temperature(i), work_temperature(i + 1), dx, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, flux(:, i), &
+        local_ok)
+      if (.not. local_ok) return
+    end do
+    output_state = work_state
+    output_temperature = work_temperature
+    do i = 1, nx
+      output_state(:, i) = work_state(:, i) - dt / dx * &
+        (flux(:, i) - flux(:, i - 1))
+      call reactive_conserved_to_primitive( &
+        species, output_state(:, i), work_temperature(i), q, local_t, &
+        sound_speed, local_ok)
+      if (.not. local_ok) return
+      output_temperature(i) = local_t
+    end do
+    call fill_ghosts(output_state, output_temperature, nx, boundary, ok)
+  end subroutine reactive_transport_euler_update
+
+  subroutine advance_reactive_transport( &
+      species, transport, state, temperature, nx, dx, interval, boundary, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, interval
+    character(len=*), intent(in) :: boundary
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: initial_state(:, :), initial_temperature(:)
+    real(dp), allocatable :: stage1_state(:, :), stage1_temperature(:)
+    real(dp), allocatable :: euler2_state(:, :), euler2_temperature(:)
+    real(dp), allocatable :: q(:)
+    real(dp) :: local_t, sound_speed, temperature_guess
+    logical :: local_ok
+    integer :: i, nvar
+
+    ok = .false.
+    if (interval < 0.0_dp) return
+    if (interval <= 0.0_dp .or. .not. (viscosity_enabled .or. &
+        thermal_conduction_enabled .or. species_diffusion_enabled)) then
+      ok = .true.
+      return
+    end if
+    nvar = reactive_nvar(size(species))
+    allocate(initial_state(nvar, 0:nx + 1), initial_temperature(0:nx + 1))
+    allocate(stage1_state(nvar, 0:nx + 1), stage1_temperature(0:nx + 1))
+    allocate(euler2_state(nvar, 0:nx + 1), euler2_temperature(0:nx + 1))
+    allocate(q(reactive_nprim(size(species))))
+    initial_state = state
+    initial_temperature = temperature
+
+    call reactive_transport_euler_update( &
+      species, transport, initial_state, initial_temperature, nx, dx, &
+      interval, boundary, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, stage1_state, &
+      stage1_temperature, local_ok)
+    if (.not. local_ok) return
+    call reactive_transport_euler_update( &
+      species, transport, stage1_state, stage1_temperature, nx, dx, &
+      interval, boundary, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, euler2_state, &
+      euler2_temperature, local_ok)
+    if (.not. local_ok) return
+
+    state = initial_state
+    temperature = initial_temperature
+    do i = 1, nx
+      state(:, i) = 0.5_dp * (initial_state(:, i) + euler2_state(:, i))
+      temperature_guess = 0.5_dp * &
+        (initial_temperature(i) + euler2_temperature(i))
+      call reactive_conserved_to_primitive( &
+        species, state(:, i), temperature_guess, q, local_t, sound_speed, &
+        local_ok)
+      if (.not. local_ok) return
+      temperature(i) = local_t
+    end do
+    call fill_ghosts(state, temperature, nx, boundary, ok)
+  end subroutine advance_reactive_transport
+
   subroutine reactive_hydro_euler_update( &
       species, input_state, input_temperature, nx, dx, dt, reconstruction, &
       limiter, boundary, riemann_solver, use_contact_steepening, &
@@ -1624,7 +1962,9 @@ contains
   subroutine advance_reactive_strang( &
       species, reactions, state, temperature, nx, dx, dt, reconstruction, &
       limiter, boundary, chemistry_enabled, rtol, atol, ok, riemann_solver, &
-      ppm_contact_steepening, ppm_shock_flattening)
+      ppm_contact_steepening, ppm_shock_flattening, transport, &
+      transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
@@ -1636,7 +1976,14 @@ contains
     character(len=*), intent(in), optional :: riemann_solver
     logical, intent(in), optional :: ppm_contact_steepening
     logical, intent(in), optional :: ppm_shock_flattening
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    logical, intent(in), optional :: transport_enabled, viscosity_enabled
+    logical, intent(in), optional :: thermal_conduction_enabled
+    logical, intent(in), optional :: species_diffusion_enabled
+    logical, intent(in), optional :: barodiffusion_enabled
     logical :: local_ok, use_contact_steepening, use_shock_flattening
+    logical :: use_transport, use_viscosity, use_conduction
+    logical :: use_species_diffusion, use_barodiffusion
     character(len=32) :: selected_solver
 
     ok = .false.
@@ -1648,15 +1995,43 @@ contains
       use_contact_steepening = ppm_contact_steepening
     if (present(ppm_shock_flattening)) &
       use_shock_flattening = ppm_shock_flattening
+    use_transport = .false.
+    use_viscosity = .true.
+    use_conduction = .true.
+    use_species_diffusion = .true.
+    use_barodiffusion = .true.
+    if (present(transport_enabled)) use_transport = transport_enabled
+    if (present(viscosity_enabled)) use_viscosity = viscosity_enabled
+    if (present(thermal_conduction_enabled)) &
+      use_conduction = thermal_conduction_enabled
+    if (present(species_diffusion_enabled)) &
+      use_species_diffusion = species_diffusion_enabled
+    if (present(barodiffusion_enabled)) &
+      use_barodiffusion = barodiffusion_enabled
+    if (use_transport .and. .not. present(transport)) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
         nx, 0.5_dp * dt, rtol, atol, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    if (use_transport) then
+      call advance_reactive_transport( &
+        species, transport, state, temperature, nx, dx, 0.5_dp * dt, &
+        boundary, use_viscosity, use_conduction, use_species_diffusion, &
+        use_barodiffusion, local_ok)
       if (.not. local_ok) return
     end if
     call advance_reactive_hydro(species, state, temperature, nx, dx, dt, &
       reconstruction, limiter, boundary, local_ok, selected_solver, &
       use_contact_steepening, use_shock_flattening)
     if (.not. local_ok) return
+    if (use_transport) then
+      call advance_reactive_transport( &
+        species, transport, state, temperature, nx, dx, 0.5_dp * dt, &
+        boundary, use_viscosity, use_conduction, use_species_diffusion, &
+        use_barodiffusion, local_ok)
+      if (.not. local_ok) return
+    end if
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
         nx, 0.5_dp * dt, rtol, atol, boundary, local_ok)
@@ -1754,7 +2129,7 @@ contains
 
   subroutine simulate_reactive_1d( &
       species, reactions, config, state, temperature, dx, time, steps, &
-      initial_integrals, final_integrals, ok)
+      initial_integrals, final_integrals, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -1763,7 +2138,8 @@ contains
     integer, intent(out) :: steps
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     logical, intent(out) :: ok
-    real(dp) :: dt, tolerance
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp) :: dt, hydro_dt, transport_dt, maximum_diffusivity, tolerance
     logical :: local_ok
 
     time = 0.0_dp
@@ -1779,17 +2155,44 @@ contains
         ok = .false.; return
       end if
       call reactive_cfl_timestep(species, state, temperature, config%nx, dx, &
-        config%cfl, dt, local_ok)
+        config%cfl, hydro_dt, local_ok)
       if (.not. local_ok) then
         ok = .false.; return
       end if
+      dt = hydro_dt
+      if (config%transport_enabled) then
+        if (.not. present(transport)) then
+          ok = .false.; return
+        end if
+        call reactive_transport_timestep( &
+          species, transport, state, temperature, config%nx, dx, &
+          config%transport_cfl, config%viscosity_enabled, &
+          config%thermal_conduction_enabled, config%species_diffusion_enabled, &
+          transport_dt, maximum_diffusivity, local_ok)
+        if (.not. local_ok) then
+          ok = .false.; return
+        end if
+        dt = min(dt, transport_dt)
+      end if
       dt = min(dt, config%final_time - time)
-      call advance_reactive_strang(species, reactions, state, temperature, &
-        config%nx, dx, dt, config%reconstruction, config%limiter, &
-        config%boundary_condition, config%chemistry_enabled, &
-        config%chemistry_relative_tolerance, config%chemistry_absolute_tolerance, &
-        local_ok, config%riemann_solver, config%ppm_contact_steepening, &
-        config%ppm_shock_flattening)
+      if (config%transport_enabled) then
+        call advance_reactive_strang( &
+          species, reactions, state, temperature, config%nx, dx, dt, &
+          config%reconstruction, config%limiter, config%boundary_condition, &
+          config%chemistry_enabled, config%chemistry_relative_tolerance, &
+          config%chemistry_absolute_tolerance, local_ok, config%riemann_solver, &
+          config%ppm_contact_steepening, config%ppm_shock_flattening, &
+          transport, .true., config%viscosity_enabled, &
+          config%thermal_conduction_enabled, config%species_diffusion_enabled, &
+          config%barodiffusion_enabled)
+      else
+        call advance_reactive_strang( &
+          species, reactions, state, temperature, config%nx, dx, dt, &
+          config%reconstruction, config%limiter, config%boundary_condition, &
+          config%chemistry_enabled, config%chemistry_relative_tolerance, &
+          config%chemistry_absolute_tolerance, local_ok, config%riemann_solver, &
+          config%ppm_contact_steepening, config%ppm_shock_flattening)
+      end if
       if (.not. local_ok) then
         ok = .false.; return
       end if
