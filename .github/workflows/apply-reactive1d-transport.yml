@@ -1,0 +1,44 @@
+name: Apply reactive 1D molecular transport
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-reactive-1d-transport
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out payload branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-reactive-1d-transport
+          fetch-depth: 0
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          cat tools/reactive1d_transport.part00a \
+              tools/reactive1d_transport.part00b \
+              tools/reactive1d_transport.part01 \
+              tools/reactive1d_transport.part02 \
+              tools/reactive1d_transport.part03 \
+            | base64 --decode > /tmp/reactive1d-transport.patch.gz
+          echo "57601b09320383b675b102f2d9d7fc6e1c7891f4ab8e38a6a6ff91c0d8737d76  /tmp/reactive1d-transport.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/reactive1d-transport.patch.gz \
+            > /tmp/reactive1d-transport.patch
+
+      - name: Apply and publish implementation
+        shell: bash
+        run: |
+          git fetch origin agent/reactive-1d-molecular-transport
+          git switch --force-create agent/reactive-1d-molecular-transport \
+            origin/agent/reactive-1d-molecular-transport
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git am /tmp/reactive1d-transport.patch
+          git push origin HEAD:agent/reactive-1d-molecular-transport
