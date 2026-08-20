@@ -637,42 +637,90 @@ than treating the new path as universally superior.
 For each cell, the 2D solver recovers the primitive vector
 
 \[
-q=(ho,u,v,w,p,Y_1,\ldots,Y_N)^T
+q=(\rho,u,v,w,p,Y_1,\ldots,Y_N)^T
 \]
 
-and the frozen mixture sound speed from the conserved state and synchronized temperature guess. Characteristic PLM slopes are computed independently in x and y. The y-normal calculation swaps u and v, uses the same frozen-composition acoustic/contact basis as the x direction, and rotates the result back.
+and the frozen mixture sound speed from the conserved state and synchronized
+temperature guess. The normal reconstruction can be PCM, characteristic PLM, or
+characteristic PPM. The y-normal calculation swaps `u` and `v`, applies the same
+frozen-composition acoustic/contact basis as the x direction, and rotates the
+result back.
 
-Provisional normal fluxes are computed at every x and y face. Each time-centered face state then receives the transverse half-step correction
+For `characteristic_ppm`, each direction independently builds the same
+five-point parabolic edge values used by the qualified 1D path. The profile is
+integrated over the regions swept by `u-c`, `u`, and `u+c`; density, normal
+velocity, and pressure are projected over the frozen mixture characteristic
+basis, while species and transverse velocities travel on the middle wave. The
+one-dimensional PeleC shock-flattening detector and the bounded contact
+steepener are optional in both directions.
+
+Provisional normal fluxes are computed at every x and y face. Each time-centered
+face state then receives the transverse half-step correction
 
 \[
 U^*_{i+1/2,j}=U^{n+1/2}_{i+1/2,j}
--rac{\Delta t}{2\Delta y}
-\left(G_{i,j+1/2}-G_{i,j-1/2}ight),
+-\frac{\Delta t}{2\Delta y}
+\left(G_{i,j+1/2}-G_{i,j-1/2}\right),
 \]
 
-with the analogous x correction on y faces. The correction includes density, all momentum components, total energy, and every species density. If the full correction is not EOS-admissible, a scalar theta in `[0,1]` is found by bisection and applied to the complete correction vector. The final face state must recover positive temperature and pressure and satisfy species closure before the final HLLC solve.
+with the analogous x correction on y faces. The correction includes density,
+all momentum components, total energy, and every species density. If the full
+correction is not EOS-admissible, a scalar \(\theta\in[0,1]\) is found by
+bisection and applied to the complete correction vector. The final face state
+must recover positive temperature and pressure and satisfy species closure
+before the final HLLC or Rusanov solve.
 
 The cell update is unsplit:
 
 \[
 U^{n+1}_{i,j}=U^n_{i,j}
--rac{\Delta t}{\Delta x}(F_{i+1/2,j}-F_{i-1/2,j})
--rac{\Delta t}{\Delta y}(G_{i,j+1/2}-G_{i,j-1/2}).
+-\frac{\Delta t}{\Delta x}(F_{i+1/2,j}-F_{i-1/2,j})
+-\frac{\Delta t}{\Delta y}(G_{i,j+1/2}-G_{i,j-1/2}).
 \]
 
 The timestep uses
 
 \[
-\Delta t=\mathrm{CFL}\left[\max_{i,j}\left(rac{|u|+c}{\Delta x}+rac{|v|+c}{\Delta y}ight)ight]^{-1}.
+\Delta t=\mathrm{CFL}\left[\max_{i,j}\left(
+\frac{|u|+c}{\Delta x}+\frac{|v|+c}{\Delta y}
+\right)\right]^{-1}.
 \]
 
-Chemistry is applied cell by cell in Strang order around this hydro step. During each reaction half-step, density, all momenta, and total energy remain fixed, and temperature is recovered from the unchanged specific internal energy after composition changes.
+Chemistry is applied cell by cell in Strang order around this hydro step. During
+each reaction half-step, density, all momenta, and total energy remain fixed,
+and temperature is recovered from the unchanged specific internal energy after
+composition changes.
+
+This is a normal-predictor-plus-conservative-CTU subset. It does not yet
+reproduce PeleC's complete multidimensional PPM transverse/corner tracing.
 
 ### Two-dimensional numerical evidence
 
-For the exact diagonal entropy wave, density L1 errors on 12, 24, and 48 square grids are `2.09551654e-4`, `7.15524055e-5`, and `1.61190312e-5`, giving observed orders `1.550234` and `2.150235`. At 24 square cells, disabling the transverse correction increases the error to `7.37180810e-5`. A y-uniform state agrees with the 1D characteristic-PLM/HLLC update below `3e-12` relative difference.
+For the characteristic-PLM exact diagonal entropy wave, density L1 errors on
+12, 24, and 48 square grids are `2.09551654e-4`, `7.15524055e-5`, and
+`1.61190312e-5`, giving observed orders `1.550234` and `2.150235`.
 
-The 24-square reacting hotspot reaches `2e-6 s` in 59 steps. It retains a maximum conservation error of `9.31e-16`, produces a `2.88685 Pa` pressure span and `6.75544e-3 m/s` maximum speed, and reaches maximum H2O and OH mass fractions of `1.53117e-4` and `1.58377e-5`.
+For characteristic PPM, density errors on 16, 32, and 64 square grids are
+`1.44130250e-4`, `3.80399208e-5`, and `9.10858005e-6`, with observed orders
+`1.921787` and `2.062216`. At 32 square cells, disabling the transverse
+correction increases the characteristic-PPM density error to `4.33952478e-5`.
+The exact oblique H2/N2 composition-wave errors are `3.74405262e-5`,
+`9.88530404e-6`, and `2.36662586e-6`, corresponding to orders `1.921243` and
+`2.062454`.
+
+Both x-normal and y-normal uniform reductions agree with the 1D
+characteristic-PLM and characteristic-PPM updates below `3e-12` relative
+difference. On the periodic 100-by-4 material-contact regression, bounded
+steepening reduces the H2 L1 error from `2.65683522e-4` to `1.66701302e-4`.
+The oblique pressure-ratio-three shock remains positive and conservative with
+zero pressure overshoot. Enabling flattening changes the conserved solution by
+`1.55397791e2` in the pinned mean-absolute signature without increasing total
+pressure variation.
+
+The characteristic-PPM 24-square reacting hotspot reaches `2e-6 s` in 59
+steps. It retains a maximum conservation error of `2.40e-15`, produces a
+`2.82161 Pa` pressure span and `6.91813e-3 m/s` maximum speed, and maintains
+roundoff-scale composition closure.
 
 ## Scope limitations
 
@@ -681,4 +729,5 @@ seven-species, four-reaction elementary subset, selectable Rusanov/HLLC fluxes,
 and qualified frozen-composition PLM/PPM characteristic bases. It lacks
 third-body/falloff chemistry, a stiff cell integrator, species diffusion,
 viscosity, thermal conduction, a complete mechanism, full general-EOS PeleC
-Riemann/PPM parity, multidimensional reactive PPM and physical boundaries, AMR, MPI, and accelerators.
+Riemann/PPM parity, complete multidimensional PPM corner tracing, physical
+boundaries, AMR, MPI, and accelerators.

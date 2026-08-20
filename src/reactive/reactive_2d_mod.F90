@@ -13,16 +13,23 @@ module reactive_2d_mod
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved, &
     reactive_conserved_to_primitive, reactive_riemann_flux_x, &
-    characteristic_limited_slope, trace_reactive_characteristics
+    characteristic_limited_slope, trace_reactive_characteristics, &
+    reactive_ppm_reconstruct_five, reactive_ppm_integrate_profile, &
+    reactive_ppm_flattening_coefficient, &
+    reactive_ppm_contact_steepening_factor, &
+    reactive_ppm_apply_contact_steepening, &
+    build_characteristic_ppm_states
   implicit none
   private
 
   integer, parameter :: max_chemistry_substeps = 100000
   real(dp), parameter :: pi = acos(-1.0_dp)
+  real(dp), parameter :: contact_steepening_cap_2d = 0.5_dp
 
   public :: reactive_riemann_flux_y
   public :: compute_reactive_cfl_timestep_2d
   public :: apply_reactive_transverse_correction_2d
+  public :: reconstruct_reactive_characteristic_ppm_cell_2d
   public :: advance_reactive_hydro_2d
   public :: advance_reactive_chemistry_2d
   public :: advance_reactive_strang_2d
@@ -31,6 +38,7 @@ module reactive_2d_mod
   public :: reactive_integrals_2d
   public :: reactive_extrema_2d
   public :: reactive_diagonal_wave_density
+  public :: reactive_diagonal_composition_wave_exact
   public :: write_reactive_2d_csv
 
 contains
@@ -193,6 +201,97 @@ contains
       species, fallback_primitive, state, temperature, sound_speed, ok)
   end subroutine primitive_face_to_state
 
+  subroutine reconstruct_reactive_characteristic_ppm_cell_2d( &
+      species, stencil, sound_speed, dtdn, use_contact_steepening, &
+      use_shock_flattening, minus_state, plus_state, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: stencil(:, -3:)
+    real(dp), intent(in) :: sound_speed, dtdn
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    real(dp), intent(out) :: minus_state(:), plus_state(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: edge_minus(:), edge_plus(:)
+    real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
+    real(dp) :: five_point(5), contact_stencil(-2:2)
+    real(dp) :: density_stencil(-2:2), pressure_stencil(-2:2)
+    real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
+    real(dp) :: profile_right(3), profile_left(3)
+    real(dp) :: flattening, eta, gamma_effective
+    logical :: local_ok
+    integer :: nspecies, nprimitive, component, offset, k
+
+    minus_state = 0.0_dp
+    plus_state = 0.0_dp
+    ok = .false.
+    nspecies = size(species)
+    nprimitive = reactive_nprim(nspecies)
+    if (size(stencil, 1) /= nprimitive .or. size(stencil, 2) < 7 .or. &
+        size(minus_state) /= nprimitive .or. size(plus_state) /= nprimitive .or. &
+        sound_speed <= 0.0_dp .or. dtdn < 0.0_dp) return
+
+    allocate(edge_minus(nprimitive), edge_plus(nprimitive))
+    allocate(integral_right(nprimitive, 3), integral_left(nprimitive, 3))
+
+    flattening = 1.0_dp
+    if (use_shock_flattening) then
+      do offset = -3, 3
+        pressure_wide(offset) = stencil(5, offset)
+        velocity_wide(offset) = stencil(2, offset)
+      end do
+      flattening = reactive_ppm_flattening_coefficient( &
+        pressure_wide, velocity_wide)
+    end if
+
+    do component = 1, nprimitive
+      five_point = stencil(component, -2:2)
+      call reactive_ppm_reconstruct_five( &
+        five_point, flattening, edge_minus(component), edge_plus(component))
+    end do
+
+    if (use_contact_steepening .and. flattening > 0.999_dp) then
+      do offset = -2, 2
+        density_stencil(offset) = stencil(1, offset)
+        pressure_stencil(offset) = stencil(5, offset)
+      end do
+      gamma_effective = sound_speed**2 * stencil(1, 0) / stencil(5, 0)
+      eta = min(contact_steepening_cap_2d, &
+        reactive_ppm_contact_steepening_factor( &
+          density_stencil, pressure_stencil, gamma_effective))
+      if (eta > 0.0_dp) then
+        call reactive_ppm_apply_contact_steepening( &
+          density_stencil, eta, edge_minus(1), edge_plus(1))
+        do k = 1, nspecies
+          component = reactive_mass_fraction_component(k)
+          do offset = -2, 2
+            contact_stencil(offset) = stencil(component, offset)
+          end do
+          call reactive_ppm_apply_contact_steepening( &
+            contact_stencil, eta, edge_minus(component), edge_plus(component))
+        end do
+      end if
+    end if
+
+    call sanitize_primitive(edge_minus, stencil(:, 0), nspecies)
+    call sanitize_primitive(edge_plus, stencil(:, 0), nspecies)
+    do component = 1, nprimitive
+      call reactive_ppm_integrate_profile( &
+        edge_minus(component), edge_plus(component), stencil(component, 0), &
+        stencil(2, 0), sound_speed, dtdn, profile_right, profile_left, local_ok)
+      if (.not. local_ok) return
+      integral_right(component, :) = profile_right
+      integral_left(component, :) = profile_left
+    end do
+    call build_characteristic_ppm_states( &
+      species, stencil(:, 0), sound_speed, integral_right, integral_left, &
+      minus_state, plus_state, local_ok)
+    if (.not. local_ok) return
+    call sanitize_primitive(minus_state, stencil(:, 0), nspecies)
+    call sanitize_primitive(plus_state, stencil(:, 0), nspecies)
+    ok = all(ieee_is_finite(minus_state)) .and. &
+      all(ieee_is_finite(plus_state))
+  end subroutine reconstruct_reactive_characteristic_ppm_cell_2d
+
   subroutine recover_state_temperature( &
       species, state, temperature_guess, temperature, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -305,7 +404,7 @@ contains
   subroutine advance_reactive_hydro_2d( &
       species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
       limiter, riemann_solver, use_transverse_correction, ok, &
-      minimum_transverse_theta)
+      minimum_transverse_theta, ppm_contact_steepening, ppm_shock_flattening)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
     integer, intent(in) :: nx, ny
@@ -314,6 +413,8 @@ contains
     logical, intent(in) :: use_transverse_correction
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: minimum_transverse_theta
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
 
     real(dp), allocatable :: primitive(:, :, :), sound_speed(:, :)
     real(dp), allocatable :: slope_x(:, :, :), slope_y(:, :, :)
@@ -330,14 +431,22 @@ contains
     real(dp), allocatable :: dl(:), dr(:), rotated_center(:), rotated_dl(:)
     real(dp), allocatable :: rotated_dr(:), rotated_slope(:)
     real(dp), allocatable :: rotated_minus(:), rotated_plus(:)
+    real(dp), allocatable :: directional_stencil(:, :)
     real(dp), allocatable :: x_left(:), x_right(:), y_lower(:), y_upper(:)
     real(dp) :: local_temperature, theta, theta_x_left, theta_x_right
     real(dp) :: theta_y_lower, theta_y_upper, local_minimum_theta
     real(dp) :: xlt, xrt, ylt, yut
     logical :: local_ok, face_ok, correction_ok
-    integer :: nvar, nprimitive, i, j, im, ip, jm, jp
+    logical :: use_contact_steepening, use_shock_flattening
+    integer :: nvar, nprimitive, i, j, im, ip, jm, jp, offset
 
     ok = .false.
+    use_contact_steepening = .false.
+    use_shock_flattening = .false.
+    if (present(ppm_contact_steepening)) &
+      use_contact_steepening = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) &
+      use_shock_flattening = ppm_shock_flattening
     if (present(minimum_transverse_theta)) minimum_transverse_theta = 0.0_dp
     nvar = reactive_nvar(size(species))
     nprimitive = reactive_nprim(size(species))
@@ -346,7 +455,10 @@ contains
         size(temperature, 2) /= ny .or. nx < 4 .or. ny < 4 .or. &
         dx <= 0.0_dp .or. dy <= 0.0_dp .or. dt <= 0.0_dp) return
     if (trim(reconstruction) /= "pcm" .and. &
-        trim(reconstruction) /= "characteristic_plm") return
+        trim(reconstruction) /= "characteristic_plm" .and. &
+        trim(reconstruction) /= "characteristic_ppm") return
+    if ((use_contact_steepening .or. use_shock_flattening) .and. &
+        trim(reconstruction) /= "characteristic_ppm") return
 
     allocate(primitive(nprimitive, nx, ny), sound_speed(nx, ny))
     allocate(slope_x(nprimitive, nx, ny), slope_y(nprimitive, nx, ny))
@@ -363,6 +475,7 @@ contains
     allocate(rotated_dl(nprimitive), rotated_dr(nprimitive))
     allocate(rotated_slope(nprimitive), rotated_minus(nprimitive))
     allocate(rotated_plus(nprimitive))
+    allocate(directional_stencil(nprimitive, -3:3))
     allocate(x_left(nvar), x_right(nvar), y_lower(nvar), y_upper(nvar))
 
     slope_x = 0.0_dp
@@ -412,12 +525,14 @@ contains
 
     do j = 1, ny
       do i = 1, nx
-        if (trim(reconstruction) == "pcm") then
+        select case (trim(reconstruction))
+        case ("pcm")
           x_minus(:, i, j) = primitive(:, i, j)
           x_plus(:, i, j) = primitive(:, i, j)
           y_minus(:, i, j) = primitive(:, i, j)
           y_plus(:, i, j) = primitive(:, i, j)
-        else
+
+        case ("characteristic_plm")
           call trace_reactive_characteristics( &
             primitive(:, i, j), slope_x(:, i, j), sound_speed(i, j), &
             dt / dx, x_minus(:, i, j), x_plus(:, i, j), local_ok)
@@ -439,7 +554,38 @@ contains
             y_minus(:, i, j), primitive(:, i, j), size(species))
           call sanitize_primitive( &
             y_plus(:, i, j), primitive(:, i, j), size(species))
-        end if
+
+        case ("characteristic_ppm")
+          do offset = -3, 3
+            directional_stencil(:, offset) = &
+              primitive(:, periodic_index(i + offset, nx), j)
+          end do
+          call reconstruct_reactive_characteristic_ppm_cell_2d( &
+            species, directional_stencil, sound_speed(i, j), dt / dx, &
+            use_contact_steepening, use_shock_flattening, &
+            x_minus(:, i, j), x_plus(:, i, j), local_ok)
+          if (.not. local_ok) return
+
+          do offset = -3, 3
+            call rotate_primitive_y_to_x( &
+              primitive(:, i, periodic_index(j + offset, ny)), &
+              directional_stencil(:, offset))
+          end do
+          call reconstruct_reactive_characteristic_ppm_cell_2d( &
+            species, directional_stencil, sound_speed(i, j), dt / dy, &
+            use_contact_steepening, use_shock_flattening, &
+            rotated_minus, rotated_plus, local_ok)
+          if (.not. local_ok) return
+          call rotate_primitive_x_to_y(rotated_minus, y_minus(:, i, j))
+          call rotate_primitive_x_to_y(rotated_plus, y_plus(:, i, j))
+          call sanitize_primitive( &
+            y_minus(:, i, j), primitive(:, i, j), size(species))
+          call sanitize_primitive( &
+            y_plus(:, i, j), primitive(:, i, j), size(species))
+
+        case default
+          return
+        end select
       end do
     end do
 
@@ -626,7 +772,8 @@ contains
   subroutine advance_reactive_strang_2d( &
       species, reactions, state, temperature, nx, ny, dx, dy, dt, &
       reconstruction, limiter, riemann_solver, use_transverse_correction, &
-      chemistry_enabled, rtol, atol, ok, minimum_transverse_theta)
+      chemistry_enabled, rtol, atol, ok, minimum_transverse_theta, &
+      ppm_contact_steepening, ppm_shock_flattening)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
@@ -636,12 +783,20 @@ contains
     logical, intent(in) :: use_transverse_correction, chemistry_enabled
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: minimum_transverse_theta
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
 
-    logical :: local_ok
+    logical :: local_ok, use_contact_steepening, use_shock_flattening
     real(dp) :: theta
 
     ok = .false.
     theta = 1.0_dp
+    use_contact_steepening = .false.
+    use_shock_flattening = .false.
+    if (present(ppm_contact_steepening)) &
+      use_contact_steepening = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) &
+      use_shock_flattening = ppm_shock_flattening
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, state, temperature, nx, ny, 0.5_dp * dt, &
@@ -650,7 +805,8 @@ contains
     end if
     call advance_reactive_hydro_2d( &
       species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
-      limiter, riemann_solver, use_transverse_correction, local_ok, theta)
+      limiter, riemann_solver, use_transverse_correction, local_ok, theta, &
+      use_contact_steepening, use_shock_flattening)
     if (.not. local_ok) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
@@ -683,6 +839,40 @@ contains
       (1.0_dp + config%density_wave_amplitude * sin(phase))
   end function reactive_diagonal_wave_density
 
+  subroutine reactive_diagonal_composition_wave_exact( &
+      species, x, y, time, config, density, mass_fractions, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: x, y, time
+    type(reactive_2d_config), intent(in) :: config
+    real(dp), intent(out) :: density, mass_fractions(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: mole_fractions(7), phase, lx, ly
+
+    density = 0.0_dp
+    mass_fractions = 0.0_dp
+    ok = .false.
+    if (size(species) /= 7 .or. size(mass_fractions) /= 7) return
+    lx = config%x_upper - config%x_lower
+    ly = config%y_upper - config%y_lower
+    if (lx <= 0.0_dp .or. ly <= 0.0_dp) return
+    phase = sin(2.0_dp * pi * ( &
+      (x - config%x_lower - config%initial_velocity_x * time) / lx + &
+      (y - config%y_lower - config%initial_velocity_y * time) / ly))
+    mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+      config%x_oh, config%x_h2o, config%x_n2]
+    mole_fractions(1) = mole_fractions(1) + &
+      config%composition_wave_amplitude * phase
+    mole_fractions(7) = mole_fractions(7) - &
+      config%composition_wave_amplitude * phase
+    call mass_fractions_from_mole_fractions( &
+      species, mole_fractions, mass_fractions, ok)
+    if (.not. ok) return
+    density = mixture_density( &
+      species, mass_fractions, config%initial_pressure, &
+      config%initial_temperature, ok)
+  end subroutine reactive_diagonal_composition_wave_exact
+
   subroutine initialize_reactive_2d( &
       species, config, state, temperature, dx, dy, base_density, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -692,6 +882,7 @@ contains
     logical, intent(out) :: ok
 
     real(dp), allocatable :: mole_fractions(:), mass_fractions(:), primitive(:)
+    real(dp), allocatable :: local_mass_fractions(:)
     real(dp) :: x, y, rho, pressure, u, v, w, local_temperature
     real(dp) :: sound_speed, rx, ry, radius_squared, factor
     logical :: local_ok
@@ -706,6 +897,7 @@ contains
     allocate(state(nvar, config%nx, config%ny))
     allocate(temperature(config%nx, config%ny))
     allocate(mole_fractions(size(species)), mass_fractions(size(species)))
+    allocate(local_mass_fractions(size(species)))
     allocate(primitive(nprimitive))
     mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
       config%x_oh, config%x_h2o, config%x_n2]
@@ -721,6 +913,7 @@ contains
       y = config%y_lower + (real(j, dp) - 0.5_dp) * dy
       do i = 1, config%nx
         x = config%x_lower + (real(i, dp) - 0.5_dp) * dx
+        local_mass_fractions = mass_fractions
         pressure = config%initial_pressure
         u = config%initial_velocity_x
         v = config%initial_velocity_y
@@ -728,6 +921,10 @@ contains
         select case (trim(config%problem))
         case ("diagonal_wave")
           rho = reactive_diagonal_wave_density(x, y, 0.0_dp, config, base_density)
+        case ("diagonal_composition_wave")
+          call reactive_diagonal_composition_wave_exact( &
+            species, x, y, 0.0_dp, config, rho, local_mass_fractions, local_ok)
+          if (.not. local_ok) return
         case ("reactive_vortex")
           rx = periodic_displacement( &
             x, config%vortex_center_x, config%x_upper - config%x_lower)
@@ -748,7 +945,7 @@ contains
             config%hotspot_temperature_rise * exp(-0.5_dp * &
             (rx * rx + ry * ry) / (config%hotspot_width**2))
           rho = mixture_density( &
-            species, mass_fractions, pressure, local_temperature, local_ok)
+            species, local_mass_fractions, pressure, local_temperature, local_ok)
           if (.not. local_ok) return
         case ("uniform_reactor")
           rho = base_density
@@ -757,7 +954,8 @@ contains
         end select
         primitive(1:5) = [rho, u, v, w, pressure]
         do k = 1, size(species)
-          primitive(reactive_mass_fraction_component(k)) = mass_fractions(k)
+          primitive(reactive_mass_fraction_component(k)) = &
+            local_mass_fractions(k)
         end do
         call reactive_primitive_to_conserved( &
           species, primitive, state(:, i, j), temperature(i, j), &
@@ -880,7 +1078,8 @@ contains
         dx, dy, dt, config%reconstruction, config%limiter, &
         config%riemann_solver, config%use_transverse_correction, &
         config%chemistry_enabled, config%chemistry_relative_tolerance, &
-        config%chemistry_absolute_tolerance, local_ok, step_theta)
+        config%chemistry_absolute_tolerance, local_ok, step_theta, &
+        config%ppm_contact_steepening, config%ppm_shock_flattening)
       if (.not. local_ok) then
         ok = .false.
         return

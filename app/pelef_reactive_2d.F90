@@ -61,6 +61,12 @@ program pelef_reactive_2d
   write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
   write(*, '(a,l2)') "Transverse correction: ", &
     config%use_transverse_correction
+  if (trim(config%reconstruction) == "characteristic_ppm") then
+    write(*, '(a,l2)') "PPM contact steepening: ", &
+      config%ppm_contact_steepening
+    write(*, '(a,l2)') "PPM shock flattening: ", &
+      config%ppm_shock_flattening
+  end if
   write(*, '(a,l2)') "Chemistry: ", config%chemistry_enabled
   write(*, '(a,i0)') "Completed steps: ", steps
   write(*, '(a,es24.16)') "Final time: ", time

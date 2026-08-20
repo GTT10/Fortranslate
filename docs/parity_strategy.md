@@ -177,16 +177,39 @@ energy tracing remains outside the claim.
 
 ## Reactive two-dimensional CTU gates
 
-The periodic general-EOS CTU path is accepted only while all of the following remain active:
+The periodic general-EOS CTU path is accepted only while all of the following
+remain active:
 
-- equal-state y-direction HLLC flux has the correct normal/tangential momentum placement;
-- the sum of species fluxes equals the y mass flux;
-- a y-uniform 2D step agrees with the 1D characteristic-PLM/HLLC update to roundoff;
-- the oblique constant-pressure entropy wave converges on 12, 24, and 48 square grids;
-- the transverse correction has a measurable signature and does not materially degrade the 24-square result;
-- all corrected face states and final cells recover positive density, pressure, temperature, and closed composition through the NASA7 EOS;
-- global mass, both in-plane momenta, out-of-plane momentum, and total energy remain conservative;
-- a periodic velocity vortex remains positive and preserves its nontrivial velocity/pressure signature;
-- the reacting 2D hotspot produces OH and H2O, a finite pressure/velocity response, and roundoff-scale composition closure.
+- equal-state y-direction HLLC flux has the correct normal/tangential momentum
+  placement;
+- the sum of species fluxes equals the directional mass flux;
+- x-normal and y-normal 2D steps agree with the corresponding 1D
+  characteristic-PLM and characteristic-PPM updates to roundoff;
+- the oblique constant-pressure entropy wave converges under refinement for
+  both PLM and characteristic PPM;
+- an oblique H2/N2 composition wave converges under characteristic PPM while
+  preserving pressure, positivity, and composition closure;
+- the transverse correction has a measurable signature and does not materially
+  degrade the 32-square result;
+- characteristic-PPM shock flattening and bounded contact steepening have
+  explicit cell-state signatures;
+- an oblique pressure-ratio-three shock remains positive, conservative, and
+  free of pressure overshoot while flattening changes the resolved state;
+- a periodic 2D material contact is sharper with bounded steepening than
+  without it;
+- all corrected face states and final cells recover positive density, pressure,
+  temperature, and closed composition through the NASA7 EOS;
+- global mass, both in-plane momenta, out-of-plane momentum, and total energy
+  remain conservative;
+- a periodic velocity vortex remains positive and preserves its nontrivial
+  velocity/pressure signature;
+- both PLM and characteristic-PPM reacting hotspots produce OH and H2O, a
+  finite pressure/velocity response, and roundoff-scale composition closure.
 
-The oblique wave is an exact advected entropy wave. The Gaussian velocity vortex is only a structural regression and is not presented as an analytic steady solution. The current CTU claim covers characteristic PLM normal prediction and conservative transverse correction; it does not cover multidimensional PeleC PPM tracing, physical boundaries, viscosity, heat conduction, or species diffusion.
+The oblique waves are exact advected solutions. The Gaussian velocity vortex is
+only a structural regression and is not presented as an analytic steady
+solution. The current characteristic-PPM claim covers a PeleC-style normal
+parabolic predictor in each coordinate direction followed by the already
+qualified conservative full-state CTU half-step correction. It does not claim
+complete PeleC multidimensional PPM transverse/corner tracing, physical
+boundaries, viscosity, heat conduction, or species diffusion.

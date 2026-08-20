@@ -836,6 +836,18 @@ set_tests_properties(
 )
 
 add_executable(
+  test_reactive_characteristic_ppm_cell_2d
+  unit/test_reactive_characteristic_ppm_cell_2d.F90
+)
+target_link_libraries(
+  test_reactive_characteristic_ppm_cell_2d PRIVATE pelef_core
+)
+add_test(
+  NAME unit_reactive_characteristic_ppm_cell_2d
+  COMMAND test_reactive_characteristic_ppm_cell_2d
+)
+
+add_executable(
   test_reactive_diagonal_wave_2d
   regression/test_reactive_diagonal_wave_2d.F90
 )
@@ -846,6 +858,34 @@ add_test(
 )
 set_tests_properties(
   regression_reactive_diagonal_wave_2d
+  PROPERTIES TIMEOUT 480
+)
+
+add_executable(
+  test_reactive_characteristic_ppm_2d
+  regression/test_reactive_characteristic_ppm_2d.F90
+)
+target_link_libraries(test_reactive_characteristic_ppm_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_characteristic_ppm_2d
+  COMMAND test_reactive_characteristic_ppm_2d
+)
+set_tests_properties(
+  regression_reactive_characteristic_ppm_2d
+  PROPERTIES TIMEOUT 480
+)
+
+add_executable(
+  test_reactive_material_contact_2d
+  regression/test_reactive_material_contact_2d.F90
+)
+target_link_libraries(test_reactive_material_contact_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_material_contact_2d
+  COMMAND test_reactive_material_contact_2d
+)
+set_tests_properties(
+  regression_reactive_material_contact_2d
   PROPERTIES TIMEOUT 480
 )
 
@@ -893,4 +933,50 @@ add_test(
 set_tests_properties(
   regression_reactive_hotspot_2d_check
   PROPERTIES DEPENDS regression_reactive_hotspot_2d_run
+)
+
+set(
+  REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot_characteristic_ppm_2d"
+)
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_characteristic_ppm_2d_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot_2d/hotspot_characteristic_ppm.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_characteristic_ppm_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_2D_WORK_DIRECTORY}"
+    TIMEOUT 480
+)
+add_test(
+  NAME regression_reactive_hotspot_characteristic_ppm_2d_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot_2d.py"
+    --input
+    "${REACTIVE_HOTSPOT_CHARACTERISTIC_PPM_2D_WORK_DIRECTORY}/reactive_hotspot_characteristic_ppm_2d.csv"
+    --nx 24
+    --ny 24
+)
+set_tests_properties(
+  regression_reactive_hotspot_characteristic_ppm_2d_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_characteristic_ppm_2d_run
+)
+
+add_executable(
+  test_reactive_ppm_shock_2d
+  regression/test_reactive_ppm_shock_2d.F90
+)
+target_link_libraries(test_reactive_ppm_shock_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_ppm_shock_2d
+  COMMAND test_reactive_ppm_shock_2d
+)
+set_tests_properties(
+  regression_reactive_ppm_shock_2d
+  PROPERTIES TIMEOUT 300
 )
