@@ -17,9 +17,27 @@ def relative_error(value: float, reference: float) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--viscosity-tolerance", type=float, default=0.20)
-    parser.add_argument("--conductivity-tolerance", type=float, default=0.40)
-    parser.add_argument("--diffusion-tolerance", type=float, default=0.35)
+    parser.add_argument(
+        "--viscosity-tolerance",
+        type=float,
+        default=0.05,
+        help="relative qualification bound for mixture viscosity (default: 5%%)",
+    )
+    parser.add_argument(
+        "--conductivity-tolerance",
+        type=float,
+        default=0.10,
+        help="relative qualification bound for thermal conductivity (default: 10%%)",
+    )
+    parser.add_argument(
+        "--diffusion-tolerance",
+        type=float,
+        default=0.40,
+        help=(
+            "relative qualification bound for mixture-averaged diffusion "
+            "without polar/full-fit corrections (default: 40%%)"
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -72,6 +90,12 @@ def main() -> int:
     print(
         "maximum_diffusion_relative_error="
         f"{maximum_diffusion_error:.16e} ({worst_diffusion})"
+    )
+    print(
+        "qualification_bounds="
+        f"mu:{args.viscosity_tolerance:.6g},"
+        f"lambda:{args.conductivity_tolerance:.6g},"
+        f"diffusion:{args.diffusion_tolerance:.6g}"
     )
 
     if maximum_mu_error > args.viscosity_tolerance:
