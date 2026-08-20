@@ -632,6 +632,48 @@ the existing characteristic-PLM or semidiscrete componentwise-PPM error for
 that particular Gaussian case.  The regression records this limitation rather
 than treating the new path as universally superior.
 
+## General-EOS reactive two-dimensional CTU
+
+For each cell, the 2D solver recovers the primitive vector
+
+\[
+q=(ho,u,v,w,p,Y_1,\ldots,Y_N)^T
+\]
+
+and the frozen mixture sound speed from the conserved state and synchronized temperature guess. Characteristic PLM slopes are computed independently in x and y. The y-normal calculation swaps u and v, uses the same frozen-composition acoustic/contact basis as the x direction, and rotates the result back.
+
+Provisional normal fluxes are computed at every x and y face. Each time-centered face state then receives the transverse half-step correction
+
+\[
+U^*_{i+1/2,j}=U^{n+1/2}_{i+1/2,j}
+-rac{\Delta t}{2\Delta y}
+\left(G_{i,j+1/2}-G_{i,j-1/2}ight),
+\]
+
+with the analogous x correction on y faces. The correction includes density, all momentum components, total energy, and every species density. If the full correction is not EOS-admissible, a scalar theta in `[0,1]` is found by bisection and applied to the complete correction vector. The final face state must recover positive temperature and pressure and satisfy species closure before the final HLLC solve.
+
+The cell update is unsplit:
+
+\[
+U^{n+1}_{i,j}=U^n_{i,j}
+-rac{\Delta t}{\Delta x}(F_{i+1/2,j}-F_{i-1/2,j})
+-rac{\Delta t}{\Delta y}(G_{i,j+1/2}-G_{i,j-1/2}).
+\]
+
+The timestep uses
+
+\[
+\Delta t=\mathrm{CFL}\left[\max_{i,j}\left(rac{|u|+c}{\Delta x}+rac{|v|+c}{\Delta y}ight)ight]^{-1}.
+\]
+
+Chemistry is applied cell by cell in Strang order around this hydro step. During each reaction half-step, density, all momenta, and total energy remain fixed, and temperature is recovered from the unchanged specific internal energy after composition changes.
+
+### Two-dimensional numerical evidence
+
+For the exact diagonal entropy wave, density L1 errors on 12, 24, and 48 square grids are `2.09551654e-4`, `7.15524055e-5`, and `1.61190312e-5`, giving observed orders `1.550234` and `2.150235`. At 24 square cells, disabling the transverse correction increases the error to `7.37180810e-5`. A y-uniform state agrees with the 1D characteristic-PLM/HLLC update below `3e-12` relative difference.
+
+The 24-square reacting hotspot reaches `2e-6 s` in 59 steps. It retains a maximum conservation error of `9.31e-16`, produces a `2.88685 Pa` pressure span and `6.75544e-3 m/s` maximum speed, and reaches maximum H2O and OH mass fractions of `1.53117e-4` and `1.58377e-5`.
+
 ## Scope limitations
 
 The code remains serial and uniform-grid. Reactive CFD currently uses only the
@@ -639,4 +681,4 @@ seven-species, four-reaction elementary subset, selectable Rusanov/HLLC fluxes,
 and qualified frozen-composition PLM/PPM characteristic bases. It lacks
 third-body/falloff chemistry, a stiff cell integrator, species diffusion,
 viscosity, thermal conduction, a complete mechanism, full general-EOS PeleC
-Riemann/PPM parity, multidimensional reactive flow, AMR, MPI, and accelerators.
+Riemann/PPM parity, multidimensional reactive PPM and physical boundaries, AMR, MPI, and accelerators.

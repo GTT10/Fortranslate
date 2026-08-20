@@ -810,3 +810,87 @@ add_test(
   COMMAND test_reactive_hotspot_reference
 )
 set_tests_properties(regression_reactive_hotspot_reference PROPERTIES TIMEOUT 240)
+
+add_executable(
+  test_reactive_directional_flux_2d
+  unit/test_reactive_directional_flux_2d.F90
+)
+target_link_libraries(test_reactive_directional_flux_2d PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_directional_flux_2d
+  COMMAND test_reactive_directional_flux_2d
+)
+
+add_executable(
+  test_reactive_ctu_dimensional_reduction
+  unit/test_reactive_ctu_dimensional_reduction.F90
+)
+target_link_libraries(test_reactive_ctu_dimensional_reduction PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_ctu_dimensional_reduction
+  COMMAND test_reactive_ctu_dimensional_reduction
+)
+set_tests_properties(
+  unit_reactive_ctu_dimensional_reduction
+  PROPERTIES TIMEOUT 180
+)
+
+add_executable(
+  test_reactive_diagonal_wave_2d
+  regression/test_reactive_diagonal_wave_2d.F90
+)
+target_link_libraries(test_reactive_diagonal_wave_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_diagonal_wave_2d
+  COMMAND test_reactive_diagonal_wave_2d
+)
+set_tests_properties(
+  regression_reactive_diagonal_wave_2d
+  PROPERTIES TIMEOUT 480
+)
+
+add_executable(
+  test_reactive_vortex_2d
+  regression/test_reactive_vortex_2d.F90
+)
+target_link_libraries(test_reactive_vortex_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_vortex_2d
+  COMMAND test_reactive_vortex_2d
+)
+set_tests_properties(
+  regression_reactive_vortex_2d
+  PROPERTIES TIMEOUT 300
+)
+
+set(
+  REACTIVE_HOTSPOT_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_hotspot_2d"
+)
+file(MAKE_DIRECTORY "${REACTIVE_HOTSPOT_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_hotspot_2d_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_hotspot_2d/hotspot.nml"
+)
+set_tests_properties(
+  regression_reactive_hotspot_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_HOTSPOT_2D_WORK_DIRECTORY}"
+    TIMEOUT 480
+)
+add_test(
+  NAME regression_reactive_hotspot_2d_check
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_hotspot_2d.py"
+    --input
+    "${REACTIVE_HOTSPOT_2D_WORK_DIRECTORY}/reactive_hotspot_2d.csv"
+    --nx 24
+    --ny 24
+)
+set_tests_properties(
+  regression_reactive_hotspot_2d_check
+  PROPERTIES DEPENDS regression_reactive_hotspot_2d_run
+)

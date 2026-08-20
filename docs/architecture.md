@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes six serial verification drivers over shared numerical and physical-property modules.
+PeleF exposes seven serial verification drivers over shared numerical and physical-property modules.
 
 ```text
 pelef
@@ -22,6 +22,9 @@ pelef0d_h2o2
 
 pelef_reactive_1d
   └─ NASA7 general-EOS reactive Euler with PLM/PPM, HLLC, and Strang splitting
+
+pelef_reactive_2d
+  └─ periodic NASA7 reactive Euler with directional HLLC and CTU correction
 ```
 
 The established constant-`gamma` solvers remain intact as regression baselines. Composition-dependent flow is introduced through a separate driver and modules so a general-EOS change cannot silently alter earlier results.
@@ -104,6 +107,33 @@ conservative finite-volume update
 
 Species face fluxes are corrected so their sum equals the total mass flux to roundoff.
 
+## Reactive two-dimensional CTU path
+
+The new reactive 2D state is stored as `state(variable,nx,ny)` with a synchronized `temperature(nx,ny)` field. The normal predictor reuses the qualified frozen-composition characteristic PLM relations from the 1D path in each coordinate direction. For the y direction, momentum and primitive velocity components are rotated into the x-normal ordering, evaluated by the same HLLC/Rusanov kernel, and rotated back.
+
+```text
+cell-centered conserved state
+        ↓
+NASA7 conserved-to-primitive recovery
+        ↓
+x- and y-normal characteristic PLM tracing
+        ↓
+provisional x/y HLLC fluxes
+        ↓
+conservative transverse half-step correction
+  U_face* = U_face - dt/(2 d_t) (F_t,hi - F_t,lo)
+        ↓
+EOS/positivity bisection on the complete conserved face state
+        ↓
+final directional HLLC fluxes
+        ↓
+unsplit two-dimensional conservative update
+```
+
+The transverse limiter acts on the complete conserved vector, including every species density and total energy. Because each directional species-flux block closes to the corresponding mass flux, the corrected face state retains `sum(rho*Y_k)=rho` rather than repairing species independently after the hydro correction. A y-uniform state reduces to the 1D characteristic-PLM/HLLC update at roundoff.
+
+Chemistry uses the same cell-local adiabatic constant-volume solver as the 1D path and is Strang split around the unsplit CTU hydro step. This path currently requires periodic boundaries and supports `pcm` or `characteristic_plm`; multidimensional PPM transverse tracing is intentionally deferred.
+
 ## Reaction-flow coupling
 
 The first coupled integrator uses Strang splitting:
@@ -127,7 +157,8 @@ The architecture retains independent gates for:
 3. NASA7 thermodynamics;
 4. zero-dimensional elementary chemistry;
 5. composition-dependent reactive hydro;
-6. reaction-flow splitting.
+6. reaction-flow splitting;
+7. reactive two-dimensional CTU and dimensional reduction.
 
 The homogeneous reactive field must reduce to independent zero-dimensional cell chemistry. The nonuniform hotspot must create finite pressure and velocity responses while preserving global mass, momentum, and total energy.
 

@@ -39,7 +39,9 @@
 - [x] composition-dependent 1D CFL and Rusanov signal speeds
 - [x] frozen-composition characteristic relations
 - [ ] general-EOS PeleC-style Riemann parity
-- [ ] multidimensional general-EOS hydro
+- [x] periodic two-dimensional general-EOS CTU hydro
+- [x] directional general-EOS HLLC with momentum rotation
+- [x] full-state transverse correction with EOS positivity limiting
 
 ## Phase 4 — zero-dimensional chemistry
 
@@ -93,7 +95,51 @@
 - [x] high-resolution hotspot comparison against PCM
 - [ ] pressure-dependent/full H2/O2 chemistry in CFD
 - [ ] molecular transport
-- [ ] multidimensional reactive flow
+- [x] periodic two-dimensional reactive CTU flow
+
+## Phase 6 — two-dimensional reactive flow
+
+- [x] separate `pelef_reactive_2d` driver and namelist
+- [x] periodic uniform Cartesian reactive state and temperature field
+- [x] x/y directional Rusanov and HLLC fluxes
+- [x] frozen-composition characteristic PLM in both directions
+- [x] conservative provisional/final CTU face fluxes
+- [x] full-state transverse correction with bisection positivity limiting
+- [x] species closure preserved through the same correction as mass and energy
+- [x] composition-dependent two-dimensional CFL timestep
+- [x] cell-local chemistry and Strang splitting
+- [x] exact oblique entropy-wave convergence
+- [x] transverse-correction signature and no-degradation gate
+- [x] one-dimensional dimensional-reduction gate
+- [x] periodic reactive-mixture vortex regression
+- [x] two-dimensional reacting-hotspot application regression
+- [ ] physical wall, inflow, and outflow boundaries
+- [ ] multidimensional characteristic PPM and transverse PPM tracing
+- [ ] molecular transport
+
+## Verified `0.14.0` results
+
+| Gate | Result |
+|---|---:|
+| Complete local Release suite without optional Cantera | `74/74` passed |
+| New reactive-2D Debug tests | `6/6` passed |
+| GitHub Actions Debug with Cantera | `75/75` target gate |
+| GitHub Actions Release with Cantera | `75/75` target gate |
+| Diagonal-wave density L1, 12 x 12 | `2.09551654e-4` |
+| Diagonal-wave density L1, 24 x 24 | `7.15524055e-5` |
+| Diagonal-wave density L1, 48 x 48 | `1.61190312e-5` |
+| Diagonal-wave observed orders | `1.550234`, `2.150235` |
+| 24 x 24 density L1 without CTU correction | `7.37180810e-5` |
+| 1D/2D dimensional-reduction relative difference | below `3e-12` |
+| Vortex maximum conservation error, 48 x 48 | `1.97e-15` |
+| Vortex pressure span, 48 x 48 | `3.619e2 Pa` |
+| 2D hotspot completed steps | `59` |
+| 2D hotspot maximum conservation error | `9.31e-16` |
+| 2D hotspot pressure span | `2.88685 Pa` |
+| 2D hotspot maximum velocity | `6.75544e-3 m/s` |
+| 2D hotspot temperature span | `2.44044e2 K` |
+| 2D hotspot maximum H2O mass fraction | `1.53117e-4` |
+| 2D hotspot maximum OH mass fraction | `1.58377e-5` |
 
 ## Verified `0.13.0` results
 
@@ -155,7 +201,4 @@ The existing `0.9.0` Cantera trajectory and exact-state production-rate comparis
 
 ## Next implementation slice
 
-Move the pressure-dependent complete H2/O2 mechanism and an implicit cell
-reactor onto the Strang-split flow interface.  Then add molecular viscosity,
-thermal conduction, and species diffusion before extending the reactive solver
-to the existing two-dimensional CTU scaffold.
+Add multidimensional characteristic PPM normal prediction and transverse PPM corrections to the reactive 2D path. In parallel, introduce mixture viscosity, thermal conduction, and species diffusion before moving the pressure-dependent complete H2/O2 mechanism and an implicit cell reactor onto the CFD interface.
