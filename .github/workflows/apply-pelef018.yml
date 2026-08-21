@@ -4,12 +4,17 @@ on:
   push:
     branches:
       - agent/tmp-publish-physical-boundaries
+  pull_request:
+    branches:
+      - agent/reactive-2d-molecular-transport
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   apply-patch:
+    if: github.head_ref == 'agent/tmp-publish-physical-boundaries' || github.ref_name == 'agent/tmp-publish-physical-boundaries'
     runs-on: ubuntu-latest
     steps:
       - name: Check out payload branch
@@ -41,5 +46,3 @@ jobs:
           git diff --check HEAD^
           test "$(git rev-parse HEAD^{tree})" = "62e160eb092ba67c6ce5ff716234920a5150de4d"
           git push origin HEAD:agent/reactive-physical-boundaries
-
-# publication trigger
