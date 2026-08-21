@@ -1,0 +1,43 @@
+name: Apply PeleF 0.18.0 physical boundaries
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-physical-boundaries
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out payload branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-physical-boundaries
+          fetch-depth: 0
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          base64 --decode tools/pelef018.part00 > /tmp/pelef018.patch.gz
+          echo "101fa72556767acc4bec7cc5a1e41d179a226f4bf4a73e71cc7149952c861ab3  /tmp/pelef018.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/pelef018.patch.gz > /tmp/pelef018.patch
+          echo "d554198e5a7362e9d886249b6d5bde7e23055add9fef356f94494319ec0d0ed7  /tmp/pelef018.patch" \
+            | sha256sum --check --strict
+
+      - name: Apply and publish implementation
+        shell: bash
+        run: |
+          git fetch origin agent/reactive-physical-boundaries
+          git switch --force-create agent/reactive-physical-boundaries \
+            origin/agent/reactive-physical-boundaries
+          test "$(git rev-parse HEAD)" = "51d6f2789a7d245cc665d65907837651e579b421"
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git am /tmp/pelef018.patch
+          git diff --check HEAD^
+          test "$(git rev-parse HEAD^{tree})" = "62e160eb092ba67c6ce5ff716234920a5150de4d"
+          git push origin HEAD:agent/reactive-physical-boundaries
