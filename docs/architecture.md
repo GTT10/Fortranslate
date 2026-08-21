@@ -272,3 +272,11 @@ configuration reader for other reconstruction modes.
 
 `reactive_transport_2d_mod` evaluates x/y face transport fluxes and advances
 their conservative divergence independently of the CTU hydro operator.
+
+
+## Physical boundary layer
+
+`reactive_boundary_2d_mod` owns four typed faces and samples periodic, wall,
+inflow, or outflow ghost states. Hydro and molecular transport use explicit
+lower/upper face arrays. Solid walls receive a pressure-only inviscid flux,
+mirrored velocity/temperature transport gradients, and zero species flux.

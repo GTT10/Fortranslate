@@ -1133,3 +1133,27 @@ set_tests_properties(
   regression_reactive_transport_2d_check
   PROPERTIES DEPENDS regression_reactive_transport_2d_run
 )
+
+add_executable(
+  test_reactive_boundary_2d
+  unit/test_reactive_boundary_2d.F90
+)
+target_link_libraries(test_reactive_boundary_2d PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_boundary_2d
+  COMMAND test_reactive_boundary_2d
+)
+
+add_executable(
+  test_reactive_physical_boundaries_2d
+  regression/test_reactive_physical_boundaries_2d.F90
+)
+target_link_libraries(test_reactive_physical_boundaries_2d PRIVATE pelef_core)
+add_test(
+  NAME regression_reactive_physical_boundaries_2d
+  COMMAND test_reactive_physical_boundaries_2d
+)
+set_tests_properties(
+  regression_reactive_physical_boundaries_2d
+  PROPERTIES TIMEOUT 300
+)

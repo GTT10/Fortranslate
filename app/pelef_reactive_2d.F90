@@ -68,6 +68,10 @@ program pelef_reactive_2d
   write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
   write(*, '(a,l2)') "Transverse correction: ", &
     config%use_transverse_correction
+  write(*, '(a,1x,a,1x,a)') "Boundary x:", &
+    trim(config%boundary_x_lower), trim(config%boundary_x_upper)
+  write(*, '(a,1x,a,1x,a)') "Boundary y:", &
+    trim(config%boundary_y_lower), trim(config%boundary_y_upper)
   if (trim(config%reconstruction) == "characteristic_ppm") then
     write(*, '(a,l2)') "PPM contact steepening: ", &
       config%ppm_contact_steepening

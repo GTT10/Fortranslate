@@ -125,7 +125,9 @@
 - [x] periodic reactive-mixture vortex regression
 - [x] two-dimensional reacting-hotspot application regression
 - [x] characteristic-PPM two-dimensional reacting-hotspot regression
-- [ ] physical wall, inflow, and outflow boundaries
+- [x] slip/no-slip physical walls
+- [x] adiabatic/isothermal wall temperature conditions
+- [x] fixed-state inflow and zero-gradient outflow
 - [ ] complete PeleC multidimensional PPM transverse/corner tracing
 - [x] molecular transport
 
@@ -287,11 +289,9 @@ The existing `0.9.0` Cantera trajectory and exact-state production-rate comparis
 
 ## Next implementation slice
 
-Extend the qualified one-dimensional viscous, conductive, and species-diffusion
-fluxes to the reactive two-dimensional solver. Add directional stress/heat/species
-fluxes, a two-dimensional parabolic timestep gate, periodic dimensional reduction,
-and transport-enabled vortex/hotspot regressions before physical wall, inflow, and
-outflow boundaries. Complete PeleC multidimensional PPM corner coupling remains a
+Add catalytic or prescribed-species wall fluxes and characteristic open-boundary
+handling after the present slip/no-slip, thermal-wall, fixed-inflow, and extrapolated-
+outflow milestone. Complete PeleC multidimensional PPM corner coupling remains a
 separate parity task.
 
 
@@ -310,3 +310,26 @@ separate parity task.
 | Reacting transport-hotspot pressure span | `8.34842515 Pa` |
 | Reacting transport-hotspot maximum speed | `9.62290759e-2 m/s` |
 | Reacting transport-hotspot temperature span | `2.40627606e2 K` |
+
+
+## Phase 8 — physical boundaries
+
+- [x] typed x/y boundary-face configuration
+- [x] matched periodic-pair validation
+- [x] moving slip/no-slip walls
+- [x] adiabatic/isothermal wall heat flux
+- [x] zero solid-wall species diffusion
+- [x] fixed inflow and extrapolated outflow
+- [x] boundary-aware PLM/PPM sampling and explicit face divergence
+- [x] Couette, thermal-wall, and inflow/outflow regressions
+- [ ] catalytic walls, NSCBC, and characteristic non-reflecting outflow
+
+## Verified `0.18.0` results
+
+| Gate | Result |
+|---|---:|
+| Complete local Release suite | `92/92` passed |
+| Complete local Debug suite | `92/92` passed |
+| Couette upper-wall velocity | `20 m/s` |
+| Couette maximum cell-center velocity | `19.6875 m/s` |
+| Uniform inflow speed | `75 m/s` |

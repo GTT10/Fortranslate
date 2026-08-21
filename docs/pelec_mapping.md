@@ -57,3 +57,11 @@ A row is called implemented only when its Fortran subsystem has an automated num
 |---|---|
 | `Diffusion.cpp` coefficient/flux/divergence workflow | `reactive_transport_2d_mod` |
 | `Diffterm.H` stress, Fourier, species enthalpy flux | directional face-flux kernels |
+
+
+| PeleC boundary concept | PeleF 0.18.0 |
+|---|---|
+| physical ghost fill | `reactive_boundary_2d_mod` |
+| impermeable wall pressure flux | `reactive_wall_flux_x/y` |
+| wall Fourier/species flux | boundary-aware `reactive_transport_2d_mod` |
+| fixed inflow / extrapolated outflow | boundary primitive sampling |
