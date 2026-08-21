@@ -1,0 +1,42 @@
+name: Export physical-boundaries source
+
+on:
+  push:
+    branches:
+      - agent/tmp-export-physical-boundaries-source
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/reactive-physical-boundaries
+          fetch-depth: 0
+
+      - name: Package source
+        shell: bash
+        run: |
+          git archive --format=tar.gz \
+            --output=/tmp/fortranslate-physical-boundaries-source.tar.gz \
+            agent/reactive-physical-boundaries
+          git rev-parse HEAD > /tmp/fortranslate-physical-boundaries-source.commit
+          git rev-parse HEAD^{tree} > /tmp/fortranslate-physical-boundaries-source.tree
+          sha256sum /tmp/fortranslate-physical-boundaries-source.tar.gz \
+            > /tmp/fortranslate-physical-boundaries-source.sha256
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: fortranslate-physical-boundaries-source
+          path: |
+            /tmp/fortranslate-physical-boundaries-source.tar.gz
+            /tmp/fortranslate-physical-boundaries-source.commit
+            /tmp/fortranslate-physical-boundaries-source.tree
+            /tmp/fortranslate-physical-boundaries-source.sha256
+          compression-level: 0
+          retention-days: 1
