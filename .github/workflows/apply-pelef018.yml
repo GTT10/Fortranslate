@@ -41,3 +41,5 @@ jobs:
           git diff --check HEAD^
           test "$(git rev-parse HEAD^{tree})" = "62e160eb092ba67c6ce5ff716234920a5150de4d"
           git push origin HEAD:agent/reactive-physical-boundaries
+
+# publication trigger
