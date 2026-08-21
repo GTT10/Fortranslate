@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/tmp-export-physical-boundaries-source
+  pull_request:
+    branches:
+      - agent/reactive-physical-boundaries
 
 permissions:
   contents: read
