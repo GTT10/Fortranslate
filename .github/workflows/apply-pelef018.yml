@@ -26,7 +26,9 @@ jobs:
       - name: Decode and verify patch
         shell: bash
         run: |
-          base64 --decode tools/pelef018.part00 > /tmp/pelef018.patch.gz
+          cat tools/pelef018.part00 tools/pelef018.part01 \
+              tools/pelef018.part02 tools/pelef018.part03 \
+            | base64 --decode > /tmp/pelef018.patch.gz
           echo "101fa72556767acc4bec7cc5a1e41d179a226f4bf4a73e71cc7149952c861ab3  /tmp/pelef018.patch.gz" \
             | sha256sum --check --strict
           gzip -dc /tmp/pelef018.patch.gz > /tmp/pelef018.patch
