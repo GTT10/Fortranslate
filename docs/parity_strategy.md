@@ -249,3 +249,12 @@ transport corrections.
 The two-dimensional transport path must reduce to the qualified one-dimensional
 operator, converge at second order for a periodic shear wave, smooth species and
 thermal waves conservatively, and keep the reacting hotspot positive.
+
+
+## 0.18.0 physical-boundary gates
+
+- the original periodic path retains every 0.17.0 regression;
+- slip/no-slip and adiabatic/isothermal ghost states are checked directly;
+- solid-wall species flux is exactly zero;
+- Couette flow remains linear;
+- uniform fixed inflow/outflow remains uniform.

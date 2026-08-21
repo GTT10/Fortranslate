@@ -842,3 +842,12 @@ The 0.17.0 path uses the Newtonian stress tensor, Fourier heat conduction, and
 mixture-averaged species fluxes with optional barodiffusion. A correction
 velocity enforces zero net diffusive mass flux and species enthalpies contribute
 to total-energy transport. SSPRK2 advances the diffusion operator.
+
+## Physical boundary conditions
+
+A no-slip ghost velocity is reflected about the prescribed wall velocity; a
+slip ghost reflects only the normal component. Solid-wall inviscid flux is
+pressure-only. Adiabatic walls copy temperature and isothermal walls use
+\(T_g=2T_w-T_i\). Species diffusive flux is zero at a solid wall. Fixed
+inflow uses the configured initial primitive state and outflow uses constant
+extrapolation. Periodic boundaries must occur in matched pairs.

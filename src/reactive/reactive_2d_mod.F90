@@ -12,6 +12,10 @@ module reactive_2d_mod
     reactive_transport_timestep_2d, advance_reactive_transport_2d
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive
   use simulation_config_reactive_2d_mod, only: reactive_2d_config
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
+    build_reactive_boundary_set_2d, sample_reactive_primitive_2d, &
+    reactive_boundary_is_periodic, reactive_boundary_is_wall
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved, &
@@ -404,7 +408,7 @@ contains
       species, corrected_state, base_temperature, corrected_temperature, ok)
   end subroutine apply_reactive_transverse_correction_2d
 
-  subroutine advance_reactive_hydro_2d( &
+  subroutine advance_reactive_hydro_periodic_2d( &
       species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
       limiter, riemann_solver, use_transverse_correction, ok, &
       minimum_transverse_theta, ppm_contact_steepening, ppm_shock_flattening)
@@ -700,7 +704,485 @@ contains
       minimum_transverse_theta = local_minimum_theta
     end if
     ok = .true.
+  end subroutine advance_reactive_hydro_periodic_2d
+
+  pure subroutine reactive_wall_flux_x(pressure, flux)
+    real(dp), intent(in) :: pressure
+    real(dp), intent(out) :: flux(:)
+    flux = 0.0_dp
+    if (size(flux) >= imx) flux(imx) = pressure
+  end subroutine reactive_wall_flux_x
+
+  pure subroutine reactive_wall_flux_y(pressure, flux)
+    real(dp), intent(in) :: pressure
+    real(dp), intent(out) :: flux(:)
+    flux = 0.0_dp
+    if (size(flux) >= imy) flux(imy) = pressure
+  end subroutine reactive_wall_flux_y
+
+  subroutine advance_reactive_hydro_physical_2d( &
+      species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+      limiter, riemann_solver, use_transverse_correction, boundaries, ok, &
+      minimum_transverse_theta, ppm_contact_steepening, ppm_shock_flattening)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
+    integer, intent(in) :: nx, ny
+    real(dp), intent(in) :: dx, dy, dt
+    character(len=*), intent(in) :: reconstruction, limiter, riemann_solver
+    logical, intent(in) :: use_transverse_correction
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    logical, intent(out) :: ok
+    real(dp), intent(out) :: minimum_transverse_theta
+    logical, intent(in) :: ppm_contact_steepening, ppm_shock_flattening
+
+    real(dp), allocatable :: primitive(:, :, :), sound_speed(:, :)
+    real(dp), allocatable :: slope_x(:, :, :), slope_y(:, :, :)
+    real(dp), allocatable :: x_minus(:, :, :), x_plus(:, :, :)
+    real(dp), allocatable :: y_minus(:, :, :), y_plus(:, :, :)
+    real(dp), allocatable :: x_left_base(:, :, :), x_right_base(:, :, :)
+    real(dp), allocatable :: y_lower_base(:, :, :), y_upper_base(:, :, :)
+    real(dp), allocatable :: provisional_x_flux(:, :, :)
+    real(dp), allocatable :: provisional_y_flux(:, :, :)
+    real(dp), allocatable :: final_x_flux(:, :, :), final_y_flux(:, :, :)
+    real(dp), allocatable :: x_left_temperature(:, :), x_right_temperature(:, :)
+    real(dp), allocatable :: y_lower_temperature(:, :), y_upper_temperature(:, :)
+    real(dp), allocatable :: new_state(:, :, :), new_temperature(:, :)
+    real(dp), allocatable :: dl(:), dr(:), qminus(:), qplus(:)
+    real(dp), allocatable :: rotated_center(:), rotated_dl(:), rotated_dr(:)
+    real(dp), allocatable :: rotated_slope(:), rotated_minus(:), rotated_plus(:)
+    real(dp), allocatable :: directional_stencil(:, :), sample_q(:)
+    real(dp), allocatable :: x_left(:), x_right(:), y_lower(:), y_upper(:)
+    real(dp) :: sample_t, local_temperature, theta
+    real(dp) :: theta_x_left, theta_x_right, theta_y_lower, theta_y_upper
+    real(dp) :: xlt, xrt, ylt, yut, wall_pressure
+    logical :: local_ok, face_ok, correction_ok, physical_face
+    logical :: periodic_x, periodic_y
+    integer :: nvar, nprimitive, i, j, face_i, face_j, li, ri, lj, uj, offset
+
+    ok = .false.
+    minimum_transverse_theta = 1.0_dp
+    nvar = reactive_nvar(size(species))
+    nprimitive = reactive_nprim(size(species))
+    if (size(state, 1) /= nvar .or. size(state, 2) /= nx .or. &
+        size(state, 3) /= ny .or. size(temperature, 1) /= nx .or. &
+        size(temperature, 2) /= ny .or. nx < 4 .or. ny < 4 .or. &
+        dx <= 0.0_dp .or. dy <= 0.0_dp .or. dt <= 0.0_dp) return
+    if (trim(reconstruction) /= 'pcm' .and. &
+        trim(reconstruction) /= 'characteristic_plm' .and. &
+        trim(reconstruction) /= 'characteristic_ppm') return
+    if ((ppm_contact_steepening .or. ppm_shock_flattening) .and. &
+        trim(reconstruction) /= 'characteristic_ppm') return
+    periodic_x = reactive_boundary_is_periodic(boundaries%face(1))
+    periodic_y = reactive_boundary_is_periodic(boundaries%face(3))
+
+    allocate(primitive(nprimitive, nx, ny), sound_speed(nx, ny))
+    allocate(slope_x(nprimitive, nx, ny), slope_y(nprimitive, nx, ny))
+    allocate(x_minus(nprimitive, nx, ny), x_plus(nprimitive, nx, ny))
+    allocate(y_minus(nprimitive, nx, ny), y_plus(nprimitive, nx, ny))
+    allocate(x_left_base(nvar, 0:nx, ny), x_right_base(nvar, 0:nx, ny))
+    allocate(y_lower_base(nvar, nx, 0:ny), y_upper_base(nvar, nx, 0:ny))
+    allocate(provisional_x_flux(nvar, 0:nx, ny))
+    allocate(provisional_y_flux(nvar, nx, 0:ny))
+    allocate(final_x_flux(nvar, 0:nx, ny), final_y_flux(nvar, nx, 0:ny))
+    allocate(x_left_temperature(0:nx, ny), x_right_temperature(0:nx, ny))
+    allocate(y_lower_temperature(nx, 0:ny), y_upper_temperature(nx, 0:ny))
+    allocate(new_state(nvar, nx, ny), new_temperature(nx, ny))
+    allocate(dl(nprimitive), dr(nprimitive), qminus(nprimitive), qplus(nprimitive))
+    allocate(rotated_center(nprimitive), rotated_dl(nprimitive))
+    allocate(rotated_dr(nprimitive), rotated_slope(nprimitive))
+    allocate(rotated_minus(nprimitive), rotated_plus(nprimitive))
+    allocate(directional_stencil(nprimitive, -3:3), sample_q(nprimitive))
+    allocate(x_left(nvar), x_right(nvar), y_lower(nvar), y_upper(nvar))
+
+    slope_x = 0.0_dp
+    slope_y = 0.0_dp
+    do j = 1, ny
+      do i = 1, nx
+        call reactive_conserved_to_primitive( &
+          species, state(:, i, j), temperature(i, j), primitive(:, i, j), &
+          local_temperature, sound_speed(i, j), local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+
+    if (trim(reconstruction) == 'characteristic_plm') then
+      do j = 1, ny
+        do i = 1, nx
+          call sample_reactive_primitive_2d( &
+            primitive, temperature, nx, ny, i - 1, j, boundaries, qminus, &
+            sample_t, local_ok)
+          if (.not. local_ok) return
+          call sample_reactive_primitive_2d( &
+            primitive, temperature, nx, ny, i + 1, j, boundaries, qplus, &
+            sample_t, local_ok)
+          if (.not. local_ok) return
+          dl = primitive(:, i, j) - qminus
+          dr = qplus - primitive(:, i, j)
+          call characteristic_limited_slope( &
+            primitive(:, i, j), dl, dr, sound_speed(i, j), limiter, &
+            slope_x(:, i, j), local_ok)
+          if (.not. local_ok) return
+          theta = primitive_slope_scale( &
+            primitive(:, i, j), slope_x(:, i, j), size(species))
+          slope_x(:, i, j) = theta * slope_x(:, i, j)
+
+          call sample_reactive_primitive_2d( &
+            primitive, temperature, nx, ny, i, j - 1, boundaries, qminus, &
+            sample_t, local_ok)
+          if (.not. local_ok) return
+          call sample_reactive_primitive_2d( &
+            primitive, temperature, nx, ny, i, j + 1, boundaries, qplus, &
+            sample_t, local_ok)
+          if (.not. local_ok) return
+          call rotate_primitive_y_to_x(primitive(:, i, j), rotated_center)
+          call rotate_primitive_y_to_x(primitive(:, i, j) - qminus, rotated_dl)
+          call rotate_primitive_y_to_x(qplus - primitive(:, i, j), rotated_dr)
+          call characteristic_limited_slope( &
+            rotated_center, rotated_dl, rotated_dr, sound_speed(i, j), &
+            limiter, rotated_slope, local_ok)
+          if (.not. local_ok) return
+          theta = primitive_slope_scale( &
+            rotated_center, rotated_slope, size(species))
+          rotated_slope = theta * rotated_slope
+          call rotate_primitive_x_to_y(rotated_slope, slope_y(:, i, j))
+        end do
+      end do
+    end if
+
+    do j = 1, ny
+      do i = 1, nx
+        select case (trim(reconstruction))
+        case ('pcm')
+          x_minus(:, i, j) = primitive(:, i, j)
+          x_plus(:, i, j) = primitive(:, i, j)
+          y_minus(:, i, j) = primitive(:, i, j)
+          y_plus(:, i, j) = primitive(:, i, j)
+        case ('characteristic_plm')
+          call trace_reactive_characteristics( &
+            primitive(:, i, j), slope_x(:, i, j), sound_speed(i, j), &
+            dt / dx, x_minus(:, i, j), x_plus(:, i, j), local_ok)
+          if (.not. local_ok) return
+          call sanitize_primitive(x_minus(:, i, j), primitive(:, i, j), size(species))
+          call sanitize_primitive(x_plus(:, i, j), primitive(:, i, j), size(species))
+          call rotate_primitive_y_to_x(primitive(:, i, j), rotated_center)
+          call rotate_primitive_y_to_x(slope_y(:, i, j), rotated_slope)
+          call trace_reactive_characteristics( &
+            rotated_center, rotated_slope, sound_speed(i, j), dt / dy, &
+            rotated_minus, rotated_plus, local_ok)
+          if (.not. local_ok) return
+          call rotate_primitive_x_to_y(rotated_minus, y_minus(:, i, j))
+          call rotate_primitive_x_to_y(rotated_plus, y_plus(:, i, j))
+          call sanitize_primitive(y_minus(:, i, j), primitive(:, i, j), size(species))
+          call sanitize_primitive(y_plus(:, i, j), primitive(:, i, j), size(species))
+        case ('characteristic_ppm')
+          do offset = -3, 3
+            call sample_reactive_primitive_2d( &
+              primitive, temperature, nx, ny, i + offset, j, boundaries, &
+              directional_stencil(:, offset), sample_t, local_ok)
+            if (.not. local_ok) return
+          end do
+          call reconstruct_reactive_characteristic_ppm_cell_2d( &
+            species, directional_stencil, sound_speed(i, j), dt / dx, &
+            ppm_contact_steepening, ppm_shock_flattening, &
+            x_minus(:, i, j), x_plus(:, i, j), local_ok)
+          if (.not. local_ok) return
+          do offset = -3, 3
+            call sample_reactive_primitive_2d( &
+              primitive, temperature, nx, ny, i, j + offset, boundaries, &
+              sample_q, sample_t, local_ok)
+            if (.not. local_ok) return
+            call rotate_primitive_y_to_x(sample_q, directional_stencil(:, offset))
+          end do
+          call reconstruct_reactive_characteristic_ppm_cell_2d( &
+            species, directional_stencil, sound_speed(i, j), dt / dy, &
+            ppm_contact_steepening, ppm_shock_flattening, &
+            rotated_minus, rotated_plus, local_ok)
+          if (.not. local_ok) return
+          call rotate_primitive_x_to_y(rotated_minus, y_minus(:, i, j))
+          call rotate_primitive_x_to_y(rotated_plus, y_plus(:, i, j))
+          call sanitize_primitive(y_minus(:, i, j), primitive(:, i, j), size(species))
+          call sanitize_primitive(y_plus(:, i, j), primitive(:, i, j), size(species))
+        end select
+      end do
+    end do
+
+    ! Provisional x-normal fluxes on explicit faces.
+    do j = 1, ny
+      do face_i = 0, nx
+        physical_face = (face_i == 0 .and. .not. periodic_x) .or. &
+          (face_i == nx .and. .not. periodic_x)
+        if (physical_face .and. &
+            reactive_boundary_is_wall(boundaries%face(merge(1, 2, face_i == 0)))) then
+          i = merge(1, nx, face_i == 0)
+          wall_pressure = primitive(5, i, j)
+          call reactive_wall_flux_x(wall_pressure, provisional_x_flux(:, face_i, j))
+          x_left_base(:, face_i, j) = state(:, i, j)
+          x_right_base(:, face_i, j) = state(:, i, j)
+          x_left_temperature(face_i, j) = temperature(i, j)
+          x_right_temperature(face_i, j) = temperature(i, j)
+        else
+          if (physical_face) then
+            if (face_i == 0) then
+              call sample_reactive_primitive_2d( &
+                primitive, temperature, nx, ny, 0, j, boundaries, qminus, &
+                sample_t, local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, qminus, qminus, x_left_base(:, face_i, j), &
+                x_left_temperature(face_i, j), local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, x_minus(:, 1, j), primitive(:, 1, j), &
+                x_right_base(:, face_i, j), x_right_temperature(face_i, j), local_ok)
+              if (.not. local_ok) return
+            else
+              call primitive_face_to_state( &
+                species, x_plus(:, nx, j), primitive(:, nx, j), &
+                x_left_base(:, face_i, j), x_left_temperature(face_i, j), local_ok)
+              if (.not. local_ok) return
+              call sample_reactive_primitive_2d( &
+                primitive, temperature, nx, ny, nx + 1, j, boundaries, qplus, &
+                sample_t, local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, qplus, qplus, x_right_base(:, face_i, j), &
+                x_right_temperature(face_i, j), local_ok)
+              if (.not. local_ok) return
+            end if
+          else
+            li = face_i
+            ri = face_i + 1
+            if (face_i == 0) li = nx
+            if (face_i == nx) ri = 1
+            call primitive_face_to_state( &
+              species, x_plus(:, li, j), primitive(:, li, j), &
+              x_left_base(:, face_i, j), x_left_temperature(face_i, j), local_ok)
+            if (.not. local_ok) return
+            call primitive_face_to_state( &
+              species, x_minus(:, ri, j), primitive(:, ri, j), &
+              x_right_base(:, face_i, j), x_right_temperature(face_i, j), local_ok)
+            if (.not. local_ok) return
+          end if
+          call reactive_riemann_flux_x( &
+            species, x_left_base(:, face_i, j), x_right_base(:, face_i, j), &
+            x_left_temperature(face_i, j), x_right_temperature(face_i, j), &
+            riemann_solver, provisional_x_flux(:, face_i, j), face_ok)
+          if (.not. face_ok) return
+        end if
+      end do
+    end do
+
+    ! Provisional y-normal fluxes on explicit faces.
+    do face_j = 0, ny
+      do i = 1, nx
+        physical_face = (face_j == 0 .and. .not. periodic_y) .or. &
+          (face_j == ny .and. .not. periodic_y)
+        if (physical_face .and. &
+            reactive_boundary_is_wall(boundaries%face(merge(3, 4, face_j == 0)))) then
+          j = merge(1, ny, face_j == 0)
+          wall_pressure = primitive(5, i, j)
+          call reactive_wall_flux_y(wall_pressure, provisional_y_flux(:, i, face_j))
+          y_lower_base(:, i, face_j) = state(:, i, j)
+          y_upper_base(:, i, face_j) = state(:, i, j)
+          y_lower_temperature(i, face_j) = temperature(i, j)
+          y_upper_temperature(i, face_j) = temperature(i, j)
+        else
+          if (physical_face) then
+            if (face_j == 0) then
+              call sample_reactive_primitive_2d( &
+                primitive, temperature, nx, ny, i, 0, boundaries, qminus, &
+                sample_t, local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, qminus, qminus, y_lower_base(:, i, face_j), &
+                y_lower_temperature(i, face_j), local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, y_minus(:, i, 1), primitive(:, i, 1), &
+                y_upper_base(:, i, face_j), y_upper_temperature(i, face_j), local_ok)
+              if (.not. local_ok) return
+            else
+              call primitive_face_to_state( &
+                species, y_plus(:, i, ny), primitive(:, i, ny), &
+                y_lower_base(:, i, face_j), y_lower_temperature(i, face_j), local_ok)
+              if (.not. local_ok) return
+              call sample_reactive_primitive_2d( &
+                primitive, temperature, nx, ny, i, ny + 1, boundaries, qplus, &
+                sample_t, local_ok)
+              if (.not. local_ok) return
+              call primitive_face_to_state( &
+                species, qplus, qplus, y_upper_base(:, i, face_j), &
+                y_upper_temperature(i, face_j), local_ok)
+              if (.not. local_ok) return
+            end if
+          else
+            lj = face_j
+            uj = face_j + 1
+            if (face_j == 0) lj = ny
+            if (face_j == ny) uj = 1
+            call primitive_face_to_state( &
+              species, y_plus(:, i, lj), primitive(:, i, lj), &
+              y_lower_base(:, i, face_j), y_lower_temperature(i, face_j), local_ok)
+            if (.not. local_ok) return
+            call primitive_face_to_state( &
+              species, y_minus(:, i, uj), primitive(:, i, uj), &
+              y_upper_base(:, i, face_j), y_upper_temperature(i, face_j), local_ok)
+            if (.not. local_ok) return
+          end if
+          call reactive_riemann_flux_y( &
+            species, y_lower_base(:, i, face_j), y_upper_base(:, i, face_j), &
+            y_lower_temperature(i, face_j), y_upper_temperature(i, face_j), &
+            riemann_solver, provisional_y_flux(:, i, face_j), face_ok)
+          if (.not. face_ok) return
+        end if
+      end do
+    end do
+
+    ! Correct interior/periodic faces. Exact wall fluxes remain untouched.
+    do j = 1, ny
+      do face_i = 0, nx
+        physical_face = (face_i == 0 .and. .not. periodic_x) .or. &
+          (face_i == nx .and. .not. periodic_x)
+        if (physical_face .and. &
+            reactive_boundary_is_wall(boundaries%face(merge(1, 2, face_i == 0)))) then
+          final_x_flux(:, face_i, j) = provisional_x_flux(:, face_i, j)
+          cycle
+        end if
+        li = face_i
+        ri = face_i + 1
+        if (face_i == 0) li = nx
+        if (face_i == nx) ri = 1
+        if (use_transverse_correction .and. .not. physical_face) then
+          call apply_reactive_transverse_correction_2d( &
+            species, x_left_base(:, face_i, j), x_left_temperature(face_i, j), &
+            provisional_y_flux(:, li, j), provisional_y_flux(:, li, j - 1), &
+            0.5_dp * dt / dy, x_left, xlt, theta_x_left, correction_ok)
+          if (.not. correction_ok) return
+          call apply_reactive_transverse_correction_2d( &
+            species, x_right_base(:, face_i, j), x_right_temperature(face_i, j), &
+            provisional_y_flux(:, ri, j), provisional_y_flux(:, ri, j - 1), &
+            0.5_dp * dt / dy, x_right, xrt, theta_x_right, correction_ok)
+          if (.not. correction_ok) return
+        else
+          x_left = x_left_base(:, face_i, j)
+          x_right = x_right_base(:, face_i, j)
+          xlt = x_left_temperature(face_i, j)
+          xrt = x_right_temperature(face_i, j)
+          theta_x_left = 1.0_dp
+          theta_x_right = 1.0_dp
+        end if
+        minimum_transverse_theta = min( &
+          minimum_transverse_theta, theta_x_left, theta_x_right)
+        call reactive_riemann_flux_x( &
+          species, x_left, x_right, xlt, xrt, riemann_solver, &
+          final_x_flux(:, face_i, j), face_ok)
+        if (.not. face_ok) return
+      end do
+    end do
+
+    do face_j = 0, ny
+      do i = 1, nx
+        physical_face = (face_j == 0 .and. .not. periodic_y) .or. &
+          (face_j == ny .and. .not. periodic_y)
+        if (physical_face .and. &
+            reactive_boundary_is_wall(boundaries%face(merge(3, 4, face_j == 0)))) then
+          final_y_flux(:, i, face_j) = provisional_y_flux(:, i, face_j)
+          cycle
+        end if
+        lj = face_j
+        uj = face_j + 1
+        if (face_j == 0) lj = ny
+        if (face_j == ny) uj = 1
+        if (use_transverse_correction .and. .not. physical_face) then
+          call apply_reactive_transverse_correction_2d( &
+            species, y_lower_base(:, i, face_j), y_lower_temperature(i, face_j), &
+            provisional_x_flux(:, i, lj), provisional_x_flux(:, i - 1, lj), &
+            0.5_dp * dt / dx, y_lower, ylt, theta_y_lower, correction_ok)
+          if (.not. correction_ok) return
+          call apply_reactive_transverse_correction_2d( &
+            species, y_upper_base(:, i, face_j), y_upper_temperature(i, face_j), &
+            provisional_x_flux(:, i, uj), provisional_x_flux(:, i - 1, uj), &
+            0.5_dp * dt / dx, y_upper, yut, theta_y_upper, correction_ok)
+          if (.not. correction_ok) return
+        else
+          y_lower = y_lower_base(:, i, face_j)
+          y_upper = y_upper_base(:, i, face_j)
+          ylt = y_lower_temperature(i, face_j)
+          yut = y_upper_temperature(i, face_j)
+          theta_y_lower = 1.0_dp
+          theta_y_upper = 1.0_dp
+        end if
+        minimum_transverse_theta = min( &
+          minimum_transverse_theta, theta_y_lower, theta_y_upper)
+        call reactive_riemann_flux_y( &
+          species, y_lower, y_upper, ylt, yut, riemann_solver, &
+          final_y_flux(:, i, face_j), face_ok)
+        if (.not. face_ok) return
+      end do
+    end do
+
+    do j = 1, ny
+      do i = 1, nx
+        new_state(:, i, j) = state(:, i, j) - &
+          dt / dx * (final_x_flux(:, i, j) - final_x_flux(:, i - 1, j)) - &
+          dt / dy * (final_y_flux(:, i, j) - final_y_flux(:, i, j - 1))
+        call recover_state_temperature( &
+          species, new_state(:, i, j), temperature(i, j), &
+          new_temperature(i, j), local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+    state = new_state
+    temperature = new_temperature
+    ok = .true.
+  end subroutine advance_reactive_hydro_physical_2d
+
+  subroutine advance_reactive_hydro_2d( &
+      species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+      limiter, riemann_solver, use_transverse_correction, ok, &
+      minimum_transverse_theta, ppm_contact_steepening, ppm_shock_flattening, &
+      boundaries)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
+    integer, intent(in) :: nx, ny
+    real(dp), intent(in) :: dx, dy, dt
+    character(len=*), intent(in) :: reconstruction, limiter, riemann_solver
+    logical, intent(in) :: use_transverse_correction
+    logical, intent(out) :: ok
+    real(dp), intent(out), optional :: minimum_transverse_theta
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
+    type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+
+    logical :: use_contact, use_flattening, all_periodic
+    real(dp) :: theta
+
+    use_contact = .false.
+    use_flattening = .false.
+    if (present(ppm_contact_steepening)) use_contact = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) use_flattening = ppm_shock_flattening
+    all_periodic = .true.
+    if (present(boundaries)) then
+      all_periodic = all([ &
+        reactive_boundary_is_periodic(boundaries%face(1)), &
+        reactive_boundary_is_periodic(boundaries%face(2)), &
+        reactive_boundary_is_periodic(boundaries%face(3)), &
+        reactive_boundary_is_periodic(boundaries%face(4))])
+    end if
+    if (all_periodic) then
+      call advance_reactive_hydro_periodic_2d( &
+        species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+        limiter, riemann_solver, use_transverse_correction, ok, theta, &
+        use_contact, use_flattening)
+    else
+      call advance_reactive_hydro_physical_2d( &
+        species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+        limiter, riemann_solver, use_transverse_correction, boundaries, ok, &
+        theta, use_contact, use_flattening)
+    end if
+    if (present(minimum_transverse_theta)) minimum_transverse_theta = theta
   end subroutine advance_reactive_hydro_2d
+
 
   subroutine advance_reactive_chemistry_2d( &
       species, reactions, state, temperature, nx, ny, interval, rtol, atol, ok)
@@ -779,7 +1261,7 @@ contains
       ppm_contact_steepening, ppm_shock_flattening, transport, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta)
+      minimum_transport_theta, boundaries)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
@@ -797,6 +1279,7 @@ contains
     logical, intent(in), optional :: species_diffusion_enabled
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
+    type(reactive_boundary_set_2d), intent(in), optional :: boundaries
 
     logical :: local_ok, use_contact_steepening, use_shock_flattening
     logical :: use_transport, use_viscosity, use_conduction, use_diffusion
@@ -833,23 +1316,44 @@ contains
       if (.not. local_ok) return
     end if
     if (use_transport) then
-      call advance_reactive_transport_2d( &
-        species, transport, state, temperature, nx, ny, dx, dy, &
-        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
-        use_barodiffusion, stage_transport_theta, local_ok)
+      if (present(boundaries)) then
+        call advance_reactive_transport_2d( &
+          species, transport, state, temperature, nx, ny, dx, dy, &
+          0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+          use_barodiffusion, stage_transport_theta, local_ok, boundaries)
+      else
+        call advance_reactive_transport_2d( &
+          species, transport, state, temperature, nx, ny, dx, dy, &
+          0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+          use_barodiffusion, stage_transport_theta, local_ok)
+      end if
       if (.not. local_ok) return
       transport_theta = min(transport_theta, stage_transport_theta)
     end if
-    call advance_reactive_hydro_2d( &
-      species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
-      limiter, riemann_solver, use_transverse_correction, local_ok, theta, &
-      use_contact_steepening, use_shock_flattening)
+    if (present(boundaries)) then
+      call advance_reactive_hydro_2d( &
+        species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+        limiter, riemann_solver, use_transverse_correction, local_ok, theta, &
+        use_contact_steepening, use_shock_flattening, boundaries)
+    else
+      call advance_reactive_hydro_2d( &
+        species, state, temperature, nx, ny, dx, dy, dt, reconstruction, &
+        limiter, riemann_solver, use_transverse_correction, local_ok, theta, &
+        use_contact_steepening, use_shock_flattening)
+    end if
     if (.not. local_ok) return
     if (use_transport) then
-      call advance_reactive_transport_2d( &
-        species, transport, state, temperature, nx, ny, dx, dy, &
-        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
-        use_barodiffusion, stage_transport_theta, local_ok)
+      if (present(boundaries)) then
+        call advance_reactive_transport_2d( &
+          species, transport, state, temperature, nx, ny, dx, dy, &
+          0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+          use_barodiffusion, stage_transport_theta, local_ok, boundaries)
+      else
+        call advance_reactive_transport_2d( &
+          species, transport, state, temperature, nx, ny, dx, dy, &
+          0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+          use_barodiffusion, stage_transport_theta, local_ok)
+      end if
       if (.not. local_ok) return
       transport_theta = min(transport_theta, stage_transport_theta)
     end if
@@ -996,6 +1500,23 @@ contains
           if (.not. local_ok) return
         case ("uniform_reactor")
           rho = base_density
+        case ("couette_channel")
+          u = config%wall_velocity_y_lower(1) + &
+            (config%wall_velocity_y_upper(1) - &
+             config%wall_velocity_y_lower(1)) * &
+            (y - config%y_lower) / (config%y_upper - config%y_lower)
+          v = 0.0_dp
+          rho = base_density
+        case ("thermal_channel")
+          local_temperature = config%wall_temperature_y_lower + &
+            (config%wall_temperature_y_upper - &
+             config%wall_temperature_y_lower) * &
+            (y - config%y_lower) / (config%y_upper - config%y_lower)
+          rho = mixture_density( &
+            species, local_mass_fractions, pressure, local_temperature, local_ok)
+          if (.not. local_ok) return
+        case ("inflow_outflow")
+          rho = base_density
         case default
           return
         end select
@@ -1098,9 +1619,15 @@ contains
     real(dp) :: dt, step_theta, transport_dt, maximum_diffusivity
     real(dp) :: step_transport_theta, local_minimum_transport_theta
     logical :: local_ok
+    type(reactive_boundary_set_2d) :: boundaries
 
     call initialize_reactive_2d( &
       species, config, state, temperature, dx, dy, base_density, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call build_reactive_boundary_set_2d(species, config, boundaries, local_ok)
     if (.not. local_ok) then
       ok = .false.
       return
@@ -1150,7 +1677,7 @@ contains
           config%ppm_contact_steepening, config%ppm_shock_flattening, &
           transport, config%transport_enabled, config%viscosity_enabled, &
           config%thermal_conduction_enabled, config%species_diffusion_enabled, &
-          config%barodiffusion_enabled, step_transport_theta)
+          config%barodiffusion_enabled, step_transport_theta, boundaries)
       else
         call advance_reactive_strang_2d( &
         species, reactions, state, temperature, config%nx, config%ny, &
@@ -1158,7 +1685,8 @@ contains
         config%riemann_solver, config%use_transverse_correction, &
         config%chemistry_enabled, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, local_ok, step_theta, &
-        config%ppm_contact_steepening, config%ppm_shock_flattening)
+        config%ppm_contact_steepening, config%ppm_shock_flattening, &
+        boundaries=boundaries)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) then

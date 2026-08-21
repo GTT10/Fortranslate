@@ -25,6 +25,22 @@ module simulation_config_reactive_2d_mod
     logical :: species_diffusion_enabled = .true.
     logical :: barodiffusion_enabled = .true.
     real(dp) :: transport_cfl = 0.35_dp
+    character(len=24) :: boundary_x_lower = "periodic"
+    character(len=24) :: boundary_x_upper = "periodic"
+    character(len=24) :: boundary_y_lower = "periodic"
+    character(len=24) :: boundary_y_upper = "periodic"
+    character(len=24) :: thermal_x_lower = "adiabatic"
+    character(len=24) :: thermal_x_upper = "adiabatic"
+    character(len=24) :: thermal_y_lower = "adiabatic"
+    character(len=24) :: thermal_y_upper = "adiabatic"
+    real(dp) :: wall_temperature_x_lower = 300.0_dp
+    real(dp) :: wall_temperature_x_upper = 300.0_dp
+    real(dp) :: wall_temperature_y_lower = 300.0_dp
+    real(dp) :: wall_temperature_y_upper = 300.0_dp
+    real(dp) :: wall_velocity_x_lower(3) = 0.0_dp
+    real(dp) :: wall_velocity_x_upper(3) = 0.0_dp
+    real(dp) :: wall_velocity_y_lower(3) = 0.0_dp
+    real(dp) :: wall_velocity_y_upper(3) = 0.0_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -57,6 +73,25 @@ module simulation_config_reactive_2d_mod
 
 contains
 
+  pure logical function valid_boundary_kind(kind) result(valid)
+    character(len=*), intent(in) :: kind
+    valid = trim(kind) == "periodic" .or. trim(kind) == "slip_wall" .or. &
+      trim(kind) == "no_slip_wall" .or. trim(kind) == "inflow" .or. &
+      trim(kind) == "outflow"
+  end function valid_boundary_kind
+
+  pure logical function valid_boundary_pair(lower, upper) result(valid)
+    character(len=*), intent(in) :: lower, upper
+    valid = valid_boundary_kind(lower) .and. valid_boundary_kind(upper)
+    if (.not. valid) return
+    valid = (trim(lower) == "periodic") .eqv. (trim(upper) == "periodic")
+  end function valid_boundary_pair
+
+  pure logical function valid_thermal_boundary(kind) result(valid)
+    character(len=*), intent(in) :: kind
+    valid = trim(kind) == "adiabatic" .or. trim(kind) == "isothermal"
+  end function valid_thermal_boundary
+
   subroutine read_reactive_2d_configuration(path, config, ok, message)
     character(len=*), intent(in) :: path
     type(reactive_2d_config), intent(out) :: config
@@ -67,6 +102,10 @@ contains
     real(dp) :: x_lower, x_upper, y_lower, y_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
+    real(dp) :: wall_temperature_x_lower, wall_temperature_x_upper
+    real(dp) :: wall_temperature_y_lower, wall_temperature_y_upper
+    real(dp) :: wall_velocity_x_lower(3), wall_velocity_x_upper(3)
+    real(dp) :: wall_velocity_y_lower(3), wall_velocity_y_upper(3)
     real(dp) :: initial_temperature, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
@@ -76,6 +115,10 @@ contains
     real(dp) :: hotspot_center_y, hotspot_width
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, mole_sum
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
+    character(len=24) :: boundary_x_lower, boundary_x_upper
+    character(len=24) :: boundary_y_lower, boundary_y_upper
+    character(len=24) :: thermal_x_lower, thermal_x_upper
+    character(len=24) :: thermal_y_lower, thermal_y_upper
     character(len=256) :: output_file
     logical :: use_transverse_correction, chemistry_enabled
     logical :: transport_enabled, viscosity_enabled
@@ -88,6 +131,12 @@ contains
       use_transverse_correction, chemistry_enabled, transport_enabled, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, transport_cfl, &
+      boundary_x_lower, boundary_x_upper, boundary_y_lower, boundary_y_upper, &
+      thermal_x_lower, thermal_x_upper, thermal_y_lower, thermal_y_upper, &
+      wall_temperature_x_lower, wall_temperature_x_upper, &
+      wall_temperature_y_lower, wall_temperature_y_upper, &
+      wall_velocity_x_lower, wall_velocity_x_upper, &
+      wall_velocity_y_lower, wall_velocity_y_upper, &
       ppm_contact_steepening, ppm_shock_flattening, &
       chemistry_relative_tolerance, chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity_x, &
@@ -119,6 +168,22 @@ contains
     species_diffusion_enabled = config%species_diffusion_enabled
     barodiffusion_enabled = config%barodiffusion_enabled
     transport_cfl = config%transport_cfl
+    boundary_x_lower = config%boundary_x_lower
+    boundary_x_upper = config%boundary_x_upper
+    boundary_y_lower = config%boundary_y_lower
+    boundary_y_upper = config%boundary_y_upper
+    thermal_x_lower = config%thermal_x_lower
+    thermal_x_upper = config%thermal_x_upper
+    thermal_y_lower = config%thermal_y_lower
+    thermal_y_upper = config%thermal_y_upper
+    wall_temperature_x_lower = config%wall_temperature_x_lower
+    wall_temperature_x_upper = config%wall_temperature_x_upper
+    wall_temperature_y_lower = config%wall_temperature_y_lower
+    wall_temperature_y_upper = config%wall_temperature_y_upper
+    wall_velocity_x_lower = config%wall_velocity_x_lower
+    wall_velocity_x_upper = config%wall_velocity_x_upper
+    wall_velocity_y_lower = config%wall_velocity_y_lower
+    wall_velocity_y_upper = config%wall_velocity_y_upper
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -170,6 +235,8 @@ contains
       density_wave_amplitude < 0.9_dp .and. vortex_radius > 0.0_dp .and. &
       composition_wave_amplitude >= 0.0_dp .and. &
       hotspot_width > 0.0_dp .and. transport_cfl > 0.0_dp .and. &
+      min(wall_temperature_x_lower, wall_temperature_x_upper, &
+        wall_temperature_y_lower, wall_temperature_y_upper) > 0.0_dp .and. &
       transport_cfl <= 0.5_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
@@ -188,7 +255,10 @@ contains
         trim(problem) /= "diagonal_composition_wave" .and. &
         trim(problem) /= "reactive_vortex" .and. &
         trim(problem) /= "reactive_hotspot" .and. &
-        trim(problem) /= "uniform_reactor") then
+        trim(problem) /= "uniform_reactor" .and. &
+        trim(problem) /= "couette_channel" .and. &
+        trim(problem) /= "thermal_channel" .and. &
+        trim(problem) /= "inflow_outflow") then
       ok = .false.
       message = "Unknown reactive 2D problem"
       return
@@ -197,6 +267,20 @@ contains
         composition_wave_amplitude > min(x_h2, x_n2)) then
       ok = .false.
       message = "Reactive 2D composition-wave amplitude exceeds H2/N2 base fraction"
+      return
+    end if
+    if (.not. valid_boundary_pair(boundary_x_lower, boundary_x_upper) .or. &
+        .not. valid_boundary_pair(boundary_y_lower, boundary_y_upper)) then
+      ok = .false.
+      message = "Invalid or unmatched reactive 2D boundary pair"
+      return
+    end if
+    if (.not. valid_thermal_boundary(thermal_x_lower) .or. &
+        .not. valid_thermal_boundary(thermal_x_upper) .or. &
+        .not. valid_thermal_boundary(thermal_y_lower) .or. &
+        .not. valid_thermal_boundary(thermal_y_upper)) then
+      ok = .false.
+      message = "Unknown reactive 2D thermal boundary"
       return
     end if
     if (trim(reconstruction) /= "pcm" .and. &
@@ -245,6 +329,22 @@ contains
     config%species_diffusion_enabled = species_diffusion_enabled
     config%barodiffusion_enabled = barodiffusion_enabled
     config%transport_cfl = transport_cfl
+    config%boundary_x_lower = trim(boundary_x_lower)
+    config%boundary_x_upper = trim(boundary_x_upper)
+    config%boundary_y_lower = trim(boundary_y_lower)
+    config%boundary_y_upper = trim(boundary_y_upper)
+    config%thermal_x_lower = trim(thermal_x_lower)
+    config%thermal_x_upper = trim(thermal_x_upper)
+    config%thermal_y_lower = trim(thermal_y_lower)
+    config%thermal_y_upper = trim(thermal_y_upper)
+    config%wall_temperature_x_lower = wall_temperature_x_lower
+    config%wall_temperature_x_upper = wall_temperature_x_upper
+    config%wall_temperature_y_lower = wall_temperature_y_lower
+    config%wall_temperature_y_upper = wall_temperature_y_upper
+    config%wall_velocity_x_lower = wall_velocity_x_lower
+    config%wall_velocity_x_upper = wall_velocity_x_upper
+    config%wall_velocity_y_lower = wall_velocity_y_lower
+    config%wall_velocity_y_upper = wall_velocity_y_upper
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance

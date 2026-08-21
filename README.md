@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.17.0` milestone contains eight serial verification executables.
+The `0.18.0` milestone contains eight serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -113,11 +113,11 @@ multicomponent diffusion, or bulk viscosity.
   reduction, material-contact sharpening, oblique strong-shock flattening,
   periodic vortex, and reacting-hotspot regressions.
 
-This reactive 2D slice is periodic. The characteristic-PPM path performs the
-PeleC-style normal parabolic predictor in each coordinate direction and then
-uses the existing conservative CTU transverse correction. Complete PeleC
-multidimensional PPM corner coupling and physical inflow/wall/outflow
-boundaries are not yet included.
+The reactive 2D path supports matched periodic pairs, slip/no-slip walls,
+adiabatic/isothermal wall temperatures, fixed-state inflow, and zero-gradient
+outflow. Periodic cases retain the qualified characteristic-PPM plus CTU path;
+physical faces use boundary-aware ghost reconstruction, an exact impermeable
+inviscid wall flux, and boundary-aware molecular transport.
 
 The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
@@ -289,3 +289,15 @@ characteristic-PPM/CTU path:
 python3 tools/check_reactive_hotspot_2d.py \
   --input reactive_transport_hotspot_2d.csv --nx 20 --ny 20
 ```
+
+
+### PeleF 0.18.0 physical-boundary examples
+
+```bash
+./build/pelef_reactive_2d cases/reactive_boundaries_2d/couette.nml
+./build/pelef_reactive_2d cases/reactive_boundaries_2d/thermal_channel.nml
+./build/pelef_reactive_2d cases/reactive_boundaries_2d/inflow_outflow.nml
+```
+
+Solid walls are species-impermeable. Slip walls remove tangential viscous
+stress; no-slip walls reflect velocity about a prescribed wall velocity.
