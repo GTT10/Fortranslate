@@ -37,18 +37,18 @@ jobs:
           ctest --test-dir build-release --output-on-failure -j 2
       - name: Release 1/2/4-rank parity
         run: |
-          mpiexec -n 1 ./build-release/pelef_mpi_multispecies_1d release_np1.csv
-          mpiexec -n 2 ./build-release/pelef_mpi_multispecies_1d release_np2.csv
-          mpiexec -n 4 ./build-release/pelef_mpi_multispecies_1d release_np4.csv
+          mpiexec --oversubscribe -n 1 ./build-release/pelef_mpi_multispecies_1d release_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-release/pelef_mpi_multispecies_1d release_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-release/pelef_mpi_multispecies_1d release_np4.csv
           python3 tools/compare_mpi_multispecies.py release_np1.csv release_np2.csv release_np4.csv
       - name: Debug build and 1/2/4-rank parity
         run: |
           cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_MPI=ON
           cmake --build build-debug --parallel 2
           ctest --test-dir build-debug --output-on-failure -j 2
-          mpiexec -n 1 ./build-debug/pelef_mpi_multispecies_1d debug_np1.csv
-          mpiexec -n 2 ./build-debug/pelef_mpi_multispecies_1d debug_np2.csv
-          mpiexec -n 4 ./build-debug/pelef_mpi_multispecies_1d debug_np4.csv
+          mpiexec --oversubscribe -n 1 ./build-debug/pelef_mpi_multispecies_1d debug_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-debug/pelef_mpi_multispecies_1d debug_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-debug/pelef_mpi_multispecies_1d debug_np4.csv
           python3 tools/compare_mpi_multispecies.py debug_np1.csv debug_np2.csv debug_np4.csv
       - name: Publish verified milestone
         run: |
