@@ -1,0 +1,41 @@
+name: Export verified MPI foundation source
+
+on:
+  push:
+    branches:
+      - agent/tmp-export-mpi-foundation-source
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/mpi-1d-foundation
+          fetch-depth: 0
+      - name: Require verified 0.19 and 0.20 markers
+        shell: bash
+        run: |
+          test -f docs/validation/0.19-remote-ci-complete.txt
+          test -f docs/validation/0.20-mpi-foundation-complete.txt
+          grep -q 'VERSION 0.20.0' CMakeLists.txt
+      - name: Package exact source and provenance
+        shell: bash
+        run: |
+          git archive --format=tar.gz --output=/tmp/pelef-0.20.0-source.tar.gz HEAD
+          git rev-parse HEAD > /tmp/pelef-0.20.0.commit
+          git rev-parse HEAD^{tree} > /tmp/pelef-0.20.0.tree
+          sha256sum /tmp/pelef-0.20.0-source.tar.gz > /tmp/pelef-0.20.0.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pelef-0.20.0-verified-source
+          path: |
+            /tmp/pelef-0.20.0-source.tar.gz
+            /tmp/pelef-0.20.0.commit
+            /tmp/pelef-0.20.0.tree
+            /tmp/pelef-0.20.0.sha256
+          compression-level: 0
+          retention-days: 1
