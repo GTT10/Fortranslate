@@ -1,0 +1,44 @@
+name: Publish verified PeleF 0.19.0
+
+on:
+  push:
+    branches:
+      - agent/tmp-publish-full-h2o2-actual
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out publication payload
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-publish-full-h2o2-actual
+          fetch-depth: 0
+
+      - name: Decode and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/pelef019.part00 | base64 --decode > /tmp/pelef019.patch.gz
+          echo "4b69c6b8ad5b35fe14b05e41b01f540d64ccf32aae9ccf9ab33ebc1568aa2fef  /tmp/pelef019.patch.gz" | sha256sum --check --strict
+          gzip -dc /tmp/pelef019.patch.gz > /tmp/pelef019.patch
+          echo "48ee632ce5998098d0d228615c013c8682366cad92ed38930472040e0281238f  /tmp/pelef019.patch" | sha256sum --check --strict
+
+      - name: Apply verified tree and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin agent/reactive-physical-boundaries agent/reactive-full-h2o2-cfd
+          git switch --force-create agent/reactive-full-h2o2-cfd origin/agent/reactive-physical-boundaries
+          test "$(git rev-parse HEAD)" = "e06289a500660d3aed79c5ba810a3eb40055382d"
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
+          git apply --index /tmp/pelef019.patch
+          git diff --cached --check
+          test "$(git write-tree)" = "b1e5c36318f94bd6a38a13b79c42a3f3ab0f1af4"
+          git commit -m "Add full pressure-dependent H2O2 chemistry to CFD"
+          test "$(git rev-parse HEAD^{tree})" = "b1e5c36318f94bd6a38a13b79c42a3f3ab0f1af4"
+          git push origin HEAD:agent/reactive-full-h2o2-cfd
