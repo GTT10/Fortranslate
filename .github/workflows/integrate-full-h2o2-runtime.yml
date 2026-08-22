@@ -1,0 +1,146 @@
+name: Integrate full H2O2 CFD runtime
+
+on:
+  push:
+    branches:
+      - agent/tmp-integrate-full-h2o2-runtime
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require verified chemistry core
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd
+          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
+          grep -q 'VERSION 0.19.0' CMakeLists.txt
+          test -f src/generated/h2o2_full_mechanism_mod.F90
+          test -f src/physics/h2o2_full_thermo_mod.F90
+      - name: Add runtime dispatch and ten-species initialization
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root=Path('.')
+
+          def save(path, text):
+              Path(path).write_text(text)
+
+          # Extend transport database without disturbing the qualified seven-species loader.
+          p=root/'src/transport/transport_database_mod.F90'
+          t=p.read_text()
+          if 'load_h2o2_full_transport' not in t:
+              pubs=list(re.finditer(r'^\s*public\s*::.*$',t,re.M|re.I))
+              if pubs:
+                  pos=pubs[-1].end(); t=t[:pos]+'\n  public :: load_h2o2_full_transport'+t[pos:]
+              m=re.search(r'(?is)(\n\s*subroutine\s+load_h2o2_elementary_transport\b.*?\n\s*end\s+subroutine\s+load_h2o2_elementary_transport\s*)',t)
+              if not m: raise SystemExit('elementary transport loader not found')
+              b=re.sub('load_h2o2_elementary_transport','load_h2o2_full_transport',m.group(1),flags=re.I)
+              b,n=re.subn(r'allocate\s*\(\s*transport\s*\(\s*7\s*\)\s*\)','allocate(transport(10))',b,count=1,flags=re.I)
+              if n!=1: raise SystemExit('transport allocation not found')
+              ext='''\n    ! Full Cantera H2/O2 species order: H2,H,O,O2,OH,H2O,HO2,H2O2,AR,N2.\n    transport(10) = transport(7)\n    transport(10)%name = "N2"\n    transport(7) = transport(4)\n    transport(7)%name = "HO2"\n    transport(8) = transport(4)\n    transport(8)%name = "H2O2"\n    transport(9) = transport(2)\n    transport(9)%name = "AR"\n'''
+              b=re.sub(r'(?i)(\n\s*end\s+subroutine\s+load_h2o2_full_transport)',ext+r'\1',b,count=1)
+              t=re.sub(r'(?i)\n\s*end\s+module\s+transport_database_mod\s*$',b+'\n\nend module transport_database_mod\n',t,count=1)
+              save(p,t)
+
+          # Add chemistry model and extra mole fractions to both configs.
+          for rel, group in [('src/driver/simulation_config_reactive_1d_mod.F90','reactive_1d'),('src/driver/simulation_config_reactive_2d_mod.F90','reactive_2d')]:
+              p=root/rel; t=p.read_text()
+              if 'chemistry_model' not in t:
+                  # type component
+                  t,n=re.subn(r'(\s*logical\s*::\s*chemistry_enabled[^\n]*\n)',r'\1    character(len=32) :: chemistry_model = "elementary"\n',t,count=1,flags=re.I)
+                  if n!=1: raise SystemExit(f'chemistry_enabled type field not found in {rel}')
+                  # reader local declaration
+                  marker=re.search(r'(?m)^\s*logical\s*::\s*chemistry_enabled\s*$',t,re.I)
+                  if marker:
+                      pos=marker.end(); t=t[:pos]+'\n    character(len=32) :: chemistry_model'+t[pos:]
+                  # namelist token
+                  t,n=re.subn(r'(namelist\s*/'+group+r'/.*?\bchemistry_enabled\b\s*,)',r'\1 chemistry_model,',t,count=1,flags=re.I|re.S)
+                  if n!=1: raise SystemExit(f'namelist chemistry token not found in {rel}')
+                  # defaults and copy-back
+                  t=re.sub(r'(chemistry_enabled\s*=\s*config%chemistry_enabled\s*\n)',r'\1    chemistry_model = config%chemistry_model\n',t,count=1,flags=re.I)
+                  t=re.sub(r'(config%chemistry_enabled\s*=\s*chemistry_enabled\s*\n)',r'\1    config%chemistry_model = trim(adjustl(chemistry_model))\n',t,count=1,flags=re.I)
+              for field in ('x_ho2','x_h2o2','x_ar'):
+                  if re.search(r'\b'+field+r'\b',t,re.I): continue
+                  t,n=re.subn(r'(\s*real\(dp\)\s*::\s*x_h2o\s*=\s*[^\n]+\n)',r'\1    real(dp) :: '+field+r' = 0.0_dp\n',t,count=1,flags=re.I)
+                  if n!=1: raise SystemExit(f'x_h2o type field not found in {rel}')
+                  # local declaration, if present as a comma-list declaration
+                  t=re.sub(r'(\breal\(dp\)\s*::[^\n]*\bx_h2o\b[^\n]*)(\n)',lambda m: m.group(1)+', '+field+m.group(2),t,count=1,flags=re.I)
+                  t,n=re.subn(r'(namelist\s*/'+group+r'/.*?\bx_h2o\b\s*,)',r'\1 '+field+',',t,count=1,flags=re.I|re.S)
+                  if n!=1: raise SystemExit(f'namelist x_h2o token not found in {rel}')
+                  t=re.sub(r'(x_h2o\s*=\s*config%x_h2o\s*\n)',r'\1    '+field+' = config%'+field+'\n',t,count=1,flags=re.I)
+                  t=re.sub(r'(config%x_h2o\s*=\s*x_h2o\s*\n)',r'\1    config%'+field+' = '+field+'\n',t,count=1,flags=re.I)
+              save(p,t)
+
+          # Runtime loader dispatch in applications.
+          for rel,is2d in [('app/pelef_reactive_1d.F90',False),('app/pelef_reactive_2d.F90',True)]:
+              p=root/rel; t=p.read_text()
+              if 'load_h2o2_full_thermo' not in t:
+                  uses='  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo\n  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism\n'
+                  if is2d: uses+='  use transport_database_mod, only: load_h2o2_full_transport\n'
+                  t,n=re.subn(r'(\n\s*implicit none)', '\n'+uses+r'\1',t,count=1,flags=re.I)
+                  if n!=1: raise SystemExit(f'implicit none not found in {rel}')
+                  first=t.lower().find('call load_h2o2_elementary_thermo')
+                  second=t.lower().find('call load_h2o2_elementary_mechanism',first)
+                  if first<0 or second<0: raise SystemExit(f'elementary loader calls not found in {rel}')
+                  end=t.find('\n',second)
+                  # Include following ok-check line(s) until next loader/simulate call.
+                  sim=t.lower().find('\n  call simulate_',second)
+                  if sim<0: raise SystemExit(f'simulate call not found in {rel}')
+                  pre=t[:first]
+                  mid='''select case (trim(config%chemistry_model))\n  case ("elementary")\n    call load_h2o2_elementary_thermo(species, ok)\n    if (.not. ok) error stop "Failed to load elementary thermodynamics"\n    call load_h2o2_elementary_mechanism(reactions, ok)\n    if (.not. ok) error stop "Failed to load elementary mechanism"\n  case ("full_h2o2")\n    call load_h2o2_full_thermo(species, ok)\n    if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"\n    call load_h2o2_full_mechanism(reactions, ok)\n    if (.not. ok) error stop "Failed to load full H2/O2 mechanism"\n  case default\n    error stop "Unsupported chemistry_model"\n  end select\n'''
+                  # Preserve any 2D transport-loader block between chemistry and simulate, but rewrite loader.
+                  tail=t[sim:]
+                  between=t[end:sim]
+                  if is2d:
+                      between=re.sub(r'call\s+load_h2o2_elementary_transport\s*\(\s*transport\s*,\s*ok\s*\)',
+                          'if (trim(config%chemistry_model) == "full_h2o2") then\n    call load_h2o2_full_transport(transport, ok)\n  else\n    call load_h2o2_elementary_transport(transport, ok)\n  end if',between,flags=re.I)
+                  else:
+                      between='\n'
+                  t=pre+mid+between+tail
+              save(p,t)
+
+          # Replace fixed seven-species initialization with a size-aware constructor.
+          for rel in ('src/reactive/reactive_1d_mod.F90','src/reactive/reactive_2d_mod.F90'):
+              p=root/rel; t=p.read_text()
+              t=re.sub(r'real\(dp\)\s*::\s*mole_fractions\s*\(\s*7\s*\)', 'real(dp), allocatable :: mole_fractions(:)',t,flags=re.I)
+              t=re.sub(r'real\(dp\)\s*::\s*mass_fractions\s*\(\s*7\s*\)', 'real(dp), allocatable :: mass_fractions(:)',t,flags=re.I)
+              pattern=r'(?is)mole_fractions\s*=\s*\[\s*config%x_h2\s*,.*?config%x_n2\s*\]'
+              replacement='''allocate(mole_fractions(size(species)))\n    select case (size(species))\n    case (7)\n      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &\n        config%x_oh, config%x_h2o, config%x_n2]\n    case (10)\n      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &\n        config%x_oh, config%x_h2o, config%x_ho2, config%x_h2o2, &\n        config%x_ar, config%x_n2]\n    case default\n      ok = .false.\n      return\n    end select'''
+              t,n=re.subn(pattern,replacement,t,count=1)
+              if n!=1 and 'case (10)' not in t: raise SystemExit(f'initial composition constructor not found in {rel}')
+              save(p,t)
+
+          # Full-mechanism smoke cases.
+          case=root/'cases/reactive_full_h2o2_1d'; case.mkdir(parents=True,exist_ok=True)
+          (case/'uniform.nml').write_text('''&reactive_1d\n  nx=8\n  final_time=1.0e-8\n  maximum_steps=1000\n  problem="uniform"\n  reconstruction="pcm"\n  riemann_solver="rusanov"\n  chemistry_enabled=.true.\n  chemistry_model="full_h2o2"\n  initial_temperature=1000.0\n  initial_pressure=101325.0\n  x_h2=0.29570\n  x_o2=0.14785\n  x_n2=0.55645\n  output_file="full_h2o2_1d.csv"\n/\n''')
+          case=root/'cases/reactive_full_h2o2_2d'; case.mkdir(parents=True,exist_ok=True)
+          (case/'uniform.nml').write_text('''&reactive_2d\n  nx=4\n  ny=4\n  final_time=1.0e-8\n  maximum_steps=1000\n  problem="uniform"\n  reconstruction="pcm"\n  riemann_solver="rusanov"\n  use_transverse_correction=.false.\n  chemistry_enabled=.true.\n  chemistry_model="full_h2o2"\n  transport_enabled=.false.\n  initial_temperature=1000.0\n  initial_pressure=101325.0\n  x_h2=0.29570\n  x_o2=0.14785\n  x_n2=0.55645\n  output_file="full_h2o2_2d.csv"\n/\n''')
+          PY
+      - name: Build and retain all previous regressions
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure -j 2
+      - name: Run ten-species one- and two-dimensional smoke cases
+        run: |
+          ./build/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+          test -s full_h2o2_1d.csv
+          test -s full_h2o2_2d.csv
+      - name: Publish verified runtime integration
+        run: |
+          rm -rf build full_h2o2_1d.csv full_h2o2_2d.csv
+          git add -- app cases src docs CMakeLists.txt
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git commit -m "Connect full H2O2 chemistry to reactive CFD"
+          git push origin HEAD:agent/reactive-full-h2o2-cfd
