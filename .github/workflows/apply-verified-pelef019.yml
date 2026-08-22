@@ -46,8 +46,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "e06289a500660d3aed79c5ba810a3eb40055382d"
           git config user.name "Toshiki Kakeya"
           git config user.email "pqg693x1@s.okayama-u.ac.jp"
-          git am /tmp/pelef019.patch
-          git diff --check HEAD^
+          git apply --index /tmp/pelef019.patch
+          git diff --cached --check
+          git commit -m "Add full pressure-dependent H2O2 chemistry to reactive CFD"
           test "$(git rev-parse HEAD^{tree})" = \
             "b1e5c36318f94bd6a38a13b79c42a3f3ab0f1af4"
           git push origin HEAD:agent/reactive-full-h2o2-cfd
