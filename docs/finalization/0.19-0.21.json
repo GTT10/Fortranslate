@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-08-22T08:53:31Z",
+  "ready_count": 0,
+  "all_ready": false,
+  "milestones": [
+    {
+      "version": "0.19.0",
+      "head": "agent/reactive-full-h2o2-cfd",
+      "base": "agent/reactive-physical-boundaries",
+      "marker": "docs/validation/0.19-remote-ci-complete.txt",
+      "exists": true,
+      "version_ok": false,
+      "marker_ok": false,
+      "ci_success": true,
+      "commit": "67ebe1ee024d4690f417f90e86a5278277bf5a7c",
+      "tree": "e17c68a19b159de0195638e6a159d3ab85ecf341",
+      "pr": {
+        "baseRefName": "agent/reactive-physical-boundaries",
+        "isDraft": true,
+        "number": 34,
+        "state": "OPEN",
+        "url": "https://github.com/GTT10/Fortranslate/pull/34"
+      },
+      "ready": false,
+      "ci_run": {
+        "conclusion": "success",
+        "databaseId": 32562250362,
+        "headSha": "67ebe1ee024d4690f417f90e86a5278277bf5a7c",
+        "name": "CI",
+        "status": "completed",
+        "url": "https://github.com/GTT10/Fortranslate/actions/runs/32562250362"
+      }
+    },
+    {
+      "version": "0.20.0",
+      "head": "agent/mpi-1d-foundation",
+      "base": "agent/reactive-full-h2o2-cfd",
+      "marker": "docs/validation/0.20-mpi-foundation-complete.txt",
+      "exists": false,
+      "version_ok": false,
+      "marker_ok": false,
+      "ci_success": false,
+      "commit": null,
+      "tree": null,
+      "pr": null,
+      "ready": false
+    },
+    {
+      "version": "0.21.0",
+      "head": "agent/mpi-multispecies-hydro",
+      "base": "agent/mpi-1d-foundation",
+      "marker": "docs/validation/0.21-mpi-multispecies-hydro-complete.txt",
+      "exists": false,
+      "version_ok": false,
+      "marker_ok": false,
+      "ci_success": false,
+      "commit": null,
+      "tree": null,
+      "pr": null,
+      "ready": false
+    }
+  ]
+}
