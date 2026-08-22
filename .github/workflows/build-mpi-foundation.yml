@@ -27,8 +27,10 @@ jobs:
         run: |
           git fetch origin agent/reactive-full-h2o2-cfd
           git switch --force-create work origin/agent/reactive-full-h2o2-cfd
-          test "$(git rev-parse HEAD)" = "788be768a53b7fb6119b67215345e18f47975e0b"
-          test "$(git rev-parse HEAD^{tree})" = "b1e5c36318f94bd6a38a13b79c42a3f3ab0f1af4"
+          test "$(git rev-parse HEAD^)" = "788be768a53b7fb6119b67215345e18f47975e0b"
+          test -f docs/validation/0.19-remote-ci-complete.txt
+          grep -q 'source_commit=788be768a53b7fb6119b67215345e18f47975e0b' \
+            docs/validation/0.19-remote-ci-complete.txt
           git show origin/agent/tmp-build-mpi-foundation:tools/build_mpi_foundation.py \
             > /tmp/build_mpi_foundation.py
 
