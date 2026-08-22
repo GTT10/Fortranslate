@@ -1,0 +1,87 @@
+name: Publish PeleF 0.19-0.21 audit
+
+on:
+  push:
+    branches:
+      - agent/tmp-finalize-019-021
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+
+jobs:
+  audit:
+    if: ${{ !contains(github.event.head_commit.message, '[skip audit]') }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build machine-readable remote audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          mkdir -p docs/finalization
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, subprocess, time
+
+          milestones = [
+              ('0.19.0','agent/reactive-full-h2o2-cfd','agent/reactive-physical-boundaries','docs/validation/0.19-remote-ci-complete.txt'),
+              ('0.20.0','agent/mpi-1d-foundation','agent/reactive-full-h2o2-cfd','docs/validation/0.20-mpi-foundation-complete.txt'),
+              ('0.21.0','agent/mpi-multispecies-hydro','agent/mpi-1d-foundation','docs/validation/0.21-mpi-multispecies-hydro-complete.txt'),
+          ]
+
+          def run(*args, check=True):
+              p=subprocess.run(args,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+              if check and p.returncode:
+                  raise RuntimeError(f"command failed: {args}\n{p.stderr}")
+              return p.stdout.strip(), p.returncode
+
+          results=[]
+          for version,head,base,marker in milestones:
+              entry={'version':version,'head':head,'base':base,'marker':marker,'exists':False,'version_ok':False,'marker_ok':False,'ci_success':False,'commit':None,'tree':None,'pr':None,'ready':False}
+              _,rc=run('git','show-ref','--verify','--quiet',f'refs/remotes/origin/{head}',check=False)
+              if rc==0:
+                  entry['exists']=True
+                  entry['commit']=run('git','rev-parse',f'origin/{head}')[0]
+                  entry['tree']=run('git','show','-s','--format=%T',entry['commit'])[0]
+                  _,rc=run('git','cat-file','-e',f"{entry['commit']}:{marker}",check=False)
+                  entry['marker_ok']=rc==0
+                  cmake,rc=run('git','show',f"{entry['commit']}:CMakeLists.txt",check=False)
+                  entry['version_ok']=rc==0 and f'VERSION {version}' in cmake
+                  runs_json,_=run('gh','run','list','--repo','GTT10/Fortranslate','--branch',head,'--limit','50','--json','databaseId,headSha,name,status,conclusion,url')
+                  runs=json.loads(runs_json or '[]')
+                  matching=[r for r in runs if r.get('headSha')==entry['commit'] and r.get('status')=='completed' and r.get('conclusion')=='success']
+                  if matching:
+                      entry['ci_success']=True
+                      entry['ci_run']=matching[0]
+                  prs_json,_=run('gh','pr','list','--repo','GTT10/Fortranslate','--state','all','--head',head,'--json','number,state,isDraft,baseRefName,url')
+                  prs=json.loads(prs_json or '[]')
+                  if prs:
+                      prs=sorted(prs,key=lambda p:p['number'])
+                      entry['pr']=prs[-1]
+              entry['ready']=entry['exists'] and entry['version_ok'] and entry['marker_ok'] and entry['ci_success'] and bool(entry['pr']) and entry['pr']['state']=='OPEN' and entry['pr']['baseRefName']==base
+              results.append(entry)
+
+          payload={'timestamp':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'ready_count':sum(1 for r in results if r['ready']),'all_ready':all(r['ready'] for r in results),'milestones':results}
+          Path('docs/finalization/0.19-0.21.json').write_text(json.dumps(payload,indent=2)+'\n')
+          lines=['# PeleF 0.19-0.21 finalization audit','',f"Timestamp: `{payload['timestamp']}`",'',f"All ready: `{str(payload['all_ready']).lower()}`",'']
+          for r in results:
+              lines += [f"## {r['version']}",f"- ready: `{str(r['ready']).lower()}`",f"- head: `{r['head']}`",f"- base: `{r['base']}`",f"- commit: `{r['commit']}`",f"- tree: `{r['tree']}`",f"- version_ok: `{r['version_ok']}`",f"- marker_ok: `{r['marker_ok']}`",f"- ci_success: `{r['ci_success']}`",f"- PR: `{r['pr']}`",'']
+          Path('docs/finalization/0.19-0.21.md').write_text('\n'.join(lines)+'\n')
+          PY
+      - name: Commit durable audit report
+        run: |
+          git add -- docs/finalization/0.19-0.21.md docs/finalization/0.19-0.21.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m 'Record 0.19-0.21 remote audit [skip audit]'
+          git push origin HEAD:agent/tmp-finalize-019-021
