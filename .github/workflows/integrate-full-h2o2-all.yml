@@ -1,0 +1,116 @@
+name: Reconstruct full H2O2 CFD milestone
+
+on:
+  push:
+    branches: [agent/tmp-integrate-full-h2o2-all]
+
+permissions:
+  contents: write
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Fetch exact inputs
+        run: |
+          git fetch origin agent/reactive-physical-boundaries agent/third-body-troe-stiff agent/tmp-integrate-full-h2o2-runtime-v4
+          git switch --force-create work origin/agent/reactive-physical-boundaries
+          test "$(git rev-parse HEAD)" = "e06289a500660d3aed79c5ba810a3eb40055382d"
+          rm -rf /tmp/third
+          mkdir -p /tmp/third
+          git archive origin/agent/third-body-troe-stiff | tar -x -C /tmp/third
+          git show origin/agent/tmp-integrate-full-h2o2-runtime-v4:tools/integrate_full_h2o2_runtime_v4.py > /tmp/integrate_runtime.py
+      - name: Import pressure-dependent chemistry core
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, re
+          root=Path('.')
+          src=Path('/tmp/third')
+          paths=[
+            'mechanisms/h2o2_full.json',
+            'src/generated/h2o2_full_mechanism_mod.F90',
+            'src/physics/h2o2_full_thermo_mod.F90',
+            'src/driver/simulation_config_h2o2_full_mod.F90',
+            'src/chemistry/elementary_kinetics_mod.F90',
+            'src/chemistry/constant_volume_reactor_mod.F90',
+            'app/pelef0d_h2o2_full.F90',
+            'cases/zero_d_h2o2_full',
+            'tests/unit/test_full_h2o2_jacobian.F90',
+            'tests/unit/test_implicit_h2o2_reactor.F90',
+            'tests/unit/test_pressure_dependent_kinetics.F90',
+            'tools/check_zero_d_h2o2_full.py',
+            'tools/compare_h2o2_full_cantera.py',
+            'tools/generate_elementary_mechanism.py']
+          for rel in paths:
+              s=src/rel; d=root/rel
+              if not s.exists():
+                  continue
+              if d.exists():
+                  shutil.rmtree(d) if d.is_dir() else d.unlink()
+              d.parent.mkdir(parents=True,exist_ok=True)
+              shutil.copytree(s,d) if s.is_dir() else shutil.copy2(s,d)
+          cm=(root/'CMakeLists.txt').read_text()
+          cm=re.sub(r'VERSION\s+0\.18\.0','VERSION 0.19.0',cm,count=1)
+          def add_after(text,anchor,line):
+              if line.strip() in text:
+                  return text
+              if anchor not in text:
+                  raise SystemExit('CMake anchor missing: '+anchor)
+              return text.replace(anchor,anchor+'\n  '+line,1)
+          cm=add_after(cm,'  src/physics/thermo_database_mod.F90','src/physics/h2o2_full_thermo_mod.F90')
+          cm=add_after(cm,'  src/driver/simulation_config_h2o2_reactor_mod.F90','src/driver/simulation_config_h2o2_full_mod.F90')
+          cm=add_after(cm,'  src/generated/h2o2_elementary_mechanism_mod.F90','src/generated/h2o2_full_mechanism_mod.F90')
+          if 'add_executable(pelef0d_h2o2_full' not in cm:
+              anchor='add_executable(pelef0d_h2o2 app/pelef0d_h2o2.F90)'
+              if anchor not in cm:
+                  raise SystemExit('full reactor executable anchor missing')
+              cm=cm.replace(anchor,anchor+'\nadd_executable(pelef0d_h2o2_full app/pelef0d_h2o2_full.F90)\ntarget_link_libraries(pelef0d_h2o2_full PRIVATE pelef_core)',1)
+          (root/'CMakeLists.txt').write_text(cm)
+          PY
+      - name: Add ten-species CFD runtime
+        run: python3 /tmp/integrate_runtime.py
+      - name: Install Cantera
+        run: python3 -m pip install --break-system-packages cantera==3.2.0
+      - name: Release build and all inherited tests
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure -j 2
+      - name: Release full-mechanism smoke gates
+        run: |
+          ./build-release/pelef0d_h2o2_full cases/zero_d_h2o2_full/reactor.nml
+          ./build-release/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build-release/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+          test -s full_h2o2_1d.csv
+          test -s full_h2o2_2d.csv
+      - name: Debug build and all inherited tests
+        run: |
+          rm -f full_h2o2_1d.csv full_h2o2_2d.csv
+          cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-debug --parallel 2
+          ctest --test-dir build-debug --output-on-failure -j 2
+          ./build-debug/pelef0d_h2o2_full cases/zero_d_h2o2_full/reactor.nml
+          ./build-debug/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build-debug/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+      - name: Publish one verified milestone commit
+        run: |
+          rm -rf build-release build-debug *.csv
+          mkdir -p docs/validation
+          {
+            echo 'full pressure-dependent H2/O2 CFD milestone passed'
+            echo 'release=passed'
+            echo 'debug=passed'
+            echo 'cantera=passed'
+            echo 'zero_d=passed'
+            echo 'one_d=passed'
+            echo 'two_d=passed'
+          } > docs/validation/0.19-remote-ci-complete.txt
+          git add -- CMakeLists.txt app cases docs mechanisms src tests tools
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m "Integrate pressure-dependent full H2O2 chemistry into CFD"
+          git push --force-with-lease=agent/reactive-full-h2o2-cfd:e06289a500660d3aed79c5ba810a3eb40055382d origin HEAD:agent/reactive-full-h2o2-cfd
