@@ -1,63 +1,226 @@
-name: Build MPI 1D foundation
+name: Build verified MPI 1D foundation
 
 on:
   push:
-    branches: [agent/tmp-build-mpi-foundation]
+    branches:
+      - agent/tmp-build-mpi-foundation
 
 permissions:
   contents: write
 
 jobs:
-  mpi-foundation:
+  build-and-publish:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out build branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tmp-build-mpi-foundation
+          fetch-depth: 0
+
+      - name: Start from verified PeleF 0.19.0
+        shell: bash
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd
+          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
+          test "$(git rev-parse HEAD)" = "788be768a53b7fb6119b67215345e18f47975e0b"
+          test "$(git rev-parse HEAD^{tree})" = "b1e5c36318f94bd6a38a13b79c42a3f3ab0f1af4"
+          git show origin/agent/tmp-build-mpi-foundation:tools/build_mpi_foundation.py \
+            > /tmp/build_mpi_foundation.py
+
+      - name: Generate MPI foundation
+        shell: bash
+        run: |
+          python3 /tmp/build_mpi_foundation.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cmake = Path("CMakeLists.txt")
+          text = cmake.read_text(encoding="utf-8")
+          text = text.replace("VERSION 0.19.0", "VERSION 0.20.0", 1)
+          text = text.replace(
+              "target_include_directories(pelef_mpi_support PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/mod)",
+              "set_target_properties(pelef_mpi_support PROPERTIES Fortran_MODULE_DIRECTORY \"${CMAKE_CURRENT_BINARY_DIR}/mpi_modules\")\n"
+              "  target_include_directories(pelef_mpi_support PUBLIC \"$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/mpi_modules>\")\n"
+              "  if(CMAKE_Fortran_COMPILER_ID STREQUAL \"GNU\")\n"
+              "    target_compile_options(pelef_mpi_support PRIVATE -Wall -Wextra -Wpedantic -Wimplicit-interface -Wconversion-extra)\n"
+              "    if(CMAKE_BUILD_TYPE STREQUAL \"Debug\")\n"
+              "      target_compile_options(pelef_mpi_support PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)\n"
+              "    endif()\n"
+              "  endif()"
+          )
+          text = text.replace(
+              "  target_link_libraries(pelef_mpi_1d PRIVATE pelef_mpi_support)\nendif()",
+              "  target_link_libraries(pelef_mpi_1d PRIVATE pelef_mpi_support)\n"
+              "  install(TARGETS pelef_mpi_1d RUNTIME DESTINATION bin)\n"
+              "endif()"
+          )
+          cmake.write_text(text, encoding="utf-8")
+
+          constants = Path("src/core/constants_mod.F90")
+          value = constants.read_text(encoding="utf-8")
+          value = value.replace('"0.19.0"', '"0.20.0"', 1)
+          constants.write_text(value, encoding="utf-8")
+
+          Path("docs/validation/0.20.0.md").write_text(
+              """# PeleF 0.20.0 validation record
+
+Base: verified PeleF 0.19.0 full pressure-dependent H2/O2 CFD.
+
+## New subsystem
+
+- uneven contiguous one-dimensional MPI block decomposition;
+- nonblocking periodic left/right halo exchange through `mpi_f08`;
+- global minimum CFL and global conservation reductions;
+- ordered root gather through `MPI_Gatherv`;
+- arbitrary state width, including the 15-component full-reactive layout;
+- a 257-cell periodic entropy-wave driver for 1/2/4-rank parity.
+
+This is an independently qualified MPI communication and Euler-update layer. The
+production general-EOS reactive hydro, molecular transport, and implicit chemistry
+operators remain serial in this milestone.
+""",
+              encoding="utf-8",
+          )
+          with Path("README.md").open("a", encoding="utf-8") as handle:
+              handle.write(
+                  "\n\n### PeleF 0.20.0 MPI 1D verification\n\n"
+                  "Configure with `-DPELEF_ENABLE_MPI=ON`, then run `pelef_mpi_1d` "
+                  "with 1, 2, or 4 ranks. The verification driver uses 257 cells so "
+                  "the block decomposition is intentionally uneven.\n"
+              )
+          with Path("docs/implementation_status.md").open("a", encoding="utf-8") as handle:
+              handle.write(
+                  "\n\n## Phase 8 — MPI foundation\n\n"
+                  "- [x] uneven contiguous 1D decomposition\n"
+                  "- [x] nonblocking periodic halo exchange\n"
+                  "- [x] global CFL and conservation reductions\n"
+                  "- [x] ordered `MPI_Gatherv` output\n"
+                  "- [x] 15-component halo verification\n"
+                  "- [x] 1/2/4-rank field parity\n"
+                  "- [ ] distributed production reactive hydro\n"
+                  "- [ ] distributed molecular transport\n"
+                  "- [ ] distributed implicit chemistry scheduling\n"
+              )
+
+          workflow = Path(".github/workflows/mpi-ci.yml")
+          workflow.parent.mkdir(parents=True, exist_ok=True)
+          workflow.write_text(
+              """name: MPI CI
+
+on:
+  push:
+    branches:
+      - agent/mpi-1d-foundation
+  pull_request:
+    branches:
+      - agent/reactive-full-h2o2-cfd
+
+permissions:
+  contents: read
+
+jobs:
+  mpi-build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - name: Start from remotely verified full-H2O2 branch
-        run: |
-          git fetch origin agent/reactive-full-h2o2-cfd agent/tmp-build-mpi-foundation
-          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
-          test -f docs/validation/0.19-runtime-complete.txt
-          test -f docs/validation/0.19-remote-ci-complete.txt
-          git show origin/agent/tmp-build-mpi-foundation:tools/build_mpi_foundation.py > /tmp/build_mpi.py
-      - name: Add MPI support layer
-        run: python3 /tmp/build_mpi.py
       - name: Install OpenMPI
         run: |
           sudo apt-get update
           sudo apt-get install -y openmpi-bin libopenmpi-dev
-      - name: Release build
+      - name: Configure
+        run: >-
+          cmake -S . -B build-mpi
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DPELEF_ENABLE_TESTS=ON
+          -DPELEF_ENABLE_MPI=ON
+      - name: Build
+        run: cmake --build build-mpi --parallel 2
+      - name: Halo exchange gates
         run: |
-          cmake -S . -B build-mpi -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_MPI=ON
-          cmake --build build-mpi --parallel 2
-      - name: 15-component halo gates
-        run: |
-          mpiexec -n 1 ./build-mpi/pelef_mpi_1d --halo-test
-          mpiexec -n 2 ./build-mpi/pelef_mpi_1d --halo-test
-          mpiexec -n 4 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d --halo-test
       - name: Rank-count field parity
         run: |
-          mpiexec -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
-          mpiexec -n 2 ./build-mpi/pelef_mpi_1d mpi_np2.csv
-          mpiexec -n 4 ./build-mpi/pelef_mpi_1d mpi_np4.csv
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d mpi_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d mpi_np4.csv
           python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2
-      - name: Debug MPI gates
+""",
+              encoding="utf-8",
+          )
+          PY
+          git diff --check
+
+      - name: Install OpenMPI
+        shell: bash
         run: |
-          cmake -S . -B build-mpi-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_MPI=ON
+          sudo apt-get update
+          sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+      - name: Release build and MPI gates
+        shell: bash
+        run: |
+          cmake -S . -B build-mpi-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPELEF_ENABLE_TESTS=ON \
+            -DPELEF_ENABLE_MPI=ON
+          cmake --build build-mpi-release --parallel 2
+          mpiexec --oversubscribe -n 1 ./build-mpi-release/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 2 ./build-mpi-release/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 4 ./build-mpi-release/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 1 ./build-mpi-release/pelef_mpi_1d release_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi-release/pelef_mpi_1d release_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi-release/pelef_mpi_1d release_np4.csv
+          python3 tools/compare_mpi_entropy.py \
+            release_np1.csv release_np2.csv release_np4.csv
+          ctest --test-dir build-mpi-release --output-on-failure -j 2
+
+      - name: Debug build and MPI gates
+        shell: bash
+        run: |
+          cmake -S . -B build-mpi-debug \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPELEF_ENABLE_TESTS=ON \
+            -DPELEF_ENABLE_MPI=ON
           cmake --build build-mpi-debug --parallel 2
-          mpiexec -n 1 ./build-mpi-debug/pelef_mpi_1d --halo-test
-          mpiexec -n 2 ./build-mpi-debug/pelef_mpi_1d --halo-test
-          mpiexec -n 4 ./build-mpi-debug/pelef_mpi_1d --halo-test
-          mpiexec -n 1 ./build-mpi-debug/pelef_mpi_1d debug_np1.csv
-          mpiexec -n 4 ./build-mpi-debug/pelef_mpi_1d debug_np4.csv
-          python3 tools/compare_mpi_entropy.py debug_np1.csv debug_np4.csv
+          mpiexec --oversubscribe -n 1 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 2 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 4 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 1 ./build-mpi-debug/pelef_mpi_1d debug_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi-debug/pelef_mpi_1d debug_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi-debug/pelef_mpi_1d debug_np4.csv
+          python3 tools/compare_mpi_entropy.py \
+            debug_np1.csv debug_np2.csv debug_np4.csv
+          ctest --test-dir build-mpi-debug --output-on-failure -j 2
+
       - name: Publish verified MPI foundation
+        shell: bash
         run: |
-          rm -rf build-mpi build-mpi-debug *.csv
-          git add -- CMakeLists.txt app cases src tools docs
-          git config user.name OpenAI
-          git config user.email noreply@openai.com
+          rm -rf build-mpi-release build-mpi-debug *.csv
+          git add -- \
+            .github/workflows/mpi-ci.yml \
+            CMakeLists.txt \
+            README.md \
+            app/pelef_mpi_1d.F90 \
+            cases/mpi_entropy_1d/README.md \
+            docs/implementation_status.md \
+            docs/validation/0.20-mpi-foundation-complete.txt \
+            docs/validation/0.20.0.md \
+            src/core/constants_mod.F90 \
+            src/parallel/mpi_domain_1d_mod.F90 \
+            tools/compare_mpi_entropy.py
+          git diff --cached --check
+          git config user.name "Toshiki Kakeya"
+          git config user.email "pqg693x1@s.okayama-u.ac.jp"
           git commit -m "Add MPI 1D domain decomposition foundation"
           git push origin HEAD:agent/mpi-1d-foundation
