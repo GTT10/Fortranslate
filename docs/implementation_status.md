@@ -342,3 +342,16 @@ separate parity task.
 - [x] implicit constant-volume chemistry in 1D and 2D cells
 - [x] runtime elementary/full mechanism selection
 - [x] uniform 0D/1D/2D reduction gate
+
+
+## Phase 8 — MPI foundation
+
+- [x] uneven contiguous 1D decomposition
+- [x] nonblocking periodic halo exchange
+- [x] global CFL and conservation reductions
+- [x] ordered `MPI_Gatherv` output
+- [x] 15-component halo verification
+- [x] 1/2/4-rank field parity
+- [ ] distributed production reactive hydro
+- [ ] distributed molecular transport
+- [ ] distributed implicit chemistry scheduling

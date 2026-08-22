@@ -306,3 +306,8 @@ stress; no-slip walls reflect velocity about a prescribed wall velocity.
 ### Full pressure-dependent H2/O2 chemistry
 
 Set `chemistry_model = "full_h2o2"` to use the 10-species, 29-reaction third-body/Troe mechanism with the implicit cell reactor.
+
+
+### PeleF 0.20.0 MPI 1D verification
+
+Configure with `-DPELEF_ENABLE_MPI=ON`, then run `pelef_mpi_1d` with 1, 2, or 4 ranks. The verification driver uses 257 cells so the block decomposition is intentionally uneven.

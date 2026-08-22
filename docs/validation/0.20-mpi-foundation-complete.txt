@@ -1,0 +1,1 @@
+MPI 1D foundation: uneven decomposition, 15-component halo, global CFL/conservation, and 1/2/4-rank parity.
