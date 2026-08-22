@@ -142,7 +142,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build-mpi
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_BUILD_TYPE=__MATRIX_BUILD_TYPE__
           -DPELEF_ENABLE_TESTS=ON
           -DPELEF_ENABLE_MPI=ON
       - name: Build
@@ -160,7 +160,7 @@ jobs:
           python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2
-""",
+""".replace("__MATRIX_BUILD_TYPE__", "$" + "{{ matrix.build_type }}"),
               encoding="utf-8",
           )
           PY
