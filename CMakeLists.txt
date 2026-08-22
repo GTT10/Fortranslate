@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.20.0
+  VERSION 0.21.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -169,5 +169,7 @@ if(PELEF_ENABLE_MPI)
   endif()
   add_executable(pelef_mpi_1d app/pelef_mpi_1d.F90)
   target_link_libraries(pelef_mpi_1d PRIVATE pelef_mpi_support)
+  add_executable(pelef_mpi_multispecies_1d app/pelef_mpi_multispecies_1d.F90)
+  target_link_libraries(pelef_mpi_multispecies_1d PRIVATE pelef_mpi_support)
   install(TARGETS pelef_mpi_1d RUNTIME DESTINATION bin)
 endif()
