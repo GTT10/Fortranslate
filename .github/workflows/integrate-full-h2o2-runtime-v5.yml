@@ -1,0 +1,60 @@
+name: Integrate and audit full H2O2 CFD runtime
+
+on:
+  push:
+    branches: [agent/tmp-integrate-full-h2o2-runtime-v5]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Start from full-chemistry core
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd agent/tmp-integrate-full-h2o2-runtime-v4
+          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
+          grep -q 'VERSION 0.19.0' CMakeLists.txt
+          test -f src/generated/h2o2_full_mechanism_mod.F90
+          test -f src/physics/h2o2_full_thermo_mod.F90
+          git show origin/agent/tmp-integrate-full-h2o2-runtime-v4:tools/integrate_full_h2o2_runtime_v4.py > /tmp/integrate.py
+      - name: Apply runtime dispatch
+        run: python3 /tmp/integrate.py
+      - name: Install Cantera
+        run: python3 -m pip install --break-system-packages cantera==3.2.0
+      - name: Release build and all tests
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure -j 2
+          ./build-release/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build-release/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+      - name: Debug build and all tests
+        run: |
+          cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-debug --parallel 2
+          ctest --test-dir build-debug --output-on-failure -j 2
+          ./build-debug/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build-debug/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+      - name: Record durable validation markers
+        run: |
+          rm -rf build-release build-debug full_h2o2_1d.csv full_h2o2_2d.csv
+          mkdir -p docs/validation
+          echo 'ten-species full_h2o2 runtime dispatch and 1D/2D smoke gates' > docs/validation/0.19-runtime-complete.txt
+          {
+            echo 'remote full-H2/O2 CFD validation passed'
+            echo 'release=passed'
+            echo 'debug=passed'
+            echo 'cantera=passed'
+          } > docs/validation/0.19-remote-ci-complete.txt
+          git add -- app cases src docs CMakeLists.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m "Connect and validate full H2O2 chemistry in reactive CFD"
+          git push origin HEAD:agent/reactive-full-h2o2-cfd
