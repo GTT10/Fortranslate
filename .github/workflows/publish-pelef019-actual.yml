@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/tmp-publish-full-h2o2-actual
+  pull_request:
+    branches:
+      - agent/reactive-physical-boundaries
 
 permissions:
   contents: write
