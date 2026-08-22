@@ -1,0 +1,47 @@
+name: Integrate full H2O2 CFD runtime v4
+
+on:
+  push:
+    branches: [agent/tmp-integrate-full-h2o2-runtime-v4]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Start from verified chemistry core
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd agent/tmp-integrate-full-h2o2-runtime-v4
+          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
+          grep -q 'VERSION 0.19.0' CMakeLists.txt
+          test -f src/generated/h2o2_full_mechanism_mod.F90
+          test -f src/physics/h2o2_full_thermo_mod.F90
+          git show origin/agent/tmp-integrate-full-h2o2-runtime-v4:tools/integrate_full_h2o2_runtime_v4.py > /tmp/integrate.py
+      - name: Apply ten-species runtime changes
+        run: python3 /tmp/integrate.py
+      - name: Release build and inherited tests
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure -j 2
+      - name: Full-mechanism 1D and 2D smoke gates
+        run: |
+          ./build/pelef_reactive_1d cases/reactive_full_h2o2_1d/uniform.nml
+          ./build/pelef_reactive_2d cases/reactive_full_h2o2_2d/uniform.nml
+          test -s full_h2o2_1d.csv
+          test -s full_h2o2_2d.csv
+      - name: Publish only verified changes
+        run: |
+          rm -rf build full_h2o2_1d.csv full_h2o2_2d.csv
+          git add -- app cases src docs CMakeLists.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m "Connect full H2O2 chemistry to reactive CFD"
+          git push origin HEAD:agent/reactive-full-h2o2-cfd
