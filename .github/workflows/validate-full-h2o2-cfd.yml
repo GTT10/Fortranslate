@@ -1,0 +1,35 @@
+name: Validate full H2O2 CFD
+
+on:
+  push:
+    branches:
+      - agent/reactive-full-h2o2-cfd
+  pull_request:
+    branches:
+      - agent/reactive-physical-boundaries
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify full mechanism is actually integrated
+        shell: bash
+        run: |
+          test "$(grep -c 'VERSION 0.19.0' CMakeLists.txt)" -eq 1
+          test -f src/generated/h2o2_full_mechanism_mod.F90
+          test -f src/physics/h2o2_full_thermo_mod.F90
+          grep -R -q 'full_h2o2' src/reactive src/driver
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPELEF_ENABLE_TESTS=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j 2
