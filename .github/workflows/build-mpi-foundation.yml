@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/tmp-build-mpi-foundation
+  pull_request:
+    branches:
+      - agent/reactive-full-h2o2-cfd
 
 permissions:
   contents: write
@@ -223,4 +226,4 @@ jobs:
           git config user.name "Toshiki Kakeya"
           git config user.email "pqg693x1@s.okayama-u.ac.jp"
           git commit -m "Add MPI 1D domain decomposition foundation"
-          git push origin HEAD:agent/mpi-1d-foundation
+          git push --force origin HEAD:agent/mpi-1d-foundation
