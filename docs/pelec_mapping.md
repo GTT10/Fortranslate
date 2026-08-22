@@ -65,3 +65,9 @@ A row is called implemented only when its Fortran subsystem has an automated num
 | impermeable wall pressure flux | `reactive_wall_flux_x/y` |
 | wall Fourier/species flux | boundary-aware `reactive_transport_2d_mod` |
 | fixed inflow / extrapolated outflow | boundary primitive sampling |
+
+| PeleC/PelePhysics chemistry concept | PeleF 0.19.0 |
+|---|---|
+| third-body and falloff rate evaluation | `elementary_kinetics_mod` |
+| cell-local stiff reactor | `constant_volume_reactor_mod` implicit path |
+| runtime mechanism selection | reactive 1D/2D application dispatch |

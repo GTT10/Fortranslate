@@ -258,3 +258,7 @@ thermal waves conservatively, and keep the reacting hotspot positive.
 - solid-wall species flux is exactly zero;
 - Couette flow remains linear;
 - uniform fixed inflow/outflow remains uniform.
+
+## 0.19.0 chemistry gates
+
+The full mechanism must match its generated source, retain H/O elemental inventories, agree with Cantera in the zero-dimensional reference case, and reduce identically from uniform 1D and 2D CFD states.

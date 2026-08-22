@@ -3,7 +3,8 @@ module reactive_boundary_2d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use mixture_thermo_mod, only: &
     mass_fractions_from_mole_fractions, mixture_density
-  use simulation_config_reactive_2d_mod, only: reactive_2d_config
+  use simulation_config_reactive_2d_mod, only: &
+    reactive_2d_config, reactive_2d_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nprim, reactive_mass_fraction_component
   implicit none
@@ -113,15 +114,16 @@ contains
     logical, intent(out) :: ok
 
     real(dp), allocatable :: mass_fractions(:), primitive(:)
-    real(dp) :: mole_fractions(7), density
+    real(dp), allocatable :: mole_fractions(:)
+    real(dp) :: density
     logical :: local_ok
     integer :: side, k
 
     ok = .false.
-    if (size(species) /= 7) return
-    allocate(mass_fractions(size(species)), primitive(reactive_nprim(size(species))))
-    mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
-      config%x_oh, config%x_h2o, config%x_n2]
+    allocate(mass_fractions(size(species)), mole_fractions(size(species)), &
+      primitive(reactive_nprim(size(species))))
+    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
+    if (.not. local_ok) return
     call mass_fractions_from_mole_fractions( &
       species, mole_fractions, mass_fractions, local_ok)
     if (.not. local_ok) return

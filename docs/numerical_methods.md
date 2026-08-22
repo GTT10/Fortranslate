@@ -851,3 +851,7 @@ pressure-only. Adiabatic walls copy temperature and isothermal walls use
 \(T_g=2T_w-T_i\). Species diffusive flux is zero at a solid wall. Fixed
 inflow uses the configured initial primitive state and outflow uses constant
 extrapolation. Periodic boundaries must occur in matched pairs.
+
+## Pressure-dependent reaction rates
+
+Third-body rates use the efficiency-weighted collider concentration. Falloff rates combine low- and high-pressure limits with the reduced-pressure factor and optional Troe broadening. The full CFD path uses adaptive implicit backward-Euler trials with step doubling and Richardson extrapolation.

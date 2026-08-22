@@ -1157,3 +1157,77 @@ set_tests_properties(
   regression_reactive_physical_boundaries_2d
   PROPERTIES TIMEOUT 300
 )
+
+
+add_executable(test_pressure_dependent_kinetics unit/test_pressure_dependent_kinetics.F90)
+target_link_libraries(test_pressure_dependent_kinetics PRIVATE pelef_core)
+add_test(NAME unit_pressure_dependent_kinetics COMMAND test_pressure_dependent_kinetics)
+
+add_executable(test_full_h2o2_jacobian unit/test_full_h2o2_jacobian.F90)
+target_link_libraries(test_full_h2o2_jacobian PRIVATE pelef_core)
+add_test(NAME unit_full_h2o2_jacobian COMMAND test_full_h2o2_jacobian)
+
+add_executable(test_implicit_h2o2_reactor unit/test_implicit_h2o2_reactor.F90)
+target_link_libraries(test_implicit_h2o2_reactor PRIVATE pelef_core)
+add_test(NAME unit_implicit_h2o2_reactor COMMAND test_implicit_h2o2_reactor)
+set_tests_properties(unit_implicit_h2o2_reactor PROPERTIES TIMEOUT 180)
+
+add_test(
+  NAME generated_h2o2_full_mechanism_clean
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_generated_mechanism.py"
+    --generator "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
+    --input "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json"
+    --committed "${PROJECT_SOURCE_DIR}/src/generated/h2o2_full_mechanism_mod.F90")
+
+set(H2O2_FULL_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zero_d_h2o2_full")
+file(MAKE_DIRECTORY "${H2O2_FULL_WORK_DIRECTORY}")
+add_test(NAME regression_zero_d_h2o2_full_run
+  COMMAND $<TARGET_FILE:pelef0d_h2o2_full>
+    "${PROJECT_SOURCE_DIR}/cases/zero_d_h2o2_full/reactor.nml")
+set_tests_properties(regression_zero_d_h2o2_full_run PROPERTIES
+  WORKING_DIRECTORY "${H2O2_FULL_WORK_DIRECTORY}" TIMEOUT 300)
+add_test(NAME regression_zero_d_h2o2_full_structure
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_zero_d_h2o2_full.py"
+    --input "${H2O2_FULL_WORK_DIRECTORY}/zero_d_h2o2_full.csv")
+set_tests_properties(regression_zero_d_h2o2_full_structure PROPERTIES
+  DEPENDS regression_zero_d_h2o2_full_run)
+if(PELEF_ENABLE_CANTERA_REFERENCE)
+  add_test(NAME regression_zero_d_h2o2_full_cantera
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/compare_h2o2_full_cantera.py"
+      --input "${H2O2_FULL_WORK_DIRECTORY}/zero_d_h2o2_full.csv"
+      --mechanism h2o2.yaml --phase ohmech)
+  set_tests_properties(regression_zero_d_h2o2_full_cantera PROPERTIES
+    DEPENDS regression_zero_d_h2o2_full_run TIMEOUT 300)
+endif()
+
+
+
+add_executable(
+  test_full_h2o2_cfd_support
+  unit/test_full_h2o2_cfd_support.F90
+)
+target_link_libraries(test_full_h2o2_cfd_support PRIVATE pelef_core)
+add_test(NAME unit_full_h2o2_cfd_support COMMAND test_full_h2o2_cfd_support)
+
+set(REACTIVE_FULL_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/reactive_full_h2o2")
+file(MAKE_DIRECTORY "${REACTIVE_FULL_WORK_DIRECTORY}")
+add_test(NAME regression_reactive_full_h2o2_1d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_full_h2o2_1d/uniform.nml")
+set_tests_properties(regression_reactive_full_h2o2_1d_run PROPERTIES
+  WORKING_DIRECTORY "${REACTIVE_FULL_WORK_DIRECTORY}" TIMEOUT 300)
+add_test(NAME regression_reactive_full_h2o2_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_full_h2o2_2d/uniform.nml")
+set_tests_properties(regression_reactive_full_h2o2_2d_run PROPERTIES
+  WORKING_DIRECTORY "${REACTIVE_FULL_WORK_DIRECTORY}" TIMEOUT 300)
+add_test(NAME regression_reactive_full_h2o2_parity
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_full_h2o2.py"
+    --one-d "${REACTIVE_FULL_WORK_DIRECTORY}/reactive_full_h2o2_1d.csv"
+    --two-d "${REACTIVE_FULL_WORK_DIRECTORY}/reactive_full_h2o2_2d.csv")
+set_tests_properties(regression_reactive_full_h2o2_parity PROPERTIES
+  DEPENDS "regression_reactive_full_h2o2_1d_run;regression_reactive_full_h2o2_2d_run")

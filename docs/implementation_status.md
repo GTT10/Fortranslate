@@ -333,3 +333,12 @@ separate parity task.
 | Couette upper-wall velocity | `20 m/s` |
 | Couette maximum cell-center velocity | `19.6875 m/s` |
 | Uniform inflow speed | `75 m/s` |
+
+
+## Phase 8 — pressure-dependent chemistry in CFD
+
+- [x] ten-species thermodynamics and transport
+- [x] 29 reversible reactions with third-body, falloff, and Troe forms
+- [x] implicit constant-volume chemistry in 1D and 2D cells
+- [x] runtime elementary/full mechanism selection
+- [x] uniform 0D/1D/2D reduction gate

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.18.0` milestone contains eight serial verification executables.
+The `0.19.0` milestone contains eight serial verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -301,3 +301,8 @@ python3 tools/check_reactive_hotspot_2d.py \
 
 Solid walls are species-impermeable. Slip walls remove tangential viscous
 stress; no-slip walls reflect velocity about a prescribed wall velocity.
+
+
+### Full pressure-dependent H2/O2 chemistry
+
+Set `chemistry_model = "full_h2o2"` to use the 10-species, 29-reaction third-body/Troe mechanism with the implicit cell reactor.

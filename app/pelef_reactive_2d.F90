@@ -4,9 +4,12 @@ program pelef_reactive_2d
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: &
-    gas_transport_species, load_h2o2_elementary_transport
+    gas_transport_species, load_h2o2_elementary_transport, &
+    load_h2o2_full_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use simulation_config_reactive_2d_mod, only: &
     reactive_2d_config, read_reactive_2d_configuration
   use reactive_2d_mod, only: &
@@ -38,12 +41,24 @@ program pelef_reactive_2d
     write(*, '(a)') trim(message)
     error stop 2
   end if
-  call load_h2o2_elementary_thermo(species, ok)
-  if (.not. ok) error stop "Failed to load reactive thermodynamics"
-  call load_h2o2_elementary_mechanism(reactions, ok)
-  if (.not. ok) error stop "Failed to load reactive mechanism"
-  call load_h2o2_elementary_transport(transport, ok)
-  if (.not. ok) error stop "Failed to load reactive transport database"
+  select case (trim(config%chemistry_model))
+  case ("elementary")
+    call load_h2o2_elementary_thermo(species, ok)
+    if (.not. ok) error stop "Failed to load elementary thermodynamics"
+    call load_h2o2_elementary_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load elementary mechanism"
+    call load_h2o2_elementary_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load elementary transport"
+  case ("full_h2o2")
+    call load_h2o2_full_thermo(species, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
+    call load_h2o2_full_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
+    call load_h2o2_full_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 transport"
+  case default
+    error stop "Unknown chemistry model"
+  end select
 
   call simulate_reactive_2d( &
     species, reactions, config, state, temperature, dx, dy, time, steps, &
@@ -79,6 +94,7 @@ program pelef_reactive_2d
       config%ppm_shock_flattening
   end if
   write(*, '(a,l2)') "Chemistry: ", config%chemistry_enabled
+  write(*, '(a,1x,a)') "Chemistry model:", trim(config%chemistry_model)
   write(*, '(a,l2)') "Molecular transport: ", config%transport_enabled
   if (config%transport_enabled) then
     write(*, '(a,l2)') "Viscosity: ", config%viscosity_enabled

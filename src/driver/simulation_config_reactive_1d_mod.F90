@@ -16,6 +16,7 @@ module simulation_config_reactive_1d_mod
     character(len=32) :: limiter = "mc"
     character(len=32) :: boundary_condition = "periodic"
     logical :: chemistry_enabled = .true.
+    character(len=32) :: chemistry_model = "elementary"
     logical :: transport_enabled = .false.
     logical :: viscosity_enabled = .true.
     logical :: thermal_conduction_enabled = .true.
@@ -40,11 +41,15 @@ module simulation_config_reactive_1d_mod
     real(dp) :: x_o2 = 0.14784_dp
     real(dp) :: x_oh = 1.0e-5_dp
     real(dp) :: x_h2o = 0.0_dp
+    real(dp) :: x_ho2 = 0.0_dp
+    real(dp) :: x_h2o2 = 0.0_dp
+    real(dp) :: x_ar = 0.0_dp
     real(dp) :: x_n2 = 0.55643_dp
     character(len=256) :: output_file = "reactive_1d.csv"
   end type reactive_1d_config
 
   public :: read_reactive_1d_configuration
+  public :: reactive_1d_mole_fractions
 
 contains
 
@@ -62,8 +67,9 @@ contains
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
     real(dp) :: hotspot_temperature_rise
     real(dp) :: hotspot_center, hotspot_width
-    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2
+    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
+    character(len=32) :: chemistry_model
     character(len=32) :: boundary_condition
     character(len=256) :: output_file
     logical :: chemistry_enabled
@@ -75,7 +81,7 @@ contains
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
       reconstruction, riemann_solver, limiter, boundary_condition, &
-      chemistry_enabled, transport_enabled, viscosity_enabled, &
+      chemistry_enabled, chemistry_model, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, transport_cfl, ppm_contact_steepening, &
       ppm_shock_flattening, chemistry_relative_tolerance, &
@@ -83,7 +89,7 @@ contains
       initial_temperature, initial_pressure, initial_velocity, &
       density_wave_amplitude, composition_wave_amplitude, &
       hotspot_temperature_rise, hotspot_center, hotspot_width, x_h2, x_h, &
-      x_o, x_o2, x_oh, x_h2o, x_n2, output_file
+      x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, output_file
 
     config = reactive_1d_config()
     nx = config%nx
@@ -98,6 +104,7 @@ contains
     limiter = config%limiter
     boundary_condition = config%boundary_condition
     chemistry_enabled = config%chemistry_enabled
+    chemistry_model = config%chemistry_model
     transport_enabled = config%transport_enabled
     viscosity_enabled = config%viscosity_enabled
     thermal_conduction_enabled = config%thermal_conduction_enabled
@@ -122,6 +129,9 @@ contains
     x_o2 = config%x_o2
     x_oh = config%x_oh
     x_h2o = config%x_h2o
+    x_ho2 = config%x_ho2
+    x_h2o2 = config%x_h2o2
+    x_ar = config%x_ar
     x_n2 = config%x_n2
     output_file = config%output_file
 
@@ -141,7 +151,7 @@ contains
       return
     end if
 
-    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_n2
+    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + x_h2o2 + x_ar + x_n2
     ok = nx >= 8 .and. maximum_steps >= 1 .and. x_upper > x_lower .and. &
       final_time > 0.0_dp .and. cfl > 0.0_dp .and. cfl <= 0.9_dp .and. &
       initial_temperature > 0.0_dp .and. initial_pressure > 0.0_dp .and. &
@@ -151,10 +161,22 @@ contains
       chemistry_relative_tolerance > 0.0_dp .and. &
       transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
-      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
+      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
     if (.not. ok) then
       message = "Invalid reactive 1D configuration"
+      return
+    end if
+    if (trim(chemistry_model) /= "elementary" .and. &
+        trim(chemistry_model) /= "full_h2o2") then
+      ok = .false.
+      message = "Unknown reactive 1D chemistry model"
+      return
+    end if
+    if (trim(chemistry_model) == "elementary" .and. &
+        max(x_ho2, x_h2o2, x_ar) > 5.0e-14_dp) then
+      ok = .false.
+      message = "Elementary chemistry requires zero HO2/H2O2/AR mole fractions"
       return
     end if
     if (trim(problem) /= "entropy_wave" .and. &
@@ -215,6 +237,7 @@ contains
     config%limiter = trim(limiter)
     config%boundary_condition = trim(boundary_condition)
     config%chemistry_enabled = chemistry_enabled
+    config%chemistry_model = trim(chemistry_model)
     config%transport_enabled = transport_enabled
     config%viscosity_enabled = viscosity_enabled
     config%thermal_conduction_enabled = thermal_conduction_enabled
@@ -239,8 +262,37 @@ contains
     config%x_o2 = x_o2
     config%x_oh = x_oh
     config%x_h2o = x_h2o
+    config%x_ho2 = x_ho2
+    config%x_h2o2 = x_h2o2
+    config%x_ar = x_ar
     config%x_n2 = x_n2
     config%output_file = trim(output_file)
   end subroutine read_reactive_1d_configuration
+
+
+  subroutine reactive_1d_mole_fractions(config, nspecies, mole_fractions, ok)
+    type(reactive_1d_config), intent(in) :: config
+    integer, intent(in) :: nspecies
+    real(dp), intent(out) :: mole_fractions(:)
+    logical, intent(out) :: ok
+
+    ok = .false.
+    if (nspecies < 1 .or. size(mole_fractions) /= nspecies) return
+    select case (trim(config%chemistry_model))
+    case ("elementary")
+      if (nspecies /= 7) return
+      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+        config%x_oh, config%x_h2o, config%x_n2]
+    case ("full_h2o2")
+      if (nspecies /= 10) return
+      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+        config%x_oh, config%x_h2o, config%x_ho2, config%x_h2o2, &
+        config%x_ar, config%x_n2]
+    case default
+      return
+    end select
+    ok = minval(mole_fractions) >= 0.0_dp .and. &
+      abs(sum(mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+  end subroutine reactive_1d_mole_fractions
 
 end module simulation_config_reactive_1d_mod
