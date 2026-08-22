@@ -10,8 +10,10 @@ module reactive_2d_mod
   use transport_database_mod, only: gas_transport_species
   use reactive_transport_2d_mod, only: &
     reactive_transport_timestep_2d, advance_reactive_transport_2d
-  use constant_volume_reactor_mod, only: advance_constant_volume_adaptive
-  use simulation_config_reactive_2d_mod, only: reactive_2d_config
+  use constant_volume_reactor_mod, only: advance_constant_volume_adaptive, &
+    advance_constant_volume_implicit_adaptive
+  use simulation_config_reactive_2d_mod, only: &
+    reactive_2d_config, reactive_2d_mole_fractions
   use reactive_boundary_2d_mod, only: &
     reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
     build_reactive_boundary_set_2d, sample_reactive_primitive_2d, &
@@ -1198,7 +1200,7 @@ contains
     real(dp) :: elapsed, request, accepted, next_step, tolerance
     real(dp) :: checked_temperature, sound_speed
     logical :: local_ok
-    integer :: i, j, k, substeps, nspecies
+    integer :: i, j, k, substeps, nspecies, newton_iterations, rejected_attempts
 
     ok = .false.
     if (interval < 0.0_dp) return
@@ -1229,9 +1231,16 @@ contains
         do while (elapsed < interval - tolerance)
           if (substeps >= max_chemistry_substeps) return
           request = min(request, interval - elapsed)
-          call advance_constant_volume_adaptive( &
-            species, reactions, rho, target_energy, request, rtol, atol, &
-            mass_fractions, temperature(i, j), accepted, next_step, local_ok)
+          if (nspecies == 10) then
+            call advance_constant_volume_implicit_adaptive( &
+              species, reactions, rho, target_energy, request, rtol, atol, &
+              mass_fractions, temperature(i, j), accepted, next_step, &
+              newton_iterations, rejected_attempts, local_ok)
+          else
+            call advance_constant_volume_adaptive( &
+              species, reactions, rho, target_energy, request, rtol, atol, &
+              mass_fractions, temperature(i, j), accepted, next_step, local_ok)
+          end if
           if (.not. local_ok .or. accepted <= 0.0_dp) return
           elapsed = elapsed + accepted
           request = min(next_step, interval - elapsed)
@@ -1398,23 +1407,26 @@ contains
     real(dp), intent(out) :: density, mass_fractions(:)
     logical, intent(out) :: ok
 
-    real(dp) :: mole_fractions(7), phase, lx, ly
+    real(dp), allocatable :: mole_fractions(:)
+    real(dp) :: phase, lx, ly
+    logical :: local_ok
 
     density = 0.0_dp
     mass_fractions = 0.0_dp
     ok = .false.
-    if (size(species) /= 7 .or. size(mass_fractions) /= 7) return
+    if (size(species) < 1 .or. size(mass_fractions) /= size(species)) return
     lx = config%x_upper - config%x_lower
     ly = config%y_upper - config%y_lower
     if (lx <= 0.0_dp .or. ly <= 0.0_dp) return
     phase = sin(2.0_dp * pi * ( &
       (x - config%x_lower - config%initial_velocity_x * time) / lx + &
       (y - config%y_lower - config%initial_velocity_y * time) / ly))
-    mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
-      config%x_oh, config%x_h2o, config%x_n2]
+    allocate(mole_fractions(size(species)))
+    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
+    if (.not. local_ok) return
     mole_fractions(1) = mole_fractions(1) + &
       config%composition_wave_amplitude * phase
-    mole_fractions(7) = mole_fractions(7) - &
+    mole_fractions(size(species)) = mole_fractions(size(species)) - &
       config%composition_wave_amplitude * phase
     call mass_fractions_from_mole_fractions( &
       species, mole_fractions, mass_fractions, ok)
@@ -1442,7 +1454,7 @@ contains
     ok = .false.
     dx = (config%x_upper - config%x_lower) / real(config%nx, dp)
     dy = (config%y_upper - config%y_lower) / real(config%ny, dp)
-    if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. size(species) /= 7) return
+    if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. size(species) < 1) return
     nvar = reactive_nvar(size(species))
     nprimitive = reactive_nprim(size(species))
     allocate(state(nvar, config%nx, config%ny))
@@ -1450,8 +1462,8 @@ contains
     allocate(mole_fractions(size(species)), mass_fractions(size(species)))
     allocate(local_mass_fractions(size(species)))
     allocate(primitive(nprimitive))
-    mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
-      config%x_oh, config%x_h2o, config%x_n2]
+    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
+    if (.not. local_ok) return
     call mass_fractions_from_mole_fractions( &
       species, mole_fractions, mass_fractions, local_ok)
     if (.not. local_ok) return
@@ -1720,14 +1732,16 @@ contains
     integer :: unit, status, i, j, k
 
     ok = .false.
-    if (size(species) /= 7) return
     allocate(primitive(reactive_nprim(size(species))))
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       iostat=status)
     if (status /= 0) return
-    write(unit, '(a)') &
-      "time,x,y,rho,u,v,w,pressure,temperature,rhoE," // &
-      "Y_H2,Y_H,Y_O,Y_O2,Y_OH,Y_H2O,Y_N2"
+    write(unit, '(a)', advance='no') &
+      "time,x,y,rho,u,v,w,pressure,temperature,rhoE"
+    do k = 1, size(species)
+      write(unit, '(a)', advance='no') ",Y_" // trim(species(k)%name)
+    end do
+    write(unit, '(a)') ""
     do j = 1, config%ny
       y = config%y_lower + (real(j, dp) - 0.5_dp) * dy
       do i = 1, config%nx

@@ -22,6 +22,7 @@ module transport_database_mod
   public :: valid_gas_transport_species
   public :: compatible_transport_database
   public :: load_h2o2_elementary_transport
+  public :: load_h2o2_full_transport
 
 contains
 
@@ -80,6 +81,36 @@ contains
 
     ok = all_valid(transport)
   end subroutine load_h2o2_elementary_transport
+
+
+  subroutine load_h2o2_full_transport(transport, ok)
+    type(gas_transport_species), allocatable, intent(out) :: transport(:)
+    logical, intent(out) :: ok
+
+    ! Order matches load_h2o2_full_thermo and mechanisms/h2o2_full.json.
+    allocate(transport(10))
+    call set_record(transport(1), "H2", transport_geometry_linear, &
+      38.0_dp, 2.92_dp, 0.0_dp, 0.79_dp, 280.0_dp)
+    call set_record(transport(2), "H", transport_geometry_atom, &
+      145.0_dp, 2.05_dp, 0.0_dp, 0.0_dp, 0.0_dp)
+    call set_record(transport(3), "O", transport_geometry_atom, &
+      80.0_dp, 2.75_dp, 0.0_dp, 0.0_dp, 0.0_dp)
+    call set_record(transport(4), "O2", transport_geometry_linear, &
+      107.4_dp, 3.458_dp, 0.0_dp, 1.6_dp, 3.8_dp)
+    call set_record(transport(5), "OH", transport_geometry_linear, &
+      80.0_dp, 2.75_dp, 0.0_dp, 0.0_dp, 0.0_dp)
+    call set_record(transport(6), "H2O", transport_geometry_nonlinear, &
+      572.4_dp, 2.605_dp, 1.844_dp, 0.0_dp, 4.0_dp)
+    call set_record(transport(7), "HO2", transport_geometry_nonlinear, &
+      107.4_dp, 3.458_dp, 0.0_dp, 0.0_dp, 1.0_dp)
+    call set_record(transport(8), "H2O2", transport_geometry_nonlinear, &
+      107.4_dp, 3.458_dp, 0.0_dp, 0.0_dp, 3.8_dp)
+    call set_record(transport(9), "AR", transport_geometry_atom, &
+      136.5_dp, 3.33_dp, 0.0_dp, 0.0_dp, 0.0_dp)
+    call set_record(transport(10), "N2", transport_geometry_linear, &
+      97.53_dp, 3.621_dp, 0.0_dp, 1.76_dp, 4.0_dp)
+    ok = all_valid(transport)
+  end subroutine load_h2o2_full_transport
 
   subroutine set_record(record, name, geometry, well_depth, diameter, dipole, &
       polarizability, rotational_relaxation)

@@ -280,3 +280,7 @@ their conservative divergence independently of the CTU hydro operator.
 inflow, or outflow ghost states. Hydro and molecular transport use explicit
 lower/upper face arrays. Solid walls receive a pressure-only inviscid flux,
 mirrored velocity/temperature transport gradients, and zero species flux.
+
+## Full pressure-dependent H2/O2 chemistry
+
+The reactive applications dispatch either the seven-species elementary model or a ten-species, 29-reaction model. The full path reuses the variable-width conserved state and advances each cell with the implicit constant-volume reactor.

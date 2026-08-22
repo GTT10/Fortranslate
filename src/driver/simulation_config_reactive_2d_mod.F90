@@ -19,6 +19,7 @@ module simulation_config_reactive_2d_mod
     character(len=32) :: limiter = "mc"
     logical :: use_transverse_correction = .true.
     logical :: chemistry_enabled = .false.
+    character(len=32) :: chemistry_model = "elementary"
     logical :: transport_enabled = .false.
     logical :: viscosity_enabled = .true.
     logical :: thermal_conduction_enabled = .true.
@@ -65,11 +66,15 @@ module simulation_config_reactive_2d_mod
     real(dp) :: x_o2 = 0.14784_dp
     real(dp) :: x_oh = 1.0e-5_dp
     real(dp) :: x_h2o = 0.0_dp
+    real(dp) :: x_ho2 = 0.0_dp
+    real(dp) :: x_h2o2 = 0.0_dp
+    real(dp) :: x_ar = 0.0_dp
     real(dp) :: x_n2 = 0.55643_dp
     character(len=256) :: output_file = "reactive_2d.csv"
   end type reactive_2d_config
 
   public :: read_reactive_2d_configuration
+  public :: reactive_2d_mole_fractions
 
 contains
 
@@ -113,8 +118,9 @@ contains
     real(dp) :: vortex_center_x, vortex_center_y, vortex_radius
     real(dp) :: hotspot_temperature_rise, hotspot_center_x
     real(dp) :: hotspot_center_y, hotspot_width
-    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, mole_sum
+    real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, mole_sum
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
+    character(len=32) :: chemistry_model
     character(len=24) :: boundary_x_lower, boundary_x_upper
     character(len=24) :: boundary_y_lower, boundary_y_upper
     character(len=24) :: thermal_x_lower, thermal_x_upper
@@ -128,7 +134,7 @@ contains
     namelist /reactive_2d/ &
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
-      use_transverse_correction, chemistry_enabled, transport_enabled, &
+      use_transverse_correction, chemistry_enabled, chemistry_model, transport_enabled, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, transport_cfl, &
       boundary_x_lower, boundary_x_upper, boundary_y_lower, boundary_y_upper, &
@@ -144,7 +150,8 @@ contains
       composition_wave_amplitude, vortex_strength, &
       vortex_center_x, vortex_center_y, vortex_radius, &
       hotspot_temperature_rise, hotspot_center_x, hotspot_center_y, &
-      hotspot_width, x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2, output_file
+      hotspot_width, x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
+      x_ar, x_n2, output_file
 
     config = reactive_2d_config()
     nx = config%nx
@@ -162,6 +169,7 @@ contains
     limiter = config%limiter
     use_transverse_correction = config%use_transverse_correction
     chemistry_enabled = config%chemistry_enabled
+    chemistry_model = config%chemistry_model
     transport_enabled = config%transport_enabled
     viscosity_enabled = config%viscosity_enabled
     thermal_conduction_enabled = config%thermal_conduction_enabled
@@ -208,6 +216,9 @@ contains
     x_o2 = config%x_o2
     x_oh = config%x_oh
     x_h2o = config%x_h2o
+    x_ho2 = config%x_ho2
+    x_h2o2 = config%x_h2o2
+    x_ar = config%x_ar
     x_n2 = config%x_n2
     output_file = config%output_file
 
@@ -227,7 +238,7 @@ contains
       return
     end if
 
-    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_n2
+    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + x_h2o2 + x_ar + x_n2
     ok = nx >= 4 .and. ny >= 4 .and. maximum_steps >= 1 .and. &
       x_upper > x_lower .and. y_upper > y_lower .and. final_time > 0.0_dp .and. &
       cfl > 0.0_dp .and. cfl <= 0.8_dp .and. initial_temperature > 0.0_dp .and. &
@@ -239,10 +250,22 @@ contains
         wall_temperature_y_lower, wall_temperature_y_upper) > 0.0_dp .and. &
       transport_cfl <= 0.5_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
-      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_n2) >= 0.0_dp .and. &
+      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
     if (.not. ok) then
       message = "Invalid reactive 2D configuration"
+      return
+    end if
+    if (trim(chemistry_model) /= "elementary" .and. &
+        trim(chemistry_model) /= "full_h2o2") then
+      ok = .false.
+      message = "Unknown reactive 2D chemistry model"
+      return
+    end if
+    if (trim(chemistry_model) == "elementary" .and. &
+        max(x_ho2, x_h2o2, x_ar) > 5.0e-14_dp) then
+      ok = .false.
+      message = "Elementary chemistry requires zero HO2/H2O2/AR mole fractions"
       return
     end if
     if (transport_enabled .and. .not. (viscosity_enabled .or. &
@@ -323,6 +346,7 @@ contains
     config%limiter = trim(limiter)
     config%use_transverse_correction = use_transverse_correction
     config%chemistry_enabled = chemistry_enabled
+    config%chemistry_model = trim(chemistry_model)
     config%transport_enabled = transport_enabled
     config%viscosity_enabled = viscosity_enabled
     config%thermal_conduction_enabled = thermal_conduction_enabled
@@ -369,8 +393,37 @@ contains
     config%x_o2 = x_o2
     config%x_oh = x_oh
     config%x_h2o = x_h2o
+    config%x_ho2 = x_ho2
+    config%x_h2o2 = x_h2o2
+    config%x_ar = x_ar
     config%x_n2 = x_n2
     config%output_file = trim(output_file)
   end subroutine read_reactive_2d_configuration
+
+
+  subroutine reactive_2d_mole_fractions(config, nspecies, mole_fractions, ok)
+    type(reactive_2d_config), intent(in) :: config
+    integer, intent(in) :: nspecies
+    real(dp), intent(out) :: mole_fractions(:)
+    logical, intent(out) :: ok
+
+    ok = .false.
+    if (nspecies < 1 .or. size(mole_fractions) /= nspecies) return
+    select case (trim(config%chemistry_model))
+    case ("elementary")
+      if (nspecies /= 7) return
+      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+        config%x_oh, config%x_h2o, config%x_n2]
+    case ("full_h2o2")
+      if (nspecies /= 10) return
+      mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+        config%x_oh, config%x_h2o, config%x_ho2, config%x_h2o2, &
+        config%x_ar, config%x_n2]
+    case default
+      return
+    end select
+    ok = minval(mole_fractions) >= 0.0_dp .and. &
+      abs(sum(mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+  end subroutine reactive_2d_mole_fractions
 
 end module simulation_config_reactive_2d_mod
