@@ -1,0 +1,46 @@
+name: Export verified MPI foundation payload
+
+on:
+  push:
+    branches:
+      - agent/tmp-export-mpi-foundation-source
+
+permissions:
+  contents: write
+
+jobs:
+  export-payload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Archive verified target
+        shell: bash
+        run: |
+          git fetch origin agent/mpi-1d-foundation
+          rm -rf /tmp/mpi020-src /tmp/mpi020-payload
+          git worktree add --detach /tmp/mpi020-src origin/agent/mpi-1d-foundation
+          test -f /tmp/mpi020-src/docs/validation/0.19-remote-ci-complete.txt
+          test -f /tmp/mpi020-src/docs/validation/0.20-mpi-foundation-complete.txt
+          grep -q 'VERSION 0.20.0' /tmp/mpi020-src/CMakeLists.txt
+          git -C /tmp/mpi020-src archive --format=tar.gz --output=/tmp/mpi020-source.tar.gz HEAD
+          mkdir -p /tmp/mpi020-payload
+          base64 -w 0 /tmp/mpi020-source.tar.gz | split -b 90000 - /tmp/mpi020-payload/part-
+          git -C /tmp/mpi020-src rev-parse HEAD > /tmp/mpi020-payload/commit.txt
+          git -C /tmp/mpi020-src rev-parse HEAD^{tree} > /tmp/mpi020-payload/tree.txt
+          sha256sum /tmp/mpi020-source.tar.gz | awk '{print $1}' > /tmp/mpi020-payload/sha256.txt
+      - name: Commit payload to temporary branch
+        shell: bash
+        run: |
+          rm -rf tools/mpi020_export
+          mkdir -p tools/mpi020_export
+          cp /tmp/mpi020-payload/* tools/mpi020_export/
+          git add -- tools/mpi020_export
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Export verified MPI foundation payload'
+          git push origin HEAD:agent/tmp-export-mpi-foundation-source
