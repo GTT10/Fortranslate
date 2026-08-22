@@ -2,13 +2,14 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.19.0
+  VERSION 0.20.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
 
 option(PELEF_ENABLE_TESTS "Build PeleF tests" ON)
 option(PELEF_ENABLE_CANTERA_REFERENCE "Enable live Cantera parity tests" OFF)
+option(PELEF_ENABLE_MPI "Build MPI verification targets" OFF)
 
 set(CMAKE_Fortran_STANDARD 2018)
 set(CMAKE_Fortran_STANDARD_REQUIRED ON)
@@ -151,4 +152,22 @@ if(PELEF_ENABLE_TESTS)
   include(CTest)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+
+if(PELEF_ENABLE_MPI)
+  find_package(MPI REQUIRED COMPONENTS Fortran)
+  add_library(pelef_mpi_support src/parallel/mpi_domain_1d_mod.F90)
+  target_link_libraries(pelef_mpi_support PUBLIC pelef_core MPI::MPI_Fortran)
+  set_target_properties(pelef_mpi_support PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mpi_modules")
+  target_include_directories(pelef_mpi_support PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/mpi_modules>")
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(pelef_mpi_support PRIVATE -Wall -Wextra -Wpedantic -Wimplicit-interface -Wconversion-extra)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+      target_compile_options(pelef_mpi_support PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+    endif()
+  endif()
+  add_executable(pelef_mpi_1d app/pelef_mpi_1d.F90)
+  target_link_libraries(pelef_mpi_1d PRIVATE pelef_mpi_support)
+  install(TARGETS pelef_mpi_1d RUNTIME DESTINATION bin)
 endif()
