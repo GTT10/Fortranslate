@@ -1,0 +1,51 @@
+name: Audit full H2O2 CFD target
+
+on:
+  push:
+    branches: [agent/tmp-audit-full-h2o2-cfd]
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Check out target branch
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd
+          git switch --force-create target origin/agent/reactive-full-h2o2-cfd
+          grep -q 'VERSION 0.19.0' CMakeLists.txt
+          test -f src/generated/h2o2_full_mechanism_mod.F90
+          test -f src/physics/h2o2_full_thermo_mod.F90
+          test -f docs/validation/0.19-runtime-complete.txt
+      - name: Install Cantera
+        run: python3 -m pip install --break-system-packages cantera==3.2.0
+      - name: Release build and tests
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure -j 2
+      - name: Debug build and tests
+        run: |
+          cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          cmake --build build-debug --parallel 2
+          ctest --test-dir build-debug --output-on-failure -j 2
+      - name: Commit durable validation marker
+        run: |
+          rm -rf build-release build-debug
+          mkdir -p docs/validation
+          {
+            echo 'remote full-H2/O2 CFD validation passed'
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo 'release=passed'
+            echo 'debug=passed'
+            echo 'cantera=passed'
+          } > docs/validation/0.19-remote-ci-complete.txt
+          git add -- docs/validation/0.19-remote-ci-complete.txt
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m "Record verified full H2O2 CFD validation"
+          git push origin HEAD:agent/reactive-full-h2o2-cfd
