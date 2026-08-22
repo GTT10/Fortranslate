@@ -20,7 +20,7 @@ jobs:
           grep -q 'VERSION 0.19.0' CMakeLists.txt
           test -f src/generated/h2o2_full_mechanism_mod.F90
           test -f src/physics/h2o2_full_thermo_mod.F90
-          test -f docs/validation/0.19-runtime-complete.txt
+          test -f docs/validation/0.19.0.md
       - name: Install Cantera
         run: python3 -m pip install --break-system-packages cantera==3.2.0
       - name: Release build and tests
