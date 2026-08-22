@@ -71,21 +71,21 @@ jobs:
           Path("docs/validation/0.20.0.md").write_text(
               """# PeleF 0.20.0 validation record
 
-Base: verified PeleF 0.19.0 full pressure-dependent H2/O2 CFD.
+          Base: verified PeleF 0.19.0 full pressure-dependent H2/O2 CFD.
 
-## New subsystem
+          ## New subsystem
 
-- uneven contiguous one-dimensional MPI block decomposition;
-- nonblocking periodic left/right halo exchange through `mpi_f08`;
-- global minimum CFL and global conservation reductions;
-- ordered root gather through `MPI_Gatherv`;
-- arbitrary state width, including the 15-component full-reactive layout;
-- a 257-cell periodic entropy-wave driver for 1/2/4-rank parity.
+          - uneven contiguous one-dimensional MPI block decomposition;
+          - nonblocking periodic left/right halo exchange through `mpi_f08`;
+          - global minimum CFL and global conservation reductions;
+          - ordered root gather through `MPI_Gatherv`;
+          - arbitrary state width, including the 15-component full-reactive layout;
+          - a 257-cell periodic entropy-wave driver for 1/2/4-rank parity.
 
-This is an independently qualified MPI communication and Euler-update layer. The
-production general-EOS reactive hydro, molecular transport, and implicit chemistry
-operators remain serial in this milestone.
-""",
+          This is an independently qualified MPI communication and Euler-update layer. The
+          production general-EOS reactive hydro, molecular transport, and implicit chemistry
+          operators remain serial in this milestone.
+          """,
               encoding="utf-8",
           )
           with Path("README.md").open("a", encoding="utf-8") as handle:
@@ -114,53 +114,53 @@ operators remain serial in this milestone.
           workflow.write_text(
               """name: MPI CI
 
-on:
-  push:
-    branches:
-      - agent/mpi-1d-foundation
-  pull_request:
-    branches:
-      - agent/reactive-full-h2o2-cfd
+          on:
+          push:
+          branches:
+          - agent/mpi-1d-foundation
+          pull_request:
+          branches:
+          - agent/reactive-full-h2o2-cfd
 
-permissions:
-  contents: read
+          permissions:
+          contents: read
 
-jobs:
-  mpi-build-and-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        build_type: [Release, Debug]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install OpenMPI
-        run: |
+          jobs:
+          mpi-build-and-test:
+          strategy:
+          fail-fast: false
+          matrix:
+          build_type: [Release, Debug]
+          runs-on: ubuntu-24.04
+          timeout-minutes: 35
+          steps:
+          - uses: actions/checkout@v4
+          - name: Install OpenMPI
+          run: |
           sudo apt-get update
           sudo apt-get install -y openmpi-bin libopenmpi-dev
-      - name: Configure
-        run: >-
+          - name: Configure
+          run: >-
           cmake -S . -B build-mpi
           -DCMAKE_BUILD_TYPE=__MATRIX_BUILD_TYPE__
           -DPELEF_ENABLE_TESTS=ON
           -DPELEF_ENABLE_MPI=ON
-      - name: Build
-        run: cmake --build build-mpi --parallel 2
-      - name: Halo exchange gates
-        run: |
+          - name: Build
+          run: cmake --build build-mpi --parallel 2
+          - name: Halo exchange gates
+          run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d --halo-test
-      - name: Rank-count field parity
-        run: |
+          - name: Rank-count field parity
+          run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d mpi_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d mpi_np4.csv
           python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv
-      - name: Preserve serial regressions
-        run: ctest --test-dir build-mpi --output-on-failure -j 2
-""".replace("__MATRIX_BUILD_TYPE__", "$" + "{{ matrix.build_type }}"),
+          - name: Preserve serial regressions
+          run: ctest --test-dir build-mpi --output-on-failure -j 2
+          """.replace("__MATRIX_BUILD_TYPE__", "$" + "{{ matrix.build_type }}"),
               encoding="utf-8",
           )
           PY
