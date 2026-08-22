@@ -1,0 +1,143 @@
+name: Finalize verified PeleF 0.19-0.21 stack
+
+on:
+  push:
+    branches:
+      - agent/tmp-finalize-019-021
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify branches and create or update stacked draft PRs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          mkdir -p /tmp/pelef-finalize
+          cat > /tmp/pelef-finalize/summary.md <<'EOF'
+          # PeleF 0.19-0.21 finalization
+
+          EOF
+          cat > /tmp/pelef-finalize/summary.json <<'EOF'
+          {"milestones":[]}
+          EOF
+
+          ready_count=0
+          finalize_one() {
+            version="$1"
+            head="$2"
+            base="$3"
+            marker="$4"
+            title="$5"
+            body_file="/tmp/pelef-finalize/body-${version}.md"
+
+            if ! git show-ref --verify --quiet "refs/remotes/origin/${head}"; then
+              echo "- ${version}: branch missing" >> /tmp/pelef-finalize/summary.md
+              return 0
+            fi
+            sha=$(git rev-parse "origin/${head}")
+            tree=$(git show -s --format=%T "$sha")
+            if ! git cat-file -e "${sha}:${marker}" 2>/dev/null; then
+              echo "- ${version}: validation marker missing at ${sha}" >> /tmp/pelef-finalize/summary.md
+              return 0
+            fi
+            if ! git show "${sha}:CMakeLists.txt" | grep -q "VERSION ${version}"; then
+              echo "- ${version}: version mismatch at ${sha}" >> /tmp/pelef-finalize/summary.md
+              return 0
+            fi
+
+            run_json=$(gh run list --repo GTT10/Fortranslate --branch "$head" --status success \
+              --limit 50 --json databaseId,headSha,name,conclusion,url,createdAt)
+            run_id=$(echo "$run_json" | jq -r --arg sha "$sha" \
+              '[.[] | select(.headSha == $sha and .conclusion == "success")][0].databaseId // empty')
+            run_url=$(echo "$run_json" | jq -r --arg sha "$sha" \
+              '[.[] | select(.headSha == $sha and .conclusion == "success")][0].url // empty')
+            if [ -z "$run_id" ]; then
+              echo "- ${version}: no successful Actions run on head ${sha}" >> /tmp/pelef-finalize/summary.md
+              return 0
+            fi
+
+            cat > "$body_file" <<EOF
+          ## Summary
+
+          Verified stacked milestone `${version}`.
+
+          - base: `${base}`
+          - head: `${head}`
+          - commit: `${sha}`
+          - tree: `${tree}`
+          - durable validation marker: `${marker}`
+          - successful GitHub Actions run: `${run_id}`
+
+          The branch is promoted only after the version, marker, head SHA, and successful Actions run all agree. Detailed implementation and numerical gates are recorded in the branch documentation and validation marker.
+          EOF
+
+            pr_number=$(gh pr list --repo GTT10/Fortranslate --state all --head "$head" \
+              --json number,state --jq 'sort_by(.number) | last | .number // empty')
+            if [ -z "$pr_number" ]; then
+              pr_url=$(gh pr create --repo GTT10/Fortranslate --draft \
+                --head "$head" --base "$base" --title "$title" --body-file "$body_file")
+              pr_number=${pr_url##*/}
+            else
+              state=$(gh pr view "$pr_number" --repo GTT10/Fortranslate --json state --jq .state)
+              if [ "$state" = "CLOSED" ]; then
+                gh pr reopen "$pr_number" --repo GTT10/Fortranslate
+              fi
+              gh pr edit "$pr_number" --repo GTT10/Fortranslate --base "$base" \
+                --title "$title" --body-file "$body_file"
+            fi
+            gh pr comment "$pr_number" --repo GTT10/Fortranslate --body \
+              "Final guard: commit \`${sha}\`, tree \`${tree}\`, marker \`${marker}\`, successful Actions run ${run_url}."
+            echo "- ${version}: PR #${pr_number}, commit ${sha}, tree ${tree}, run ${run_id}" \
+              >> /tmp/pelef-finalize/summary.md
+            ready_count=$((ready_count + 1))
+          }
+
+          finalize_one "0.19.0" "agent/reactive-full-h2o2-cfd" \
+            "agent/reactive-physical-boundaries" \
+            "docs/validation/0.19-remote-ci-complete.txt" \
+            "Integrate pressure-dependent full H2O2 chemistry into reactive CFD"
+          finalize_one "0.20.0" "agent/mpi-1d-foundation" \
+            "agent/reactive-full-h2o2-cfd" \
+            "docs/validation/0.20-mpi-foundation-complete.txt" \
+            "Add MPI 1D domain-decomposition foundation"
+          finalize_one "0.21.0" "agent/mpi-multispecies-hydro" \
+            "agent/mpi-1d-foundation" \
+            "docs/validation/0.21-mpi-multispecies-hydro-complete.txt" \
+            "Add non-replicated MPI multispecies hydro"
+
+          echo "" >> /tmp/pelef-finalize/summary.md
+          echo "ready_count=${ready_count}" >> /tmp/pelef-finalize/summary.md
+          echo "${ready_count}" > /tmp/pelef-finalize/ready-count.txt
+
+          if [ "$ready_count" -eq 3 ]; then
+            for branch in \
+              agent/tmp-integrate-full-h2o2-cfd-v2 \
+              agent/tmp-integrate-full-h2o2-runtime-v2 \
+              agent/tmp-integrate-full-h2o2-runtime-v4 \
+              agent/tmp-integrate-full-h2o2-runtime-v5 \
+              agent/tmp-integrate-full-h2o2-all \
+              agent/tmp-audit-full-h2o2-cfd \
+              agent/tmp-build-mpi-foundation \
+              agent/tmp-export-mpi-foundation-source \
+              agent/tmp-build-mpi-multispecies-hydro; do
+              git push origin --delete "$branch" 2>/dev/null || true
+            done
+          fi
+      - name: Upload finalization audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: pelef-0.19-0.21-finalization-audit
+          path: /tmp/pelef-finalize/
+          retention-days: 7
