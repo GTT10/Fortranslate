@@ -1,0 +1,63 @@
+name: Build MPI 1D foundation
+
+on:
+  push:
+    branches: [agent/tmp-build-mpi-foundation]
+
+permissions:
+  contents: write
+
+jobs:
+  mpi-foundation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Start from remotely verified full-H2O2 branch
+        run: |
+          git fetch origin agent/reactive-full-h2o2-cfd agent/tmp-build-mpi-foundation
+          git switch --force-create work origin/agent/reactive-full-h2o2-cfd
+          test -f docs/validation/0.19-runtime-complete.txt
+          test -f docs/validation/0.19-remote-ci-complete.txt
+          git show origin/agent/tmp-build-mpi-foundation:tools/build_mpi_foundation.py > /tmp/build_mpi.py
+      - name: Add MPI support layer
+        run: python3 /tmp/build_mpi.py
+      - name: Install OpenMPI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openmpi-bin libopenmpi-dev
+      - name: Release build
+        run: |
+          cmake -S . -B build-mpi -DCMAKE_BUILD_TYPE=Release -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_MPI=ON
+          cmake --build build-mpi --parallel 2
+      - name: 15-component halo gates
+        run: |
+          mpiexec -n 1 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec -n 2 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec -n 4 ./build-mpi/pelef_mpi_1d --halo-test
+      - name: Rank-count field parity
+        run: |
+          mpiexec -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
+          mpiexec -n 2 ./build-mpi/pelef_mpi_1d mpi_np2.csv
+          mpiexec -n 4 ./build-mpi/pelef_mpi_1d mpi_np4.csv
+          python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv
+      - name: Preserve serial regressions
+        run: ctest --test-dir build-mpi --output-on-failure -j 2
+      - name: Debug MPI gates
+        run: |
+          cmake -S . -B build-mpi-debug -DCMAKE_BUILD_TYPE=Debug -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_MPI=ON
+          cmake --build build-mpi-debug --parallel 2
+          mpiexec -n 1 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec -n 2 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec -n 4 ./build-mpi-debug/pelef_mpi_1d --halo-test
+          mpiexec -n 1 ./build-mpi-debug/pelef_mpi_1d debug_np1.csv
+          mpiexec -n 4 ./build-mpi-debug/pelef_mpi_1d debug_np4.csv
+          python3 tools/compare_mpi_entropy.py debug_np1.csv debug_np4.csv
+      - name: Publish verified MPI foundation
+        run: |
+          rm -rf build-mpi build-mpi-debug *.csv
+          git add -- CMakeLists.txt app cases src tools docs
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git commit -m "Add MPI 1D domain decomposition foundation"
+          git push origin HEAD:agent/mpi-1d-foundation
