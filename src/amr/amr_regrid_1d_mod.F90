@@ -1,8 +1,13 @@
 module amr_regrid_1d_mod
   use precision_mod, only: dp
   use amr_hierarchy_1d_mod, only: &
-    amr_two_level_hierarchy_1d, initialize_two_level_hierarchy_1d, &
-    prolong_conservative_1d, average_down_1d
+    amr_two_level_hierarchy_1d, amr_level_field_1d, &
+    initialize_two_level_hierarchy_1d, prolong_conservative_1d, &
+    average_down_1d
+  use amr_multipatch_1d_mod, only: &
+    amr_patch_set_1d, initialize_patch_set_1d, &
+    prolong_patch_set_1d, average_down_patch_set_1d, &
+    patch_fields_are_valid_1d
   implicit none
   private
 
@@ -45,6 +50,7 @@ module amr_regrid_1d_mod
   public :: plan_gradient_regrid_1d
   public :: plan_gradient_regrid_collection_1d
   public :: regrid_two_level_state_1d
+  public :: regrid_patch_set_state_1d
 
 contains
 
@@ -349,6 +355,106 @@ contains
     ok = plan%is_valid() .and. plan%patch_upper - plan%patch_lower + 1 >= &
       minimum_patch_cells
   end subroutine initialize_cluster_plan
+
+  subroutine regrid_patch_set_state_1d( &
+      coarse, old_patch_set, old_fine_fields, collection, &
+      refinement_ratio, x_lower, x_upper, &
+      new_patch_set, new_fine_fields, ok, coarse_level)
+    real(dp), intent(inout) :: coarse(:, :)
+    type(amr_patch_set_1d), intent(in) :: old_patch_set
+    type(amr_level_field_1d), intent(in) :: old_fine_fields(:)
+    type(amr_regrid_plan_collection_1d), intent(in) :: collection
+    integer, intent(in) :: refinement_ratio
+    real(dp), intent(in) :: x_lower, x_upper
+    type(amr_patch_set_1d), intent(out) :: new_patch_set
+    type(amr_level_field_1d), allocatable, intent(out) :: new_fine_fields(:)
+    logical, intent(out) :: ok
+    integer, intent(in), optional :: coarse_level
+
+    real(dp), allocatable :: coarse_backup(:, :)
+    real(dp) :: domain_tolerance
+    integer, allocatable :: patch_lower(:), patch_upper(:)
+    integer :: parent_level, old_patch, new_patch
+    integer :: overlap_lower, overlap_upper
+    integer :: old_first, old_last, new_first, new_last
+    logical :: retain_overlap
+
+    parent_level = old_patch_set%coarse_level
+    if (present(coarse_level)) parent_level = coarse_level
+    ok = collection%is_valid() .and. old_patch_set%is_valid() .and. &
+      collection%coarse_cells == size(coarse, 2) .and. &
+      old_patch_set%coarse_cells == size(coarse, 2) .and. &
+      size(coarse, 1) >= 1 .and. &
+      patch_fields_are_valid_1d( &
+        old_fine_fields, old_patch_set, size(coarse, 1))
+    if (.not. ok) return
+
+    coarse_backup = coarse
+    call average_down_patch_set_1d( &
+      old_fine_fields, old_patch_set, coarse, ok)
+    if (.not. ok) then
+      coarse = coarse_backup
+      return
+    end if
+
+    allocate(patch_lower(collection%patch_count()))
+    allocate(patch_upper(collection%patch_count()))
+    do new_patch = 1, collection%patch_count()
+      patch_lower(new_patch) = collection%plans(new_patch)%patch_lower
+      patch_upper(new_patch) = collection%plans(new_patch)%patch_upper
+    end do
+    call initialize_patch_set_1d( &
+      size(coarse, 2), patch_lower, patch_upper, refinement_ratio, &
+      x_lower, x_upper, new_patch_set, ok, parent_level)
+    if (.not. ok) then
+      coarse = coarse_backup
+      return
+    end if
+    call prolong_patch_set_1d( &
+      coarse, new_patch_set, new_fine_fields, ok)
+    if (.not. ok) then
+      coarse = coarse_backup
+      return
+    end if
+
+    domain_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(x_lower), abs(x_upper))
+    retain_overlap = &
+      old_patch_set%refinement_ratio == refinement_ratio .and. &
+      old_patch_set%coarse_level == parent_level .and. &
+      abs(old_patch_set%x_lower - x_lower) <= domain_tolerance .and. &
+      abs(old_patch_set%x_upper - x_upper) <= domain_tolerance
+    if (retain_overlap) then
+      do new_patch = 1, new_patch_set%patch_count()
+        do old_patch = 1, old_patch_set%patch_count()
+          overlap_lower = max( &
+            new_patch_set%patches(new_patch)%fine_coarse_lower, &
+            old_patch_set%patches(old_patch)%fine_coarse_lower)
+          overlap_upper = min( &
+            new_patch_set%patches(new_patch)%fine_coarse_upper, &
+            old_patch_set%patches(old_patch)%fine_coarse_upper)
+          if (overlap_lower > overlap_upper) cycle
+          old_first = (overlap_lower - &
+            old_patch_set%patches(old_patch)%fine_coarse_lower) * &
+            refinement_ratio + 1
+          old_last = (overlap_upper - &
+            old_patch_set%patches(old_patch)%fine_coarse_lower + 1) * &
+            refinement_ratio
+          new_first = (overlap_lower - &
+            new_patch_set%patches(new_patch)%fine_coarse_lower) * &
+            refinement_ratio + 1
+          new_last = (overlap_upper - &
+            new_patch_set%patches(new_patch)%fine_coarse_lower + 1) * &
+            refinement_ratio
+          new_fine_fields(new_patch)%values(:, new_first:new_last) = &
+            old_fine_fields(old_patch)%values(:, old_first:old_last)
+        end do
+      end do
+    end if
+    ok = patch_fields_are_valid_1d( &
+      new_fine_fields, new_patch_set, size(coarse, 1))
+    if (.not. ok) coarse = coarse_backup
+  end subroutine regrid_patch_set_state_1d
 
   subroutine regrid_two_level_state_1d( &
       coarse, old_hierarchy, old_fine, plan, refinement_ratio, &

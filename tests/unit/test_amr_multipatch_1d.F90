@@ -8,6 +8,9 @@ program test_amr_multipatch_1d
     prolong_patch_set_1d, average_down_patch_set_1d, &
     initialize_patch_flux_registers_1d, synchronize_patch_set_1d, &
     composite_integral_patch_set_1d
+  use amr_regrid_1d_mod, only: &
+    amr_regrid_plan_collection_1d, build_regrid_plan_collection_1d, &
+    regrid_patch_set_state_1d
   implicit none
 
   integer, parameter :: variable_count = 2
@@ -19,9 +22,14 @@ program test_amr_multipatch_1d
   integer :: adjacent_lower(patch_count), adjacent_upper(patch_count)
   integer, allocatable :: empty(:)
   type(amr_patch_set_1d) :: patch_set, invalid_set, empty_set
+  type(amr_patch_set_1d) :: old_set, new_set, removed_set
+  type(amr_regrid_plan_collection_1d) :: plan_collection
   type(amr_level_field_1d), allocatable :: fine_fields(:)
   type(amr_level_field_1d), allocatable :: flux_fields(:)
   type(amr_level_field_1d), allocatable :: empty_fields(:)
+  type(amr_level_field_1d), allocatable :: old_fields(:)
+  type(amr_level_field_1d), allocatable :: new_fields(:)
+  type(amr_level_field_1d), allocatable :: removed_fields(:)
   type(amr_flux_register_1d), allocatable :: registers(:)
   real(dp) :: coarse(variable_count, coarse_cells)
   real(dp) :: averaged(variable_count, coarse_cells)
@@ -30,10 +38,14 @@ program test_amr_multipatch_1d
   real(dp) :: root_integral(variable_count)
   real(dp) :: composite_before(variable_count)
   real(dp) :: composite_after(variable_count)
+  real(dp) :: regrid_before(variable_count), regrid_after(variable_count)
+  real(dp) :: expected_overlap_one(variable_count, 2)
+  real(dp) :: expected_overlap_two(variable_count, 4)
   real(dp) :: coarse_left(variable_count), coarse_right(variable_count)
   real(dp) :: fine_left(variable_count), fine_right(variable_count)
   real(dp) :: fine_density(variable_count), dt, x
   logical :: ok
+  logical :: regrid_tags(coarse_cells)
   integer :: cell, child_patch
 
   patch_lower = [1, 9]
@@ -183,6 +195,82 @@ program test_amr_multipatch_1d
   call assert_true(ok, "empty patch composite integral")
   call assert_close(maxval(abs(composite_after - root_integral)), &
     0.0_dp, tolerance, "empty patch retains root integral")
+
+  patch_lower = [2, 9]
+  patch_upper = [4, 11]
+  call initialize_patch_set_1d( &
+    coarse_cells, patch_lower, patch_upper, ratio, 0.0_dp, 1.0_dp, &
+    old_set, ok)
+  call assert_true(ok, "old multipatch regrid hierarchy")
+  call prolong_patch_set_1d(coarse, old_set, old_fields, ok)
+  call assert_true(ok, "old multipatch regrid fields")
+  old_fields(1)%values(1, 1:2) = &
+    old_fields(1)%values(1, 1:2) + [0.4_dp, -0.4_dp]
+  old_fields(1)%values(1, 5:6) = &
+    old_fields(1)%values(1, 5:6) + [0.3_dp, -0.3_dp]
+  old_fields(2)%values(1, 1:2) = &
+    old_fields(2)%values(1, 1:2) + [0.2_dp, -0.2_dp]
+  old_fields(2)%values(2, 3:4) = &
+    old_fields(2)%values(2, 3:4) + [0.5_dp, -0.5_dp]
+  expected_overlap_one = old_fields(1)%values(:, 5:6)
+  expected_overlap_two = old_fields(2)%values(:, 1:4)
+  call composite_integral_patch_set_1d( &
+    coarse, old_fields, old_set, regrid_before, ok)
+  call assert_true(ok, "old multipatch regrid integral")
+
+  regrid_tags = .false.
+  regrid_tags(4:6) = .true.
+  regrid_tags(8:10) = .true.
+  call build_regrid_plan_collection_1d( &
+    regrid_tags, 0, 1, 0, plan_collection, ok)
+  call assert_true(ok .and. plan_collection%patch_count() == 2, &
+    "shifted multipatch regrid plan")
+  call regrid_patch_set_state_1d( &
+    coarse, old_set, old_fields, plan_collection, ratio, &
+    0.0_dp, 1.0_dp, new_set, new_fields, ok)
+  call assert_true(ok, "multipatch state regrid")
+  call assert_true( &
+    new_set%patches(1)%fine_coarse_lower == 4 .and. &
+    new_set%patches(1)%fine_coarse_upper == 6 .and. &
+    new_set%patches(2)%fine_coarse_lower == 8 .and. &
+    new_set%patches(2)%fine_coarse_upper == 10, &
+    "shifted multipatch hierarchy bounds")
+  call assert_close(maxval(abs( &
+    new_fields(1)%values(:, 1:2) - expected_overlap_one)), &
+    0.0_dp, tolerance, "first exact fine overlap retained")
+  call assert_close(maxval(abs( &
+    new_fields(2)%values(:, 3:6) - expected_overlap_two)), &
+    0.0_dp, tolerance, "second exact fine overlap retained")
+  call composite_integral_patch_set_1d( &
+    coarse, new_fields, new_set, regrid_after, ok)
+  call assert_true(ok, "new multipatch regrid integral")
+  call assert_close(maxval(abs(regrid_after - regrid_before)), &
+    0.0_dp, tolerance, "multipatch regrid conservation")
+  do child_patch = 1, patch_count
+    call restrict_average_1d( &
+      new_fields(child_patch)%values, new_set%patches(child_patch), &
+      restricted, ok)
+    call assert_true(ok, "new patch restriction")
+    call assert_close(maxval(abs(restricted - coarse(:, &
+      new_set%patches(child_patch)%fine_coarse_lower: &
+      new_set%patches(child_patch)%fine_coarse_upper))), &
+      0.0_dp, tolerance, "new patch coarse-average identity")
+  end do
+
+  regrid_tags = .false.
+  call build_regrid_plan_collection_1d( &
+    regrid_tags, 0, 1, 0, plan_collection, ok)
+  call assert_true(ok, "empty multipatch removal plan")
+  call regrid_patch_set_state_1d( &
+    coarse, new_set, new_fields, plan_collection, ratio, &
+    0.0_dp, 1.0_dp, removed_set, removed_fields, ok)
+  call assert_true(ok .and. removed_set%patch_count() == 0 .and. &
+    size(removed_fields) == 0, "multipatch refinement removal")
+  call composite_integral_patch_set_1d( &
+    coarse, removed_fields, removed_set, regrid_after, ok)
+  call assert_true(ok, "removed multipatch integral")
+  call assert_close(maxval(abs(regrid_after - regrid_before)), &
+    0.0_dp, tolerance, "multipatch removal conservation")
 
   write(*, '(a)') "test_amr_multipatch_1d: PASS"
 

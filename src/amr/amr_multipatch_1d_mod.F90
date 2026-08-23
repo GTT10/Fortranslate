@@ -33,6 +33,7 @@ module amr_multipatch_1d_mod
   public :: reflux_patch_set_1d
   public :: synchronize_patch_set_1d
   public :: composite_integral_patch_set_1d
+  public :: patch_fields_are_valid_1d
 
 contains
 
@@ -192,7 +193,8 @@ contains
         return
       end if
     end do
-    ok = valid_patch_fields(fine_fields, patch_set, variable_count)
+    ok = patch_fields_are_valid_1d( &
+      fine_fields, patch_set, variable_count)
   end subroutine prolong_patch_set_1d
 
   subroutine average_down_patch_set_1d( &
@@ -208,7 +210,7 @@ contains
 
     ok = size(coarse, 1) >= 1 .and. &
       size(coarse, 2) == patch_set%coarse_cells .and. &
-      valid_patch_fields(fine_fields, patch_set, size(coarse, 1))
+      patch_fields_are_valid_1d(fine_fields, patch_set, size(coarse, 1))
     if (.not. ok) return
     coarse_backup = coarse
     do patch = 1, size(fine_fields)
@@ -289,7 +291,8 @@ contains
     real(dp), allocatable :: coarse_backup(:, :)
     type(amr_flux_register_1d), allocatable :: register_backup(:)
 
-    ok = valid_patch_fields(fine_fields, patch_set, size(coarse, 1))
+    ok = patch_fields_are_valid_1d( &
+      fine_fields, patch_set, size(coarse, 1))
     if (.not. ok) return
     coarse_backup = coarse
     register_backup = registers
@@ -320,7 +323,7 @@ contains
     ok = size(coarse, 1) >= 1 .and. &
       size(coarse, 2) == patch_set%coarse_cells .and. &
       size(integral) == size(coarse, 1) .and. &
-      valid_patch_fields(fine_fields, patch_set, size(coarse, 1))
+      patch_fields_are_valid_1d(fine_fields, patch_set, size(coarse, 1))
     if (.not. ok) return
 
     do component = 1, size(integral)
@@ -337,7 +340,7 @@ contains
     ok = .true.
   end subroutine composite_integral_patch_set_1d
 
-  pure logical function valid_patch_fields( &
+  pure logical function patch_fields_are_valid_1d( &
       fine_fields, patch_set, variable_count) result(valid)
     type(amr_level_field_1d), intent(in) :: fine_fields(:)
     type(amr_patch_set_1d), intent(in) :: patch_set
@@ -356,6 +359,6 @@ contains
           patch_set%patches(patch)%fine%cell_count()
       if (.not. valid) return
     end do
-  end function valid_patch_fields
+  end function patch_fields_are_valid_1d
 
 end module amr_multipatch_1d_mod
