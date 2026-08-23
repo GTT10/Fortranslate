@@ -539,6 +539,19 @@ remain separate.
 
 The qualified path holds the midpoint parent ghost interpolation fixed through
 the three SSPRK stages of one fine substep. It retains one interior parent cell
-beyond the four-layer footprint for limited spatial interpolation. WENO,
-physical-boundary refinement, multiple patches, and distributed patch ownership
-remain separate.
+beyond the four-layer footprint for limited spatial interpolation.
+
+## Multilevel reactive AMR hybrid WENO5 (`0.35.0`)
+
+- [x] PeleC-style five-point WENO5-JS edge reconstruction
+- [x] PeleC-style five-point WENO5-Z edge reconstruction
+- [x] exact constant/linear reproduction and fixed formula-parity points
+- [x] optional hybrid replacement inside characteristic PPM
+- [x] four-layer physical and coarse/fine ghost reuse at every level
+- [x] recursive SSPRK3 advancement and effective-flux reflux reuse
+- [x] three-level JS/Z conservation, synchronization, positivity, and closure
+- [x] runnable dynamic three-level WENO5-Z hotspot case
+
+This is a one-dimensional multilevel reactive qualification. WENO3-Z,
+WENO7-Z, regular-grid two-dimensional WENO, physical-boundary refinement,
+multiple patches, and distributed patch ownership remain separate.

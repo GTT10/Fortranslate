@@ -34,12 +34,12 @@ This table maps responsibilities, not source lines.
 | third-body/falloff chemistry | `elementary_kinetics_mod`, `h2o2_full_mechanism_mod` | Third-body efficiencies, pressure falloff, and Troe verified |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
 | `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod`, `reactive_2d_mod` characteristic PPM paths | Five-point reconstruction and `u-c/u/u+c` profile integration verified in 1D and as x/y normal predictors before 2D CTU correction |
-| `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
+| `Source/WENO.H` | `reconstruction_weno_mod`, multilevel `reactive_1d_mod` path | Five-point JS and Z nonlinear weights implemented as optional characteristic-PPM edge reconstruction; fixed formula-parity points and three-level AMR gates verified; WENO3-Z/WENO7-Z remain future work |
 | PelePhysics `Source/Transport/Simple.H` | `transport_database_mod`, `mixture_transport_mod`, `pelef_transport_probe` | Qualified dilute ideal-gas subset: Chapman--Enskog/Wilke/Mathur/mixture-averaged diffusion |
 | PeleC `Source/Diffterm.H`, `Source/Diffusion.cpp` | `reactive_diffusive_flux_x`, `advance_reactive_transport` | Periodic 1D viscous, conductive, barodiffusive, correction-velocity, and enthalpy-flux subset verified |
 | `Source/Diffusion.*` multidimensional/AMR/EB responsibility | `reactive_transport_2d_mod` for regular 2D cells and `amr_reactive_1d_mod` for two-level 1D; future EB modules | Regular-grid 2D and conservative two-level 1D AMR transport verified; EB not started |
 | AMReX distributed-box responsibility | `mpi_domain_1d_mod`, `mpi_reactive_transport_1d_mod`, `mpi_reactive_1d_mod` | Uneven 1D blocks, halos, reductions, gather, transport, chemistry, and reactive splitting verified for 1/2/4/8 ranks |
-| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod`, `amr_multilevel_reactive_1d_mod` | Runnable tag-driven arbitrary-depth nested hierarchy with recursive PCM/limited-PLM/characteristic-PPM reactive hydro, chemistry, molecular transport, conservative periodic rebuilds, aligned fine-overlap retention, and composite output; multiple patches, MPI ownership, and WENO remain pending |
+| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod`, `amr_multilevel_reactive_1d_mod` | Runnable tag-driven arbitrary-depth nested hierarchy with recursive PCM/limited-PLM/characteristic-PPM and hybrid-WENO5 reactive hydro, chemistry, molecular transport, conservative periodic rebuilds, aligned fine-overlap retention, and composite output; multiple patches and MPI ownership remain pending |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |

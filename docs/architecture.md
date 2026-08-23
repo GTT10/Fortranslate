@@ -273,6 +273,14 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
   five-point parabolic reconstruction and `u-c`, `u`, `u+c` profile
   integration.
 
+For multilevel AMR, `characteristic_ppm` can additionally enable the hybrid
+WENO switch. `reconstruction_weno_mod` then replaces the five-point PPM edge
+formula with the selected WENO5-JS or WENO5-Z nonlinear edge reconstruction;
+the existing parabolic profile integration, frozen-composition characteristic
+projection, SSPRK3 advancement, coarse-time ghost interpolation, and reflux
+remain unchanged. Keeping WENO as an edge-reconstruction policy rather than a
+fifth top-level hydro method follows the corresponding PeleC PPM control flow.
+
 The characteristic PPM path carries species and transverse velocities on the
 middle wave, projects density/normal velocity/pressure over the frozen mixture
 acoustic basis, and converts the final face state through the NASA7 EOS. Its
@@ -391,8 +399,8 @@ Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
 Multiple patches, transfer between changed refinement ratios,
-physical-boundary refinement, MPI patch ownership, and WENO coarse/fine
-coupling remain separate.
+physical-boundary refinement, MPI patch ownership, and the WENO3-Z/WENO7-Z
+variants remain separate.
 
 ## Reactive AMR time advancement
 

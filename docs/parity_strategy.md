@@ -454,3 +454,18 @@ The high-order coarse/fine path is accepted only while:
 - the public AMR executable accepts characteristic PPM, produces three ordered
   levels, covers the domain within `3e-13`, and emits only finite positive
   states.
+
+## 0.35.0 multilevel hybrid-WENO5 gates
+
+The WENO slice is accepted only while:
+
+- WENO5-JS and WENO5-Z reproduce constants and linear profiles to roundoff;
+- both kernels match fixed nonsymmetric parity points evaluated from PeleC
+  `Source/WENO.H` within `3e-14`;
+- both schemes advance the fixed three-level reactive hierarchy for two steps;
+- composite conservation remains within `3e-10`, covered parent/child states
+  synchronize within `5e-13`, temperature remains positive, and species close
+  within `3e-10`;
+- the public WENO5-Z hotspot case dynamically produces three ordered levels,
+  exact composite coverage within `3e-13`, and finite positive states in both
+  Debug and Release CI builds.
