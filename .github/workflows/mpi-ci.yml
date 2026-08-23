@@ -63,5 +63,11 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np4.csv
           python3 tools/compare_mpi_reactive_transport.py mpi_transport_np1.csv mpi_transport_np2.csv mpi_transport_np4.csv
+      - name: Coupled general-EOS reactive rank-count parity
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
+          python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_reactive_np2.csv mpi_reactive_np4.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2
