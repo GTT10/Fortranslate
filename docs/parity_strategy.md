@@ -382,3 +382,24 @@ The multilevel hierarchy foundation is accepted only while:
   roundoff at all three interfaces;
 - the arbitrary-depth composite integral is invariant under prolongation,
   restriction, and synchronization.
+
+## 0.31.0 arbitrary-depth reactive AMR gates
+
+The static multilevel reactive engine is accepted only while:
+
+- state and temperature storage is runtime-sized and valid on every level;
+- a global root step respects hydro limits from every level after cumulative
+  `r` scaling and transport limits after cumulative `r^2` scaling;
+- hydro recursively advances each child `r` times with time-interpolated parent
+  ghosts and molecular transport advances it `r^2` times;
+- every recursive return refluxes the parent and averages the child down before
+  the next coarser relation is synchronized;
+- chemistry and transport compose as `R-T-H-T-R` across all active levels;
+- any failed split operator restores the complete hierarchy transactionally;
+- a three-level `24/36/56`-cell hotspot retains the periodic composite integral
+  within `3e-10` after PLM hydro and molecular transport;
+- every parent covered region equals restriction of its child within `5e-13`;
+- all level states retain positive thermodynamics, nonnegative species, and
+  mass-fraction closure within `3e-10`;
+- a chemistry-enabled three-level split step passes the same synchronization,
+  positivity, and closure gates.

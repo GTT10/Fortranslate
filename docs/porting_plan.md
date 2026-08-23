@@ -484,7 +484,9 @@ Reactive application integration:
 - [x] limited PLM coarse/fine reconstruction (`0.28.0`)
 - [ ] characteristic PPM/WENO coarse/fine reconstruction
 - [x] AMR molecular transport (`0.29.0`)
-- [ ] arbitrary-depth reactive state ownership and recursive advancement
+- [x] arbitrary-depth reactive state ownership and recursive advancement
+  (`0.31.0`)
+- [ ] dynamic arbitrary-depth reactive regridding and composite output
 
 AMR parity metrics:
 

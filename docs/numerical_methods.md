@@ -934,6 +934,39 @@ that owns a child and the complete deepest field. A four-level gate with ratios
 subcycling, restriction identities, and simultaneous conservation correction
 at all three interfaces.
 
+## Arbitrary-depth reactive AMR advance
+
+`amr_multilevel_reactive_1d_mod` owns one conserved field, temperature field,
+and ghost pair for every runtime level. Given cumulative refinement
+`R_ell = product(r_0...r_(ell-1))`, the root timestep satisfies
+
+```text
+dt_0 <= min_ell(R_ell * dt_hydro,ell),
+dt_0 <= min_ell(R_ell^2 * dt_transport,ell).
+```
+
+Hydro advances a parent over its interval, saves its beginning and provisional
+end states, and advances the child `r_ell` times with interpolated parent ghost
+states. Each child call recursively completes all deeper work before returning
+its time-integrated outer fluxes. The caller then refluxes and averages down its
+own parent/child relation. Molecular transport uses the same recursion with
+`r_ell^2` child substeps and the actual parent/child center distance at outer
+child faces.
+
+Cell-local chemistry advances every level over the same physical half interval,
+followed by deepest-to-root average-down. The complete accepted update is
+
+```text
+R(dt/2) -> T_recursive(dt/2) -> H_recursive(dt)
+        -> T_recursive(dt/2) -> R(dt/2).
+```
+
+The solution is deep-copied before this composition, so any failed chemistry,
+transport, hydro, EOS recovery, reflux, or ghost fill restores every level,
+the root time, and the step counter. A three-level hotspot gate exercises PLM,
+molecular transport, chemistry, recursive synchronization, composite
+conservation, positivity, and species closure.
+
 ## One-dimensional tagging and dynamic regridding
 
 For a selected component `q`, cell `i` uses the largest adjacent jump,

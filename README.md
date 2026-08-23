@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.30.0` milestone contains ten serial verification executables, five
+The `0.31.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -171,14 +171,20 @@ The AMR layer provides:
 - symmetric reaction--transport--hydro--transport--reaction composition;
 - cumulative multilevel subcycle schedules and deepest-to-root synchronization;
 - a four-level, mixed-ratio conservation gate across every interface;
+- arbitrary-depth reactive state and temperature ownership;
+- recursive hydro subcycling and diffusive `r^2` subcycling at every depth;
+- recursive chemistry and reaction--transport--hydro splitting;
+- a three-level reactive conservation, positivity, closure, and synchronization
+  gate;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 The reactive AMR application qualifies PCM and limited primitive-variable PLM
 Godunov hydro with dilute-gas molecular transport on two active levels. The
-hierarchy and transfer/synchronization primitives support arbitrary depth, but
-arbitrary-depth reactive advancement, boundary-touching fine patches, multiple
-patches per level, and characteristic PPM/WENO AMR reconstruction remain later
-slices.
+separate static multilevel engine qualifies the same reactive operators at
+arbitrary nested depth. Dynamic multilevel regridding and composite output are
+not yet connected to the executable application; boundary-touching fine
+patches, multiple patches per level, MPI patch ownership, and characteristic
+PPM/WENO AMR reconstruction remain later slices.
 
 ## Build and test
 

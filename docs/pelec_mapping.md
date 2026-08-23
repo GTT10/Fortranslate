@@ -39,7 +39,7 @@ This table maps responsibilities, not source lines.
 | PeleC `Source/Diffterm.H`, `Source/Diffusion.cpp` | `reactive_diffusive_flux_x`, `advance_reactive_transport` | Periodic 1D viscous, conductive, barodiffusive, correction-velocity, and enthalpy-flux subset verified |
 | `Source/Diffusion.*` multidimensional/AMR/EB responsibility | `reactive_transport_2d_mod` for regular 2D cells and `amr_reactive_1d_mod` for two-level 1D; future EB modules | Regular-grid 2D and conservative two-level 1D AMR transport verified; EB not started |
 | AMReX distributed-box responsibility | `mpi_domain_1d_mod`, `mpi_reactive_transport_1d_mod`, `mpi_reactive_1d_mod` | Uneven 1D blocks, halos, reductions, gather, transport, chemistry, and reactive splitting verified for 1/2/4/8 ranks |
-| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod` | Arbitrary-depth nested hierarchy/transfer/synchronization primitives plus a runnable reactive 1D two-level application with PCM/limited-PLM hydro, chemistry and molecular transport; recursive reactive advancement and characteristic PPM pending |
+| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod`, `amr_multilevel_reactive_1d_mod` | Arbitrary-depth nested hierarchy and recursive PCM/limited-PLM reactive hydro, chemistry, and molecular transport plus a runnable dynamic two-level application; recursive multilevel regridding/output and characteristic PPM pending |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |

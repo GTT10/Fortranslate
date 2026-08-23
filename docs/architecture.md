@@ -348,13 +348,21 @@ Restriction replaces covered coarse cells with fine volume averages. Reflux
 corrects the two uncovered coarse cells adjacent to the refined patch using the
 time-integrated difference between fine and coarse interface fluxes.
 
-The arbitrary-depth wrapper owns an allocatable sequence of these adjacent
+The arbitrary-depth hierarchy owns an allocatable sequence of these adjacent
 interfaces. Every interface may use a different refinement ratio, and each
 level owns a separately allocated field because patch cell counts differ.
 Initialization propagates physical bounds and spacing through the complete
 nested chain. Composite integration counts each parent only outside its child,
 then counts the deepest level in full. Synchronization applies reflux and
 average-down from the deepest interface toward the root.
+
+`amr_multilevel_reactive_1d_mod` adds separately allocated conserved-state and
+temperature fields with ghost cells at every level. It recursively advances
+each parent once and its child `r` times for hydro or `r^2` times for explicit
+molecular transport, then synchronizes that relation before returning to the
+next coarser caller. Chemistry is advanced on every level and averaged down
+from deepest to root. The complete split update is transactional across the
+hierarchy.
 
 `amr_regrid_1d_mod` tags a selected state component using a normalized local
 jump with an absolute floor, buffers the resulting tag interval, and constructs
@@ -366,8 +374,10 @@ unchanged fine cells retain their full resolution. An empty tag set removes the
 fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
-Multiple patches, arbitrary-depth reactive advancement/regridding, and
-characteristic PPM/WENO coarse/fine coupling remain separate.
+The runnable solution-driven regrid driver still owns two levels. Recursive
+multilevel regridding and composite output, multiple patches, physical-boundary
+refinement, MPI patch ownership, and characteristic PPM/WENO coarse/fine
+coupling remain separate.
 
 ## Reactive AMR time advancement
 

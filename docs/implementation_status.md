@@ -428,8 +428,8 @@ full-H2/O2 chemistry.
 - [x] moving-contact error lower than the matching PCM AMR run
 - [x] composite conservation retained with PLM and dynamic regrid
 
-Characteristic PPM/WENO AMR reconstruction, multiple patches, reactive
-advancement beyond two levels, and MPI patch ownership remain open.
+Characteristic PPM/WENO AMR reconstruction, multiple patches, dynamic
+regridding beyond two levels, and MPI patch ownership remain open.
 
 ## Reactive AMR molecular transport (`0.29.0`)
 
@@ -464,5 +464,24 @@ outside this milestone.
 - [x] four-level mixed-ratio conservation and synchronization gate
 
 The hierarchy primitives have no fixed level-count limit. The runnable reactive
-application still owns two levels; recursive reactive hydro, chemistry,
-transport, regridding, and output are the next integration slice.
+application still owns two levels; the static recursive reactive engine below
+uses this hierarchy while recursive regridding and output remain separate.
+
+## Arbitrary-depth reactive AMR advancement (`0.31.0`)
+
+- [x] allocatable conserved-state and temperature fields at every level
+- [x] root physical ghosts and coarse/fine ghosts at every nested interface
+- [x] global CFL limit reduced from every level into a root time step
+- [x] recursive `r`-way hydro subcycling with coarse-time interpolation
+- [x] recursive `r^2`-way molecular-transport subcycling
+- [x] one time-integrated flux register for every active parent/child advance
+- [x] deepest-to-root reflux, average-down, and temperature recovery
+- [x] hierarchy-wide chemistry and `R-T-H-T-R` operator composition
+- [x] whole-hierarchy transactional rollback on a failed operator
+- [x] arbitrary-depth composite conserved integrals
+- [x] three-level transport/chemistry conservation and positivity regression
+
+The recursive engine accepts runtime patch bounds and refinement ratios with no
+fixed depth. Dynamic tag-driven construction, regridding during time advance,
+composite CSV output, multiple patches, physical-boundary refinement, and MPI
+patch distribution are not claimed by this milestone.
