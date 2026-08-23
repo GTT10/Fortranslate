@@ -471,8 +471,8 @@ Implementation order:
 3. [x] prolongation (`0.25.0`)
 4. [x] level subcycling (`0.25.0`)
 5. [x] reflux (`0.25.0`)
-6. [ ] tagging
-7. [ ] dynamic regrid
+6. [x] tagging (`0.26.0`)
+7. [x] dynamic regrid (`0.26.0`)
 8. [ ] arbitrary multiple levels
 
 AMR parity metrics:

@@ -6,9 +6,9 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.25.0` milestone contains nine serial verification executables, five
+The `0.26.0` milestone contains nine serial verification executables, five
 optional MPI verification executables, and a conservative one-dimensional AMR
-foundation.
+layer with solution-driven tagging and dynamic regridding.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -140,7 +140,7 @@ With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
 - ordered gather output, global timestep/conservation reductions, and
   complete-field parity for 1, 2, 4, and 8 ranks.
 
-### One-dimensional AMR foundation
+### One-dimensional AMR
 
 The first AMR slice provides:
 
@@ -150,10 +150,14 @@ The first AMR slice provides:
 - volume-average restriction and covered-cell synchronization;
 - refinement-ratio level subcycling;
 - time-integrated coarse/fine flux registers and reflux;
-- a composite-integral gate proving conservation across both patch interfaces.
+- a composite-integral gate proving conservation across both patch interfaces;
+- component-selectable normalized-gradient tagging with absolute noise floors;
+- buffered, minimum-width single-patch planning with explicit boundary checks;
+- conservative patch creation, movement, resizing, and removal;
+- exact retention of same-resolution fine data where old and new patches overlap.
 
-Tagging, dynamic regridding, arbitrary multiple levels, and direct reactive-flow
-coupling remain later AMR slices.
+Arbitrary multiple levels, boundary-touching fine patches, multiple patches per
+level, and direct reactive-flow coupling remain later AMR slices.
 
 ## Build and test
 

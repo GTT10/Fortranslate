@@ -325,7 +325,7 @@ and 8 ranks in both Debug and Release builds.
 
 ## AMR one-dimensional foundation
 
-`amr_hierarchy_1d_mod` introduces a static level-0/level-1 hierarchy without
+`amr_hierarchy_1d_mod` introduces a level-0/level-1 hierarchy without
 coupling AMR ownership to a particular fluid state width. A level-1 patch is
 strictly nested inside the coarse domain and uses an integer refinement ratio.
 
@@ -342,5 +342,16 @@ synchronized conservative composite state
 Restriction replaces covered coarse cells with fine volume averages. Reflux
 corrects the two uncovered coarse cells adjacent to the refined patch using the
 time-integrated difference between fine and coarse interface fluxes. This first
-slice supplies hierarchy and synchronization primitives; tagging, regridding,
-multiple levels, and solver coupling remain separate.
+slice supplies hierarchy and synchronization primitives.
+
+`amr_regrid_1d_mod` tags a selected state component using a normalized local
+jump with an absolute floor, buffers the resulting tag interval, and constructs
+one deterministic minimum-width patch. Regridding first averages old fine data
+onto the coarse state, conservatively prolongs the new patch, then restores old
+fine values on any same-resolution overlap. Consequently cells leaving a patch
+retain their fine average, newly refined cells retain their coarse average, and
+unchanged fine cells retain their full resolution. An empty tag set removes the
+fine level after average-down. Boundary tags are rejected because this hierarchy
+does not yet own physical-boundary fine ghosts.
+
+Multiple patches, more than two levels, and solver coupling remain separate.

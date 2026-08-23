@@ -374,11 +374,26 @@ remain later porting-plan phases rather than claims of this milestone.
 - [x] time-integrated coarse/fine flux register
 - [x] conservative two-interface reflux
 - [x] composite-integral conservation gate
-- [ ] solution-driven tagging
-- [ ] dynamic regridding
+- [x] solution-driven tagging (`0.26.0`)
+- [x] dynamic regridding (`0.26.0`)
 - [ ] arbitrary multiple levels
 - [ ] AMR reactive-flow application
 
 The foundation is state-width independent and intentionally serial. MPI patch
 distribution follows only after the AMR ownership and regridding model is
 qualified.
+
+## Dynamic AMR regridding (`0.26.0`)
+
+- [x] component-selectable relative-gradient tagging
+- [x] absolute gradient floor and local normalization floor
+- [x] deterministic tag buffering and minimum patch width
+- [x] explicit rejection of unsupported physical-boundary tags
+- [x] conservative fine-patch creation, relocation, resizing, and removal
+- [x] average-down before an old refined region is discarded
+- [x] exact transfer of overlapping fine cells at unchanged refinement ratio
+- [x] composite-integral invariance across regrid operations
+
+The current planner deliberately produces one strictly interior patch. It does
+not yet cluster disjoint tag sets, refine physical boundaries, or construct
+more than two levels.

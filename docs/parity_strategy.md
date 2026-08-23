@@ -295,3 +295,17 @@ The first AMR slice is accepted only while:
 - coarse and fine interface fluxes accumulate over their respective time steps;
 - reflux drives a manufactured composite conservation error to roundoff;
 - a used flux register resets so it cannot be applied twice accidentally.
+
+## 0.26.0 AMR-regrid gates
+
+Dynamic regridding is accepted only while:
+
+- a discontinuity tags exactly the adjacent cells of the selected component;
+- a flat component produces no tags or fine patch;
+- buffering and minimum width produce deterministic strictly interior bounds;
+- a physical-boundary tag is rejected instead of silently dropped;
+- cells leaving a fine patch are averaged onto the coarse state;
+- same-ratio overlap retains the old fine values exactly;
+- new fine cells restrict to their source coarse averages;
+- patch movement preserves every component's composite integral to roundoff;
+- removing and recreating refinement also preserves the composite integral.

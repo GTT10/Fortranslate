@@ -860,10 +860,11 @@ changes from producing divergent accept/reject histories.
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
-AMR layer currently provides only static 1D transfer and synchronization
-primitives. MPI 2D, reactive AMR integration, tagging/regridding, embedded
-boundaries, LES, particles/spray, and accelerators remain outside the implemented
-scope. The transport model still excludes Soret, Dufour,
+AMR layer provides 1D two-level transfer, synchronization, tagging, and
+single-patch dynamic regridding. MPI 2D, reactive AMR integration, multilevel
+and multipatch AMR, boundary refinement, embedded boundaries, LES,
+particles/spray, and accelerators remain outside the implemented scope. The
+transport model still excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
 The characteristic hydro basis remains a qualified frozen-composition
 approximation rather than complete PeleC/PelePhysics general-EOS Riemann and
@@ -900,3 +901,26 @@ interface and adds it to the uncovered coarse cell on the right interface. The
 covered coarse cells are separately replaced by restricted fine averages. A
 composite integral counts uncovered coarse volumes and fine volumes exactly
 once, providing the conservation gate.
+
+## One-dimensional tagging and dynamic regridding
+
+For a selected component `q`, cell `i` uses the largest adjacent jump,
+
+```text
+jump_i = max(|q_i - q_(i-1)|, |q_(i+1) - q_i|),
+scale_i = max(scale_floor, |q_(i-1)|, |q_i|, |q_(i+1)|).
+```
+
+A cell is tagged when the jump is above the absolute threshold and
+`jump_i / scale_i` is at least the relative threshold. The one-patch planner
+takes the bounding interval of all tags, adds a configured coarse-cell buffer,
+and expands deterministically to the requested minimum width.
+
+Before replacing an existing patch, its fine values are averaged down. The new
+patch is then conservatively prolonged from that synchronized coarse state. If
+the refinement ratio is unchanged, fine cells in the geometric overlap are
+copied from the old patch after prolongation. Thus leaving regions preserve
+their fine averages, entering regions preserve their coarse averages, and the
+overlap preserves its complete fine representation. This sequence makes the
+composite integral invariant under patch creation, movement, resizing, and
+removal.
