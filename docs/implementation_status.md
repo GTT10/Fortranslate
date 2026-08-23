@@ -568,3 +568,18 @@ Together with the 0.35.0 WENO5-JS/Z slice, the four hybrid schemes currently
 selected by PeleC `PPM.cpp` are available. Regular-grid two-dimensional WENO,
 physical-boundary refinement, multiple patches, and distributed patch
 ownership remain separate.
+
+## Outflow physical-boundary refinement (`0.37.0`)
+
+- [x] hierarchy geometry accepts left-, right-, or both-side parent contact
+- [x] conservative endpoint prolongation without parent out-of-bounds access
+- [x] one-sided reflux only at an existing coarse/fine interface
+- [x] composite integration with zero uncovered cells on either side
+- [x] fine face and four-layer PPM/WENO outflow ghost construction
+- [x] recursive nested boundary contact at two successive interfaces
+- [x] WENO7-Z conservation, synchronization, positivity, and closure gate
+- [x] runnable tag-driven three-level boundary-hotspot case
+
+The qualified dynamic path is outflow-only. A periodic child may wrap itself
+only when it covers its complete parent. A single patch crossing the periodic
+seam, multiple patches, and distributed patch ownership remain separate.

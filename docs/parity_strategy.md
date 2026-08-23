@@ -482,3 +482,18 @@ The remaining upstream schemes are accepted only while:
 - the public WENO7-Z and WENO3-Z hotspot cases each dynamically produce three
   ordered levels with exact composite coverage and finite positive states in
   Debug and Release CI builds.
+
+## 0.37.0 physical-boundary AMR gates
+
+Boundary refinement is accepted only while:
+
+- hierarchy, prolongation, restriction, composite integration, and reflux
+  accept a patch touching one parent boundary without indexing outside it;
+- the physical side receives no reflux and the opposite coarse/fine side
+  receives the complete flux-register correction;
+- two nested WENO7-Z levels may share the left outflow boundary and advance for
+  two steps with composite conservation within `3e-10`;
+- every covered parent/child state synchronizes within `5e-13`, thermodynamics
+  remain positive, and species close within `3e-10`;
+- the public boundary-hotspot case dynamically produces three ordered levels,
+  exact coverage within `3e-13`, and finite positive states in Debug/Release.

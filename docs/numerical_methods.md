@@ -877,10 +877,10 @@ changes from producing divergent accept/reject histories.
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
-AMR layer provides arbitrary-depth 1D reactive PCM/PLM/PPM advancement,
+AMR layer provides arbitrary-depth 1D reactive PCM/PLM/PPM/WENO advancement,
 molecular transport, synchronization, tagging, overlap-preserving single-patch
-dynamic regridding, and composite output. MPI 2D, WENO coarse/fine
-reconstruction, multipatch AMR, boundary refinement, embedded boundaries, LES,
+dynamic regridding, outflow-boundary refinement, and composite output. MPI 2D,
+multipatch AMR, one-sided periodic-seam refinement, embedded boundaries, LES,
 particles/spray, and accelerators remain outside the implemented scope. The
 transport model still
 excludes Soret, Dufour,
@@ -915,11 +915,12 @@ For each interface the flux register stores the time-integrated mismatch
 delta I = sum_fine(dt_f F_f) - dt_c F_c.
 ```
 
-Reflux subtracts `delta I / dx_c` from the uncovered coarse cell on the left
-interface and adds it to the uncovered coarse cell on the right interface. The
-covered coarse cells are separately replaced by restricted fine averages. A
-composite integral counts uncovered coarse volumes and fine volumes exactly
-once, providing the conservation gate.
+At each existing coarse/fine interface, reflux subtracts `delta I / dx_c` from
+the uncovered coarse cell on the left or adds it to the uncovered coarse cell
+on the right. A side coincident with a physical boundary has no uncovered
+parent neighbor and receives no reflux. Covered coarse cells are separately
+replaced by restricted fine averages. A composite integral counts uncovered
+coarse volumes and fine volumes exactly once, providing the conservation gate.
 
 ## Arbitrary-depth nested AMR hierarchy
 
@@ -939,10 +940,11 @@ dt_ell = dt_0 / N_ell.
 ```
 
 Conservative prolongation proceeds from root to deepest level. Restriction,
-reflux, and average-down proceed in the opposite direction. For each interface,
-reflux first corrects the two uncovered parent cells, then average-down replaces
-the covered parent cells. Processing the deepest interface first ensures the
-state transferred to its parent already contains all finer-level information.
+reflux, and average-down proceed in the opposite direction. For each relation,
+reflux first corrects its one or two existing coarse/fine sides, then
+average-down replaces the covered parent cells. Processing the deepest
+interface first ensures the state transferred to its parent already contains
+all finer-level information.
 
 The multilevel composite integral sums the uncovered portion of every level
 that owns a child and the complete deepest field. A four-level gate with ratios
@@ -987,10 +989,18 @@ conservation, positivity, and species closure.
 
 Starting from the root, the runtime application evaluates the existing
 normalized-gradient criterion on each parent. If tags exist, it builds one
-strictly interior patch, conservatively prolongs that child, and repeats until
-no tags remain or `amr_max_levels` is reached. At interior depths, tags on the
-first and last parent-patch cells are suppressed because a child touching those
-cells would not own the required coarse/fine ghost neighborhood.
+patch, conservatively prolongs that child, and repeats until no tags remain or
+`amr_max_levels` is reached. Internal coarse/fine sides retain the parent-cell
+buffer required by the four wide ghost layers and limited prolongation. An
+outflow side coincident with the global physical boundary may instead extend
+to that edge at every nested level.
+
+At a physical outflow side, the fine face-adjacent and wide PPM/WENO ghosts use
+constant extrapolation from the fine boundary cell. The flux register ignores
+that side because no uncovered parent neighbor exists; reflux is applied only
+at the opposite coarse/fine interface. A periodic fine patch may use fine-level
+wrap only when it covers the complete parent domain. One-sided periodic-seam
+refinement is rejected.
 
 Before changing a hierarchy, every child is averaged down deepest-to-root. The
 new nested chain is then planned from this synchronized root and every child is

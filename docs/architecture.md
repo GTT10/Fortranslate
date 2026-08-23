@@ -380,8 +380,11 @@ onto the coarse state, conservatively prolongs the new patch, then restores old
 fine values on any same-resolution overlap. Consequently cells leaving a patch
 retain their fine average, newly refined cells retain their coarse average, and
 unchanged fine cells retain their full resolution. An empty tag set removes the
-fine level after average-down. Boundary tags are rejected because this hierarchy
-does not yet own physical-boundary fine ghosts.
+fine level after average-down. In the multilevel PPM/WENO engine, outflow
+boundary tags may extend the patch to the matching physical edge. That side
+uses fine-level constant-extrapolation ghosts; the opposite side retains
+parent-interpolated coarse/fine ghosts. The legacy two-level PCM/PLM engine
+continues to suppress boundary tags.
 
 The reactive driver retains the overlap-preserving two-level implementation for
 PCM/PLM with `amr_max_levels = 2`. A larger level limit or either PPM option
@@ -398,8 +401,8 @@ deepest-to-root average-down propagates retained fine information consistently.
 Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
-Multiple patches, transfer between changed refinement ratios,
-physical-boundary refinement, and MPI patch ownership remain separate.
+Multiple patches, transfer between changed refinement ratios, one-sided
+periodic-seam refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 
