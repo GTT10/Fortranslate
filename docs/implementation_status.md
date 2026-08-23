@@ -378,6 +378,7 @@ remain later porting-plan phases rather than claims of this milestone.
 - [x] dynamic regridding (`0.26.0`)
 - [ ] arbitrary multiple levels
 - [x] AMR reactive-flow application (`0.27.0`)
+- [x] AMR molecular transport (`0.29.0`)
 
 The foundation is state-width independent and intentionally serial. MPI patch
 distribution follows only after the AMR ownership and regridding model is
@@ -427,5 +428,23 @@ full-H2/O2 chemistry.
 - [x] moving-contact error lower than the matching PCM AMR run
 - [x] composite conservation retained with PLM and dynamic regrid
 
-Characteristic PPM/WENO AMR reconstruction, molecular transport on AMR,
-multiple patches, more than two levels, and MPI patch ownership remain open.
+Characteristic PPM/WENO AMR reconstruction, multiple patches, more than two
+levels, and MPI patch ownership remain open.
+
+## Reactive AMR molecular transport (`0.29.0`)
+
+- [x] viscosity, Fourier conduction, and mixture-averaged species diffusion
+- [x] optional barodiffusion, correction velocity, and species-enthalpy flux
+- [x] parabolic coarse/fine timestep limits
+- [x] `r^2` fine transport subcycling with coarse-time ghost interpolation
+- [x] coarse/fine center-distance gradients at patch interfaces
+- [x] SSPRK2 stage-averaged diffusive flux registration
+- [x] diffusive reflux and covered-cell average-down after each half step
+- [x] reaction--transport--hydro--transport--reaction AMR composition
+- [x] transactional rollback across every split operator
+- [x] periodic all-component and per-species conservation gates
+- [x] conduction/reference smoothing and final synchronization gates
+
+Soret, Dufour, multicomponent Stefan--Maxwell diffusion, PelePhysics transport
+polynomial parity, multiple patches, and arbitrary multilevel recursion remain
+outside this milestone.

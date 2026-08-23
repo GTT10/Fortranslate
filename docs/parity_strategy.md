@@ -339,3 +339,25 @@ The second-order AMR option is accepted only while:
 - a smooth moving thermal contact remains dynamically refined;
 - PLM has at least 15 percent less composite density error than PCM;
 - both PCM and PLM retain composite conservation within `2e-10`.
+
+## 0.29.0 reactive-AMR molecular-transport gates
+
+AMR molecular transport is accepted only while:
+
+- the transport database matches the active thermodynamic species set;
+- the coarse timestep includes coarse and `r^2`-scaled fine parabolic limits;
+- the fine level completes `r^2` transport substeps per coarse transport
+  interval with midpoint-interpolated coarse ghosts;
+- coarse/fine gradients use the true adjacent cell-center distance;
+- SSPRK2 stage-averaged diffusive fluxes are accumulated for reflux;
+- reflux and average-down synchronize every transport half step;
+- a conduction-enabled AMR step reduces the temperature span relative to the
+  matching inviscid AMR step;
+- the dynamic-regrid transport run retains positive thermodynamic states and
+  closed, nonnegative species mass fractions;
+- every conserved state component and each periodic species mass remain
+  conserved within `2e-10`;
+- restricted fine cells match covered coarse cells within `5e-13` relative
+  tolerance;
+- the reacting-hotspot application exercises transport together with
+  chemistry, PLM hydro, reflux, and regridding.

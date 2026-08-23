@@ -483,7 +483,7 @@ Reactive application integration:
 - [x] hierarchy-wide chemistry splitting and rollback (`0.27.0`)
 - [x] limited PLM coarse/fine reconstruction (`0.28.0`)
 - [ ] characteristic PPM/WENO coarse/fine reconstruction
-- [ ] AMR molecular transport
+- [x] AMR molecular transport (`0.29.0`)
 
 AMR parity metrics:
 

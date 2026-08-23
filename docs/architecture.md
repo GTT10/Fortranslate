@@ -32,6 +32,9 @@ pelef_reactive_1d
 
 pelef_reactive_2d
   └─ NASA7 reactive Euler, physical boundaries, transport, and CTU correction
+
+pelef_amr_reactive_1d
+  └─ dynamic two-level reactive AMR with PLM, chemistry, and transport
 ```
 
 The established constant-`gamma` solvers remain intact as regression baselines. Composition-dependent flow is introduced through a separate driver and modules so a general-EOS change cannot silently alter earlier results.
@@ -231,7 +234,9 @@ The architecture retains independent gates for:
    qualification;
 9. physical boundaries and full pressure-dependent H2/O2 chemistry;
 10. MPI decomposition, multispecies hydro, implicit chemistry, molecular
-    transport, and coupled reactive splitting.
+    transport, and coupled reactive splitting;
+11. dynamic reactive AMR hydro, chemistry, molecular transport, regridding,
+    and conservative coarse/fine synchronization.
 
 The homogeneous reactive field must reduce to independent zero-dimensional cell chemistry. The nonuniform hotspot must create finite pressure and velocity responses while preserving global mass, momentum, and total energy.
 
@@ -361,25 +366,33 @@ coarse/fine coupling remain separate.
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both
 temperature fields, hierarchy metadata, simulation time, and regrid counters.
-One accepted coarse interval is:
+One accepted coarse interval with all operators enabled is:
 
 ```text
 chemistry(dt/2) on coarse and fine
         ↓
-coarse PCM hydro(dt) and interface-flux capture
+SSPRK2 molecular transport(dt/2) on coarse and fine
+  with r^2 fine diffusion substeps, reflux, and average-down
         ↓
-fine PCM hydro(dt/r), repeated r times
+coarse PCM/PLM hydro(dt) and interface-flux capture
+        ↓
+fine PCM/PLM hydro(dt/r), repeated r times
   with time-interpolated coarse ghost states
         ↓
 flux-register reflux + average-down
+        ↓
+SSPRK2 molecular transport(dt/2) on coarse and fine
+  with r^2 fine diffusion substeps, reflux, and average-down
         ↓
 chemistry(dt/2) on coarse and fine + average-down
         ↓
 optional tagging and conservative regrid
 ```
 
-The coarse CFL limit is combined with `r` times the fine CFL limit so every
-fine substep is stable. A complete solution copy makes the interval
+The coarse hyperbolic CFL limit is combined with `r` times the fine hyperbolic
+limit. The parabolic limit is combined with `r^2` times the fine transport
+limit, so every advective and diffusive substep is stable. A complete solution
+copy makes the interval
 transactional: any EOS, Riemann, chemistry, transfer, or synchronization
 failure restores both levels and all hierarchy metadata. Composite output emits
 uncovered coarse cells and fine cells exactly once and in coordinate order.
@@ -391,3 +404,12 @@ state. SSPRK2 evaluates two flux divergences and returns their arithmetic mean
 to the flux register, so the reflux correction represents the same conservative
 update applied to each level. Fine PLM substeps hold a coarse-time midpoint
 ghost state during both SSPRK2 stages.
+
+The AMR transport path evaluates the same Newtonian stress, Fourier heat flux,
+mixture-averaged species diffusion, barodiffusion, correction velocity, and
+species-enthalpy flux as the uniform 1D path. Coarse and fine levels each use
+SSPRK2, and the mean stage flux is accumulated in a separate diffusive flux
+register. Fine transport uses `r^2` substeps over each half interval. At a
+coarse/fine face, gradients use the actual distance between the adjacent
+coarse and fine cell centers. Reflux and average-down complete each transport
+half step before the next split operator begins.

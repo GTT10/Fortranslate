@@ -860,11 +860,12 @@ changes from producing divergent accept/reject histories.
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
-AMR layer provides 1D two-level reactive PCM advancement, synchronization,
-tagging, and single-patch dynamic regridding. MPI 2D, AMR molecular transport,
-characteristic PPM/WENO coarse/fine reconstruction, multilevel and multipatch
-AMR, boundary refinement, embedded boundaries, LES, particles/spray, and
-accelerators remain outside the implemented scope. The transport model still
+AMR layer provides 1D two-level reactive PCM/PLM advancement, molecular
+transport, synchronization, tagging, and single-patch dynamic regridding. MPI
+2D, characteristic PPM/WENO coarse/fine reconstruction, multilevel and
+multipatch AMR, boundary refinement, embedded boundaries, LES,
+particles/spray, and accelerators remain outside the implemented scope. The
+transport model still
 excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
 The characteristic hydro basis remains a qualified frozen-composition
@@ -928,8 +929,9 @@ removal.
 
 ## Reactive two-level AMR advance
 
-The first reactive AMR application uses PCM face states and the qualified
-general-EOS Rusanov or HLLC flux. If the fine-level explicit limit is
+The reactive AMR application uses PCM or limited primitive PLM face states and
+the qualified general-EOS Rusanov or HLLC flux. If the fine-level explicit
+limit is
 `dt_f,max`, the coarse interval is limited by
 
 ```text
@@ -980,3 +982,35 @@ This update is exactly conservative with the effective face flux
 `F_eff = [F(U(n)) + F(U(1))]/2`. The AMR flux register therefore accumulates
 `F_eff`, rather than only one stage, at both coarse/fine interfaces. PLM fine
 substeps use the time-interpolated coarse ghost state at each substep midpoint.
+
+### Molecular transport and diffusive synchronization
+
+The AMR transport operator uses the uniform-grid 1D diffusive face kernel for
+Newtonian stress, Fourier conduction, mixture-averaged species diffusion,
+optional barodiffusion, correction velocity, and species-enthalpy transport.
+It is composed symmetrically with reaction and advection:
+
+```text
+R(dt/2) -> T(dt/2) -> A(dt) -> T(dt/2) -> R(dt/2).
+```
+
+For a parabolic fine-level stability limit `dt_T,f,max`, the coarse interval is
+limited by
+
+```text
+dt <= min(dt_T,c,max, r^2 dt_T,f,max).
+```
+
+Each transport half interval advances the coarse level once with SSPRK2 and
+the fine level in `r^2` SSPRK2 substeps. Fine ghosts use coarse states
+interpolated to each substep midpoint. Interior fine faces use `dx_f`; a patch
+interface uses the actual coarse-center to fine-center distance
+`(dx_c + dx_f)/2` when forming its gradient.
+
+The effective diffusive flux is the arithmetic mean of the two SSPRK2 stage
+fluxes. Its time integral is accumulated at each coarse/fine interface, and a
+dedicated reflux correction is followed by covered-cell average-down. Because
+the species correction velocity makes the total diffusive mass flux zero, the
+same synchronization conserves total mass and each periodic species mass while
+the energy flux includes conduction, viscous work, and transported species
+enthalpy.
