@@ -25,6 +25,15 @@ module simulation_config_reactive_1d_mod
     real(dp) :: transport_cfl = 0.40_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
+    logical :: amr_enabled = .false.
+    integer :: amr_refinement_ratio = 2
+    integer :: amr_regrid_interval = 4
+    integer :: amr_tag_component = 1
+    integer :: amr_buffer_cells = 2
+    integer :: amr_minimum_patch_cells = 8
+    real(dp) :: amr_relative_gradient_threshold = 0.02_dp
+    real(dp) :: amr_absolute_gradient_threshold = 0.0_dp
+    real(dp) :: amr_scale_floor = 1.0e-12_dp
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
     real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
     real(dp) :: initial_temperature = 1200.0_dp
@@ -60,9 +69,14 @@ contains
     character(len=*), intent(out) :: message
 
     integer :: nx, maximum_steps, unit, status
+    integer :: amr_refinement_ratio, amr_regrid_interval
+    integer :: amr_tag_component, amr_buffer_cells
+    integer :: amr_minimum_patch_cells
     real(dp) :: x_lower, x_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
+    real(dp) :: amr_relative_gradient_threshold
+    real(dp) :: amr_absolute_gradient_threshold, amr_scale_floor
     real(dp) :: initial_temperature, initial_pressure, initial_velocity
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
     real(dp) :: hotspot_temperature_rise
@@ -77,6 +91,7 @@ contains
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
+    logical :: amr_enabled
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
@@ -86,6 +101,10 @@ contains
       barodiffusion_enabled, transport_cfl, ppm_contact_steepening, &
       ppm_shock_flattening, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
+      amr_enabled, amr_refinement_ratio, amr_regrid_interval, &
+      amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
+      amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
+      amr_scale_floor, &
       initial_temperature, initial_pressure, initial_velocity, &
       density_wave_amplitude, composition_wave_amplitude, &
       hotspot_temperature_rise, hotspot_center, hotspot_width, x_h2, x_h, &
@@ -113,6 +132,17 @@ contains
     transport_cfl = config%transport_cfl
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
+    amr_enabled = config%amr_enabled
+    amr_refinement_ratio = config%amr_refinement_ratio
+    amr_regrid_interval = config%amr_regrid_interval
+    amr_tag_component = config%amr_tag_component
+    amr_buffer_cells = config%amr_buffer_cells
+    amr_minimum_patch_cells = config%amr_minimum_patch_cells
+    amr_relative_gradient_threshold = &
+      config%amr_relative_gradient_threshold
+    amr_absolute_gradient_threshold = &
+      config%amr_absolute_gradient_threshold
+    amr_scale_floor = config%amr_scale_floor
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
     chemistry_absolute_tolerance = config%chemistry_absolute_tolerance
     initial_temperature = config%initial_temperature
@@ -163,6 +193,15 @@ contains
       chemistry_absolute_tolerance > 0.0_dp .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+    if (ok .and. amr_enabled) then
+      ok = amr_refinement_ratio >= 2 .and. amr_regrid_interval >= 1 .and. &
+        amr_tag_component >= 1 .and. amr_buffer_cells >= 0 .and. &
+        amr_minimum_patch_cells >= 1 .and. &
+        amr_minimum_patch_cells <= nx - 2 .and. &
+        amr_relative_gradient_threshold >= 0.0_dp .and. &
+        amr_absolute_gradient_threshold >= 0.0_dp .and. &
+        amr_scale_floor > 0.0_dp
+    end if
     if (.not. ok) then
       message = "Invalid reactive 1D configuration"
       return
@@ -246,6 +285,17 @@ contains
     config%transport_cfl = transport_cfl
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
+    config%amr_enabled = amr_enabled
+    config%amr_refinement_ratio = amr_refinement_ratio
+    config%amr_regrid_interval = amr_regrid_interval
+    config%amr_tag_component = amr_tag_component
+    config%amr_buffer_cells = amr_buffer_cells
+    config%amr_minimum_patch_cells = amr_minimum_patch_cells
+    config%amr_relative_gradient_threshold = &
+      amr_relative_gradient_threshold
+    config%amr_absolute_gradient_threshold = &
+      amr_absolute_gradient_threshold
+    config%amr_scale_floor = amr_scale_floor
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
     config%chemistry_absolute_tolerance = chemistry_absolute_tolerance
     config%initial_temperature = initial_temperature

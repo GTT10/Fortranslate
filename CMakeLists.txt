@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.26.0
+  VERSION 0.27.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -37,6 +37,7 @@ add_library(
   src/driver/simulation_config_reactive_1d_mod.F90
   src/driver/simulation_config_reactive_2d_mod.F90
   src/reactive/reactive_1d_mod.F90
+  src/amr/amr_reactive_1d_mod.F90
   src/boundary/reactive_boundary_2d_mod.F90
   src/transport/reactive_transport_2d_mod.F90
   src/reactive/reactive_2d_mod.F90
@@ -138,6 +139,9 @@ target_link_libraries(pelef0d_h2o2_full PRIVATE pelef_core)
 add_executable(pelef_reactive_1d app/pelef_reactive_1d.F90)
 target_link_libraries(pelef_reactive_1d PRIVATE pelef_core)
 
+add_executable(pelef_amr_reactive_1d app/pelef_amr_reactive_1d.F90)
+target_link_libraries(pelef_amr_reactive_1d PRIVATE pelef_core)
+
 add_executable(pelef_reactive_2d app/pelef_reactive_2d.F90)
 target_link_libraries(pelef_reactive_2d PRIVATE pelef_core)
 
@@ -146,6 +150,7 @@ target_link_libraries(pelef_transport_probe PRIVATE pelef_core)
 
 install(
   TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef_reactive_1d
+    pelef_amr_reactive_1d
     pelef0d_h2o2_full pelef_reactive_2d pelef_transport_probe
   RUNTIME DESTINATION bin
 )

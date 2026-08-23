@@ -24,6 +24,37 @@ add_executable(test_amr_regrid_1d unit/test_amr_regrid_1d.F90)
 target_link_libraries(test_amr_regrid_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_regrid_1d COMMAND test_amr_regrid_1d)
 
+add_executable(
+  test_amr_reactive_1d
+  regression/test_amr_reactive_1d.F90
+)
+target_link_libraries(test_amr_reactive_1d PRIVATE pelef_core)
+add_test(NAME regression_amr_reactive_1d COMMAND test_amr_reactive_1d)
+set_tests_properties(regression_amr_reactive_1d PROPERTIES TIMEOUT 240)
+
+set(AMR_REACTIVE_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/amr_reactive_hotspot")
+file(MAKE_DIRECTORY "${AMR_REACTIVE_WORK_DIRECTORY}")
+add_test(
+  NAME regression_amr_reactive_hotspot_run
+  COMMAND $<TARGET_FILE:pelef_amr_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/amr_reactive_hotspot/hotspot.nml"
+)
+set_tests_properties(
+  regression_amr_reactive_hotspot_run
+  PROPERTIES WORKING_DIRECTORY "${AMR_REACTIVE_WORK_DIRECTORY}" TIMEOUT 300
+)
+add_test(
+  NAME regression_amr_reactive_hotspot_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_amr_reactive_hotspot.py"
+    --input "${AMR_REACTIVE_WORK_DIRECTORY}/amr_reactive_hotspot.csv"
+)
+set_tests_properties(
+  regression_amr_reactive_hotspot_check
+  PROPERTIES DEPENDS regression_amr_reactive_hotspot_run
+)
+
 add_executable(test_plm_reconstruction unit/test_plm_reconstruction.F90)
 target_link_libraries(test_plm_reconstruction PRIVATE pelef_core)
 add_test(NAME unit_plm_reconstruction COMMAND test_plm_reconstruction)

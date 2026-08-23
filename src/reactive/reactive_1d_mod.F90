@@ -52,6 +52,7 @@ module reactive_1d_mod
   public :: trace_reactive_characteristics
   public :: initialize_reactive_1d
   public :: advance_reactive_hydro
+  public :: reactive_cfl_timestep
   public :: reactive_diffusive_flux_x
   public :: reactive_transport_timestep
   public :: advance_reactive_transport
