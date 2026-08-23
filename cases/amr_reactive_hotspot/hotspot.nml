@@ -12,7 +12,12 @@
   boundary_condition = "periodic"
   chemistry_enabled = .true.
   chemistry_model = "elementary"
-  transport_enabled = .false.
+  transport_enabled = .true.
+  viscosity_enabled = .true.
+  thermal_conduction_enabled = .true.
+  species_diffusion_enabled = .true.
+  barodiffusion_enabled = .true.
+  transport_cfl = 0.35
   chemistry_relative_tolerance = 2.0e-7
   chemistry_absolute_tolerance = 1.0e-12
   initial_temperature = 1200.0

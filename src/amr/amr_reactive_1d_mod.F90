@@ -4,13 +4,15 @@ module amr_reactive_1d_mod
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive, reactive_primitive_to_conserved, &
     reactive_riemann_flux_x, &
     reactive_cfl_timestep, initialize_reactive_1d, &
-    advance_reactive_chemistry
+    advance_reactive_chemistry, reactive_diffusive_flux_x, &
+    reactive_transport_timestep
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, amr_flux_register_1d, &
     initialize_flux_register_1d, accumulate_coarse_flux_1d, &
@@ -94,14 +96,16 @@ contains
   end subroutine initialize_amr_reactive_1d
 
   subroutine amr_reactive_timestep_1d( &
-      species, config, solution, dt, ok)
+      species, config, solution, dt, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_reactive_solution_1d), intent(in) :: solution
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
-    real(dp) :: coarse_dt, fine_dt
+    real(dp) :: coarse_dt, fine_dt, transport_dt, fine_transport_dt
+    real(dp) :: maximum_diffusivity
     logical :: local_ok
 
     dt = 0.0_dp
@@ -120,17 +124,41 @@ contains
       dt = min(dt, &
         real(solution%hierarchy%refinement_ratio, dp) * fine_dt)
     end if
+    if (config%transport_enabled) then
+      if (.not. present(transport)) return
+      call reactive_transport_timestep( &
+        species, transport, solution%coarse, solution%coarse_temperature, &
+        config%nx, solution%coarse_dx, config%transport_cfl, &
+        config%viscosity_enabled, config%thermal_conduction_enabled, &
+        config%species_diffusion_enabled, transport_dt, &
+        maximum_diffusivity, local_ok)
+      if (.not. local_ok) return
+      dt = min(dt, transport_dt)
+      if (solution%fine_active()) then
+        call reactive_transport_timestep( &
+          species, transport, solution%fine, solution%fine_temperature, &
+          solution%hierarchy%fine%cell_count(), &
+          solution%hierarchy%fine_dx, config%transport_cfl, &
+          config%viscosity_enabled, config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled, fine_transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        dt = min(dt, real(solution%hierarchy%refinement_ratio**2, dp) * &
+          fine_transport_dt)
+      end if
+    end if
     ok = dt > 0.0_dp
   end subroutine amr_reactive_timestep_1d
 
   subroutine advance_amr_reactive_1d( &
-      species, reactions, config, dt, solution, ok)
+      species, reactions, config, dt, solution, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
     real(dp), intent(in) :: dt
     type(amr_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
     type(amr_reactive_solution_1d) :: backup
     type(amr_flux_register_1d) :: flux_register
@@ -143,6 +171,7 @@ contains
     ok = .false.
     if (dt <= 0.0_dp .or. .not. &
         valid_amr_configuration(config, reactive_nvar(size(species)))) return
+    if (config%transport_enabled .and. .not. present(transport)) return
     backup = solution
 
     if (config%chemistry_enabled) then
@@ -165,6 +194,15 @@ contains
           solution = backup
           return
         end if
+      end if
+    end if
+
+    if (config%transport_enabled) then
+      call advance_amr_transport_1d( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
       end if
     end if
 
@@ -244,6 +282,15 @@ contains
         return
       end if
       call synchronize_levels_1d(species, config, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+
+    if (config%transport_enabled) then
+      call advance_amr_transport_1d( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
       if (.not. local_ok) then
         solution = backup
         return
@@ -334,13 +381,14 @@ contains
 
   subroutine simulate_amr_reactive_1d( &
       species, reactions, config, solution, initial_integrals, &
-      final_integrals, ok)
+      final_integrals, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_reactive_solution_1d), intent(out) :: solution
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
     real(dp) :: dt, tolerance
     logical :: local_ok, changed
@@ -364,14 +412,29 @@ contains
         ok = .false.
         return
       end if
-      call amr_reactive_timestep_1d(species, config, solution, dt, local_ok)
+      if (config%transport_enabled) then
+        if (.not. present(transport)) then
+          ok = .false.
+          return
+        end if
+        call amr_reactive_timestep_1d( &
+          species, config, solution, dt, local_ok, transport)
+      else
+        call amr_reactive_timestep_1d( &
+          species, config, solution, dt, local_ok)
+      end if
       if (.not. local_ok) then
         ok = .false.
         return
       end if
       dt = min(dt, config%final_time - solution%time)
-      call advance_amr_reactive_1d( &
-        species, reactions, config, dt, solution, local_ok)
+      if (config%transport_enabled) then
+        call advance_amr_reactive_1d( &
+          species, reactions, config, dt, solution, local_ok, transport)
+      else
+        call advance_amr_reactive_1d( &
+          species, reactions, config, dt, solution, local_ok)
+      end if
       if (.not. local_ok) then
         ok = .false.
         return
@@ -502,8 +565,7 @@ contains
     type(reactive_1d_config), intent(in) :: config
     integer, intent(in) :: nvar
 
-    valid = config%amr_enabled .and. .not. config%transport_enabled .and. &
-      config%nx >= 8 .and. &
+    valid = config%amr_enabled .and. config%nx >= 8 .and. &
       (trim(config%amr_reconstruction) == "pcm" .or. &
         trim(config%amr_reconstruction) == "plm") .and. &
       config%amr_refinement_ratio >= 2 .and. &
@@ -605,6 +667,219 @@ contains
     changed = .true.
     ok = .true.
   end subroutine apply_regrid_plan_1d
+
+  subroutine advance_amr_transport_1d( &
+      species, transport, config, interval, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(amr_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_flux_register_1d) :: flux_register
+    real(dp), allocatable :: coarse_start(:, :), coarse_end(:, :)
+    real(dp), allocatable :: coarse_flux(:, :), fine_flux(:, :)
+    real(dp) :: fine_interval, alpha, interface_distance
+    logical :: local_ok
+    integer :: fine_cells, ratio, subcycles, substep, nvar
+
+    ok = .false.
+    if (interval < 0.0_dp .or. size(transport) /= size(species)) return
+    if (interval == 0.0_dp .or. .not. &
+        (config%viscosity_enabled .or. &
+          config%thermal_conduction_enabled .or. &
+          config%species_diffusion_enabled)) then
+      ok = .true.
+      return
+    end if
+
+    nvar = reactive_nvar(size(species))
+    allocate(coarse_start(nvar, 0:config%nx + 1))
+    allocate(coarse_end(nvar, 0:config%nx + 1))
+    allocate(coarse_flux(nvar, 0:config%nx))
+    coarse_start = solution%coarse
+    call advance_transport_level_1d( &
+      species, transport, solution%coarse, solution%coarse_temperature, &
+      config%nx, solution%coarse_dx, interval, solution%coarse_dx, &
+      config, .true., config%boundary_condition, coarse_flux, local_ok)
+    if (.not. local_ok) return
+    coarse_end = solution%coarse
+
+    if (solution%fine_active()) then
+      ratio = solution%hierarchy%refinement_ratio
+      subcycles = ratio * ratio
+      fine_cells = solution%hierarchy%fine%cell_count()
+      fine_interval = interval / real(subcycles, dp)
+      interface_distance = 0.5_dp * &
+        (solution%coarse_dx + solution%hierarchy%fine_dx)
+      allocate(fine_flux(nvar, 0:fine_cells))
+      call initialize_flux_register_1d(flux_register, nvar, local_ok)
+      if (.not. local_ok) return
+      call accumulate_coarse_flux_1d( &
+        flux_register, &
+        coarse_flux(:, solution%hierarchy%fine_coarse_lower - 1), &
+        coarse_flux(:, solution%hierarchy%fine_coarse_upper), interval, &
+        local_ok)
+      if (.not. local_ok) return
+
+      do substep = 1, subcycles
+        alpha = (real(substep, dp) - 0.5_dp) / real(subcycles, dp)
+        call fill_fine_ghosts_1d( &
+          species, solution%hierarchy, coarse_start, coarse_end, alpha, &
+          solution%fine, solution%fine_temperature, local_ok)
+        if (.not. local_ok) return
+        call advance_transport_level_1d( &
+          species, transport, solution%fine, solution%fine_temperature, &
+          fine_cells, solution%hierarchy%fine_dx, fine_interval, &
+          interface_distance, config, .false., "coarse_fine", fine_flux, &
+          local_ok)
+        if (.not. local_ok) return
+        call accumulate_fine_flux_1d( &
+          flux_register, fine_flux(:, 0), fine_flux(:, fine_cells), &
+          fine_interval, local_ok)
+        if (.not. local_ok) return
+      end do
+      call reflux_1d( &
+        solution%coarse(:, 1:config%nx), solution%hierarchy, &
+        flux_register, local_ok)
+      if (.not. local_ok) return
+      call synchronize_levels_1d(species, config, solution, local_ok)
+      if (.not. local_ok) return
+      call fill_fine_ghosts_1d( &
+        species, solution%hierarchy, solution%coarse, solution%coarse, &
+        1.0_dp, solution%fine, solution%fine_temperature, local_ok)
+      if (.not. local_ok) return
+    end if
+    ok = .true.
+  end subroutine advance_amr_transport_1d
+
+  subroutine advance_transport_level_1d( &
+      species, transport, state, temperature, nx, dx, interval, &
+      boundary_distance, config, physical_boundary, boundary, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, interval, boundary_distance
+    type(reactive_1d_config), intent(in) :: config
+    logical, intent(in) :: physical_boundary
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: initial_state(:, :), initial_temperature(:)
+    real(dp), allocatable :: stage1_state(:, :), stage1_temperature(:)
+    real(dp), allocatable :: euler2_state(:, :), euler2_temperature(:)
+    real(dp), allocatable :: first_flux(:, :), second_flux(:, :), q(:)
+    real(dp) :: guess, local_temperature, sound_speed
+    logical :: local_ok
+    integer :: nvar, cell
+
+    ok = .false.
+    if (interval <= 0.0_dp .or. boundary_distance <= 0.0_dp) return
+    nvar = size(state, 1)
+    allocate(initial_state(nvar, 0:nx + 1))
+    allocate(initial_temperature(0:nx + 1))
+    allocate(stage1_state(nvar, 0:nx + 1))
+    allocate(stage1_temperature(0:nx + 1))
+    allocate(euler2_state(nvar, 0:nx + 1))
+    allocate(euler2_temperature(0:nx + 1))
+    allocate(first_flux(nvar, 0:nx), second_flux(nvar, 0:nx))
+    allocate(q(reactive_nprim(size(species))))
+    initial_state = state
+    initial_temperature = temperature
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        initial_state, initial_temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    call transport_euler_update_1d( &
+      species, transport, initial_state, initial_temperature, nx, dx, &
+      interval, boundary_distance, config, physical_boundary, stage1_state, &
+      stage1_temperature, first_flux, local_ok)
+    if (.not. local_ok) return
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        stage1_state, stage1_temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    call transport_euler_update_1d( &
+      species, transport, stage1_state, stage1_temperature, nx, dx, &
+      interval, boundary_distance, config, physical_boundary, euler2_state, &
+      euler2_temperature, second_flux, local_ok)
+    if (.not. local_ok) return
+
+    state = initial_state
+    temperature = initial_temperature
+    do cell = 1, nx
+      state(:, cell) = &
+        0.5_dp * (initial_state(:, cell) + euler2_state(:, cell))
+      guess = 0.5_dp * &
+        (initial_temperature(cell) + euler2_temperature(cell))
+      call reactive_conserved_to_primitive( &
+        species, state(:, cell), guess, q, local_temperature, sound_speed, &
+        local_ok)
+      if (.not. local_ok) return
+      temperature(cell) = local_temperature
+    end do
+    flux = 0.5_dp * (first_flux + second_flux)
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        state, temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    ok = .true.
+  end subroutine advance_transport_level_1d
+
+  subroutine transport_euler_update_1d( &
+      species, transport, state, temperature, nx, dx, interval, &
+      boundary_distance, config, physical_boundary, output_state, &
+      output_temperature, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, interval, boundary_distance
+    type(reactive_1d_config), intent(in) :: config
+    logical, intent(in) :: physical_boundary
+    real(dp), intent(out) :: output_state(:, 0:), output_temperature(0:)
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: q(:)
+    real(dp) :: face_distance, local_temperature, sound_speed
+    logical :: local_ok
+    integer :: face, cell
+
+    ok = .false.
+    allocate(q(reactive_nprim(size(species))))
+    do face = 0, nx
+      face_distance = dx
+      if (.not. physical_boundary .and. &
+          (face == 0 .or. face == nx)) face_distance = boundary_distance
+      call reactive_diffusive_flux_x( &
+        species, transport, state(:, face), state(:, face + 1), &
+        temperature(face), temperature(face + 1), face_distance, &
+        config%viscosity_enabled, config%thermal_conduction_enabled, &
+        config%species_diffusion_enabled, config%barodiffusion_enabled, &
+        flux(:, face), local_ok)
+      if (.not. local_ok) return
+    end do
+    output_state = state
+    output_temperature = temperature
+    do cell = 1, nx
+      output_state(:, cell) = state(:, cell) - interval / dx * &
+        (flux(:, cell) - flux(:, cell - 1))
+      call reactive_conserved_to_primitive( &
+        species, output_state(:, cell), temperature(cell), q, &
+        local_temperature, sound_speed, local_ok)
+      if (.not. local_ok) return
+      output_temperature(cell) = local_temperature
+    end do
+    ok = .true.
+  end subroutine transport_euler_update_1d
 
   subroutine advance_amr_level_1d( &
       species, state, temperature, nx, dx, dt, reconstruction, limiter, &

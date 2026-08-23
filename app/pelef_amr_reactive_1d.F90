@@ -3,6 +3,9 @@ program pelef_amr_reactive_1d
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport, &
+    load_h2o2_full_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_elementary_mechanism_mod, only: &
@@ -19,6 +22,7 @@ program pelef_amr_reactive_1d
   type(amr_reactive_solution_1d) :: solution
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   real(dp) :: initial_integrals(5), final_integrals(5)
   real(dp) :: conservation_error(5)
   character(len=1024) :: input_path, message
@@ -36,8 +40,6 @@ program pelef_amr_reactive_1d
   end if
   if (.not. config%amr_enabled) &
     error stop "AMR reactive application requires amr_enabled"
-  if (config%transport_enabled) &
-    error stop "AMR molecular transport is not yet qualified"
 
   select case (trim(config%chemistry_model))
   case ("elementary")
@@ -45,18 +47,22 @@ program pelef_amr_reactive_1d
     if (.not. ok) error stop "Failed to load elementary thermodynamics"
     call load_h2o2_elementary_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load elementary mechanism"
+    call load_h2o2_elementary_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load elementary transport"
   case ("full_h2o2")
     call load_h2o2_full_thermo(species, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
     call load_h2o2_full_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
+    call load_h2o2_full_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 transport"
   case default
     error stop "Unknown chemistry model"
   end select
 
   call simulate_amr_reactive_1d( &
     species, reactions, config, solution, initial_integrals, &
-    final_integrals, ok)
+    final_integrals, ok, transport)
   if (.not. ok) error stop "AMR reactive 1D simulation failed"
   call write_amr_reactive_1d_csv( &
     config%output_file, species, solution, ok)
@@ -70,6 +76,8 @@ program pelef_amr_reactive_1d
   write(*, '(a,i0)') "Refinement ratio: ", config%amr_refinement_ratio
   write(*, '(a,1x,a)') "AMR reconstruction:", &
     trim(config%amr_reconstruction)
+  write(*, '(a,l2)') "AMR molecular transport: ", &
+    config%transport_enabled
   write(*, '(a,l2)') "Fine level active: ", solution%fine_active()
   if (solution%fine_active()) then
     write(*, '(a,i0,a,i0)') "Fine coarse-cell bounds: ", &
