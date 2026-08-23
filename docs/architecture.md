@@ -330,9 +330,9 @@ and 8 ranks in both Debug and Release builds.
 
 ## AMR one-dimensional foundation
 
-`amr_hierarchy_1d_mod` introduces a level-0/level-1 hierarchy without
-coupling AMR ownership to a particular fluid state width. A level-1 patch is
-strictly nested inside the coarse domain and uses an integer refinement ratio.
+`amr_hierarchy_1d_mod` retains a reusable adjacent-level interface without
+coupling AMR ownership to a particular fluid state width. Each child patch is
+strictly nested inside its parent and uses an integer refinement ratio.
 
 ```text
 coarse cell averages
@@ -346,8 +346,15 @@ synchronized conservative composite state
 
 Restriction replaces covered coarse cells with fine volume averages. Reflux
 corrects the two uncovered coarse cells adjacent to the refined patch using the
-time-integrated difference between fine and coarse interface fluxes. This first
-slice supplies hierarchy and synchronization primitives.
+time-integrated difference between fine and coarse interface fluxes.
+
+The arbitrary-depth wrapper owns an allocatable sequence of these adjacent
+interfaces. Every interface may use a different refinement ratio, and each
+level owns a separately allocated field because patch cell counts differ.
+Initialization propagates physical bounds and spacing through the complete
+nested chain. Composite integration counts each parent only outside its child,
+then counts the deepest level in full. Synchronization applies reflux and
+average-down from the deepest interface toward the root.
 
 `amr_regrid_1d_mod` tags a selected state component using a normalized local
 jump with an absolute floor, buffers the resulting tag interval, and constructs
@@ -359,8 +366,8 @@ unchanged fine cells retain their full resolution. An empty tag set removes the
 fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
-Multiple patches, more than two levels, and characteristic PPM/WENO
-coarse/fine coupling remain separate.
+Multiple patches, arbitrary-depth reactive advancement/regridding, and
+characteristic PPM/WENO coarse/fine coupling remain separate.
 
 ## Reactive AMR time advancement
 

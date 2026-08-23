@@ -376,7 +376,7 @@ remain later porting-plan phases rather than claims of this milestone.
 - [x] composite-integral conservation gate
 - [x] solution-driven tagging (`0.26.0`)
 - [x] dynamic regridding (`0.26.0`)
-- [ ] arbitrary multiple levels
+- [x] arbitrary multiple levels in hierarchy primitives (`0.30.0`)
 - [x] AMR reactive-flow application (`0.27.0`)
 - [x] AMR molecular transport (`0.29.0`)
 
@@ -428,8 +428,8 @@ full-H2/O2 chemistry.
 - [x] moving-contact error lower than the matching PCM AMR run
 - [x] composite conservation retained with PLM and dynamic regrid
 
-Characteristic PPM/WENO AMR reconstruction, multiple patches, more than two
-levels, and MPI patch ownership remain open.
+Characteristic PPM/WENO AMR reconstruction, multiple patches, reactive
+advancement beyond two levels, and MPI patch ownership remain open.
 
 ## Reactive AMR molecular transport (`0.29.0`)
 
@@ -448,3 +448,21 @@ levels, and MPI patch ownership remain open.
 Soret, Dufour, multicomponent Stefan--Maxwell diffusion, PelePhysics transport
 polynomial parity, multiple patches, and arbitrary multilevel recursion remain
 outside this milestone.
+
+## Arbitrary-depth AMR hierarchy foundation (`0.30.0`)
+
+- [x] allocatable sequence of adjacent coarse/fine level interfaces
+- [x] contiguous level numbering and strict physical nesting validation
+- [x] independent integer refinement ratio at every interface
+- [x] cumulative cell spacing, physical bounds, and subcycle products
+- [x] variable-size state storage for every level
+- [x] recursive conservative prolongation from the root level
+- [x] deepest-to-root restriction and covered-cell average-down
+- [x] one flux register per adjacent level pair
+- [x] deepest-to-root reflux followed by average-down
+- [x] arbitrary-depth composite integral over uncovered cells
+- [x] four-level mixed-ratio conservation and synchronization gate
+
+The hierarchy primitives have no fixed level-count limit. The runnable reactive
+application still owns two levels; recursive reactive hydro, chemistry,
+transport, regridding, and output are the next integration slice.

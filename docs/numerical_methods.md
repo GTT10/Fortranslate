@@ -862,8 +862,9 @@ The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
 AMR layer provides 1D two-level reactive PCM/PLM advancement, molecular
 transport, synchronization, tagging, and single-patch dynamic regridding. MPI
-2D, characteristic PPM/WENO coarse/fine reconstruction, multilevel and
-multipatch AMR, boundary refinement, embedded boundaries, LES,
+2D, characteristic PPM/WENO coarse/fine reconstruction, arbitrary-depth
+reactive advancement, multipatch AMR, boundary refinement, embedded
+boundaries, LES,
 particles/spray, and accelerators remain outside the implemented scope. The
 transport model still
 excludes Soret, Dufour,
@@ -903,6 +904,35 @@ interface and adds it to the uncovered coarse cell on the right interface. The
 covered coarse cells are separately replaced by restricted fine averages. A
 composite integral counts uncovered coarse volumes and fine volumes exactly
 once, providing the conservation gate.
+
+## Arbitrary-depth nested AMR hierarchy
+
+An arbitrary-depth hierarchy is an allocatable chain of adjacent-level
+relations. For interface `ell -> ell+1`, the relation records its own integer
+ratio `r_ell`, parent-local patch bounds, physical parent bounds, and parent and
+child spacing. The child becomes the complete parent field of the next
+relation, so no fixed maximum level count or common refinement ratio is built
+into the data model.
+
+The number of substeps and step size relative to a root interval are
+
+```text
+N_0 = 1,
+N_ell = product(m=0...ell-1, r_m),
+dt_ell = dt_0 / N_ell.
+```
+
+Conservative prolongation proceeds from root to deepest level. Restriction,
+reflux, and average-down proceed in the opposite direction. For each interface,
+reflux first corrects the two uncovered parent cells, then average-down replaces
+the covered parent cells. Processing the deepest interface first ensures the
+state transferred to its parent already contains all finer-level information.
+
+The multilevel composite integral sums the uncovered portion of every level
+that owns a child and the complete deepest field. A four-level gate with ratios
+`2`, `3`, and `2` verifies cumulative geometry, 12-way root-relative
+subcycling, restriction identities, and simultaneous conservation correction
+at all three interfaces.
 
 ## One-dimensional tagging and dynamic regridding
 

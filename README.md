@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.29.0` milestone contains ten serial verification executables, five
+The `0.30.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -143,9 +143,10 @@ With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
 
 ### One-dimensional AMR
 
-The first AMR slice provides:
+The AMR layer provides:
 
 - a static two-level hierarchy with an interior refined patch;
+- an arbitrary-depth hierarchy foundation built from nested level interfaces;
 - arbitrary component counts and integer refinement ratios;
 - MC-limited, conservative piecewise-linear prolongation;
 - volume-average restriction and covered-cell synchronization;
@@ -168,12 +169,16 @@ The first AMR slice provides:
 - parabolic fine subcycling with time-interpolated coarse transport ghosts;
 - diffusive flux-register reflux and covered-cell average-down;
 - symmetric reaction--transport--hydro--transport--reaction composition;
+- cumulative multilevel subcycle schedules and deepest-to-root synchronization;
+- a four-level, mixed-ratio conservation gate across every interface;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 The reactive AMR application qualifies PCM and limited primitive-variable PLM
-Godunov hydro with dilute-gas molecular transport. Arbitrary multiple levels,
-boundary-touching fine patches, multiple patches per level, and characteristic
-PPM/WENO AMR reconstruction remain later slices.
+Godunov hydro with dilute-gas molecular transport on two active levels. The
+hierarchy and transfer/synchronization primitives support arbitrary depth, but
+arbitrary-depth reactive advancement, boundary-touching fine patches, multiple
+patches per level, and characteristic PPM/WENO AMR reconstruction remain later
+slices.
 
 ## Build and test
 

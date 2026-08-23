@@ -361,3 +361,24 @@ AMR molecular transport is accepted only while:
   tolerance;
 - the reacting-hotspot application exercises transport together with
   chemistry, PLM hydro, reflux, and regridding.
+
+## 0.30.0 arbitrary-depth AMR hierarchy gates
+
+The multilevel hierarchy foundation is accepted only while:
+
+- a runtime-sized interface array represents one, two, or arbitrarily many
+  levels without a compile-time maximum;
+- every adjacent pair has contiguous level numbering, strict nesting, and an
+  independently validated refinement ratio;
+- cumulative physical bounds, cell counts, and spacings agree across the full
+  chain;
+- a boundary-touching patch at any depth is rejected;
+- recursive prolongation restricts back to every parent cell average;
+- cumulative subcycle counts and time steps close exactly to the root interval;
+- deepest-to-root average-down synchronizes every covered parent region;
+- one independent flux register is owned for each adjacent pair;
+- deepest-to-root reflux resets every register and synchronizes each parent;
+- a nontrivial four-level, mixed-ratio flux mismatch is corrected to
+  roundoff at all three interfaces;
+- the arbitrary-depth composite integral is invariant under prolongation,
+  restriction, and synchronization.

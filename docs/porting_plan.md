@@ -473,7 +473,7 @@ Implementation order:
 5. [x] reflux (`0.25.0`)
 6. [x] tagging (`0.26.0`)
 7. [x] dynamic regrid (`0.26.0`)
-8. [ ] arbitrary multiple levels
+8. [x] arbitrary multiple levels in hierarchy primitives (`0.30.0`)
 
 Reactive application integration:
 
@@ -484,6 +484,7 @@ Reactive application integration:
 - [x] limited PLM coarse/fine reconstruction (`0.28.0`)
 - [ ] characteristic PPM/WENO coarse/fine reconstruction
 - [x] AMR molecular transport (`0.29.0`)
+- [ ] arbitrary-depth reactive state ownership and recursive advancement
 
 AMR parity metrics:
 
