@@ -609,3 +609,19 @@ Patch-tree chemistry splitting is accepted only while:
 - every parent-child relation is synchronized within `5e-13`, and all cells
   retain positive temperature and pressure, nonnegative species, and closure
   within `3e-10` in Debug and Release CI.
+
+## 0.45.0 reactive patch-tree transport gates
+
+Patch-tree molecular transport is accepted only while:
+
+- the full reaction--transport--hydro--transport--reaction split advances a
+  four-level `1/2/3/2`-patch reactive hotspot;
+- two transport half-steps produce exact per-level call counts of
+  `2/16/96/256` under ratio-two parabolic subcycling;
+- an otherwise identical transport-disabled control differs from the
+  transport-enabled state by more than `100 epsilon`;
+- composite mass, three momentum components, and total energy remain within
+  `2e-9`, and every parent-child relation remains synchronized within `8e-13`;
+- temperature and pressure remain positive, species remain nonnegative and
+  closed within `3e-10`, and omitting the required transport database rejects
+  the step without changing state or counters in Debug and Release CI.

@@ -702,3 +702,22 @@ This milestone composes elementary chemistry with the static patch-tree PCM
 hydro path. Molecular transport, dynamic tagging and overlap-preserving tree
 rebuilds, same-level exchange, physical-boundary children, load balancing, and
 distributed patch ownership remain separate.
+
+## Reactive patch-tree molecular transport (`0.45.0`)
+
+- [x] all-patch hydro and parabolic timestep reduction
+- [x] cumulative refinement-ratio-squared transport subcycling
+- [x] midpoint time interpolation for parent-to-child transport ghosts
+- [x] per-child coarse and fine diffusive flux accumulation
+- [x] recursive transport reflux and covered-cell average-down
+- [x] separate per-level transport-advance accounting
+- [x] reaction--transport--hydro--transport--reaction public composition
+- [x] four-level exact `2/16/96/256` transport-call gate
+- [x] transport-enabled versus transport-disabled state-change gate
+- [x] mass, momentum, energy, synchronization, and physical-state gates
+- [x] missing transport database rejection without solution mutation
+
+This milestone completes the physics composition on the static, strictly
+interior patch-tree PCM path. Dynamic tagging and overlap-preserving tree
+rebuilds, same-level exchange, physical-boundary children, load balancing, and
+distributed patch ownership remain separate.

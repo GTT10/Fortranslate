@@ -1207,14 +1207,21 @@ ancestors. The stable root interval is the minimum of each patch's local CFL
 limit multiplied by its cumulative refinement ratio.
 
 The complete reactive-tree interval uses
-`R(dt/2)-H(dt)-R(dt/2)`. Each reaction operator advances every patch for the
+`R(dt/2)-T(dt/2)-H(dt)-T(dt/2)-R(dt/2)`. Each reaction operator advances every patch for the
 same physical half interval because chemistry is cell-local rather than a
 mesh-stability-limited flux operator. It then averages the changed fields from
 the deepest leaves to the root, recovers every parent temperature, and refreshes
 all ghosts. A transaction around the full composition prevents a failed second
 reaction half-step from retaining the already accepted hydro state.
 
-The qualified reactive-tree gate uses PCM, elementary chemistry, and strictly
-interior separated patches. Transport, dynamic patch-tree rebuilds,
-physical-boundary children, and same-level ghost exchange remain future
-integrations.
+Each transport recursion advances its parent for `dt_l`, then advances each
+child for `r_l^2` intervals of `dt_l/r_l^2`. The parent start and end states
+provide midpoint-in-time coarse/fine ghosts. Coarse and fine diffusive boundary
+fluxes accumulate in the same nested register shape as hydro, followed by
+per-parent reflux and average-down. A fine transport limit is converted to a
+root interval by the square of its cumulative refinement ratio.
+
+The qualified reactive-tree gate uses PCM, elementary chemistry, molecular
+transport, and strictly interior separated patches. Dynamic patch-tree
+rebuilds, physical-boundary children, and same-level ghost exchange remain
+future integrations.

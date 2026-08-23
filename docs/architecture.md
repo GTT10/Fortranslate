@@ -455,10 +455,17 @@ covered parent cells again represent their children before the next operator.
 The outer transaction restores state, temperature, time, and counters together
 if either reaction half-step or hydro fails.
 
+Molecular transport uses the same parent-owned register topology with
+parabolic subcycling. A parent advances once for its transport interval; each
+child advances `r^2` times with midpoint-interpolated parent ghosts, returns its
+time-integrated diffusive boundary fluxes, and is refluxed and averaged down
+before returning. The timestep reduction applies the square of every
+cumulative refinement ratio to each fine-patch transport limit.
+
 The qualified patch-tree path currently covers static interior patches, PCM
-hydro, and elementary chemistry. Dynamic tree rebuilds, molecular transport
-composition, same-level ghost exchange, transfer between changed patch trees,
-one-sided periodic-seam refinement, and MPI patch ownership remain separate.
+hydro, elementary chemistry, and molecular transport. Dynamic tree rebuilds,
+same-level ghost exchange, transfer between changed patch trees, one-sided
+periodic-seam refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 
