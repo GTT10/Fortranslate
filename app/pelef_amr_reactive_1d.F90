@@ -94,6 +94,9 @@ program pelef_amr_reactive_1d
   write(*, '(a,i0)') "Maximum AMR levels: ", config%amr_max_levels
   write(*, '(a,1x,a)') "AMR reconstruction:", &
     trim(config%amr_reconstruction)
+  write(*, '(a,l2)') "AMR hybrid WENO: ", config%amr_hybrid_weno
+  if (config%amr_hybrid_weno) &
+    write(*, '(a,i0)') "AMR WENO scheme: ", config%amr_weno_scheme
   write(*, '(a,l2)') "AMR molecular transport: ", &
     config%transport_enabled
   if (multilevel_run) then

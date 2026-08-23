@@ -899,7 +899,7 @@ contains
       riemann_solver, physical_boundary, boundary, flux, ok, &
       left_ghost_state, right_ghost_state, left_ghost_temperature, &
       right_ghost_temperature, ppm_contact_steepening, &
-      ppm_shock_flattening)
+      ppm_shock_flattening, amr_hybrid_weno, amr_weno_scheme)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -916,15 +916,23 @@ contains
     real(dp), intent(in), optional :: right_ghost_temperature(:)
     logical, intent(in), optional :: ppm_contact_steepening
     logical, intent(in), optional :: ppm_shock_flattening
+    logical, intent(in), optional :: amr_hybrid_weno
+    integer, intent(in), optional :: amr_weno_scheme
 
     logical :: use_contact_steepening, use_shock_flattening, wide_ghosts
+    logical :: use_hybrid_weno
+    integer :: selected_weno_scheme
 
     use_contact_steepening = .false.
     use_shock_flattening = .false.
+    use_hybrid_weno = .false.
+    selected_weno_scheme = 1
     if (present(ppm_contact_steepening)) &
       use_contact_steepening = ppm_contact_steepening
     if (present(ppm_shock_flattening)) &
       use_shock_flattening = ppm_shock_flattening
+    if (present(amr_hybrid_weno)) use_hybrid_weno = amr_hybrid_weno
+    if (present(amr_weno_scheme)) selected_weno_scheme = amr_weno_scheme
     wide_ghosts = present(left_ghost_state) .and. &
       present(right_ghost_state) .and. &
       present(left_ghost_temperature) .and. &
@@ -952,12 +960,14 @@ contains
         call advance_ppm_level_1d( &
           species, state, temperature, nx, dx, dt, reconstruction, &
           riemann_solver, boundary, use_contact_steepening, &
-          use_shock_flattening, flux, ok)
+          use_shock_flattening, use_hybrid_weno, selected_weno_scheme, &
+          flux, ok)
       else if (wide_ghosts) then
         call advance_ppm_level_1d( &
           species, state, temperature, nx, dx, dt, reconstruction, &
           riemann_solver, boundary, use_contact_steepening, &
-          use_shock_flattening, flux, ok, left_ghost_state, &
+          use_shock_flattening, use_hybrid_weno, selected_weno_scheme, &
+          flux, ok, left_ghost_state, &
           right_ghost_state, left_ghost_temperature, &
           right_ghost_temperature)
       else
@@ -973,7 +983,8 @@ contains
   subroutine advance_ppm_level_1d( &
       species, state, temperature, nx, dx, dt, reconstruction, &
       riemann_solver, boundary, use_contact_steepening, &
-      use_shock_flattening, flux, ok, left_ghost_state, &
+      use_shock_flattening, use_hybrid_weno, weno_scheme, flux, ok, &
+      left_ghost_state, &
       right_ghost_state, left_ghost_temperature, right_ghost_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
@@ -981,6 +992,8 @@ contains
     real(dp), intent(in) :: dx, dt
     character(len=*), intent(in) :: reconstruction, riemann_solver, boundary
     logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    logical, intent(in) :: use_hybrid_weno
+    integer, intent(in) :: weno_scheme
     real(dp), intent(out) :: flux(:, 0:)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: left_ghost_state(:, :)
@@ -1040,7 +1053,8 @@ contains
     call ppm_euler_update_1d( &
       species, initial_state, initial_temperature, nx, dx, dt, &
       reconstruction, riemann_solver, boundary, use_contact_steepening, &
-      use_shock_flattening, left_wide, right_wide, &
+      use_shock_flattening, use_hybrid_weno, weno_scheme, left_wide, &
+      right_wide, &
       left_wide_temperature, right_wide_temperature, stage1_state, &
       stage1_temperature, first_flux, local_ok)
     if (.not. local_ok) return
@@ -1054,7 +1068,8 @@ contains
     call ppm_euler_update_1d( &
       species, stage1_state, stage1_temperature, nx, dx, dt, &
       reconstruction, riemann_solver, boundary, use_contact_steepening, &
-      use_shock_flattening, left_wide, right_wide, &
+      use_shock_flattening, use_hybrid_weno, weno_scheme, left_wide, &
+      right_wide, &
       left_wide_temperature, right_wide_temperature, euler2_state, &
       euler2_temperature, second_flux, local_ok)
     if (.not. local_ok) return
@@ -1082,7 +1097,8 @@ contains
     call ppm_euler_update_1d( &
       species, stage2_state, stage2_temperature, nx, dx, dt, &
       reconstruction, riemann_solver, boundary, use_contact_steepening, &
-      use_shock_flattening, left_wide, right_wide, &
+      use_shock_flattening, use_hybrid_weno, weno_scheme, left_wide, &
+      right_wide, &
       left_wide_temperature, right_wide_temperature, euler3_state, &
       euler3_temperature, third_flux, local_ok)
     if (.not. local_ok) return
@@ -1157,7 +1173,8 @@ contains
   subroutine ppm_euler_update_1d( &
       species, state, temperature, nx, dx, dt, reconstruction, &
       riemann_solver, boundary, use_contact_steepening, &
-      use_shock_flattening, left_wide, right_wide, &
+      use_shock_flattening, use_hybrid_weno, weno_scheme, left_wide, &
+      right_wide, &
       left_wide_temperature, right_wide_temperature, output_state, &
       output_temperature, flux, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -1166,6 +1183,8 @@ contains
     real(dp), intent(in) :: dx, dt
     character(len=*), intent(in) :: reconstruction, riemann_solver, boundary
     logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    logical, intent(in) :: use_hybrid_weno
+    integer, intent(in) :: weno_scheme
     real(dp), intent(in) :: left_wide(:, :), right_wide(:, :)
     real(dp), intent(in) :: left_wide_temperature(:)
     real(dp), intent(in) :: right_wide_temperature(:)
@@ -1195,7 +1214,8 @@ contains
         species, state, temperature, nx, boundary, dt / dx, &
         use_contact_steepening, use_shock_flattening, left_face, &
         right_face, left_t, right_t, local_ok, left_wide, right_wide, &
-        left_wide_temperature, right_wide_temperature)
+        left_wide_temperature, right_wide_temperature, use_hybrid_weno, &
+        weno_scheme)
     case default
       return
     end select

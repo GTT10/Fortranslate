@@ -718,7 +718,9 @@ contains
         config%amr_reconstruction, config%limiter, config%riemann_solver, &
         physical_boundary, level_boundary(config, level), flux, local_ok, &
         ppm_contact_steepening=config%ppm_contact_steepening, &
-        ppm_shock_flattening=config%ppm_shock_flattening)
+        ppm_shock_flattening=config%ppm_shock_flattening, &
+        amr_hybrid_weno=config%amr_hybrid_weno, &
+        amr_weno_scheme=config%amr_weno_scheme)
     else
       call advance_amr_level_1d( &
         species, solution%levels(level)%state, &
@@ -729,7 +731,8 @@ contains
         solution%levels(level)%right_ghost_state, &
         solution%levels(level)%left_ghost_temperature, &
         solution%levels(level)%right_ghost_temperature, &
-        config%ppm_contact_steepening, config%ppm_shock_flattening)
+        config%ppm_contact_steepening, config%ppm_shock_flattening, &
+        config%amr_hybrid_weno, config%amr_weno_scheme)
     end if
     if (.not. local_ok) return
     state_end = solution%levels(level)%state

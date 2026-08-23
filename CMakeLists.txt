@@ -36,6 +36,7 @@ add_library(
   src/transport/mixture_transport_mod.F90
   src/driver/simulation_config_reactive_1d_mod.F90
   src/driver/simulation_config_reactive_2d_mod.F90
+  src/hydro/reconstruction_weno_mod.F90
   src/reactive/reactive_1d_mod.F90
   src/amr/amr_reactive_1d_mod.F90
   src/boundary/reactive_boundary_2d_mod.F90

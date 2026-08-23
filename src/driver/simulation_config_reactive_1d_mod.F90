@@ -25,6 +25,8 @@ module simulation_config_reactive_1d_mod
     real(dp) :: transport_cfl = 0.40_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
+    logical :: amr_hybrid_weno = .false.
+    integer :: amr_weno_scheme = 1
     logical :: amr_enabled = .false.
     character(len=32) :: amr_reconstruction = "pcm"
     integer :: amr_refinement_ratio = 2
@@ -72,6 +74,7 @@ contains
 
     integer :: nx, maximum_steps, unit, status
     integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
+    integer :: amr_weno_scheme
     integer :: amr_tag_component, amr_buffer_cells
     integer :: amr_minimum_patch_cells
     real(dp) :: x_lower, x_upper, final_time, cfl
@@ -93,7 +96,7 @@ contains
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
-    logical :: amr_enabled
+    logical :: amr_enabled, amr_hybrid_weno
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
@@ -101,7 +104,8 @@ contains
       chemistry_enabled, chemistry_model, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, transport_cfl, ppm_contact_steepening, &
-      ppm_shock_flattening, chemistry_relative_tolerance, &
+      ppm_shock_flattening, amr_hybrid_weno, amr_weno_scheme, &
+      chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
       amr_enabled, amr_reconstruction, &
       amr_refinement_ratio, amr_max_levels, amr_regrid_interval, &
@@ -135,6 +139,8 @@ contains
     transport_cfl = config%transport_cfl
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
+    amr_hybrid_weno = config%amr_hybrid_weno
+    amr_weno_scheme = config%amr_weno_scheme
     amr_enabled = config%amr_enabled
     amr_reconstruction = config%amr_reconstruction
     amr_refinement_ratio = config%amr_refinement_ratio
@@ -206,11 +212,17 @@ contains
         amr_minimum_patch_cells <= nx - 2 .and. &
         amr_relative_gradient_threshold >= 0.0_dp .and. &
         amr_absolute_gradient_threshold >= 0.0_dp .and. &
-        amr_scale_floor > 0.0_dp
+        amr_scale_floor > 0.0_dp .and. &
+        amr_weno_scheme >= 0 .and. amr_weno_scheme <= 1
       ok = ok .and. (trim(amr_reconstruction) == "pcm" .or. &
         trim(amr_reconstruction) == "plm" .or. &
         trim(amr_reconstruction) == "ppm" .or. &
         trim(amr_reconstruction) == "characteristic_ppm")
+    end if
+    if (ok .and. amr_hybrid_weno .and. &
+        (.not. amr_enabled .or. &
+          trim(amr_reconstruction) /= "characteristic_ppm")) then
+      ok = .false.
     end if
     if (.not. ok) then
       message = "Invalid reactive 1D configuration"
@@ -297,6 +309,8 @@ contains
     config%transport_cfl = transport_cfl
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
+    config%amr_hybrid_weno = amr_hybrid_weno
+    config%amr_weno_scheme = amr_weno_scheme
     config%amr_enabled = amr_enabled
     config%amr_reconstruction = trim(amr_reconstruction)
     config%amr_refinement_ratio = amr_refinement_ratio

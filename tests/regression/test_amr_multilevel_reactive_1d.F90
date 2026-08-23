@@ -27,9 +27,12 @@ program test_amr_multilevel_reactive_1d
   type(amr_multilevel_reactive_solution_1d) :: initial_solution
   type(amr_multilevel_reactive_solution_1d) :: solution, chemistry_solution
   type(amr_multilevel_reactive_solution_1d) :: ppm_solution
+  type(amr_multilevel_reactive_solution_1d) :: weno_js_solution
+  type(amr_multilevel_reactive_solution_1d) :: weno_z_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, ppm_conservation_error
+  real(dp) :: weno_js_conservation_error, weno_z_conservation_error
   real(dp) :: minimum_temperature
   real(dp) :: maximum_closure_error
   integer, parameter :: patch_lower(2) = [4, 5]
@@ -112,6 +115,9 @@ program test_amr_multilevel_reactive_1d
   call require(maximum_closure_error < 3.0e-10_dp, &
     "characteristic PPM species closure")
 
+  call run_weno_case(0, weno_js_solution, weno_js_conservation_error)
+  call run_weno_case(1, weno_z_solution, weno_z_conservation_error)
+
   chemistry_config = config
   chemistry_config%chemistry_enabled = .true.
   chemistry_config%transport_enabled = .false.
@@ -133,11 +139,48 @@ program test_amr_multilevel_reactive_1d
     conservation_error
   write(*, '(a,1x,es16.8)') "PPM composite conservation:", &
     ppm_conservation_error
+  write(*, '(a,2(1x,es16.8))') "WENO5 JS/Z composite conservation:", &
+    weno_js_conservation_error, weno_z_conservation_error
   write(*, '(a,1x,es16.8)') "Minimum temperature:", &
     minimum_temperature
   write(*, '(a)') "test_amr_multilevel_reactive_1d: PASS"
 
 contains
+
+  subroutine run_weno_case(scheme, local_solution, local_error)
+    integer, intent(in) :: scheme
+    type(amr_multilevel_reactive_solution_1d), intent(out) :: local_solution
+    real(dp), intent(out) :: local_error
+
+    type(reactive_1d_config) :: local_config
+    integer :: local_step
+
+    local_config = config
+    local_config%amr_reconstruction = "characteristic_ppm"
+    local_config%amr_hybrid_weno = .true.
+    local_config%amr_weno_scheme = scheme
+    local_config%transport_enabled = .false.
+    local_solution = initial_solution
+    do local_step = 1, 2
+      call advance_multilevel_reactive_1d( &
+        species, reactions, local_config, dt, local_solution, ok)
+      call require(ok, "recursive hybrid WENO hydro step")
+    end do
+    call multilevel_reactive_integrals_1d( &
+      local_solution, final_integral, ok)
+    call require(ok, "hybrid WENO composite integral")
+    local_error = maxval(abs(final_integral - initial_integral) / &
+      max(1.0_dp, abs(initial_integral)))
+    call require(local_error < 3.0e-10_dp, &
+      "hybrid WENO reflux conservation")
+    call check_synchronization(local_solution)
+    call inspect_solution( &
+      local_solution, minimum_temperature, maximum_closure_error)
+    call require(minimum_temperature > 0.0_dp, &
+      "hybrid WENO thermodynamic positivity")
+    call require(maximum_closure_error < 3.0e-10_dp, &
+      "hybrid WENO species closure")
+  end subroutine run_weno_case
 
   subroutine configure_case(local_config)
     type(reactive_1d_config), intent(out) :: local_config

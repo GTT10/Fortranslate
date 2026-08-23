@@ -15,6 +15,8 @@ module reactive_1d_mod
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive, &
     advance_constant_volume_implicit_adaptive
   use slope_limiter_mod, only: limited_slope, minmod3
+  use reconstruction_weno_mod, only: &
+    weno_reconstruct_5js, weno_reconstruct_5z
   use simulation_config_reactive_1d_mod, only: &
     reactive_1d_config, reactive_1d_mole_fractions
   implicit none
@@ -984,7 +986,8 @@ contains
       species, state, temperature, nx, boundary, dtdx, &
       use_contact_steepening, use_shock_flattening, left_faces, right_faces, &
       left_t, right_t, ok, left_ghost_state, right_ghost_state, &
-      left_ghost_temperature, right_ghost_temperature)
+      left_ghost_temperature, right_ghost_temperature, hybrid_weno, &
+      weno_scheme)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -998,6 +1001,8 @@ contains
     real(dp), intent(in), optional :: right_ghost_state(:, :)
     real(dp), intent(in), optional :: left_ghost_temperature(:)
     real(dp), intent(in), optional :: right_ghost_temperature(:)
+    logical, intent(in), optional :: hybrid_weno
+    integer, intent(in), optional :: weno_scheme
 
     real(dp), allocatable :: q(:, :), cell_left(:, :), cell_right(:, :)
     real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
@@ -1007,12 +1012,18 @@ contains
     real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
     real(dp) :: flattening, eta, gamma_effective, dummy_c, local_t
     real(dp) :: profile_right(3), profile_left(3)
-    logical :: local_ok, wide_ghosts
+    logical :: local_ok, wide_ghosts, use_weno
     integer :: nspecies, nprimitive, i, j, component, k, source, lc, rc
-    integer :: first_cell, last_cell, layer
+    integer :: first_cell, last_cell, layer, selected_weno_scheme
 
     ok = .false.
     if (dtdx < 0.0_dp) return
+    use_weno = .false.
+    selected_weno_scheme = 1
+    if (present(hybrid_weno)) use_weno = hybrid_weno
+    if (present(weno_scheme)) selected_weno_scheme = weno_scheme
+    if (use_weno .and. &
+        (selected_weno_scheme < 0 .or. selected_weno_scheme > 1)) return
     wide_ghosts = present(left_ghost_state) .and. &
       present(right_ghost_state) .and. &
       present(left_ghost_temperature) .and. &
@@ -1092,8 +1103,19 @@ contains
       end if
       do component = 1, nprimitive
         stencil = q(component, i - 2:i + 2)
-        call reactive_ppm_reconstruct_five( &
-          stencil, flattening, edge_left(component), edge_right(component))
+        if (use_weno) then
+          select case (selected_weno_scheme)
+          case (0)
+            call weno_reconstruct_5js( &
+              stencil, edge_left(component), edge_right(component))
+          case (1)
+            call weno_reconstruct_5z( &
+              stencil, edge_left(component), edge_right(component))
+          end select
+        else
+          call reactive_ppm_reconstruct_five( &
+            stencil, flattening, edge_left(component), edge_right(component))
+        end if
       end do
 
       if (use_contact_steepening .and. flattening > 0.999_dp) then
