@@ -23,7 +23,7 @@ module amr_multilevel_reactive_1d_mod
     fill_fine_ghosts_1d, write_amr_cell
   use amr_regrid_1d_mod, only: &
     amr_tagging_criteria_1d, amr_regrid_plan_1d, &
-    plan_gradient_regrid_1d
+    tag_gradient_1d, build_regrid_plan_1d
   implicit none
   private
 
@@ -215,8 +215,16 @@ contains
         min(config%amr_minimum_patch_cells, nx - 2)
       if (criteria%minimum_patch_cells < 1) exit
       allocate(tags(nx))
-      call plan_gradient_regrid_1d( &
-        candidate(level)%values, criteria, tags, plan, local_ok)
+      call tag_gradient_1d( &
+        candidate(level)%values, criteria, tags, local_ok)
+      if (.not. local_ok) return
+      if (level > 1) then
+        tags(1) = .false.
+        tags(nx) = .false.
+      end if
+      call build_regrid_plan_1d( &
+        tags, criteria%buffer_cells, criteria%minimum_patch_cells, &
+        plan, local_ok)
       deallocate(tags)
       if (.not. local_ok) return
       if (.not. plan%active) exit
