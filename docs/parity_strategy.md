@@ -282,3 +282,16 @@ following remain active in both Debug and Release builds:
 - the final coupled field agrees for 1, 2, 4, and 8 ranks within `5e-13`
   relative tolerance;
 - the complete serial regression suite still passes in the MPI-enabled build.
+
+## 0.25.0 AMR-foundation gates
+
+The first AMR slice is accepted only while:
+
+- invalid refinement ratios and boundary-touching fine patches are rejected;
+- a limited linear profile is prolonged to exact fine-cell averages;
+- restricting the prolonged field recovers every covered coarse average;
+- average-down changes covered cells and leaves uncovered cells untouched;
+- fine substeps sum exactly to the coarse interval;
+- coarse and fine interface fluxes accumulate over their respective time steps;
+- reflux drives a manufactured composite conservation error to roundoff;
+- a used flux register resets so it cannot be applied twice accidentally.

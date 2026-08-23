@@ -362,3 +362,23 @@ separate parity task.
 The `0.24.0` milestone completes the planned one-dimensional MPI slice. AMR,
 multidimensional MPI decomposition, load balancing, and accelerator execution
 remain later porting-plan phases rather than claims of this milestone.
+
+## AMR foundation (`0.25.0`)
+
+- [x] typed one-dimensional level and patch/box metadata
+- [x] static two-level hierarchy with a strictly nested fine patch
+- [x] integer refinement ratios and fine/coarse spacing relationship
+- [x] MC-limited conservative piecewise-linear prolongation
+- [x] volume-average restriction and average-down synchronization
+- [x] refinement-ratio level subcycling schedule
+- [x] time-integrated coarse/fine flux register
+- [x] conservative two-interface reflux
+- [x] composite-integral conservation gate
+- [ ] solution-driven tagging
+- [ ] dynamic regridding
+- [ ] arbitrary multiple levels
+- [ ] AMR reactive-flow application
+
+The foundation is state-width independent and intentionally serial. MPI patch
+distribution follows only after the AMR ownership and regridding model is
+qualified.

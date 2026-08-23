@@ -6,8 +6,9 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.24.0` milestone contains nine serial verification executables and five
-optional MPI verification executables.
+The `0.25.0` milestone contains nine serial verification executables, five
+optional MPI verification executables, and a conservative one-dimensional AMR
+foundation.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -138,6 +139,21 @@ With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
 - transactional reaction--transport--hydro--transport--reaction splitting;
 - ordered gather output, global timestep/conservation reductions, and
   complete-field parity for 1, 2, 4, and 8 ranks.
+
+### One-dimensional AMR foundation
+
+The first AMR slice provides:
+
+- a static two-level hierarchy with an interior refined patch;
+- arbitrary component counts and integer refinement ratios;
+- MC-limited, conservative piecewise-linear prolongation;
+- volume-average restriction and covered-cell synchronization;
+- refinement-ratio level subcycling;
+- time-integrated coarse/fine flux registers and reflux;
+- a composite-integral gate proving conservation across both patch interfaces.
+
+Tagging, dynamic regridding, arbitrary multiple levels, and direct reactive-flow
+coupling remain later AMR slices.
 
 ## Build and test
 

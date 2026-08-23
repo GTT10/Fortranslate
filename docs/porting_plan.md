@@ -466,14 +466,14 @@ Required concepts:
 
 Implementation order:
 
-1. static two-level hierarchy
-2. restriction
-3. prolongation
-4. level subcycling
-5. reflux
-6. tagging
-7. dynamic regrid
-8. arbitrary multiple levels
+1. [x] static two-level hierarchy (`0.25.0`)
+2. [x] restriction (`0.25.0`)
+3. [x] prolongation (`0.25.0`)
+4. [x] level subcycling (`0.25.0`)
+5. [x] reflux (`0.25.0`)
+6. [ ] tagging
+7. [ ] dynamic regrid
+8. [ ] arbitrary multiple levels
 
 AMR parity metrics:
 

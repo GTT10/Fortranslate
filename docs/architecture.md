@@ -322,3 +322,25 @@ Every coupled attempt is transactional. A failure on any rank is reduced across
 the communicator, all ranks restore the pre-attempt state, and the scheduler
 retries a smaller interval. CI compares complete gathered fields for 1, 2, 4,
 and 8 ranks in both Debug and Release builds.
+
+## AMR one-dimensional foundation
+
+`amr_hierarchy_1d_mod` introduces a static level-0/level-1 hierarchy without
+coupling AMR ownership to a particular fluid state width. A level-1 patch is
+strictly nested inside the coarse domain and uses an integer refinement ratio.
+
+```text
+coarse cell averages
+        ↓ conservative limited prolongation
+fine patch cell averages
+        ↓ refinement-ratio subcycling
+fine accumulated interface fluxes
+        ↓ restriction + flux-register reflux
+synchronized conservative composite state
+```
+
+Restriction replaces covered coarse cells with fine volume averages. Reflux
+corrects the two uncovered coarse cells adjacent to the refined patch using the
+time-integrated difference between fine and coarse interface fluxes. This first
+slice supplies hierarchy and synchronization primitives; tagging, regridding,
+multiple levels, and solver coupling remain separate.

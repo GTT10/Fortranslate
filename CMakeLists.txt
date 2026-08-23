@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.24.0
+  VERSION 0.25.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -49,6 +49,7 @@ add_library(
   src/hydro/boundary_conditions_mod.F90
   src/hydro/boundary_conditions_multispecies_mod.F90
   src/hydro/slope_limiter_mod.F90
+  src/amr/amr_hierarchy_1d_mod.F90
   src/hydro/reconstruction_plm_mod.F90
   src/hydro/reconstruction_pelec_plm_mod.F90
   src/hydro/riemann_rusanov_mod.F90

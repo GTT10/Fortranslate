@@ -16,6 +16,10 @@ add_executable(test_slope_limiter unit/test_slope_limiter.F90)
 target_link_libraries(test_slope_limiter PRIVATE pelef_core)
 add_test(NAME unit_slope_limiter COMMAND test_slope_limiter)
 
+add_executable(test_amr_hierarchy_1d unit/test_amr_hierarchy_1d.F90)
+target_link_libraries(test_amr_hierarchy_1d PRIVATE pelef_core)
+add_test(NAME unit_amr_hierarchy_1d COMMAND test_amr_hierarchy_1d)
+
 add_executable(test_plm_reconstruction unit/test_plm_reconstruction.F90)
 target_link_libraries(test_plm_reconstruction PRIVATE pelef_core)
 add_test(NAME unit_plm_reconstruction COMMAND test_plm_reconstruction)

@@ -859,10 +859,44 @@ changes from producing divergent accept/reject histories.
 ## Scope limitations
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
-reactive flow includes molecular transport and physical boundaries, but MPI 2D,
-AMR, embedded boundaries, LES, particles/spray, and accelerators remain outside
-the implemented scope. The transport model still excludes Soret, Dufour,
+reactive flow includes molecular transport and physical boundaries, while the
+AMR layer currently provides only static 1D transfer and synchronization
+primitives. MPI 2D, reactive AMR integration, tagging/regridding, embedded
+boundaries, LES, particles/spray, and accelerators remain outside the implemented
+scope. The transport model still excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
 The characteristic hydro basis remains a qualified frozen-composition
 approximation rather than complete PeleC/PelePhysics general-EOS Riemann and
 multidimensional PPM corner-tracing parity.
+
+## Static two-level AMR transfer and synchronization
+
+For a coarse cell average `U_i` and refinement ratio `r`, the fine child center
+has normalized coarse-cell offset
+
+```text
+xi_j = (j - 1/2) / r - 1/2,  j = 1 ... r.
+```
+
+The first AMR prolongation uses an MC-limited coarse slope `s_i`:
+
+```text
+U_f(i,j) = U_i + s_i xi_j.
+```
+
+Because the child offsets sum to zero, their arithmetic mean is exactly `U_i`.
+Restriction therefore uses the matching volume average. The fine patch is
+strictly interior in this slice so every prolonged coarse cell has both slope
+neighbors and the patch has two explicit coarse/fine interfaces.
+
+For each interface the flux register stores the time-integrated mismatch
+
+```text
+delta I = sum_fine(dt_f F_f) - dt_c F_c.
+```
+
+Reflux subtracts `delta I / dx_c` from the uncovered coarse cell on the left
+interface and adds it to the uncovered coarse cell on the right interface. The
+covered coarse cells are separately replaced by restricted fine averages. A
+composite integral counts uncovered coarse volumes and fine volumes exactly
+once, providing the conservation gate.
