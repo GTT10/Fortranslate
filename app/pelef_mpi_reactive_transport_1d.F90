@@ -22,7 +22,7 @@ program pelef_mpi_reactive_transport_1d
   integer, parameter :: global_cells = 33
   real(dp), parameter :: domain_length = 1.0e-3_dp
   real(dp), parameter :: final_time = 1.0e-6_dp
-  real(dp), parameter :: transport_cfl = 0.10_dp
+  real(dp), parameter :: transport_cfl = 0.05_dp
   real(dp), parameter :: conservation_tolerance = 2.0e-10_dp
   real(dp), parameter :: closure_tolerance = 2.0e-10_dp
   real(dp), parameter :: species_tolerance = 2.0e-12_dp
@@ -175,13 +175,13 @@ contains
     phase = 2.0_dp * acos(-1.0_dp) * position / domain_length
     mole_fractions = [ &
       2.0_dp + 0.25_dp * sin(phase), &
-      1.0e-6_dp * (1.0_dp + 0.10_dp * cos(phase)), &
-      1.0e-8_dp, &
+      0.020_dp + 0.002_dp * cos(phase), &
+      0.015_dp + 0.001_dp * sin(2.0_dp * phase), &
       1.0_dp + 0.10_dp * cos(phase), &
-      1.0e-6_dp * (1.0_dp + 0.20_dp * sin(phase)), &
-      0.12_dp + 0.02_dp * cos(phase), &
-      1.0e-8_dp, &
-      1.0e-8_dp, &
+      0.020_dp + 0.002_dp * sin(phase), &
+      0.20_dp + 0.02_dp * cos(phase), &
+      0.010_dp + 0.001_dp * sin(phase), &
+      0.010_dp + 0.001_dp * cos(phase), &
       0.20_dp, &
       3.0_dp]
     mole_fractions = mole_fractions / sum(mole_fractions)
@@ -191,7 +191,7 @@ contains
 
     cell_temperature = 900.0_dp + 80.0_dp * sin(phase) + &
       20.0_dp * cos(2.0_dp * phase)
-    pressure = 101325.0_dp * (1.0_dp + 0.03_dp * cos(phase))
+    pressure = 101325.0_dp * (1.0_dp + 0.01_dp * cos(phase))
     density = mixture_density( &
       species, mass_fractions, pressure, cell_temperature, local_ok)
     if (.not. local_ok) error stop 'MPI transport density failed'
