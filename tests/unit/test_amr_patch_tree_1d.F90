@@ -1,11 +1,14 @@
 program test_amr_patch_tree_1d
   use precision_mod, only: dp
   use amr_hierarchy_1d_mod, only: &
-    amr_two_level_hierarchy_1d, restrict_average_1d
+    amr_two_level_hierarchy_1d, restrict_average_1d, &
+    accumulate_coarse_flux_1d, accumulate_fine_flux_1d
   use amr_patch_tree_1d_mod, only: &
     amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_level_fields_1d, initialize_patch_tree_1d, &
     prolong_patch_tree_1d, average_down_patch_tree_1d, &
+    amr_patch_tree_relation_flux_registers_1d, &
+    initialize_patch_tree_flux_registers_1d, synchronize_patch_tree_1d, &
     composite_integral_patch_tree_1d, patch_tree_child_geometry_1d
   implicit none
 
@@ -14,15 +17,19 @@ program test_amr_patch_tree_1d
   real(dp), parameter :: tolerance = 5.0e-12_dp
   type(amr_patch_level_plan_1d), allocatable :: plans(:), invalid_plans(:)
   type(amr_patch_tree_hierarchy_1d) :: hierarchy, invalid_hierarchy
-  type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
+  type(amr_patch_tree_level_fields_1d), allocatable :: fields(:), flux_fields(:)
+  type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
   type(amr_two_level_hierarchy_1d) :: geometry
   real(dp) :: root(variable_count, base_cells)
   real(dp) :: root_integral(variable_count)
   real(dp) :: composite_before(variable_count)
   real(dp) :: composite_after(variable_count)
+  real(dp) :: coarse_left(variable_count), coarse_right(variable_count)
+  real(dp) :: fine_left(variable_count), fine_right(variable_count)
+  real(dp) :: fine_density(variable_count), dt
   real(dp) :: x, child_lower, child_upper
   logical :: ok
-  integer :: cell, last_cell
+  integer :: cell, last_cell, relation, parent, child, index, fine_cells
 
   call configure_plans(plans)
   call initialize_patch_tree_1d( &
@@ -95,6 +102,74 @@ program test_amr_patch_tree_1d
   call assert_true(ok, "averaged patch-tree composite integral")
   call assert_close(maxval(abs(composite_after - composite_before)), &
     0.0_dp, tolerance, "patch-tree average-down conservation")
+
+  call prolong_patch_tree_1d(0.0_dp * root, hierarchy, flux_fields, ok)
+  call assert_true(ok, "zero patch-tree flux fields")
+  call initialize_patch_tree_flux_registers_1d( &
+    hierarchy, variable_count, registers, ok)
+  call assert_true(ok, "patch-tree flux-register initialization")
+  call assert_true( &
+    size(registers(3)%parents) == 3 .and. &
+    size(registers(3)%parents(1)%children) == 1 .and. &
+    size(registers(3)%parents(2)%children) == 0 .and. &
+    size(registers(3)%parents(3)%children) == 1, &
+    "branched flux-register ownership")
+
+  dt = 0.08_dp
+  relation = 3
+  do parent = 1, hierarchy%relations(relation)%parent_patch_count()
+    do child = 1, &
+        hierarchy%relations(relation)%child_sets(parent)%patch_count()
+      index = hierarchy%relations(relation)%child_index(parent, child)
+      geometry = &
+        hierarchy%relations(relation)%child_sets(parent)%patches(child)
+      coarse_left = [1.0_dp + real(parent, dp), -0.5_dp]
+      coarse_right = [2.0_dp, 0.25_dp * real(parent, dp)]
+      fine_left = coarse_left + [0.50_dp, 0.75_dp]
+      fine_right = coarse_right + [-0.25_dp, 0.50_dp]
+      call accumulate_coarse_flux_1d( &
+        registers(relation)%parents(parent)%children(child), &
+        coarse_left, coarse_right, dt, ok)
+      call assert_true(ok, "tree coarse-flux accumulation")
+      call accumulate_fine_flux_1d( &
+        registers(relation)%parents(parent)%children(child), &
+        fine_left, fine_right, dt, ok)
+      call assert_true(ok, "tree fine-flux accumulation")
+      if (.not. geometry%touches_left_boundary()) then
+        cell = geometry%fine_coarse_lower - 1
+        flux_fields(relation)%patches(parent)%values(:, cell) = &
+          flux_fields(relation)%patches(parent)%values(:, cell) - &
+          dt * coarse_left / geometry%coarse_dx
+      end if
+      if (.not. geometry%touches_right_boundary()) then
+        cell = geometry%fine_coarse_upper + 1
+        flux_fields(relation)%patches(parent)%values(:, cell) = &
+          flux_fields(relation)%patches(parent)%values(:, cell) + &
+          dt * coarse_right / geometry%coarse_dx
+      end if
+      fine_cells = geometry%fine%cell_count()
+      fine_density = dt * (fine_left - fine_right) / &
+        (real(fine_cells, dp) * geometry%fine_dx)
+      do cell = 1, fine_cells
+        flux_fields(relation + 1)%patches(index)%values(:, cell) = &
+          fine_density
+      end do
+    end do
+  end do
+  call composite_integral_patch_tree_1d( &
+    flux_fields, hierarchy, composite_before, ok)
+  call assert_true(ok .and. maxval(abs(composite_before)) > 1.0e-3_dp, &
+    "nontrivial deepest patch-tree flux mismatch")
+  call synchronize_patch_tree_1d(flux_fields, hierarchy, registers, ok)
+  call assert_true(ok, "deepest-to-root patch-tree reflux")
+  call composite_integral_patch_tree_1d( &
+    flux_fields, hierarchy, composite_after, ok)
+  call assert_true(ok, "post-reflux patch-tree composite integral")
+  call assert_close(maxval(abs(composite_after)), 0.0_dp, tolerance, &
+    "patch-tree reflux restores conservation")
+  call assert_synchronized(flux_fields, "post-reflux patch-tree sync")
+  call assert_true(registers_are_zero(registers), &
+    "all patch-tree flux registers reset")
 
   invalid_plans = plans
   invalid_plans(2)%patches(3)%parent_patch = 3
@@ -182,6 +257,26 @@ contains
       error stop 1
     end if
   end subroutine assert_true
+
+  logical function registers_are_zero(local_registers) result(zero)
+    type(amr_patch_tree_relation_flux_registers_1d), &
+      intent(in) :: local_registers(:)
+
+    integer :: local_relation, local_parent, local_child
+
+    zero = .true.
+    do local_relation = 1, size(local_registers)
+      do local_parent = 1, size(local_registers(local_relation)%parents)
+        do local_child = 1, size( &
+            local_registers(local_relation)%parents(local_parent)%children)
+          zero = zero .and. maxval(abs(local_registers(local_relation)% &
+            parents(local_parent)%children(local_child)%left)) <= tolerance
+          zero = zero .and. maxval(abs(local_registers(local_relation)% &
+            parents(local_parent)%children(local_child)%right)) <= tolerance
+        end do
+      end do
+    end do
+  end function registers_are_zero
 
   subroutine assert_close(actual, expected, tol, label)
     real(dp), intent(in) :: actual, expected, tol

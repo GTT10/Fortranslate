@@ -1,10 +1,11 @@
 module amr_patch_tree_1d_mod
   use precision_mod, only: dp
   use amr_hierarchy_1d_mod, only: &
-    amr_two_level_hierarchy_1d, amr_level_field_1d
+    amr_two_level_hierarchy_1d, amr_level_field_1d, amr_flux_register_1d
   use amr_multipatch_1d_mod, only: &
     amr_patch_set_1d, initialize_patch_set_1d, prolong_patch_set_1d, &
-    average_down_patch_set_1d
+    average_down_patch_set_1d, initialize_patch_flux_registers_1d, &
+    synchronize_patch_set_1d
   implicit none
   private
 
@@ -49,11 +50,22 @@ module amr_patch_tree_1d_mod
     type(amr_level_field_1d), allocatable :: patches(:)
   end type amr_patch_tree_level_fields_1d
 
+  type, public :: amr_patch_tree_parent_flux_registers_1d
+    type(amr_flux_register_1d), allocatable :: children(:)
+  end type amr_patch_tree_parent_flux_registers_1d
+
+  type, public :: amr_patch_tree_relation_flux_registers_1d
+    type(amr_patch_tree_parent_flux_registers_1d), allocatable :: parents(:)
+  end type amr_patch_tree_relation_flux_registers_1d
+
   public :: initialize_patch_tree_1d
   public :: prolong_patch_tree_1d
   public :: average_down_patch_tree_1d
+  public :: initialize_patch_tree_flux_registers_1d
+  public :: synchronize_patch_tree_1d
   public :: composite_integral_patch_tree_1d
   public :: patch_tree_fields_are_valid_1d
+  public :: patch_tree_flux_registers_are_valid_1d
   public :: patch_tree_child_geometry_1d
 
 contains
@@ -353,6 +365,85 @@ contains
     ok = patch_tree_fields_are_valid_1d(fields, hierarchy)
   end subroutine average_down_patch_tree_1d
 
+  subroutine initialize_patch_tree_flux_registers_1d( &
+      hierarchy, variable_count, registers, ok)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
+    integer, intent(in) :: variable_count
+    type(amr_patch_tree_relation_flux_registers_1d), allocatable, &
+      intent(out) :: registers(:)
+    logical, intent(out) :: ok
+
+    logical :: local_ok
+    integer :: relation, parent
+
+    ok = hierarchy%is_valid() .and. variable_count >= 1
+    if (.not. ok) return
+    allocate(registers(size(hierarchy%relations)))
+    do relation = 1, size(hierarchy%relations)
+      allocate(registers(relation)%parents( &
+        hierarchy%relations(relation)%parent_patch_count()))
+      do parent = 1, hierarchy%relations(relation)%parent_patch_count()
+        call initialize_patch_flux_registers_1d( &
+          hierarchy%relations(relation)%child_sets(parent), &
+          variable_count, registers(relation)%parents(parent)%children, &
+          local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    ok = patch_tree_flux_registers_are_valid_1d( &
+      registers, hierarchy, variable_count)
+  end subroutine initialize_patch_tree_flux_registers_1d
+
+  subroutine synchronize_patch_tree_1d( &
+      fields, hierarchy, registers, ok)
+    type(amr_patch_tree_level_fields_1d), intent(inout) :: fields(:)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
+    type(amr_patch_tree_relation_flux_registers_1d), &
+      intent(inout) :: registers(:)
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_level_fields_1d), allocatable :: field_backup(:)
+    type(amr_patch_tree_relation_flux_registers_1d), allocatable :: &
+      register_backup(:)
+    logical :: local_ok
+    integer :: relation, parent, first_child, last_child, variable_count
+
+    ok = patch_tree_fields_are_valid_1d(fields, hierarchy)
+    if (.not. ok) return
+    variable_count = size(fields(1)%patches(1)%values, 1)
+    ok = patch_tree_flux_registers_are_valid_1d( &
+      registers, hierarchy, variable_count)
+    if (.not. ok) return
+    field_backup = fields
+    register_backup = registers
+    do relation = size(hierarchy%relations), 1, -1
+      do parent = 1, hierarchy%relations(relation)%parent_patch_count()
+        first_child = &
+          hierarchy%relations(relation)%child_offsets(parent) + 1
+        last_child = &
+          hierarchy%relations(relation)%child_offsets(parent + 1)
+        if (last_child < first_child) cycle
+        call synchronize_patch_set_1d( &
+          fields(relation)%patches(parent)%values, &
+          fields(relation + 1)%patches(first_child:last_child), &
+          hierarchy%relations(relation)%child_sets(parent), &
+          registers(relation)%parents(parent)%children, local_ok)
+        if (.not. local_ok) then
+          fields = field_backup
+          registers = register_backup
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    ok = patch_tree_fields_are_valid_1d(fields, hierarchy) .and. &
+      patch_tree_flux_registers_are_valid_1d( &
+        registers, hierarchy, variable_count)
+  end subroutine synchronize_patch_tree_1d
+
   pure subroutine composite_integral_patch_tree_1d( &
       fields, hierarchy, integral, ok)
     type(amr_patch_tree_level_fields_1d), intent(in) :: fields(:)
@@ -441,6 +532,47 @@ contains
       end do
     end do
   end function patch_tree_fields_are_valid_1d
+
+  pure logical function patch_tree_flux_registers_are_valid_1d( &
+      registers, hierarchy, variable_count) result(valid)
+    type(amr_patch_tree_relation_flux_registers_1d), &
+      intent(in) :: registers(:)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
+    integer, intent(in) :: variable_count
+
+    integer :: relation, parent, child
+
+    valid = hierarchy%is_valid() .and. variable_count >= 1 .and. &
+      size(registers) == size(hierarchy%relations)
+    if (.not. valid) return
+    do relation = 1, size(registers)
+      valid = allocated(registers(relation)%parents) .and. &
+        size(registers(relation)%parents) == &
+          hierarchy%relations(relation)%parent_patch_count()
+      if (.not. valid) return
+      do parent = 1, size(registers(relation)%parents)
+        valid = allocated(registers(relation)%parents(parent)%children) .and. &
+          size(registers(relation)%parents(parent)%children) == &
+            hierarchy%relations(relation)%child_sets(parent)%patch_count()
+        if (.not. valid) return
+        do child = 1, &
+            size(registers(relation)%parents(parent)%children)
+          valid = allocated( &
+            registers(relation)%parents(parent)%children(child)%left) .and. &
+            allocated( &
+            registers(relation)%parents(parent)%children(child)%right)
+          if (.not. valid) return
+          valid = size( &
+            registers(relation)%parents(parent)%children(child)%left) == &
+              variable_count .and. &
+            size( &
+            registers(relation)%parents(parent)%children(child)%right) == &
+              variable_count
+          if (.not. valid) return
+        end do
+      end do
+    end do
+  end function patch_tree_flux_registers_are_valid_1d
 
   pure subroutine patch_tree_child_geometry_1d( &
       relation, child_index, geometry, ok)
