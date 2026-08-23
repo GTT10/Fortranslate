@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes nine serial verification drivers and five optional MPI drivers
+PeleF exposes ten serial verification drivers and five optional MPI drivers
 over shared numerical and physical-property modules.
 
 ```text
@@ -354,4 +354,32 @@ unchanged fine cells retain their full resolution. An empty tag set removes the
 fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
-Multiple patches, more than two levels, and solver coupling remain separate.
+Multiple patches, more than two levels, and high-order coarse/fine coupling
+remain separate.
+
+## Reactive AMR time advancement
+
+`amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both
+temperature fields, hierarchy metadata, simulation time, and regrid counters.
+One accepted coarse interval is:
+
+```text
+chemistry(dt/2) on coarse and fine
+        ↓
+coarse PCM hydro(dt) and interface-flux capture
+        ↓
+fine PCM hydro(dt/r), repeated r times
+  with time-interpolated coarse ghost states
+        ↓
+flux-register reflux + average-down
+        ↓
+chemistry(dt/2) on coarse and fine + average-down
+        ↓
+optional tagging and conservative regrid
+```
+
+The coarse CFL limit is combined with `r` times the fine CFL limit so every
+fine substep is stable. A complete solution copy makes the interval
+transactional: any EOS, Riemann, chemistry, transfer, or synchronization
+failure restores both levels and all hierarchy metadata. Composite output emits
+uncovered coarse cells and fine cells exactly once and in coordinate order.

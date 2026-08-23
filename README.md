@@ -6,9 +6,9 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.26.0` milestone contains nine serial verification executables, five
-optional MPI verification executables, and a conservative one-dimensional AMR
-layer with solution-driven tagging and dynamic regridding.
+The `0.27.0` milestone contains ten serial verification executables, five
+optional MPI verification executables, and a runnable one-dimensional reactive
+AMR application with solution-driven dynamic regridding.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -154,10 +154,18 @@ The first AMR slice provides:
 - component-selectable normalized-gradient tagging with absolute noise floors;
 - buffered, minimum-width single-patch planning with explicit boundary checks;
 - conservative patch creation, movement, resizing, and removal;
-- exact retention of same-resolution fine data where old and new patches overlap.
+- exact retention of same-resolution fine data where old and new patches overlap;
+- reactive general-EOS states advanced on both coarse and fine levels;
+- refinement-ratio fine-level subcycling with time-interpolated coarse ghosts;
+- coarse/fine flux accumulation, reflux, and average-down every coarse step;
+- symmetric chemistry--hydro--chemistry splitting across the AMR hierarchy;
+- transactional hierarchy rollback and periodic solution-driven regridding;
+- ordered composite CSV output with exact domain-coverage checks.
 
-Arbitrary multiple levels, boundary-touching fine patches, multiple patches per
-level, and direct reactive-flow coupling remain later AMR slices.
+The reactive AMR application currently qualifies PCM Godunov hydro without
+molecular transport. Arbitrary multiple levels, boundary-touching fine patches,
+multiple patches per level, high-order AMR reconstruction, and AMR molecular
+transport remain later slices.
 
 ## Build and test
 

@@ -309,3 +309,19 @@ Dynamic regridding is accepted only while:
 - new fine cells restrict to their source coarse averages;
 - patch movement preserves every component's composite integral to roundoff;
 - removing and recreating refinement also preserves the composite integral.
+
+## 0.27.0 reactive-AMR gates
+
+The first runnable reactive AMR path is accepted only while:
+
+- the initial reacting hotspot creates a strictly interior fine patch;
+- coarse and fine CFL limits produce stable refinement-ratio substeps;
+- fine ghost states receive coarse data at each substep time;
+- time-integrated coarse and fine interface fluxes are refluxed;
+- covered coarse cells equal restricted fine averages after every interval;
+- chemistry advances both levels without losing density, momentum, or energy;
+- any failed hierarchy operation rolls back both levels transactionally;
+- periodic regrid evaluation remains active during the reacting run;
+- the final composite state is positive and species mass fractions close;
+- composite mass, momentum, and energy remain conserved within `2e-10`;
+- CSV cells are coordinate ordered and cover the domain exactly once.

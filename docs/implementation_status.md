@@ -377,7 +377,7 @@ remain later porting-plan phases rather than claims of this milestone.
 - [x] solution-driven tagging (`0.26.0`)
 - [x] dynamic regridding (`0.26.0`)
 - [ ] arbitrary multiple levels
-- [ ] AMR reactive-flow application
+- [x] AMR reactive-flow application (`0.27.0`)
 
 The foundation is state-width independent and intentionally serial. MPI patch
 distribution follows only after the AMR ownership and regridding model is
@@ -397,3 +397,21 @@ qualified.
 The current planner deliberately produces one strictly interior patch. It does
 not yet cluster disjoint tag sets, refine physical boundaries, or construct
 more than two levels.
+
+## Reactive AMR application (`0.27.0`)
+
+- [x] executable two-level reactive 1D driver and namelist configuration
+- [x] general-EOS coarse/fine conserved states and temperatures
+- [x] refinement-ratio fine hydro subcycling
+- [x] time-interpolated coarse data for fine-patch ghost cells
+- [x] coarse/fine interface flux accumulation and reflux every coarse step
+- [x] covered-cell average-down after hydro and chemistry
+- [x] hierarchy-wide chemistry--hydro--chemistry Strang composition
+- [x] transactional rollback of coarse and fine states on failed updates
+- [x] periodic solution-driven patch creation, movement, resizing, or removal
+- [x] composite CSV output with ordered exact domain coverage
+- [x] reacting-hotspot positivity, closure, synchronization, and conservation
+
+This milestone qualifies first-order PCM hydro with elementary or full-H2/O2
+chemistry. High-order coarse/fine reconstruction, molecular transport on AMR,
+multiple patches, more than two levels, and MPI patch ownership remain open.

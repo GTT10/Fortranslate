@@ -860,11 +860,11 @@ changes from producing divergent accept/reject histories.
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
-AMR layer provides 1D two-level transfer, synchronization, tagging, and
-single-patch dynamic regridding. MPI 2D, reactive AMR integration, multilevel
-and multipatch AMR, boundary refinement, embedded boundaries, LES,
-particles/spray, and accelerators remain outside the implemented scope. The
-transport model still excludes Soret, Dufour,
+AMR layer provides 1D two-level reactive PCM advancement, synchronization,
+tagging, and single-patch dynamic regridding. MPI 2D, AMR molecular transport,
+high-order coarse/fine reconstruction, multilevel and multipatch AMR, boundary
+refinement, embedded boundaries, LES, particles/spray, and accelerators remain
+outside the implemented scope. The transport model still excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
 The characteristic hydro basis remains a qualified frozen-composition
 approximation rather than complete PeleC/PelePhysics general-EOS Riemann and
@@ -924,3 +924,32 @@ their fine averages, entering regions preserve their coarse averages, and the
 overlap preserves its complete fine representation. This sequence makes the
 composite integral invariant under patch creation, movement, resizing, and
 removal.
+
+## Reactive two-level AMR advance
+
+The first reactive AMR application uses PCM face states and the qualified
+general-EOS Rusanov or HLLC flux. If the fine-level explicit limit is
+`dt_f,max`, the coarse interval is limited by
+
+```text
+dt = min(dt_coarse,max, r * dt_f,max),
+dt_f = dt / r.
+```
+
+The coarse level advances once and the fine patch advances `r` times. Fine
+ghost states at substep `m` interpolate the adjacent uncovered coarse state
+between the beginning and end of the coarse hydro interval with
+`alpha = m/r`. Coarse and fine fluxes at both patch interfaces are accumulated
+over their actual time steps, then the existing reflux correction is applied.
+
+Chemistry is composed symmetrically around the complete hydro interval,
+
+```text
+R(dt/2) -> A_coarse(dt) + [A_fine(dt/r)]^r -> reflux/average-down
+        -> R(dt/2) -> average-down.
+```
+
+The cell-local constant-volume reactor conserves density, momentum, and total
+energy. Reflux accounts for coarse/fine advective mismatch, and average-down
+counts the fine solution in covered volumes, so the composite mass, momentum,
+and energy conservation argument remains valid for the coupled reactive step.
