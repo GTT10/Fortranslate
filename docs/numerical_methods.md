@@ -1230,5 +1230,13 @@ conservatively prolonged from that root. At each common level with equal `dx`,
 the physical intersection of every old/new patch pair is converted to aligned
 cell offsets and copied exactly. This coordinate rule survives patch movement,
 repartition, and changed parent ownership. The rebuilt tree is then averaged
-down deepest-to-root. Automatic tag-driven planning, physical-boundary
-children, and same-level ghost exchange remain future integrations.
+down deepest-to-root.
+
+For automatic tree planning, the synchronized root is the canonical input.
+Each prospective parent is tagged with the configured normalized-gradient and
+absolute thresholds. Its disconnected tag groups are buffered, expanded to a
+minimum width, and assigned that parent's flattened index. Children are
+conservatively prolonged before the same operation repeats at the next
+relation. Recursion stops independently on untagged branches and globally when
+no children remain or `amr_max_levels` is reached. Physical-boundary children
+and same-level ghost exchange remain future integrations.

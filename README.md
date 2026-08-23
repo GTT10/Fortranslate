@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.46.0` milestone contains ten serial verification executables, five
+The `0.47.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -228,6 +228,10 @@ The AMR layer provides:
   with physical-coordinate overlap transfer across changed parent ownership;
 - no-op, moved-tree conservation, deepest exact state/temperature retention,
   counter preservation, and invalid-plan rollback gates;
+- per-parent normalized-gradient tagging and deterministic disconnected-tag
+  clustering for automatic arbitrary-depth branching plans;
+- tag-driven transactional tree rebuilds, including root-only creation,
+  maximum-depth branching, unchanged-plan no-op, and invalid-request gates;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -246,8 +250,10 @@ cell exactly once. A separate static patch-tree engine permits each parent
 patch to own zero or more separated children at arbitrary depth and advances
 those patches recursively with level-ratio hydro subcycling. Every local child
 accumulates its own coarse/fine boundary fluxes; reflux and average-down occur
-after its fine subcycles, and failures restore the complete tree. Dynamic
-tag-driven patch-tree planning, same-level ghost exchange, and MPI patch
+after its fine subcycles, and failures restore the complete tree. The
+patch-tree engine can synchronize to the root, tag and cluster every
+prospective parent independently, and rebuild the resulting arbitrary-depth
+branching plan transactionally. Same-level ghost exchange and MPI patch
 ownership remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic

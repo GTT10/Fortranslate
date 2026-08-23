@@ -736,5 +736,23 @@ distributed patch ownership remain separate.
 - [x] moved four-level conservation and deepest exact-retention gate
 
 This milestone qualifies plan-driven dynamic trees. Automatic tag clustering
-at every parent, same-level exchange, physical-boundary children, load
-balancing, and distributed ownership remain separate.
+at every parent is added in `0.47.0`; same-level exchange, physical-boundary
+children, load balancing, and distributed ownership remain separate.
+
+## Tag-driven reactive patch-tree rebuilds (`0.47.0`)
+
+- [x] synchronized-root canonical input for deterministic planning
+- [x] normalized-gradient tagging on every prospective parent patch
+- [x] parent-local disconnected-tag clustering and minimum-width expansion
+- [x] stencil-support reservation for PCM/PLM and wide PPM ghosts
+- [x] deterministic parent-order flattening into branching level plans
+- [x] independent termination of untagged branches
+- [x] recursive plan construction through `amr_max_levels`
+- [x] tag-plan connection to the transactional overlap-preserving rebuild
+- [x] root-only to four-level `1/2/2/2` branch-creation gate
+- [x] unchanged-plan no-op and invalid-tag-request rollback gates
+
+This milestone qualifies automatic interior patch-tree planning and rebuilds
+for one common configured refinement ratio. Same-level adjacent-patch
+exchange, physical-boundary children, load balancing, and distributed patch
+ownership remain separate.

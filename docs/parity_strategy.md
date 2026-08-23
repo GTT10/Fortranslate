@@ -640,3 +640,18 @@ Plan-driven patch-tree regridding is accepted only while:
   remain unchanged;
 - an invalid parent ownership plan fails without changing state or regrid
   counters in Debug and Release CI.
+
+## 0.47.0 tag-driven patch-tree rebuild gates
+
+Automatic patch-tree planning is accepted only while:
+
+- two separated root features produce two deterministic children owned by the
+  root and retain separate branches through three refinement relations;
+- per-parent tag clustering reaches the configured four-level limit with
+  exact `1/2/2/2` patch counts and deterministic flattened ownership;
+- a root-only solution rebuilds transactionally, remains synchronized, and
+  preserves every composite conserved component within `3e-10`;
+- re-evaluating the unchanged tagged state is a no-op that increments only the
+  evaluation counter;
+- an invalid tag component fails without changing the solution or counters in
+  Debug and Release CI.

@@ -507,6 +507,8 @@ Reactive application integration:
 - [x] arbitrary-depth patch-tree molecular transport and full physics split
   (`0.45.0`)
 - [x] plan-driven dynamic patch-tree rebuild and overlap transfer (`0.46.0`)
+- [x] per-parent automatic tag clustering and arbitrary-depth patch-tree
+  rebuild (`0.47.0`)
 
 AMR parity metrics:
 

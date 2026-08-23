@@ -470,10 +470,20 @@ when their parent ownership changes. A final deepest-to-root average-down
 restores covered-parent consistency. State, temperature, time, advance
 counters, and regrid statistics roll back together on failure.
 
+Automatic planning uses that synchronized root as its deterministic source.
+At each prospective relation it tags every parent patch independently,
+restricts tags to cells that retain enough parent stencil support, and
+clusters disconnected features with the configured gap, buffer, and minimum
+width. Parent-local collections flatten in parent order into the next level.
+The resulting children are prolonged from the root and become the parents for
+the next tagging pass until tags end or `amr_max_levels` is reached. The plan
+then enters the same transactional rebuild and overlap-transfer path as an
+explicit plan.
+
 The qualified patch-tree path covers interior patches, PCM hydro, elementary
-chemistry, molecular transport, and plan-driven runtime rebuilds. Automatic
-tag-driven tree planning, same-level ghost exchange, one-sided periodic-seam
-refinement, and MPI patch ownership remain separate.
+chemistry, molecular transport, and explicit or tag-driven runtime rebuilds.
+Same-level ghost exchange, one-sided periodic-seam refinement, and MPI patch
+ownership remain separate.
 
 ## Reactive AMR time advancement
 
