@@ -13,6 +13,7 @@ module mpi_reactive_transport_1d_mod
 
   public :: mpi_reactive_transport_timestep
   public :: advance_mpi_reactive_transport
+  public :: advance_mpi_reactive_transport_adaptive
 
 contains
 
@@ -145,6 +146,67 @@ contains
     end if
     call exchange_transport_halos(domain, state, temperature, ok)
   end subroutine advance_mpi_reactive_transport
+
+  subroutine advance_mpi_reactive_transport_adaptive( &
+      domain, species, transport, state, temperature, dx, &
+      requested_interval, minimum_interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, accepted_interval, rejected_trials, ok)
+    type(mpi_domain_1d), intent(in) :: domain
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    real(dp), intent(in) :: dx, requested_interval, minimum_interval
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    real(dp), intent(out) :: accepted_interval
+    integer, intent(out) :: rejected_trials
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: trial_state(:, :), trial_temperature(:)
+    real(dp) :: trial_interval
+    logical :: local_ok, global_ok, reduction_ok
+    integer :: nvar
+
+    accepted_interval = 0.0_dp
+    rejected_trials = 0
+    local_ok = requested_interval >= 0.0_dp .and. &
+      minimum_interval > 0.0_dp .and. dx > 0.0_dp .and. &
+      valid_local_shape(domain, species, state, temperature)
+    call collective_logical_and(domain, local_ok, global_ok, reduction_ok)
+    if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    if (requested_interval <= 0.0_dp) then
+      call exchange_transport_halos(domain, state, temperature, ok)
+      return
+    end if
+
+    nvar = reactive_nvar(size(species))
+    allocate(trial_state(nvar, 0:domain%local_cells + 1))
+    allocate(trial_temperature(0:domain%local_cells + 1))
+    trial_interval = requested_interval
+    do
+      trial_state = state
+      trial_temperature = temperature
+      call advance_mpi_reactive_transport( &
+        domain, species, transport, trial_state, trial_temperature, dx, &
+        trial_interval, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, local_ok)
+      if (local_ok) then
+        state = trial_state
+        temperature = trial_temperature
+        accepted_interval = trial_interval
+        ok = .true.
+        return
+      end if
+      rejected_trials = rejected_trials + 1
+      if (trial_interval <= minimum_interval) exit
+      trial_interval = max(minimum_interval, 0.5_dp * trial_interval)
+    end do
+    ok = .false.
+  end subroutine advance_mpi_reactive_transport_adaptive
 
   subroutine distributed_transport_euler_update( &
       domain, species, transport, input_state, input_temperature, dx, dt, &
