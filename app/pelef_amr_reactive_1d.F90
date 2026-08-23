@@ -102,6 +102,8 @@ program pelef_amr_reactive_1d
     write(*, '(a,i0)') "Regrid evaluations: ", &
       multilevel_solution%regrid_evaluations
     write(*, '(a,i0)') "Hierarchy changes: ", multilevel_solution%regrids
+    write(*, '(a,i0)') "Fine overlap cells transferred: ", &
+      multilevel_solution%overlap_cells_transferred
     write(*, '(a,es24.16)') "Final time: ", multilevel_solution%time
   else
     write(*, '(a,l2)') "Fine level active: ", solution%fine_active()

@@ -39,6 +39,7 @@ module amr_multilevel_reactive_1d_mod
     integer :: steps = 0
     integer :: regrid_evaluations = 0
     integer :: regrids = 0
+    integer :: overlap_cells_transferred = 0
   contains
     procedure :: level_count => multilevel_reactive_level_count
     procedure :: is_valid => multilevel_reactive_is_valid
@@ -145,6 +146,7 @@ contains
     solution%steps = 0
     solution%regrid_evaluations = 0
     solution%regrids = 0
+    solution%overlap_cells_transferred = 0
     ok = solution%is_valid() .and. root_dx > 0.0_dp
   end subroutine initialize_multilevel_reactive_1d
 
@@ -171,6 +173,7 @@ contains
     solution%steps = 0
     solution%regrid_evaluations = 1
     solution%regrids = merge(1, 0, solution%level_count() > 1)
+    solution%overlap_cells_transferred = 0
     ok = .true.
   end subroutine initialize_tagged_multilevel_reactive_1d
 
@@ -433,6 +436,7 @@ contains
     type(amr_multilevel_reactive_solution_1d) :: backup, rebuilt
     real(dp), allocatable :: root_state(:, :), root_temperature(:)
     logical :: local_ok
+    integer :: transferred_cells
 
     changed = .false.
     ok = .false.
@@ -462,9 +466,82 @@ contains
     rebuilt%steps = backup%steps
     rebuilt%regrid_evaluations = backup%regrid_evaluations + 1
     rebuilt%regrids = backup%regrids + 1
+    call transfer_multilevel_overlap( &
+      backup, rebuilt, transferred_cells, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    call average_down_all_levels(species, config, rebuilt, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    rebuilt%overlap_cells_transferred = &
+      backup%overlap_cells_transferred + transferred_cells
     solution = rebuilt
     ok = .true.
   end subroutine regrid_multilevel_reactive_1d
+
+  subroutine transfer_multilevel_overlap( &
+      old_solution, new_solution, transferred_cells, ok)
+    type(amr_multilevel_reactive_solution_1d), intent(in) :: old_solution
+    type(amr_multilevel_reactive_solution_1d), intent(inout) :: new_solution
+    integer, intent(out) :: transferred_cells
+    logical, intent(out) :: ok
+
+    real(dp) :: old_lower, old_upper, new_lower, new_upper
+    real(dp) :: overlap_lower, overlap_upper, old_dx, new_dx, tolerance
+    real(dp) :: old_offset, new_offset
+    logical :: old_bounds_ok, new_bounds_ok
+    integer :: level, common_levels, old_first, new_first, cell_count
+
+    transferred_cells = 0
+    ok = old_solution%is_valid() .and. new_solution%is_valid()
+    if (.not. ok) return
+    common_levels = min( &
+      old_solution%level_count(), new_solution%level_count())
+    do level = 2, common_levels
+      old_dx = old_solution%hierarchy%level_dx(level - 1)
+      new_dx = new_solution%hierarchy%level_dx(level - 1)
+      tolerance = 128.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(old_dx), abs(new_dx))
+      if (abs(old_dx - new_dx) > tolerance) cycle
+      call old_solution%hierarchy%level_bounds( &
+        level - 1, old_lower, old_upper, old_bounds_ok)
+      call new_solution%hierarchy%level_bounds( &
+        level - 1, new_lower, new_upper, new_bounds_ok)
+      if (.not. old_bounds_ok .or. .not. new_bounds_ok) then
+        ok = .false.
+        return
+      end if
+      overlap_lower = max(old_lower, new_lower)
+      overlap_upper = min(old_upper, new_upper)
+      if (overlap_upper <= overlap_lower + tolerance) cycle
+      old_offset = (overlap_lower - old_lower) / old_dx
+      new_offset = (overlap_lower - new_lower) / new_dx
+      if (abs(old_offset - real(nint(old_offset), dp)) > tolerance / old_dx .or. &
+          abs(new_offset - real(nint(new_offset), dp)) > &
+            tolerance / new_dx) then
+        ok = .false.
+        return
+      end if
+      old_first = nint(old_offset) + 1
+      new_first = nint(new_offset) + 1
+      cell_count = nint((overlap_upper - overlap_lower) / old_dx)
+      if (cell_count < 1) cycle
+      new_solution%levels(level)%state(:, &
+        new_first:new_first + cell_count - 1) = &
+        old_solution%levels(level)%state(:, &
+          old_first:old_first + cell_count - 1)
+      new_solution%levels(level)%temperature( &
+        new_first:new_first + cell_count - 1) = &
+        old_solution%levels(level)%temperature( &
+          old_first:old_first + cell_count - 1)
+      transferred_cells = transferred_cells + cell_count
+    end do
+    ok = .true.
+  end subroutine transfer_multilevel_overlap
 
   subroutine simulate_multilevel_reactive_1d( &
       species, reactions, config, solution, initial_integrals, &

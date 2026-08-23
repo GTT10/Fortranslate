@@ -17,12 +17,14 @@ program test_amr_multilevel_regrid_1d
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(reactive_1d_config) :: config
-  type(amr_multilevel_reactive_solution_1d) :: solution, simulated
+  type(amr_multilevel_reactive_solution_1d) :: solution, old_solution
+  type(amr_multilevel_reactive_solution_1d) :: simulated
   real(dp), allocatable :: before(:), after(:)
   real(dp) :: initial_integrals(5), final_integrals(5)
-  real(dp) :: regrid_error, simulation_error
+  real(dp) :: regrid_error, simulation_error, overlap_error
+  real(dp) :: old_lower, old_upper, new_lower, new_upper, dx
   logical :: ok, changed
-  integer :: target_cell, lower, upper
+  integer :: target_cell, lower, upper, old_first, new_first, overlap_cells
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamics load")
@@ -49,12 +51,36 @@ program test_amr_multilevel_regrid_1d
   allocate(after(reactive_nvar(size(species))))
   call multilevel_reactive_integrals_1d(solution, before, ok)
   call require(ok, "pre-regrid composite integral")
+  old_solution = solution
   call regrid_multilevel_reactive_1d( &
     species, config, solution, changed, ok)
   call require(ok .and. changed, "tag-driven hierarchy changes")
   call require(solution%regrid_evaluations == 2, &
     "dynamic hierarchy evaluation counted")
   call require(solution%regrids >= 2, "dynamic hierarchy change counted")
+  call require(solution%level_count() == 3, &
+    "changed hierarchy retains overlap test depth")
+  call old_solution%hierarchy%level_bounds( &
+    2, old_lower, old_upper, ok)
+  call require(ok, "old deepest bounds")
+  call solution%hierarchy%level_bounds( &
+    2, new_lower, new_upper, ok)
+  call require(ok, "new deepest bounds")
+  dx = solution%hierarchy%level_dx(2)
+  old_first = nint((max(old_lower, new_lower) - old_lower) / dx) + 1
+  new_first = nint((max(old_lower, new_lower) - new_lower) / dx) + 1
+  overlap_cells = nint((min(old_upper, new_upper) - &
+    max(old_lower, new_lower)) / dx)
+  call require(overlap_cells > 0, "deepest old/new overlap exists")
+  overlap_error = maxval(abs( &
+    solution%levels(3)%state(:, &
+      new_first:new_first + overlap_cells - 1) - &
+    old_solution%levels(3)%state(:, &
+      old_first:old_first + overlap_cells - 1)))
+  call require(overlap_error == 0.0_dp, &
+    "deepest overlapping fine state retained exactly")
+  call require(solution%overlap_cells_transferred >= overlap_cells, &
+    "overlap transfer count includes deepest cells")
   call multilevel_reactive_integrals_1d(solution, after, ok)
   call require(ok, "post-regrid composite integral")
   regrid_error = maxval(abs(after - before) / max(1.0_dp, abs(before)))
@@ -79,6 +105,7 @@ program test_amr_multilevel_regrid_1d
 
   write(*, '(a,1x,es16.8)') "Regrid conservation:", regrid_error
   write(*, '(a,1x,es16.8)') "Simulation conservation:", simulation_error
+  write(*, '(a,1x,es16.8)') "Overlap retention:", overlap_error
   write(*, '(a,i0)') "Regrid evaluations: ", &
     simulated%regrid_evaluations
   write(*, '(a)') "test_amr_multilevel_regrid_1d: PASS"
