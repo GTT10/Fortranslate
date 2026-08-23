@@ -24,6 +24,7 @@ program test_amr_multilevel_reactive_1d
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_1d_config) :: config, chemistry_config, ppm_config
+  type(reactive_1d_config) :: boundary_config
   type(amr_multilevel_reactive_solution_1d) :: initial_solution
   type(amr_multilevel_reactive_solution_1d) :: solution, chemistry_solution
   type(amr_multilevel_reactive_solution_1d) :: ppm_solution
@@ -31,16 +32,22 @@ program test_amr_multilevel_reactive_1d
   type(amr_multilevel_reactive_solution_1d) :: weno_z_solution
   type(amr_multilevel_reactive_solution_1d) :: weno_7z_solution
   type(amr_multilevel_reactive_solution_1d) :: weno_3z_solution
+  type(amr_multilevel_reactive_solution_1d) :: boundary_initial_solution
+  type(amr_multilevel_reactive_solution_1d) :: boundary_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
+  real(dp), allocatable :: boundary_initial_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, ppm_conservation_error
   real(dp) :: weno_js_conservation_error, weno_z_conservation_error
   real(dp) :: weno_7z_conservation_error, weno_3z_conservation_error
+  real(dp) :: boundary_conservation_error, boundary_dt
   real(dp) :: minimum_temperature
   real(dp) :: maximum_closure_error
   integer, parameter :: patch_lower(2) = [4, 5]
   integer, parameter :: patch_upper(2) = [21, 32]
   integer, parameter :: ratios(2) = [2, 2]
+  integer, parameter :: boundary_patch_lower(2) = [1, 1]
+  integer, parameter :: boundary_patch_upper(2) = [18, 28]
   logical :: ok
   integer :: step
 
@@ -123,6 +130,53 @@ program test_amr_multilevel_reactive_1d
   call run_weno_case(2, weno_7z_solution, weno_7z_conservation_error)
   call run_weno_case(3, weno_3z_solution, weno_3z_conservation_error)
 
+  boundary_config = config
+  boundary_config%boundary_condition = "outflow"
+  boundary_config%amr_reconstruction = "characteristic_ppm"
+  boundary_config%amr_hybrid_weno = .true.
+  boundary_config%amr_weno_scheme = 2
+  boundary_config%transport_enabled = .false.
+  boundary_config%hotspot_center = boundary_config%x_lower
+  call initialize_multilevel_reactive_1d( &
+    species, boundary_config, boundary_patch_lower, boundary_patch_upper, &
+    ratios, boundary_initial_solution, ok)
+  call require(ok, "boundary-touching reactive initialization")
+  call require( &
+    boundary_initial_solution%hierarchy%interfaces(1)%touches_left_boundary() &
+      .and. boundary_initial_solution%hierarchy%interfaces(2)% &
+      touches_left_boundary(), &
+    "two nested levels touch the physical boundary")
+  allocate(boundary_initial_integral(reactive_nvar(size(species))))
+  call multilevel_reactive_integrals_1d( &
+    boundary_initial_solution, boundary_initial_integral, ok)
+  call require(ok, "boundary initial composite integral")
+  call multilevel_reactive_timestep_1d( &
+    species, boundary_config, boundary_initial_solution, boundary_dt, ok)
+  call require(ok .and. boundary_dt > 0.0_dp, &
+    "boundary all-level stable time step")
+  boundary_dt = min(boundary_dt, 1.0e-8_dp)
+  boundary_solution = boundary_initial_solution
+  do step = 1, 2
+    call advance_multilevel_reactive_1d( &
+      species, reactions, boundary_config, boundary_dt, boundary_solution, ok)
+    call require(ok, "boundary-touching WENO7-Z hydro step")
+  end do
+  call multilevel_reactive_integrals_1d( &
+    boundary_solution, final_integral, ok)
+  call require(ok, "boundary final composite integral")
+  boundary_conservation_error = maxval(abs( &
+    final_integral - boundary_initial_integral) / &
+    max(1.0_dp, abs(boundary_initial_integral)))
+  call require(boundary_conservation_error < 3.0e-10_dp, &
+    "boundary-touching one-sided reflux conservation")
+  call check_synchronization(boundary_solution)
+  call inspect_solution( &
+    boundary_solution, minimum_temperature, maximum_closure_error)
+  call require(minimum_temperature > 0.0_dp, &
+    "boundary-touching thermodynamic positivity")
+  call require(maximum_closure_error < 3.0e-10_dp, &
+    "boundary-touching species closure")
+
   chemistry_config = config
   chemistry_config%chemistry_enabled = .true.
   chemistry_config%transport_enabled = .false.
@@ -148,6 +202,8 @@ program test_amr_multilevel_reactive_1d
     weno_js_conservation_error, weno_z_conservation_error
   write(*, '(a,2(1x,es16.8))') "WENO7-Z/3-Z composite conservation:", &
     weno_7z_conservation_error, weno_3z_conservation_error
+  write(*, '(a,1x,es16.8)') "Boundary composite conservation:", &
+    boundary_conservation_error
   write(*, '(a,1x,es16.8)') "Minimum temperature:", &
     minimum_temperature
   write(*, '(a)') "test_amr_multilevel_reactive_1d: PASS"
