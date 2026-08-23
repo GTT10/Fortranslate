@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.41.0` milestone contains ten serial verification executables, five
+The `0.42.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -208,6 +208,8 @@ The AMR layer provides:
 - arbitrary-depth separated patch trees with explicit parent ownership,
   mixed per-level refinement ratios, recursive conservative prolongation,
   deepest-to-root average-down, and exact composite integration;
+- parent-owned patch-tree flux registers with transactional deepest-to-root
+  reflux and covered-cell synchronization across every branch;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving

@@ -499,6 +499,8 @@ Reactive application integration:
   (`0.40.0`)
 - [x] arbitrary-depth multipatch tree geometry and conservative field
   operations (`0.41.0`)
+- [x] arbitrary-depth parent-owned flux registers and tree synchronization
+  (`0.42.0`)
 
 AMR parity metrics:
 

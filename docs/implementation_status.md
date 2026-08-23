@@ -650,3 +650,18 @@ The existing arbitrary-depth reactive time integrator still owns one patch per
 level. Patch-tree subcycling, reflux, chemistry/transport integration, dynamic
 tagging and overlap transfer, adjacent boxes, same-level exchange, and
 distributed ownership remain separate.
+
+## Arbitrary-depth multipatch tree synchronization (`0.42.0`)
+
+- [x] one flux-register array per parent-owned child set
+- [x] exact nested register shape validation, including empty child sets
+- [x] transactional field and register rollback across the full tree
+- [x] deepest-to-root per-parent reflux followed by average-down
+- [x] register reset after accepted synchronization
+- [x] branched deepest-level flux-mismatch conservation gate
+
+The patch-tree field layer now has the synchronization primitive required by
+recursive advancement. Reactive hydro and transport still need to accumulate
+their time-integrated interface fluxes into this nested register layout.
+Dynamic tree rebuilds, adjacent boxes, same-level exchange, load balancing,
+and distributed ownership remain separate.

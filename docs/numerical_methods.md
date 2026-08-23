@@ -1189,5 +1189,9 @@ root, so a changed leaf is restricted through every ancestor. The composite
 integral begins with the root, then for every child subtracts its covered
 parent interval and adds its fine-cell integral. This replacement formula is
 valid for branching trees and mixed per-level refinement ratios. Reactive
-time advancement, dynamic patch-tree rebuilds, and same-level ghost exchange
-remain future patch-tree integrations.
+flux registers mirror the geometry: each relation contains one register array
+per parent and one register per local child. Synchronization applies every
+deepest relation's reflux before restricting that relation into its parents,
+then continues toward the root. Fields and registers roll back together if any
+parent-set operation fails. Reactive time advancement, dynamic patch-tree
+rebuilds, and same-level ghost exchange remain future patch-tree integrations.

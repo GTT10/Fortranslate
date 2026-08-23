@@ -565,3 +565,16 @@ The static patch-tree foundation is accepted only while:
 - perturbations on two deepest patches propagate deepest-to-root, synchronize
   every covered parent interval, and retain the composite integral within
   `5e-12` in Debug and Release CI.
+
+## 0.42.0 arbitrary-depth patch-tree synchronization gates
+
+Patch-tree reflux is accepted only while:
+
+- the nested register layout matches every relation, parent, and local child,
+  including a parent with an allocated empty register array;
+- independent coarse/fine flux mismatches are injected on two deepest patches
+  owned by different parents;
+- the pre-reflux composite mismatch is nontrivial and deepest-to-root
+  synchronization restores the zero reference within `5e-12`;
+- every covered interval is synchronized and all registers reset within
+  `5e-12` in Debug and Release CI.

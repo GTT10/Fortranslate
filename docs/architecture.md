@@ -434,7 +434,10 @@ This permits a parent to own zero or more separated children while another
 parent continues refining. Geometry validation reconstructs every parent
 patch's physical extent, and field operations recursively prolong, average
 down deepest-to-root, and integrate by replacing each covered parent interval
-exactly once. Refinement ratios may differ between levels.
+exactly once. Refinement ratios may differ between levels. A matching nested
+register layout stores one flux register per child inside each parent-owned
+set. Tree synchronization walks relations deepest-to-root and performs
+set-wide reflux followed by average-down transactionally at every parent.
 
 The arbitrary-depth reactive engine still owns one patch per level. Reactive
 patch-tree time integration and dynamic rebuilds, same-level ghost exchange,
