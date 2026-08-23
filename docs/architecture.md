@@ -386,6 +386,21 @@ uses fine-level constant-extrapolation ghosts; the opposite side retains
 parent-interpolated coarse/fine ghosts. The legacy two-level PCM/PLM engine
 continues to suppress boundary tags.
 
+`amr_multipatch_1d_mod` represents an ordered set of separated child patches
+over one parent level. It applies prolongation, average-down, reflux, and
+composite integration across the set while excluding each covered parent
+interval exactly once. `amr_regrid_1d_mod` can split disconnected tags into
+candidate patches, expand each candidate, and coalesce candidates whose final
+bounds touch or overlap. Regridding first synchronizes every old patch, builds
+the new set, and restores all equal-resolution fine intersections even when a
+patch moves, splits, or is repartitioned.
+
+`amr_multipatch_reactive_1d_mod` qualifies fixed two-level hydro on separated
+patches. The root advances once, every child advances `r` times from the same
+time-interpolated parent start/end states, and one register per child is
+refluxed before set-wide average-down. It reuses the existing characteristic
+PPM/WENO and four-layer coarse/fine ghost kernels.
+
 The reactive driver retains the overlap-preserving two-level implementation for
 PCM/PLM with `amr_max_levels = 2`. A larger level limit or either PPM option
 selects the multilevel engine. It tags each parent, suppresses refinement at
@@ -401,8 +416,10 @@ deepest-to-root average-down propagates retained fine information consistently.
 Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
-Multiple patches, transfer between changed refinement ratios, one-sided
-periodic-seam refinement, and MPI patch ownership remain separate.
+The main dynamic reactive application still owns one patch per level.
+Multipatch chemistry, transport, arbitrary-depth recursion, same-level ghost
+exchange, transfer between changed refinement ratios, one-sided periodic-seam
+refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

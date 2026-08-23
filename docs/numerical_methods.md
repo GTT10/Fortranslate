@@ -880,8 +880,10 @@ reactive flow includes molecular transport and physical boundaries, while the
 AMR layer provides arbitrary-depth 1D reactive PCM/PLM/PPM/WENO advancement,
 molecular transport, synchronization, tagging, overlap-preserving single-patch
 dynamic regridding, outflow-boundary refinement, and composite output. MPI 2D,
-multipatch AMR, one-sided periodic-seam refinement, embedded boundaries, LES,
-particles/spray, and accelerators remain outside the implemented scope. The
+dynamic multipatch chemistry/transport/depth, one-sided periodic-seam
+refinement, embedded boundaries, LES, particles/spray, and accelerators remain
+outside the implemented scope. Fixed two-level separated multipatch WENO hydro
+and conservative multipatch regrid transfer are qualified. The
 transport model still
 excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
@@ -1133,3 +1135,35 @@ the species correction velocity makes the total diffusive mass flux zero, the
 same synchronization conserves total mass and each periodic species mass while
 the energy flux includes conduction, viscous work, and transported species
 enthalpy.
+
+## Separated multipatch AMR
+
+A patch set stores ordered coarse index intervals
+`[lo_p, hi_p]` with at least one uncovered parent cell between consecutive
+patches. This separation makes every nonphysical patch side a true coarse/fine
+interface. Adjacent tag candidates are coalesced before hierarchy creation;
+same-level fine/fine ghost exchange is therefore not yet required.
+
+The composite integral is
+
+```text
+I = dx_c * sum(uncovered parent cells U_c)
+  + dx_f * sum_p sum(all cells of patch p U_f,p).
+```
+
+Each covered parent interval is subtracted exactly once. Prolongation,
+restriction, flux-register correction, and average-down are applied per patch
+inside a transactional set-wide operation. At regrid, all old patches first
+average down to the parent. Every new patch is conservatively prolonged, then
+each old/new pair copies its same-ratio fine intersection. This permits patch
+movement, split/repartition, creation, and removal without losing aligned fine
+structure or changing the composite integral.
+
+For the qualified fixed two-level reactive hydro path, the parent advances
+once over `dt`. Every patch advances independently for `r` steps of `dt/r`,
+using the same parent start/end states for time-interpolated narrow and
+four-layer PPM/WENO ghosts. One flux register is accumulated per patch. All
+registers are refluxed and every covered region is averaged down before the
+parent temperature is recovered. Chemistry, molecular transport,
+arbitrary-depth patch trees, and same-level ghost exchange remain future
+multipatch slices.

@@ -492,6 +492,8 @@ Reactive application integration:
   (`0.32.0`)
 - [x] overlap-preserving transfer for changed multilevel hierarchies (`0.33.0`)
 - [x] outflow physical-boundary refinement and one-sided reflux (`0.37.0`)
+- [x] two-level multipatch geometry, regrid transfer, and reactive hydro
+  (`0.38.0`)
 
 AMR parity metrics:
 

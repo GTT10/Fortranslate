@@ -583,3 +583,22 @@ ownership remain separate.
 The qualified dynamic path is outflow-only. A periodic child may wrap itself
 only when it covers its complete parent. A single patch crossing the periodic
 seam, multiple patches, and distributed patch ownership remain separate.
+
+## Two-level multipatch AMR foundation (`0.38.0`)
+
+- [x] ordered non-overlapping patch-set geometry over one parent level
+- [x] boundary-contact and empty-set representations
+- [x] set-wide conservative prolongation and average-down
+- [x] one flux register per patch and transactional set-wide reflux
+- [x] composite integration excluding every covered parent interval once
+- [x] disconnected-tag clustering and adjacent-candidate coalescing
+- [x] conservative patch-set creation, movement, repartition, and removal
+- [x] exact same-resolution fine overlap transfer across old/new patch pairs
+- [x] fixed two-level reactive WENO7-Z subcycling on two fine patches
+- [x] conservation, synchronization, positivity, and species-closure gate
+
+The reactive qualification is hydro-only and uses separated patches, so each
+coarse/fine side is a genuine interface and no same-level ghost exchange is
+required. The primary dynamic application, chemistry, molecular transport,
+arbitrary-depth multipatch recursion, adjacent boxes, and distributed patch
+ownership remain separate.

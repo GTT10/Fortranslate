@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.37.0` milestone contains ten serial verification executables, five
+The `0.38.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -192,6 +192,15 @@ The AMR layer provides:
 - nested fine patches touching an outflow physical boundary;
 - physical-side PPM/WENO ghost fill with reflux restricted to the remaining
   coarse/fine interface;
+- ordered sets of disjoint fine patches over one parent level;
+- disconnected-tag clustering with deterministic buffer/minimum-width
+  expansion and automatic coalescing of adjacent candidates;
+- set-wide conservative prolongation, average-down, reflux, and composite
+  integration without double counting covered parent cells;
+- conservative patch-set movement, repartition, removal, and exact retention
+  of same-resolution fine overlap across old/new patch intersections;
+- fixed two-level reactive WENO7-Z hydro subcycling on two separated fine
+  patches with per-patch flux registers;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -202,10 +211,14 @@ advancement, periodic hierarchy rebuilds, and composite output. A changed
 multilevel hierarchy is conservatively averaged to the root before nested
 patches are rebuilt, then old fine state and temperature data are copied
 wherever old/new level spacing and physical cells align. Changed refinement
-ratios fall back to conservative prolongation. Multiple patches per level and
-MPI patch ownership remain later slices. A periodic child may touch a physical
-boundary only when it covers the full parent domain; one-sided periodic
-refinement remains excluded because it crosses the periodic seam.
+ratios fall back to conservative prolongation. The multipatch slice currently
+qualifies fixed two-level hydro plus conservative regrid transfer primitives;
+the main tag-driven application still owns one patch per level. Multipatch
+chemistry, molecular transport, arbitrary-depth recursion, same-level ghost
+exchange, and MPI patch ownership remain later slices. A periodic child may
+touch a physical boundary only when it covers the full parent domain;
+one-sided periodic refinement remains excluded because it crosses the periodic
+seam.
 
 ## Build and test
 

@@ -497,3 +497,20 @@ Boundary refinement is accepted only while:
   remain positive, and species close within `3e-10`;
 - the public boundary-hotspot case dynamically produces three ordered levels,
   exact coverage within `3e-13`, and finite positive states in Debug/Release.
+
+## 0.38.0 two-level multipatch AMR gates
+
+Multipatch support is accepted only while:
+
+- ordered separated patch sets reject overlap and adjacency before any field
+  mutation;
+- disconnected tags create multiple plans, while buffered candidates that
+  touch or overlap are deterministically coalesced;
+- set-wide prolongation, average-down, composite integration, and per-patch
+  reflux preserve the parent integral within `5e-12`;
+- patch-set movement and repartition preserve the composite integral within
+  `5e-12` and retain every aligned same-resolution fine intersection exactly;
+- a fixed two-level entropy wave advances two separated WENO7-Z patches for
+  two steps with composite conservation within `3e-10`;
+- both covered regions synchronize within `5e-13`, thermodynamics remain
+  positive, and species close within `3e-10` in Debug and Release CI.
