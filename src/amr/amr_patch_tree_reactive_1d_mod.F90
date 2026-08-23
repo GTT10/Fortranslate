@@ -11,6 +11,9 @@ module amr_patch_tree_reactive_1d_mod
     amr_two_level_hierarchy_1d, amr_level_field_1d, &
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d
   use amr_multipatch_1d_mod, only: synchronize_patch_set_1d
+  use amr_regrid_1d_mod, only: &
+    amr_tagging_criteria_1d, amr_regrid_plan_collection_1d, &
+    tag_gradient_1d, build_regrid_plan_collection_1d
   use amr_patch_tree_1d_mod, only: &
     amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_level_fields_1d, &
@@ -58,6 +61,8 @@ module amr_patch_tree_reactive_1d_mod
   public :: patch_tree_reactive_timestep_1d
   public :: advance_patch_tree_reactive_1d
   public :: advance_patch_tree_reactive_hydro_1d
+  public :: plan_tagged_patch_tree_reactive_1d
+  public :: regrid_tagged_patch_tree_reactive_1d
   public :: regrid_patch_tree_reactive_1d
   public :: patch_tree_reactive_integrals_1d
 
@@ -359,6 +364,140 @@ contains
     if (.not. ok) solution = backup
   end subroutine advance_patch_tree_reactive_1d
 
+  subroutine plan_tagged_patch_tree_reactive_1d( &
+      config, solution, plans, tagged_cells, ok)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: plans(:)
+    integer, intent(out) :: tagged_cells
+    logical, intent(out) :: ok
+
+    type(amr_patch_level_plan_1d), allocatable :: workspace(:)
+    type(amr_patch_tree_level_fields_1d), allocatable :: synchronized(:)
+    type(amr_patch_tree_level_fields_1d), allocatable :: candidates(:)
+    type(amr_patch_tree_level_fields_1d), allocatable :: next_candidates(:)
+    type(amr_patch_tree_hierarchy_1d) :: candidate_hierarchy
+    type(amr_regrid_plan_collection_1d), allocatable :: collections(:)
+    real(dp) :: tolerance
+    logical :: local_ok
+    integer :: maximum_relations, relation_count, relation
+    integer :: parent, child, parent_count, child_count, entry
+
+    tagged_cells = 0
+    ok = solution%is_valid()
+    if (.not. ok) return
+    ok = valid_tagged_patch_tree_configuration( &
+      config, size(solution%levels(1)%patches(1)%state, 1)) .and. &
+      solution%hierarchy%base_cells == config%nx
+    if (.not. ok) return
+    tolerance = 128.0_dp * epsilon(1.0_dp) * max( &
+      1.0_dp, abs(config%x_lower), abs(config%x_upper), &
+      abs(solution%hierarchy%x_lower), abs(solution%hierarchy%x_upper))
+    ok = abs(config%x_lower - solution%hierarchy%x_lower) <= tolerance .and. &
+      abs(config%x_upper - solution%hierarchy%x_upper) <= tolerance
+    if (.not. ok) return
+
+    call extract_patch_tree_fields(solution, synchronized, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call average_down_patch_tree_1d( &
+      synchronized, solution%hierarchy, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+
+    maximum_relations = config%amr_max_levels - 1
+    allocate(workspace(maximum_relations))
+    allocate(candidates(1))
+    allocate(candidates(1)%patches(1))
+    candidates(1)%patches(1)%values = &
+      synchronized(1)%patches(1)%values
+    relation_count = 0
+
+    do relation = 1, maximum_relations
+      parent_count = size(candidates(relation)%patches)
+      allocate(collections(parent_count))
+      child_count = 0
+      do parent = 1, parent_count
+        call build_tagged_parent_collection( &
+          config, candidates(relation)%patches(parent)%values, &
+          collections(parent), local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        tagged_cells = tagged_cells + collections(parent)%tagged_cell_count
+        child_count = child_count + collections(parent)%patch_count()
+      end do
+      if (child_count == 0) then
+        deallocate(collections)
+        exit
+      end if
+
+      workspace(relation)%refinement_ratio = config%amr_refinement_ratio
+      allocate(workspace(relation)%patches(child_count))
+      entry = 0
+      do parent = 1, parent_count
+        do child = 1, collections(parent)%patch_count()
+          entry = entry + 1
+          workspace(relation)%patches(entry)%parent_patch = parent
+          workspace(relation)%patches(entry)%lower = &
+            collections(parent)%plans(child)%patch_lower
+          workspace(relation)%patches(entry)%upper = &
+            collections(parent)%plans(child)%patch_upper
+        end do
+      end do
+      deallocate(collections)
+      relation_count = relation
+
+      call initialize_patch_tree_1d( &
+        config%nx, config%x_lower, config%x_upper, &
+        workspace(1:relation_count), candidate_hierarchy, local_ok)
+      if (.not. local_ok .or. &
+          .not. patch_tree_children_are_interior(candidate_hierarchy)) then
+        ok = .false.
+        return
+      end if
+      call prolong_patch_tree_1d( &
+        synchronized(1)%patches(1)%values, candidate_hierarchy, &
+        next_candidates, local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+      call move_alloc(next_candidates, candidates)
+    end do
+
+    allocate(plans(relation_count))
+    if (relation_count > 0) plans = workspace(1:relation_count)
+    ok = .true.
+  end subroutine plan_tagged_patch_tree_reactive_1d
+
+  subroutine regrid_tagged_patch_tree_reactive_1d( &
+      species, config, solution, changed, tagged_cells, &
+      transferred_cells, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: changed
+    integer, intent(out) :: tagged_cells, transferred_cells
+    logical, intent(out) :: ok
+
+    type(amr_patch_level_plan_1d), allocatable :: plans(:)
+
+    changed = .false.
+    tagged_cells = 0
+    transferred_cells = 0
+    call plan_tagged_patch_tree_reactive_1d( &
+      config, solution, plans, tagged_cells, ok)
+    if (.not. ok) return
+    call regrid_patch_tree_reactive_1d( &
+      species, config, plans, solution, changed, transferred_cells, ok)
+  end subroutine regrid_tagged_patch_tree_reactive_1d
+
   subroutine regrid_patch_tree_reactive_1d( &
       species, config, plans, solution, changed, transferred_cells, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -452,6 +591,69 @@ contains
     ok = solution%is_valid()
     if (.not. ok) solution = backup
   end subroutine regrid_patch_tree_reactive_1d
+
+  subroutine build_tagged_parent_collection(config, state, collection, ok)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: state(:, :)
+    type(amr_regrid_plan_collection_1d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    type(amr_tagging_criteria_1d) :: criteria
+    logical, allocatable :: tags(:), interior_tags(:)
+    integer :: nx, parent_buffer, allowed_lower, allowed_upper
+    integer :: allowed_cells, patch, offset
+
+    nx = size(state, 2)
+    call patch_tree_criteria_from_config(config, criteria)
+    ok = nx >= 3 .and. criteria%is_valid(size(state, 1))
+    if (.not. ok) return
+    allocate(tags(nx))
+    call tag_gradient_1d(state, criteria, tags, ok)
+    if (.not. ok) return
+
+    parent_buffer = 1
+    if (uses_ppm_reconstruction(config)) then
+      parent_buffer = (amr_ppm_ghost_width + &
+        config%amr_refinement_ratio - 1) / &
+        config%amr_refinement_ratio + 1
+    end if
+    allowed_lower = parent_buffer + 1
+    allowed_upper = nx - parent_buffer
+    allowed_cells = allowed_upper - allowed_lower + 1
+    if (allowed_cells < 3) then
+      tags = .false.
+      allowed_lower = 1
+      allowed_upper = nx
+      allowed_cells = nx
+    else
+      if (allowed_lower > 1) tags(1:allowed_lower - 1) = .false.
+      if (allowed_upper < nx) tags(allowed_upper + 1:nx) = .false.
+    end if
+
+    criteria%minimum_patch_cells = min( &
+      criteria%minimum_patch_cells, allowed_cells)
+    allocate(interior_tags(allowed_cells))
+    interior_tags = tags(allowed_lower:allowed_upper)
+    call build_regrid_plan_collection_1d( &
+      interior_tags, criteria%buffer_cells, criteria%minimum_patch_cells, &
+      criteria%maximum_patch_gap_cells, collection, ok)
+    if (.not. ok) return
+
+    offset = allowed_lower - 1
+    collection%coarse_cells = nx
+    do patch = 1, collection%patch_count()
+      collection%plans(patch)%coarse_cells = nx
+      collection%plans(patch)%tag_lower = &
+        collection%plans(patch)%tag_lower + offset
+      collection%plans(patch)%tag_upper = &
+        collection%plans(patch)%tag_upper + offset
+      collection%plans(patch)%patch_lower = &
+        collection%plans(patch)%patch_lower + offset
+      collection%plans(patch)%patch_upper = &
+        collection%plans(patch)%patch_upper + offset
+    end do
+    ok = collection%is_valid()
+  end subroutine build_tagged_parent_collection
 
   subroutine average_down_patch_tree_solution(species, config, solution, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -1215,6 +1417,43 @@ contains
     enabled = trim(config%amr_reconstruction) == "ppm" .or. &
       trim(config%amr_reconstruction) == "characteristic_ppm"
   end function uses_ppm_reconstruction
+
+  pure subroutine patch_tree_criteria_from_config(config, criteria)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_tagging_criteria_1d), intent(out) :: criteria
+
+    criteria%component = config%amr_tag_component
+    criteria%relative_gradient_threshold = &
+      config%amr_relative_gradient_threshold
+    criteria%absolute_gradient_threshold = &
+      config%amr_absolute_gradient_threshold
+    criteria%scale_floor = config%amr_scale_floor
+    criteria%buffer_cells = config%amr_buffer_cells
+    criteria%minimum_patch_cells = config%amr_minimum_patch_cells
+    criteria%maximum_patch_gap_cells = config%amr_maximum_patch_gap_cells
+  end subroutine patch_tree_criteria_from_config
+
+  pure logical function valid_tagged_patch_tree_configuration( &
+      config, nvar) result(valid)
+    type(reactive_1d_config), intent(in) :: config
+    integer, intent(in) :: nvar
+
+    valid = config%amr_enabled .and. config%amr_multipatch_enabled .and. &
+      config%amr_max_levels >= 2 .and. config%nx >= 8 .and. &
+      config%amr_refinement_ratio >= 2 .and. &
+      config%amr_tag_component >= 1 .and. &
+      config%amr_tag_component <= nvar .and. &
+      config%amr_buffer_cells >= 0 .and. &
+      config%amr_minimum_patch_cells >= 1 .and. &
+      config%amr_maximum_patch_gap_cells >= 0 .and. &
+      config%amr_relative_gradient_threshold >= 0.0_dp .and. &
+      config%amr_absolute_gradient_threshold >= 0.0_dp .and. &
+      config%amr_scale_floor > 0.0_dp .and. &
+      (trim(config%amr_reconstruction) == "pcm" .or. &
+        trim(config%amr_reconstruction) == "plm" .or. &
+        trim(config%amr_reconstruction) == "ppm" .or. &
+        trim(config%amr_reconstruction) == "characteristic_ppm")
+  end function valid_tagged_patch_tree_configuration
 
   pure function patch_boundary(config, level) result(boundary)
     type(reactive_1d_config), intent(in) :: config

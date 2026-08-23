@@ -1,6 +1,6 @@
 program test_amr_patch_tree_reactive_1d
   use precision_mod, only: dp
-  use state_indices_mod, only: irho, qp
+  use state_indices_mod, only: irho, imx, qp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -22,6 +22,8 @@ program test_amr_patch_tree_reactive_1d
     patch_tree_reactive_timestep_1d, &
     advance_patch_tree_reactive_1d, &
     advance_patch_tree_reactive_hydro_1d, &
+    plan_tagged_patch_tree_reactive_1d, &
+    regrid_tagged_patch_tree_reactive_1d, &
     regrid_patch_tree_reactive_1d, &
     patch_tree_reactive_integrals_1d
   implicit none
@@ -34,9 +36,12 @@ program test_amr_patch_tree_reactive_1d
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_1d_config) :: config, chemistry_config
   type(reactive_1d_config) :: transport_config, split_control_config
+  type(reactive_1d_config) :: tagged_config, invalid_tagged_config
   type(amr_patch_level_plan_1d), allocatable :: plans(:)
   type(amr_patch_level_plan_1d), allocatable :: moved_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: invalid_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: empty_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: tagged_plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
   type(amr_patch_tree_reactive_solution_1d) :: hydro_control
   type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
@@ -44,6 +49,8 @@ program test_amr_patch_tree_reactive_1d
   type(amr_patch_tree_reactive_solution_1d) :: transport_control
   type(amr_patch_tree_reactive_solution_1d) :: rejected_solution
   type(amr_patch_tree_reactive_solution_1d) :: old_tree
+  type(amr_patch_tree_reactive_solution_1d) :: tagged_solution
+  type(amr_patch_tree_reactive_solution_1d) :: tagged_backup
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: chemistry_initial_integral(:)
   real(dp), allocatable :: chemistry_final_integral(:)
@@ -51,6 +58,8 @@ program test_amr_patch_tree_reactive_1d
   real(dp), allocatable :: transport_final_integral(:)
   real(dp), allocatable :: regrid_initial_integral(:)
   real(dp), allocatable :: regrid_final_integral(:)
+  real(dp), allocatable :: tagged_initial_integral(:)
+  real(dp), allocatable :: tagged_final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, synchronization_error
   real(dp) :: chemistry_dt, chemistry_difference
@@ -58,11 +67,12 @@ program test_amr_patch_tree_reactive_1d
   real(dp) :: transport_dt, transport_difference
   real(dp) :: transport_conservation_error
   real(dp) :: regrid_conservation_error, overlap_error
+  real(dp) :: tagged_conservation_error
   real(dp) :: minimum_temperature, minimum_pressure
   real(dp) :: maximum_closure_error
   logical :: ok, changed
   integer :: transferred_cells, accepted_transferred_cells
-  integer :: deepest_overlap_cells
+  integer :: deepest_overlap_cells, tagged_cells
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "patch-tree thermodynamics load")
@@ -296,6 +306,83 @@ program test_amr_patch_tree_reactive_1d
     rejected_solution%regrids == transport_solution%regrids, &
     "invalid patch-tree regrid is transactional")
 
+  call configure_tagged_case(config, tagged_config)
+  allocate(empty_plans(0))
+  call initialize_patch_tree_reactive_1d( &
+    species, tagged_config, empty_plans, tagged_solution, ok)
+  call require(ok .and. tagged_solution%level_count() == 1, &
+    "root-only tagged patch-tree initialization")
+  tagged_solution%levels(1)%patches(1)%state(imx, 1:tagged_config%nx) = &
+    0.0_dp
+  tagged_solution%levels(1)%patches(1)%state(imx, 8) = 10.0_dp
+  tagged_solution%levels(1)%patches(1)%state(imx, 24) = -10.0_dp
+  call plan_tagged_patch_tree_reactive_1d( &
+    tagged_config, tagged_solution, tagged_plans, tagged_cells, ok)
+  call require(ok .and. size(tagged_plans) == 3 .and. &
+    tagged_cells > 0, "tag-driven patch-tree plan reaches maximum depth")
+  call require(all([ &
+    tagged_plans(1)%patch_count(), tagged_plans(2)%patch_count(), &
+    tagged_plans(3)%patch_count()] == [2, 2, 2]), &
+    "disconnected tags branch through every relation")
+  call require(all(tagged_plans(1)%patches%parent_patch == [1, 1]) .and. &
+    all(tagged_plans(2)%patches%parent_patch == [1, 2]) .and. &
+    all(tagged_plans(3)%patches%parent_patch == [1, 2]), &
+    "each tagged child retains deterministic parent ownership")
+  allocate(tagged_initial_integral(reactive_nvar(size(species))))
+  allocate(tagged_final_integral(reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    tagged_solution, tagged_initial_integral, ok)
+  call require(ok, "pre-tagged-regrid composite integral")
+  call regrid_tagged_patch_tree_reactive_1d( &
+    species, tagged_config, tagged_solution, changed, tagged_cells, &
+    transferred_cells, ok)
+  call require(ok .and. changed .and. tagged_cells > 0 .and. &
+    transferred_cells == 0 .and. tagged_solution%level_count() == 4, &
+    "tag-driven patch-tree rebuild")
+  call require(all([ &
+    size(tagged_solution%levels(1)%patches), &
+    size(tagged_solution%levels(2)%patches), &
+    size(tagged_solution%levels(3)%patches), &
+    size(tagged_solution%levels(4)%patches)] == [1, 2, 2, 2]), &
+    "tag-driven patch-tree branching")
+  call require(tagged_solution%regrid_evaluations == 1 .and. &
+    tagged_solution%regrids == 1, "tag-driven regrid accounting")
+  call patch_tree_reactive_integrals_1d( &
+    tagged_solution, tagged_final_integral, ok)
+  call require(ok, "post-tagged-regrid composite integral")
+  tagged_conservation_error = maxval(abs( &
+    tagged_final_integral - tagged_initial_integral) / &
+    max(1.0_dp, abs(tagged_initial_integral)))
+  call require(tagged_conservation_error < conservation_tolerance, &
+    "tag-driven patch-tree regrid conservation")
+  call check_synchronization(tagged_solution, synchronization_error)
+  call require(synchronization_error < synchronization_tolerance, &
+    "tag-driven patch-tree synchronization")
+
+  tagged_backup = tagged_solution
+  call regrid_tagged_patch_tree_reactive_1d( &
+    species, tagged_config, tagged_solution, changed, tagged_cells, &
+    transferred_cells, ok)
+  call require(ok .and. .not. changed .and. transferred_cells == 0 .and. &
+    tagged_solution%regrid_evaluations == 2 .and. &
+    tagged_solution%regrids == 1 .and. &
+    patch_tree_state_difference(tagged_solution, tagged_backup) == 0.0_dp, &
+    "unchanged tag-driven patch-tree plan is a no-op")
+
+  invalid_tagged_config = tagged_config
+  invalid_tagged_config%amr_tag_component = &
+    reactive_nvar(size(species)) + 1
+  tagged_backup = tagged_solution
+  call regrid_tagged_patch_tree_reactive_1d( &
+    species, invalid_tagged_config, tagged_solution, changed, tagged_cells, &
+    transferred_cells, ok)
+  call require(.not. ok .and. .not. changed .and. tagged_cells == 0 .and. &
+    transferred_cells == 0 .and. &
+    tagged_solution%regrid_evaluations == &
+      tagged_backup%regrid_evaluations .and. &
+    patch_tree_state_difference(tagged_solution, tagged_backup) == 0.0_dp, &
+    "invalid tag-driven patch-tree request is transactional")
+
   write(*, '(a,1x,es16.8)') &
     "Patch-tree conservation error:", conservation_error
   write(*, '(a,1x,es16.8)') &
@@ -312,6 +399,8 @@ program test_amr_patch_tree_reactive_1d
     "Patch-tree regrid conservation:", regrid_conservation_error
   write(*, '(a,1x,i0)') &
     "Patch-tree overlap cells transferred:", accepted_transferred_cells
+  write(*, '(a,1x,es16.8)') &
+    "Tagged patch-tree regrid conservation:", tagged_conservation_error
   write(*, '(a)') "test_amr_patch_tree_reactive_1d: PASS"
 
 contains
@@ -356,6 +445,23 @@ contains
     local_config%hotspot_center = 0.006_dp
     local_config%hotspot_width = 0.0012_dp
   end subroutine configure_transport_case
+
+  subroutine configure_tagged_case(base_config, local_config)
+    type(reactive_1d_config), intent(in) :: base_config
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = base_config
+    local_config%amr_multipatch_enabled = .true.
+    local_config%amr_max_levels = 4
+    local_config%amr_refinement_ratio = 2
+    local_config%amr_tag_component = imx
+    local_config%amr_relative_gradient_threshold = 0.20_dp
+    local_config%amr_absolute_gradient_threshold = 1.0_dp
+    local_config%amr_scale_floor = 1.0_dp
+    local_config%amr_buffer_cells = 4
+    local_config%amr_minimum_patch_cells = 8
+    local_config%amr_maximum_patch_gap_cells = 4
+  end subroutine configure_tagged_case
 
   subroutine configure_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
