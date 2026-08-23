@@ -593,3 +593,19 @@ Recursive patch-tree hydro is accepted only while:
   `5e-13`;
 - every patch retains positive temperature and pressure, nonnegative species,
   and species closure within `3e-10` in Debug and Release CI.
+
+## 0.44.0 reactive patch-tree chemistry gates
+
+Patch-tree chemistry splitting is accepted only while:
+
+- the same four-level branched state advances through a symmetric elementary
+  chemistry--recursive-hydro--chemistry interval;
+- an otherwise identical hydro-only control proves that chemistry changes at
+  least one stored species density by more than `100 epsilon`;
+- composite mass, three momentum components, and total energy remain within
+  `3e-10` of their pre-step values;
+- recursive hydro accounting remains exactly `2/8/24/32` after the second
+  accepted root interval;
+- every parent-child relation is synchronized within `5e-13`, and all cells
+  retain positive temperature and pressure, nonnegative species, and closure
+  within `3e-10` in Debug and Release CI.

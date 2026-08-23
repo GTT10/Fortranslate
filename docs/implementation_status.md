@@ -685,3 +685,20 @@ reactive PCM hydro. Chemistry and molecular transport composition, dynamic
 tagging and overlap-preserving tree rebuilds, adjacent boxes and same-level
 exchange, physical-boundary children, load balancing, and distributed patch
 ownership remain separate.
+
+## Reactive patch-tree chemistry splitting (`0.44.0`)
+
+- [x] elementary chemistry advancement on every stored patch
+- [x] identical physical reaction interval across all tree levels
+- [x] deepest-to-root average-down after each reaction half-step
+- [x] temperature recovery and ghost refresh after reaction synchronization
+- [x] symmetric chemistry--hydro--chemistry public advance
+- [x] whole-tree rollback across both reaction halves and recursive hydro
+- [x] chemistry-enabled versus hydro-only species-evolution gate
+- [x] composite mass, momentum, and total-energy conservation gate
+- [x] post-reaction synchronization, positivity, and species-closure gates
+
+This milestone composes elementary chemistry with the static patch-tree PCM
+hydro path. Molecular transport, dynamic tagging and overlap-preserving tree
+rebuilds, same-level exchange, physical-boundary children, load balancing, and
+distributed patch ownership remain separate.

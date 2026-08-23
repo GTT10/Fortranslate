@@ -448,10 +448,17 @@ child set. Independent branches may terminate at different levels. The public
 advance is transactional and records the accepted advance count at every
 level.
 
-The qualified patch-tree path currently covers static interior patches and
-PCM hydro. Dynamic tree rebuilds, chemistry and transport composition,
-same-level ghost exchange, transfer between changed patch trees, one-sided
-periodic-seam refinement, and MPI patch ownership remain separate.
+The public patch-tree step wraps that recursion in symmetric
+chemistry--hydro--chemistry splitting. Chemistry advances every stored patch
+for the same physical half interval, then average-down walks deepest-to-root so
+covered parent cells again represent their children before the next operator.
+The outer transaction restores state, temperature, time, and counters together
+if either reaction half-step or hydro fails.
+
+The qualified patch-tree path currently covers static interior patches, PCM
+hydro, and elementary chemistry. Dynamic tree rebuilds, molecular transport
+composition, same-level ghost exchange, transfer between changed patch trees,
+one-sided periodic-seam refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

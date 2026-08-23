@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.43.0` milestone contains ten serial verification executables, five
+The `0.44.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -215,6 +215,10 @@ The AMR layer provides:
   reflux, and average-down at every branch;
 - a four-level `1/2/3/2`-patch reactive conservation, synchronization,
   positivity, closure, and exact subcycle-count gate;
+- symmetric chemistry--hydro--chemistry splitting over every patch-tree node,
+  with deepest-to-root post-reaction synchronization and whole-tree rollback;
+- a chemistry-on versus hydro-only branch comparison proving reactive species
+  evolution while retaining composite mass, momentum, and total energy;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -234,7 +238,7 @@ patch to own zero or more separated children at arbitrary depth and advances
 those patches recursively with level-ratio hydro subcycling. Every local child
 accumulates its own coarse/fine boundary fluxes; reflux and average-down occur
 after its fine subcycles, and failures restore the complete tree. Dynamic
-patch-tree regridding, chemistry and transport composition, same-level ghost
+patch-tree regridding, molecular transport composition, same-level ghost
 exchange, and MPI patch ownership remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic

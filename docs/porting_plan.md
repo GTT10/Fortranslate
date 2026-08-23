@@ -503,6 +503,7 @@ Reactive application integration:
   (`0.42.0`)
 - [x] arbitrary-depth branched reactive PCM hydro and recursive subcycling
   (`0.43.0`)
+- [x] arbitrary-depth patch-tree chemistry splitting and rollback (`0.44.0`)
 
 AMR parity metrics:
 

@@ -1206,6 +1206,15 @@ child returns, this ordering propagates every leaf correction through all
 ancestors. The stable root interval is the minimum of each patch's local CFL
 limit multiplied by its cumulative refinement ratio.
 
-The qualified reactive-tree gate uses PCM and strictly interior separated
-patches. Chemistry, transport, dynamic patch-tree rebuilds, physical-boundary
-children, and same-level ghost exchange remain future integrations.
+The complete reactive-tree interval uses
+`R(dt/2)-H(dt)-R(dt/2)`. Each reaction operator advances every patch for the
+same physical half interval because chemistry is cell-local rather than a
+mesh-stability-limited flux operator. It then averages the changed fields from
+the deepest leaves to the root, recovers every parent temperature, and refreshes
+all ghosts. A transaction around the full composition prevents a failed second
+reaction half-step from retaining the already accepted hydro state.
+
+The qualified reactive-tree gate uses PCM, elementary chemistry, and strictly
+interior separated patches. Transport, dynamic patch-tree rebuilds,
+physical-boundary children, and same-level ghost exchange remain future
+integrations.
