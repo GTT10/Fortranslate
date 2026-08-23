@@ -485,3 +485,24 @@ The recursive engine accepts runtime patch bounds and refinement ratios with no
 fixed depth. Dynamic tag-driven construction, regridding during time advance,
 composite CSV output, multiple patches, physical-boundary refinement, and MPI
 patch distribution are not claimed by this milestone.
+
+## Dynamic multilevel reactive AMR application (`0.32.0`)
+
+- [x] `amr_max_levels` runtime configuration with a two-level-compatible default
+- [x] recursive normalized-gradient tag planning at every active depth
+- [x] strict nesting through suppression of interior patch-edge tags
+- [x] automatic termination when a parent has no refinement tags
+- [x] deepest-to-root average-down before any hierarchy replacement
+- [x] conservative prolongation of every rebuilt child patch
+- [x] unchanged-plan detection that retains the complete existing hierarchy
+- [x] periodic multilevel regrid evaluation in the simulation loop
+- [x] exact final-time clipping and five-component composite diagnostics
+- [x] spatially ordered recursive composite CSV output
+- [x] executable three-level hotspot case and output coverage checker
+- [x] forced hierarchy-change and regrid-conservation regression
+
+When a multilevel plan changes, this milestone deliberately transfers the old
+composite through the synchronized root and reconstructs children. This
+preserves conserved integrals but not old fine-scale values in overlap regions.
+Multiple patches, physical-boundary refinement, MPI patch ownership, and
+load-balanced distribution remain open.

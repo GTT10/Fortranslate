@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.31.0` milestone contains ten serial verification executables, five
+The `0.32.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -176,15 +176,20 @@ The AMR layer provides:
 - recursive chemistry and reaction--transport--hydro splitting;
 - a three-level reactive conservation, positivity, closure, and synchronization
   gate;
+- a runtime `amr_max_levels` limit with tag-driven nested hierarchy creation;
+- periodic conservative multilevel hierarchy rebuilds during simulation;
+- recursively ordered, exact-coverage multilevel composite CSV output;
+- a runnable three-level hotspot case and structural output gate;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
-The reactive AMR application qualifies PCM and limited primitive-variable PLM
-Godunov hydro with dilute-gas molecular transport on two active levels. The
-separate static multilevel engine qualifies the same reactive operators at
-arbitrary nested depth. Dynamic multilevel regridding and composite output are
-not yet connected to the executable application; boundary-touching fine
-patches, multiple patches per level, MPI patch ownership, and characteristic
-PPM/WENO AMR reconstruction remain later slices.
+The reactive AMR application retains its overlap-preserving two-level path when
+`amr_max_levels = 2` and selects tag-driven arbitrary-depth state ownership,
+recursive advancement, periodic hierarchy rebuilds, and composite output for
+larger values. A changed multilevel hierarchy is conservatively averaged to the
+root before nested patches are rebuilt; preserving old fine data in overlapping
+changed patches remains future work. Boundary-touching fine patches, multiple
+patches per level, MPI patch ownership, and characteristic PPM/WENO AMR
+reconstruction also remain later slices.
 
 ## Build and test
 

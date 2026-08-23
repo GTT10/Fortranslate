@@ -967,6 +967,32 @@ the root time, and the step counter. A three-level hotspot gate exercises PLM,
 molecular transport, chemistry, recursive synchronization, composite
 conservation, positivity, and species closure.
 
+### Tag-driven multilevel regridding and output
+
+Starting from the root, the runtime application evaluates the existing
+normalized-gradient criterion on each parent. If tags exist, it builds one
+strictly interior patch, conservatively prolongs that child, and repeats until
+no tags remain or `amr_max_levels` is reached. At interior depths, tags on the
+first and last parent-patch cells are suppressed because a child touching those
+cells would not own the required coarse/fine ghost neighborhood.
+
+Before changing a hierarchy, every child is averaged down deepest-to-root. The
+new nested chain is then planned from this synchronized root and every child is
+conservatively prolonged. Thus the complete composite integral is invariant
+under creation, movement, resizing, depth reduction, and depth growth. If the
+new bounds and ratios are identical, the existing hierarchy is retained
+without reconstruction. If they differ, old fine-scale overlap values are not
+yet copied into the rebuilt patches.
+
+Composite output follows the hierarchy recursively:
+
+```text
+write uncovered parent left -> write child composite -> write parent right.
+```
+
+This traversal emits monotonically ordered cell centers and counts each domain
+volume exactly once at its finest active representation.
+
 ## One-dimensional tagging and dynamic regridding
 
 For a selected component `q`, cell `i` uses the largest adjacent jump,

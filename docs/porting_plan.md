@@ -486,7 +486,9 @@ Reactive application integration:
 - [x] AMR molecular transport (`0.29.0`)
 - [x] arbitrary-depth reactive state ownership and recursive advancement
   (`0.31.0`)
-- [ ] dynamic arbitrary-depth reactive regridding and composite output
+- [x] dynamic arbitrary-depth reactive regridding and composite output
+  (`0.32.0`)
+- [ ] overlap-preserving transfer for changed multilevel hierarchies
 
 AMR parity metrics:
 

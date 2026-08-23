@@ -403,3 +403,21 @@ The static multilevel reactive engine is accepted only while:
   mass-fraction closure within `3e-10`;
 - a chemistry-enabled three-level split step passes the same synchronization,
   positivity, and closure gates.
+
+## 0.32.0 dynamic multilevel reactive AMR gates
+
+The runnable multilevel regrid path is accepted only while:
+
+- omitting `amr_max_levels` retains the established two-level application;
+- a value of three creates levels `0/1/2` from solution-driven tags;
+- child-edge tags are excluded so every deeper patch remains strictly nested;
+- an unchanged plan retains all existing state without reconstruction;
+- a changed plan averages every old level to the root before conservative
+  reconstruction and preserves the composite integral within `5e-13`;
+- the simulation reevaluates tags at the configured coarse-step interval;
+- dynamic three-level periodic hydro conserves mass, momentum, and energy
+  within `3e-10`;
+- composite CSV rows are spatially ordered, contain all three spacings with
+  ratio two, and cover the domain within `3e-13`;
+- every output state is finite and retains positive density, pressure, and
+  temperature with species closure within `3e-10`.

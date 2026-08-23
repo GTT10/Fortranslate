@@ -374,10 +374,18 @@ unchanged fine cells retain their full resolution. An empty tag set removes the
 fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
-The runnable solution-driven regrid driver still owns two levels. Recursive
-multilevel regridding and composite output, multiple patches, physical-boundary
-refinement, MPI patch ownership, and characteristic PPM/WENO coarse/fine
-coupling remain separate.
+The reactive driver retains the overlap-preserving two-level implementation for
+`amr_max_levels = 2`. Larger values select the multilevel engine. It tags each
+parent, suppresses refinement at interior patch boundaries, and constructs the
+next strictly nested child until tags end or the configured depth is reached.
+At a regrid point, it averages the old hierarchy deepest-to-root, plans a new
+chain from the synchronized root, and rebuilds changed children by conservative
+prolongation. Recursive output emits the left uncovered parent region, its
+child, and the right uncovered region, producing ordered exact domain coverage.
+
+Multiple patches, overlap-preserving transfer after a changed multilevel plan,
+physical-boundary refinement, MPI patch ownership, and characteristic PPM/WENO
+coarse/fine coupling remain separate.
 
 ## Reactive AMR time advancement
 
