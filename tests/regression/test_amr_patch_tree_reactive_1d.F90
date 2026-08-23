@@ -14,13 +14,15 @@ program test_amr_patch_tree_reactive_1d
     reactive_conserved_to_primitive
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, restrict_average_1d
-  use amr_patch_tree_1d_mod, only: amr_patch_level_plan_1d
+  use amr_patch_tree_1d_mod, only: &
+    amr_patch_level_plan_1d, patch_tree_child_geometry_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, &
     patch_tree_reactive_timestep_1d, &
     advance_patch_tree_reactive_1d, &
     advance_patch_tree_reactive_hydro_1d, &
+    regrid_patch_tree_reactive_1d, &
     patch_tree_reactive_integrals_1d
   implicit none
 
@@ -33,26 +35,34 @@ program test_amr_patch_tree_reactive_1d
   type(reactive_1d_config) :: config, chemistry_config
   type(reactive_1d_config) :: transport_config, split_control_config
   type(amr_patch_level_plan_1d), allocatable :: plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: moved_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: invalid_plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
   type(amr_patch_tree_reactive_solution_1d) :: hydro_control
   type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
   type(amr_patch_tree_reactive_solution_1d) :: transport_solution
   type(amr_patch_tree_reactive_solution_1d) :: transport_control
   type(amr_patch_tree_reactive_solution_1d) :: rejected_solution
+  type(amr_patch_tree_reactive_solution_1d) :: old_tree
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: chemistry_initial_integral(:)
   real(dp), allocatable :: chemistry_final_integral(:)
   real(dp), allocatable :: transport_initial_integral(:)
   real(dp), allocatable :: transport_final_integral(:)
+  real(dp), allocatable :: regrid_initial_integral(:)
+  real(dp), allocatable :: regrid_final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, synchronization_error
   real(dp) :: chemistry_dt, chemistry_difference
   real(dp) :: chemistry_conservation_error
   real(dp) :: transport_dt, transport_difference
   real(dp) :: transport_conservation_error
+  real(dp) :: regrid_conservation_error, overlap_error
   real(dp) :: minimum_temperature, minimum_pressure
   real(dp) :: maximum_closure_error
-  logical :: ok
+  logical :: ok, changed
+  integer :: transferred_cells, accepted_transferred_cells
+  integer :: deepest_overlap_cells
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "patch-tree thermodynamics load")
@@ -224,6 +234,68 @@ program test_amr_patch_tree_reactive_1d
       transport_solution%transport_level_advances), &
     "missing transport database leaves patch tree unchanged")
 
+  rejected_solution = transport_solution
+  call regrid_patch_tree_reactive_1d( &
+    species, transport_config, plans, rejected_solution, changed, &
+    transferred_cells, ok)
+  call require(ok .and. .not. changed .and. transferred_cells == 0 .and. &
+    rejected_solution%regrid_evaluations == 1 .and. &
+    rejected_solution%regrids == 0 .and. &
+    patch_tree_state_difference(rejected_solution, transport_solution) == &
+      0.0_dp, "identical patch-tree plan is a no-op")
+  transport_solution = rejected_solution
+  old_tree = transport_solution
+  allocate(regrid_initial_integral(reactive_nvar(size(species))))
+  allocate(regrid_final_integral(reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    old_tree, regrid_initial_integral, ok)
+  call require(ok, "pre-regrid patch-tree composite integral")
+  call configure_moved_plans(moved_plans)
+  call regrid_patch_tree_reactive_1d( &
+    species, transport_config, moved_plans, transport_solution, changed, &
+    transferred_cells, ok)
+  call require(ok .and. changed .and. transferred_cells > 0, &
+    "moved patch-tree plan accepted")
+  accepted_transferred_cells = transferred_cells
+  call require(transport_solution%regrid_evaluations == 2 .and. &
+    transport_solution%regrids == 1 .and. &
+    transport_solution%overlap_cells_transferred == &
+      accepted_transferred_cells .and. &
+    all(transport_solution%level_advances == [1, 4, 12, 16]) .and. &
+    all(transport_solution%transport_level_advances == [2, 16, 96, 256]), &
+    "patch-tree regrid statistics and counters")
+  call deepest_overlap_retention( &
+    old_tree, transport_solution, deepest_overlap_cells, overlap_error)
+  call require(deepest_overlap_cells > 0 .and. &
+    accepted_transferred_cells >= deepest_overlap_cells .and. &
+    overlap_error == 0.0_dp, &
+    "deepest same-resolution overlap retained exactly")
+  call patch_tree_reactive_integrals_1d( &
+    transport_solution, regrid_final_integral, ok)
+  call require(ok, "post-regrid patch-tree composite integral")
+  regrid_conservation_error = maxval(abs( &
+    regrid_final_integral - regrid_initial_integral) / &
+    max(1.0_dp, abs(regrid_initial_integral)))
+  call require(regrid_conservation_error < transport_conservation_tolerance, &
+    "patch-tree regrid composite conservation")
+  call check_synchronization(transport_solution, synchronization_error)
+  call require(synchronization_error < 8.0e-13_dp, &
+    "post-regrid patch-tree synchronization")
+
+  invalid_plans = moved_plans
+  invalid_plans(2)%patches(3)%parent_patch = 3
+  rejected_solution = transport_solution
+  call regrid_patch_tree_reactive_1d( &
+    species, transport_config, invalid_plans, rejected_solution, changed, &
+    transferred_cells, ok)
+  call require(.not. ok .and. &
+    patch_tree_state_difference(rejected_solution, transport_solution) == &
+      0.0_dp .and. &
+    rejected_solution%regrid_evaluations == &
+      transport_solution%regrid_evaluations .and. &
+    rejected_solution%regrids == transport_solution%regrids, &
+    "invalid patch-tree regrid is transactional")
+
   write(*, '(a,1x,es16.8)') &
     "Patch-tree conservation error:", conservation_error
   write(*, '(a,1x,es16.8)') &
@@ -236,6 +308,10 @@ program test_amr_patch_tree_reactive_1d
     "Patch-tree transport difference:", transport_difference
   write(*, '(a,1x,es16.8)') &
     "Patch-tree transport conservation:", transport_conservation_error
+  write(*, '(a,1x,es16.8)') &
+    "Patch-tree regrid conservation:", regrid_conservation_error
+  write(*, '(a,1x,i0)') &
+    "Patch-tree overlap cells transferred:", accepted_transferred_cells
   write(*, '(a)') "test_amr_patch_tree_reactive_1d: PASS"
 
 contains
@@ -316,6 +392,16 @@ contains
     local_plans(3)%patches(2)%lower = 4
     local_plans(3)%patches(2)%upper = 13
   end subroutine configure_plans
+
+  subroutine configure_moved_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    call configure_plans(local_plans)
+    local_plans(1)%patches(1)%lower = 6
+    local_plans(1)%patches(1)%upper = 13
+    local_plans(1)%patches(2)%lower = 18
+    local_plans(1)%patches(2)%upper = 25
+  end subroutine configure_moved_plans
 
   subroutine check_synchronization(local_solution, maximum_error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: local_solution
@@ -443,6 +529,70 @@ contains
       end do
     end do
   end function patch_tree_state_difference
+
+  subroutine deepest_overlap_retention( &
+      first, second, overlap_cells, maximum_error)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
+    integer, intent(out) :: overlap_cells
+    real(dp), intent(out) :: maximum_error
+
+    type(amr_two_level_hierarchy_1d) :: first_geometry, second_geometry
+    real(dp) :: first_lower, first_upper, second_lower, second_upper
+    real(dp) :: overlap_lower, overlap_upper, dx, tolerance
+    logical :: local_ok
+    integer :: level, first_patch, second_patch
+    integer :: first_cell, second_cell, cell_count
+
+    overlap_cells = 0
+    maximum_error = 0.0_dp
+    level = min(first%level_count(), second%level_count())
+    if (level < 2) return
+    dx = first%hierarchy%level_dx(level - 1)
+    tolerance = 128.0_dp * epsilon(1.0_dp) * max(1.0_dp, abs(dx))
+    if (abs(dx - second%hierarchy%level_dx(level - 1)) > tolerance) return
+    do first_patch = 1, size(first%levels(level)%patches)
+      call patch_tree_child_geometry_1d( &
+        first%hierarchy%relations(level - 1), first_patch, first_geometry, &
+        local_ok)
+      call require(local_ok, "old deepest patch geometry")
+      call geometry_bounds(first_geometry, first_lower, first_upper)
+      do second_patch = 1, size(second%levels(level)%patches)
+        call patch_tree_child_geometry_1d( &
+          second%hierarchy%relations(level - 1), second_patch, &
+          second_geometry, local_ok)
+        call require(local_ok, "new deepest patch geometry")
+        call geometry_bounds(second_geometry, second_lower, second_upper)
+        overlap_lower = max(first_lower, second_lower)
+        overlap_upper = min(first_upper, second_upper)
+        if (overlap_upper <= overlap_lower + tolerance) cycle
+        first_cell = nint((overlap_lower - first_lower) / dx) + 1
+        second_cell = nint((overlap_lower - second_lower) / dx) + 1
+        cell_count = nint((overlap_upper - overlap_lower) / dx)
+        if (cell_count < 1) cycle
+        maximum_error = max(maximum_error, maxval(abs( &
+          first%levels(level)%patches(first_patch)%state(:, &
+            first_cell:first_cell + cell_count - 1) - &
+          second%levels(level)%patches(second_patch)%state(:, &
+            second_cell:second_cell + cell_count - 1))))
+        maximum_error = max(maximum_error, maxval(abs( &
+          first%levels(level)%patches(first_patch)%temperature( &
+            first_cell:first_cell + cell_count - 1) - &
+          second%levels(level)%patches(second_patch)%temperature( &
+            second_cell:second_cell + cell_count - 1))))
+        overlap_cells = overlap_cells + cell_count
+      end do
+    end do
+  end subroutine deepest_overlap_retention
+
+  pure subroutine geometry_bounds(geometry, lower, upper)
+    type(amr_two_level_hierarchy_1d), intent(in) :: geometry
+    real(dp), intent(out) :: lower, upper
+
+    lower = geometry%x_lower + &
+      real(geometry%fine_coarse_lower - 1, dp) * geometry%coarse_dx
+    upper = geometry%x_lower + &
+      real(geometry%fine_coarse_upper, dp) * geometry%coarse_dx
+  end subroutine geometry_bounds
 
   subroutine require(condition, label)
     logical, intent(in) :: condition

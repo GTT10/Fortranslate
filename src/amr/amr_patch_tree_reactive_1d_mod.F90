@@ -46,6 +46,9 @@ module amr_patch_tree_reactive_1d_mod
     integer, allocatable :: transport_level_advances(:)
     real(dp) :: time = 0.0_dp
     integer :: steps = 0
+    integer :: regrid_evaluations = 0
+    integer :: regrids = 0
+    integer :: overlap_cells_transferred = 0
   contains
     procedure :: level_count => patch_tree_reactive_level_count
     procedure :: is_valid => patch_tree_reactive_is_valid
@@ -55,6 +58,7 @@ module amr_patch_tree_reactive_1d_mod
   public :: patch_tree_reactive_timestep_1d
   public :: advance_patch_tree_reactive_1d
   public :: advance_patch_tree_reactive_hydro_1d
+  public :: regrid_patch_tree_reactive_1d
   public :: patch_tree_reactive_integrals_1d
 
 contains
@@ -81,7 +85,9 @@ contains
       size(self%level_advances) == size(self%levels) .and. &
       size(self%transport_level_advances) == size(self%levels) .and. &
       all(self%level_advances >= 0) .and. self%time >= 0.0_dp .and. &
-      all(self%transport_level_advances >= 0) .and. self%steps >= 0
+      all(self%transport_level_advances >= 0) .and. self%steps >= 0 .and. &
+      self%regrid_evaluations >= 0 .and. self%regrids >= 0 .and. &
+      self%overlap_cells_transferred >= 0
     if (.not. valid .or. size(self%levels) < 1) return
     valid = allocated(self%levels(1)%patches) .and. &
       size(self%levels(1)%patches) == 1 .and. &
@@ -207,6 +213,9 @@ contains
     if (.not. local_ok) return
     solution%time = 0.0_dp
     solution%steps = 0
+    solution%regrid_evaluations = 0
+    solution%regrids = 0
+    solution%overlap_cells_transferred = 0
     ok = solution%is_valid()
   end subroutine initialize_patch_tree_reactive_1d
 
@@ -349,6 +358,316 @@ contains
     ok = solution%is_valid()
     if (.not. ok) solution = backup
   end subroutine advance_patch_tree_reactive_1d
+
+  subroutine regrid_patch_tree_reactive_1d( &
+      species, config, plans, solution, changed, transferred_cells, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_level_plan_1d), intent(in) :: plans(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: changed
+    integer, intent(out) :: transferred_cells
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_reactive_solution_1d) :: backup, rebuilt
+    type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
+    real(dp) :: tolerance
+    logical :: local_ok
+    integer :: common_levels
+
+    changed = .false.
+    transferred_cells = 0
+    ok = solution%is_valid() .and. config%amr_enabled .and. &
+      config%nx == solution%hierarchy%base_cells
+    if (.not. ok) return
+    tolerance = 128.0_dp * epsilon(1.0_dp) * max( &
+      1.0_dp, abs(config%x_lower), abs(config%x_upper), &
+      abs(solution%hierarchy%x_lower), abs(solution%hierarchy%x_upper))
+    ok = abs(config%x_lower - solution%hierarchy%x_lower) <= tolerance .and. &
+      abs(config%x_upper - solution%hierarchy%x_upper) <= tolerance
+    if (.not. ok) return
+    backup = solution
+    call initialize_patch_tree_reactive_1d( &
+      species, config, plans, rebuilt, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    changed = .not. same_patch_tree_hierarchy( &
+      backup%hierarchy, rebuilt%hierarchy)
+    if (.not. changed) then
+      solution%regrid_evaluations = backup%regrid_evaluations + 1
+      ok = .true.
+      return
+    end if
+
+    call average_down_patch_tree_solution(species, config, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      ok = .false.
+      return
+    end if
+    call prolong_patch_tree_1d( &
+      solution%levels(1)%patches(1)%state(:, 1:config%nx), &
+      rebuilt%hierarchy, fields, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      ok = .false.
+      return
+    end if
+    call install_patch_tree_fields(species, fields, rebuilt, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      ok = .false.
+      return
+    end if
+    call transfer_patch_tree_overlap( &
+      solution, rebuilt, transferred_cells, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      ok = .false.
+      return
+    end if
+    call average_down_patch_tree_solution( &
+      species, config, rebuilt, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      ok = .false.
+      return
+    end if
+
+    rebuilt%time = backup%time
+    rebuilt%steps = backup%steps
+    common_levels = min( &
+      backup%level_count(), rebuilt%level_count())
+    rebuilt%level_advances(1:common_levels) = &
+      backup%level_advances(1:common_levels)
+    rebuilt%transport_level_advances(1:common_levels) = &
+      backup%transport_level_advances(1:common_levels)
+    rebuilt%regrid_evaluations = backup%regrid_evaluations + 1
+    rebuilt%regrids = backup%regrids + 1
+    rebuilt%overlap_cells_transferred = &
+      backup%overlap_cells_transferred + transferred_cells
+    solution = rebuilt
+    ok = solution%is_valid()
+    if (.not. ok) solution = backup
+  end subroutine regrid_patch_tree_reactive_1d
+
+  subroutine average_down_patch_tree_solution(species, config, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
+    logical :: local_ok
+    integer :: level, patch, nx
+
+    call extract_patch_tree_fields(solution, fields, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call average_down_patch_tree_1d(fields, solution%hierarchy, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        solution%levels(level)%patches(patch)%state(:, 1:nx) = &
+          fields(level)%patches(patch)%values
+        if (level > size(solution%hierarchy%relations)) cycle
+        if (solution%hierarchy%relations(level)% &
+            child_sets(patch)%patch_count() == 0) cycle
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    ok = local_ok
+  end subroutine average_down_patch_tree_solution
+
+  subroutine install_patch_tree_fields(species, fields, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_level_fields_1d), intent(in) :: fields(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    logical :: local_ok
+    integer :: level, patch, nx
+
+    ok = size(fields) == solution%level_count()
+    if (.not. ok) return
+    do level = 1, solution%level_count()
+      if (.not. allocated(fields(level)%patches)) then
+        ok = .false.
+        return
+      end if
+      if (size(fields(level)%patches) /= &
+          size(solution%levels(level)%patches)) then
+        ok = .false.
+        return
+      end if
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        if (.not. allocated(fields(level)%patches(patch)%values)) then
+          ok = .false.
+          return
+        end if
+        if (size(fields(level)%patches(patch)%values, 1) /= &
+              size(solution%levels(level)%patches(patch)%state, 1) .or. &
+            size(fields(level)%patches(patch)%values, 2) /= nx) then
+          ok = .false.
+          return
+        end if
+        solution%levels(level)%patches(patch)%state(:, 1:nx) = &
+          fields(level)%patches(patch)%values
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    ok = .true.
+  end subroutine install_patch_tree_fields
+
+  subroutine transfer_patch_tree_overlap( &
+      old_solution, new_solution, transferred_cells, ok)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: old_solution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: new_solution
+    integer, intent(out) :: transferred_cells
+    logical, intent(out) :: ok
+
+    type(amr_two_level_hierarchy_1d) :: old_geometry, new_geometry
+    real(dp) :: old_lower, old_upper, new_lower, new_upper
+    real(dp) :: overlap_lower, overlap_upper, old_dx, new_dx, tolerance
+    real(dp) :: old_offset, new_offset
+    logical :: local_ok
+    integer :: level, old_patch, new_patch, common_levels
+    integer :: old_first, new_first, cell_count
+
+    transferred_cells = 0
+    ok = old_solution%is_valid() .and. new_solution%is_valid()
+    if (.not. ok) return
+    common_levels = min(old_solution%level_count(), new_solution%level_count())
+    do level = 2, common_levels
+      old_dx = old_solution%hierarchy%level_dx(level - 1)
+      new_dx = new_solution%hierarchy%level_dx(level - 1)
+      tolerance = 128.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(old_dx), abs(new_dx))
+      if (abs(old_dx - new_dx) > tolerance) cycle
+      do old_patch = 1, size(old_solution%levels(level)%patches)
+        call patch_tree_child_geometry_1d( &
+          old_solution%hierarchy%relations(level - 1), old_patch, &
+          old_geometry, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        call patch_physical_bounds( &
+          old_geometry, old_lower, old_upper)
+        do new_patch = 1, size(new_solution%levels(level)%patches)
+          call patch_tree_child_geometry_1d( &
+            new_solution%hierarchy%relations(level - 1), new_patch, &
+            new_geometry, local_ok)
+          if (.not. local_ok) then
+            ok = .false.
+            return
+          end if
+          call patch_physical_bounds( &
+            new_geometry, new_lower, new_upper)
+          overlap_lower = max(old_lower, new_lower)
+          overlap_upper = min(old_upper, new_upper)
+          if (overlap_upper <= overlap_lower + tolerance) cycle
+          old_offset = (overlap_lower - old_lower) / old_dx
+          new_offset = (overlap_lower - new_lower) / new_dx
+          if (abs(old_offset - real(nint(old_offset), dp)) > &
+                tolerance / old_dx .or. &
+              abs(new_offset - real(nint(new_offset), dp)) > &
+                tolerance / new_dx) then
+            ok = .false.
+            return
+          end if
+          old_first = nint(old_offset) + 1
+          new_first = nint(new_offset) + 1
+          cell_count = nint((overlap_upper - overlap_lower) / old_dx)
+          if (cell_count < 1) cycle
+          new_solution%levels(level)%patches(new_patch)%state(:, &
+            new_first:new_first + cell_count - 1) = &
+            old_solution%levels(level)%patches(old_patch)%state(:, &
+              old_first:old_first + cell_count - 1)
+          new_solution%levels(level)%patches(new_patch)%temperature( &
+            new_first:new_first + cell_count - 1) = &
+            old_solution%levels(level)%patches(old_patch)%temperature( &
+              old_first:old_first + cell_count - 1)
+          transferred_cells = transferred_cells + cell_count
+        end do
+      end do
+    end do
+    ok = .true.
+  end subroutine transfer_patch_tree_overlap
+
+  pure logical function same_patch_tree_hierarchy(first, second) result(same)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: first, second
+
+    real(dp) :: tolerance
+    integer :: relation, parent, child
+
+    same = first%is_valid() .and. second%is_valid()
+    if (.not. same) return
+    tolerance = 128.0_dp * epsilon(1.0_dp) * max( &
+      1.0_dp, abs(first%x_lower), abs(first%x_upper), &
+      abs(second%x_lower), abs(second%x_upper))
+    same = first%base_cells == second%base_cells .and. &
+      size(first%relations) == size(second%relations) .and. &
+      abs(first%x_lower - second%x_lower) <= tolerance .and. &
+      abs(first%x_upper - second%x_upper) <= tolerance
+    if (.not. same) return
+    do relation = 1, size(first%relations)
+      same = first%relations(relation)%refinement_ratio == &
+          second%relations(relation)%refinement_ratio .and. &
+        first%relations(relation)%parent_patch_count() == &
+          second%relations(relation)%parent_patch_count()
+      if (.not. same) return
+      do parent = 1, first%relations(relation)%parent_patch_count()
+        same = first%relations(relation)%child_sets(parent)%patch_count() == &
+          second%relations(relation)%child_sets(parent)%patch_count()
+        if (.not. same) return
+        do child = 1, first%relations(relation)% &
+            child_sets(parent)%patch_count()
+          same = first%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_lower == &
+                second%relations(relation)%child_sets(parent)% &
+                  patches(child)%fine_coarse_lower .and. &
+            first%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_upper == &
+                second%relations(relation)%child_sets(parent)% &
+                  patches(child)%fine_coarse_upper
+          if (.not. same) return
+        end do
+      end do
+    end do
+  end function same_patch_tree_hierarchy
+
+  pure subroutine patch_physical_bounds(geometry, lower, upper)
+    type(amr_two_level_hierarchy_1d), intent(in) :: geometry
+    real(dp), intent(out) :: lower, upper
+
+    lower = geometry%x_lower + &
+      real(geometry%fine_coarse_lower - 1, dp) * geometry%coarse_dx
+    upper = geometry%x_lower + &
+      real(geometry%fine_coarse_upper, dp) * geometry%coarse_dx
+  end subroutine patch_physical_bounds
 
   subroutine advance_patch_tree_reactive_hydro_1d( &
       species, config, dt, solution, ok)
