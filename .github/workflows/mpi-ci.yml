@@ -57,5 +57,11 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np4.csv
           python3 tools/compare_mpi_h2o2_batch.py mpi_chem_np1.csv mpi_chem_np2.csv mpi_chem_np4.csv
+      - name: General-EOS molecular transport rank-count parity
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np4.csv
+          python3 tools/compare_mpi_reactive_transport.py mpi_transport_np1.csv mpi_transport_np2.csv mpi_transport_np4.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2
