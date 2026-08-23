@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.35.0` milestone contains ten serial verification executables, five
+The `0.36.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -167,8 +167,8 @@ The AMR layer provides:
 - time-averaged SSPRK2 interface fluxes used consistently for reflux;
 - four-layer physical and coarse/fine ghost storage for PPM stencils;
 - primitive or time-traced characteristic PPM with SSPRK3 level advancement;
-- optional PeleC-style hybrid WENO5-JS or WENO5-Z edge reconstruction inside
-  the characteristic-PPM path;
+- optional PeleC-style hybrid WENO5-JS, WENO5-Z, WENO7-Z, or WENO3-Z edge
+  reconstruction inside the characteristic-PPM path;
 - SSPRK3 effective interface fluxes used consistently for reflux;
 - conservative, MC-limited parent-to-fine ghost interpolation at subcycle
   midpoint times;
@@ -200,8 +200,7 @@ multilevel hierarchy is conservatively averaged to the root before nested
 patches are rebuilt, then old fine state and temperature data are copied
 wherever old/new level spacing and physical cells align. Changed refinement
 ratios fall back to conservative prolongation. Boundary-touching fine patches,
-multiple patches per level, MPI patch ownership, and the upstream WENO3-Z and
-WENO7-Z variants remain later slices.
+multiple patches per level, and MPI patch ownership remain later slices.
 
 ## Build and test
 

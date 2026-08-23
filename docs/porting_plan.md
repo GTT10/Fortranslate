@@ -484,7 +484,7 @@ Reactive application integration:
 - [x] limited PLM coarse/fine reconstruction (`0.28.0`)
 - [x] characteristic PPM coarse/fine reconstruction (`0.34.0`)
 - [x] hybrid WENO5-JS/WENO5-Z coarse/fine reconstruction (`0.35.0`)
-- [ ] WENO3-Z/WENO7-Z coarse/fine reconstruction
+- [x] WENO3-Z/WENO7-Z coarse/fine reconstruction (`0.36.0`)
 - [x] AMR molecular transport (`0.29.0`)
 - [x] arbitrary-depth reactive state ownership and recursive advancement
   (`0.31.0`)

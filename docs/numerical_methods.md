@@ -554,22 +554,22 @@ conservative Godunov update rather than the SSPRK3 loop used by the semidiscrete
 componentwise PPM path.  A profile is rejected when the local characteristic
 Courant number exceeds one.
 
-### Hybrid WENO5 edge reconstruction in AMR
+### Hybrid WENO edge reconstruction in AMR
 
 The multilevel AMR path may set `amr_hybrid_weno = .true.` while retaining
 `amr_reconstruction = "characteristic_ppm"`. For each primitive five-cell
-stencil, the ordinary limited PPM edge pair is then replaced by either the
-PeleC WENO5-JS weights (`amr_weno_scheme = 0`) or WENO5-Z weights
-(`amr_weno_scheme = 1`). The reconstructed edges still pass through the same
+stencil, the ordinary limited PPM edge pair is replaced by the selected PeleC
+formula: WENO5-JS (`amr_weno_scheme = 0`), WENO5-Z (`1`), WENO7-Z (`2`), or
+WENO3-Z (`3`). The reconstructed edges still pass through the same
 physical-state sanitization, parabolic profile integration, and characteristic
 projection described above. As in PeleC's hybrid branch, shock flattening is
 part of the ordinary PPM alternative rather than an extra blend on WENO edges.
 
 This option uses the existing four coarse/fine ghost layers, midpoint
 parent-time interpolation, recursive SSPRK3 stages, and effective reflux flux.
-It is qualified only for the one-dimensional multilevel reactive path. The
-WENO3-Z and WENO7-Z formulas, regular-grid 2D use, multiple AMR patches, and
-distributed patch ownership are not included in this milestone.
+It is qualified only for the one-dimensional multilevel reactive path.
+Regular-grid 2D use, multiple AMR patches, and distributed patch ownership are
+not included in this milestone.
 
 ### Reactive shock flattening
 

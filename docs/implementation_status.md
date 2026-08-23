@@ -555,3 +555,16 @@ beyond the four-layer footprint for limited spatial interpolation.
 This is a one-dimensional multilevel reactive qualification. WENO3-Z,
 WENO7-Z, regular-grid two-dimensional WENO, physical-boundary refinement,
 multiple patches, and distributed patch ownership remain separate.
+
+## Complete PeleC hybrid-WENO scheme set (`0.36.0`)
+
+- [x] WENO7-Z seven-point reconstruction (`amr_weno_scheme = 2`)
+- [x] WENO3-Z three-point reconstruction (`amr_weno_scheme = 3`)
+- [x] exact constant/linear reproduction and fixed formula-parity points
+- [x] four-scheme fixed three-level conservation and synchronization gate
+- [x] public dynamic three-level WENO7-Z and WENO3-Z hotspot cases
+
+Together with the 0.35.0 WENO5-JS/Z slice, the four hybrid schemes currently
+selected by PeleC `PPM.cpp` are available. Regular-grid two-dimensional WENO,
+physical-boundary refinement, multiple patches, and distributed patch
+ownership remain separate.

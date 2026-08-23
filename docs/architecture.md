@@ -274,8 +274,8 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
   integration.
 
 For multilevel AMR, `characteristic_ppm` can additionally enable the hybrid
-WENO switch. `reconstruction_weno_mod` then replaces the five-point PPM edge
-formula with the selected WENO5-JS or WENO5-Z nonlinear edge reconstruction;
+WENO switch. `reconstruction_weno_mod` then replaces the PPM edge formula with
+the selected WENO5-JS, WENO5-Z, WENO7-Z, or WENO3-Z nonlinear reconstruction;
 the existing parabolic profile integration, frozen-composition characteristic
 projection, SSPRK3 advancement, coarse-time ghost interpolation, and reflux
 remain unchanged. Keeping WENO as an edge-reconstruction policy rather than a
@@ -399,8 +399,7 @@ Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
 Multiple patches, transfer between changed refinement ratios,
-physical-boundary refinement, MPI patch ownership, and the WENO3-Z/WENO7-Z
-variants remain separate.
+physical-boundary refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

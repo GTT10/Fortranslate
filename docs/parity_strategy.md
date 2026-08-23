@@ -469,3 +469,16 @@ The WENO slice is accepted only while:
 - the public WENO5-Z hotspot case dynamically produces three ordered levels,
   exact composite coverage within `3e-13`, and finite positive states in both
   Debug and Release CI builds.
+
+## 0.36.0 complete hybrid-WENO scheme gates
+
+The remaining upstream schemes are accepted only while:
+
+- WENO7-Z and WENO3-Z reproduce constants and linear profiles to roundoff;
+- both kernels match fixed nonsymmetric PeleC `Source/WENO.H` formula points
+  within `2e-13` and `3e-14`, respectively;
+- schemes 2 and 3 join schemes 0 and 1 in the fixed three-level conservation,
+  synchronization, positivity, and species-closure gate;
+- the public WENO7-Z and WENO3-Z hotspot cases each dynamically produce three
+  ordered levels with exact composite coverage and finite positive states in
+  Debug and Release CI builds.
