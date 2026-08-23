@@ -1,1 +1,1 @@
-A 257-cell ten-species composition wave verifies non-replicated local state, periodic halo exchange, conservative multispecies Euler fluxes, species closure, global reductions, and 1/2/4-rank field parity.
+A 257-cell ten-species composition wave verifies non-replicated local state, periodic halo exchange, conservative multispecies Euler fluxes, species closure, global reductions, and 1/2/4/8-rank field parity.

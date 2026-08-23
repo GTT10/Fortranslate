@@ -436,6 +436,13 @@ Required parity checks:
 
 Parallel decomposition must not materially change the numerical result.
 
+The `0.20.0` through `0.24.0` milestones complete this initial one-dimensional
+slice: uneven block ownership, periodic halos, global reductions, ordered
+gather, conservative multispecies hydro, adaptive implicit full-H2/O2
+chemistry, molecular transport, and transactional reactive Strang splitting.
+The Debug and Release gates exercise 1, 2, 4, and 8 ranks. Multidimensional
+decomposition and load balancing are deferred until the AMR data model exists.
+
 ---
 
 ## Phase 12 — AMR

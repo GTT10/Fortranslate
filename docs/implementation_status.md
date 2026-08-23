@@ -57,12 +57,12 @@
 - [x] seven-species, four-reaction H2/O2/N2 subset
 - [x] structural mass, element, positivity, closure, and energy gates
 - [x] live Cantera 3.2 trajectory and production-rate parity
-- [ ] third-body efficiencies
-- [ ] pressure falloff and Troe/SRI forms
+- [x] third-body efficiencies
+- [x] pressure falloff and Troe forms
 - [ ] direct Cantera/CHEMKIN YAML parser
-- [ ] analytic or generated Jacobian
-- [ ] stiff integration through CVODE or an equivalent solver
-- [ ] complete H2/O2 mechanism
+- [x] generated concentration and mass-fraction Jacobians
+- [x] adaptive implicit backward Euler with step-doubling error control
+- [x] complete ten-species, 29-reaction H2/O2 mechanism
 - [ ] detailed hydrocarbon mechanism
 
 ## Phase 5 — one-dimensional reactive flow
@@ -94,7 +94,7 @@
 - [x] nonuniform reactive-hotspot structural regression
 - [x] nonuniform reactive-hotspot HLLC application regression
 - [x] high-resolution hotspot comparison against PCM
-- [ ] pressure-dependent/full H2/O2 chemistry in CFD
+- [x] pressure-dependent/full H2/O2 chemistry in CFD
 - [x] qualified dilute-gas molecular transport in 1D
 - [x] viscous, conductive, barodiffusive, correction-velocity, and enthalpy fluxes
 - [x] explicit SSPRK2 transport and parabolic timestep gate
@@ -312,7 +312,7 @@ separate parity task.
 | Reacting transport-hotspot temperature span | `2.40627606e2 K` |
 
 
-## Phase 8 — physical boundaries
+## Physical boundaries (`0.18.0`)
 
 - [x] typed x/y boundary-face configuration
 - [x] matched periodic-pair validation
@@ -335,7 +335,7 @@ separate parity task.
 | Uniform inflow speed | `75 m/s` |
 
 
-## Phase 8 — pressure-dependent chemistry in CFD
+## Pressure-dependent chemistry in CFD (`0.19.0`)
 
 - [x] ten-species thermodynamics and transport
 - [x] 29 reversible reactions with third-body, falloff, and Troe forms
@@ -344,14 +344,21 @@ separate parity task.
 - [x] uniform 0D/1D/2D reduction gate
 
 
-## Phase 8 — MPI foundation
+## MPI domain decomposition (`0.20.0`–`0.24.0`)
 
 - [x] uneven contiguous 1D decomposition
 - [x] nonblocking periodic halo exchange
 - [x] global CFL and conservation reductions
 - [x] ordered `MPI_Gatherv` output
 - [x] 15-component halo verification
-- [x] 1/2/4-rank field parity
-- [ ] distributed production reactive hydro
-- [ ] distributed molecular transport
-- [ ] distributed implicit chemistry scheduling
+- [x] 1/2/4/8-rank field parity
+- [x] distributed conservative multispecies hydro
+- [x] distributed general-EOS reactive hydro
+- [x] distributed molecular transport
+- [x] distributed implicit chemistry scheduling
+- [x] globally synchronized adaptive step rejection and rollback
+- [x] coupled reaction--transport--hydro--transport--reaction splitting
+
+The `0.24.0` milestone completes the planned one-dimensional MPI slice. AMR,
+multidimensional MPI decomposition, load balancing, and accelerator execution
+remain later porting-plan phases rather than claims of this milestone.

@@ -3,11 +3,13 @@ name: MPI CI
 on:
   push:
     branches:
-      - 'agent/mpi-*'
+      - main
+      - "agent/mpi-*"
   pull_request:
     branches:
+      - main
       - agent/reactive-full-h2o2-cfd
-      - 'agent/mpi-*'
+      - "agent/mpi-*"
 
 permissions:
   contents: read
@@ -39,35 +41,41 @@ jobs:
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d --halo-test
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_1d --halo-test
       - name: Euler rank-count field parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d mpi_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d mpi_np4.csv
-          python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_1d mpi_np8.csv
+          python3 tools/compare_mpi_entropy.py mpi_np1.csv mpi_np2.csv mpi_np4.csv mpi_np8.csv
       - name: Multispecies rank-count field parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_multispecies_1d mpi_ms_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_multispecies_1d mpi_ms_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_multispecies_1d mpi_ms_np4.csv
-          python3 tools/compare_mpi_multispecies.py mpi_ms_np1.csv mpi_ms_np2.csv mpi_ms_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_multispecies_1d mpi_ms_np8.csv
+          python3 tools/compare_mpi_multispecies.py mpi_ms_np1.csv mpi_ms_np2.csv mpi_ms_np4.csv mpi_ms_np8.csv
       - name: Full H2O2 implicit chemistry scheduling parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np4.csv
-          python3 tools/compare_mpi_h2o2_batch.py mpi_chem_np1.csv mpi_chem_np2.csv mpi_chem_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_h2o2_batch mpi_chem_np8.csv
+          python3 tools/compare_mpi_h2o2_batch.py mpi_chem_np1.csv mpi_chem_np2.csv mpi_chem_np4.csv mpi_chem_np8.csv
       - name: General-EOS molecular transport rank-count parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np4.csv
-          python3 tools/compare_mpi_reactive_transport.py mpi_transport_np1.csv mpi_transport_np2.csv mpi_transport_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_transport_1d mpi_transport_np8.csv
+          python3 tools/compare_mpi_reactive_transport.py mpi_transport_np1.csv mpi_transport_np2.csv mpi_transport_np4.csv mpi_transport_np8.csv
       - name: Coupled general-EOS reactive rank-count parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np1.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
-          python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_reactive_np2.csv mpi_reactive_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np8.csv
+          python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_reactive_np2.csv mpi_reactive_np4.csv mpi_reactive_np8.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2

@@ -6,7 +6,8 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.19.0` milestone contains eight serial verification executables.
+The `0.24.0` milestone contains nine serial verification executables and five
+optional MPI verification executables.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -119,7 +120,24 @@ outflow. Periodic cases retain the qualified characteristic-PPM plus CTU path;
 physical faces use boundary-aware ghost reconstruction, an exact impermeable
 inviscid wall flux, and boundary-aware molecular transport.
 
-The reactive path currently uses the verified seven-species, four-reaction elementary subset. The characteristic projection is a qualified frozen-composition ideal-gas-mixture approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
+The reactive applications can select either the verified seven-species,
+four-reaction elementary subset or the full ten-species, 29-reaction H2/O2
+mechanism with third-body, falloff, Troe, and adaptive implicit chemistry. The
+characteristic projection is a qualified frozen-composition ideal-gas-mixture
+approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
+
+### MPI one-dimensional verification
+
+With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
+
+- uneven non-replicated block decomposition and periodic halo exchange;
+- conservative multispecies Euler transport;
+- distributed adaptive implicit full-H2/O2 chemistry scheduling;
+- general-EOS molecular transport with viscosity, conduction, barodiffusion,
+  correction velocity, and species-enthalpy transport;
+- transactional reaction--transport--hydro--transport--reaction splitting;
+- ordered gather output, global timestep/conservation reductions, and
+  complete-field parity for 1, 2, 4, and 8 ranks.
 
 ## Build and test
 
@@ -129,6 +147,17 @@ Requirements: CMake 3.23 or newer, a Fortran 2018 compiler, and Python 3.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+```
+
+MPI verification additionally requires an MPI implementation with the Fortran
+2018 `mpi_f08` module:
+
+```bash
+cmake -S . -B build-mpi \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPELEF_ENABLE_MPI=ON
+cmake --build build-mpi --parallel
+mpiexec -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
 ```
 
 To enable the live Cantera reference gate:
@@ -308,6 +337,10 @@ stress; no-slip walls reflect velocity about a prescribed wall velocity.
 Set `chemistry_model = "full_h2o2"` to use the 10-species, 29-reaction third-body/Troe mechanism with the implicit cell reactor.
 
 
-### PeleF 0.20.0 MPI 1D verification
+### PeleF 0.24.0 MPI 1D verification
 
-Configure with `-DPELEF_ENABLE_MPI=ON`, then run `pelef_mpi_1d` with 1, 2, or 4 ranks. The verification driver uses 257 cells so the block decomposition is intentionally uneven.
+Configure with `-DPELEF_ENABLE_MPI=ON`, then run the MPI verification drivers
+with 1, 2, 4, or 8 ranks. The foundation and multispecies drivers use 257 cells
+so the block decomposition is intentionally uneven; the chemistry, transport,
+and coupled-reactive drivers use smaller non-divisible workloads to exercise the
+same decomposition and ordered-gather logic.
