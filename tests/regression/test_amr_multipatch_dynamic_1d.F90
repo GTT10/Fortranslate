@@ -31,31 +31,29 @@ program test_amr_multipatch_dynamic_1d
   allocate(before(reactive_nvar(size(species))))
   allocate(after(reactive_nvar(size(species))))
 
-  call set_velocity_pattern(solution, 0.003_dp, 0.009_dp, 20.0_dp)
+  call set_velocity_boxes(solution, 8, 12, 34, 38, 20.0_dp)
   call multipatch_reactive_integrals_1d(solution, before, ok)
   call require(ok, "pre-creation composite integral")
   call regrid_multipatch_reactive_1d( &
     species, config, solution, changed, ok)
   call require(ok .and. changed, "two-patch creation changes the hierarchy")
-  write(*, '(a,i0)') "Created fine patches: ", solution%patch_count()
-  call require(solution%patch_count() >= 2, &
-    "two separated velocity features create multiple patches")
+  call require(solution%patch_count() == 2, &
+    "two separated velocity features create two patches")
   call check_integral(before, solution, "patch creation conservation")
 
-  call set_velocity_pattern(solution, 0.004_dp, 0.008_dp, 20.0_dp)
+  call set_velocity_boxes(solution, 10, 14, 32, 36, 20.0_dp)
   call multipatch_reactive_integrals_1d(solution, before, ok)
   call require(ok, "pre-movement composite integral")
   call regrid_multipatch_reactive_1d( &
     species, config, solution, changed, ok)
   call require(ok .and. changed, "shifted features move the patch set")
-  write(*, '(a,i0)') "Moved fine patches: ", solution%patch_count()
-  call require(solution%patch_count() >= 2, &
-    "moving features retain multiple separated patches")
+  call require(solution%patch_count() == 2, &
+    "moving features retain two separated patches")
   call require(solution%overlap_cells_transferred > 0, &
     "patch movement transfers aligned fine overlap")
   call check_integral(before, solution, "patch movement conservation")
 
-  call set_velocity_pattern(solution, 0.0_dp, 0.0_dp, 0.0_dp)
+  call set_velocity_boxes(solution, 1, 0, 1, 0, 0.0_dp)
   call multipatch_reactive_integrals_1d(solution, before, ok)
   call require(ok, "pre-removal composite integral")
   call regrid_multipatch_reactive_1d( &
@@ -96,25 +94,26 @@ contains
     local_config%amr_tag_component = imx
     local_config%amr_buffer_cells = 1
     local_config%amr_minimum_patch_cells = 4
-    local_config%amr_maximum_patch_gap_cells = 2
+    local_config%amr_maximum_patch_gap_cells = 4
     local_config%amr_relative_gradient_threshold = 0.18_dp
     local_config%amr_absolute_gradient_threshold = 1.0e-6_dp
     local_config%amr_scale_floor = 1.0e-3_dp
   end subroutine configure_case
 
-  subroutine set_velocity_pattern( &
-      local_solution, first_center, second_center, amplitude)
+  subroutine set_velocity_boxes( &
+      local_solution, first_lower, first_upper, second_lower, second_upper, &
+      amplitude)
     type(amr_multipatch_reactive_solution_1d), intent(inout) :: local_solution
-    real(dp), intent(in) :: first_center, second_center, amplitude
+    integer, intent(in) :: first_lower, first_upper
+    integer, intent(in) :: second_lower, second_upper
+    real(dp), intent(in) :: amplitude
 
     real(dp) :: x, patch_lower
-    integer :: patch, cell, fine_cells
+    integer :: patch, cell, fine_cells, parent_cell
 
     do cell = 1, local_solution%hierarchy%coarse_cells
-      x = local_solution%hierarchy%x_lower + &
-        (real(cell, dp) - 0.5_dp) * local_solution%hierarchy%coarse_dx
-      call set_cell_velocity(local_solution%coarse(:, cell), x, &
-        first_center, second_center, amplitude)
+      call set_cell_velocity(local_solution%coarse(:, cell), cell, &
+        first_lower, first_upper, second_lower, second_upper, amplitude)
     end do
     do patch = 1, local_solution%patch_count()
       patch_lower = local_solution%hierarchy%x_lower + real( &
@@ -125,29 +124,32 @@ contains
       do cell = 1, fine_cells
         x = patch_lower + (real(cell, dp) - 0.5_dp) * &
           local_solution%hierarchy%fine_dx
+        parent_cell = min(local_solution%hierarchy%coarse_cells, max(1, &
+          int((x - local_solution%hierarchy%x_lower) / &
+            local_solution%hierarchy%coarse_dx) + 1))
         call set_cell_velocity(local_solution%patches(patch)%state(:, cell), &
-          x, first_center, second_center, amplitude)
+          parent_cell, first_lower, first_upper, second_lower, second_upper, &
+          amplitude)
       end do
     end do
-  end subroutine set_velocity_pattern
+  end subroutine set_velocity_boxes
 
   subroutine set_cell_velocity( &
-      state, x, first_center, second_center, amplitude)
+      state, parent_cell, first_lower, first_upper, second_lower, &
+      second_upper, amplitude)
     real(dp), intent(inout) :: state(:)
-    real(dp), intent(in) :: x, first_center, second_center, amplitude
+    integer, intent(in) :: parent_cell, first_lower, first_upper
+    integer, intent(in) :: second_lower, second_upper
+    real(dp), intent(in) :: amplitude
 
-    real(dp), parameter :: width = 4.5e-4_dp
     real(dp) :: rho, old_momentum, velocity
 
     rho = state(irho)
     old_momentum = state(imx)
-    if (amplitude == 0.0_dp) then
-      velocity = 0.0_dp
-    else
-      velocity = amplitude * ( &
-        exp(-((x - first_center) / width)**2) + &
-        exp(-((x - second_center) / width)**2))
-    end if
+    velocity = 0.0_dp
+    if ((parent_cell >= first_lower .and. parent_cell <= first_upper) .or. &
+        (parent_cell >= second_lower .and. parent_cell <= second_upper)) &
+      velocity = amplitude
     state(imx) = rho * velocity
     state(iet) = state(iet) - 0.5_dp * old_momentum**2 / rho + &
       0.5_dp * state(imx)**2 / rho
