@@ -462,10 +462,18 @@ time-integrated diffusive boundary fluxes, and is refluxed and averaged down
 before returning. The timestep reduction applies the square of every
 cumulative refinement ratio to each fine-patch transport limit.
 
-The qualified patch-tree path currently covers static interior patches, PCM
-hydro, elementary chemistry, and molecular transport. Dynamic tree rebuilds,
-same-level ghost exchange, transfer between changed patch trees, one-sided
-periodic-seam refinement, and MPI patch ownership remain separate.
+Runtime regridding first synchronizes the old tree to the root, constructs a
+new tree from an explicit branching plan, and conservatively prolongs that
+root. For every common level with matching spacing, all old/new patch pairs are
+intersected in physical coordinates and aligned cells are copied exactly even
+when their parent ownership changes. A final deepest-to-root average-down
+restores covered-parent consistency. State, temperature, time, advance
+counters, and regrid statistics roll back together on failure.
+
+The qualified patch-tree path covers interior patches, PCM hydro, elementary
+chemistry, molecular transport, and plan-driven runtime rebuilds. Automatic
+tag-driven tree planning, same-level ghost exchange, one-sided periodic-seam
+refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

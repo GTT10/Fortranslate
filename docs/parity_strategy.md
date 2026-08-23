@@ -625,3 +625,18 @@ Patch-tree molecular transport is accepted only while:
 - temperature and pressure remain positive, species remain nonnegative and
   closed within `3e-10`, and omitting the required transport database rejects
   the step without changing state or counters in Debug and Release CI.
+
+## 0.46.0 runtime patch-tree rebuild gates
+
+Plan-driven patch-tree regridding is accepted only while:
+
+- reapplying an identical four-level plan is a no-op that increments only the
+  evaluation counter;
+- moving both level-one branches rebuilds all descendants and transfers a
+  nonzero number of aligned same-spacing cells by physical coordinate;
+- every overlapping deepest state and temperature cell is retained bitwise;
+- all composite conserved components remain within `2e-9`, every parent-child
+  relation remains synchronized within `8e-13`, and hydro/transport counters
+  remain unchanged;
+- an invalid parent ownership plan fails without changing state or regrid
+  counters in Debug and Release CI.

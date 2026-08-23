@@ -721,3 +721,20 @@ This milestone completes the physics composition on the static, strictly
 interior patch-tree PCM path. Dynamic tagging and overlap-preserving tree
 rebuilds, same-level exchange, physical-boundary children, load balancing, and
 distributed patch ownership remain separate.
+
+## Runtime reactive patch-tree rebuilds (`0.46.0`)
+
+- [x] explicit runtime branching-plan replacement
+- [x] identical-plan no-op detection and evaluation accounting
+- [x] old-tree deepest-to-root synchronization before rebuild
+- [x] conservative root-to-new-tree prolongation
+- [x] physical-coordinate same-spacing overlap transfer at every common level
+- [x] overlap transfer independent of changed parent ownership
+- [x] final deepest-to-root synchronization and temperature recovery
+- [x] time, hydro, transport, and regrid counter preservation
+- [x] whole-tree rollback for invalid plans or failed transfer
+- [x] moved four-level conservation and deepest exact-retention gate
+
+This milestone qualifies plan-driven dynamic trees. Automatic tag clustering
+at every parent, same-level exchange, physical-boundary children, load
+balancing, and distributed ownership remain separate.

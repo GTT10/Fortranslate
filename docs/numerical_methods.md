@@ -1222,6 +1222,13 @@ per-parent reflux and average-down. A fine transport limit is converted to a
 root interval by the square of its cumulative refinement ratio.
 
 The qualified reactive-tree gate uses PCM, elementary chemistry, molecular
-transport, and strictly interior separated patches. Dynamic patch-tree
-rebuilds, physical-boundary children, and same-level ghost exchange remain
-future integrations.
+transport, and strictly interior separated patches.
+
+For a runtime patch-tree rebuild, the old tree is first averaged down so its
+root represents the complete composite solution. The new branching plan is
+conservatively prolonged from that root. At each common level with equal `dx`,
+the physical intersection of every old/new patch pair is converted to aligned
+cell offsets and copied exactly. This coordinate rule survives patch movement,
+repartition, and changed parent ownership. The rebuilt tree is then averaged
+down deepest-to-root. Automatic tag-driven planning, physical-boundary
+children, and same-level ghost exchange remain future integrations.
