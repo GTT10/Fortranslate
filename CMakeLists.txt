@@ -53,6 +53,7 @@ add_library(
   src/hydro/slope_limiter_mod.F90
   src/amr/amr_hierarchy_1d_mod.F90
   src/amr/amr_multipatch_1d_mod.F90
+  src/amr/amr_patch_tree_1d_mod.F90
   src/amr/amr_regrid_1d_mod.F90
   src/amr/amr_multilevel_reactive_1d_mod.F90
   src/amr/amr_multipatch_reactive_1d_mod.F90
