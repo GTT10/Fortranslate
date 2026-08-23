@@ -21,7 +21,7 @@ module amr_reactive_1d_mod
     composite_integral_1d
   use amr_regrid_1d_mod, only: &
     amr_tagging_criteria_1d, amr_regrid_plan_1d, &
-    plan_gradient_regrid_1d, regrid_two_level_state_1d
+    tag_gradient_1d, build_regrid_plan_1d, regrid_two_level_state_1d
   use slope_limiter_mod, only: limited_slope
   implicit none
   private
@@ -95,8 +95,17 @@ contains
     solution%x_upper = config%x_upper
     call criteria_from_config(config, criteria)
     allocate(tags(config%nx))
-    call plan_gradient_regrid_1d( &
-      solution%coarse(:, 1:config%nx), criteria, tags, plan, local_ok)
+    call tag_gradient_1d( &
+      solution%coarse(:, 1:config%nx), criteria, tags, local_ok)
+    if (local_ok) then
+      ! Boundary-touching refinement is owned by the multilevel engine. The
+      ! legacy two-level PCM/PLM path retains two coarse/fine interfaces.
+      tags(1) = .false.
+      tags(config%nx) = .false.
+      call build_regrid_plan_1d( &
+        tags, criteria%buffer_cells, criteria%minimum_patch_cells, &
+        plan, local_ok)
+    end if
     if (.not. local_ok) return
     call apply_regrid_plan_1d( &
       species, config, plan, solution, changed, local_ok)
@@ -381,8 +390,15 @@ contains
     ok = .false.
     call criteria_from_config(config, criteria)
     allocate(tags(config%nx))
-    call plan_gradient_regrid_1d( &
-      solution%coarse(:, 1:config%nx), criteria, tags, plan, local_ok)
+    call tag_gradient_1d( &
+      solution%coarse(:, 1:config%nx), criteria, tags, local_ok)
+    if (local_ok) then
+      tags(1) = .false.
+      tags(config%nx) = .false.
+      call build_regrid_plan_1d( &
+        tags, criteria%buffer_cells, criteria%minimum_patch_cells, &
+        plan, local_ok)
+    end if
     solution%regrid_evaluations = solution%regrid_evaluations + 1
     if (.not. local_ok) return
     call apply_regrid_plan_1d( &
@@ -1665,7 +1681,8 @@ contains
 
   subroutine fill_fine_wide_ghosts_1d( &
       species, hierarchy, coarse_start, coarse_end, alpha, left_ghost, &
-      right_ghost, left_temperature, right_temperature, ok)
+      right_ghost, left_temperature, right_temperature, ok, fine, &
+      fine_temperature, boundary)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_two_level_hierarchy_1d), intent(in) :: hierarchy
     real(dp), intent(in) :: coarse_start(:, 0:), coarse_end(:, 0:)
@@ -1673,14 +1690,23 @@ contains
     real(dp), intent(out) :: left_ghost(:, :), right_ghost(:, :)
     real(dp), intent(out) :: left_temperature(:), right_temperature(:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: fine(:, 0:), fine_temperature(0:)
+    character(len=*), intent(in), optional :: boundary
 
     logical :: local_ok
-    integer :: layer, global_fine
+    logical :: boundary_data
+    integer :: layer, global_fine, fine_cells, source
 
     left_ghost = 0.0_dp
     right_ghost = 0.0_dp
     left_temperature = 0.0_dp
     right_temperature = 0.0_dp
+    ok = .false.
+    boundary_data = present(fine) .and. present(fine_temperature) .and. &
+      present(boundary)
+    if (boundary_data .neqv. (present(fine) .or. &
+        present(fine_temperature) .or. present(boundary))) return
+    fine_cells = hierarchy%fine%cell_count()
     ok = hierarchy%is_valid() .and. alpha >= 0.0_dp .and. alpha <= 1.0_dp .and. &
       size(coarse_start, 1) == size(coarse_end, 1) .and. &
       size(left_ghost, 1) == size(coarse_start, 1) .and. &
@@ -1689,24 +1715,73 @@ contains
       size(right_ghost, 2) == amr_ppm_ghost_width .and. &
       size(left_temperature) == amr_ppm_ghost_width .and. &
       size(right_temperature) == amr_ppm_ghost_width
+    if (boundary_data) then
+      ok = ok .and. size(fine, 1) == size(coarse_start, 1) .and. &
+        ubound(fine, 2) == fine_cells + 1 .and. &
+        ubound(fine_temperature, 1) == fine_cells + 1
+    end if
     if (.not. ok) return
     do layer = 1, amr_ppm_ghost_width
       ! Layer one is adjacent to the fine patch; subsequent layers move away.
-      global_fine = hierarchy%fine%lower - layer
-      call interpolate_parent_fine_cell( &
-        species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
-        left_ghost(:, layer), left_temperature(layer), local_ok)
-      if (.not. local_ok) then
-        ok = .false.
-        return
+      if (hierarchy%touches_left_boundary()) then
+        if (.not. boundary_data) then
+          ok = .false.
+          return
+        end if
+        select case (trim(boundary))
+        case ("outflow")
+          source = 1
+        case ("periodic")
+          if (.not. hierarchy%touches_right_boundary()) then
+            ok = .false.
+            return
+          end if
+          source = modulo(fine_cells - layer, fine_cells) + 1
+        case default
+          ok = .false.
+          return
+        end select
+        left_ghost(:, layer) = fine(:, source)
+        left_temperature(layer) = fine_temperature(source)
+      else
+        global_fine = hierarchy%fine%lower - layer
+        call interpolate_parent_fine_cell( &
+          species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
+          left_ghost(:, layer), left_temperature(layer), local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
       end if
-      global_fine = hierarchy%fine%upper + layer
-      call interpolate_parent_fine_cell( &
-        species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
-        right_ghost(:, layer), right_temperature(layer), local_ok)
-      if (.not. local_ok) then
-        ok = .false.
-        return
+      if (hierarchy%touches_right_boundary()) then
+        if (.not. boundary_data) then
+          ok = .false.
+          return
+        end if
+        select case (trim(boundary))
+        case ("outflow")
+          source = fine_cells
+        case ("periodic")
+          if (.not. hierarchy%touches_left_boundary()) then
+            ok = .false.
+            return
+          end if
+          source = modulo(layer - 1, fine_cells) + 1
+        case default
+          ok = .false.
+          return
+        end select
+        right_ghost(:, layer) = fine(:, source)
+        right_temperature(layer) = fine_temperature(source)
+      else
+        global_fine = hierarchy%fine%upper + layer
+        call interpolate_parent_fine_cell( &
+          species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
+          right_ghost(:, layer), right_temperature(layer), local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
       end if
     end do
     ok = .true.
@@ -1773,13 +1848,14 @@ contains
 
   subroutine fill_fine_ghosts_1d( &
       species, hierarchy, coarse_start, coarse_end, alpha, fine, &
-      fine_temperature, ok)
+      fine_temperature, ok, boundary)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_two_level_hierarchy_1d), intent(in) :: hierarchy
     real(dp), intent(in) :: coarse_start(:, 0:), coarse_end(:, 0:)
     real(dp), intent(in) :: alpha
     real(dp), intent(inout) :: fine(:, 0:), fine_temperature(0:)
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: boundary
 
     real(dp), allocatable :: q(:)
     real(dp) :: guess, local_temperature, sound_speed
@@ -1793,20 +1869,54 @@ contains
     allocate(q(reactive_nprim(size(species))))
     do side = 1, 2
       if (side == 1) then
-        coarse_cell = hierarchy%fine_coarse_lower - 1
-        fine(:, 0) = (1.0_dp - alpha) * &
-          coarse_start(:, coarse_cell) + alpha * coarse_end(:, coarse_cell)
-        guess = fine_temperature(1)
+        if (hierarchy%touches_left_boundary()) then
+          if (.not. present(boundary)) return
+          select case (trim(boundary))
+          case ("outflow")
+            fine(:, 0) = fine(:, 1)
+            fine_temperature(0) = fine_temperature(1)
+            cycle
+          case ("periodic")
+            if (.not. hierarchy%touches_right_boundary()) return
+            fine(:, 0) = fine(:, fine_cells)
+            fine_temperature(0) = fine_temperature(fine_cells)
+            cycle
+          case default
+            return
+          end select
+        else
+          coarse_cell = hierarchy%fine_coarse_lower - 1
+          fine(:, 0) = (1.0_dp - alpha) * &
+            coarse_start(:, coarse_cell) + alpha * coarse_end(:, coarse_cell)
+          guess = fine_temperature(1)
+        end if
         call reactive_conserved_to_primitive( &
           species, fine(:, 0), guess, q, local_temperature, sound_speed, &
           local_ok)
         if (.not. local_ok) return
         fine_temperature(0) = local_temperature
       else
-        coarse_cell = hierarchy%fine_coarse_upper + 1
-        fine(:, fine_cells + 1) = (1.0_dp - alpha) * &
-          coarse_start(:, coarse_cell) + alpha * coarse_end(:, coarse_cell)
-        guess = fine_temperature(fine_cells)
+        if (hierarchy%touches_right_boundary()) then
+          if (.not. present(boundary)) return
+          select case (trim(boundary))
+          case ("outflow")
+            fine(:, fine_cells + 1) = fine(:, fine_cells)
+            fine_temperature(fine_cells + 1) = fine_temperature(fine_cells)
+            cycle
+          case ("periodic")
+            if (.not. hierarchy%touches_left_boundary()) return
+            fine(:, fine_cells + 1) = fine(:, 1)
+            fine_temperature(fine_cells + 1) = fine_temperature(1)
+            cycle
+          case default
+            return
+          end select
+        else
+          coarse_cell = hierarchy%fine_coarse_upper + 1
+          fine(:, fine_cells + 1) = (1.0_dp - alpha) * &
+            coarse_start(:, coarse_cell) + alpha * coarse_end(:, coarse_cell)
+          guess = fine_temperature(fine_cells)
+        end if
         call reactive_conserved_to_primitive( &
           species, fine(:, fine_cells + 1), guess, q, local_temperature, &
           sound_speed, local_ok)

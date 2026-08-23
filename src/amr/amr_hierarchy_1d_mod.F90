@@ -25,6 +25,8 @@ module amr_hierarchy_1d_mod
     real(dp) :: fine_dx = 0.0_dp
   contains
     procedure :: covered_coarse_cells => amr_covered_coarse_cells
+    procedure :: touches_left_boundary => amr_touches_left_boundary
+    procedure :: touches_right_boundary => amr_touches_right_boundary
     procedure :: is_valid => amr_hierarchy_is_valid
   end type amr_two_level_hierarchy_1d
 
@@ -194,6 +196,18 @@ contains
     count = max(0, self%fine_coarse_upper - self%fine_coarse_lower + 1)
   end function amr_covered_coarse_cells
 
+  pure logical function amr_touches_left_boundary(self) result(touches)
+    class(amr_two_level_hierarchy_1d), intent(in) :: self
+
+    touches = self%fine_coarse_lower == self%coarse%lower
+  end function amr_touches_left_boundary
+
+  pure logical function amr_touches_right_boundary(self) result(touches)
+    class(amr_two_level_hierarchy_1d), intent(in) :: self
+
+    touches = self%fine_coarse_upper == self%coarse%upper
+  end function amr_touches_right_boundary
+
   pure logical function amr_hierarchy_is_valid(self) result(valid)
     class(amr_two_level_hierarchy_1d), intent(in) :: self
     real(dp) :: spacing_tolerance
@@ -204,8 +218,8 @@ contains
       self%fine%level == self%coarse%level + 1 .and. &
       self%refinement_ratio >= 2 .and. self%x_upper > self%x_lower .and. &
       self%coarse_dx > 0.0_dp .and. self%fine_dx > 0.0_dp .and. &
-      self%fine_coarse_lower > self%coarse%lower .and. &
-      self%fine_coarse_upper < self%coarse%upper .and. &
+      self%fine_coarse_lower >= self%coarse%lower .and. &
+      self%fine_coarse_upper <= self%coarse%upper .and. &
       self%fine_coarse_upper >= self%fine_coarse_lower .and. &
       self%fine%lower == &
         (self%fine_coarse_lower - 1) * self%refinement_ratio + 1 .and. &
@@ -326,10 +340,18 @@ contains
     do component = 1, size(coarse, 1)
       do coarse_cell = hierarchy%fine_coarse_lower, &
           hierarchy%fine_coarse_upper
-        delta_minus = coarse(component, coarse_cell) - &
-          coarse(component, coarse_cell - 1)
-        delta_plus = coarse(component, coarse_cell + 1) - &
-          coarse(component, coarse_cell)
+        if (coarse_cell == hierarchy%coarse%lower) then
+          delta_minus = 0.0_dp
+        else
+          delta_minus = coarse(component, coarse_cell) - &
+            coarse(component, coarse_cell - 1)
+        end if
+        if (coarse_cell == hierarchy%coarse%upper) then
+          delta_plus = 0.0_dp
+        else
+          delta_plus = coarse(component, coarse_cell + 1) - &
+            coarse(component, coarse_cell)
+        end if
         call limited_slope( &
           delta_minus, delta_plus, "mc", slope, slope_ok)
         if (.not. slope_ok) then
@@ -582,12 +604,16 @@ contains
       size(coarse, 2) == hierarchy%coarse%cell_count() .and. &
       valid_flux_register(register, size(coarse, 1))
     if (.not. ok) return
-    coarse(:, hierarchy%fine_coarse_lower - 1) = &
-      coarse(:, hierarchy%fine_coarse_lower - 1) - &
-      register%left / hierarchy%coarse_dx
-    coarse(:, hierarchy%fine_coarse_upper + 1) = &
-      coarse(:, hierarchy%fine_coarse_upper + 1) + &
-      register%right / hierarchy%coarse_dx
+    if (.not. hierarchy%touches_left_boundary()) then
+      coarse(:, hierarchy%fine_coarse_lower - 1) = &
+        coarse(:, hierarchy%fine_coarse_lower - 1) - &
+        register%left / hierarchy%coarse_dx
+    end if
+    if (.not. hierarchy%touches_right_boundary()) then
+      coarse(:, hierarchy%fine_coarse_upper + 1) = &
+        coarse(:, hierarchy%fine_coarse_upper + 1) + &
+        register%right / hierarchy%coarse_dx
+    end if
     call register%reset()
   end subroutine reflux_1d
 
@@ -598,6 +624,7 @@ contains
     real(dp), intent(out) :: integral(:)
     logical, intent(out) :: ok
 
+    real(dp) :: coarse_sum
     integer :: component
 
     integral = 0.0_dp
@@ -608,10 +635,14 @@ contains
     if (.not. ok) return
 
     do component = 1, size(integral)
-      integral(component) = hierarchy%coarse_dx * ( &
-        sum(coarse(component, 1:hierarchy%fine_coarse_lower - 1)) + &
-        sum(coarse(component, hierarchy%fine_coarse_upper + 1: &
-          hierarchy%coarse%upper))) + &
+      coarse_sum = 0.0_dp
+      if (.not. hierarchy%touches_left_boundary()) &
+        coarse_sum = coarse_sum + sum(coarse(component, &
+          hierarchy%coarse%lower:hierarchy%fine_coarse_lower - 1))
+      if (.not. hierarchy%touches_right_boundary()) &
+        coarse_sum = coarse_sum + sum(coarse(component, &
+          hierarchy%fine_coarse_upper + 1:hierarchy%coarse%upper))
+      integral(component) = hierarchy%coarse_dx * coarse_sum + &
         hierarchy%fine_dx * sum(fine(component, :))
     end do
   end subroutine composite_integral_1d
@@ -671,6 +702,7 @@ contains
     real(dp), intent(out) :: integral(:)
     logical, intent(out) :: ok
 
+    real(dp) :: coarse_sum
     integer :: relation, deepest, component
 
     integral = 0.0_dp
@@ -681,13 +713,16 @@ contains
 
     do relation = 1, size(hierarchy%interfaces)
       do component = 1, size(integral)
+        coarse_sum = 0.0_dp
+        if (.not. hierarchy%interfaces(relation)%touches_left_boundary()) &
+          coarse_sum = coarse_sum + sum(fields(relation)%values(component, &
+            1:hierarchy%interfaces(relation)%fine_coarse_lower - 1))
+        if (.not. hierarchy%interfaces(relation)%touches_right_boundary()) &
+          coarse_sum = coarse_sum + sum(fields(relation)%values(component, &
+            hierarchy%interfaces(relation)%fine_coarse_upper + 1: &
+            hierarchy%interfaces(relation)%coarse%upper))
         integral(component) = integral(component) + &
-          hierarchy%interfaces(relation)%coarse_dx * ( &
-            sum(fields(relation)%values(component, &
-              1:hierarchy%interfaces(relation)%fine_coarse_lower - 1)) + &
-            sum(fields(relation)%values(component, &
-              hierarchy%interfaces(relation)%fine_coarse_upper + 1: &
-              hierarchy%interfaces(relation)%coarse%upper)))
+          hierarchy%interfaces(relation)%coarse_dx * coarse_sum
       end do
     end do
     deepest = hierarchy%level_count()

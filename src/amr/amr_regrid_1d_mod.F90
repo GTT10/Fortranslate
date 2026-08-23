@@ -63,11 +63,11 @@ contains
       return
     end if
     valid = self%tagged_cell_count >= 1 .and. &
-      self%tag_lower >= 2 .and. &
-      self%tag_upper <= self%coarse_cells - 1 .and. &
+      self%tag_lower >= 1 .and. &
+      self%tag_upper <= self%coarse_cells .and. &
       self%tag_lower <= self%tag_upper .and. &
-      self%patch_lower >= 2 .and. &
-      self%patch_upper <= self%coarse_cells - 1 .and. &
+      self%patch_lower >= 1 .and. &
+      self%patch_upper <= self%coarse_cells .and. &
       self%patch_lower <= self%tag_lower .and. &
       self%patch_upper >= self%tag_upper
   end function regrid_plan_is_valid
@@ -118,7 +118,7 @@ contains
     plan%coarse_cells = size(tags)
     ok = size(tags) >= 3 .and. buffer_cells >= 0 .and. &
       minimum_patch_cells >= 1 .and. &
-      minimum_patch_cells <= size(tags) - 2
+      minimum_patch_cells <= size(tags)
     if (.not. ok) return
 
     plan%tagged_cell_count = count(tags)
@@ -127,13 +127,9 @@ contains
       return
     end if
 
-    if (tags(1) .or. tags(size(tags))) then
-      ok = .false.
-      return
-    end if
     first_tag = 0
     last_tag = 0
-    do cell = 2, size(tags) - 1
+    do cell = 1, size(tags)
       if (tags(cell)) then
         if (first_tag == 0) first_tag = cell
         last_tag = cell
@@ -143,14 +139,14 @@ contains
     plan%active = .true.
     plan%tag_lower = first_tag
     plan%tag_upper = last_tag
-    plan%patch_lower = max(2, first_tag - buffer_cells)
-    plan%patch_upper = min(size(tags) - 1, last_tag + buffer_cells)
+    plan%patch_lower = max(1, first_tag - buffer_cells)
+    plan%patch_upper = min(size(tags), last_tag + buffer_cells)
     do while (plan%patch_upper - plan%patch_lower + 1 < &
         minimum_patch_cells)
-      if (plan%patch_lower > 2) plan%patch_lower = plan%patch_lower - 1
+      if (plan%patch_lower > 1) plan%patch_lower = plan%patch_lower - 1
       if (plan%patch_upper - plan%patch_lower + 1 >= &
           minimum_patch_cells) exit
-      if (plan%patch_upper < size(tags) - 1) then
+      if (plan%patch_upper < size(tags)) then
         plan%patch_upper = plan%patch_upper + 1
       end if
     end do

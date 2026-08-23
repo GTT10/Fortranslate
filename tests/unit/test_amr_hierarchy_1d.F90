@@ -13,11 +13,14 @@ program test_amr_hierarchy_1d
   integer, parameter :: coarse_cells = 8
   integer, parameter :: fine_cells = 8
   real(dp), parameter :: tolerance = 2.0e-13_dp
-  type(amr_two_level_hierarchy_1d) :: hierarchy, invalid_hierarchy
-  type(amr_flux_register_1d) :: flux_register
+  type(amr_two_level_hierarchy_1d) :: hierarchy, boundary_hierarchy
+  type(amr_two_level_hierarchy_1d) :: invalid_hierarchy
+  type(amr_flux_register_1d) :: flux_register, boundary_register
   real(dp) :: coarse(variable_count, coarse_cells)
   real(dp) :: averaged(variable_count, coarse_cells)
   real(dp) :: fine(variable_count, fine_cells)
+  real(dp) :: boundary_fine(variable_count, 12)
+  real(dp) :: boundary_coarse(variable_count, coarse_cells)
   real(dp) :: restricted(variable_count, 4)
   real(dp) :: expected_fine(variable_count, fine_cells)
   real(dp) :: fine_time_steps(2)
@@ -49,8 +52,11 @@ program test_amr_hierarchy_1d
     "fine spacing")
 
   call initialize_two_level_hierarchy_1d( &
-    coarse_cells, 1, 6, 2, 0.0_dp, 1.0_dp, invalid_hierarchy, ok)
-  call assert_true(.not. ok, "boundary-touching patch rejection")
+    coarse_cells, 1, 6, 2, 0.0_dp, 1.0_dp, boundary_hierarchy, ok)
+  call assert_true(ok, "boundary-touching patch acceptance")
+  call assert_true(boundary_hierarchy%touches_left_boundary() .and. &
+    .not. boundary_hierarchy%touches_right_boundary(), &
+    "one-sided physical boundary geometry")
   call initialize_two_level_hierarchy_1d( &
     coarse_cells, 3, 6, 1, 0.0_dp, 1.0_dp, invalid_hierarchy, ok)
   call assert_true(.not. ok, "invalid refinement ratio rejection")
@@ -74,6 +80,15 @@ program test_amr_hierarchy_1d
   end do
   call assert_close(maxval(abs(fine - expected_fine)), 0.0_dp, &
     tolerance, "limited linear prolongation")
+
+  call prolong_conservative_1d( &
+    coarse, boundary_hierarchy, boundary_fine, ok)
+  call assert_true(ok, "boundary conservative prolongation")
+  call assert_close(maxval(abs( &
+    sum(reshape(boundary_fine, &
+      [variable_count, 2, boundary_hierarchy%covered_coarse_cells()]), &
+      dim=2) / 2.0_dp - coarse(:, 1:6))), 0.0_dp, tolerance, &
+    "boundary prolongation restriction identity")
 
   call restrict_average_1d(fine, hierarchy, restricted, ok)
   call assert_true(ok, "restriction")
@@ -147,6 +162,27 @@ program test_amr_hierarchy_1d
     "left register reset")
   call assert_close(maxval(abs(flux_register%right)), 0.0_dp, tolerance, &
     "right register reset")
+
+  call initialize_flux_register_1d( &
+    boundary_register, variable_count, ok)
+  call assert_true(ok, "boundary flux-register allocation")
+  boundary_register%left = [100.0_dp, -100.0_dp]
+  boundary_register%right = [1.0_dp, 2.0_dp]
+  boundary_coarse = 0.0_dp
+  call reflux_1d( &
+    boundary_coarse, boundary_hierarchy, boundary_register, ok)
+  call assert_true(ok, "one-sided boundary reflux")
+  call assert_close(maxval(abs(boundary_coarse(:, 1:6))), 0.0_dp, &
+    tolerance, "physical side receives no reflux")
+  call assert_close(maxval(abs(boundary_coarse(:, 7) - &
+    [1.0_dp, 2.0_dp] / boundary_hierarchy%coarse_dx)), 0.0_dp, &
+    tolerance, "interior side receives reflux")
+  call assert_close(maxval(abs(boundary_coarse(:, 8))), 0.0_dp, &
+    tolerance, "nonadjacent coarse state unchanged")
+  call assert_close(maxval(abs(boundary_register%left)), 0.0_dp, &
+    tolerance, "boundary left register reset")
+  call assert_close(maxval(abs(boundary_register%right)), 0.0_dp, &
+    tolerance, "boundary right register reset")
 
   write(*, '(a)') "test_amr_hierarchy_1d: PASS"
 

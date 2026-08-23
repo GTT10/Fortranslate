@@ -76,7 +76,10 @@ program test_amr_multilevel_hierarchy_1d
   call initialize_multilevel_hierarchy_1d( &
     base_cells, bad_lower, patch_upper, refinement_ratios, &
     0.0_dp, 1.0_dp, invalid_hierarchy, ok)
-  call assert_true(.not. ok, "nested boundary-touching patch rejection")
+  call assert_true(ok, "nested boundary-touching patch acceptance")
+  call assert_true( &
+    invalid_hierarchy%interfaces(2)%touches_left_boundary(), &
+    "nested left physical boundary geometry")
 
   do cell = 1, base_cells
     x = (real(cell, dp) - 0.5_dp) / real(base_cells, dp)

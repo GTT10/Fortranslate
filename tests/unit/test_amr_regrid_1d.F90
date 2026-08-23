@@ -64,7 +64,9 @@ program test_amr_regrid_1d
   call tag_gradient_1d(boundary_state, criteria, boundary_tags, ok)
   call assert_true(ok .and. boundary_tags(1), "boundary feature tagged")
   call build_regrid_plan_1d(boundary_tags, 0, 1, plan, ok)
-  call assert_true(.not. ok, "unsupported boundary patch rejected")
+  call assert_true(ok .and. plan%active, "boundary patch accepted")
+  call assert_true(plan%tag_lower == 1 .and. plan%patch_lower == 1, &
+    "boundary plan retains physical edge")
 
   empty_tags = .false.
   tags = .false.

@@ -224,7 +224,8 @@ contains
     integer, allocatable :: patch_lower(:), patch_upper(:), ratios(:)
     logical, allocatable :: tags(:)
     real(dp) :: parent_lower, parent_upper, child_lower, child_upper
-    logical :: local_ok
+    real(dp) :: boundary_tolerance
+    logical :: local_ok, left_physical, right_physical
     integer :: level, relation_count, nx, nvar, maximum_relations
     integer :: parent_buffer, allowed_lower, allowed_upper
 
@@ -260,13 +261,21 @@ contains
         parent_buffer = (amr_ppm_ghost_width + &
           config%amr_refinement_ratio - 1) / &
           config%amr_refinement_ratio + 1
-        if (2 * parent_buffer >= nx) then
+        boundary_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+          max(1.0_dp, abs(config%x_lower), abs(config%x_upper))
+        left_physical = trim(config%boundary_condition) == "outflow" .and. &
+          abs(parent_lower - config%x_lower) <= boundary_tolerance
+        right_physical = trim(config%boundary_condition) == "outflow" .and. &
+          abs(parent_upper - config%x_upper) <= boundary_tolerance
+        allowed_lower = merge(1, parent_buffer + 1, left_physical)
+        allowed_upper = merge(nx, nx - parent_buffer, right_physical)
+        if (allowed_lower > allowed_upper) then
           tags = .false.
         else
-          tags(1:parent_buffer) = .false.
-          tags(nx - parent_buffer + 1:nx) = .false.
+          if (allowed_lower > 1) tags(1:allowed_lower - 1) = .false.
+          if (allowed_upper < nx) tags(allowed_upper + 1:nx) = .false.
         end if
-      else if (level > 1) then
+      else
         tags(1) = .false.
         tags(nx) = .false.
       end if
@@ -277,8 +286,6 @@ contains
       if (.not. local_ok) return
       if (.not. plan%active) exit
       if (uses_ppm_reconstruction(config)) then
-        allowed_lower = parent_buffer + 1
-        allowed_upper = nx - parent_buffer
         plan%patch_lower = max(plan%patch_lower, allowed_lower)
         plan%patch_upper = min(plan%patch_upper, allowed_upper)
         do while (plan%patch_upper - plan%patch_lower + 1 < &
@@ -763,7 +770,8 @@ contains
       call fill_fine_ghosts_1d( &
         species, solution%hierarchy%interfaces(level), state_start, &
         state_end, alpha, solution%levels(level + 1)%state, &
-        solution%levels(level + 1)%temperature, local_ok)
+        solution%levels(level + 1)%temperature, local_ok, &
+        config%boundary_condition)
       if (.not. local_ok) return
       if (uses_ppm_reconstruction(config)) then
         call fill_fine_wide_ghosts_1d( &
@@ -772,7 +780,10 @@ contains
           solution%levels(level + 1)%left_ghost_state, &
           solution%levels(level + 1)%right_ghost_state, &
           solution%levels(level + 1)%left_ghost_temperature, &
-          solution%levels(level + 1)%right_ghost_temperature, local_ok)
+          solution%levels(level + 1)%right_ghost_temperature, local_ok, &
+          solution%levels(level + 1)%state, &
+          solution%levels(level + 1)%temperature, &
+          config%boundary_condition)
         if (.not. local_ok) return
       end if
       call advance_hydro_recursive( &
@@ -854,7 +865,8 @@ contains
       call fill_fine_ghosts_1d( &
         species, solution%hierarchy%interfaces(level), state_start, &
         state_end, alpha, solution%levels(level + 1)%state, &
-        solution%levels(level + 1)%temperature, local_ok)
+        solution%levels(level + 1)%temperature, local_ok, &
+        config%boundary_condition)
       if (.not. local_ok) return
       call advance_transport_recursive( &
         species, transport, config, solution, level + 1, child_interval, &
@@ -987,7 +999,8 @@ contains
         solution%levels(level - 1)%state, &
         solution%levels(level - 1)%state, 1.0_dp, &
         solution%levels(level)%state, &
-        solution%levels(level)%temperature, local_ok)
+        solution%levels(level)%temperature, local_ok, &
+        config%boundary_condition)
       if (.not. local_ok) return
       if (uses_ppm_reconstruction(config)) then
         call fill_fine_wide_ghosts_1d( &
@@ -997,7 +1010,9 @@ contains
           solution%levels(level)%left_ghost_state, &
           solution%levels(level)%right_ghost_state, &
           solution%levels(level)%left_ghost_temperature, &
-          solution%levels(level)%right_ghost_temperature, local_ok)
+          solution%levels(level)%right_ghost_temperature, local_ok, &
+          solution%levels(level)%state, &
+          solution%levels(level)%temperature, config%boundary_condition)
         if (.not. local_ok) return
       end if
     end do
