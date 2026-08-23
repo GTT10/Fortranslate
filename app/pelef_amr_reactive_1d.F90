@@ -19,18 +19,23 @@ program pelef_amr_reactive_1d
   use amr_multilevel_reactive_1d_mod, only: &
     amr_multilevel_reactive_solution_1d, &
     simulate_multilevel_reactive_1d, write_multilevel_reactive_1d_csv
+  use amr_multipatch_reactive_1d_mod, only: &
+    amr_multipatch_reactive_solution_1d, &
+    simulate_multipatch_reactive_1d, write_multipatch_reactive_1d_csv
   implicit none
 
   type(reactive_1d_config) :: config
   type(amr_reactive_solution_1d) :: solution
   type(amr_multilevel_reactive_solution_1d) :: multilevel_solution
+  type(amr_multipatch_reactive_solution_1d) :: multipatch_solution
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp) :: initial_integrals(5), final_integrals(5)
   real(dp) :: conservation_error(5)
   character(len=1024) :: input_path, message
-  logical :: ok, multilevel_run
+  logical :: ok, multilevel_run, multipatch_run
+  integer :: patch
 
   if (command_argument_count() /= 1) then
     write(*, '(a)') "Usage: pelef_amr_reactive_1d <input.nml>"
@@ -64,10 +69,20 @@ program pelef_amr_reactive_1d
     error stop "Unknown chemistry model"
   end select
 
-  multilevel_run = config%amr_max_levels > 2 .or. &
+  multipatch_run = config%amr_multipatch_enabled
+  multilevel_run = .not. multipatch_run .and. &
+    (config%amr_max_levels > 2 .or. &
     trim(config%amr_reconstruction) == "ppm" .or. &
-    trim(config%amr_reconstruction) == "characteristic_ppm"
-  if (multilevel_run) then
+    trim(config%amr_reconstruction) == "characteristic_ppm")
+  if (multipatch_run) then
+    call simulate_multipatch_reactive_1d( &
+      species, reactions, config, multipatch_solution, initial_integrals, &
+      final_integrals, ok, transport)
+    if (.not. ok) error stop "Multipatch AMR reactive simulation failed"
+    call write_multipatch_reactive_1d_csv( &
+      config%output_file, species, multipatch_solution, ok)
+    if (.not. ok) error stop "Multipatch AMR reactive output failed"
+  else if (multilevel_run) then
     call simulate_multilevel_reactive_1d( &
       species, reactions, config, multilevel_solution, initial_integrals, &
       final_integrals, ok, transport)
@@ -99,7 +114,28 @@ program pelef_amr_reactive_1d
     write(*, '(a,i0)') "AMR WENO scheme: ", config%amr_weno_scheme
   write(*, '(a,l2)') "AMR molecular transport: ", &
     config%transport_enabled
-  if (multilevel_run) then
+  write(*, '(a,l2)') "Dynamic multipatch AMR: ", multipatch_run
+  if (multipatch_run) then
+    write(*, '(a,i0)') "Active fine patches: ", &
+      multipatch_solution%patch_count()
+    do patch = 1, multipatch_solution%patch_count()
+      write(*, '(a,i0,a,i0,a,i0)') "Patch ", patch, &
+        " coarse-cell bounds: ", &
+        multipatch_solution%hierarchy%patches(patch)%fine_coarse_lower, &
+        ":", &
+        multipatch_solution%hierarchy%patches(patch)%fine_coarse_upper
+    end do
+    write(*, '(a,i0)') "Fine cells: ", &
+      multipatch_solution%hierarchy%fine_cell_count()
+    write(*, '(a,i0)') "Completed coarse steps: ", &
+      multipatch_solution%steps
+    write(*, '(a,i0)') "Regrid evaluations: ", &
+      multipatch_solution%regrid_evaluations
+    write(*, '(a,i0)') "Patch-set changes: ", multipatch_solution%regrids
+    write(*, '(a,i0)') "Fine overlap cells transferred: ", &
+      multipatch_solution%overlap_cells_transferred
+    write(*, '(a,es24.16)') "Final time: ", multipatch_solution%time
+  else if (multilevel_run) then
     write(*, '(a,i0)') "Active AMR levels: ", &
       multilevel_solution%level_count()
     write(*, '(a,i0)') "Completed coarse steps: ", &

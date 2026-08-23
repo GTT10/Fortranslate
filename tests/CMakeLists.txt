@@ -67,6 +67,32 @@ set_tests_properties(
   PROPERTIES TIMEOUT 300
 )
 
+set(AMR_MULTIPATCH_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/amr_multipatch_entropy_wave")
+file(MAKE_DIRECTORY "${AMR_MULTIPATCH_WORK_DIRECTORY}")
+add_test(
+  NAME regression_amr_multipatch_entropy_wave_run
+  COMMAND $<TARGET_FILE:pelef_amr_reactive_1d>
+    "${PROJECT_SOURCE_DIR}/cases/amr_multipatch_entropy_wave/entropy_wave.nml"
+)
+set_tests_properties(
+  regression_amr_multipatch_entropy_wave_run
+  PROPERTIES WORKING_DIRECTORY "${AMR_MULTIPATCH_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_amr_multipatch_entropy_wave_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_amr_multipatch_output.py"
+    --input
+    "${AMR_MULTIPATCH_WORK_DIRECTORY}/amr_multipatch_entropy_wave.csv"
+    --minimum-patches 2
+)
+set_tests_properties(
+  regression_amr_multipatch_entropy_wave_check
+  PROPERTIES DEPENDS regression_amr_multipatch_entropy_wave_run
+)
+
 add_executable(test_amr_regrid_1d unit/test_amr_regrid_1d.F90)
 target_link_libraries(test_amr_regrid_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_regrid_1d COMMAND test_amr_regrid_1d)

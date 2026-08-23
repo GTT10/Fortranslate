@@ -28,6 +28,7 @@ module simulation_config_reactive_1d_mod
     logical :: amr_hybrid_weno = .false.
     integer :: amr_weno_scheme = 1
     logical :: amr_enabled = .false.
+    logical :: amr_multipatch_enabled = .false.
     character(len=32) :: amr_reconstruction = "pcm"
     integer :: amr_refinement_ratio = 2
     integer :: amr_max_levels = 2
@@ -35,6 +36,7 @@ module simulation_config_reactive_1d_mod
     integer :: amr_tag_component = 1
     integer :: amr_buffer_cells = 2
     integer :: amr_minimum_patch_cells = 8
+    integer :: amr_maximum_patch_gap_cells = 0
     real(dp) :: amr_relative_gradient_threshold = 0.02_dp
     real(dp) :: amr_absolute_gradient_threshold = 0.0_dp
     real(dp) :: amr_scale_floor = 1.0e-12_dp
@@ -76,7 +78,7 @@ contains
     integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
     integer :: amr_weno_scheme
     integer :: amr_tag_component, amr_buffer_cells
-    integer :: amr_minimum_patch_cells
+    integer :: amr_minimum_patch_cells, amr_maximum_patch_gap_cells
     real(dp) :: x_lower, x_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
@@ -96,7 +98,7 @@ contains
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
-    logical :: amr_enabled, amr_hybrid_weno
+    logical :: amr_enabled, amr_hybrid_weno, amr_multipatch_enabled
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
@@ -107,9 +109,10 @@ contains
       ppm_shock_flattening, amr_hybrid_weno, amr_weno_scheme, &
       chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
-      amr_enabled, amr_reconstruction, &
+      amr_enabled, amr_multipatch_enabled, amr_reconstruction, &
       amr_refinement_ratio, amr_max_levels, amr_regrid_interval, &
       amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
+      amr_maximum_patch_gap_cells, &
       amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
       amr_scale_floor, &
       initial_temperature, initial_pressure, initial_velocity, &
@@ -142,6 +145,7 @@ contains
     amr_hybrid_weno = config%amr_hybrid_weno
     amr_weno_scheme = config%amr_weno_scheme
     amr_enabled = config%amr_enabled
+    amr_multipatch_enabled = config%amr_multipatch_enabled
     amr_reconstruction = config%amr_reconstruction
     amr_refinement_ratio = config%amr_refinement_ratio
     amr_max_levels = config%amr_max_levels
@@ -149,6 +153,7 @@ contains
     amr_tag_component = config%amr_tag_component
     amr_buffer_cells = config%amr_buffer_cells
     amr_minimum_patch_cells = config%amr_minimum_patch_cells
+    amr_maximum_patch_gap_cells = config%amr_maximum_patch_gap_cells
     amr_relative_gradient_threshold = &
       config%amr_relative_gradient_threshold
     amr_absolute_gradient_threshold = &
@@ -210,6 +215,7 @@ contains
         amr_tag_component >= 1 .and. amr_buffer_cells >= 0 .and. &
         amr_minimum_patch_cells >= 1 .and. &
         amr_minimum_patch_cells <= nx - 2 .and. &
+        amr_maximum_patch_gap_cells >= 0 .and. &
         amr_relative_gradient_threshold >= 0.0_dp .and. &
         amr_absolute_gradient_threshold >= 0.0_dp .and. &
         amr_scale_floor > 0.0_dp .and. &
@@ -218,6 +224,10 @@ contains
         trim(amr_reconstruction) == "plm" .or. &
         trim(amr_reconstruction) == "ppm" .or. &
         trim(amr_reconstruction) == "characteristic_ppm")
+    end if
+    if (ok .and. amr_multipatch_enabled .and. &
+        (.not. amr_enabled .or. amr_max_levels /= 2)) then
+      ok = .false.
     end if
     if (ok .and. amr_hybrid_weno .and. &
         (.not. amr_enabled .or. &
@@ -312,6 +322,7 @@ contains
     config%amr_hybrid_weno = amr_hybrid_weno
     config%amr_weno_scheme = amr_weno_scheme
     config%amr_enabled = amr_enabled
+    config%amr_multipatch_enabled = amr_multipatch_enabled
     config%amr_reconstruction = trim(amr_reconstruction)
     config%amr_refinement_ratio = amr_refinement_ratio
     config%amr_max_levels = amr_max_levels
@@ -319,6 +330,7 @@ contains
     config%amr_tag_component = amr_tag_component
     config%amr_buffer_cells = amr_buffer_cells
     config%amr_minimum_patch_cells = amr_minimum_patch_cells
+    config%amr_maximum_patch_gap_cells = amr_maximum_patch_gap_cells
     config%amr_relative_gradient_threshold = &
       amr_relative_gradient_threshold
     config%amr_absolute_gradient_threshold = &
