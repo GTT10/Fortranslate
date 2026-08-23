@@ -25,6 +25,8 @@ sedov.csv
 isentropic_vortex.csv
 multispec_sod.csv
 reactive_*.csv
+mpi_*.csv
+transport_probe.csv
 zero_d_*.csv
 *.vtk
 *.vtu

@@ -262,3 +262,23 @@ thermal waves conservatively, and keep the reacting hotspot positive.
 ## 0.19.0 chemistry gates
 
 The full mechanism must match its generated source, retain H/O elemental inventories, agree with Cantera in the zero-dimensional reference case, and reduce identically from uniform 1D and 2D CFD states.
+
+## 0.20.0–0.24.0 MPI gates
+
+The distributed one-dimensional milestone is accepted only while all of the
+following remain active in both Debug and Release builds:
+
+- uneven 257-cell decomposition and 15-component periodic halo exchange work
+  for 1, 2, 4, and 8 ranks;
+- global timestep and conservation reductions are communicator-consistent;
+- ordered gather reconstructs the same complete field for every rank count;
+- passive ten-species Euler transport preserves positivity and species closure;
+- eleven independent implicit full-H2/O2 reactors retain energy, closure, and
+  nontrivial chemistry response without replicated state;
+- distributed general-EOS molecular transport preserves positivity, closure,
+  and periodic conservation;
+- coupled chemistry, transport, and hydro use a globally synchronized
+  accept/reject decision with complete rollback;
+- the final coupled field agrees for 1, 2, 4, and 8 ranks within `5e-13`
+  relative tolerance;
+- the complete serial regression suite still passes in the MPI-enabled build.

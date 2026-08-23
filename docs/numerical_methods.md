@@ -823,19 +823,6 @@ The analytical transverse-shear diffusion wave verifies second-order spatial
 and temporal behavior. Separate periodic species and temperature waves verify
 smoothing, positivity, species closure, and conservative flux divergence.
 
-## Scope limitations
-
-The code remains serial and uniform-grid. Reactive CFD currently uses only the
-seven-species, four-reaction elementary subset, selectable Rusanov/HLLC fluxes,
-and qualified frozen-composition PLM/PPM characteristic bases. Molecular
-viscosity, Fourier conduction, and mixture-averaged species diffusion are
-qualified only in 1D. The code still lacks third-body/falloff chemistry in CFD,
-a stiff coupled cell integrator, two-dimensional transport, Soret/multicomponent
-transport, a complete mechanism, full general-EOS PeleC Riemann/PPM parity,
-complete multidimensional PPM corner tracing, physical boundaries, AMR, MPI,
-and accelerators.
-
-
 ## Two-dimensional molecular transport
 
 The 0.17.0 path uses the Newtonian stress tensor, Fourier heat conduction, and
@@ -855,3 +842,27 @@ extrapolation. Periodic boundaries must occur in matched pairs.
 ## Pressure-dependent reaction rates
 
 Third-body rates use the efficiency-weighted collider concentration. Falloff rates combine low- and high-pressure limits with the reduced-pressure factor and optional Troe broadening. The full CFD path uses adaptive implicit backward-Euler trials with step doubling and Richardson extrapolation.
+
+## Distributed one-dimensional operators
+
+The MPI path uses uneven contiguous blocks and one ghost cell on either side of
+each local state. Periodic nonblocking halo exchange supplies face states for
+hydro and molecular transport. `MPI_Allreduce` synchronizes the hyperbolic and
+parabolic timestep limits, operator success flags, and conservation diagnostics.
+
+The coupled update is transactional: chemistry, transport, hydro, transport,
+and chemistry act on a trial copy. If any local implicit solve or state recovery
+fails, the failure is reduced globally, the trial is discarded on every rank,
+and the complete Strang interval is retried at half size. This keeps rank-count
+changes from producing divergent accept/reject histories.
+
+## Scope limitations
+
+The current distributed path is one-dimensional and uniform-grid. Serial 2D
+reactive flow includes molecular transport and physical boundaries, but MPI 2D,
+AMR, embedded boundaries, LES, particles/spray, and accelerators remain outside
+the implemented scope. The transport model still excludes Soret, Dufour,
+multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
+The characteristic hydro basis remains a qualified frozen-composition
+approximation rather than complete PeleC/PelePhysics general-EOS Riemann and
+multidimensional PPM corner-tracing parity.

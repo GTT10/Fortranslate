@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def main() -> int:
         generated = Path(directory) / args.committed.name
         subprocess.run(
             [
-                "python3",
+                sys.executable,
                 str(args.generator),
                 "--input",
                 str(args.input),

@@ -4,7 +4,7 @@ This table maps responsibilities, not source lines.
 
 | PeleC reference | PeleF implementation | Status |
 |---|---|---|
-| `Source/main.cpp` | `app/pelef.F90`, `app/pelef2d.F90`, `app/pelef_reactive_1d.F90`, `app/pelef_reactive_2d.F90` | Separate constant-gamma and reactive serial drivers |
+| `Source/main.cpp` | serial `app/pelef*.F90` and distributed `app/pelef_mpi*.F90` drivers | Separate constant-gamma, reactive, and MPI verification applications |
 | `Source/IndexDefines.H` | `src/core/state_indices_mod.F90` | Base single-species state indices |
 | PelePhysics constant-`gamma` calls | `src/physics/eos_ideal_mod.F90` | Existing hydro closure |
 | PelePhysics species thermodynamics | `nasa7_thermo_mod`, `thermo_database_mod` | NASA7 H2/H/O/O2/OH/H2O/N2 subset verified |
@@ -26,24 +26,28 @@ This table maps responsibilities, not source lines.
 | `Exec/RegTests/Sedov` | `cases/sedov`, `tools/check_sedov.py` | Independent planar strong-blast gate |
 | `Exec/RegTests/MultiSpecSod` | `cases/multispec_sod`, `check_multispec_sod.py` | Passive multispecies regression implemented |
 | reactive multidimensional Godunov/CTU responsibility | `reactive_2d_mod`, `pelef_reactive_2d` | Periodic regular-grid PCM/characteristic-PLM/characteristic-PPM normal predictors, full-state transverse correction, and x/y reduction verified |
-| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod`, `reactive_2d_mod` | Four-reaction 0D chemistry and Strang-split 1D/2D cell coupling verified |
+| `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod`, `reactive_2d_mod`, `mpi_reactive_1d_mod` | Elementary/full chemistry and serial/distributed Strang coupling verified |
 | PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
 | reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
 | reactive hydro state/flux path | `reactive_1d_mod`, `reactive_2d_mod`, `pelef_reactive_1d`, `pelef_reactive_2d` | NASA7 conversion, directional Rusanov/HLLC, PLM/PPM normal prediction, CTU, and Strang splitting verified |
-| stiff reactor integration | future CVODE/SUNDIALS layer | Not started |
-| third-body/falloff chemistry | future kinetics extensions | Not started |
+| stiff reactor integration | `constant_volume_reactor_mod` adaptive implicit backward-Euler path | Verified with generated Jacobian, step doubling, and rollback; not CVODE parity |
+| third-body/falloff chemistry | `elementary_kinetics_mod`, `h2o2_full_mechanism_mod` | Third-body efficiencies, pressure falloff, and Troe verified |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |
 | `Source/PPM.*` regular-cell normal predictor | `reactive_1d_mod`, `reactive_2d_mod` characteristic PPM paths | Five-point reconstruction and `u-c/u/u+c` profile integration verified in 1D and as x/y normal predictors before 2D CTU correction |
 | `Source/WENO.H` | future `reconstruction_weno_mod` | Not started |
 | PelePhysics `Source/Transport/Simple.H` | `transport_database_mod`, `mixture_transport_mod`, `pelef_transport_probe` | Qualified dilute ideal-gas subset: Chapman--Enskog/Wilke/Mathur/mixture-averaged diffusion |
 | PeleC `Source/Diffterm.H`, `Source/Diffusion.cpp` | `reactive_diffusive_flux_x`, `advance_reactive_transport` | Periodic 1D viscous, conductive, barodiffusive, correction-velocity, and enthalpy-flux subset verified |
-| `Source/Diffusion.*` multidimensional/EB responsibility | future 2D/AMR diffusion modules | Not started |
+| `Source/Diffusion.*` multidimensional/EB responsibility | `reactive_transport_2d_mod` for regular 2D cells; future AMR/EB modules | Regular-grid 2D transport verified; AMR/EB not started |
+| AMReX distributed-box responsibility | `mpi_domain_1d_mod`, `mpi_reactive_transport_1d_mod`, `mpi_reactive_1d_mod` | Uneven 1D blocks, halos, reductions, gather, transport, chemistry, and reactive splitting verified for 1/2/4/8 ranks |
 | `Source/PeleCAmr.*` | future `src/amr/` | Not started |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 
-A row is called implemented only when its Fortran subsystem has an automated numerical gate. The current chemistry row is qualified: it covers reversible elementary reactions and one small constant-volume subset, not a complete PelePhysics mechanism, stiff integration, full transport parity, or multidimensional diffusive flow.
+A row is called implemented only when its Fortran subsystem has an automated
+numerical gate. Chemistry includes a complete ten-species, 29-reaction H2/O2
+path, but this is not a claim of arbitrary PelePhysics mechanism parsing,
+hydrocarbon chemistry, CVODE parity, or full transport parity.
 
 | PeleC responsibility | PeleF current mapping | Qualification |
 |---|---|---|
@@ -71,3 +75,11 @@ A row is called implemented only when its Fortran subsystem has an automated num
 | third-body and falloff rate evaluation | `elementary_kinetics_mod` |
 | cell-local stiff reactor | `constant_volume_reactor_mod` implicit path |
 | runtime mechanism selection | reactive 1D/2D application dispatch |
+
+| Distributed responsibility | PeleF 0.24.0 |
+|---|---|
+| rank-local block ownership | `mpi_domain_1d_mod` uneven contiguous decomposition |
+| periodic ghost fill | nonblocking state and temperature halo exchange |
+| global timestep and diagnostics | communicator-wide min/max/sum reductions |
+| ordered output | root `MPI_Gatherv` reconstruction |
+| distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |

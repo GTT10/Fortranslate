@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.23.0
+  VERSION 0.24.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -161,6 +161,7 @@ if(PELEF_ENABLE_MPI)
     pelef_mpi_support
     src/parallel/mpi_domain_1d_mod.F90
     src/parallel/mpi_reactive_transport_1d_mod.F90
+    src/parallel/mpi_reactive_1d_mod.F90
   )
   target_link_libraries(pelef_mpi_support PUBLIC pelef_core MPI::MPI_Fortran)
   set_target_properties(pelef_mpi_support PROPERTIES Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mpi_modules")
@@ -184,12 +185,15 @@ if(PELEF_ENABLE_MPI)
   target_link_libraries(
     pelef_mpi_reactive_transport_1d PRIVATE pelef_mpi_support
   )
+  add_executable(pelef_mpi_reactive_1d app/pelef_mpi_reactive_1d.F90)
+  target_link_libraries(pelef_mpi_reactive_1d PRIVATE pelef_mpi_support)
   install(
     TARGETS
       pelef_mpi_1d
       pelef_mpi_multispecies_1d
       pelef_mpi_h2o2_batch
       pelef_mpi_reactive_transport_1d
+      pelef_mpi_reactive_1d
     RUNTIME DESTINATION bin
   )
 endif()

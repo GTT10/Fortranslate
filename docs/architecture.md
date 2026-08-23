@@ -2,7 +2,8 @@
 
 ## Executable split
 
-PeleF exposes eight serial verification drivers over shared numerical and physical-property modules.
+PeleF exposes nine serial verification drivers and five optional MPI drivers
+over shared numerical and physical-property modules.
 
 ```text
 pelef
@@ -20,6 +21,9 @@ pelef0d
 pelef0d_h2o2
   └─ generated reversible elementary kinetics and an H2/O2 reactor
 
+pelef0d_h2o2_full
+  └─ full pressure-dependent H2/O2 kinetics and an implicit reactor
+
 pelef_transport_probe
   └─ qualified dilute-gas mixture transport coefficients
 
@@ -27,7 +31,7 @@ pelef_reactive_1d
   └─ NASA7 general-EOS reactive Euler with PLM/PPM, HLLC, and Strang splitting
 
 pelef_reactive_2d
-  └─ periodic NASA7 reactive Euler with directional HLLC and CTU correction
+  └─ NASA7 reactive Euler, physical boundaries, transport, and CTU correction
 ```
 
 The established constant-`gamma` solvers remain intact as regression baselines. Composition-dependent flow is introduced through a separate driver and modules so a general-EOS change cannot silently alter earlier results.
@@ -223,7 +227,11 @@ The architecture retains independent gates for:
 5. composition-dependent reactive hydro;
 6. reaction-flow splitting;
 7. reactive two-dimensional CTU and dimensional reduction;
-8. one-dimensional molecular transport and Cantera coefficient qualification.
+8. one- and two-dimensional molecular transport and Cantera coefficient
+   qualification;
+9. physical boundaries and full pressure-dependent H2/O2 chemistry;
+10. MPI decomposition, multispecies hydro, implicit chemistry, molecular
+    transport, and coupled reactive splitting.
 
 The homogeneous reactive field must reduce to independent zero-dimensional cell chemistry. The nonuniform hotspot must create finite pressure and velocity responses while preserving global mass, momentum, and total energy.
 
@@ -239,14 +247,15 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
 8. Rusanov remains the robustness baseline. HLLC is the verified
    contact-resolving general-EOS intermediate; it is not labeled as PeleC
    Riemann parity.
-9. The current four-reaction chemistry subset is not a complete H2/O2 mechanism.
+9. The four-reaction chemistry subset remains a lightweight regression path;
+   the selectable ten-species, 29-reaction mechanism is the full H2/O2 path.
 10. Contact steepening is explicitly bounded to half of the canonical detector
     strength until a complete general-EOS PPM/HLLC characteristic system is
     available.
 11. The present transport layer excludes Soret, Dufour, multicomponent Stefan--
     Maxwell diffusion, polar corrections, and bulk viscosity.
-12. Molecular transport is qualified only on the periodic one-dimensional
-    reactive path; the two-dimensional CTU path remains inviscid.
+12. Molecular transport is qualified in serial 1D/2D and distributed 1D paths;
+    Soret and multicomponent diffusion remain excluded.
 
 ## Reactive PPM path
 
@@ -284,3 +293,32 @@ mirrored velocity/temperature transport gradients, and zero species flux.
 ## Full pressure-dependent H2/O2 chemistry
 
 The reactive applications dispatch either the seven-species elementary model or a ten-species, 29-reaction model. The full path reuses the variable-width conserved state and advances each cell with the implicit constant-volume reactor.
+
+## MPI one-dimensional path
+
+`mpi_domain_1d_mod` owns uneven contiguous decomposition, periodic nonblocking
+halo exchange, global reductions, and ordered `MPI_Gatherv` output. The MPI
+drivers allocate only rank-local state plus two ghost cells.
+
+```text
+rank-local conserved state + temperature
+        ↓
+periodic state/temperature halo exchange
+        ↓
+global hydro/transport timestep reduction
+        ↓
+implicit chemistry(dt/2)
+        ↓
+SSPRK2 molecular transport(dt/2)
+        ↓
+conservative general-EOS Rusanov hydro(dt)
+        ↓
+SSPRK2 molecular transport(dt/2)
+        ↓
+implicit chemistry(dt/2)
+```
+
+Every coupled attempt is transactional. A failure on any rank is reduced across
+the communicator, all ranks restore the pre-attempt state, and the scheduler
+retries a smaller interval. CI compares complete gathered fields for 1, 2, 4,
+and 8 ranks in both Debug and Release builds.
