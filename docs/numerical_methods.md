@@ -1193,5 +1193,19 @@ flux registers mirror the geometry: each relation contains one register array
 per parent and one register per local child. Synchronization applies every
 deepest relation's reflux before restricting that relation into its parents,
 then continues toward the root. Fields and registers roll back together if any
-parent-set operation fails. Reactive time advancement, dynamic patch-tree
-rebuilds, and same-level ghost exchange remain future patch-tree integrations.
+parent-set operation fails.
+
+For reactive patch-tree hydro, a recursive call advances one parent patch for
+`dt_l` and records the time-integrated coarse flux at every local child
+boundary. Each child then advances recursively for `r_l` intervals of
+`dt_l/r_l`. Child ghost cells interpolate between the parent state before and
+after its advance. The returned fine boundary-flux integrals accumulate in the
+matching child register. Once all child substeps finish, the parent-owned set
+is refluxed and averaged down. Because descendants are synchronized before a
+child returns, this ordering propagates every leaf correction through all
+ancestors. The stable root interval is the minimum of each patch's local CFL
+limit multiplied by its cumulative refinement ratio.
+
+The qualified reactive-tree gate uses PCM and strictly interior separated
+patches. Chemistry, transport, dynamic patch-tree rebuilds, physical-boundary
+children, and same-level ghost exchange remain future integrations.

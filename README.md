@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.42.0` milestone contains ten serial verification executables, five
+The `0.43.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -210,6 +210,11 @@ The AMR layer provides:
   deepest-to-root average-down, and exact composite integration;
 - parent-owned patch-tree flux registers with transactional deepest-to-root
   reflux and covered-cell synchronization across every branch;
+- static arbitrary-depth reactive patch trees with recursive PCM hydro
+  subcycling, time-interpolated parent ghosts, per-child flux accumulation,
+  reflux, and average-down at every branch;
+- a four-level `1/2/3/2`-patch reactive conservation, synchronization,
+  positivity, closure, and exact subcycle-count gate;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -224,11 +229,13 @@ ratios fall back to conservative prolongation. With
 `amr_multipatch_enabled = .true.`, the public application uses a tag-driven
 two-level patch set, clusters disconnected tags, periodically rebuilds the
 set, retains aligned fine overlap, and writes every uncovered parent or fine
-cell exactly once. A separate static patch-tree foundation now permits each
-parent patch to own zero or more separated children at arbitrary depth. The
-arbitrary-depth reactive time integrator still owns one patch per level.
-Patch-tree time integration and regridding, same-level ghost exchange, and MPI
-patch ownership remain later slices. A periodic child may
+cell exactly once. A separate static patch-tree engine permits each parent
+patch to own zero or more separated children at arbitrary depth and advances
+those patches recursively with level-ratio hydro subcycling. Every local child
+accumulates its own coarse/fine boundary fluxes; reflux and average-down occur
+after its fine subcycles, and failures restore the complete tree. Dynamic
+patch-tree regridding, chemistry and transport composition, same-level ghost
+exchange, and MPI patch ownership remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

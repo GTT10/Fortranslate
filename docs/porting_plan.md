@@ -501,6 +501,8 @@ Reactive application integration:
   operations (`0.41.0`)
 - [x] arbitrary-depth parent-owned flux registers and tree synchronization
   (`0.42.0`)
+- [x] arbitrary-depth branched reactive PCM hydro and recursive subcycling
+  (`0.43.0`)
 
 AMR parity metrics:
 

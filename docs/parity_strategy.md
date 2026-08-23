@@ -578,3 +578,18 @@ Patch-tree reflux is accepted only while:
   synchronization restores the zero reference within `5e-12`;
 - every covered interval is synchronized and all registers reset within
   `5e-12` in Debug and Release CI.
+
+## 0.43.0 arbitrary-depth reactive patch-tree hydro gates
+
+Recursive patch-tree hydro is accepted only while:
+
+- a static four-level hierarchy owns `1/2/3/2` reactive patches and contains
+  both branching parents and a branch that terminates early;
+- one root interval produces exact per-level advance counts of
+  `1/4/12/16` under ratio-two subcycling;
+- the composite conserved state remains within `3e-10` of its periodic initial
+  integral after independent per-child flux-register reflux;
+- every parent covered interval matches restriction of its local child within
+  `5e-13`;
+- every patch retains positive temperature and pressure, nonnegative species,
+  and species closure within `3e-10` in Debug and Release CI.

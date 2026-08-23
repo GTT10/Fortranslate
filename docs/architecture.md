@@ -439,10 +439,19 @@ register layout stores one flux register per child inside each parent-owned
 set. Tree synchronization walks relations deepest-to-root and performs
 set-wide reflux followed by average-down transactionally at every parent.
 
-The arbitrary-depth reactive engine still owns one patch per level. Reactive
-patch-tree time integration and dynamic rebuilds, same-level ghost exchange,
-transfer between changed patch trees, one-sided periodic-seam refinement, and
-MPI patch ownership remain separate.
+`amr_patch_tree_reactive_1d_mod` binds a reactive state, temperature, and wide
+ghost storage to every flattened tree patch. A coarse interval is advanced by
+a depth-first recursion: advance the parent once, accumulate its boundary
+fluxes into every local child register, advance every child for `r` substeps
+with time-interpolated parent ghosts, then reflux and average down that complete
+child set. Independent branches may terminate at different levels. The public
+advance is transactional and records the accepted advance count at every
+level.
+
+The qualified patch-tree path currently covers static interior patches and
+PCM hydro. Dynamic tree rebuilds, chemistry and transport composition,
+same-level ghost exchange, transfer between changed patch trees, one-sided
+periodic-seam refinement, and MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

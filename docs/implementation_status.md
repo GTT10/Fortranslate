@@ -627,11 +627,12 @@ patch-set engine into that application.
 - [x] public chemistry-and-transport entropy-wave application gate
 - [x] deterministic empty-to-two-to-moved-to-empty lifecycle regression
 
-The public reactive AMR executable now selects the dynamic two-level
-patch-set engine when `amr_multipatch_enabled` is true. The arbitrary-depth
-engine still owns one patch per level. Arbitrary-depth multipatch recursion,
-independently owned adjacent boxes and same-level exchange, periodic-seam
-splitting, load balancing, and distributed patch ownership remain separate.
+The public reactive AMR executable selects the dynamic two-level patch-set
+engine when `amr_multipatch_enabled` is true. Static arbitrary-depth
+multipatch recursion is qualified separately in `0.43.0`. Dynamic patch-tree
+rebuilds, independently owned adjacent boxes and same-level exchange,
+periodic-seam splitting, load balancing, and distributed patch ownership
+remain separate.
 
 ## Arbitrary-depth multipatch tree foundation (`0.41.0`)
 
@@ -660,8 +661,27 @@ distributed ownership remain separate.
 - [x] register reset after accepted synchronization
 - [x] branched deepest-level flux-mismatch conservation gate
 
-The patch-tree field layer now has the synchronization primitive required by
-recursive advancement. Reactive hydro and transport still need to accumulate
-their time-integrated interface fluxes into this nested register layout.
-Dynamic tree rebuilds, adjacent boxes, same-level exchange, load balancing,
-and distributed ownership remain separate.
+This milestone supplied the synchronization primitive consumed by the
+`0.43.0` recursive hydro path. Reactive transport still needs to accumulate
+its time-integrated interface fluxes into the nested register layout. Dynamic
+tree rebuilds, adjacent boxes, same-level exchange, load balancing, and
+distributed ownership remain separate.
+
+## Arbitrary-depth reactive patch-tree hydro (`0.43.0`)
+
+- [x] reactive state, temperature, and wide-ghost ownership per tree patch
+- [x] all-patch CFL reduction to a stable root-level interval
+- [x] depth-first parent advance with refinement-ratio child subcycling
+- [x] time-interpolated parent-to-child coarse/fine ghost fill
+- [x] per-child coarse and fine time-integrated flux accumulation
+- [x] per-parent reflux and covered-cell average-down after child subcycles
+- [x] transactional rollback of the complete reactive tree
+- [x] four-level branched PCM hydro conservation and synchronization gate
+- [x] exact `1/4/12/16` level-advance accounting gate
+- [x] temperature, pressure, species positivity, and closure gates
+
+This milestone qualifies static, strictly interior, separated patch trees for
+reactive PCM hydro. Chemistry and molecular transport composition, dynamic
+tagging and overlap-preserving tree rebuilds, adjacent boxes and same-level
+exchange, physical-boundary children, load balancing, and distributed patch
+ownership remain separate.
