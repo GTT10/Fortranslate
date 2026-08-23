@@ -162,6 +162,34 @@ set_tests_properties(
   PROPERTIES DEPENDS regression_amr_multilevel_weno5z_hotspot_run
 )
 
+foreach(WENO_VARIANT IN ITEMS weno7z weno3z)
+  set(WENO_WORK_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/amr_multilevel_${WENO_VARIANT}_hotspot")
+  file(MAKE_DIRECTORY "${WENO_WORK_DIRECTORY}")
+  add_test(
+    NAME regression_amr_multilevel_${WENO_VARIANT}_hotspot_run
+    COMMAND $<TARGET_FILE:pelef_amr_reactive_1d>
+      "${PROJECT_SOURCE_DIR}/cases/amr_multilevel_reactive_hotspot/hotspot_${WENO_VARIANT}.nml"
+  )
+  set_tests_properties(
+    regression_amr_multilevel_${WENO_VARIANT}_hotspot_run
+    PROPERTIES WORKING_DIRECTORY "${WENO_WORK_DIRECTORY}"
+      TIMEOUT 300
+  )
+  add_test(
+    NAME regression_amr_multilevel_${WENO_VARIANT}_hotspot_check
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/check_amr_multilevel_hotspot.py"
+      --input
+      "${WENO_WORK_DIRECTORY}/amr_multilevel_${WENO_VARIANT}_hotspot.csv"
+  )
+  set_tests_properties(
+    regression_amr_multilevel_${WENO_VARIANT}_hotspot_check
+    PROPERTIES DEPENDS
+      regression_amr_multilevel_${WENO_VARIANT}_hotspot_run
+  )
+endforeach()
+
 add_executable(test_plm_reconstruction unit/test_plm_reconstruction.F90)
 target_link_libraries(test_plm_reconstruction PRIVATE pelef_core)
 add_test(NAME unit_plm_reconstruction COMMAND test_plm_reconstruction)

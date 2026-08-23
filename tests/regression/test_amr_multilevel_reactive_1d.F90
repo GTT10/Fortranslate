@@ -29,10 +29,13 @@ program test_amr_multilevel_reactive_1d
   type(amr_multilevel_reactive_solution_1d) :: ppm_solution
   type(amr_multilevel_reactive_solution_1d) :: weno_js_solution
   type(amr_multilevel_reactive_solution_1d) :: weno_z_solution
+  type(amr_multilevel_reactive_solution_1d) :: weno_7z_solution
+  type(amr_multilevel_reactive_solution_1d) :: weno_3z_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, ppm_conservation_error
   real(dp) :: weno_js_conservation_error, weno_z_conservation_error
+  real(dp) :: weno_7z_conservation_error, weno_3z_conservation_error
   real(dp) :: minimum_temperature
   real(dp) :: maximum_closure_error
   integer, parameter :: patch_lower(2) = [4, 5]
@@ -117,6 +120,8 @@ program test_amr_multilevel_reactive_1d
 
   call run_weno_case(0, weno_js_solution, weno_js_conservation_error)
   call run_weno_case(1, weno_z_solution, weno_z_conservation_error)
+  call run_weno_case(2, weno_7z_solution, weno_7z_conservation_error)
+  call run_weno_case(3, weno_3z_solution, weno_3z_conservation_error)
 
   chemistry_config = config
   chemistry_config%chemistry_enabled = .true.
@@ -141,6 +146,8 @@ program test_amr_multilevel_reactive_1d
     ppm_conservation_error
   write(*, '(a,2(1x,es16.8))') "WENO5 JS/Z composite conservation:", &
     weno_js_conservation_error, weno_z_conservation_error
+  write(*, '(a,2(1x,es16.8))') "WENO7-Z/3-Z composite conservation:", &
+    weno_7z_conservation_error, weno_3z_conservation_error
   write(*, '(a,1x,es16.8)') "Minimum temperature:", &
     minimum_temperature
   write(*, '(a)') "test_amr_multilevel_reactive_1d: PASS"

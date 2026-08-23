@@ -213,7 +213,7 @@ contains
         amr_relative_gradient_threshold >= 0.0_dp .and. &
         amr_absolute_gradient_threshold >= 0.0_dp .and. &
         amr_scale_floor > 0.0_dp .and. &
-        amr_weno_scheme >= 0 .and. amr_weno_scheme <= 1
+        amr_weno_scheme >= 0 .and. amr_weno_scheme <= 3
       ok = ok .and. (trim(amr_reconstruction) == "pcm" .or. &
         trim(amr_reconstruction) == "plm" .or. &
         trim(amr_reconstruction) == "ppm" .or. &

@@ -16,7 +16,8 @@ module reactive_1d_mod
     advance_constant_volume_implicit_adaptive
   use slope_limiter_mod, only: limited_slope, minmod3
   use reconstruction_weno_mod, only: &
-    weno_reconstruct_5js, weno_reconstruct_5z
+    weno_reconstruct_5js, weno_reconstruct_5z, &
+    weno_reconstruct_7z, weno_reconstruct_3z
   use simulation_config_reactive_1d_mod, only: &
     reactive_1d_config, reactive_1d_mole_fractions
   implicit none
@@ -1007,7 +1008,8 @@ contains
     real(dp), allocatable :: q(:, :), cell_left(:, :), cell_right(:, :)
     real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
     real(dp), allocatable :: edge_left(:), edge_right(:), sound_speed(:)
-    real(dp) :: stencil(5), contact_stencil(-2:2)
+    real(dp) :: stencil(5), stencil7(7), stencil3(3)
+    real(dp) :: contact_stencil(-2:2)
     real(dp) :: density_stencil(-2:2), pressure_stencil(-2:2)
     real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
     real(dp) :: flattening, eta, gamma_effective, dummy_c, local_t
@@ -1023,7 +1025,7 @@ contains
     if (present(hybrid_weno)) use_weno = hybrid_weno
     if (present(weno_scheme)) selected_weno_scheme = weno_scheme
     if (use_weno .and. &
-        (selected_weno_scheme < 0 .or. selected_weno_scheme > 1)) return
+        (selected_weno_scheme < 0 .or. selected_weno_scheme > 3)) return
     wide_ghosts = present(left_ghost_state) .and. &
       present(right_ghost_state) .and. &
       present(left_ghost_temperature) .and. &
@@ -1111,6 +1113,14 @@ contains
           case (1)
             call weno_reconstruct_5z( &
               stencil, edge_left(component), edge_right(component))
+          case (2)
+            stencil7 = q(component, i - 3:i + 3)
+            call weno_reconstruct_7z( &
+              stencil7, edge_left(component), edge_right(component))
+          case (3)
+            stencil3 = q(component, i - 1:i + 1)
+            call weno_reconstruct_3z( &
+              stencil3, edge_left(component), edge_right(component))
           end select
         else
           call reactive_ppm_reconstruct_five( &
