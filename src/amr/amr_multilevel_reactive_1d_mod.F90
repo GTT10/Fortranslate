@@ -1,22 +1,29 @@
 module amr_multilevel_reactive_1d_mod
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_cfl_timestep, reactive_transport_timestep, &
+    reactive_nvar, reactive_nprim, reactive_cfl_timestep, &
+    reactive_transport_timestep, &
     initialize_reactive_1d, advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
-    amr_multilevel_hierarchy_1d, amr_level_field_1d, &
+    amr_two_level_hierarchy_1d, amr_multilevel_hierarchy_1d, &
+    amr_level_field_1d, &
     amr_flux_register_1d, initialize_multilevel_hierarchy_1d, &
+    initialize_two_level_hierarchy_1d, prolong_conservative_1d, &
     prolong_multilevel_1d, initialize_flux_register_1d, &
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d, reflux_1d, &
     average_down_1d, composite_integral_multilevel_1d
   use amr_reactive_1d_mod, only: &
     advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
-    fill_fine_ghosts_1d
+    fill_fine_ghosts_1d, write_amr_cell
+  use amr_regrid_1d_mod, only: &
+    amr_tagging_criteria_1d, amr_regrid_plan_1d, &
+    plan_gradient_regrid_1d
   implicit none
   private
 
@@ -30,15 +37,21 @@ module amr_multilevel_reactive_1d_mod
     type(amr_reactive_level_1d), allocatable :: levels(:)
     real(dp) :: time = 0.0_dp
     integer :: steps = 0
+    integer :: regrid_evaluations = 0
+    integer :: regrids = 0
   contains
     procedure :: level_count => multilevel_reactive_level_count
     procedure :: is_valid => multilevel_reactive_is_valid
   end type amr_multilevel_reactive_solution_1d
 
   public :: initialize_multilevel_reactive_1d
+  public :: initialize_tagged_multilevel_reactive_1d
   public :: multilevel_reactive_timestep_1d
   public :: advance_multilevel_reactive_1d
+  public :: regrid_multilevel_reactive_1d
+  public :: simulate_multilevel_reactive_1d
   public :: multilevel_reactive_integrals_1d
+  public :: write_multilevel_reactive_1d_csv
 
 contains
 
@@ -130,8 +143,134 @@ contains
     if (.not. local_ok) return
     solution%time = 0.0_dp
     solution%steps = 0
+    solution%regrid_evaluations = 0
+    solution%regrids = 0
     ok = solution%is_valid() .and. root_dx > 0.0_dp
   end subroutine initialize_multilevel_reactive_1d
+
+  subroutine initialize_tagged_multilevel_reactive_1d( &
+      species, config, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_multilevel_reactive_solution_1d), intent(out) :: solution
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: root_state(:, :), root_temperature(:)
+    real(dp) :: root_dx
+    logical :: local_ok
+
+    ok = .false.
+    if (.not. config%amr_enabled .or. config%amr_max_levels < 2) return
+    call initialize_reactive_1d( &
+      species, config, root_state, root_temperature, root_dx, local_ok)
+    if (.not. local_ok .or. root_dx <= 0.0_dp) return
+    call build_tagged_solution_from_root( &
+      species, config, root_state, root_temperature, solution, local_ok)
+    if (.not. local_ok) return
+    solution%time = 0.0_dp
+    solution%steps = 0
+    solution%regrid_evaluations = 1
+    solution%regrids = merge(1, 0, solution%level_count() > 1)
+    ok = .true.
+  end subroutine initialize_tagged_multilevel_reactive_1d
+
+  subroutine build_tagged_solution_from_root( &
+      species, config, root_state, root_temperature, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: root_state(:, 0:), root_temperature(0:)
+    type(amr_multilevel_reactive_solution_1d), intent(out) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_level_field_1d), allocatable :: candidate(:)
+    type(amr_two_level_hierarchy_1d) :: relation_geometry
+    type(amr_tagging_criteria_1d) :: criteria
+    type(amr_regrid_plan_1d) :: plan
+    integer, allocatable :: patch_lower(:), patch_upper(:), ratios(:)
+    logical, allocatable :: tags(:)
+    real(dp) :: parent_lower, parent_upper, child_lower, child_upper
+    logical :: local_ok
+    integer :: level, relation_count, nx, nvar, maximum_relations
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (.not. config%amr_enabled .or. config%amr_max_levels < 2 .or. &
+        size(root_state, 1) /= nvar .or. &
+        ubound(root_state, 2) /= config%nx + 1 .or. &
+        ubound(root_temperature, 1) /= config%nx + 1) return
+    maximum_relations = config%amr_max_levels - 1
+    allocate(candidate(config%amr_max_levels))
+    allocate(patch_lower(maximum_relations), patch_upper(maximum_relations))
+    allocate(ratios(maximum_relations))
+    allocate(candidate(1)%values(nvar, config%nx))
+    candidate(1)%values = root_state(:, 1:config%nx)
+    parent_lower = config%x_lower
+    parent_upper = config%x_upper
+    relation_count = 0
+    call criteria_from_config(config, criteria)
+
+    do level = 1, maximum_relations
+      nx = size(candidate(level)%values, 2)
+      criteria%minimum_patch_cells = &
+        min(config%amr_minimum_patch_cells, nx - 2)
+      if (criteria%minimum_patch_cells < 1) exit
+      allocate(tags(nx))
+      call plan_gradient_regrid_1d( &
+        candidate(level)%values, criteria, tags, plan, local_ok)
+      deallocate(tags)
+      if (.not. local_ok) return
+      if (.not. plan%active) exit
+      relation_count = relation_count + 1
+      patch_lower(relation_count) = plan%patch_lower
+      patch_upper(relation_count) = plan%patch_upper
+      ratios(relation_count) = config%amr_refinement_ratio
+      call initialize_two_level_hierarchy_1d( &
+        nx, plan%patch_lower, plan%patch_upper, &
+        config%amr_refinement_ratio, parent_lower, parent_upper, &
+        relation_geometry, local_ok, level - 1)
+      if (.not. local_ok) return
+      allocate(candidate(level + 1)%values( &
+        nvar, relation_geometry%fine%cell_count()))
+      call prolong_conservative_1d( &
+        candidate(level)%values, relation_geometry, &
+        candidate(level + 1)%values, local_ok)
+      if (.not. local_ok) return
+      child_lower = parent_lower + &
+        real(plan%patch_lower - 1, dp) * relation_geometry%coarse_dx
+      child_upper = parent_lower + &
+        real(plan%patch_upper, dp) * relation_geometry%coarse_dx
+      parent_lower = child_lower
+      parent_upper = child_upper
+    end do
+
+    call initialize_multilevel_hierarchy_1d( &
+      config%nx, patch_lower(1:relation_count), &
+      patch_upper(1:relation_count), ratios(1:relation_count), &
+      config%x_lower, config%x_upper, solution%hierarchy, local_ok)
+    if (.not. local_ok) return
+    allocate(solution%levels(relation_count + 1))
+    do level = 1, relation_count + 1
+      nx = solution%hierarchy%level_cell_count(level - 1)
+      allocate(solution%levels(level)%state(nvar, 0:nx + 1))
+      allocate(solution%levels(level)%temperature(0:nx + 1))
+      solution%levels(level)%state = 0.0_dp
+      solution%levels(level)%temperature = 0.0_dp
+      solution%levels(level)%state(:, 1:nx) = candidate(level)%values
+      if (level == 1) then
+        solution%levels(level)%state(:, 0) = root_state(:, 0)
+        solution%levels(level)%state(:, nx + 1) = root_state(:, nx + 1)
+        solution%levels(level)%temperature = root_temperature
+      else
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%state, &
+          solution%levels(level)%temperature, nx, local_ok)
+        if (.not. local_ok) return
+      end if
+    end do
+    call refresh_multilevel_ghosts(species, config, solution, local_ok)
+    if (.not. local_ok) return
+    ok = solution%is_valid()
+  end subroutine build_tagged_solution_from_root
 
   subroutine multilevel_reactive_timestep_1d( &
       species, config, solution, dt, ok, transport)
@@ -275,6 +414,112 @@ contains
     solution%steps = solution%steps + 1
     ok = .true.
   end subroutine advance_multilevel_reactive_1d
+
+  subroutine regrid_multilevel_reactive_1d( &
+      species, config, solution, changed, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_multilevel_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: changed, ok
+
+    type(amr_multilevel_reactive_solution_1d) :: backup, rebuilt
+    real(dp), allocatable :: root_state(:, :), root_temperature(:)
+    logical :: local_ok
+
+    changed = .false.
+    ok = .false.
+    if (.not. solution%is_valid() .or. config%amr_max_levels < 2) return
+    backup = solution
+    call average_down_all_levels(species, config, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    root_state = solution%levels(1)%state
+    root_temperature = solution%levels(1)%temperature
+    call build_tagged_solution_from_root( &
+      species, config, root_state, root_temperature, rebuilt, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    changed = .not. same_hierarchy(backup%hierarchy, rebuilt%hierarchy)
+    if (.not. changed) then
+      solution = backup
+      solution%regrid_evaluations = backup%regrid_evaluations + 1
+      ok = .true.
+      return
+    end if
+    rebuilt%time = backup%time
+    rebuilt%steps = backup%steps
+    rebuilt%regrid_evaluations = backup%regrid_evaluations + 1
+    rebuilt%regrids = backup%regrids + 1
+    solution = rebuilt
+    ok = .true.
+  end subroutine regrid_multilevel_reactive_1d
+
+  subroutine simulate_multilevel_reactive_1d( &
+      species, reactions, config, solution, initial_integrals, &
+      final_integrals, ok, transport)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_multilevel_reactive_solution_1d), intent(out) :: solution
+    real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
+    logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+
+    real(dp), allocatable :: all_integrals(:)
+    real(dp) :: dt, tolerance
+    logical :: local_ok, changed
+    integer :: nvar
+
+    initial_integrals = 0.0_dp
+    final_integrals = 0.0_dp
+    ok = .false.
+    if (config%transport_enabled .and. .not. present(transport)) return
+    call initialize_tagged_multilevel_reactive_1d( &
+      species, config, solution, local_ok)
+    if (.not. local_ok) return
+    nvar = reactive_nvar(size(species))
+    allocate(all_integrals(nvar))
+    call multilevel_reactive_integrals_1d( &
+      solution, all_integrals, local_ok)
+    if (.not. local_ok) return
+    initial_integrals = all_integrals([irho, imx, imy, imz, iet])
+    tolerance = 50.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, config%final_time)
+    do while (solution%time < config%final_time - tolerance)
+      if (solution%steps >= config%maximum_steps) return
+      if (config%transport_enabled) then
+        call multilevel_reactive_timestep_1d( &
+          species, config, solution, dt, local_ok, transport)
+      else
+        call multilevel_reactive_timestep_1d( &
+          species, config, solution, dt, local_ok)
+      end if
+      if (.not. local_ok) return
+      dt = min(dt, config%final_time - solution%time)
+      if (config%transport_enabled) then
+        call advance_multilevel_reactive_1d( &
+          species, reactions, config, dt, solution, local_ok, transport)
+      else
+        call advance_multilevel_reactive_1d( &
+          species, reactions, config, dt, solution, local_ok)
+      end if
+      if (.not. local_ok) return
+      if (mod(solution%steps, config%amr_regrid_interval) == 0) then
+        call regrid_multilevel_reactive_1d( &
+          species, config, solution, changed, local_ok)
+        if (.not. local_ok) return
+      end if
+    end do
+    solution%time = config%final_time
+    call multilevel_reactive_integrals_1d(solution, all_integrals, local_ok)
+    if (.not. local_ok) return
+    final_integrals = all_integrals([irho, imx, imy, imz, iet])
+    ok = .true.
+  end subroutine simulate_multilevel_reactive_1d
 
   recursive subroutine advance_hydro_recursive( &
       species, config, solution, level, interval, left_integral, &
@@ -574,6 +819,142 @@ contains
     call composite_integral_multilevel_1d( &
       fields, solution%hierarchy, integral, ok)
   end subroutine multilevel_reactive_integrals_1d
+
+  subroutine write_multilevel_reactive_1d_csv(path, species, solution, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_multilevel_reactive_solution_1d), intent(in) :: solution
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: q(:)
+    logical :: local_ok
+    integer :: unit, status, k
+
+    ok = .false.
+    if (.not. solution%is_valid()) return
+    allocate(q(reactive_nprim(size(species))))
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', advance='no') &
+      "level,cell_dx,time,x,rho,u,v,w,pressure,temperature,rhoE"
+    do k = 1, size(species)
+      write(unit, '(a)', advance='no') ",Y_" // trim(species(k)%name)
+    end do
+    write(unit, '(a)') ""
+    call write_composite_level( &
+      unit, 1, species, solution, q, local_ok)
+    close(unit)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine write_multilevel_reactive_1d_csv
+
+  recursive subroutine write_composite_level( &
+      unit, level, species, solution, q, ok)
+    integer, intent(in) :: unit, level
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_multilevel_reactive_solution_1d), intent(in) :: solution
+    real(dp), intent(out) :: q(:)
+    logical, intent(out) :: ok
+
+    logical :: local_ok
+    integer :: cell, first_after_child, last_before_child, nx
+
+    ok = .false.
+    nx = solution%hierarchy%level_cell_count(level - 1)
+    if (level == solution%level_count()) then
+      do cell = 1, nx
+        call write_multilevel_cell( &
+          unit, level, cell, species, solution, q, local_ok)
+        if (.not. local_ok) return
+      end do
+      ok = .true.
+      return
+    end if
+    last_before_child = &
+      solution%hierarchy%interfaces(level)%fine_coarse_lower - 1
+    first_after_child = &
+      solution%hierarchy%interfaces(level)%fine_coarse_upper + 1
+    do cell = 1, last_before_child
+      call write_multilevel_cell( &
+        unit, level, cell, species, solution, q, local_ok)
+      if (.not. local_ok) return
+    end do
+    call write_composite_level( &
+      unit, level + 1, species, solution, q, local_ok)
+    if (.not. local_ok) return
+    do cell = first_after_child, nx
+      call write_multilevel_cell( &
+        unit, level, cell, species, solution, q, local_ok)
+      if (.not. local_ok) return
+    end do
+    ok = .true.
+  end subroutine write_composite_level
+
+  subroutine write_multilevel_cell( &
+      unit, level, cell, species, solution, q, ok)
+    integer, intent(in) :: unit, level, cell
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_multilevel_reactive_solution_1d), intent(in) :: solution
+    real(dp), intent(out) :: q(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: x_lower, x_upper, dx, x
+    logical :: bounds_ok
+
+    call solution%hierarchy%level_bounds( &
+      level - 1, x_lower, x_upper, bounds_ok)
+    if (.not. bounds_ok) then
+      ok = .false.
+      return
+    end if
+    dx = solution%hierarchy%level_dx(level - 1)
+    x = x_lower + (real(cell, dp) - 0.5_dp) * dx
+    if (x < x_lower .or. x > x_upper) then
+      ok = .false.
+      return
+    end if
+    call write_amr_cell( &
+      unit, level - 1, dx, solution%time, x, species, &
+      solution%levels(level)%state(:, cell), &
+      solution%levels(level)%temperature(cell), q, ok)
+  end subroutine write_multilevel_cell
+
+  pure logical function same_hierarchy(left, right) result(same)
+    type(amr_multilevel_hierarchy_1d), intent(in) :: left, right
+
+    integer :: relation
+
+    same = left%is_valid() .and. right%is_valid()
+    if (.not. same) return
+    same = left%base_cells == right%base_cells .and. &
+      size(left%interfaces) == size(right%interfaces)
+    if (.not. same) return
+    do relation = 1, size(left%interfaces)
+      same = &
+        left%interfaces(relation)%fine_coarse_lower == &
+          right%interfaces(relation)%fine_coarse_lower .and. &
+        left%interfaces(relation)%fine_coarse_upper == &
+          right%interfaces(relation)%fine_coarse_upper .and. &
+        left%interfaces(relation)%refinement_ratio == &
+          right%interfaces(relation)%refinement_ratio
+      if (.not. same) return
+    end do
+  end function same_hierarchy
+
+  pure subroutine criteria_from_config(config, criteria)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_tagging_criteria_1d), intent(out) :: criteria
+
+    criteria%component = config%amr_tag_component
+    criteria%relative_gradient_threshold = &
+      config%amr_relative_gradient_threshold
+    criteria%absolute_gradient_threshold = &
+      config%amr_absolute_gradient_threshold
+    criteria%scale_floor = config%amr_scale_floor
+    criteria%buffer_cells = config%amr_buffer_cells
+    criteria%minimum_patch_cells = config%amr_minimum_patch_cells
+  end subroutine criteria_from_config
 
   pure function level_boundary(config, level) result(boundary)
     type(reactive_1d_config), intent(in) :: config

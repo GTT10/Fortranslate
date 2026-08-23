@@ -28,6 +28,7 @@ module simulation_config_reactive_1d_mod
     logical :: amr_enabled = .false.
     character(len=32) :: amr_reconstruction = "pcm"
     integer :: amr_refinement_ratio = 2
+    integer :: amr_max_levels = 2
     integer :: amr_regrid_interval = 4
     integer :: amr_tag_component = 1
     integer :: amr_buffer_cells = 2
@@ -70,7 +71,7 @@ contains
     character(len=*), intent(out) :: message
 
     integer :: nx, maximum_steps, unit, status
-    integer :: amr_refinement_ratio, amr_regrid_interval
+    integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
     integer :: amr_tag_component, amr_buffer_cells
     integer :: amr_minimum_patch_cells
     real(dp) :: x_lower, x_upper, final_time, cfl
@@ -103,7 +104,7 @@ contains
       ppm_shock_flattening, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
       amr_enabled, amr_reconstruction, &
-      amr_refinement_ratio, amr_regrid_interval, &
+      amr_refinement_ratio, amr_max_levels, amr_regrid_interval, &
       amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
       amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
       amr_scale_floor, &
@@ -137,6 +138,7 @@ contains
     amr_enabled = config%amr_enabled
     amr_reconstruction = config%amr_reconstruction
     amr_refinement_ratio = config%amr_refinement_ratio
+    amr_max_levels = config%amr_max_levels
     amr_regrid_interval = config%amr_regrid_interval
     amr_tag_component = config%amr_tag_component
     amr_buffer_cells = config%amr_buffer_cells
@@ -197,7 +199,8 @@ contains
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
     if (ok .and. amr_enabled) then
-      ok = amr_refinement_ratio >= 2 .and. amr_regrid_interval >= 1 .and. &
+      ok = amr_refinement_ratio >= 2 .and. amr_max_levels >= 2 .and. &
+        amr_regrid_interval >= 1 .and. &
         amr_tag_component >= 1 .and. amr_buffer_cells >= 0 .and. &
         amr_minimum_patch_cells >= 1 .and. &
         amr_minimum_patch_cells <= nx - 2 .and. &
@@ -293,6 +296,7 @@ contains
     config%amr_enabled = amr_enabled
     config%amr_reconstruction = trim(amr_reconstruction)
     config%amr_refinement_ratio = amr_refinement_ratio
+    config%amr_max_levels = amr_max_levels
     config%amr_regrid_interval = amr_regrid_interval
     config%amr_tag_component = amr_tag_component
     config%amr_buffer_cells = amr_buffer_cells

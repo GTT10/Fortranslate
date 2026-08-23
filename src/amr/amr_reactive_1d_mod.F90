@@ -54,6 +54,7 @@ module amr_reactive_1d_mod
   public :: recover_level_temperatures_1d
   public :: fill_physical_ghosts_1d
   public :: fill_fine_ghosts_1d
+  public :: write_amr_cell
 
 contains
 
