@@ -2,10 +2,11 @@ module amr_patch_tree_reactive_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_cfl_timestep, initialize_reactive_1d, &
-    advance_reactive_chemistry
+    reactive_nvar, reactive_cfl_timestep, reactive_transport_timestep, &
+    initialize_reactive_1d, advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, amr_level_field_1d, &
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d
@@ -19,7 +20,7 @@ module amr_patch_tree_reactive_1d_mod
     initialize_patch_tree_flux_registers_1d, &
     composite_integral_patch_tree_1d, patch_tree_child_geometry_1d
   use amr_reactive_1d_mod, only: &
-    amr_ppm_ghost_width, advance_amr_level_1d, &
+    amr_ppm_ghost_width, advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
     fill_fine_ghosts_1d, fill_fine_wide_ghosts_1d
   implicit none
@@ -42,6 +43,7 @@ module amr_patch_tree_reactive_1d_mod
     type(amr_patch_tree_hierarchy_1d) :: hierarchy
     type(amr_patch_tree_reactive_level_1d), allocatable :: levels(:)
     integer, allocatable :: level_advances(:)
+    integer, allocatable :: transport_level_advances(:)
     real(dp) :: time = 0.0_dp
     integer :: steps = 0
   contains
@@ -72,12 +74,14 @@ contains
     integer :: level, patch, nx, nvar
 
     valid = self%hierarchy%is_valid() .and. allocated(self%levels) .and. &
-      allocated(self%level_advances)
+      allocated(self%level_advances) .and. &
+      allocated(self%transport_level_advances)
     if (.not. valid) return
     valid = size(self%levels) == self%hierarchy%level_count() .and. &
       size(self%level_advances) == size(self%levels) .and. &
+      size(self%transport_level_advances) == size(self%levels) .and. &
       all(self%level_advances >= 0) .and. self%time >= 0.0_dp .and. &
-      self%steps >= 0
+      all(self%transport_level_advances >= 0) .and. self%steps >= 0
     if (.not. valid .or. size(self%levels) < 1) return
     valid = allocated(self%levels(1)%patches) .and. &
       size(self%levels(1)%patches) == 1 .and. &
@@ -167,7 +171,10 @@ contains
     nvar = reactive_nvar(size(species))
     allocate(solution%levels(solution%hierarchy%level_count()))
     allocate(solution%level_advances(solution%hierarchy%level_count()))
+    allocate(solution%transport_level_advances( &
+      solution%hierarchy%level_count()))
     solution%level_advances = 0
+    solution%transport_level_advances = 0
     do level = 1, solution%level_count()
       allocate(solution%levels(level)%patches( &
         solution%hierarchy%level_patch_count(level - 1)))
@@ -222,20 +229,26 @@ contains
   end subroutine allocate_reactive_patch
 
   subroutine patch_tree_reactive_timestep_1d( &
-      species, config, solution, dt, ok)
+      species, config, solution, dt, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
-    real(dp) :: local_dt, scale, dx
+    real(dp) :: local_dt, transport_dt, maximum_diffusivity
+    real(dp) :: scale, transport_scale, dx
     logical :: local_ok
     integer :: level, patch, nx
 
     dt = huge(1.0_dp)
     ok = solution%is_valid() .and. size(species) >= 1
     if (.not. ok) return
+    if (config%transport_enabled .and. .not. present(transport)) then
+      ok = .false.
+      return
+    end if
     scale = 1.0_dp
     do level = 1, solution%level_count()
       if (level > 1) scale = scale * real( &
@@ -252,29 +265,55 @@ contains
           return
         end if
         dt = min(dt, scale * local_dt)
+        if (config%transport_enabled) then
+          call reactive_transport_timestep( &
+            species, transport, &
+            solution%levels(level)%patches(patch)%state, &
+            solution%levels(level)%patches(patch)%temperature, nx, dx, &
+            config%transport_cfl, config%viscosity_enabled, &
+            config%thermal_conduction_enabled, &
+            config%species_diffusion_enabled, transport_dt, &
+            maximum_diffusivity, local_ok)
+          if (.not. local_ok) then
+            ok = .false.
+            return
+          end if
+          transport_scale = scale * scale
+          dt = min(dt, transport_scale * transport_dt)
+        end if
       end do
     end do
     ok = dt > 0.0_dp .and. dt < huge(1.0_dp)
   end subroutine patch_tree_reactive_timestep_1d
 
   subroutine advance_patch_tree_reactive_1d( &
-      species, reactions, config, dt, solution, ok)
+      species, reactions, config, dt, solution, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
     real(dp), intent(in) :: dt
     type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
     type(amr_patch_tree_reactive_solution_1d) :: backup
     logical :: local_ok
 
     ok = .false.
     if (dt <= 0.0_dp .or. .not. solution%is_valid()) return
+    if (config%transport_enabled .and. .not. present(transport)) return
     backup = solution
     if (config%chemistry_enabled) then
       call advance_patch_tree_chemistry( &
         species, reactions, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    if (config%transport_enabled) then
+      call advance_patch_tree_transport( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
       if (.not. local_ok) then
         solution = backup
         return
@@ -285,6 +324,14 @@ contains
     if (.not. local_ok) then
       solution = backup
       return
+    end if
+    if (config%transport_enabled) then
+      call advance_patch_tree_transport( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
     end if
     if (config%chemistry_enabled) then
       call advance_patch_tree_chemistry( &
@@ -407,6 +454,167 @@ contains
     call refresh_patch_tree_ghosts(species, config, solution, local_ok)
     ok = local_ok
   end subroutine advance_patch_tree_chemistry
+
+  subroutine advance_patch_tree_transport( &
+      species, transport, config, interval, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
+    real(dp), allocatable :: left_integral(:), right_integral(:)
+    logical :: local_ok
+    integer :: nvar
+
+    ok = interval > 0.0_dp .and. solution%is_valid()
+    if (.not. ok) return
+    nvar = size(solution%levels(1)%patches(1)%state, 1)
+    allocate(left_integral(nvar), right_integral(nvar))
+    call initialize_patch_tree_flux_registers_1d( &
+      solution%hierarchy, nvar, registers, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call advance_patch_transport_recursive( &
+      species, transport, config, solution, registers, 1, 1, interval, &
+      left_integral, right_integral, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    ok = local_ok
+  end subroutine advance_patch_tree_transport
+
+  recursive subroutine advance_patch_transport_recursive( &
+      species, transport, config, solution, registers, level, &
+      parent_patch, interval, left_integral, right_integral, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    type(amr_patch_tree_relation_flux_registers_1d), &
+      intent(inout) :: registers(:)
+    integer, intent(in) :: level, parent_patch
+    real(dp), intent(in) :: interval
+    real(dp), intent(out) :: left_integral(:), right_integral(:)
+    logical, intent(out) :: ok
+
+    type(amr_level_field_1d), allocatable :: child_fields(:)
+    real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
+    real(dp), allocatable :: child_left(:), child_right(:)
+    real(dp) :: child_interval, alpha, dx, boundary_distance
+    logical :: local_ok, physical_boundary
+    integer :: nx, nvar, ratio, subcycles, substep
+    integer :: child, global_child, child_count
+
+    ok = .false.
+    left_integral = 0.0_dp
+    right_integral = 0.0_dp
+    if (interval <= 0.0_dp .or. level < 1 .or. &
+        level > solution%level_count()) return
+    if (parent_patch < 1 .or. &
+        parent_patch > size(solution%levels(level)%patches)) return
+    nx = size(solution%levels(level)%patches(parent_patch)%state, 2) - 2
+    nvar = size(solution%levels(level)%patches(parent_patch)%state, 1)
+    dx = solution%hierarchy%level_dx(level - 1)
+    allocate(state_start(nvar, 0:nx + 1), state_end(nvar, 0:nx + 1))
+    allocate(flux(nvar, 0:nx))
+    state_start = solution%levels(level)%patches(parent_patch)%state
+    physical_boundary = level == 1
+    boundary_distance = dx
+    if (.not. physical_boundary) boundary_distance = 0.5_dp * ( &
+      solution%hierarchy%level_dx(level - 2) + dx)
+    call advance_transport_level_1d( &
+      species, transport, &
+      solution%levels(level)%patches(parent_patch)%state, &
+      solution%levels(level)%patches(parent_patch)%temperature, nx, dx, &
+      interval, boundary_distance, config, physical_boundary, &
+      patch_boundary(config, level), flux, local_ok)
+    if (.not. local_ok) return
+    solution%transport_level_advances(level) = &
+      solution%transport_level_advances(level) + 1
+    state_end = solution%levels(level)%patches(parent_patch)%state
+    left_integral = interval * flux(:, 0)
+    right_integral = interval * flux(:, nx)
+    if (level > size(solution%hierarchy%relations)) then
+      ok = .true.
+      return
+    end if
+
+    child_count = solution%hierarchy%relations(level)% &
+      child_sets(parent_patch)%patch_count()
+    if (child_count == 0) then
+      ok = .true.
+      return
+    end if
+    ratio = solution%hierarchy%relations(level)%refinement_ratio
+    subcycles = ratio * ratio
+    child_interval = interval / real(subcycles, dp)
+    allocate(child_left(nvar), child_right(nvar))
+    do child = 1, child_count
+      call accumulate_coarse_flux_1d( &
+        registers(level)%parents(parent_patch)%children(child), &
+        flux(:, solution%hierarchy%relations(level)% &
+          child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
+        flux(:, solution%hierarchy%relations(level)% &
+          child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
+        interval, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    do substep = 1, subcycles
+      alpha = (real(substep, dp) - 0.5_dp) / real(subcycles, dp)
+      do child = 1, child_count
+        global_child = solution%hierarchy%relations(level)% &
+          child_index(parent_patch, child)
+        call fill_one_child_ghosts( &
+          species, config, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child), state_start, state_end, &
+          alpha, solution%levels(level + 1)%patches(global_child), local_ok)
+        if (.not. local_ok) return
+      end do
+      do child = 1, child_count
+        global_child = solution%hierarchy%relations(level)% &
+          child_index(parent_patch, child)
+        call advance_patch_transport_recursive( &
+          species, transport, config, solution, registers, level + 1, &
+          global_child, child_interval, child_left, child_right, local_ok)
+        if (.not. local_ok) return
+        call accumulate_fine_flux_1d( &
+          registers(level)%parents(parent_patch)%children(child), &
+          child_left / child_interval, child_right / child_interval, &
+          child_interval, local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+
+    allocate(child_fields(child_count))
+    do child = 1, child_count
+      global_child = solution%hierarchy%relations(level)% &
+        child_index(parent_patch, child)
+      nx = size(solution%levels(level + 1)% &
+        patches(global_child)%state, 2) - 2
+      child_fields(child)%values = solution%levels(level + 1)% &
+        patches(global_child)%state(:, 1:nx)
+    end do
+    nx = size(solution%levels(level)%patches(parent_patch)%state, 2) - 2
+    call synchronize_patch_set_1d( &
+      solution%levels(level)%patches(parent_patch)%state(:, 1:nx), &
+      child_fields, &
+      solution%hierarchy%relations(level)%child_sets(parent_patch), &
+      registers(level)%parents(parent_patch)%children, local_ok)
+    if (.not. local_ok) return
+    call recover_level_temperatures_1d( &
+      species, solution%levels(level)%patches(parent_patch)%state, &
+      solution%levels(level)%patches(parent_patch)%temperature, nx, local_ok)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine advance_patch_transport_recursive
 
   recursive subroutine advance_patch_recursive( &
       species, config, solution, registers, level, parent_patch, interval, &

@@ -6,6 +6,8 @@ program test_amr_patch_tree_reactive_1d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -23,21 +25,31 @@ program test_amr_patch_tree_reactive_1d
   implicit none
 
   real(dp), parameter :: conservation_tolerance = 3.0e-10_dp
+  real(dp), parameter :: transport_conservation_tolerance = 2.0e-9_dp
   real(dp), parameter :: synchronization_tolerance = 5.0e-13_dp
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   type(reactive_1d_config) :: config, chemistry_config
+  type(reactive_1d_config) :: transport_config, split_control_config
   type(amr_patch_level_plan_1d), allocatable :: plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
   type(amr_patch_tree_reactive_solution_1d) :: hydro_control
   type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
+  type(amr_patch_tree_reactive_solution_1d) :: transport_solution
+  type(amr_patch_tree_reactive_solution_1d) :: transport_control
+  type(amr_patch_tree_reactive_solution_1d) :: rejected_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: chemistry_initial_integral(:)
   real(dp), allocatable :: chemistry_final_integral(:)
+  real(dp), allocatable :: transport_initial_integral(:)
+  real(dp), allocatable :: transport_final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, synchronization_error
   real(dp) :: chemistry_dt, chemistry_difference
   real(dp) :: chemistry_conservation_error
+  real(dp) :: transport_dt, transport_difference
+  real(dp) :: transport_conservation_error
   real(dp) :: minimum_temperature, minimum_pressure
   real(dp) :: maximum_closure_error
   logical :: ok
@@ -46,6 +58,8 @@ program test_amr_patch_tree_reactive_1d
   call require(ok, "patch-tree thermodynamics load")
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "patch-tree chemistry mechanism load")
+  call load_h2o2_elementary_transport(transport, ok)
+  call require(ok, "patch-tree transport database load")
   call configure_case(config)
   call configure_plans(plans)
   call initialize_patch_tree_reactive_1d( &
@@ -142,6 +156,74 @@ program test_amr_patch_tree_reactive_1d
     minimum_pressure > 0.0_dp .and. maximum_closure_error < 3.0e-10_dp, &
     "post-chemistry patch-tree physical state")
 
+  call configure_transport_case(config, transport_config)
+  call initialize_patch_tree_reactive_1d( &
+    species, transport_config, plans, transport_solution, ok)
+  call require(ok .and. transport_solution%is_valid(), &
+    "patch-tree reacting transport initialization")
+  call patch_tree_reactive_timestep_1d( &
+    species, transport_config, transport_solution, transport_dt, ok)
+  call require(.not. ok, "patch-tree transport timestep requires database")
+  call patch_tree_reactive_timestep_1d( &
+    species, transport_config, transport_solution, transport_dt, ok, &
+    transport)
+  call require(ok .and. transport_dt > 0.0_dp, &
+    "all-patch hydro-transport stable timestep")
+  transport_dt = min(transport_dt, 1.0e-10_dp)
+  allocate(transport_initial_integral(reactive_nvar(size(species))))
+  allocate(transport_final_integral(reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    transport_solution, transport_initial_integral, ok)
+  call require(ok, "pre-transport patch-tree composite integral")
+  transport_control = transport_solution
+  split_control_config = transport_config
+  split_control_config%transport_enabled = .false.
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, split_control_config, transport_dt, &
+    transport_control, ok)
+  call require(ok, "patch-tree chemistry-hydro control step")
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, transport_config, transport_dt, &
+    transport_solution, ok, transport)
+  call require(ok .and. transport_solution%is_valid(), &
+    "patch-tree reacting transport split step")
+  transport_difference = patch_tree_state_difference( &
+    transport_solution, transport_control)
+  call require(transport_difference > 100.0_dp * epsilon(1.0_dp), &
+    "transport changes the recursive patch-tree state")
+  call require(all(transport_solution%level_advances == [1, 4, 12, 16]) &
+    .and. all(transport_solution%transport_level_advances == &
+      [2, 16, 96, 256]), "recursive parabolic subcycling counts")
+  call patch_tree_reactive_integrals_1d( &
+    transport_solution, transport_final_integral, ok)
+  call require(ok, "post-transport patch-tree composite integral")
+  transport_conservation_error = maxval(abs( &
+    transport_final_integral(1:5) - transport_initial_integral(1:5)) / &
+    max(1.0_dp, abs(transport_initial_integral(1:5))))
+  call require( &
+    transport_conservation_error < transport_conservation_tolerance, &
+    "patch-tree reacting transport conservation")
+  call check_synchronization(transport_solution, synchronization_error)
+  call require(synchronization_error < 8.0e-13_dp, &
+    "post-transport patch-tree synchronization")
+  call inspect_solution( &
+    transport_solution, minimum_temperature, minimum_pressure, &
+    maximum_closure_error)
+  call require(minimum_temperature > 0.0_dp .and. &
+    minimum_pressure > 0.0_dp .and. maximum_closure_error < 3.0e-10_dp, &
+    "post-transport patch-tree physical state")
+
+  rejected_solution = transport_solution
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, transport_config, transport_dt, &
+    rejected_solution, ok)
+  call require(.not. ok .and. &
+    patch_tree_state_difference(rejected_solution, transport_solution) == &
+      0.0_dp .and. rejected_solution%steps == transport_solution%steps .and. &
+    all(rejected_solution%transport_level_advances == &
+      transport_solution%transport_level_advances), &
+    "missing transport database leaves patch tree unchanged")
+
   write(*, '(a,1x,es16.8)') &
     "Patch-tree conservation error:", conservation_error
   write(*, '(a,1x,es16.8)') &
@@ -150,6 +232,10 @@ program test_amr_patch_tree_reactive_1d
     "Patch-tree chemistry difference:", chemistry_difference
   write(*, '(a,1x,es16.8)') &
     "Patch-tree chemistry conservation:", chemistry_conservation_error
+  write(*, '(a,1x,es16.8)') &
+    "Patch-tree transport difference:", transport_difference
+  write(*, '(a,1x,es16.8)') &
+    "Patch-tree transport conservation:", transport_conservation_error
   write(*, '(a)') "test_amr_patch_tree_reactive_1d: PASS"
 
 contains
@@ -175,6 +261,25 @@ contains
     local_config%amr_enabled = .true.
     local_config%amr_reconstruction = "pcm"
   end subroutine configure_case
+
+  subroutine configure_transport_case(base_config, local_config)
+    type(reactive_1d_config), intent(in) :: base_config
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = base_config
+    local_config%problem = "reactive_hotspot"
+    local_config%chemistry_enabled = .true.
+    local_config%transport_enabled = .true.
+    local_config%viscosity_enabled = .true.
+    local_config%thermal_conduction_enabled = .true.
+    local_config%species_diffusion_enabled = .true.
+    local_config%barodiffusion_enabled = .true.
+    local_config%transport_cfl = 0.30_dp
+    local_config%initial_velocity = 0.0_dp
+    local_config%hotspot_temperature_rise = 200.0_dp
+    local_config%hotspot_center = 0.006_dp
+    local_config%hotspot_width = 0.0012_dp
+  end subroutine configure_transport_case
 
   subroutine configure_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
@@ -318,6 +423,26 @@ contains
       end do
     end do
   end function reactive_species_difference
+
+  real(dp) function patch_tree_state_difference( &
+      first, second) result(difference)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
+
+    integer :: level, patch, nx
+
+    difference = 0.0_dp
+    do level = 1, first%level_count()
+      do patch = 1, size(first%levels(level)%patches)
+        nx = size(first%levels(level)%patches(patch)%state, 2) - 2
+        difference = max(difference, maxval(abs( &
+          first%levels(level)%patches(patch)%state(:, 1:nx) - &
+          second%levels(level)%patches(patch)%state(:, 1:nx))))
+        difference = max(difference, maxval(abs( &
+          first%levels(level)%patches(patch)%temperature(1:nx) - &
+          second%levels(level)%patches(patch)%temperature(1:nx))))
+      end do
+    end do
+  end function patch_tree_state_difference
 
   subroutine require(condition, label)
     logical, intent(in) :: condition
