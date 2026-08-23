@@ -1,0 +1,1 @@
+Eleven independent full H2/O2 constant-volume reactors are partitioned without replication across MPI ranks. Each local cell advances with the existing adaptive implicit 29-reaction integrator, and the gathered final thermochemical states must agree for 1, 2, and 4 ranks while preserving positivity, mass-fraction closure, and constant-volume energy.
