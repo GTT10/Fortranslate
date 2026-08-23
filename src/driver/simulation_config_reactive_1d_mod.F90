@@ -208,7 +208,9 @@ contains
         amr_absolute_gradient_threshold >= 0.0_dp .and. &
         amr_scale_floor > 0.0_dp
       ok = ok .and. (trim(amr_reconstruction) == "pcm" .or. &
-        trim(amr_reconstruction) == "plm")
+        trim(amr_reconstruction) == "plm" .or. &
+        trim(amr_reconstruction) == "ppm" .or. &
+        trim(amr_reconstruction) == "characteristic_ppm")
     end if
     if (.not. ok) then
       message = "Invalid reactive 1D configuration"
@@ -249,7 +251,9 @@ contains
       return
     end if
     if ((ppm_contact_steepening .or. ppm_shock_flattening) .and. &
-        trim(reconstruction) /= "characteristic_ppm") then
+        trim(reconstruction) /= "characteristic_ppm" .and. &
+        (.not. amr_enabled .or. &
+          trim(amr_reconstruction) /= "characteristic_ppm")) then
       ok = .false.
       message = "Reactive PPM steepening/flattening requires characteristic_ppm"
       return

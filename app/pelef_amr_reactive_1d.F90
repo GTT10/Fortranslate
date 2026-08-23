@@ -64,7 +64,9 @@ program pelef_amr_reactive_1d
     error stop "Unknown chemistry model"
   end select
 
-  multilevel_run = config%amr_max_levels > 2
+  multilevel_run = config%amr_max_levels > 2 .or. &
+    trim(config%amr_reconstruction) == "ppm" .or. &
+    trim(config%amr_reconstruction) == "characteristic_ppm"
   if (multilevel_run) then
     call simulate_multilevel_reactive_1d( &
       species, reactions, config, multilevel_solution, initial_integrals, &

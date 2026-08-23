@@ -46,6 +46,8 @@ module reactive_1d_mod
   public :: reactive_ppm_contact_steepening_factor
   public :: reactive_ppm_apply_contact_steepening
   public :: build_characteristic_ppm_states
+  public :: reconstruct_characteristic_ppm_faces
+  public :: reconstruct_ppm_faces
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
   public :: characteristic_limited_slope
@@ -981,7 +983,8 @@ contains
   subroutine reconstruct_characteristic_ppm_faces( &
       species, state, temperature, nx, boundary, dtdx, &
       use_contact_steepening, use_shock_flattening, left_faces, right_faces, &
-      left_t, right_t, ok)
+      left_t, right_t, ok, left_ghost_state, right_ghost_state, &
+      left_ghost_temperature, right_ghost_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -991,6 +994,10 @@ contains
     real(dp), intent(out) :: left_faces(:, 0:), right_faces(:, 0:)
     real(dp), intent(out) :: left_t(0:), right_t(0:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: left_ghost_state(:, :)
+    real(dp), intent(in), optional :: right_ghost_state(:, :)
+    real(dp), intent(in), optional :: left_ghost_temperature(:)
+    real(dp), intent(in), optional :: right_ghost_temperature(:)
 
     real(dp), allocatable :: q(:, :), cell_left(:, :), cell_right(:, :)
     real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
@@ -1000,15 +1007,40 @@ contains
     real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
     real(dp) :: flattening, eta, gamma_effective, dummy_c, local_t
     real(dp) :: profile_right(3), profile_left(3)
-    logical :: local_ok
+    logical :: local_ok, wide_ghosts
     integer :: nspecies, nprimitive, i, j, component, k, source, lc, rc
+    integer :: first_cell, last_cell, layer
 
     ok = .false.
     if (dtdx < 0.0_dp) return
+    wide_ghosts = present(left_ghost_state) .and. &
+      present(right_ghost_state) .and. &
+      present(left_ghost_temperature) .and. &
+      present(right_ghost_temperature)
+    if (wide_ghosts .neqv. (present(left_ghost_state) .or. &
+        present(right_ghost_state) .or. &
+        present(left_ghost_temperature) .or. &
+        present(right_ghost_temperature))) return
     nspecies = size(species)
     nprimitive = reactive_nprim(nspecies)
-    allocate(q(nprimitive, -3:nx + 3), sound_speed(1:nx))
-    allocate(cell_left(nprimitive, 1:nx), cell_right(nprimitive, 1:nx))
+    if (wide_ghosts) then
+      if (size(left_ghost_state, 1) /= size(state, 1) .or. &
+          size(right_ghost_state, 1) /= size(state, 1) .or. &
+          size(left_ghost_state, 2) /= 4 .or. &
+          size(right_ghost_state, 2) /= 4 .or. &
+          size(left_ghost_temperature) /= 4 .or. &
+          size(right_ghost_temperature) /= 4) return
+      first_cell = 0
+      last_cell = nx + 1
+      allocate(q(nprimitive, -3:nx + 4), sound_speed(0:nx + 1))
+      allocate(cell_left(nprimitive, 0:nx + 1))
+      allocate(cell_right(nprimitive, 0:nx + 1))
+    else
+      first_cell = 1
+      last_cell = nx
+      allocate(q(nprimitive, -3:nx + 3), sound_speed(1:nx))
+      allocate(cell_left(nprimitive, 1:nx), cell_right(nprimitive, 1:nx))
+    end if
     allocate(integral_right(nprimitive, 3), integral_left(nprimitive, 3))
     allocate(edge_left(nprimitive), edge_right(nprimitive))
 
@@ -1018,14 +1050,37 @@ contains
         sound_speed(i), local_ok)
       if (.not. local_ok) return
     end do
-    do i = -3, nx + 3
-      if (i >= 1 .and. i <= nx) cycle
-      source = extended_cell_index(i, nx, boundary)
-      if (source == 0) return
-      q(:, i) = q(:, source)
-    end do
+    if (wide_ghosts) then
+      do layer = 1, 4
+        i = 1 - layer
+        call reactive_conserved_to_primitive( &
+          species, left_ghost_state(:, layer), &
+          left_ghost_temperature(layer), q(:, i), local_t, dummy_c, local_ok)
+        if (.not. local_ok) return
+        i = nx + layer
+        call reactive_conserved_to_primitive( &
+          species, right_ghost_state(:, layer), &
+          right_ghost_temperature(layer), q(:, i), local_t, dummy_c, local_ok)
+        if (.not. local_ok) return
+      end do
+    else
+      do i = -3, nx + 3
+        if (i >= 1 .and. i <= nx) cycle
+        source = extended_cell_index(i, nx, boundary)
+        if (source == 0) return
+        q(:, i) = q(:, source)
+      end do
+    end if
 
-    do i = 1, nx
+    do i = first_cell, last_cell
+      if (wide_ghosts .and. (i == 0 .or. i == nx + 1)) then
+        call reactive_conserved_to_primitive( &
+          species, merge(left_ghost_state(:, 1), &
+            right_ghost_state(:, 1), i == 0), &
+          merge(left_ghost_temperature(1), right_ghost_temperature(1), &
+            i == 0), q(:, i), local_t, sound_speed(i), local_ok)
+        if (.not. local_ok) return
+      end if
       flattening = 1.0_dp
       if (use_shock_flattening) then
         do j = -3, 3
@@ -1086,7 +1141,10 @@ contains
     end do
 
     do j = 0, nx
-      if (j == 0) then
+      if (wide_ghosts) then
+        lc = j
+        rc = j + 1
+      else if (j == 0) then
         if (trim(boundary) == "periodic") then
           lc = nx
           rc = 1
@@ -1128,7 +1186,8 @@ contains
 
   subroutine reconstruct_ppm_faces( &
       species, state, temperature, nx, boundary, left_faces, right_faces, &
-      left_t, right_t, ok)
+      left_t, right_t, ok, left_ghost_state, right_ghost_state, &
+      left_ghost_temperature, right_ghost_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -1136,18 +1195,47 @@ contains
     real(dp), intent(out) :: left_faces(:, 0:), right_faces(:, 0:)
     real(dp), intent(out) :: left_t(0:), right_t(0:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: left_ghost_state(:, :)
+    real(dp), intent(in), optional :: right_ghost_state(:, :)
+    real(dp), intent(in), optional :: left_ghost_temperature(:)
+    real(dp), intent(in), optional :: right_ghost_temperature(:)
 
     real(dp), allocatable :: q(:, :), qleft(:, :), qright(:, :)
     real(dp), allocatable :: face(:, :)
     real(dp) :: dummy_c, local_temperature
-    logical :: local_ok
+    logical :: local_ok, wide_ghosts
     integer :: nspecies, nprimitive, i, j, component, source, lc, rc
+    integer :: first_cell, last_cell, layer
 
     ok = .false.
+    wide_ghosts = present(left_ghost_state) .and. &
+      present(right_ghost_state) .and. &
+      present(left_ghost_temperature) .and. &
+      present(right_ghost_temperature)
+    if (wide_ghosts .neqv. (present(left_ghost_state) .or. &
+        present(right_ghost_state) .or. &
+        present(left_ghost_temperature) .or. &
+        present(right_ghost_temperature))) return
     nspecies = size(species)
     nprimitive = reactive_nprim(nspecies)
-    allocate(q(nprimitive, -2:nx + 3))
-    allocate(qleft(nprimitive, 1:nx), qright(nprimitive, 1:nx))
+    if (wide_ghosts) then
+      if (size(left_ghost_state, 1) /= size(state, 1) .or. &
+          size(right_ghost_state, 1) /= size(state, 1) .or. &
+          size(left_ghost_state, 2) /= 4 .or. &
+          size(right_ghost_state, 2) /= 4 .or. &
+          size(left_ghost_temperature) /= 4 .or. &
+          size(right_ghost_temperature) /= 4) return
+      first_cell = 0
+      last_cell = nx + 1
+      allocate(q(nprimitive, -3:nx + 4))
+      allocate(qleft(nprimitive, 0:nx + 1))
+      allocate(qright(nprimitive, 0:nx + 1))
+    else
+      first_cell = 1
+      last_cell = nx
+      allocate(q(nprimitive, -2:nx + 3))
+      allocate(qleft(nprimitive, 1:nx), qright(nprimitive, 1:nx))
+    end if
     allocate(face(nprimitive, -1:nx + 1))
 
     do i = 1, nx
@@ -1156,12 +1244,29 @@ contains
         dummy_c, local_ok)
       if (.not. local_ok) return
     end do
-    do i = -2, nx + 3
-      if (i >= 1 .and. i <= nx) cycle
-      source = extended_cell_index(i, nx, boundary)
-      if (source == 0) return
-      q(:, i) = q(:, source)
-    end do
+    if (wide_ghosts) then
+      do layer = 1, 4
+        i = 1 - layer
+        call reactive_conserved_to_primitive( &
+          species, left_ghost_state(:, layer), &
+          left_ghost_temperature(layer), q(:, i), local_temperature, &
+          dummy_c, local_ok)
+        if (.not. local_ok) return
+        i = nx + layer
+        call reactive_conserved_to_primitive( &
+          species, right_ghost_state(:, layer), &
+          right_ghost_temperature(layer), q(:, i), local_temperature, &
+          dummy_c, local_ok)
+        if (.not. local_ok) return
+      end do
+    else
+      do i = -2, nx + 3
+        if (i >= 1 .and. i <= nx) cycle
+        source = extended_cell_index(i, nx, boundary)
+        if (source == 0) return
+        q(:, i) = q(:, source)
+      end do
+    end if
 
     do j = -1, nx + 1
       do component = 1, nprimitive
@@ -1171,7 +1276,7 @@ contains
       end do
     end do
 
-    do i = 1, nx
+    do i = first_cell, last_cell
       qleft(:, i) = face(:, i - 1)
       qright(:, i) = face(:, i)
       do component = 1, nprimitive
@@ -1183,7 +1288,10 @@ contains
     end do
 
     do j = 0, nx
-      if (j == 0) then
+      if (wide_ghosts) then
+        lc = j
+        rc = j + 1
+      else if (j == 0) then
         if (trim(boundary) == "periodic") then
           lc = nx
           rc = 1

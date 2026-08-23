@@ -23,12 +23,14 @@ program test_amr_multilevel_reactive_1d
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
-  type(reactive_1d_config) :: config, chemistry_config
+  type(reactive_1d_config) :: config, chemistry_config, ppm_config
   type(amr_multilevel_reactive_solution_1d) :: initial_solution
   type(amr_multilevel_reactive_solution_1d) :: solution, chemistry_solution
+  type(amr_multilevel_reactive_solution_1d) :: ppm_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: q(:)
-  real(dp) :: dt, conservation_error, minimum_temperature
+  real(dp) :: dt, conservation_error, ppm_conservation_error
+  real(dp) :: minimum_temperature
   real(dp) :: maximum_closure_error
   integer, parameter :: patch_lower(2) = [4, 5]
   integer, parameter :: patch_upper(2) = [21, 32]
@@ -87,6 +89,29 @@ program test_amr_multilevel_reactive_1d
   call require(maximum_closure_error < 3.0e-10_dp, &
     "multilevel species closure")
 
+  ppm_config = config
+  ppm_config%amr_reconstruction = "characteristic_ppm"
+  ppm_config%transport_enabled = .false.
+  ppm_solution = initial_solution
+  do step = 1, 2
+    call advance_multilevel_reactive_1d( &
+      species, reactions, ppm_config, dt, ppm_solution, ok)
+    call require(ok, "recursive characteristic PPM hydro step")
+  end do
+  call multilevel_reactive_integrals_1d(ppm_solution, final_integral, ok)
+  call require(ok, "characteristic PPM composite integral")
+  ppm_conservation_error = maxval(abs(final_integral - initial_integral) / &
+    max(1.0_dp, abs(initial_integral)))
+  call require(ppm_conservation_error < 3.0e-10_dp, &
+    "characteristic PPM reflux conservation")
+  call check_synchronization(ppm_solution)
+  call inspect_solution( &
+    ppm_solution, minimum_temperature, maximum_closure_error)
+  call require(minimum_temperature > 0.0_dp, &
+    "characteristic PPM thermodynamic positivity")
+  call require(maximum_closure_error < 3.0e-10_dp, &
+    "characteristic PPM species closure")
+
   chemistry_config = config
   chemistry_config%chemistry_enabled = .true.
   chemistry_config%transport_enabled = .false.
@@ -106,6 +131,8 @@ program test_amr_multilevel_reactive_1d
   write(*, '(a,1x,es16.8)') "Three-level stable dt:", dt
   write(*, '(a,1x,es16.8)') "Composite conservation:", &
     conservation_error
+  write(*, '(a,1x,es16.8)') "PPM composite conservation:", &
+    ppm_conservation_error
   write(*, '(a,1x,es16.8)') "Minimum temperature:", &
     minimum_temperature
   write(*, '(a)') "test_amr_multilevel_reactive_1d: PASS"

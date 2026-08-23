@@ -18,9 +18,11 @@ module amr_multilevel_reactive_1d_mod
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d, reflux_1d, &
     average_down_1d, composite_integral_multilevel_1d
   use amr_reactive_1d_mod, only: &
+    amr_ppm_ghost_width, &
     advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
-    fill_fine_ghosts_1d, write_amr_cell
+    fill_fine_ghosts_1d, fill_physical_wide_ghosts_1d, &
+    fill_fine_wide_ghosts_1d, write_amr_cell
   use amr_regrid_1d_mod, only: &
     amr_tagging_criteria_1d, amr_regrid_plan_1d, &
     tag_gradient_1d, build_regrid_plan_1d
@@ -30,6 +32,10 @@ module amr_multilevel_reactive_1d_mod
   type, public :: amr_reactive_level_1d
     real(dp), allocatable :: state(:, :)
     real(dp), allocatable :: temperature(:)
+    real(dp), allocatable :: left_ghost_state(:, :)
+    real(dp), allocatable :: right_ghost_state(:, :)
+    real(dp), allocatable :: left_ghost_temperature(:)
+    real(dp), allocatable :: right_ghost_temperature(:)
   end type amr_reactive_level_1d
 
   type, public :: amr_multilevel_reactive_solution_1d
@@ -80,14 +86,28 @@ contains
     if (.not. valid) return
     do level = 1, size(self%levels)
       valid = allocated(self%levels(level)%state) .and. &
-        allocated(self%levels(level)%temperature)
+        allocated(self%levels(level)%temperature) .and. &
+        allocated(self%levels(level)%left_ghost_state) .and. &
+        allocated(self%levels(level)%right_ghost_state) .and. &
+        allocated(self%levels(level)%left_ghost_temperature) .and. &
+        allocated(self%levels(level)%right_ghost_temperature)
       if (.not. valid) return
       nx = self%hierarchy%level_cell_count(level - 1)
       valid = lbound(self%levels(level)%state, 2) == 0 .and. &
         ubound(self%levels(level)%state, 2) == nx + 1 .and. &
         size(self%levels(level)%state, 1) == nvar .and. &
         lbound(self%levels(level)%temperature, 1) == 0 .and. &
-        ubound(self%levels(level)%temperature, 1) == nx + 1
+        ubound(self%levels(level)%temperature, 1) == nx + 1 .and. &
+        size(self%levels(level)%left_ghost_state, 1) == nvar .and. &
+        size(self%levels(level)%right_ghost_state, 1) == nvar .and. &
+        size(self%levels(level)%left_ghost_state, 2) == &
+          amr_ppm_ghost_width .and. &
+        size(self%levels(level)%right_ghost_state, 2) == &
+          amr_ppm_ghost_width .and. &
+        size(self%levels(level)%left_ghost_temperature) == &
+          amr_ppm_ghost_width .and. &
+        size(self%levels(level)%right_ghost_temperature) == &
+          amr_ppm_ghost_width
       if (.not. valid) return
     end do
   end function multilevel_reactive_is_valid
@@ -127,8 +147,20 @@ contains
       nx = solution%hierarchy%level_cell_count(level - 1)
       allocate(solution%levels(level)%state(nvar, 0:nx + 1))
       allocate(solution%levels(level)%temperature(0:nx + 1))
+      allocate(solution%levels(level)%left_ghost_state( &
+        nvar, amr_ppm_ghost_width))
+      allocate(solution%levels(level)%right_ghost_state( &
+        nvar, amr_ppm_ghost_width))
+      allocate(solution%levels(level)%left_ghost_temperature( &
+        amr_ppm_ghost_width))
+      allocate(solution%levels(level)%right_ghost_temperature( &
+        amr_ppm_ghost_width))
       solution%levels(level)%state = 0.0_dp
       solution%levels(level)%temperature = 0.0_dp
+      solution%levels(level)%left_ghost_state = 0.0_dp
+      solution%levels(level)%right_ghost_state = 0.0_dp
+      solution%levels(level)%left_ghost_temperature = 0.0_dp
+      solution%levels(level)%right_ghost_temperature = 0.0_dp
       solution%levels(level)%state(:, 1:nx) = fields(level)%values
       if (level == 1) then
         solution%levels(level)%temperature = root_temperature
@@ -194,6 +226,7 @@ contains
     real(dp) :: parent_lower, parent_upper, child_lower, child_upper
     logical :: local_ok
     integer :: level, relation_count, nx, nvar, maximum_relations
+    integer :: parent_buffer, allowed_lower, allowed_upper
 
     ok = .false.
     nvar = reactive_nvar(size(species))
@@ -221,7 +254,17 @@ contains
       call tag_gradient_1d( &
         candidate(level)%values, criteria, tags, local_ok)
       if (.not. local_ok) return
-      if (level > 1) then
+      if (uses_ppm_reconstruction(config)) then
+        parent_buffer = (amr_ppm_ghost_width + &
+          config%amr_refinement_ratio - 1) / &
+          config%amr_refinement_ratio + 1
+        if (2 * parent_buffer >= nx) then
+          tags = .false.
+        else
+          tags(1:parent_buffer) = .false.
+          tags(nx - parent_buffer + 1:nx) = .false.
+        end if
+      else if (level > 1) then
         tags(1) = .false.
         tags(nx) = .false.
       end if
@@ -231,6 +274,25 @@ contains
       deallocate(tags)
       if (.not. local_ok) return
       if (.not. plan%active) exit
+      if (uses_ppm_reconstruction(config)) then
+        allowed_lower = parent_buffer + 1
+        allowed_upper = nx - parent_buffer
+        plan%patch_lower = max(plan%patch_lower, allowed_lower)
+        plan%patch_upper = min(plan%patch_upper, allowed_upper)
+        do while (plan%patch_upper - plan%patch_lower + 1 < &
+            criteria%minimum_patch_cells)
+          if (plan%patch_lower > allowed_lower) &
+            plan%patch_lower = plan%patch_lower - 1
+          if (plan%patch_upper - plan%patch_lower + 1 >= &
+              criteria%minimum_patch_cells) exit
+          if (plan%patch_upper < allowed_upper) &
+            plan%patch_upper = plan%patch_upper + 1
+          if (plan%patch_lower == allowed_lower .and. &
+              plan%patch_upper == allowed_upper) exit
+        end do
+        if (plan%patch_upper - plan%patch_lower + 1 < &
+            criteria%minimum_patch_cells) exit
+      end if
       relation_count = relation_count + 1
       patch_lower(relation_count) = plan%patch_lower
       patch_upper(relation_count) = plan%patch_upper
@@ -264,8 +326,20 @@ contains
       nx = solution%hierarchy%level_cell_count(level - 1)
       allocate(solution%levels(level)%state(nvar, 0:nx + 1))
       allocate(solution%levels(level)%temperature(0:nx + 1))
+      allocate(solution%levels(level)%left_ghost_state( &
+        nvar, amr_ppm_ghost_width))
+      allocate(solution%levels(level)%right_ghost_state( &
+        nvar, amr_ppm_ghost_width))
+      allocate(solution%levels(level)%left_ghost_temperature( &
+        amr_ppm_ghost_width))
+      allocate(solution%levels(level)%right_ghost_temperature( &
+        amr_ppm_ghost_width))
       solution%levels(level)%state = 0.0_dp
       solution%levels(level)%temperature = 0.0_dp
+      solution%levels(level)%left_ghost_state = 0.0_dp
+      solution%levels(level)%right_ghost_state = 0.0_dp
+      solution%levels(level)%left_ghost_temperature = 0.0_dp
+      solution%levels(level)%right_ghost_temperature = 0.0_dp
       solution%levels(level)%state(:, 1:nx) = candidate(level)%values
       if (level == 1) then
         solution%levels(level)%state(:, 0) = root_state(:, 0)
@@ -635,11 +709,26 @@ contains
     allocate(flux(nvar, 0:nx))
     state_start = solution%levels(level)%state
     physical_boundary = level == 1
-    call advance_amr_level_1d( &
-      species, solution%levels(level)%state, &
-      solution%levels(level)%temperature, nx, dx, interval, &
-      config%amr_reconstruction, config%limiter, config%riemann_solver, &
-      physical_boundary, level_boundary(config, level), flux, local_ok)
+    if (physical_boundary .or. .not. uses_ppm_reconstruction(config)) then
+      call advance_amr_level_1d( &
+        species, solution%levels(level)%state, &
+        solution%levels(level)%temperature, nx, dx, interval, &
+        config%amr_reconstruction, config%limiter, config%riemann_solver, &
+        physical_boundary, level_boundary(config, level), flux, local_ok, &
+        ppm_contact_steepening=config%ppm_contact_steepening, &
+        ppm_shock_flattening=config%ppm_shock_flattening)
+    else
+      call advance_amr_level_1d( &
+        species, solution%levels(level)%state, &
+        solution%levels(level)%temperature, nx, dx, interval, &
+        config%amr_reconstruction, config%limiter, config%riemann_solver, &
+        physical_boundary, level_boundary(config, level), flux, local_ok, &
+        solution%levels(level)%left_ghost_state, &
+        solution%levels(level)%right_ghost_state, &
+        solution%levels(level)%left_ghost_temperature, &
+        solution%levels(level)%right_ghost_temperature, &
+        config%ppm_contact_steepening, config%ppm_shock_flattening)
+    end if
     if (.not. local_ok) return
     state_end = solution%levels(level)%state
     left_integral = interval * flux(:, 0)
@@ -661,7 +750,7 @@ contains
       interval, local_ok)
     if (.not. local_ok) return
     do substep = 1, ratio
-      if (trim(config%amr_reconstruction) == "plm") then
+      if (trim(config%amr_reconstruction) /= "pcm") then
         alpha = (real(substep, dp) - 0.5_dp) / real(ratio, dp)
       else
         alpha = real(substep - 1, dp) / real(ratio, dp)
@@ -671,6 +760,16 @@ contains
         state_end, alpha, solution%levels(level + 1)%state, &
         solution%levels(level + 1)%temperature, local_ok)
       if (.not. local_ok) return
+      if (uses_ppm_reconstruction(config)) then
+        call fill_fine_wide_ghosts_1d( &
+          species, solution%hierarchy%interfaces(level), state_start, &
+          state_end, alpha, &
+          solution%levels(level + 1)%left_ghost_state, &
+          solution%levels(level + 1)%right_ghost_state, &
+          solution%levels(level + 1)%left_ghost_temperature, &
+          solution%levels(level + 1)%right_ghost_temperature, local_ok)
+        if (.not. local_ok) return
+      end if
       call advance_hydro_recursive( &
         species, config, solution, level + 1, child_interval, &
         child_left, child_right, local_ok)
@@ -867,6 +966,16 @@ contains
       solution%levels(1)%state, solution%levels(1)%temperature, nx, &
       config%boundary_condition, local_ok)
     if (.not. local_ok) return
+    if (uses_ppm_reconstruction(config)) then
+      call fill_physical_wide_ghosts_1d( &
+        solution%levels(1)%state, solution%levels(1)%temperature, nx, &
+        config%boundary_condition, &
+        solution%levels(1)%left_ghost_state, &
+        solution%levels(1)%right_ghost_state, &
+        solution%levels(1)%left_ghost_temperature, &
+        solution%levels(1)%right_ghost_temperature, local_ok)
+      if (.not. local_ok) return
+    end if
     do level = 2, solution%level_count()
       call fill_fine_ghosts_1d( &
         species, solution%hierarchy%interfaces(level - 1), &
@@ -875,9 +984,27 @@ contains
         solution%levels(level)%state, &
         solution%levels(level)%temperature, local_ok)
       if (.not. local_ok) return
+      if (uses_ppm_reconstruction(config)) then
+        call fill_fine_wide_ghosts_1d( &
+          species, solution%hierarchy%interfaces(level - 1), &
+          solution%levels(level - 1)%state, &
+          solution%levels(level - 1)%state, 1.0_dp, &
+          solution%levels(level)%left_ghost_state, &
+          solution%levels(level)%right_ghost_state, &
+          solution%levels(level)%left_ghost_temperature, &
+          solution%levels(level)%right_ghost_temperature, local_ok)
+        if (.not. local_ok) return
+      end if
     end do
     ok = .true.
   end subroutine refresh_multilevel_ghosts
+
+  pure logical function uses_ppm_reconstruction(config) result(enabled)
+    type(reactive_1d_config), intent(in) :: config
+
+    enabled = trim(config%amr_reconstruction) == "ppm" .or. &
+      trim(config%amr_reconstruction) == "characteristic_ppm"
+  end function uses_ppm_reconstruction
 
   subroutine multilevel_reactive_integrals_1d(solution, integral, ok)
     type(amr_multilevel_reactive_solution_1d), intent(in) :: solution

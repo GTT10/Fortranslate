@@ -10,6 +10,7 @@ module amr_reactive_1d_mod
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive, reactive_primitive_to_conserved, &
     reactive_riemann_flux_x, &
+    reconstruct_ppm_faces, reconstruct_characteristic_ppm_faces, &
     reactive_cfl_timestep, initialize_reactive_1d, &
     advance_reactive_chemistry, reactive_diffusive_flux_x, &
     reactive_transport_timestep
@@ -24,6 +25,8 @@ module amr_reactive_1d_mod
   use slope_limiter_mod, only: limited_slope
   implicit none
   private
+
+  integer, parameter, public :: amr_ppm_ghost_width = 4
 
   type, public :: amr_reactive_solution_1d
     type(amr_two_level_hierarchy_1d) :: hierarchy
@@ -54,6 +57,8 @@ module amr_reactive_1d_mod
   public :: recover_level_temperatures_1d
   public :: fill_physical_ghosts_1d
   public :: fill_fine_ghosts_1d
+  public :: fill_physical_wide_ghosts_1d
+  public :: fill_fine_wide_ghosts_1d
   public :: write_amr_cell
 
 contains
@@ -889,7 +894,10 @@ contains
 
   subroutine advance_amr_level_1d( &
       species, state, temperature, nx, dx, dt, reconstruction, limiter, &
-      riemann_solver, physical_boundary, boundary, flux, ok)
+      riemann_solver, physical_boundary, boundary, flux, ok, &
+      left_ghost_state, right_ghost_state, left_ghost_temperature, &
+      right_ghost_temperature, ppm_contact_steepening, &
+      ppm_shock_flattening)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     integer, intent(in) :: nx
@@ -900,6 +908,33 @@ contains
     character(len=*), intent(in) :: boundary
     real(dp), intent(out) :: flux(:, 0:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: left_ghost_state(:, :)
+    real(dp), intent(in), optional :: right_ghost_state(:, :)
+    real(dp), intent(in), optional :: left_ghost_temperature(:)
+    real(dp), intent(in), optional :: right_ghost_temperature(:)
+    logical, intent(in), optional :: ppm_contact_steepening
+    logical, intent(in), optional :: ppm_shock_flattening
+
+    logical :: use_contact_steepening, use_shock_flattening, wide_ghosts
+
+    use_contact_steepening = .false.
+    use_shock_flattening = .false.
+    if (present(ppm_contact_steepening)) &
+      use_contact_steepening = ppm_contact_steepening
+    if (present(ppm_shock_flattening)) &
+      use_shock_flattening = ppm_shock_flattening
+    wide_ghosts = present(left_ghost_state) .and. &
+      present(right_ghost_state) .and. &
+      present(left_ghost_temperature) .and. &
+      present(right_ghost_temperature)
+    if (wide_ghosts .neqv. (present(left_ghost_state) .or. &
+        present(right_ghost_state) .or. &
+        present(left_ghost_temperature) .or. &
+        present(right_ghost_temperature))) then
+      flux = 0.0_dp
+      ok = .false.
+      return
+    end if
 
     select case (trim(reconstruction))
     case ("pcm")
@@ -910,11 +945,276 @@ contains
       call advance_plm_level_1d( &
         species, state, temperature, nx, dx, dt, limiter, riemann_solver, &
         physical_boundary, boundary, flux, ok)
+    case ("ppm", "characteristic_ppm")
+      if (physical_boundary) then
+        call advance_ppm_level_1d( &
+          species, state, temperature, nx, dx, dt, reconstruction, &
+          riemann_solver, boundary, use_contact_steepening, &
+          use_shock_flattening, flux, ok)
+      else if (wide_ghosts) then
+        call advance_ppm_level_1d( &
+          species, state, temperature, nx, dx, dt, reconstruction, &
+          riemann_solver, boundary, use_contact_steepening, &
+          use_shock_flattening, flux, ok, left_ghost_state, &
+          right_ghost_state, left_ghost_temperature, &
+          right_ghost_temperature)
+      else
+        flux = 0.0_dp
+        ok = .false.
+      end if
     case default
       flux = 0.0_dp
       ok = .false.
     end select
   end subroutine advance_amr_level_1d
+
+  subroutine advance_ppm_level_1d( &
+      species, state, temperature, nx, dx, dt, reconstruction, &
+      riemann_solver, boundary, use_contact_steepening, &
+      use_shock_flattening, flux, ok, left_ghost_state, &
+      right_ghost_state, left_ghost_temperature, right_ghost_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: reconstruction, riemann_solver, boundary
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: left_ghost_state(:, :)
+    real(dp), intent(in), optional :: right_ghost_state(:, :)
+    real(dp), intent(in), optional :: left_ghost_temperature(:)
+    real(dp), intent(in), optional :: right_ghost_temperature(:)
+
+    real(dp), allocatable :: initial_state(:, :), initial_temperature(:)
+    real(dp), allocatable :: stage1_state(:, :), stage1_temperature(:)
+    real(dp), allocatable :: euler2_state(:, :), euler2_temperature(:)
+    real(dp), allocatable :: stage2_state(:, :), stage2_temperature(:)
+    real(dp), allocatable :: euler3_state(:, :), euler3_temperature(:)
+    real(dp), allocatable :: first_flux(:, :), second_flux(:, :)
+    real(dp), allocatable :: third_flux(:, :), q(:)
+    real(dp), allocatable :: left_wide(:, :), right_wide(:, :)
+    real(dp), allocatable :: left_wide_temperature(:)
+    real(dp), allocatable :: right_wide_temperature(:)
+    real(dp) :: guess, local_temperature, sound_speed
+    logical :: local_ok, external_ghosts
+    integer :: nvar, cell
+
+    ok = .false.
+    external_ghosts = present(left_ghost_state) .and. &
+      present(right_ghost_state) .and. &
+      present(left_ghost_temperature) .and. &
+      present(right_ghost_temperature)
+    if (external_ghosts .neqv. (present(left_ghost_state) .or. &
+        present(right_ghost_state) .or. &
+        present(left_ghost_temperature) .or. &
+        present(right_ghost_temperature))) return
+    nvar = size(state, 1)
+    allocate(initial_state(nvar, 0:nx + 1))
+    allocate(initial_temperature(0:nx + 1))
+    allocate(stage1_state(nvar, 0:nx + 1))
+    allocate(stage1_temperature(0:nx + 1))
+    allocate(euler2_state(nvar, 0:nx + 1))
+    allocate(euler2_temperature(0:nx + 1))
+    allocate(stage2_state(nvar, 0:nx + 1))
+    allocate(stage2_temperature(0:nx + 1))
+    allocate(euler3_state(nvar, 0:nx + 1))
+    allocate(euler3_temperature(0:nx + 1))
+    allocate(first_flux(nvar, 0:nx), second_flux(nvar, 0:nx))
+    allocate(third_flux(nvar, 0:nx), q(reactive_nprim(size(species))))
+    allocate(left_wide(nvar, amr_ppm_ghost_width))
+    allocate(right_wide(nvar, amr_ppm_ghost_width))
+    allocate(left_wide_temperature(amr_ppm_ghost_width))
+    allocate(right_wide_temperature(amr_ppm_ghost_width))
+    initial_state = state
+    initial_temperature = temperature
+
+    call prepare_ppm_ghosts( &
+      initial_state, initial_temperature, nx, boundary, external_ghosts, &
+      left_wide, right_wide, left_wide_temperature, &
+      right_wide_temperature, local_ok, left_ghost_state, &
+      right_ghost_state, left_ghost_temperature, right_ghost_temperature)
+    if (.not. local_ok) return
+    call ppm_euler_update_1d( &
+      species, initial_state, initial_temperature, nx, dx, dt, &
+      reconstruction, riemann_solver, boundary, use_contact_steepening, &
+      use_shock_flattening, left_wide, right_wide, &
+      left_wide_temperature, right_wide_temperature, stage1_state, &
+      stage1_temperature, first_flux, local_ok)
+    if (.not. local_ok) return
+
+    call prepare_ppm_ghosts( &
+      stage1_state, stage1_temperature, nx, boundary, external_ghosts, &
+      left_wide, right_wide, left_wide_temperature, &
+      right_wide_temperature, local_ok, left_ghost_state, &
+      right_ghost_state, left_ghost_temperature, right_ghost_temperature)
+    if (.not. local_ok) return
+    call ppm_euler_update_1d( &
+      species, stage1_state, stage1_temperature, nx, dx, dt, &
+      reconstruction, riemann_solver, boundary, use_contact_steepening, &
+      use_shock_flattening, left_wide, right_wide, &
+      left_wide_temperature, right_wide_temperature, euler2_state, &
+      euler2_temperature, second_flux, local_ok)
+    if (.not. local_ok) return
+    stage2_state = initial_state
+    stage2_temperature = initial_temperature
+    do cell = 1, nx
+      stage2_state(:, cell) = &
+        0.75_dp * initial_state(:, cell) + &
+        0.25_dp * euler2_state(:, cell)
+      guess = 0.75_dp * initial_temperature(cell) + &
+        0.25_dp * euler2_temperature(cell)
+      call reactive_conserved_to_primitive( &
+        species, stage2_state(:, cell), guess, q, local_temperature, &
+        sound_speed, local_ok)
+      if (.not. local_ok) return
+      stage2_temperature(cell) = local_temperature
+    end do
+
+    call prepare_ppm_ghosts( &
+      stage2_state, stage2_temperature, nx, boundary, external_ghosts, &
+      left_wide, right_wide, left_wide_temperature, &
+      right_wide_temperature, local_ok, left_ghost_state, &
+      right_ghost_state, left_ghost_temperature, right_ghost_temperature)
+    if (.not. local_ok) return
+    call ppm_euler_update_1d( &
+      species, stage2_state, stage2_temperature, nx, dx, dt, &
+      reconstruction, riemann_solver, boundary, use_contact_steepening, &
+      use_shock_flattening, left_wide, right_wide, &
+      left_wide_temperature, right_wide_temperature, euler3_state, &
+      euler3_temperature, third_flux, local_ok)
+    if (.not. local_ok) return
+
+    state = initial_state
+    temperature = initial_temperature
+    do cell = 1, nx
+      state(:, cell) = initial_state(:, cell) / 3.0_dp + &
+        2.0_dp * euler3_state(:, cell) / 3.0_dp
+      guess = initial_temperature(cell) / 3.0_dp + &
+        2.0_dp * euler3_temperature(cell) / 3.0_dp
+      call reactive_conserved_to_primitive( &
+        species, state(:, cell), guess, q, local_temperature, sound_speed, &
+        local_ok)
+      if (.not. local_ok) return
+      temperature(cell) = local_temperature
+    end do
+    flux = (first_flux + second_flux) / 6.0_dp + &
+      2.0_dp * third_flux / 3.0_dp
+    if (.not. external_ghosts) then
+      call fill_physical_ghosts_1d( &
+        state, temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    ok = .true.
+  end subroutine advance_ppm_level_1d
+
+  subroutine prepare_ppm_ghosts( &
+      state, temperature, nx, boundary, external_ghosts, left_wide, &
+      right_wide, left_wide_temperature, right_wide_temperature, ok, &
+      external_left, external_right, external_left_temperature, &
+      external_right_temperature)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    character(len=*), intent(in) :: boundary
+    logical, intent(in) :: external_ghosts
+    real(dp), intent(out) :: left_wide(:, :), right_wide(:, :)
+    real(dp), intent(out) :: left_wide_temperature(:)
+    real(dp), intent(out) :: right_wide_temperature(:)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: external_left(:, :)
+    real(dp), intent(in), optional :: external_right(:, :)
+    real(dp), intent(in), optional :: external_left_temperature(:)
+    real(dp), intent(in), optional :: external_right_temperature(:)
+
+    ok = .false.
+    if (external_ghosts) then
+      if (.not. present(external_left) .or. &
+          .not. present(external_right) .or. &
+          .not. present(external_left_temperature) .or. &
+          .not. present(external_right_temperature)) return
+      if (size(external_left, 1) /= size(left_wide, 1) .or. &
+          size(external_right, 1) /= size(right_wide, 1) .or. &
+          size(external_left, 2) /= amr_ppm_ghost_width .or. &
+          size(external_right, 2) /= amr_ppm_ghost_width .or. &
+          size(external_left_temperature) /= amr_ppm_ghost_width .or. &
+          size(external_right_temperature) /= amr_ppm_ghost_width) return
+      left_wide = external_left
+      right_wide = external_right
+      left_wide_temperature = external_left_temperature
+      right_wide_temperature = external_right_temperature
+      ok = .true.
+      return
+    end if
+    call fill_physical_wide_ghosts_1d( &
+      state, temperature, nx, boundary, left_wide, right_wide, &
+      left_wide_temperature, right_wide_temperature, ok)
+  end subroutine prepare_ppm_ghosts
+
+  subroutine ppm_euler_update_1d( &
+      species, state, temperature, nx, dx, dt, reconstruction, &
+      riemann_solver, boundary, use_contact_steepening, &
+      use_shock_flattening, left_wide, right_wide, &
+      left_wide_temperature, right_wide_temperature, output_state, &
+      output_temperature, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: reconstruction, riemann_solver, boundary
+    logical, intent(in) :: use_contact_steepening, use_shock_flattening
+    real(dp), intent(in) :: left_wide(:, :), right_wide(:, :)
+    real(dp), intent(in) :: left_wide_temperature(:)
+    real(dp), intent(in) :: right_wide_temperature(:)
+    real(dp), intent(out) :: output_state(:, 0:), output_temperature(0:)
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: left_face(:, :), right_face(:, :)
+    real(dp), allocatable :: left_t(:), right_t(:), q(:)
+    real(dp) :: local_temperature, sound_speed
+    logical :: local_ok
+    integer :: nvar, face, cell
+
+    ok = .false.
+    nvar = size(state, 1)
+    allocate(left_face(nvar, 0:nx), right_face(nvar, 0:nx))
+    allocate(left_t(0:nx), right_t(0:nx))
+    allocate(q(reactive_nprim(size(species))))
+    select case (trim(reconstruction))
+    case ("ppm")
+      call reconstruct_ppm_faces( &
+        species, state, temperature, nx, boundary, left_face, right_face, &
+        left_t, right_t, local_ok, left_wide, right_wide, &
+        left_wide_temperature, right_wide_temperature)
+    case ("characteristic_ppm")
+      call reconstruct_characteristic_ppm_faces( &
+        species, state, temperature, nx, boundary, dt / dx, &
+        use_contact_steepening, use_shock_flattening, left_face, &
+        right_face, left_t, right_t, local_ok, left_wide, right_wide, &
+        left_wide_temperature, right_wide_temperature)
+    case default
+      return
+    end select
+    if (.not. local_ok) return
+    do face = 0, nx
+      call reactive_riemann_flux_x( &
+        species, left_face(:, face), right_face(:, face), &
+        left_t(face), right_t(face), riemann_solver, flux(:, face), local_ok)
+      if (.not. local_ok) return
+    end do
+    output_state = state
+    output_temperature = temperature
+    do cell = 1, nx
+      output_state(:, cell) = state(:, cell) - dt / dx * &
+        (flux(:, cell) - flux(:, cell - 1))
+      call reactive_conserved_to_primitive( &
+        species, output_state(:, cell), temperature(cell), q, &
+        local_temperature, sound_speed, local_ok)
+      if (.not. local_ok) return
+      output_temperature(cell) = local_temperature
+    end do
+    ok = .true.
+  end subroutine ppm_euler_update_1d
 
   subroutine advance_plm_level_1d( &
       species, state, temperature, nx, dx, dt, limiter, riemann_solver, &
@@ -1294,6 +1594,155 @@ contains
       ok = .false.
     end select
   end subroutine fill_physical_ghosts_1d
+
+  pure subroutine fill_physical_wide_ghosts_1d( &
+      state, temperature, nx, boundary, left_ghost, right_ghost, &
+      left_temperature, right_temperature, ok)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(out) :: left_ghost(:, :), right_ghost(:, :)
+    real(dp), intent(out) :: left_temperature(:), right_temperature(:)
+    logical, intent(out) :: ok
+
+    integer :: layer, left_source, right_source
+
+    left_ghost = 0.0_dp
+    right_ghost = 0.0_dp
+    left_temperature = 0.0_dp
+    right_temperature = 0.0_dp
+    ok = nx >= amr_ppm_ghost_width .and. &
+      size(left_ghost, 1) == size(state, 1) .and. &
+      size(right_ghost, 1) == size(state, 1) .and. &
+      size(left_ghost, 2) == amr_ppm_ghost_width .and. &
+      size(right_ghost, 2) == amr_ppm_ghost_width .and. &
+      size(left_temperature) == amr_ppm_ghost_width .and. &
+      size(right_temperature) == amr_ppm_ghost_width
+    if (.not. ok) return
+    do layer = 1, amr_ppm_ghost_width
+      select case (trim(boundary))
+      case ("periodic")
+        left_source = modulo(nx - layer, nx) + 1
+        right_source = modulo(layer - 1, nx) + 1
+      case ("outflow")
+        left_source = 1
+        right_source = nx
+      case default
+        ok = .false.
+        return
+      end select
+      left_ghost(:, layer) = state(:, left_source)
+      right_ghost(:, layer) = state(:, right_source)
+      left_temperature(layer) = temperature(left_source)
+      right_temperature(layer) = temperature(right_source)
+    end do
+    ok = .true.
+  end subroutine fill_physical_wide_ghosts_1d
+
+  subroutine fill_fine_wide_ghosts_1d( &
+      species, hierarchy, coarse_start, coarse_end, alpha, left_ghost, &
+      right_ghost, left_temperature, right_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_two_level_hierarchy_1d), intent(in) :: hierarchy
+    real(dp), intent(in) :: coarse_start(:, 0:), coarse_end(:, 0:)
+    real(dp), intent(in) :: alpha
+    real(dp), intent(out) :: left_ghost(:, :), right_ghost(:, :)
+    real(dp), intent(out) :: left_temperature(:), right_temperature(:)
+    logical, intent(out) :: ok
+
+    logical :: local_ok
+    integer :: layer, global_fine
+
+    left_ghost = 0.0_dp
+    right_ghost = 0.0_dp
+    left_temperature = 0.0_dp
+    right_temperature = 0.0_dp
+    ok = hierarchy%is_valid() .and. alpha >= 0.0_dp .and. alpha <= 1.0_dp .and. &
+      size(coarse_start, 1) == size(coarse_end, 1) .and. &
+      size(left_ghost, 1) == size(coarse_start, 1) .and. &
+      size(right_ghost, 1) == size(coarse_start, 1) .and. &
+      size(left_ghost, 2) == amr_ppm_ghost_width .and. &
+      size(right_ghost, 2) == amr_ppm_ghost_width .and. &
+      size(left_temperature) == amr_ppm_ghost_width .and. &
+      size(right_temperature) == amr_ppm_ghost_width
+    if (.not. ok) return
+    do layer = 1, amr_ppm_ghost_width
+      global_fine = hierarchy%fine%lower - layer
+      call interpolate_parent_fine_cell( &
+        species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
+        left_ghost(:, layer), left_temperature(layer), local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+      global_fine = hierarchy%fine%upper + layer
+      call interpolate_parent_fine_cell( &
+        species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
+        right_ghost(:, layer), right_temperature(layer), local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+    end do
+    ok = .true.
+  end subroutine fill_fine_wide_ghosts_1d
+
+  subroutine interpolate_parent_fine_cell( &
+      species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
+      sampled_state, sampled_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_two_level_hierarchy_1d), intent(in) :: hierarchy
+    real(dp), intent(in) :: coarse_start(:, 0:), coarse_end(:, 0:)
+    real(dp), intent(in) :: alpha
+    integer, intent(in) :: global_fine
+    real(dp), intent(out) :: sampled_state(:), sampled_temperature
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: center(:), left(:), right(:), slope(:), q(:)
+    real(dp) :: offset, local_temperature, sound_speed
+    logical :: local_ok, slope_ok
+    integer :: parent_cell, child, component, ratio, parent_cells
+
+    sampled_state = 0.0_dp
+    sampled_temperature = 0.0_dp
+    ok = .false.
+    ratio = hierarchy%refinement_ratio
+    parent_cells = hierarchy%coarse%cell_count()
+    if (global_fine < 1 .or. global_fine > parent_cells * ratio .or. &
+        size(sampled_state) /= size(coarse_start, 1)) return
+    parent_cell = (global_fine - 1) / ratio + 1
+    child = modulo(global_fine - 1, ratio) + 1
+    allocate(center(size(sampled_state)), left(size(sampled_state)))
+    allocate(right(size(sampled_state)), slope(size(sampled_state)))
+    allocate(q(reactive_nprim(size(species))))
+    center = (1.0_dp - alpha) * coarse_start(:, parent_cell) + &
+      alpha * coarse_end(:, parent_cell)
+    left = (1.0_dp - alpha) * coarse_start(:, parent_cell - 1) + &
+      alpha * coarse_end(:, parent_cell - 1)
+    right = (1.0_dp - alpha) * coarse_start(:, parent_cell + 1) + &
+      alpha * coarse_end(:, parent_cell + 1)
+    do component = 1, size(sampled_state)
+      call limited_slope( &
+        center(component) - left(component), &
+        right(component) - center(component), "mc", slope(component), &
+        slope_ok)
+      if (.not. slope_ok) return
+    end do
+    offset = (real(child, dp) - 0.5_dp) / real(ratio, dp) - 0.5_dp
+    sampled_state = center + offset * slope
+    call reactive_conserved_to_primitive( &
+      species, sampled_state, 1000.0_dp, q, local_temperature, sound_speed, &
+      local_ok)
+    if (.not. local_ok) then
+      sampled_state = center
+      call reactive_conserved_to_primitive( &
+        species, sampled_state, 1000.0_dp, q, local_temperature, &
+        sound_speed, local_ok)
+      if (.not. local_ok) return
+    end if
+    sampled_temperature = local_temperature
+    ok = .true.
+  end subroutine interpolate_parent_fine_cell
 
   subroutine fill_fine_ghosts_1d( &
       species, hierarchy, coarse_start, coarse_end, alpha, fine, &
