@@ -6,7 +6,8 @@ program pelef_mpi_reactive_transport_1d
   use mpi_domain_1d_mod, only: &
     mpi_domain_1d, initialize_mpi_domain_1d, global_sum_1d, gather_state_1d
   use mpi_reactive_transport_1d_mod, only: &
-    mpi_reactive_transport_timestep, advance_mpi_reactive_transport
+    mpi_reactive_transport_timestep, &
+    advance_mpi_reactive_transport_adaptive
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: full_nspecies, load_h2o2_full_thermo
   use transport_database_mod, only: &
@@ -23,6 +24,7 @@ program pelef_mpi_reactive_transport_1d
   real(dp), parameter :: domain_length = 1.0e-3_dp
   real(dp), parameter :: final_time = 1.0e-6_dp
   real(dp), parameter :: transport_cfl = 0.05_dp
+  real(dp), parameter :: minimum_step_fraction = 1.0e-10_dp
   real(dp), parameter :: conservation_tolerance = 2.0e-10_dp
   real(dp), parameter :: closure_tolerance = 2.0e-10_dp
   real(dp), parameter :: species_tolerance = 2.0e-12_dp
@@ -38,12 +40,14 @@ program pelef_mpi_reactive_transport_1d
   real(dp), allocatable :: state(:, :), initial_state(:, :)
   real(dp), allocatable :: temperature(:), initial_temperature(:)
   real(dp), allocatable :: local_output(:, :), global_output(:, :)
-  real(dp) :: dx, time, dt, maximum_diffusivity, time_tolerance
+  real(dp) :: dx, time, requested_dt, accepted_dt, minimum_dt
+  real(dp) :: maximum_diffusivity, time_tolerance
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: maximum_conservation_error, maximum_closure_error
   real(dp) :: minimum_species, maximum_state_change
   character(len=256) :: output_file
-  integer :: ierr, nvar, output_fields, cell, global_cell, steps, output_unit
+  integer :: ierr, nvar, output_fields, cell, global_cell
+  integer :: steps, rejected_trials, total_rejected, output_unit
   logical :: ok
 
   call MPI_Init(ierr)
@@ -88,24 +92,31 @@ program pelef_mpi_reactive_transport_1d
 
   time = 0.0_dp
   steps = 0
+  total_rejected = 0
   time_tolerance = 100.0_dp * epsilon(1.0_dp) * final_time
   do while (time < final_time - time_tolerance)
     if (steps >= maximum_steps) error stop 'MPI transport step limit reached'
     call mpi_reactive_transport_timestep( &
       domain, species, transport, state, temperature, dx, transport_cfl, &
       viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, dt, maximum_diffusivity, ok)
-    if (.not. ok .or. dt <= 0.0_dp) then
+      species_diffusion_enabled, requested_dt, maximum_diffusivity, ok)
+    if (.not. ok .or. requested_dt <= 0.0_dp) then
       error stop 'MPI transport timestep failed'
     end if
-    dt = min(dt, final_time - time)
-    call advance_mpi_reactive_transport( &
-      domain, species, transport, state, temperature, dx, dt, &
-      viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, ok)
-    if (.not. ok) error stop 'MPI transport update failed'
-    time = time + dt
+    requested_dt = min(requested_dt, final_time - time)
+    minimum_dt = max(tiny(1.0_dp), &
+      minimum_step_fraction * requested_dt)
+    call advance_mpi_reactive_transport_adaptive( &
+      domain, species, transport, state, temperature, dx, requested_dt, &
+      minimum_dt, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, accepted_dt, &
+      rejected_trials, ok)
+    if (.not. ok .or. accepted_dt <= 0.0_dp) then
+      error stop 'MPI adaptive transport update failed'
+    end if
+    time = time + accepted_dt
     steps = steps + 1
+    total_rejected = total_rejected + rejected_trials
   end do
 
   call validate_local_state( &
@@ -149,6 +160,7 @@ program pelef_mpi_reactive_transport_1d
     write(*, '(a,i0)') 'MPI ranks: ', domain%nranks
     write(*, '(a,i0)') 'Distributed transport cells: ', global_cells
     write(*, '(a,i0)') 'Accepted SSPRK2 steps: ', steps
+    write(*, '(a,i0)') 'Rejected transport trials: ', total_rejected
     write(*, '(a,es24.16)') 'Final time: ', time
     write(*, '(a,es24.16)') 'Maximum diffusivity: ', maximum_diffusivity
     write(*, '(a,es24.16)') 'Maximum conservation error: ', &
