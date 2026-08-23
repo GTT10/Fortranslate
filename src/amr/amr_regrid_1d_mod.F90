@@ -13,6 +13,7 @@ module amr_regrid_1d_mod
     real(dp) :: scale_floor = 1.0e-12_dp
     integer :: buffer_cells = 1
     integer :: minimum_patch_cells = 1
+    integer :: maximum_patch_gap_cells = 0
   contains
     procedure :: is_valid => tagging_criteria_is_valid
   end type amr_tagging_criteria_1d
@@ -29,9 +30,20 @@ module amr_regrid_1d_mod
     procedure :: is_valid => regrid_plan_is_valid
   end type amr_regrid_plan_1d
 
+  type, public :: amr_regrid_plan_collection_1d
+    integer :: coarse_cells = 0
+    integer :: tagged_cell_count = 0
+    type(amr_regrid_plan_1d), allocatable :: plans(:)
+  contains
+    procedure :: patch_count => regrid_plan_collection_patch_count
+    procedure :: is_valid => regrid_plan_collection_is_valid
+  end type amr_regrid_plan_collection_1d
+
   public :: tag_gradient_1d
   public :: build_regrid_plan_1d
+  public :: build_regrid_plan_collection_1d
   public :: plan_gradient_regrid_1d
+  public :: plan_gradient_regrid_collection_1d
   public :: regrid_two_level_state_1d
 
 contains
@@ -45,7 +57,8 @@ contains
       self%relative_gradient_threshold >= 0.0_dp .and. &
       self%absolute_gradient_threshold >= 0.0_dp .and. &
       self%scale_floor > 0.0_dp .and. self%buffer_cells >= 0 .and. &
-      self%minimum_patch_cells >= 1
+      self%minimum_patch_cells >= 1 .and. &
+      self%maximum_patch_gap_cells >= 0
     if (present(variable_count)) then
       valid = valid .and. self%component <= variable_count
     end if
@@ -71,6 +84,44 @@ contains
       self%patch_lower <= self%tag_lower .and. &
       self%patch_upper >= self%tag_upper
   end function regrid_plan_is_valid
+
+  pure integer function regrid_plan_collection_patch_count(self) &
+      result(count)
+    class(amr_regrid_plan_collection_1d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%plans)) count = size(self%plans)
+  end function regrid_plan_collection_patch_count
+
+  pure logical function regrid_plan_collection_is_valid(self) result(valid)
+    class(amr_regrid_plan_collection_1d), intent(in) :: self
+
+    integer :: patch, previous_upper, tagged_count
+
+    valid = self%coarse_cells >= 3 .and. &
+      self%tagged_cell_count >= 0 .and. allocated(self%plans)
+    if (.not. valid) return
+    if (size(self%plans) == 0) then
+      valid = self%tagged_cell_count == 0
+      return
+    end if
+
+    previous_upper = -1
+    tagged_count = 0
+    do patch = 1, size(self%plans)
+      valid = self%plans(patch)%is_valid() .and. &
+        self%plans(patch)%active .and. &
+        self%plans(patch)%coarse_cells == self%coarse_cells
+      if (.not. valid) return
+      if (patch > 1) then
+        valid = self%plans(patch)%patch_lower > previous_upper + 1
+        if (.not. valid) return
+      end if
+      previous_upper = self%plans(patch)%patch_upper
+      tagged_count = tagged_count + self%plans(patch)%tagged_cell_count
+    end do
+    valid = tagged_count == self%tagged_cell_count
+  end function regrid_plan_collection_is_valid
 
   pure subroutine tag_gradient_1d(state, criteria, tags, ok)
     real(dp), intent(in) :: state(:, :)
@@ -154,6 +205,93 @@ contains
       plan%patch_upper - plan%patch_lower + 1 >= minimum_patch_cells
   end subroutine build_regrid_plan_1d
 
+  pure subroutine build_regrid_plan_collection_1d( &
+      tags, buffer_cells, minimum_patch_cells, maximum_gap_cells, &
+      collection, ok)
+    logical, intent(in) :: tags(:)
+    integer, intent(in) :: buffer_cells, minimum_patch_cells
+    integer, intent(in) :: maximum_gap_cells
+    type(amr_regrid_plan_collection_1d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    type(amr_regrid_plan_1d), allocatable :: candidates(:), merged(:)
+    integer :: candidate_count, merged_count
+    integer :: cell, first_tag, last_tag, cluster_tag_count
+
+    collection = amr_regrid_plan_collection_1d()
+    collection%coarse_cells = size(tags)
+    collection%tagged_cell_count = count(tags)
+    ok = size(tags) >= 3 .and. buffer_cells >= 0 .and. &
+      minimum_patch_cells >= 1 .and. &
+      minimum_patch_cells <= size(tags) .and. maximum_gap_cells >= 0
+    if (.not. ok) return
+    if (collection%tagged_cell_count == 0) then
+      allocate(collection%plans(0))
+      ok = collection%is_valid()
+      return
+    end if
+
+    allocate(candidates(collection%tagged_cell_count))
+    candidate_count = 0
+    first_tag = 0
+    last_tag = 0
+    cluster_tag_count = 0
+    do cell = 1, size(tags)
+      if (.not. tags(cell)) cycle
+      if (first_tag == 0) then
+        first_tag = cell
+        last_tag = cell
+        cluster_tag_count = 1
+      else if (cell - last_tag - 1 <= maximum_gap_cells) then
+        last_tag = cell
+        cluster_tag_count = cluster_tag_count + 1
+      else
+        candidate_count = candidate_count + 1
+        call initialize_cluster_plan( &
+          size(tags), first_tag, last_tag, cluster_tag_count, &
+          buffer_cells, minimum_patch_cells, &
+          candidates(candidate_count), ok)
+        if (.not. ok) return
+        first_tag = cell
+        last_tag = cell
+        cluster_tag_count = 1
+      end if
+    end do
+    candidate_count = candidate_count + 1
+    call initialize_cluster_plan( &
+      size(tags), first_tag, last_tag, cluster_tag_count, &
+      buffer_cells, minimum_patch_cells, candidates(candidate_count), ok)
+    if (.not. ok) return
+
+    allocate(merged(candidate_count))
+    merged_count = 0
+    do cell = 1, candidate_count
+      if (merged_count == 0) then
+        merged_count = merged_count + 1
+        merged(merged_count) = candidates(cell)
+      else if (candidates(cell)%patch_lower > &
+          merged(merged_count)%patch_upper + 1) then
+        merged_count = merged_count + 1
+        merged(merged_count) = candidates(cell)
+      else
+        merged(merged_count)%tagged_cell_count = &
+          merged(merged_count)%tagged_cell_count + &
+          candidates(cell)%tagged_cell_count
+        merged(merged_count)%tag_lower = min( &
+          merged(merged_count)%tag_lower, candidates(cell)%tag_lower)
+        merged(merged_count)%tag_upper = max( &
+          merged(merged_count)%tag_upper, candidates(cell)%tag_upper)
+        merged(merged_count)%patch_lower = min( &
+          merged(merged_count)%patch_lower, candidates(cell)%patch_lower)
+        merged(merged_count)%patch_upper = max( &
+          merged(merged_count)%patch_upper, candidates(cell)%patch_upper)
+      end if
+    end do
+    allocate(collection%plans(merged_count))
+    collection%plans = merged(1:merged_count)
+    ok = collection%is_valid()
+  end subroutine build_regrid_plan_collection_1d
+
   pure subroutine plan_gradient_regrid_1d( &
       state, criteria, tags, plan, ok)
     real(dp), intent(in) :: state(:, :)
@@ -167,6 +305,50 @@ contains
     call build_regrid_plan_1d( &
       tags, criteria%buffer_cells, criteria%minimum_patch_cells, plan, ok)
   end subroutine plan_gradient_regrid_1d
+
+  pure subroutine plan_gradient_regrid_collection_1d( &
+      state, criteria, tags, collection, ok)
+    real(dp), intent(in) :: state(:, :)
+    type(amr_tagging_criteria_1d), intent(in) :: criteria
+    logical, intent(out) :: tags(:)
+    type(amr_regrid_plan_collection_1d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    call tag_gradient_1d(state, criteria, tags, ok)
+    if (.not. ok) return
+    call build_regrid_plan_collection_1d( &
+      tags, criteria%buffer_cells, criteria%minimum_patch_cells, &
+      criteria%maximum_patch_gap_cells, collection, ok)
+  end subroutine plan_gradient_regrid_collection_1d
+
+  pure subroutine initialize_cluster_plan( &
+      coarse_cells, first_tag, last_tag, tagged_cell_count, &
+      buffer_cells, minimum_patch_cells, plan, ok)
+    integer, intent(in) :: coarse_cells, first_tag, last_tag
+    integer, intent(in) :: tagged_cell_count
+    integer, intent(in) :: buffer_cells, minimum_patch_cells
+    type(amr_regrid_plan_1d), intent(out) :: plan
+    logical, intent(out) :: ok
+
+    plan = amr_regrid_plan_1d()
+    plan%active = .true.
+    plan%coarse_cells = coarse_cells
+    plan%tagged_cell_count = tagged_cell_count
+    plan%tag_lower = first_tag
+    plan%tag_upper = last_tag
+    plan%patch_lower = max(1, first_tag - buffer_cells)
+    plan%patch_upper = min(coarse_cells, last_tag + buffer_cells)
+    do while (plan%patch_upper - plan%patch_lower + 1 < &
+        minimum_patch_cells)
+      if (plan%patch_lower > 1) plan%patch_lower = plan%patch_lower - 1
+      if (plan%patch_upper - plan%patch_lower + 1 >= &
+          minimum_patch_cells) exit
+      if (plan%patch_upper < coarse_cells) &
+        plan%patch_upper = plan%patch_upper + 1
+    end do
+    ok = plan%is_valid() .and. plan%patch_upper - plan%patch_lower + 1 >= &
+      minimum_patch_cells
+  end subroutine initialize_cluster_plan
 
   subroutine regrid_two_level_state_1d( &
       coarse, old_hierarchy, old_fine, plan, refinement_ratio, &

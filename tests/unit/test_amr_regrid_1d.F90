@@ -5,8 +5,10 @@ program test_amr_regrid_1d
     prolong_conservative_1d, restrict_average_1d, composite_integral_1d
   use amr_regrid_1d_mod, only: &
     amr_tagging_criteria_1d, amr_regrid_plan_1d, &
+    amr_regrid_plan_collection_1d, &
     tag_gradient_1d, build_regrid_plan_1d, &
-    plan_gradient_regrid_1d, regrid_two_level_state_1d
+    build_regrid_plan_collection_1d, plan_gradient_regrid_1d, &
+    regrid_two_level_state_1d
   implicit none
 
   integer, parameter :: variable_count = 2
@@ -15,6 +17,7 @@ program test_amr_regrid_1d
   real(dp), parameter :: tolerance = 3.0e-13_dp
   type(amr_tagging_criteria_1d) :: criteria
   type(amr_regrid_plan_1d) :: plan, inactive_plan
+  type(amr_regrid_plan_collection_1d) :: plan_collection
   type(amr_two_level_hierarchy_1d) :: old_hierarchy, new_hierarchy
   type(amr_two_level_hierarchy_1d) :: removed_hierarchy, created_hierarchy
   real(dp) :: state(variable_count, coarse_cells)
@@ -75,6 +78,54 @@ program test_amr_regrid_1d
   call assert_true(ok, "minimum-width patch plan")
   call assert_true(plan%patch_lower == 3 .and. plan%patch_upper == 6, &
     "minimum patch expansion")
+
+  tags = .false.
+  tags(1:2) = .true.
+  tags(7:8) = .true.
+  call build_regrid_plan_collection_1d( &
+    tags, 1, 2, 0, plan_collection, ok)
+  call assert_true(ok .and. plan_collection%is_valid(), &
+    "disconnected tag collection")
+  call assert_true(plan_collection%patch_count() == 2, &
+    "two disconnected patches")
+  call assert_true( &
+    plan_collection%plans(1)%patch_lower == 1 .and. &
+    plan_collection%plans(1)%patch_upper == 3 .and. &
+    plan_collection%plans(2)%patch_lower == 6 .and. &
+    plan_collection%plans(2)%patch_upper == 9, &
+    "buffered disconnected patch bounds")
+  call assert_true(plan_collection%tagged_cell_count == 4, &
+    "collection tag accounting")
+
+  tags = .false.
+  tags(3) = .true.
+  tags(6) = .true.
+  call build_regrid_plan_collection_1d( &
+    tags, 1, 1, 0, plan_collection, ok)
+  call assert_true(ok .and. plan_collection%patch_count() == 1, &
+    "adjacent buffered patches coalesced")
+  call assert_true( &
+    plan_collection%plans(1)%patch_lower == 2 .and. &
+    plan_collection%plans(1)%patch_upper == 7 .and. &
+    plan_collection%plans(1)%tagged_cell_count == 2, &
+    "coalesced patch bounds and tag count")
+
+  tags = .false.
+  tags(3) = .true.
+  tags(5) = .true.
+  call build_regrid_plan_collection_1d( &
+    tags, 0, 1, 1, plan_collection, ok)
+  call assert_true(ok .and. plan_collection%patch_count() == 1, &
+    "small untagged gap retained in one patch")
+  call assert_true( &
+    plan_collection%plans(1)%patch_lower == 3 .and. &
+    plan_collection%plans(1)%patch_upper == 5, &
+    "maximum tag-gap clustering")
+
+  call build_regrid_plan_collection_1d( &
+    empty_tags, 1, 2, 0, plan_collection, ok)
+  call assert_true(ok .and. plan_collection%patch_count() == 0, &
+    "empty tag collection")
 
   call initialize_two_level_hierarchy_1d( &
     coarse_cells, 4, 7, refinement_ratio, 0.0_dp, 1.0_dp, &
