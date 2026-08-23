@@ -16,12 +16,17 @@ program test_amr_multipatch_dynamic_1d
   type(reactive_1d_config) :: config
   type(amr_multipatch_reactive_solution_1d) :: solution
   real(dp), allocatable :: before(:), after(:)
-  real(dp) :: error
+  real(dp) :: error, maximum_error
   logical :: changed, ok
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "dynamic multipatch thermodynamics load")
   call configure_case(config)
+  config%amr_max_levels = 3
+  call initialize_tagged_multipatch_reactive_1d( &
+    species, config, solution, ok)
+  call require(.not. ok, "multipatch mode rejects more than two levels")
+  config%amr_max_levels = 2
   call initialize_tagged_multipatch_reactive_1d( &
     species, config, solution, ok)
   call require(ok .and. solution%patch_count() == 0, &
@@ -30,6 +35,7 @@ program test_amr_multipatch_dynamic_1d
     solution%regrids == 0, "initial empty tag accounting")
   allocate(before(reactive_nvar(size(species))))
   allocate(after(reactive_nvar(size(species))))
+  maximum_error = 0.0_dp
 
   call set_velocity_boxes(solution, 8, 12, 34, 38, 20.0_dp)
   call multipatch_reactive_integrals_1d(solution, before, ok)
@@ -66,7 +72,7 @@ program test_amr_multipatch_dynamic_1d
     solution%regrids == 3, "dynamic patch-set accounting")
 
   write(*, '(a,1x,es16.8)') &
-    "Dynamic multipatch maximum conservation error:", error
+    "Dynamic multipatch maximum conservation error:", maximum_error
   write(*, '(a)') "test_amr_multipatch_dynamic_1d: PASS"
 
 contains
@@ -163,6 +169,7 @@ contains
     call multipatch_reactive_integrals_1d(local_solution, after, ok)
     call require(ok, trim(label) // " evaluation")
     error = maxval(abs(after - reference) / max(1.0_dp, abs(reference)))
+    maximum_error = max(maximum_error, error)
     call require(error < conservation_tolerance, label)
   end subroutine check_integral
 

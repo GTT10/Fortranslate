@@ -420,10 +420,15 @@ deepest-to-root average-down propagates retained fine information consistently.
 Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
-The main dynamic reactive application still owns one patch per level.
-Multipatch dynamic regridding, arbitrary-depth recursion, same-level ghost
-exchange, transfer between changed refinement ratios, one-sided periodic-seam
-refinement, and MPI patch ownership remain separate.
+The main dynamic reactive application selects the two-level patch-set engine
+when `amr_multipatch_enabled` is true. It tags the synchronized root, clusters
+disconnected features with a configurable maximum gap, constrains periodic
+patches away from the domain seam, rebuilds the set at the configured interval,
+retains every aligned old/new fine intersection, and emits ordered composite
+CSV output. The arbitrary-depth engine still owns one patch per level.
+Arbitrary-depth multipatch recursion, same-level ghost exchange, transfer
+between changed refinement ratios, one-sided periodic-seam refinement, and MPI
+patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

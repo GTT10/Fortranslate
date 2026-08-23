@@ -32,5 +32,7 @@ Every split boundary owns a synchronized composite state, and the existing
 single-patch chemistry and transport kernels can be reused without changing
 their numerical formulas. This performs more average-down and ghost-fill work
 than a deferred synchronization scheme but keeps correctness explicit.
-Dynamic patch-set rebuilds, arbitrary-depth multipatch recursion, adjacent-box
-exchange, and distributed patch ownership remain separate integrations.
+At the `0.39.0` milestone, dynamic patch-set rebuilds, arbitrary-depth
+multipatch recursion, adjacent-box exchange, and distributed patch ownership
+remained separate integrations. Decision 0032 subsequently connects the
+two-level patch-set engine to the tag-driven application.

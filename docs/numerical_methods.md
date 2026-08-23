@@ -1172,5 +1172,12 @@ parent and patch cells for the same physical half interval and then averages
 down the patch set. The full transactional composition is
 `R(dt/2)-T(dt/2)-H(dt)-T(dt/2)-R(dt/2)`. The root timestep is limited by `r`
 times every fine hyperbolic limit and `r^2` times every fine parabolic limit.
-Dynamic patch-set integration, arbitrary-depth patch trees, and same-level
+At each configured regrid interval, the public two-level multipatch driver tags
+the synchronized parent, clusters tags separated by no more than
+`amr_maximum_patch_gap_cells`, and expands each cluster by the configured buffer
+and minimum width. The old set first averages down; the new set is
+conservatively prolonged; every equal-resolution old/new fine intersection is
+then copied exactly. An empty tag collection removes all patches. Ordered
+composite output alternates uncovered parent intervals and fine patch cells so
+the domain is covered exactly once. Arbitrary-depth patch trees and same-level
 ghost exchange remain future multipatch slices.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.39.0` milestone contains ten serial verification executables, five
+The `0.40.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -203,6 +203,8 @@ The AMR layer provides:
   patches with per-patch flux registers;
 - fixed two-level multipatch reaction--transport--hydro splitting with `r^2`
   diffusive subcycling, per-patch reflux, and transactional rollback;
+- tag-driven two-level multipatch creation, movement, repartition, removal,
+  overlap retention, runtime statistics, and ordered composite CSV output;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -213,12 +215,13 @@ advancement, periodic hierarchy rebuilds, and composite output. A changed
 multilevel hierarchy is conservatively averaged to the root before nested
 patches are rebuilt, then old fine state and temperature data are copied
 wherever old/new level spacing and physical cells align. Changed refinement
-ratios fall back to conservative prolongation. The multipatch slice currently
-qualifies fixed two-level reactive hydro, chemistry, molecular transport, and
-conservative regrid transfer primitives; the main tag-driven application still
-owns one patch per level. Multipatch dynamic regridding, arbitrary-depth
-recursion, same-level ghost exchange, and MPI patch ownership remain later
-slices. A periodic child may
+ratios fall back to conservative prolongation. With
+`amr_multipatch_enabled = .true.`, the public application uses a tag-driven
+two-level patch set, clusters disconnected tags, periodically rebuilds the
+set, retains aligned fine overlap, and writes every uncovered parent or fine
+cell exactly once. The arbitrary-depth engine still owns one patch per level.
+Multipatch arbitrary-depth recursion, same-level ghost exchange, and MPI patch
+ownership remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

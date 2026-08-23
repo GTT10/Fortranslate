@@ -531,3 +531,21 @@ The reactive multipatch extension is accepted only while:
   with hydro-quantity conservation within `2e-9`;
 - both covered regions synchronize within `8e-13`, thermodynamics remain
   positive, and species remain nonnegative and close within `3e-10`.
+
+## 0.40.0 dynamic two-level multipatch application gates
+
+The tag-driven application integration is accepted only while:
+
+- configuration rejects multipatch mode unless AMR is enabled with exactly
+  two levels;
+- a deterministic lifecycle starts empty, creates two separated patches,
+  moves both patches with nonzero exact overlap transfer, and removes the
+  complete set when tags disappear;
+- every conserved component retains its composite integral within `8e-12`
+  through creation, movement, and removal, with exact regrid counters;
+- the public periodic entropy-wave case enables chemistry and molecular
+  transport and dynamically creates at least two separated fine segments;
+- composite rows are spatially ordered and cover the domain exactly once
+  within `3e-13` using level spacings in ratio two;
+- density, pressure, and temperature remain positive, while species remain
+  nonnegative and close within `3e-10`, in Debug and Release CI.

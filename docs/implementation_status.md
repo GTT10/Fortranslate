@@ -611,6 +611,24 @@ exchange is required.
 - [x] reacting-hotspot conservation, synchronization, positivity, and closure
 
 The fixed two-level separated-patch path now supports chemistry and molecular
-transport. The primary tag-driven application still owns one patch per level;
-dynamic multipatch application integration, arbitrary depth, adjacent boxes,
-same-level exchange, and distributed patch ownership remain separate.
+transport. At the `0.39.0` milestone, the primary tag-driven application still
+owned one patch per level; Decision 0032 subsequently integrates the two-level
+patch-set engine into that application.
+
+## Dynamic two-level multipatch application (`0.40.0`)
+
+- [x] runtime multipatch selection and maximum tag-gap configuration
+- [x] disconnected-tag clustering into an empty or separated patch collection
+- [x] periodic-seam-safe and outflow-boundary-safe patch planning
+- [x] interval-driven patch creation, movement, repartition, and removal
+- [x] exact transfer of every aligned old/new fine-cell intersection
+- [x] regrid-evaluation, accepted-regrid, and overlap-transfer counters
+- [x] ordered exact-coverage multipatch composite CSV output
+- [x] public chemistry-and-transport entropy-wave application gate
+- [x] deterministic empty-to-two-to-moved-to-empty lifecycle regression
+
+The public reactive AMR executable now selects the dynamic two-level
+patch-set engine when `amr_multipatch_enabled` is true. The arbitrary-depth
+engine still owns one patch per level. Arbitrary-depth multipatch recursion,
+independently owned adjacent boxes and same-level exchange, periodic-seam
+splitting, load balancing, and distributed patch ownership remain separate.
