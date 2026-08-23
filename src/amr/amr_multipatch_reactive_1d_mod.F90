@@ -1,18 +1,22 @@
 module amr_multipatch_reactive_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_cfl_timestep, initialize_reactive_1d
+    reactive_nvar, reactive_cfl_timestep, reactive_transport_timestep, &
+    initialize_reactive_1d, advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
     amr_level_field_1d, amr_flux_register_1d, &
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d
   use amr_multipatch_1d_mod, only: &
     amr_patch_set_1d, initialize_patch_set_1d, prolong_patch_set_1d, &
+    average_down_patch_set_1d, &
     initialize_patch_flux_registers_1d, synchronize_patch_set_1d, &
     composite_integral_patch_set_1d
   use amr_reactive_1d_mod, only: &
-    amr_ppm_ghost_width, advance_amr_level_1d, &
+    amr_ppm_ghost_width, advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
     fill_fine_ghosts_1d, fill_fine_wide_ghosts_1d
   implicit none
@@ -41,6 +45,7 @@ module amr_multipatch_reactive_1d_mod
 
   public :: initialize_multipatch_reactive_1d
   public :: multipatch_reactive_timestep_1d
+  public :: advance_multipatch_reactive_1d
   public :: advance_multipatch_reactive_hydro_1d
   public :: multipatch_reactive_integrals_1d
 
@@ -162,20 +167,25 @@ contains
   end subroutine initialize_multipatch_reactive_1d
 
   subroutine multipatch_reactive_timestep_1d( &
-      species, config, solution, dt, ok)
+      species, config, solution, dt, ok, transport)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_multipatch_reactive_solution_1d), intent(in) :: solution
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
 
-    real(dp) :: local_dt
+    real(dp) :: local_dt, transport_dt, maximum_diffusivity
     logical :: local_ok
     integer :: patch, fine_cells
 
     dt = 0.0_dp
     ok = solution%is_valid()
     if (.not. ok) return
+    if (config%transport_enabled .and. .not. present(transport)) then
+      ok = .false.
+      return
+    end if
     call reactive_cfl_timestep( &
       species, solution%coarse, solution%coarse_temperature, &
       solution%hierarchy%coarse_cells, solution%hierarchy%coarse_dx, &
@@ -183,6 +193,20 @@ contains
     if (.not. local_ok) then
       ok = .false.
       return
+    end if
+    if (config%transport_enabled) then
+      call reactive_transport_timestep( &
+        species, transport, solution%coarse, &
+        solution%coarse_temperature, solution%hierarchy%coarse_cells, &
+        solution%hierarchy%coarse_dx, config%transport_cfl, &
+        config%viscosity_enabled, config%thermal_conduction_enabled, &
+        config%species_diffusion_enabled, transport_dt, &
+        maximum_diffusivity, local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+      dt = min(dt, transport_dt)
     end if
     do patch = 1, solution%patch_count()
       fine_cells = solution%hierarchy%patches(patch)%fine%cell_count()
@@ -195,9 +219,89 @@ contains
         return
       end if
       dt = min(dt, real(solution%hierarchy%refinement_ratio, dp) * local_dt)
+      if (config%transport_enabled) then
+        call reactive_transport_timestep( &
+          species, transport, solution%patches(patch)%state, &
+          solution%patches(patch)%temperature, fine_cells, &
+          solution%hierarchy%fine_dx, config%transport_cfl, &
+          config%viscosity_enabled, config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled, transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        dt = min(dt, &
+          real(solution%hierarchy%refinement_ratio**2, dp) * transport_dt)
+      end if
     end do
     ok = dt > 0.0_dp
   end subroutine multipatch_reactive_timestep_1d
+
+  subroutine advance_multipatch_reactive_1d( &
+      species, reactions, config, dt, solution, ok, transport)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: dt
+    type(amr_multipatch_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+
+    type(amr_multipatch_reactive_solution_1d) :: backup
+    logical :: local_ok
+
+    ok = .false.
+    if (dt <= 0.0_dp .or. .not. solution%is_valid()) return
+    if (config%transport_enabled .and. .not. present(transport)) return
+    backup = solution
+
+    if (config%chemistry_enabled) then
+      call advance_multipatch_chemistry( &
+        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    if (config%transport_enabled) then
+      call advance_multipatch_transport( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    call advance_multipatch_hydro_impl( &
+      species, config, dt, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    if (config%transport_enabled) then
+      call advance_multipatch_transport( &
+        species, transport, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    if (config%chemistry_enabled) then
+      call advance_multipatch_chemistry( &
+        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    call refresh_multipatch_ghosts(species, config, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    ok = solution%is_valid()
+    if (.not. ok) solution = backup
+  end subroutine advance_multipatch_reactive_1d
 
   subroutine advance_multipatch_reactive_hydro_1d( &
       species, config, dt, solution, ok)
@@ -230,8 +334,7 @@ contains
     logical :: local_ok
     integer :: nx, nvar, ratio, substep, patch, fine_cells
 
-    ok = solution%is_valid() .and. dt > 0.0_dp .and. &
-      .not. config%transport_enabled
+    ok = solution%is_valid() .and. dt > 0.0_dp
     if (.not. ok) return
     nx = solution%hierarchy%coarse_cells
     nvar = size(solution%coarse, 1)
@@ -344,6 +447,182 @@ contains
     solution%steps = solution%steps + 1
     ok = solution%is_valid()
   end subroutine advance_multipatch_hydro_impl
+
+  subroutine advance_multipatch_transport( &
+      species, transport, config, interval, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(amr_multipatch_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_flux_register_1d), allocatable :: registers(:)
+    type(amr_level_field_1d), allocatable :: fields(:)
+    real(dp), allocatable :: coarse_start(:, :), coarse_end(:, :)
+    real(dp), allocatable :: coarse_flux(:, :), fine_flux(:, :)
+    real(dp) :: child_interval, alpha, boundary_distance
+    logical :: local_ok
+    integer :: nx, nvar, ratio, subcycles, substep, patch, fine_cells
+
+    ok = solution%is_valid() .and. interval > 0.0_dp
+    if (.not. ok) return
+    nx = solution%hierarchy%coarse_cells
+    nvar = size(solution%coarse, 1)
+    ratio = solution%hierarchy%refinement_ratio
+    subcycles = ratio * ratio
+    child_interval = interval / real(subcycles, dp)
+    boundary_distance = 0.5_dp * &
+      (solution%hierarchy%coarse_dx + solution%hierarchy%fine_dx)
+    allocate(coarse_start(nvar, 0:nx + 1))
+    allocate(coarse_end(nvar, 0:nx + 1))
+    allocate(coarse_flux(nvar, 0:nx))
+    coarse_start = solution%coarse
+    call advance_transport_level_1d( &
+      species, transport, solution%coarse, solution%coarse_temperature, &
+      nx, solution%hierarchy%coarse_dx, interval, &
+      solution%hierarchy%coarse_dx, config, .true., &
+      config%boundary_condition, coarse_flux, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    coarse_end = solution%coarse
+
+    call initialize_patch_flux_registers_1d( &
+      solution%hierarchy, nvar, registers, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    do patch = 1, solution%patch_count()
+      call accumulate_coarse_flux_1d( &
+        registers(patch), &
+        coarse_flux(:, &
+          solution%hierarchy%patches(patch)%fine_coarse_lower - 1), &
+        coarse_flux(:, &
+          solution%hierarchy%patches(patch)%fine_coarse_upper), &
+        interval, local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+    end do
+
+    do substep = 1, subcycles
+      alpha = (real(substep, dp) - 0.5_dp) / real(subcycles, dp)
+      do patch = 1, solution%patch_count()
+        fine_cells = solution%hierarchy%patches(patch)%fine%cell_count()
+        call fill_fine_ghosts_1d( &
+          species, solution%hierarchy%patches(patch), &
+          coarse_start, coarse_end, alpha, &
+          solution%patches(patch)%state, &
+          solution%patches(patch)%temperature, local_ok, &
+          config%boundary_condition)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        allocate(fine_flux(nvar, 0:fine_cells))
+        call advance_transport_level_1d( &
+          species, transport, solution%patches(patch)%state, &
+          solution%patches(patch)%temperature, fine_cells, &
+          solution%hierarchy%fine_dx, child_interval, boundary_distance, &
+          config, .false., "coarse_fine", fine_flux, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        call accumulate_fine_flux_1d( &
+          registers(patch), fine_flux(:, 0), &
+          fine_flux(:, fine_cells), child_interval, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+        deallocate(fine_flux)
+      end do
+    end do
+
+    call extract_patch_fields(solution, fields, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call synchronize_patch_set_1d( &
+      solution%coarse(:, 1:nx), fields, solution%hierarchy, &
+      registers, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call recover_level_temperatures_1d( &
+      species, solution%coarse, solution%coarse_temperature, nx, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call refresh_multipatch_ghosts(species, config, solution, local_ok)
+    ok = local_ok
+  end subroutine advance_multipatch_transport
+
+  subroutine advance_multipatch_chemistry( &
+      species, reactions, config, interval, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(amr_multipatch_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_level_field_1d), allocatable :: fields(:)
+    logical :: local_ok
+    integer :: nx, patch, fine_cells
+
+    ok = solution%is_valid() .and. interval >= 0.0_dp
+    if (.not. ok) return
+    nx = solution%hierarchy%coarse_cells
+    call advance_reactive_chemistry( &
+      species, reactions, solution%coarse, solution%coarse_temperature, &
+      nx, interval, config%chemistry_relative_tolerance, &
+      config%chemistry_absolute_tolerance, config%boundary_condition, &
+      local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    do patch = 1, solution%patch_count()
+      fine_cells = solution%hierarchy%patches(patch)%fine%cell_count()
+      call advance_reactive_chemistry( &
+        species, reactions, solution%patches(patch)%state, &
+        solution%patches(patch)%temperature, fine_cells, interval, &
+        config%chemistry_relative_tolerance, &
+        config%chemistry_absolute_tolerance, "outflow", local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+    end do
+    call extract_patch_fields(solution, fields, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call average_down_patch_set_1d( &
+      fields, solution%hierarchy, solution%coarse(:, 1:nx), local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call recover_level_temperatures_1d( &
+      species, solution%coarse, solution%coarse_temperature, nx, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call refresh_multipatch_ghosts(species, config, solution, local_ok)
+    ok = local_ok
+  end subroutine advance_multipatch_chemistry
 
   subroutine multipatch_reactive_integrals_1d(solution, integrals, ok)
     type(amr_multipatch_reactive_solution_1d), intent(in) :: solution
