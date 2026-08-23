@@ -632,3 +632,21 @@ patch-set engine when `amr_multipatch_enabled` is true. The arbitrary-depth
 engine still owns one patch per level. Arbitrary-depth multipatch recursion,
 independently owned adjacent boxes and same-level exchange, periodic-seam
 splitting, load balancing, and distributed patch ownership remain separate.
+
+## Arbitrary-depth multipatch tree foundation (`0.41.0`)
+
+- [x] explicit parent ownership for every child patch
+- [x] zero-or-more separated child sets per parent patch
+- [x] deterministic parent-local to flattened-level child indexing
+- [x] arbitrary relation count with mixed per-level refinement ratios
+- [x] physical-extent and parent-ownership hierarchy validation
+- [x] root-to-leaf conservative patch-set prolongation
+- [x] transactional deepest-to-root patch-set average-down
+- [x] exact branching-tree composite integration
+- [x] four-level `1/2/3/2`-patch mixed-ratio unit gate
+
+This milestone qualifies static geometry and conservative field operations.
+The existing arbitrary-depth reactive time integrator still owns one patch per
+level. Patch-tree subcycling, reflux, chemistry/transport integration, dynamic
+tagging and overlap transfer, adjacent boxes, same-level exchange, and
+distributed ownership remain separate.

@@ -425,10 +425,21 @@ when `amr_multipatch_enabled` is true. It tags the synchronized root, clusters
 disconnected features with a configurable maximum gap, constrains periodic
 patches away from the domain seam, rebuilds the set at the configured interval,
 retains every aligned old/new fine intersection, and emits ordered composite
-CSV output. The arbitrary-depth engine still owns one patch per level.
-Arbitrary-depth multipatch recursion, same-level ghost exchange, transfer
-between changed refinement ratios, one-sided periodic-seam refinement, and MPI
-patch ownership remain separate.
+CSV output.
+
+`amr_patch_tree_1d_mod` composes those patch sets into an arbitrary-depth
+forest. Each relation stores one child set per flattened parent patch and a
+prefix-offset map from parent-local child indices to the next flattened level.
+This permits a parent to own zero or more separated children while another
+parent continues refining. Geometry validation reconstructs every parent
+patch's physical extent, and field operations recursively prolong, average
+down deepest-to-root, and integrate by replacing each covered parent interval
+exactly once. Refinement ratios may differ between levels.
+
+The arbitrary-depth reactive engine still owns one patch per level. Reactive
+patch-tree time integration and dynamic rebuilds, same-level ghost exchange,
+transfer between changed patch trees, one-sided periodic-seam refinement, and
+MPI patch ownership remain separate.
 
 ## Reactive AMR time advancement
 

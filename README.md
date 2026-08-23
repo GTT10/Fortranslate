@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.40.0` milestone contains ten serial verification executables, five
+The `0.41.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -205,6 +205,9 @@ The AMR layer provides:
   diffusive subcycling, per-patch reflux, and transactional rollback;
 - tag-driven two-level multipatch creation, movement, repartition, removal,
   overlap retention, runtime statistics, and ordered composite CSV output;
+- arbitrary-depth separated patch trees with explicit parent ownership,
+  mixed per-level refinement ratios, recursive conservative prolongation,
+  deepest-to-root average-down, and exact composite integration;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -219,9 +222,11 @@ ratios fall back to conservative prolongation. With
 `amr_multipatch_enabled = .true.`, the public application uses a tag-driven
 two-level patch set, clusters disconnected tags, periodically rebuilds the
 set, retains aligned fine overlap, and writes every uncovered parent or fine
-cell exactly once. The arbitrary-depth engine still owns one patch per level.
-Multipatch arbitrary-depth recursion, same-level ghost exchange, and MPI patch
-ownership remain later slices. A periodic child may
+cell exactly once. A separate static patch-tree foundation now permits each
+parent patch to own zero or more separated children at arbitrary depth. The
+arbitrary-depth reactive time integrator still owns one patch per level.
+Patch-tree time integration and regridding, same-level ghost exchange, and MPI
+patch ownership remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

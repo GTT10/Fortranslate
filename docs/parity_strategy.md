@@ -549,3 +549,19 @@ The tag-driven application integration is accepted only while:
   within `3e-13` using level spacings in ratio two;
 - density, pressure, and temperature remain positive, while species remain
   nonnegative and close within `3e-10`, in Debug and Release CI.
+
+## 0.41.0 arbitrary-depth multipatch tree gates
+
+The static patch-tree foundation is accepted only while:
+
+- a four-level hierarchy owns `1/2/3/2` patches by level, including a parent
+  with no deeper child and two parents that continue refining;
+- parent-local children flatten into deterministic level indices and invalid
+  parent ownership is rejected;
+- physical child bounds remain correct through two ratio-two relations and a
+  ratio-three relation;
+- recursive conservative prolongation reproduces the root composite integral
+  within `5e-12`;
+- perturbations on two deepest patches propagate deepest-to-root, synchronize
+  every covered parent interval, and retain the composite integral within
+  `5e-12` in Debug and Release CI.

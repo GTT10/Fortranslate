@@ -1179,5 +1179,15 @@ and minimum width. The old set first averages down; the new set is
 conservatively prolonged; every equal-resolution old/new fine intersection is
 then copied exactly. An empty tag collection removes all patches. Ordered
 composite output alternates uncovered parent intervals and fine patch cells so
-the domain is covered exactly once. Arbitrary-depth patch trees and same-level
-ghost exchange remain future multipatch slices.
+the domain is covered exactly once.
+
+For a static arbitrary-depth patch tree, relation `l` stores a separated child
+set for every patch at level `l-1`. Child offsets flatten those parent-local
+sets into one deterministic level order. Conservative prolongation walks from
+the root toward the leaves. Average-down walks from the deepest relation to the
+root, so a changed leaf is restricted through every ancestor. The composite
+integral begins with the root, then for every child subtracts its covered
+parent interval and adds its fine-cell integral. This replacement formula is
+valid for branching trees and mixed per-level refinement ratios. Reactive
+time advancement, dynamic patch-tree rebuilds, and same-level ghost exchange
+remain future patch-tree integrations.

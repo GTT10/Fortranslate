@@ -497,6 +497,8 @@ Reactive application integration:
 - [x] two-level multipatch chemistry and molecular transport (`0.39.0`)
 - [x] tag-driven two-level multipatch application, regridding, and output
   (`0.40.0`)
+- [x] arbitrary-depth multipatch tree geometry and conservative field
+  operations (`0.41.0`)
 
 AMR parity metrics:
 
