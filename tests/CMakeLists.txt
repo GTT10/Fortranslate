@@ -37,6 +37,20 @@ add_executable(
 target_link_libraries(test_amr_multipatch_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_multipatch_1d COMMAND test_amr_multipatch_1d)
 
+add_executable(
+  test_amr_multipatch_reactive_1d
+  regression/test_amr_multipatch_reactive_1d.F90
+)
+target_link_libraries(test_amr_multipatch_reactive_1d PRIVATE pelef_core)
+add_test(
+  NAME regression_amr_multipatch_reactive_1d
+  COMMAND test_amr_multipatch_reactive_1d
+)
+set_tests_properties(
+  regression_amr_multipatch_reactive_1d
+  PROPERTIES TIMEOUT 300
+)
+
 add_executable(test_amr_regrid_1d unit/test_amr_regrid_1d.F90)
 target_link_libraries(test_amr_regrid_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_regrid_1d COMMAND test_amr_regrid_1d)
