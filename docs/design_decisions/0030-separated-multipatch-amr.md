@@ -28,5 +28,6 @@ Fixed two-level hydro can advance several separated patches conservatively
 without inventing same-level communication. Adjacent boxes must be coalesced,
 which can refine extra cells. Supporting independently owned adjacent boxes
 later requires explicit same-level ghost exchange, interface ownership, and a
-single flux per fine/fine face. Chemistry, transport, arbitrary-depth patch
-trees, and MPI distribution remain separate integrations.
+single flux per fine/fine face. At the `0.38.0` milestone chemistry, transport,
+arbitrary-depth patch trees, and MPI distribution remained separate;
+Decision 0031 subsequently integrates fixed two-level chemistry and transport.

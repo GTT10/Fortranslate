@@ -494,6 +494,7 @@ Reactive application integration:
 - [x] outflow physical-boundary refinement and one-sided reflux (`0.37.0`)
 - [x] two-level multipatch geometry, regrid transfer, and reactive hydro
   (`0.38.0`)
+- [x] two-level multipatch chemistry and molecular transport (`0.39.0`)
 
 AMR parity metrics:
 

@@ -880,10 +880,11 @@ reactive flow includes molecular transport and physical boundaries, while the
 AMR layer provides arbitrary-depth 1D reactive PCM/PLM/PPM/WENO advancement,
 molecular transport, synchronization, tagging, overlap-preserving single-patch
 dynamic regridding, outflow-boundary refinement, and composite output. MPI 2D,
-dynamic multipatch chemistry/transport/depth, one-sided periodic-seam
+dynamic multipatch application integration and depth, one-sided periodic-seam
 refinement, embedded boundaries, LES, particles/spray, and accelerators remain
-outside the implemented scope. Fixed two-level separated multipatch WENO hydro
-and conservative multipatch regrid transfer are qualified. The
+outside the implemented scope. Fixed two-level separated multipatch WENO hydro,
+chemistry, molecular transport, and conservative regrid transfer are qualified.
+The
 transport model still
 excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
@@ -1159,11 +1160,17 @@ each old/new pair copies its same-ratio fine intersection. This permits patch
 movement, split/repartition, creation, and removal without losing aligned fine
 structure or changing the composite integral.
 
-For the qualified fixed two-level reactive hydro path, the parent advances
+For the qualified fixed two-level reactive path, the parent hydro advances
 once over `dt`. Every patch advances independently for `r` steps of `dt/r`,
 using the same parent start/end states for time-interpolated narrow and
 four-layer PPM/WENO ghosts. One flux register is accumulated per patch. All
 registers are refluxed and every covered region is averaged down before the
-parent temperature is recovered. Chemistry, molecular transport,
-arbitrary-depth patch trees, and same-level ghost exchange remain future
-multipatch slices.
+parent temperature is recovered. Each molecular-transport half interval
+advances the parent once and every patch for `r^2` steps, accumulating the
+mean SSPRK2 diffusive face flux in its own register. Chemistry advances all
+parent and patch cells for the same physical half interval and then averages
+down the patch set. The full transactional composition is
+`R(dt/2)-T(dt/2)-H(dt)-T(dt/2)-R(dt/2)`. The root timestep is limited by `r`
+times every fine hyperbolic limit and `r^2` times every fine parabolic limit.
+Dynamic patch-set integration, arbitrary-depth patch trees, and same-level
+ghost exchange remain future multipatch slices.

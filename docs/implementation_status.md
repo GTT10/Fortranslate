@@ -597,8 +597,20 @@ seam, multiple patches, and distributed patch ownership remain separate.
 - [x] fixed two-level reactive WENO7-Z subcycling on two fine patches
 - [x] conservation, synchronization, positivity, and species-closure gate
 
-The reactive qualification is hydro-only and uses separated patches, so each
-coarse/fine side is a genuine interface and no same-level ghost exchange is
-required. The primary dynamic application, chemistry, molecular transport,
-arbitrary-depth multipatch recursion, adjacent boxes, and distributed patch
-ownership remain separate.
+The `0.38.0` reactive qualification is hydro-only and uses separated patches,
+so each coarse/fine side is a genuine interface and no same-level ghost
+exchange is required.
+
+## Two-level multipatch reactive physics (`0.39.0`)
+
+- [x] hierarchy-wide chemistry half steps with set-wide average-down
+- [x] per-patch SSPRK2 molecular-transport flux registers
+- [x] `r^2` fine transport subcycling with parent-time ghost interpolation
+- [x] combined hyperbolic/parabolic root timestep reduction across all patches
+- [x] transactional `R-T-H-T-R` composition and missing-database rejection
+- [x] reacting-hotspot conservation, synchronization, positivity, and closure
+
+The fixed two-level separated-patch path now supports chemistry and molecular
+transport. The primary tag-driven application still owns one patch per level;
+dynamic multipatch application integration, arbitrary depth, adjacent boxes,
+same-level exchange, and distributed patch ownership remain separate.

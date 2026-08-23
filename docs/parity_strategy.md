@@ -514,3 +514,20 @@ Multipatch support is accepted only while:
   two steps with composite conservation within `3e-10`;
 - both covered regions synchronize within `5e-13`, thermodynamics remain
   positive, and species close within `3e-10` in Debug and Release CI.
+
+## 0.39.0 multipatch chemistry and transport gates
+
+The reactive multipatch extension is accepted only while:
+
+- requesting transport without a matching database rejects the timestep or
+  advance before mutating the solution;
+- the root timestep includes every patch hyperbolic limit after `r` scaling
+  and every parabolic limit after `r^2` scaling;
+- chemistry advances the parent and all patches over equal physical half
+  intervals, followed by set-wide average-down;
+- transport advances every patch for `r^2` substeps per half interval and
+  refluxes one mean-SSPRK2 diffusive flux register per patch;
+- a periodic reacting hotspot completes the transactional `R-T-H-T-R` path
+  with hydro-quantity conservation within `2e-9`;
+- both covered regions synchronize within `8e-13`, thermodynamics remain
+  positive, and species remain nonnegative and close within `3e-10`.

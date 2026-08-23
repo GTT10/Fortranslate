@@ -395,11 +395,15 @@ bounds touch or overlap. Regridding first synchronizes every old patch, builds
 the new set, and restores all equal-resolution fine intersections even when a
 patch moves, splits, or is repartitioned.
 
-`amr_multipatch_reactive_1d_mod` qualifies fixed two-level hydro on separated
-patches. The root advances once, every child advances `r` times from the same
-time-interpolated parent start/end states, and one register per child is
-refluxed before set-wide average-down. It reuses the existing characteristic
-PPM/WENO and four-layer coarse/fine ghost kernels.
+`amr_multipatch_reactive_1d_mod` qualifies fixed two-level reactive flow on
+separated patches. The root hydro advances once, every child advances `r`
+times from the same time-interpolated parent start/end states, and one register
+per child is refluxed before set-wide average-down. Molecular transport uses
+the same patch-wise synchronization with `r^2` child substeps per half
+interval. Cell-local chemistry advances every root and child cell before a
+set-wide average-down. The complete `R-T-H-T-R` interval is transactional and
+reuses the existing characteristic PPM/WENO, diffusion, chemistry, and
+coarse/fine ghost kernels.
 
 The reactive driver retains the overlap-preserving two-level implementation for
 PCM/PLM with `amr_max_levels = 2`. A larger level limit or either PPM option
@@ -417,7 +421,7 @@ Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
 The main dynamic reactive application still owns one patch per level.
-Multipatch chemistry, transport, arbitrary-depth recursion, same-level ghost
+Multipatch dynamic regridding, arbitrary-depth recursion, same-level ghost
 exchange, transfer between changed refinement ratios, one-sided periodic-seam
 refinement, and MPI patch ownership remain separate.
 
