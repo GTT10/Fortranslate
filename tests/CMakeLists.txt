@@ -1283,6 +1283,16 @@ add_executable(
 target_link_libraries(test_full_h2o2_cfd_support PRIVATE pelef_core)
 add_test(NAME unit_full_h2o2_cfd_support COMMAND test_full_h2o2_cfd_support)
 
+add_executable(
+  test_amr_multilevel_reactive_1d
+  regression/test_amr_multilevel_reactive_1d.F90
+)
+target_link_libraries(test_amr_multilevel_reactive_1d PRIVATE pelef_core)
+add_test(
+  NAME regression_amr_multilevel_reactive_1d
+  COMMAND test_amr_multilevel_reactive_1d
+)
+
 set(REACTIVE_FULL_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/reactive_full_h2o2")
 file(MAKE_DIRECTORY "${REACTIVE_FULL_WORK_DIRECTORY}")
 add_test(NAME regression_reactive_full_h2o2_1d_run
