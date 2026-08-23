@@ -51,6 +51,7 @@ program test_amr_reactive_1d
   config%hotspot_center = 0.006_dp
   config%hotspot_width = 0.0012_dp
   config%amr_enabled = .true.
+  config%amr_reconstruction = "plm"
   config%amr_refinement_ratio = 2
   config%amr_regrid_interval = 1
   config%amr_tag_component = 1

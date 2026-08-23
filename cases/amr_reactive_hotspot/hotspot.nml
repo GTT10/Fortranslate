@@ -29,6 +29,7 @@
   x_h2o = 0.0
   x_n2 = 0.55643
   amr_enabled = .true.
+  amr_reconstruction = "plm"
   amr_refinement_ratio = 2
   amr_regrid_interval = 2
   amr_tag_component = 1

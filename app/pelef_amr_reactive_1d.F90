@@ -38,8 +38,6 @@ program pelef_amr_reactive_1d
     error stop "AMR reactive application requires amr_enabled"
   if (config%transport_enabled) &
     error stop "AMR molecular transport is not yet qualified"
-  if (trim(config%reconstruction) /= "pcm") &
-    error stop "AMR reactive application currently requires PCM"
 
   select case (trim(config%chemistry_model))
   case ("elementary")
@@ -70,6 +68,8 @@ program pelef_amr_reactive_1d
   write(*, '(a,1x,a)') "Problem:", trim(config%problem)
   write(*, '(a,i0)') "Coarse cells: ", config%nx
   write(*, '(a,i0)') "Refinement ratio: ", config%amr_refinement_ratio
+  write(*, '(a,1x,a)') "AMR reconstruction:", &
+    trim(config%amr_reconstruction)
   write(*, '(a,l2)') "Fine level active: ", solution%fine_active()
   if (solution%fine_active()) then
     write(*, '(a,i0,a,i0)') "Fine coarse-cell bounds: ", &

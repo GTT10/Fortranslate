@@ -1,12 +1,14 @@
 module amr_reactive_1d_mod
   use precision_mod, only: dp
+  use constants_mod, only: density_floor, pressure_floor
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_conserved_to_primitive, reactive_riemann_flux_x, &
+    reactive_conserved_to_primitive, reactive_primitive_to_conserved, &
+    reactive_riemann_flux_x, &
     reactive_cfl_timestep, initialize_reactive_1d, &
     advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
@@ -17,6 +19,7 @@ module amr_reactive_1d_mod
   use amr_regrid_1d_mod, only: &
     amr_tagging_criteria_1d, amr_regrid_plan_1d, &
     plan_gradient_regrid_1d, regrid_two_level_state_1d
+  use slope_limiter_mod, only: limited_slope
   implicit none
   private
 
@@ -169,10 +172,11 @@ contains
       size(solution%coarse, 1), 0:config%nx + 1))
     coarse_start = solution%coarse
     allocate(coarse_flux(reactive_nvar(size(species)), 0:config%nx))
-    call advance_pcm_level_1d( &
+    call advance_amr_level_1d( &
       species, solution%coarse, solution%coarse_temperature, config%nx, &
-      solution%coarse_dx, dt, config%riemann_solver, .true., &
-      config%boundary_condition, coarse_flux, local_ok)
+      solution%coarse_dx, dt, config%amr_reconstruction, config%limiter, &
+      config%riemann_solver, .true., config%boundary_condition, &
+      coarse_flux, local_ok)
     if (.not. local_ok) then
       solution = backup
       return
@@ -202,7 +206,11 @@ contains
       end if
 
       do substep = 1, ratio
-        alpha = real(substep - 1, dp) / real(ratio, dp)
+        if (trim(config%amr_reconstruction) == "plm") then
+          alpha = (real(substep, dp) - 0.5_dp) / real(ratio, dp)
+        else
+          alpha = real(substep - 1, dp) / real(ratio, dp)
+        end if
         call fill_fine_ghosts_1d( &
           species, solution%hierarchy, coarse_start, coarse_end, alpha, &
           solution%fine, solution%fine_temperature, local_ok)
@@ -210,10 +218,12 @@ contains
           solution = backup
           return
         end if
-        call advance_pcm_level_1d( &
+        call advance_amr_level_1d( &
           species, solution%fine, solution%fine_temperature, fine_cells, &
-          solution%hierarchy%fine_dx, fine_dt, config%riemann_solver, &
-          .false., "coarse_fine", fine_flux, local_ok)
+          solution%hierarchy%fine_dx, fine_dt, &
+          config%amr_reconstruction, config%limiter, &
+          config%riemann_solver, .false., "coarse_fine", fine_flux, &
+          local_ok)
         if (.not. local_ok) then
           solution = backup
           return
@@ -493,7 +503,9 @@ contains
     integer, intent(in) :: nvar
 
     valid = config%amr_enabled .and. .not. config%transport_enabled .and. &
-      trim(config%reconstruction) == "pcm" .and. config%nx >= 8 .and. &
+      config%nx >= 8 .and. &
+      (trim(config%amr_reconstruction) == "pcm" .or. &
+        trim(config%amr_reconstruction) == "plm") .and. &
       config%amr_refinement_ratio >= 2 .and. &
       config%amr_regrid_interval >= 1 .and. &
       config%amr_tag_component >= 1 .and. &
@@ -593,6 +605,276 @@ contains
     changed = .true.
     ok = .true.
   end subroutine apply_regrid_plan_1d
+
+  subroutine advance_amr_level_1d( &
+      species, state, temperature, nx, dx, dt, reconstruction, limiter, &
+      riemann_solver, physical_boundary, boundary, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: reconstruction, limiter
+    character(len=*), intent(in) :: riemann_solver
+    logical, intent(in) :: physical_boundary
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    select case (trim(reconstruction))
+    case ("pcm")
+      call advance_pcm_level_1d( &
+        species, state, temperature, nx, dx, dt, riemann_solver, &
+        physical_boundary, boundary, flux, ok)
+    case ("plm")
+      call advance_plm_level_1d( &
+        species, state, temperature, nx, dx, dt, limiter, riemann_solver, &
+        physical_boundary, boundary, flux, ok)
+    case default
+      flux = 0.0_dp
+      ok = .false.
+    end select
+  end subroutine advance_amr_level_1d
+
+  subroutine advance_plm_level_1d( &
+      species, state, temperature, nx, dx, dt, limiter, riemann_solver, &
+      physical_boundary, boundary, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: limiter, riemann_solver
+    logical, intent(in) :: physical_boundary
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: initial_state(:, :), initial_temperature(:)
+    real(dp), allocatable :: stage1_state(:, :), stage1_temperature(:)
+    real(dp), allocatable :: euler2_state(:, :), euler2_temperature(:)
+    real(dp), allocatable :: first_flux(:, :), second_flux(:, :), q(:)
+    real(dp) :: temperature_guess, local_temperature, sound_speed
+    logical :: local_ok
+    integer :: nvar, cell
+
+    ok = .false.
+    nvar = size(state, 1)
+    allocate(initial_state(nvar, 0:nx + 1))
+    allocate(initial_temperature(0:nx + 1))
+    allocate(stage1_state(nvar, 0:nx + 1))
+    allocate(stage1_temperature(0:nx + 1))
+    allocate(euler2_state(nvar, 0:nx + 1))
+    allocate(euler2_temperature(0:nx + 1))
+    allocate(first_flux(nvar, 0:nx), second_flux(nvar, 0:nx))
+    allocate(q(reactive_nprim(size(species))))
+    initial_state = state
+    initial_temperature = temperature
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        initial_state, initial_temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    call plm_euler_update_1d( &
+      species, initial_state, initial_temperature, nx, dx, dt, limiter, &
+      riemann_solver, physical_boundary, boundary, stage1_state, &
+      stage1_temperature, first_flux, local_ok)
+    if (.not. local_ok) return
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        stage1_state, stage1_temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    call plm_euler_update_1d( &
+      species, stage1_state, stage1_temperature, nx, dx, dt, limiter, &
+      riemann_solver, physical_boundary, boundary, euler2_state, &
+      euler2_temperature, second_flux, local_ok)
+    if (.not. local_ok) return
+
+    state = initial_state
+    temperature = initial_temperature
+    do cell = 1, nx
+      state(:, cell) = &
+        0.5_dp * (initial_state(:, cell) + euler2_state(:, cell))
+      temperature_guess = 0.5_dp * &
+        (initial_temperature(cell) + euler2_temperature(cell))
+      call reactive_conserved_to_primitive( &
+        species, state(:, cell), temperature_guess, q, local_temperature, &
+        sound_speed, local_ok)
+      if (.not. local_ok) return
+      temperature(cell) = local_temperature
+    end do
+    flux = 0.5_dp * (first_flux + second_flux)
+    if (physical_boundary) then
+      call fill_physical_ghosts_1d( &
+        state, temperature, nx, boundary, local_ok)
+      if (.not. local_ok) return
+    end if
+    ok = .true.
+  end subroutine advance_plm_level_1d
+
+  subroutine plm_euler_update_1d( &
+      species, state, temperature, nx, dx, dt, limiter, riemann_solver, &
+      physical_boundary, boundary, output_state, output_temperature, &
+      flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dx, dt
+    character(len=*), intent(in) :: limiter, riemann_solver
+    logical, intent(in) :: physical_boundary
+    character(len=*), intent(in) :: boundary
+    real(dp), intent(out) :: output_state(:, 0:), output_temperature(0:)
+    real(dp), intent(out) :: flux(:, 0:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: left_state(:, :), right_state(:, :)
+    real(dp), allocatable :: left_temperature(:), right_temperature(:)
+    real(dp), allocatable :: q(:)
+    real(dp) :: local_temperature, sound_speed
+    logical :: local_ok
+    integer :: nvar, face, cell
+
+    ok = .false.
+    nvar = size(state, 1)
+    allocate(left_state(nvar, nx), right_state(nvar, nx))
+    allocate(left_temperature(nx), right_temperature(nx))
+    allocate(q(reactive_nprim(size(species))))
+    call build_plm_cell_edges_1d( &
+      species, state, temperature, nx, limiter, left_state, right_state, &
+      left_temperature, right_temperature, local_ok)
+    if (.not. local_ok) return
+
+    do face = 1, nx - 1
+      call reactive_riemann_flux_x( &
+        species, right_state(:, face), left_state(:, face + 1), &
+        right_temperature(face), left_temperature(face + 1), &
+        riemann_solver, flux(:, face), local_ok)
+      if (.not. local_ok) return
+    end do
+    if (physical_boundary .and. trim(boundary) == "periodic") then
+      call reactive_riemann_flux_x( &
+        species, right_state(:, nx), left_state(:, 1), &
+        right_temperature(nx), left_temperature(1), riemann_solver, &
+        flux(:, 0), local_ok)
+      if (.not. local_ok) return
+      flux(:, nx) = flux(:, 0)
+    else
+      call reactive_riemann_flux_x( &
+        species, state(:, 0), left_state(:, 1), temperature(0), &
+        left_temperature(1), riemann_solver, flux(:, 0), local_ok)
+      if (.not. local_ok) return
+      call reactive_riemann_flux_x( &
+        species, right_state(:, nx), state(:, nx + 1), &
+        right_temperature(nx), temperature(nx + 1), riemann_solver, &
+        flux(:, nx), local_ok)
+      if (.not. local_ok) return
+    end if
+
+    output_state = state
+    output_temperature = temperature
+    do cell = 1, nx
+      output_state(:, cell) = state(:, cell) - dt / dx * &
+        (flux(:, cell) - flux(:, cell - 1))
+      call reactive_conserved_to_primitive( &
+        species, output_state(:, cell), temperature(cell), q, &
+        local_temperature, sound_speed, local_ok)
+      if (.not. local_ok) return
+      output_temperature(cell) = local_temperature
+    end do
+    ok = .true.
+  end subroutine plm_euler_update_1d
+
+  subroutine build_plm_cell_edges_1d( &
+      species, state, temperature, nx, limiter, left_state, right_state, &
+      left_temperature, right_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, 0:), temperature(0:)
+    integer, intent(in) :: nx
+    character(len=*), intent(in) :: limiter
+    real(dp), intent(out) :: left_state(:, :), right_state(:, :)
+    real(dp), intent(out) :: left_temperature(:), right_temperature(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: primitive(:, :), slope(:)
+    real(dp), allocatable :: left_primitive(:), right_primitive(:)
+    real(dp) :: local_temperature, sound_speed
+    logical :: local_ok, slope_ok
+    integer :: nprimitive, cell, component
+
+    ok = .false.
+    nprimitive = reactive_nprim(size(species))
+    allocate(primitive(nprimitive, 0:nx + 1), slope(nprimitive))
+    allocate(left_primitive(nprimitive), right_primitive(nprimitive))
+    do cell = 0, nx + 1
+      call reactive_conserved_to_primitive( &
+        species, state(:, cell), temperature(cell), primitive(:, cell), &
+        local_temperature, sound_speed, local_ok)
+      if (.not. local_ok) return
+    end do
+    do cell = 1, nx
+      do component = 1, nprimitive
+        call limited_slope( &
+          primitive(component, cell) - primitive(component, cell - 1), &
+          primitive(component, cell + 1) - primitive(component, cell), &
+          limiter, slope(component), slope_ok)
+        if (.not. slope_ok) return
+      end do
+      left_primitive = primitive(:, cell) - 0.5_dp * slope
+      right_primitive = primitive(:, cell) + 0.5_dp * slope
+      call sanitize_amr_primitive_1d( &
+        left_primitive, primitive(:, cell), size(species))
+      call sanitize_amr_primitive_1d( &
+        right_primitive, primitive(:, cell), size(species))
+      call reactive_primitive_to_conserved( &
+        species, left_primitive, left_state(:, cell), &
+        left_temperature(cell), sound_speed, local_ok)
+      if (.not. local_ok) then
+        call reactive_primitive_to_conserved( &
+          species, primitive(:, cell), left_state(:, cell), &
+          left_temperature(cell), sound_speed, local_ok)
+        if (.not. local_ok) return
+      end if
+      call reactive_primitive_to_conserved( &
+        species, right_primitive, right_state(:, cell), &
+        right_temperature(cell), sound_speed, local_ok)
+      if (.not. local_ok) then
+        call reactive_primitive_to_conserved( &
+          species, primitive(:, cell), right_state(:, cell), &
+          right_temperature(cell), sound_speed, local_ok)
+        if (.not. local_ok) return
+      end if
+    end do
+    ok = .true.
+  end subroutine build_plm_cell_edges_1d
+
+  pure subroutine sanitize_amr_primitive_1d(primitive, fallback, nspecies)
+    real(dp), intent(inout) :: primitive(:)
+    real(dp), intent(in) :: fallback(:)
+    integer, intent(in) :: nspecies
+
+    real(dp) :: total
+    integer :: component, k
+
+    if (primitive(1) <= density_floor .or. &
+        primitive(5) <= pressure_floor) then
+      primitive = fallback
+      return
+    end if
+    total = 0.0_dp
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      primitive(component) = max(0.0_dp, primitive(component))
+      total = total + primitive(component)
+    end do
+    if (total <= tiny(1.0_dp)) then
+      primitive = fallback
+      return
+    end if
+    do k = 1, nspecies
+      component = reactive_mass_fraction_component(k)
+      primitive(component) = primitive(component) / total
+    end do
+  end subroutine sanitize_amr_primitive_1d
 
   subroutine advance_pcm_level_1d( &
       species, state, temperature, nx, dx, dt, riemann_solver, &

@@ -32,6 +32,14 @@ target_link_libraries(test_amr_reactive_1d PRIVATE pelef_core)
 add_test(NAME regression_amr_reactive_1d COMMAND test_amr_reactive_1d)
 set_tests_properties(regression_amr_reactive_1d PROPERTIES TIMEOUT 240)
 
+add_executable(
+  test_amr_reactive_plm
+  regression/test_amr_reactive_plm.F90
+)
+target_link_libraries(test_amr_reactive_plm PRIVATE pelef_core)
+add_test(NAME regression_amr_reactive_plm COMMAND test_amr_reactive_plm)
+set_tests_properties(regression_amr_reactive_plm PROPERTIES TIMEOUT 240)
+
 set(AMR_REACTIVE_WORK_DIRECTORY
   "${CMAKE_CURRENT_BINARY_DIR}/amr_reactive_hotspot")
 file(MAKE_DIRECTORY "${AMR_REACTIVE_WORK_DIRECTORY}")

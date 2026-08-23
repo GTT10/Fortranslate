@@ -26,6 +26,7 @@ module simulation_config_reactive_1d_mod
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     logical :: amr_enabled = .false.
+    character(len=32) :: amr_reconstruction = "pcm"
     integer :: amr_refinement_ratio = 2
     integer :: amr_regrid_interval = 4
     integer :: amr_tag_component = 1
@@ -83,7 +84,7 @@ contains
     real(dp) :: hotspot_center, hotspot_width
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
-    character(len=32) :: chemistry_model
+    character(len=32) :: chemistry_model, amr_reconstruction
     character(len=32) :: boundary_condition
     character(len=256) :: output_file
     logical :: chemistry_enabled
@@ -101,7 +102,8 @@ contains
       barodiffusion_enabled, transport_cfl, ppm_contact_steepening, &
       ppm_shock_flattening, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
-      amr_enabled, amr_refinement_ratio, amr_regrid_interval, &
+      amr_enabled, amr_reconstruction, &
+      amr_refinement_ratio, amr_regrid_interval, &
       amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
       amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
       amr_scale_floor, &
@@ -133,6 +135,7 @@ contains
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
     amr_enabled = config%amr_enabled
+    amr_reconstruction = config%amr_reconstruction
     amr_refinement_ratio = config%amr_refinement_ratio
     amr_regrid_interval = config%amr_regrid_interval
     amr_tag_component = config%amr_tag_component
@@ -201,6 +204,8 @@ contains
         amr_relative_gradient_threshold >= 0.0_dp .and. &
         amr_absolute_gradient_threshold >= 0.0_dp .and. &
         amr_scale_floor > 0.0_dp
+      ok = ok .and. (trim(amr_reconstruction) == "pcm" .or. &
+        trim(amr_reconstruction) == "plm")
     end if
     if (.not. ok) then
       message = "Invalid reactive 1D configuration"
@@ -286,6 +291,7 @@ contains
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
     config%amr_enabled = amr_enabled
+    config%amr_reconstruction = trim(amr_reconstruction)
     config%amr_refinement_ratio = amr_refinement_ratio
     config%amr_regrid_interval = amr_regrid_interval
     config%amr_tag_component = amr_tag_component
