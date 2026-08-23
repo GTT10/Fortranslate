@@ -354,8 +354,8 @@ unchanged fine cells retain their full resolution. An empty tag set removes the
 fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
-Multiple patches, more than two levels, and high-order coarse/fine coupling
-remain separate.
+Multiple patches, more than two levels, and characteristic PPM/WENO
+coarse/fine coupling remain separate.
 
 ## Reactive AMR time advancement
 
@@ -383,3 +383,11 @@ fine substep is stable. A complete solution copy makes the interval
 transactional: any EOS, Riemann, chemistry, transfer, or synchronization
 failure restores both levels and all hierarchy metadata. Composite output emits
 uncovered coarse cells and fine cells exactly once and in coordinate order.
+
+The optional AMR PLM path reconstructs density, velocity, pressure, and mass
+fractions with the configured MC or minmod limiter. Face mass fractions are
+clipped and renormalized before conversion back to the conserved general-EOS
+state. SSPRK2 evaluates two flux divergences and returns their arithmetic mean
+to the flux register, so the reflux correction represents the same conservative
+update applied to each level. Fine PLM substeps hold a coarse-time midpoint
+ghost state during both SSPRK2 stages.

@@ -862,9 +862,10 @@ The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
 AMR layer provides 1D two-level reactive PCM advancement, synchronization,
 tagging, and single-patch dynamic regridding. MPI 2D, AMR molecular transport,
-high-order coarse/fine reconstruction, multilevel and multipatch AMR, boundary
-refinement, embedded boundaries, LES, particles/spray, and accelerators remain
-outside the implemented scope. The transport model still excludes Soret, Dufour,
+characteristic PPM/WENO coarse/fine reconstruction, multilevel and multipatch
+AMR, boundary refinement, embedded boundaries, LES, particles/spray, and
+accelerators remain outside the implemented scope. The transport model still
+excludes Soret, Dufour,
 multicomponent Stefan--Maxwell diffusion, polar corrections, and bulk viscosity.
 The characteristic hydro basis remains a qualified frozen-composition
 approximation rather than complete PeleC/PelePhysics general-EOS Riemann and
@@ -953,3 +954,29 @@ The cell-local constant-volume reactor conserves density, momentum, and total
 energy. Reflux accounts for coarse/fine advective mismatch, and average-down
 counts the fine solution in covered volumes, so the composite mass, momentum,
 and energy conservation argument remains valid for the coupled reactive step.
+
+### Limited PLM and flux-consistent SSPRK2
+
+For AMR PLM, each primitive component uses the configured limited slope. The
+left and right cell-edge values are
+
+```text
+q_i,L = q_i - s_i/2,
+q_i,R = q_i + s_i/2.
+```
+
+Density and pressure fall back to the cell center if reconstruction violates a
+floor. Species face values are clipped at zero and normalized to unit sum before
+the general-EOS primitive-to-conserved conversion.
+
+With `L(U)` denoting the flux divergence, the level update is SSPRK2,
+
+```text
+U(1)   = U(n) + dt L(U(n)),
+U(n+1) = 1/2 U(n) + 1/2 [U(1) + dt L(U(1))].
+```
+
+This update is exactly conservative with the effective face flux
+`F_eff = [F(U(n)) + F(U(1))]/2`. The AMR flux register therefore accumulates
+`F_eff`, rather than only one stage, at both coarse/fine interfaces. PLM fine
+substeps use the time-interpolated coarse ghost state at each substep midpoint.

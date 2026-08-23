@@ -325,3 +325,17 @@ The first runnable reactive AMR path is accepted only while:
 - the final composite state is positive and species mass fractions close;
 - composite mass, momentum, and energy remain conserved within `2e-10`;
 - CSV cells are coordinate ordered and cover the domain exactly once.
+
+## 0.28.0 reactive-AMR PLM gates
+
+The second-order AMR option is accepted only while:
+
+- limited primitive face states retain positive density and pressure;
+- reconstructed species mass fractions are nonnegative and close to one;
+- both SSPRK2 stages remain valid on coarse and fine levels;
+- their averaged interface flux is the flux accumulated for reflux;
+- periodic coarse boundary faces use one identical numerical flux;
+- fine substeps receive coarse ghost data at the substep midpoint;
+- a smooth moving thermal contact remains dynamically refined;
+- PLM has at least 15 percent less composite density error than PCM;
+- both PCM and PLM retain composite conservation within `2e-10`.

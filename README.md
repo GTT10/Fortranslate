@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.27.0` milestone contains ten serial verification executables, five
+The `0.28.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding.
 
@@ -160,12 +160,15 @@ The first AMR slice provides:
 - coarse/fine flux accumulation, reflux, and average-down every coarse step;
 - symmetric chemistry--hydro--chemistry splitting across the AMR hierarchy;
 - transactional hierarchy rollback and periodic solution-driven regridding;
-- ordered composite CSV output with exact domain-coverage checks.
+- ordered composite CSV output with exact domain-coverage checks;
+- optional limited primitive-variable PLM with SSPRK2 time advancement;
+- time-averaged SSPRK2 interface fluxes used consistently for reflux;
+- a moving-contact gate demonstrating lower AMR error than PCM.
 
-The reactive AMR application currently qualifies PCM Godunov hydro without
-molecular transport. Arbitrary multiple levels, boundary-touching fine patches,
-multiple patches per level, high-order AMR reconstruction, and AMR molecular
-transport remain later slices.
+The reactive AMR application qualifies PCM and limited primitive-variable PLM
+Godunov hydro without molecular transport. Arbitrary multiple levels,
+boundary-touching fine patches, multiple patches per level, characteristic
+PPM/WENO AMR reconstruction, and AMR molecular transport remain later slices.
 
 ## Build and test
 

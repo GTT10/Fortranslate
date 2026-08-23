@@ -39,7 +39,7 @@ This table maps responsibilities, not source lines.
 | PeleC `Source/Diffterm.H`, `Source/Diffusion.cpp` | `reactive_diffusive_flux_x`, `advance_reactive_transport` | Periodic 1D viscous, conductive, barodiffusive, correction-velocity, and enthalpy-flux subset verified |
 | `Source/Diffusion.*` multidimensional/EB responsibility | `reactive_transport_2d_mod` for regular 2D cells; future AMR/EB modules | Regular-grid 2D transport verified; AMR/EB not started |
 | AMReX distributed-box responsibility | `mpi_domain_1d_mod`, `mpi_reactive_transport_1d_mod`, `mpi_reactive_1d_mod` | Uneven 1D blocks, halos, reductions, gather, transport, chemistry, and reactive splitting verified for 1/2/4/8 ranks |
-| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod` | Runnable reactive 1D two-level hierarchy with transfers, subcycling, reflux, chemistry splitting, tagging, conservative regridding, and composite output; high-order/multilevel pending |
+| `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod` | Runnable reactive 1D two-level hierarchy with PCM/limited-PLM hydro, SSPRK2 flux-consistent reflux, chemistry splitting, tagging, regridding, and composite output; characteristic PPM/multilevel pending |
 | `Source/EB.*` | future `src/eb/` | Not started |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |

@@ -481,7 +481,8 @@ Reactive application integration:
 - [x] fine subcycling and coarse-time ghost interpolation (`0.27.0`)
 - [x] reactive flux-register synchronization (`0.27.0`)
 - [x] hierarchy-wide chemistry splitting and rollback (`0.27.0`)
-- [ ] high-order coarse/fine reconstruction
+- [x] limited PLM coarse/fine reconstruction (`0.28.0`)
+- [ ] characteristic PPM/WENO coarse/fine reconstruction
 - [ ] AMR molecular transport
 
 AMR parity metrics:

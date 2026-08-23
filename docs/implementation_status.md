@@ -412,6 +412,20 @@ more than two levels.
 - [x] composite CSV output with ordered exact domain coverage
 - [x] reacting-hotspot positivity, closure, synchronization, and conservation
 
-This milestone qualifies first-order PCM hydro with elementary or full-H2/O2
-chemistry. High-order coarse/fine reconstruction, molecular transport on AMR,
+This milestone initially qualified first-order PCM hydro with elementary or
+full-H2/O2 chemistry.
+
+## Reactive AMR PLM (`0.28.0`)
+
+- [x] MC/minmod-limited primitive-variable coarse and fine reconstruction
+- [x] face-state density and pressure positivity fallback
+- [x] nonnegative species-face normalization and closure
+- [x] SSPRK2 level advancement
+- [x] time-averaged SSPRK2 interface fluxes supplied to reflux
+- [x] periodic physical-boundary flux identity
+- [x] midpoint coarse-time ghosts for each fine PLM substep
+- [x] moving-contact error lower than the matching PCM AMR run
+- [x] composite conservation retained with PLM and dynamic regrid
+
+Characteristic PPM/WENO AMR reconstruction, molecular transport on AMR,
 multiple patches, more than two levels, and MPI patch ownership remain open.
