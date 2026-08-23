@@ -26,6 +26,8 @@ module amr_reactive_1d_mod
   implicit none
   private
 
+  ! Reconstructing both cells adjacent to an AMR interface requires the
+  ! four exterior cell averages consumed by the widest characteristic stencil.
   integer, parameter, public :: amr_ppm_ghost_width = 4
 
   type, public :: amr_reactive_solution_1d
@@ -1098,6 +1100,8 @@ contains
       if (.not. local_ok) return
       temperature(cell) = local_temperature
     end do
+    ! This is the conservative flux combination represented by SSPRK3:
+    ! U^(n+1) = U^n - dt*div((F0 + F1)/6 + 2*F2/3).
     flux = (first_flux + second_flux) / 6.0_dp + &
       2.0_dp * third_flux / 3.0_dp
     if (.not. external_ghosts) then
@@ -1667,6 +1671,7 @@ contains
       size(right_temperature) == amr_ppm_ghost_width
     if (.not. ok) return
     do layer = 1, amr_ppm_ghost_width
+      ! Layer one is adjacent to the fine patch; subsequent layers move away.
       global_fine = hierarchy%fine%lower - layer
       call interpolate_parent_fine_cell( &
         species, hierarchy, coarse_start, coarse_end, alpha, global_fine, &
@@ -1715,6 +1720,8 @@ contains
     allocate(center(size(sampled_state)), left(size(sampled_state)))
     allocate(right(size(sampled_state)), slope(size(sampled_state)))
     allocate(q(reactive_nprim(size(species))))
+    ! Interpolate the parent conserved averages in time first, then form a
+    ! conservative MC-limited subcell value at the requested refined center.
     center = (1.0_dp - alpha) * coarse_start(:, parent_cell) + &
       alpha * coarse_end(:, parent_cell)
     left = (1.0_dp - alpha) * coarse_start(:, parent_cell - 1) + &

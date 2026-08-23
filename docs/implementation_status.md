@@ -522,3 +522,23 @@ The qualified transfer assumes one Cartesian patch per level. It maps aligned
 cells at equal level spacing; arbitrary refinement-ratio remapping, multiple
 patch intersection, physical-boundary refinement, and distributed ownership
 remain separate.
+
+## Multilevel reactive AMR characteristic PPM (`0.34.0`)
+
+- [x] four exterior conserved-state and temperature layers per level
+- [x] periodic/outflow physical PPM ghost construction
+- [x] conservative MC-limited parent-to-fine subcell interpolation
+- [x] parent start/end time interpolation at every fine hydro subcycle
+- [x] primitive PPM and time-traced frozen-composition characteristic PPM
+- [x] optional bounded contact steepening and shock flattening
+- [x] SSPRK3 advancement on every recursively subcycled level
+- [x] SSPRK3 effective face flux supplied to every flux register
+- [x] PPM-aware strict-nesting buffer in dynamic tag planning
+- [x] three-level conservation, synchronization, positivity, and closure gate
+- [x] runnable dynamic three-level characteristic-PPM hotspot case
+
+The qualified path holds the midpoint parent ghost interpolation fixed through
+the three SSPRK stages of one fine substep. It retains one interior parent cell
+beyond the four-layer footprint for limited spatial interpolation. WENO,
+physical-boundary refinement, multiple patches, and distributed patch ownership
+remain separate.

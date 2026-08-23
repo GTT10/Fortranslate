@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.33.0` milestone contains ten serial verification executables, five
+The `0.34.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -165,6 +165,11 @@ The AMR layer provides:
 - ordered composite CSV output with exact domain-coverage checks;
 - optional limited primitive-variable PLM with SSPRK2 time advancement;
 - time-averaged SSPRK2 interface fluxes used consistently for reflux;
+- four-layer physical and coarse/fine ghost storage for PPM stencils;
+- primitive or time-traced characteristic PPM with SSPRK3 level advancement;
+- SSPRK3 effective interface fluxes used consistently for reflux;
+- conservative, MC-limited parent-to-fine ghost interpolation at subcycle
+  midpoint times;
 - AMR viscosity, Fourier conduction, and mixture-averaged species diffusion;
 - parabolic fine subcycling with time-interpolated coarse transport ghosts;
 - diffusive flux-register reflux and covered-cell average-down;
@@ -184,15 +189,17 @@ The AMR layer provides:
 - exact retention of aligned old fine state and temperature data;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
-The reactive AMR application retains its overlap-preserving two-level path when
-`amr_max_levels = 2` and selects tag-driven arbitrary-depth state ownership,
-recursive advancement, periodic hierarchy rebuilds, and composite output for
-larger values. A changed multilevel hierarchy is conservatively averaged to the
-root before nested patches are rebuilt, then old fine state and temperature data
-are copied wherever old/new level spacing and physical cells align. Changed
-refinement ratios fall back to conservative prolongation. Boundary-touching
-fine patches, multiple patches per level, MPI patch ownership, and
-characteristic PPM/WENO AMR reconstruction remain later slices.
+For PCM/PLM, the reactive AMR application retains its overlap-preserving
+two-level path when `amr_max_levels = 2`. PPM selects the multilevel engine at
+any configured depth so every level owns the wider stencil state. The same
+engine provides tag-driven arbitrary-depth state ownership, recursive
+advancement, periodic hierarchy rebuilds, and composite output. A changed
+multilevel hierarchy is conservatively averaged to the root before nested
+patches are rebuilt, then old fine state and temperature data are copied
+wherever old/new level spacing and physical cells align. Changed refinement
+ratios fall back to conservative prolongation. Boundary-touching fine patches,
+multiple patches per level, MPI patch ownership, and WENO AMR reconstruction
+remain later slices.
 
 ## Build and test
 

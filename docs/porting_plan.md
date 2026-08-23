@@ -482,7 +482,8 @@ Reactive application integration:
 - [x] reactive flux-register synchronization (`0.27.0`)
 - [x] hierarchy-wide chemistry splitting and rollback (`0.27.0`)
 - [x] limited PLM coarse/fine reconstruction (`0.28.0`)
-- [ ] characteristic PPM/WENO coarse/fine reconstruction
+- [x] characteristic PPM coarse/fine reconstruction (`0.34.0`)
+- [ ] WENO coarse/fine reconstruction
 - [x] AMR molecular transport (`0.29.0`)
 - [x] arbitrary-depth reactive state ownership and recursive advancement
   (`0.31.0`)

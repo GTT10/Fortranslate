@@ -435,3 +435,22 @@ Changed multilevel hierarchy transfer is accepted only while:
 - a forced three-level hierarchy change reports transferred cells;
 - the complete deepest overlap is bitwise identical before and after regrid;
 - the changed-hierarchy composite integral remains conserved within `5e-13`.
+
+## 0.34.0 multilevel characteristic-PPM gates
+
+The high-order coarse/fine path is accepted only while:
+
+- every level owns four left and right exterior conserved states and
+  temperatures;
+- physical PPM ghosts preserve periodic wrapping or outflow extrapolation;
+- fine PPM ghosts use conservative MC-limited parent subcell values at the
+  subcycle midpoint time;
+- dynamic PPM patches retain the complete ghost and parent-slope footprint;
+- primitive and characteristic PPM advance recursively with SSPRK3;
+- flux registers receive the SSPRK3 effective flux used by the state update;
+- a three-level characteristic-PPM hotspot conserves the composite state within
+  `3e-10`, synchronizes every covered parent region within `5e-13`, retains
+  positive thermodynamics and species closure, and completes in Debug/Release;
+- the public AMR executable accepts characteristic PPM, produces three ordered
+  levels, covers the domain within `3e-13`, and emits only finite positive
+  states.

@@ -255,6 +255,8 @@ contains
         candidate(level)%values, criteria, tags, local_ok)
       if (.not. local_ok) return
       if (uses_ppm_reconstruction(config)) then
+        ! Retain the parent cells needed by all four fine ghost layers plus
+        ! one interior parent cell on either side for limited prolongation.
         parent_buffer = (amr_ppm_ghost_width + &
           config%amr_refinement_ratio - 1) / &
           config%amr_refinement_ratio + 1

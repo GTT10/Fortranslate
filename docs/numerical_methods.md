@@ -860,11 +860,10 @@ changes from producing divergent accept/reject histories.
 
 The current distributed path is one-dimensional and uniform-grid. Serial 2D
 reactive flow includes molecular transport and physical boundaries, while the
-AMR layer provides 1D two-level reactive PCM/PLM advancement, molecular
-transport, synchronization, tagging, and single-patch dynamic regridding. MPI
-2D, characteristic PPM/WENO coarse/fine reconstruction, arbitrary-depth
-reactive advancement, multipatch AMR, boundary refinement, embedded
-boundaries, LES,
+AMR layer provides arbitrary-depth 1D reactive PCM/PLM/PPM advancement,
+molecular transport, synchronization, tagging, overlap-preserving single-patch
+dynamic regridding, and composite output. MPI 2D, WENO coarse/fine
+reconstruction, multipatch AMR, boundary refinement, embedded boundaries, LES,
 particles/spray, and accelerators remain outside the implemented scope. The
 transport model still
 excludes Soret, Dufour,

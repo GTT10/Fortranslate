@@ -357,7 +357,8 @@ then counts the deepest level in full. Synchronization applies reflux and
 average-down from the deepest interface toward the root.
 
 `amr_multilevel_reactive_1d_mod` adds separately allocated conserved-state and
-temperature fields with ghost cells at every level. It recursively advances
+temperature fields with one face-adjacent ghost and four PPM stencil layers at
+every level. It recursively advances
 each parent once and its child `r` times for hydro or `r^2` times for explicit
 molecular transport, then synchronizes that relation before returning to the
 next coarser caller. Chemistry is advanced on every level and averaged down
@@ -375,9 +376,12 @@ fine level after average-down. Boundary tags are rejected because this hierarchy
 does not yet own physical-boundary fine ghosts.
 
 The reactive driver retains the overlap-preserving two-level implementation for
-`amr_max_levels = 2`. Larger values select the multilevel engine. It tags each
-parent, suppresses refinement at interior patch boundaries, and constructs the
-next strictly nested child until tags end or the configured depth is reached.
+PCM/PLM with `amr_max_levels = 2`. A larger level limit or either PPM option
+selects the multilevel engine. It tags each parent, suppresses refinement at
+interior patch boundaries, and constructs the next strictly nested child until
+tags end or the configured depth is reached. PPM planning additionally reserves
+the parent footprint required by four fine ghost layers and a limited parent
+slope.
 At a regrid point, it averages the old hierarchy deepest-to-root, plans a new
 chain from the synchronized root, and rebuilds changed children by conservative
 prolongation. It then maps every common old/new level in physical coordinates
@@ -387,8 +391,8 @@ Recursive output emits the left uncovered parent region, its
 child, and the right uncovered region, producing ordered exact domain coverage.
 
 Multiple patches, transfer between changed refinement ratios,
-physical-boundary refinement, MPI patch ownership, and characteristic PPM/WENO
-coarse/fine coupling remain separate.
+physical-boundary refinement, MPI patch ownership, and WENO coarse/fine
+coupling remain separate.
 
 ## Reactive AMR time advancement
 
@@ -402,9 +406,9 @@ chemistry(dt/2) on coarse and fine
 SSPRK2 molecular transport(dt/2) on coarse and fine
   with r^2 fine diffusion substeps, reflux, and average-down
         ↓
-coarse PCM/PLM hydro(dt) and interface-flux capture
+coarse PCM/PLM/PPM hydro(dt) and interface-flux capture
         ↓
-fine PCM/PLM hydro(dt/r), repeated r times
+fine PCM/PLM/PPM hydro(dt/r), repeated r times
   with time-interpolated coarse ghost states
         ↓
 flux-register reflux + average-down
@@ -432,6 +436,15 @@ state. SSPRK2 evaluates two flux divergences and returns their arithmetic mean
 to the flux register, so the reflux correction represents the same conservative
 update applied to each level. Fine PLM substeps hold a coarse-time midpoint
 ghost state during both SSPRK2 stages.
+
+The AMR PPM path reconstructs both cells adjacent to every coarse/fine face.
+Four exterior conserved states and temperatures cover the widest
+characteristic stencil. Fine ghost cell centers are obtained by linearly
+interpolating parent conserved averages in time and applying an MC-limited
+conservative parent slope in space. Each fine substep holds its midpoint ghost
+data through an SSPRK3 update. The returned interface flux is
+`(F0 + F1)/6 + 2 F2/3`, exactly matching the conservative SSPRK3 state update,
+so reflux uses the flux that advanced the level.
 
 The AMR transport path evaluates the same Newtonian stress, Fourier heat flux,
 mixture-averaged species diffusion, barodiffusion, correction velocity, and
