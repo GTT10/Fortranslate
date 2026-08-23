@@ -2,7 +2,10 @@ program test_amr_patch_tree_reactive_1d
   use precision_mod, only: dp
   use state_indices_mod, only: irho, qp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -14,6 +17,7 @@ program test_amr_patch_tree_reactive_1d
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, &
     patch_tree_reactive_timestep_1d, &
+    advance_patch_tree_reactive_1d, &
     advance_patch_tree_reactive_hydro_1d, &
     patch_tree_reactive_integrals_1d
   implicit none
@@ -21,18 +25,27 @@ program test_amr_patch_tree_reactive_1d
   real(dp), parameter :: conservation_tolerance = 3.0e-10_dp
   real(dp), parameter :: synchronization_tolerance = 5.0e-13_dp
   type(nasa7_species), allocatable :: species(:)
-  type(reactive_1d_config) :: config
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(reactive_1d_config) :: config, chemistry_config
   type(amr_patch_level_plan_1d), allocatable :: plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
+  type(amr_patch_tree_reactive_solution_1d) :: hydro_control
+  type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
+  real(dp), allocatable :: chemistry_initial_integral(:)
+  real(dp), allocatable :: chemistry_final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, synchronization_error
+  real(dp) :: chemistry_dt, chemistry_difference
+  real(dp) :: chemistry_conservation_error
   real(dp) :: minimum_temperature, minimum_pressure
   real(dp) :: maximum_closure_error
   logical :: ok
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "patch-tree thermodynamics load")
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "patch-tree chemistry mechanism load")
   call configure_case(config)
   call configure_plans(plans)
   call initialize_patch_tree_reactive_1d( &
@@ -82,10 +95,61 @@ program test_amr_patch_tree_reactive_1d
   call require(maximum_closure_error < 3.0e-10_dp, &
     "patch-tree species closure")
 
+  allocate(chemistry_initial_integral(reactive_nvar(size(species))))
+  allocate(chemistry_final_integral(reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    solution, chemistry_initial_integral, ok)
+  call require(ok, "pre-chemistry patch-tree composite integral")
+  hydro_control = solution
+  chemistry_solution = solution
+  chemistry_config = config
+  chemistry_config%chemistry_enabled = .true.
+  chemistry_config%chemistry_relative_tolerance = 1.0e-8_dp
+  chemistry_config%chemistry_absolute_tolerance = 1.0e-14_dp
+  chemistry_dt = min(dt, 1.0e-10_dp)
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, config, chemistry_dt, hydro_control, ok)
+  call require(ok, "patch-tree hydro control Strang step")
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, chemistry_config, chemistry_dt, &
+    chemistry_solution, ok)
+  call require(ok .and. chemistry_solution%is_valid(), &
+    "patch-tree chemistry Strang step")
+  chemistry_difference = reactive_species_difference( &
+    chemistry_solution, hydro_control)
+  call require(chemistry_difference > 100.0_dp * epsilon(1.0_dp), &
+    "chemistry changes the recursive patch-tree species state")
+  call require(chemistry_solution%steps == 2 .and. &
+    all(chemistry_solution%level_advances == [2, 8, 24, 32]) .and. &
+    abs(chemistry_solution%time - dt - chemistry_dt) <= &
+      32.0_dp * epsilon(1.0_dp) * max(dt, chemistry_dt), &
+    "chemistry composition preserves hydro advance accounting")
+  call patch_tree_reactive_integrals_1d( &
+    chemistry_solution, chemistry_final_integral, ok)
+  call require(ok, "post-chemistry patch-tree composite integral")
+  chemistry_conservation_error = maxval(abs( &
+    chemistry_final_integral(1:5) - chemistry_initial_integral(1:5)) / &
+    max(1.0_dp, abs(chemistry_initial_integral(1:5))))
+  call require(chemistry_conservation_error < conservation_tolerance, &
+    "patch-tree chemistry mass momentum energy conservation")
+  call check_synchronization(chemistry_solution, synchronization_error)
+  call require(synchronization_error < synchronization_tolerance, &
+    "post-chemistry patch-tree synchronization")
+  call inspect_solution( &
+    chemistry_solution, minimum_temperature, minimum_pressure, &
+    maximum_closure_error)
+  call require(minimum_temperature > 0.0_dp .and. &
+    minimum_pressure > 0.0_dp .and. maximum_closure_error < 3.0e-10_dp, &
+    "post-chemistry patch-tree physical state")
+
   write(*, '(a,1x,es16.8)') &
     "Patch-tree conservation error:", conservation_error
   write(*, '(a,1x,es16.8)') &
     "Patch-tree synchronization error:", synchronization_error
+  write(*, '(a,1x,es16.8)') &
+    "Patch-tree chemistry difference:", chemistry_difference
+  write(*, '(a,1x,es16.8)') &
+    "Patch-tree chemistry conservation:", chemistry_conservation_error
   write(*, '(a)') "test_amr_patch_tree_reactive_1d: PASS"
 
 contains
@@ -232,6 +296,28 @@ contains
     end do
     deallocate(q)
   end subroutine inspect_solution
+
+  real(dp) function reactive_species_difference( &
+      first, second) result(difference)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
+
+    integer :: level, patch, cell, nx, species_index, component
+
+    difference = 0.0_dp
+    do level = 1, first%level_count()
+      do patch = 1, size(first%levels(level)%patches)
+        nx = size(first%levels(level)%patches(patch)%state, 2) - 2
+        do cell = 1, nx
+          do species_index = 1, size(species)
+            component = reactive_species_component(species_index)
+            difference = max(difference, abs( &
+              first%levels(level)%patches(patch)%state(component, cell) - &
+              second%levels(level)%patches(patch)%state(component, cell)))
+          end do
+        end do
+      end do
+    end do
+  end function reactive_species_difference
 
   subroutine require(condition, label)
     logical, intent(in) :: condition

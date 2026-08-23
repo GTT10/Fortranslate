@@ -1,9 +1,11 @@
 module amr_patch_tree_reactive_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_cfl_timestep, initialize_reactive_1d
+    reactive_nvar, reactive_cfl_timestep, initialize_reactive_1d, &
+    advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, amr_level_field_1d, &
     accumulate_coarse_flux_1d, accumulate_fine_flux_1d
@@ -13,6 +15,7 @@ module amr_patch_tree_reactive_1d_mod
     amr_patch_tree_level_fields_1d, &
     amr_patch_tree_relation_flux_registers_1d, &
     initialize_patch_tree_1d, prolong_patch_tree_1d, &
+    average_down_patch_tree_1d, &
     initialize_patch_tree_flux_registers_1d, &
     composite_integral_patch_tree_1d, patch_tree_child_geometry_1d
   use amr_reactive_1d_mod, only: &
@@ -48,6 +51,7 @@ module amr_patch_tree_reactive_1d_mod
 
   public :: initialize_patch_tree_reactive_1d
   public :: patch_tree_reactive_timestep_1d
+  public :: advance_patch_tree_reactive_1d
   public :: advance_patch_tree_reactive_hydro_1d
   public :: patch_tree_reactive_integrals_1d
 
@@ -253,6 +257,52 @@ contains
     ok = dt > 0.0_dp .and. dt < huge(1.0_dp)
   end subroutine patch_tree_reactive_timestep_1d
 
+  subroutine advance_patch_tree_reactive_1d( &
+      species, reactions, config, dt, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: dt
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_reactive_solution_1d) :: backup
+    logical :: local_ok
+
+    ok = .false.
+    if (dt <= 0.0_dp .or. .not. solution%is_valid()) return
+    backup = solution
+    if (config%chemistry_enabled) then
+      call advance_patch_tree_chemistry( &
+        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    call advance_patch_tree_reactive_hydro_1d( &
+      species, config, dt, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    if (config%chemistry_enabled) then
+      call advance_patch_tree_chemistry( &
+        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+      if (.not. local_ok) then
+        solution = backup
+        return
+      end if
+    end if
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    if (.not. local_ok) then
+      solution = backup
+      return
+    end if
+    ok = solution%is_valid()
+    if (.not. ok) solution = backup
+  end subroutine advance_patch_tree_reactive_1d
+
   subroutine advance_patch_tree_reactive_hydro_1d( &
       species, config, dt, solution, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -297,6 +347,66 @@ contains
     ok = solution%is_valid()
     if (.not. ok) solution = backup
   end subroutine advance_patch_tree_reactive_hydro_1d
+
+  subroutine advance_patch_tree_chemistry( &
+      species, reactions, config, interval, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
+    logical :: local_ok
+    integer :: level, patch, nx
+
+    ok = solution%is_valid() .and. interval >= 0.0_dp
+    if (.not. ok) return
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        call advance_reactive_chemistry( &
+          species, reactions, &
+          solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, interval, &
+          config%chemistry_relative_tolerance, &
+          config%chemistry_absolute_tolerance, &
+          chemistry_boundary(config, level), local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    call extract_patch_tree_fields(solution, fields, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    call average_down_patch_tree_1d( &
+      fields, solution%hierarchy, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        solution%levels(level)%patches(patch)%state(:, 1:nx) = &
+          fields(level)%patches(patch)%values
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    ok = local_ok
+  end subroutine advance_patch_tree_chemistry
 
   recursive subroutine advance_patch_recursive( &
       species, config, solution, registers, level, parent_patch, interval, &
@@ -587,5 +697,14 @@ contains
     boundary = "coarse_fine"
     if (level == 1) boundary = config%boundary_condition
   end function patch_boundary
+
+  pure function chemistry_boundary(config, level) result(boundary)
+    type(reactive_1d_config), intent(in) :: config
+    integer, intent(in) :: level
+    character(len=32) :: boundary
+
+    boundary = "outflow"
+    if (level == 1) boundary = config%boundary_condition
+  end function chemistry_boundary
 
 end module amr_patch_tree_reactive_1d_mod
