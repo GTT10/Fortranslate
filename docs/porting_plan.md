@@ -488,7 +488,7 @@ Reactive application integration:
   (`0.31.0`)
 - [x] dynamic arbitrary-depth reactive regridding and composite output
   (`0.32.0`)
-- [ ] overlap-preserving transfer for changed multilevel hierarchies
+- [x] overlap-preserving transfer for changed multilevel hierarchies (`0.33.0`)
 
 AMR parity metrics:
 

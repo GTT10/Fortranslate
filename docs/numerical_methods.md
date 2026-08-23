@@ -981,8 +981,12 @@ new nested chain is then planned from this synchronized root and every child is
 conservatively prolonged. Thus the complete composite integral is invariant
 under creation, movement, resizing, depth reduction, and depth growth. If the
 new bounds and ratios are identical, the existing hierarchy is retained
-without reconstruction. If they differ, old fine-scale overlap values are not
-yet copied into the rebuilt patches.
+without reconstruction. If they differ, every common old/new fine level is
+intersected in physical coordinates. When its spacing agrees and both overlap
+edges lie on cell boundaries, conserved state and temperature are copied
+exactly into the rebuilt patch. Processing all levels and then averaging down
+deepest-to-root makes retained deepest data authoritative in covered parents.
+Levels whose spacing changed retain their conservative prolongation instead.
 
 Composite output follows the hierarchy recursively:
 

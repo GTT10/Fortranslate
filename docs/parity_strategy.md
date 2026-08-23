@@ -421,3 +421,17 @@ The runnable multilevel regrid path is accepted only while:
   ratio two, and cover the domain within `3e-13`;
 - every output state is finite and retains positive density, pressure, and
   temperature with species closure within `3e-10`.
+
+## 0.33.0 multilevel overlap-transfer gates
+
+Changed multilevel hierarchy transfer is accepted only while:
+
+- old and new physical bounds are intersected independently at each common
+  fine level;
+- direct transfer occurs only for equal spacing and cell-aligned overlap edges;
+- all conserved components and temperature are copied for every aligned cell;
+- a spacing mismatch skips direct copy and retains conservative prolongation;
+- deepest-to-root average-down follows all copies;
+- a forced three-level hierarchy change reports transferred cells;
+- the complete deepest overlap is bitwise identical before and after regrid;
+- the changed-hierarchy composite integral remains conserved within `5e-13`.

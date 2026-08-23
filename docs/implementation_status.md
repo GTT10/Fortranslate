@@ -506,3 +506,19 @@ composite through the synchronized root and reconstructs children. This
 preserves conserved integrals but not old fine-scale values in overlap regions.
 Multiple patches, physical-boundary refinement, MPI patch ownership, and
 load-balanced distribution remain open.
+
+## Multilevel overlap-preserving regrid transfer (`0.33.0`)
+
+- [x] old/new physical-bound intersection at every common fine level
+- [x] spacing and cell-boundary alignment checks before direct transfer
+- [x] exact conserved-state and temperature copy for aligned overlap cells
+- [x] safe conservative-prolongation fallback when level spacing changes
+- [x] deepest-to-root synchronization after all overlap copies
+- [x] cumulative transferred-cell diagnostics in the executable
+- [x] forced hierarchy-change regression with bitwise deepest-level retention
+- [x] simultaneous composite-conservation gate across the changed hierarchy
+
+The qualified transfer assumes one Cartesian patch per level. It maps aligned
+cells at equal level spacing; arbitrary refinement-ratio remapping, multiple
+patch intersection, physical-boundary refinement, and distributed ownership
+remain separate.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.32.0` milestone contains ten serial verification executables, five
+The `0.33.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -180,16 +180,19 @@ The AMR layer provides:
 - periodic conservative multilevel hierarchy rebuilds during simulation;
 - recursively ordered, exact-coverage multilevel composite CSV output;
 - a runnable three-level hotspot case and structural output gate;
+- physical-coordinate overlap transfer across changed multilevel hierarchies;
+- exact retention of aligned old fine state and temperature data;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 The reactive AMR application retains its overlap-preserving two-level path when
 `amr_max_levels = 2` and selects tag-driven arbitrary-depth state ownership,
 recursive advancement, periodic hierarchy rebuilds, and composite output for
 larger values. A changed multilevel hierarchy is conservatively averaged to the
-root before nested patches are rebuilt; preserving old fine data in overlapping
-changed patches remains future work. Boundary-touching fine patches, multiple
-patches per level, MPI patch ownership, and characteristic PPM/WENO AMR
-reconstruction also remain later slices.
+root before nested patches are rebuilt, then old fine state and temperature data
+are copied wherever old/new level spacing and physical cells align. Changed
+refinement ratios fall back to conservative prolongation. Boundary-touching
+fine patches, multiple patches per level, MPI patch ownership, and
+characteristic PPM/WENO AMR reconstruction remain later slices.
 
 ## Build and test
 
