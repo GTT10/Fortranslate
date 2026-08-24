@@ -107,10 +107,19 @@ contains
       allocated(self%x_face_fraction) .and. &
       allocated(self%y_face_fraction) .and. allocated(self%cell_type)
     if (.not. valid) return
+    valid = abs(real(self%nx, dp) * self%dx - &
+      (self%x_upper - self%x_lower)) <= tolerance * &
+        max(1.0_dp, abs(self%x_lower), abs(self%x_upper)) .and. &
+      abs(real(self%ny, dp) * self%dy - &
+        (self%y_upper - self%y_lower)) <= tolerance * &
+          max(1.0_dp, abs(self%y_lower), abs(self%y_upper))
+    if (.not. valid) return
     valid = all(shape(self%volume_fraction) == [self%nx, self%ny]) .and. &
       all(shape(self%x_face_fraction) == [self%nx + 1, self%ny]) .and. &
       all(shape(self%y_face_fraction) == [self%nx, self%ny + 1]) .and. &
       all(shape(self%cell_type) == [self%nx, self%ny]) .and. &
+      all(lbound(self%volume_fraction) == [1, 1]) .and. &
+      all(lbound(self%cell_type) == [1, 1]) .and. &
       all(lbound(self%x_face_fraction) == [0, 1]) .and. &
       all(lbound(self%y_face_fraction) == [1, 0])
     if (.not. valid) return
