@@ -480,9 +480,19 @@ the next tagging pass until tags end or `amr_max_levels` is reached. The plan
 then enters the same transactional rebuild and overlap-transfer path as an
 explicit plan.
 
-The qualified patch-tree path covers interior patches, PCM hydro, elementary
-chemistry, molecular transport, and explicit or tag-driven runtime rebuilds.
-Same-level ghost exchange, one-sided periodic-seam refinement, and MPI patch
+Patch-tree child sets may retain independently owned adjacent intervals. At
+each child substep the parent fills coarse/fine ghosts first, then sibling
+interiors overwrite every covered face ghost and available PPM/WENO wide
+layer by global fine index. After the siblings advance, their two returned
+time-integrated fluxes at each shared face are replaced by one arithmetic-mean
+flux. Conservative corrections apply that owned flux to the two adjacent fine
+cells. The internal face is suppressed in both sibling flux registers, so
+only genuine coarse/fine sides participate in reflux. The same sequence is
+used for hyperbolic and molecular-transport recursion.
+
+The qualified patch-tree path covers interior separated or adjacent patches,
+PCM/PPM hydro, elementary chemistry, molecular transport, and explicit or
+tag-driven runtime rebuilds. One-sided periodic-seam refinement and MPI patch
 ownership remain separate.
 
 ## Reactive AMR time advancement

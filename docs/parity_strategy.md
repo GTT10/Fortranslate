@@ -655,3 +655,19 @@ Automatic patch-tree planning is accepted only while:
   evaluation counter;
 - an invalid tag component fails without changing the solution or counters in
   Debug and Release CI.
+
+## 0.48.0 adjacent patch-tree exchange gates
+
+Independently owned adjacent children are accepted only while:
+
+- patch-tree geometry accepts two touching parent intervals while the older
+  separated multipatch API continues to reject them by default;
+- each face ghost and all four PPM/WENO ghost layers equal the corresponding
+  sibling interior state and temperature exactly before and after advancement;
+- a single shared time-integrated hydro flux conserves every composite
+  component within `3e-10` under PPM and exact `1/4` level calls;
+- the same ownership rule conserves the complete molecular-transport split
+  within `2e-9` and produces exact `2/16` transport calls;
+- internal fine/fine register sides do not reflux covered parent cells and all
+  parent-child relations remain synchronized within `8e-13` in Debug and
+  Release CI.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.47.0` milestone contains ten serial verification executables, five
+The `0.48.0` milestone contains ten serial verification executables, five
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -232,6 +232,12 @@ The AMR layer provides:
   clustering for automatic arbitrary-depth branching plans;
 - tag-driven transactional tree rebuilds, including root-only creation,
   maximum-depth branching, unchanged-plan no-op, and invalid-request gates;
+- independently owned adjacent children with parent-local same-level exchange
+  for face and four-layer PPM/WENO ghost data;
+- single owned time-integrated hydro and diffusive fluxes at fine/fine faces,
+  with those internal faces excluded from coarse/fine reflux;
+- adjacent PPM hydro and molecular-transport conservation, synchronization,
+  exact exchange, and subcycle-accounting gates;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -253,8 +259,10 @@ accumulates its own coarse/fine boundary fluxes; reflux and average-down occur
 after its fine subcycles, and failures restore the complete tree. The
 patch-tree engine can synchronize to the root, tag and cluster every
 prospective parent independently, and rebuild the resulting arbitrary-depth
-branching plan transactionally. Same-level ghost exchange and MPI patch
-ownership remain later slices. A periodic child may
+branching plan transactionally. Independently owned adjacent siblings exchange
+same-level ghosts, reconcile each shared time-integrated interface flux, and
+exclude that internal side from reflux. MPI patch ownership remains a later
+slice. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

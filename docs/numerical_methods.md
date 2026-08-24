@@ -1239,4 +1239,16 @@ minimum width, and assigned that parent's flattened index. Children are
 conservatively prolonged before the same operation repeats at the next
 relation. Recursion stops independently on untagged branches and globally when
 no children remain or `amr_max_levels` is reached. Physical-boundary children
-and same-level ghost exchange remain future integrations.
+remain a future integration.
+
+Adjacent children of one parent remain separate owners. Before each fine
+substep, a child first receives its time-interpolated parent ghosts. Any ghost
+fine index covered by a sibling is then replaced exactly by that sibling's
+interior state and temperature; the same lookup fills up to four PPM/WENO
+layers across a chain of adjacent boxes. Each patch advances locally and
+returns its time-integrated boundary flux. The two values at a shared
+fine/fine face are replaced by their arithmetic mean, and conservative
+boundary-cell corrections make both patches use that single owned flux. The
+corresponding register sides are zeroed before reflux because neither is a
+coarse/fine interface. Hydro and molecular transport use the same interface
+ownership rule.

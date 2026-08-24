@@ -736,8 +736,9 @@ distributed patch ownership remain separate.
 - [x] moved four-level conservation and deepest exact-retention gate
 
 This milestone qualifies plan-driven dynamic trees. Automatic tag clustering
-at every parent is added in `0.47.0`; same-level exchange, physical-boundary
-children, load balancing, and distributed ownership remain separate.
+at every parent is added in `0.47.0`, and same-level sibling exchange in
+`0.48.0`; physical-boundary children, load balancing, and distributed
+ownership remain separate.
 
 ## Tag-driven reactive patch-tree rebuilds (`0.47.0`)
 
@@ -753,6 +754,24 @@ children, load balancing, and distributed ownership remain separate.
 - [x] unchanged-plan no-op and invalid-tag-request rollback gates
 
 This milestone qualifies automatic interior patch-tree planning and rebuilds
-for one common configured refinement ratio. Same-level adjacent-patch
-exchange, physical-boundary children, load balancing, and distributed patch
-ownership remain separate.
+for one common configured refinement ratio. Same-level adjacent-patch exchange
+is added in `0.48.0`; physical-boundary children, load balancing, and
+distributed patch ownership remain separate.
+
+## Adjacent patch-tree same-level exchange (`0.48.0`)
+
+- [x] patch-tree-only opt-in for independently owned adjacent child intervals
+- [x] parent-local face ghost exchange by global fine-cell index
+- [x] PPM/WENO four-layer exchange across adjacent sibling chains
+- [x] one shared time-integrated flux per fine/fine face
+- [x] conservative correction of both cells adjacent to the shared face
+- [x] internal fine/fine register-side suppression before reflux
+- [x] identical interface ownership for hydro and molecular transport
+- [x] exact post-initialization and post-step ghost exchange gates
+- [x] PPM hydro conservation and `1/4` subcycle-accounting gate
+- [x] transport conservation and `2/16` parabolic-accounting gate
+- [x] parent-child synchronization after adjacent hydro and transport
+
+This milestone qualifies same-process sibling exchange for strictly interior
+patch-tree children. Periodic-seam splitting, physical-boundary children,
+load balancing, and distributed MPI patch ownership remain separate.

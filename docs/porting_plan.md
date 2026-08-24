@@ -509,6 +509,8 @@ Reactive application integration:
 - [x] plan-driven dynamic patch-tree rebuild and overlap transfer (`0.46.0`)
 - [x] per-parent automatic tag clustering and arbitrary-depth patch-tree
   rebuild (`0.47.0`)
+- [x] adjacent patch-tree sibling exchange, shared fine/fine flux ownership,
+  and reflux suppression (`0.48.0`)
 
 AMR parity metrics:
 
