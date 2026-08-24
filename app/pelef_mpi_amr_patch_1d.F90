@@ -5,6 +5,8 @@ program pelef_mpi_amr_patch_1d
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
@@ -16,7 +18,7 @@ program pelef_mpi_amr_patch_1d
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
     patch_tree_reactive_timestep_1d, advance_patch_tree_reactive_hydro_1d, &
-    patch_tree_reactive_integrals_1d
+    advance_patch_tree_transport, patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -24,7 +26,8 @@ program pelef_mpi_amr_patch_1d
     exchange_owned_adjacent_patch_halos_1d, &
     synchronize_owned_patch_tree_reactive_1d, &
     advance_owned_patch_tree_chemistry_1d, &
-    advance_owned_patch_tree_hydro_1d
+    advance_owned_patch_tree_hydro_1d, &
+    advance_owned_patch_tree_transport_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -46,6 +49,8 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_reactive_solution_1d) :: rejected_backup
   type(amr_patch_tree_reactive_solution_1d) :: serial_hydro
   type(amr_patch_tree_reactive_solution_1d) :: distributed_hydro
+  type(amr_patch_tree_reactive_solution_1d) :: serial_transport
+  type(amr_patch_tree_reactive_solution_1d) :: distributed_transport
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_serial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_distributed
@@ -53,11 +58,15 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_level_plan_1d), allocatable :: adjacent_reactive_plans(:)
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   type(reactive_1d_config) :: reactive_config
   type(reactive_1d_config) :: adjacent_reactive_config
+  type(reactive_1d_config) :: transport_config
+  type(reactive_1d_config) :: adjacent_transport_config
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
+  real(dp) :: transport_dt, adjacent_transport_dt
   logical :: ok
   integer :: ierr, rank, nranks, level, patch, variable, cell
   integer :: parent, child, left_patch, right_patch, layer, cross_rank_faces
@@ -65,6 +74,8 @@ program pelef_mpi_amr_patch_1d
   integer :: expected_patch_advances, corrupt_owner
   integer :: local_hydro_advances, global_hydro_advances
   integer :: expected_hydro_advances, cross_owner_hydro_faces
+  integer :: local_transport_advances, global_transport_advances
+  integer :: expected_transport_advances
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -181,6 +192,8 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok, "reactive AMR thermodynamics", rank)
   call load_h2o2_elementary_mechanism(reactions, ok)
   call assert_all(ok, "reactive AMR chemistry mechanism", rank)
+  call load_h2o2_elementary_transport(transport, ok)
+  call assert_all(ok, "reactive AMR transport database", rank)
   call configure_reactive_case(reactive_config)
   call build_reactive_plans(reactive_plans)
   call initialize_patch_tree_reactive_1d( &
@@ -314,6 +327,71 @@ program pelef_mpi_amr_patch_1d
     reactive_solution_difference(rejected_reactive, rejected_backup) == &
       0.0_dp, "global hydro rollback is exact", rank)
 
+  call configure_transport_case(reactive_config, transport_config)
+  serial_transport = initial_reactive
+  distributed_transport = initial_reactive
+  call patch_tree_reactive_timestep_1d( &
+    species, transport_config, initial_reactive, transport_dt, ok, transport)
+  call assert_all(ok .and. transport_dt > 0.0_dp, &
+    "four-level reactive transport timestep", rank)
+  transport_dt = min(transport_dt, 1.0e-10_dp)
+  call advance_patch_tree_transport( &
+    species, transport, transport_config, transport_dt, serial_transport, ok)
+  call assert_all(ok .and. serial_transport%is_valid(), &
+    "serial four-level transport reference", rank)
+  call advance_owned_patch_tree_transport_1d( &
+    species, transport, transport_config, transport_dt, &
+    reactive_distribution, distributed_transport, ok, &
+    local_transport_advances)
+  call assert_all(ok .and. distributed_transport%is_valid(), &
+    "owner-only four-level transport", rank)
+  expected_transport_advances = expected_owned_transport_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_transport_advances == expected_transport_advances, &
+    "four-level transport executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_transport_advances == 185, &
+    "four-level transport global subcycle count", rank)
+  call assert_all(all(distributed_transport%transport_level_advances == &
+    [1, 8, 48, 128]), &
+    "four-level distributed transport level accounting", rank)
+  reactive_difference = reactive_solution_difference( &
+    distributed_transport, serial_transport)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "distributed four-level transport matches serial", rank)
+  call assert_all( &
+    reactive_solution_difference(distributed_transport, initial_reactive) > &
+      100.0_dp * epsilon(1.0_dp), &
+    "owner-only transport changes the reactive state", rank)
+  call patch_tree_reactive_integrals_1d( &
+    distributed_transport, final_integral, ok)
+  call assert_all(ok, "distributed transport composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral(1:5) - initial_integral(1:5)) / &
+    max(1.0_dp, abs(initial_integral(1:5))))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "owner-only four-level transport conservation", rank)
+
+  rejected_reactive = initial_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_reactive%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  call synchronize_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_reactive, ok)
+  call assert_all(ok, "corrupt transport owner state synchronization", rank)
+  rejected_backup = rejected_reactive
+  call advance_owned_patch_tree_transport_1d( &
+    species, transport, transport_config, transport_dt, &
+    reactive_distribution, rejected_reactive, ok, local_transport_advances)
+  call assert_all(.not. ok .and. local_transport_advances == 0, &
+    "owner transport failure is rejected globally", rank)
+  call assert_all( &
+    reactive_solution_difference(rejected_reactive, rejected_backup) == &
+      0.0_dp, "global transport rollback is exact", rank)
+
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"
   adjacent_reactive_config%amr_reconstruction = "ppm"
@@ -384,6 +462,51 @@ program pelef_mpi_amr_patch_1d
   call assert_all(conservation_error <= 3.0e-10_dp, &
     "cross-owner adjacent PPM conservation", rank)
 
+  call configure_transport_case( &
+    adjacent_reactive_config, adjacent_transport_config)
+  adjacent_serial = adjacent_initial
+  adjacent_distributed = adjacent_initial
+  call patch_tree_reactive_timestep_1d( &
+    species, adjacent_transport_config, adjacent_initial, &
+    adjacent_transport_dt, ok, transport)
+  call assert_all(ok .and. adjacent_transport_dt > 0.0_dp, &
+    "adjacent reactive transport timestep", rank)
+  adjacent_transport_dt = min(adjacent_transport_dt, 1.0e-10_dp)
+  call advance_patch_tree_transport( &
+    species, transport, adjacent_transport_config, adjacent_transport_dt, &
+    adjacent_serial, ok)
+  call assert_all(ok, "serial adjacent transport reference", rank)
+  call advance_owned_patch_tree_transport_1d( &
+    species, transport, adjacent_transport_config, adjacent_transport_dt, &
+    adjacent_distribution, adjacent_distributed, ok, &
+    local_transport_advances)
+  call assert_all(ok .and. adjacent_distributed%is_valid(), &
+    "owner-only adjacent transport", rank)
+  expected_transport_advances = expected_owned_transport_advances( &
+    adjacent_distribution, adjacent_initial%hierarchy, rank)
+  call assert_all(local_transport_advances == expected_transport_advances, &
+    "adjacent transport executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_transport_advances == 25, &
+    "adjacent transport global subcycle count", rank)
+  call assert_all(all(adjacent_distributed%transport_level_advances == &
+    [1, 24]), "adjacent distributed transport level accounting", rank)
+  reactive_difference = reactive_solution_difference( &
+    adjacent_distributed, adjacent_serial)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "cross-owner adjacent transport matches serial", rank)
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_distributed, final_integral, ok)
+  call assert_all(ok, "adjacent transport composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral(1:5) - initial_integral(1:5)) / &
+    max(1.0_dp, abs(initial_integral(1:5))))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "cross-owner adjacent transport conservation", rank)
+
   if (rank == 0) write(*, '(a,i0,a)') &
     "pelef_mpi_amr_patch_1d: PASS (", nranks, " ranks)"
   call MPI_Finalize(ierr)
@@ -441,6 +564,19 @@ contains
     local_config%amr_enabled = .true.
     local_config%amr_reconstruction = "pcm"
   end subroutine configure_reactive_case
+
+  subroutine configure_transport_case(base_config, local_config)
+    type(reactive_1d_config), intent(in) :: base_config
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = base_config
+    local_config%transport_enabled = .true.
+    local_config%viscosity_enabled = .true.
+    local_config%thermal_conduction_enabled = .true.
+    local_config%species_diffusion_enabled = .true.
+    local_config%barodiffusion_enabled = .true.
+    local_config%transport_cfl = 0.30_dp
+  end subroutine configure_transport_case
 
   subroutine build_reactive_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
@@ -511,6 +647,28 @@ contains
       end do
     end do
   end function expected_owned_hydro_advances
+
+  integer function expected_owned_transport_advances( &
+      local_distribution, local_hierarchy, local_rank) result(count)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    integer, intent(in) :: local_rank
+
+    integer :: local_level, local_patch, multiplier, ratio
+
+    count = 0
+    multiplier = 1
+    do local_level = 0, local_hierarchy%level_count() - 1
+      if (local_level > 0) then
+        ratio = local_hierarchy%relations(local_level)%refinement_ratio
+        multiplier = multiplier * ratio * ratio
+      end if
+      do local_patch = 1, local_hierarchy%level_patch_count(local_level)
+        if (local_distribution%owner_of(local_level, local_patch) == &
+            local_rank) count = count + multiplier
+      end do
+    end do
+  end function expected_owned_transport_advances
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second

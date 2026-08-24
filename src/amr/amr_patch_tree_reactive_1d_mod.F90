@@ -62,6 +62,8 @@ module amr_patch_tree_reactive_1d_mod
   public :: advance_patch_tree_reactive_1d
   public :: advance_patch_tree_reactive_hydro_1d
   public :: advance_patch_tree_hydro_node_1d
+  public :: advance_patch_tree_transport
+  public :: advance_patch_tree_transport_node_1d
   public :: advance_patch_tree_chemistry
   public :: refresh_patch_tree_ghosts
   public :: fill_one_child_ghosts
@@ -1017,6 +1019,58 @@ contains
     ok = local_ok
   end subroutine advance_patch_tree_transport
 
+  subroutine advance_patch_tree_transport_node_1d( &
+      species, transport, config, solution, level, patch, interval, &
+      state_start, state_end, flux, left_integral, right_integral, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: level, patch
+    real(dp), intent(in) :: interval
+    real(dp), allocatable, intent(out) :: state_start(:, :)
+    real(dp), allocatable, intent(out) :: state_end(:, :)
+    real(dp), allocatable, intent(out) :: flux(:, :)
+    real(dp), intent(out) :: left_integral(:), right_integral(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: dx, boundary_distance
+    logical :: local_ok, physical_boundary
+    integer :: nx, nvar
+
+    ok = .false.
+    left_integral = 0.0_dp
+    right_integral = 0.0_dp
+    if (interval <= 0.0_dp .or. level < 1 .or. &
+        level > solution%level_count()) return
+    if (patch < 1 .or. patch > &
+        size(solution%levels(level)%patches)) return
+    nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+    nvar = size(solution%levels(level)%patches(patch)%state, 1)
+    if (size(left_integral) /= nvar .or. &
+        size(right_integral) /= nvar) return
+    dx = solution%hierarchy%level_dx(level - 1)
+    allocate(state_start(nvar, 0:nx + 1), state_end(nvar, 0:nx + 1))
+    allocate(flux(nvar, 0:nx))
+    state_start = solution%levels(level)%patches(patch)%state
+    physical_boundary = level == 1
+    boundary_distance = dx
+    if (.not. physical_boundary) boundary_distance = 0.5_dp * ( &
+      solution%hierarchy%level_dx(level - 2) + dx)
+    call advance_transport_level_1d( &
+      species, transport, solution%levels(level)%patches(patch)%state, &
+      solution%levels(level)%patches(patch)%temperature, nx, dx, interval, &
+      boundary_distance, config, physical_boundary, &
+      patch_boundary(config, level), flux, local_ok)
+    if (.not. local_ok) return
+    solution%transport_level_advances(level) = &
+      solution%transport_level_advances(level) + 1
+    state_end = solution%levels(level)%patches(patch)%state
+    left_integral = interval * flux(:, 0)
+    right_integral = interval * flux(:, nx)
+    ok = .true.
+  end subroutine advance_patch_tree_transport_node_1d
+
   recursive subroutine advance_patch_transport_recursive( &
       species, transport, config, solution, registers, level, &
       parent_patch, interval, left_integral, right_integral, ok)
@@ -1034,8 +1088,8 @@ contains
     type(amr_level_field_1d), allocatable :: child_fields(:)
     real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
     real(dp), allocatable :: child_left(:, :), child_right(:, :)
-    real(dp) :: child_interval, alpha, dx, boundary_distance
-    logical :: local_ok, physical_boundary
+    real(dp) :: child_interval, alpha
+    logical :: local_ok
     integer :: nx, nvar, ratio, subcycles, substep
     integer :: child, global_child, child_count
 
@@ -1048,26 +1102,10 @@ contains
         parent_patch > size(solution%levels(level)%patches)) return
     nx = size(solution%levels(level)%patches(parent_patch)%state, 2) - 2
     nvar = size(solution%levels(level)%patches(parent_patch)%state, 1)
-    dx = solution%hierarchy%level_dx(level - 1)
-    allocate(state_start(nvar, 0:nx + 1), state_end(nvar, 0:nx + 1))
-    allocate(flux(nvar, 0:nx))
-    state_start = solution%levels(level)%patches(parent_patch)%state
-    physical_boundary = level == 1
-    boundary_distance = dx
-    if (.not. physical_boundary) boundary_distance = 0.5_dp * ( &
-      solution%hierarchy%level_dx(level - 2) + dx)
-    call advance_transport_level_1d( &
-      species, transport, &
-      solution%levels(level)%patches(parent_patch)%state, &
-      solution%levels(level)%patches(parent_patch)%temperature, nx, dx, &
-      interval, boundary_distance, config, physical_boundary, &
-      patch_boundary(config, level), flux, local_ok)
+    call advance_patch_tree_transport_node_1d( &
+      species, transport, config, solution, level, parent_patch, interval, &
+      state_start, state_end, flux, left_integral, right_integral, local_ok)
     if (.not. local_ok) return
-    solution%transport_level_advances(level) = &
-      solution%transport_level_advances(level) + 1
-    state_end = solution%levels(level)%patches(parent_patch)%state
-    left_integral = interval * flux(:, 0)
-    right_integral = interval * flux(:, nx)
     if (level > size(solution%hierarchy%relations)) then
       ok = .true.
       return

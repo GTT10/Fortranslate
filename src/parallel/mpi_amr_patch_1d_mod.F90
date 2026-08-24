@@ -3,6 +3,7 @@ module mpi_amr_patch_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: advance_reactive_chemistry
   use amr_reactive_1d_mod, only: recover_level_temperatures_1d
@@ -17,7 +18,8 @@ module mpi_amr_patch_1d_mod
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_patch_1d, &
     amr_patch_tree_reactive_solution_1d, refresh_patch_tree_ghosts, &
-    advance_patch_tree_hydro_node_1d, fill_one_child_ghosts, &
+    advance_patch_tree_hydro_node_1d, &
+    advance_patch_tree_transport_node_1d, fill_one_child_ghosts, &
     exchange_adjacent_child_ghosts, reconcile_adjacent_child_fluxes
   implicit none
   private
@@ -62,6 +64,7 @@ module mpi_amr_patch_1d_mod
   public :: synchronize_owned_patch_tree_reactive_1d
   public :: advance_owned_patch_tree_chemistry_1d
   public :: advance_owned_patch_tree_hydro_1d
+  public :: advance_owned_patch_tree_transport_1d
 
 contains
 
@@ -708,6 +711,237 @@ contains
     if (.not. local_ok) return
     ok = .true.
   end subroutine advance_owned_patch_hydro_recursive_1d
+
+  subroutine advance_owned_patch_tree_transport_1d( &
+      species, transport, config, interval, distribution, solution, ok, &
+      local_patch_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_patch_advances
+
+    type(amr_patch_tree_reactive_solution_1d) :: backup
+    type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
+    real(dp), allocatable :: left_integral(:), right_integral(:)
+    logical :: local_ok, accepted, mpi_ok
+    integer :: nvar, advances
+
+    ok = .false.
+    advances = 0
+    if (present(local_patch_advances)) local_patch_advances = 0
+    local_ok = interval > 0.0_dp .and. size(species) >= 1 .and. &
+      size(transport) == size(species) .and. solution%is_valid() .and. &
+      mpi_amr_distribution_matches_hierarchy_1d( &
+        distribution, solution%hierarchy)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call synchronize_owned_patch_tree_reactive_1d( &
+      distribution, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    backup = solution
+
+    nvar = size(solution%levels(1)%patches(1)%state, 1)
+    allocate(left_integral(nvar), right_integral(nvar))
+    call initialize_patch_tree_flux_registers_1d( &
+      solution%hierarchy, nvar, registers, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      return
+    end if
+    call advance_owned_patch_transport_recursive_1d( &
+      species, transport, config, distribution, solution, registers, 1, 1, &
+      interval, left_integral, right_integral, advances, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    local_ok = solution%is_valid()
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    ok = mpi_ok .and. accepted
+    if (.not. ok) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    if (present(local_patch_advances)) local_patch_advances = advances
+  end subroutine advance_owned_patch_tree_transport_1d
+
+  recursive subroutine advance_owned_patch_transport_recursive_1d( &
+      species, transport, config, distribution, solution, registers, level, &
+      parent_patch, interval, left_integral, right_integral, &
+      local_advances, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    type(amr_patch_tree_relation_flux_registers_1d), &
+      intent(inout) :: registers(:)
+    integer, intent(in) :: level, parent_patch
+    real(dp), intent(in) :: interval
+    real(dp), intent(out) :: left_integral(:), right_integral(:)
+    integer, intent(inout) :: local_advances
+    logical, intent(out) :: ok
+
+    type(amr_level_field_1d), allocatable :: child_fields(:)
+    real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
+    real(dp), allocatable :: child_left(:, :), child_right(:, :)
+    real(dp) :: child_interval, alpha
+    logical :: local_ok, patch_ok, accepted, mpi_ok
+    integer :: nx, nvar, owner, ratio, subcycles, substep, child
+    integer :: global_child, child_count, ierr
+
+    ok = .false.
+    left_integral = 0.0_dp
+    right_integral = 0.0_dp
+    if (interval <= 0.0_dp .or. level < 1 .or. &
+        level > solution%level_count()) return
+    if (parent_patch < 1 .or. &
+        parent_patch > size(solution%levels(level)%patches)) return
+    nx = size(solution%levels(level)%patches(parent_patch)%state, 2) - 2
+    nvar = size(solution%levels(level)%patches(parent_patch)%state, 1)
+    if (size(left_integral) /= nvar .or. &
+        size(right_integral) /= nvar) return
+    owner = distribution%owner_of(level - 1, parent_patch)
+    patch_ok = .true.
+    if (distribution%rank == owner) then
+      call advance_patch_tree_transport_node_1d( &
+        species, transport, config, solution, level, parent_patch, &
+        interval, state_start, state_end, flux, left_integral, &
+        right_integral, patch_ok)
+      if (patch_ok) local_advances = local_advances + 1
+    else
+      allocate(state_start(nvar, 0:nx + 1), state_end(nvar, 0:nx + 1))
+      allocate(flux(nvar, 0:nx))
+      state_start = 0.0_dp
+      state_end = 0.0_dp
+      flux = 0.0_dp
+    end if
+    call all_ranks_accept_1d( &
+      distribution, patch_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call MPI_Bcast(state_start, size(state_start), MPI_DOUBLE_PRECISION, &
+      owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast(flux, size(flux), MPI_DOUBLE_PRECISION, owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call broadcast_owned_reactive_patch_1d( &
+      distribution, owner, &
+      solution%levels(level)%patches(parent_patch), local_ok)
+    if (.not. local_ok) return
+    call MPI_Bcast( &
+      solution%transport_level_advances(level), 1, MPI_INTEGER, owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    state_end = solution%levels(level)%patches(parent_patch)%state
+    left_integral = interval * flux(:, 0)
+    right_integral = interval * flux(:, nx)
+    if (level > size(solution%hierarchy%relations)) then
+      ok = .true.
+      return
+    end if
+
+    child_count = solution%hierarchy%relations(level)% &
+      child_sets(parent_patch)%patch_count()
+    if (child_count == 0) then
+      ok = .true.
+      return
+    end if
+    ratio = solution%hierarchy%relations(level)%refinement_ratio
+    subcycles = ratio * ratio
+    child_interval = interval / real(subcycles, dp)
+    allocate(child_left(nvar, child_count), child_right(nvar, child_count))
+    do child = 1, child_count
+      call accumulate_coarse_flux_1d( &
+        registers(level)%parents(parent_patch)%children(child), &
+        flux(:, solution%hierarchy%relations(level)% &
+          child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
+        flux(:, solution%hierarchy%relations(level)% &
+          child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
+        interval, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    do substep = 1, subcycles
+      alpha = (real(substep, dp) - 0.5_dp) / real(subcycles, dp)
+      do child = 1, child_count
+        global_child = solution%hierarchy%relations(level)% &
+          child_index(parent_patch, child)
+        call fill_one_child_ghosts( &
+          species, config, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child), state_start, state_end, &
+          alpha, solution%levels(level + 1)%patches(global_child), local_ok)
+        if (.not. local_ok) return
+      end do
+      call exchange_adjacent_child_ghosts( &
+        config, solution, level, parent_patch, local_ok)
+      if (.not. local_ok) return
+      do child = 1, child_count
+        global_child = solution%hierarchy%relations(level)% &
+          child_index(parent_patch, child)
+        call advance_owned_patch_transport_recursive_1d( &
+          species, transport, config, distribution, solution, registers, &
+          level + 1, global_child, child_interval, child_left(:, child), &
+          child_right(:, child), local_advances, local_ok)
+        if (.not. local_ok) return
+      end do
+      call reconcile_adjacent_child_fluxes( &
+        species, solution, level, parent_patch, child_left, child_right, &
+        local_ok)
+      if (.not. local_ok) return
+      do child = 1, child_count
+        call accumulate_fine_flux_1d( &
+          registers(level)%parents(parent_patch)%children(child), &
+          child_left(:, child) / child_interval, &
+          child_right(:, child) / child_interval, child_interval, local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+
+    allocate(child_fields(child_count))
+    do child = 1, child_count
+      global_child = solution%hierarchy%relations(level)% &
+        child_index(parent_patch, child)
+      nx = size(solution%levels(level + 1)% &
+        patches(global_child)%state, 2) - 2
+      child_fields(child)%values = solution%levels(level + 1)% &
+        patches(global_child)%state(:, 1:nx)
+    end do
+    nx = size(solution%levels(level)%patches(parent_patch)%state, 2) - 2
+    call synchronize_patch_set_1d( &
+      solution%levels(level)%patches(parent_patch)%state(:, 1:nx), &
+      child_fields, &
+      solution%hierarchy%relations(level)%child_sets(parent_patch), &
+      registers(level)%parents(parent_patch)%children, local_ok)
+    if (.not. local_ok) return
+    call recover_level_temperatures_1d( &
+      species, solution%levels(level)%patches(parent_patch)%state, &
+      solution%levels(level)%patches(parent_patch)%temperature, nx, local_ok)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine advance_owned_patch_transport_recursive_1d
 
   subroutine broadcast_owned_reactive_patch_1d( &
       distribution, owner, patch, ok)
