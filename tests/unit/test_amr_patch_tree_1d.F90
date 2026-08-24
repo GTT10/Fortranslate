@@ -16,7 +16,9 @@ program test_amr_patch_tree_1d
   integer, parameter :: base_cells = 16
   real(dp), parameter :: tolerance = 5.0e-12_dp
   type(amr_patch_level_plan_1d), allocatable :: plans(:), invalid_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: adjacent_plans(:)
   type(amr_patch_tree_hierarchy_1d) :: hierarchy, invalid_hierarchy
+  type(amr_patch_tree_hierarchy_1d) :: adjacent_hierarchy
   type(amr_patch_tree_level_fields_1d), allocatable :: fields(:), flux_fields(:)
   type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
   type(amr_two_level_hierarchy_1d) :: geometry
@@ -177,6 +179,15 @@ program test_amr_patch_tree_1d
     base_cells, 0.0_dp, 1.0_dp, invalid_plans, invalid_hierarchy, ok)
   call assert_true(.not. ok, "invalid parent ownership rejected")
 
+  call configure_adjacent_plans(adjacent_plans)
+  call initialize_patch_tree_1d( &
+    base_cells, 0.0_dp, 1.0_dp, adjacent_plans, adjacent_hierarchy, ok)
+  call assert_true(ok .and. adjacent_hierarchy%is_valid() .and. &
+    adjacent_hierarchy%relations(1)%child_sets(1)% &
+      adjacent_patches_allowed .and. &
+    adjacent_hierarchy%level_patch_count(1) == 2, &
+    "patch tree accepts independently owned adjacent children")
+
   write(*, '(a)') "test_amr_patch_tree_1d: PASS"
 
 contains
@@ -216,6 +227,20 @@ contains
     local_plans(3)%patches(2)%lower = 3
     local_plans(3)%patches(2)%upper = 8
   end subroutine configure_plans
+
+  subroutine configure_adjacent_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    allocate(local_plans(1))
+    local_plans(1)%refinement_ratio = 2
+    allocate(local_plans(1)%patches(2))
+    local_plans(1)%patches(1)%parent_patch = 1
+    local_plans(1)%patches(1)%lower = 3
+    local_plans(1)%patches(1)%upper = 6
+    local_plans(1)%patches(2)%parent_patch = 1
+    local_plans(1)%patches(2)%lower = 7
+    local_plans(1)%patches(2)%upper = 10
+  end subroutine configure_adjacent_plans
 
   subroutine assert_synchronized(local_fields, label)
     type(amr_patch_tree_level_fields_1d), intent(in) :: local_fields(:)

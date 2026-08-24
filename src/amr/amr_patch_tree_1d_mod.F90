@@ -270,7 +270,7 @@ contains
           parent_cells, lower, upper, plans(relation)%refinement_ratio, &
           parent_lower, parent_upper, &
           hierarchy%relations(relation)%child_sets(parent), local_ok, &
-          relation - 1)
+          coarse_level=relation - 1, allow_adjacent=.true.)
         deallocate(lower, upper)
         if (.not. local_ok) then
           ok = .false.

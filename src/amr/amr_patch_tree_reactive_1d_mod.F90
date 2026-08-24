@@ -1027,7 +1027,7 @@ contains
 
     type(amr_level_field_1d), allocatable :: child_fields(:)
     real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
-    real(dp), allocatable :: child_left(:), child_right(:)
+    real(dp), allocatable :: child_left(:, :), child_right(:, :)
     real(dp) :: child_interval, alpha, dx, boundary_distance
     logical :: local_ok, physical_boundary
     integer :: nx, nvar, ratio, subcycles, substep
@@ -1076,7 +1076,7 @@ contains
     ratio = solution%hierarchy%relations(level)%refinement_ratio
     subcycles = ratio * ratio
     child_interval = interval / real(subcycles, dp)
-    allocate(child_left(nvar), child_right(nvar))
+    allocate(child_left(nvar, child_count), child_right(nvar, child_count))
     do child = 1, child_count
       call accumulate_coarse_flux_1d( &
         registers(level)%parents(parent_patch)%children(child), &
@@ -1099,16 +1099,27 @@ contains
           alpha, solution%levels(level + 1)%patches(global_child), local_ok)
         if (.not. local_ok) return
       end do
+      call exchange_adjacent_child_ghosts( &
+        config, solution, level, parent_patch, local_ok)
+      if (.not. local_ok) return
       do child = 1, child_count
         global_child = solution%hierarchy%relations(level)% &
           child_index(parent_patch, child)
         call advance_patch_transport_recursive( &
           species, transport, config, solution, registers, level + 1, &
-          global_child, child_interval, child_left, child_right, local_ok)
+          global_child, child_interval, child_left(:, child), &
+          child_right(:, child), local_ok)
         if (.not. local_ok) return
+      end do
+      call reconcile_adjacent_child_fluxes( &
+        species, solution, level, parent_patch, child_left, child_right, &
+        local_ok)
+      if (.not. local_ok) return
+      do child = 1, child_count
         call accumulate_fine_flux_1d( &
           registers(level)%parents(parent_patch)%children(child), &
-          child_left / child_interval, child_right / child_interval, &
+          child_left(:, child) / child_interval, &
+          child_right(:, child) / child_interval, &
           child_interval, local_ok)
         if (.not. local_ok) return
       end do
@@ -1152,7 +1163,7 @@ contains
 
     type(amr_level_field_1d), allocatable :: child_fields(:)
     real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
-    real(dp), allocatable :: child_left(:), child_right(:)
+    real(dp), allocatable :: child_left(:, :), child_right(:, :)
     real(dp) :: child_interval, alpha, dx
     logical :: local_ok, physical_boundary
     integer :: nx, nvar, ratio, substep, child, global_child, child_count
@@ -1216,7 +1227,7 @@ contains
     end if
     ratio = solution%hierarchy%relations(level)%refinement_ratio
     child_interval = interval / real(ratio, dp)
-    allocate(child_left(nvar), child_right(nvar))
+    allocate(child_left(nvar, child_count), child_right(nvar, child_count))
     do child = 1, child_count
       call accumulate_coarse_flux_1d( &
         registers(level)%parents(parent_patch)%children(child), &
@@ -1243,16 +1254,27 @@ contains
           alpha, solution%levels(level + 1)%patches(global_child), local_ok)
         if (.not. local_ok) return
       end do
+      call exchange_adjacent_child_ghosts( &
+        config, solution, level, parent_patch, local_ok)
+      if (.not. local_ok) return
       do child = 1, child_count
         global_child = solution%hierarchy%relations(level)% &
           child_index(parent_patch, child)
         call advance_patch_recursive( &
           species, config, solution, registers, level + 1, global_child, &
-          child_interval, child_left, child_right, local_ok)
+          child_interval, child_left(:, child), child_right(:, child), &
+          local_ok)
         if (.not. local_ok) return
+      end do
+      call reconcile_adjacent_child_fluxes( &
+        species, solution, level, parent_patch, child_left, child_right, &
+        local_ok)
+      if (.not. local_ok) return
+      do child = 1, child_count
         call accumulate_fine_flux_1d( &
           registers(level)%parents(parent_patch)%children(child), &
-          child_left / child_interval, child_right / child_interval, &
+          child_left(:, child) / child_interval, &
+          child_right(:, child) / child_interval, &
           child_interval, local_ok)
         if (.not. local_ok) return
       end do
@@ -1315,6 +1337,212 @@ contains
     ok = .true.
   end subroutine extract_patch_tree_fields
 
+  subroutine exchange_adjacent_child_ghosts( &
+      config, solution, relation, parent, ok)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, parent
+    logical, intent(out) :: ok
+
+    integer :: target, source, target_index, source_index
+    integer :: target_nx, source_cell, global_fine, layer, child_count
+    integer :: source_lower, source_upper
+
+    ok = relation >= 1 .and. relation <= &
+      size(solution%hierarchy%relations)
+    if (.not. ok) return
+    ok = parent >= 1 .and. parent <= solution%hierarchy% &
+      relations(relation)%parent_patch_count()
+    if (.not. ok) return
+    child_count = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patch_count()
+
+    do target = 1, child_count
+      target_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, target)
+      target_nx = size(solution%levels(relation + 1)% &
+        patches(target_index)%state, 2) - 2
+
+      global_fine = solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patches(target)%fine%lower - 1
+      do source = 1, child_count
+        if (source == target) cycle
+        source_lower = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(source)%fine%lower
+        source_upper = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(source)%fine%upper
+        if (global_fine < source_lower .or. &
+            global_fine > source_upper) cycle
+        source_index = solution%hierarchy%relations(relation)% &
+          child_index(parent, source)
+        source_cell = global_fine - source_lower + 1
+        solution%levels(relation + 1)%patches(target_index)%state(:, 0) = &
+          solution%levels(relation + 1)%patches(source_index)% &
+            state(:, source_cell)
+        solution%levels(relation + 1)%patches(target_index)%temperature(0) = &
+          solution%levels(relation + 1)%patches(source_index)% &
+            temperature(source_cell)
+        exit
+      end do
+
+      global_fine = solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patches(target)%fine%upper + 1
+      do source = 1, child_count
+        if (source == target) cycle
+        source_lower = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(source)%fine%lower
+        source_upper = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(source)%fine%upper
+        if (global_fine < source_lower .or. &
+            global_fine > source_upper) cycle
+        source_index = solution%hierarchy%relations(relation)% &
+          child_index(parent, source)
+        source_cell = global_fine - source_lower + 1
+        solution%levels(relation + 1)%patches(target_index)% &
+          state(:, target_nx + 1) = &
+          solution%levels(relation + 1)%patches(source_index)% &
+            state(:, source_cell)
+        solution%levels(relation + 1)%patches(target_index)% &
+          temperature(target_nx + 1) = &
+          solution%levels(relation + 1)%patches(source_index)% &
+            temperature(source_cell)
+        exit
+      end do
+
+      if (.not. uses_ppm_reconstruction(config)) cycle
+      do layer = 1, amr_ppm_ghost_width
+        global_fine = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(target)%fine%lower - layer
+        do source = 1, child_count
+          if (source == target) cycle
+          source_lower = solution%hierarchy%relations(relation)% &
+            child_sets(parent)%patches(source)%fine%lower
+          source_upper = solution%hierarchy%relations(relation)% &
+            child_sets(parent)%patches(source)%fine%upper
+          if (global_fine < source_lower .or. &
+              global_fine > source_upper) cycle
+          source_index = solution%hierarchy%relations(relation)% &
+            child_index(parent, source)
+          source_cell = global_fine - source_lower + 1
+          solution%levels(relation + 1)%patches(target_index)% &
+            left_ghost_state(:, layer) = &
+            solution%levels(relation + 1)%patches(source_index)% &
+              state(:, source_cell)
+          solution%levels(relation + 1)%patches(target_index)% &
+            left_ghost_temperature(layer) = &
+            solution%levels(relation + 1)%patches(source_index)% &
+              temperature(source_cell)
+          exit
+        end do
+
+        global_fine = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(target)%fine%upper + layer
+        do source = 1, child_count
+          if (source == target) cycle
+          source_lower = solution%hierarchy%relations(relation)% &
+            child_sets(parent)%patches(source)%fine%lower
+          source_upper = solution%hierarchy%relations(relation)% &
+            child_sets(parent)%patches(source)%fine%upper
+          if (global_fine < source_lower .or. &
+              global_fine > source_upper) cycle
+          source_index = solution%hierarchy%relations(relation)% &
+            child_index(parent, source)
+          source_cell = global_fine - source_lower + 1
+          solution%levels(relation + 1)%patches(target_index)% &
+            right_ghost_state(:, layer) = &
+            solution%levels(relation + 1)%patches(source_index)% &
+              state(:, source_cell)
+          solution%levels(relation + 1)%patches(target_index)% &
+            right_ghost_temperature(layer) = &
+            solution%levels(relation + 1)%patches(source_index)% &
+              temperature(source_cell)
+          exit
+        end do
+      end do
+    end do
+    ok = .true.
+  end subroutine exchange_adjacent_child_ghosts
+
+  subroutine reconcile_adjacent_child_fluxes( &
+      species, solution, relation, parent, left_integrals, &
+      right_integrals, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, parent
+    real(dp), intent(inout) :: left_integrals(:, :), right_integrals(:, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: shared_integral(:)
+    logical, allocatable :: touched(:)
+    real(dp) :: dx
+    logical :: local_ok
+    integer :: child, left_index, right_index, left_nx
+    integer :: child_count
+
+    ok = relation >= 1 .and. relation <= &
+      size(solution%hierarchy%relations)
+    if (.not. ok) return
+    ok = parent >= 1 .and. parent <= solution%hierarchy% &
+      relations(relation)%parent_patch_count()
+    if (.not. ok) return
+    child_count = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patch_count()
+    ok = size(left_integrals, 1) == size(right_integrals, 1) .and. &
+      size(left_integrals, 2) == child_count .and. &
+      size(right_integrals, 2) == child_count
+    if (.not. ok) return
+    allocate(shared_integral(size(left_integrals, 1)))
+    allocate(touched(child_count))
+    touched = .false.
+    dx = solution%hierarchy%level_dx(relation)
+    ok = dx > 0.0_dp
+    if (.not. ok) return
+
+    do child = 1, child_count - 1
+      if (solution%hierarchy%relations(relation)%child_sets(parent)% &
+            patches(child)%fine_coarse_upper + 1 /= &
+          solution%hierarchy%relations(relation)%child_sets(parent)% &
+            patches(child + 1)%fine_coarse_lower) cycle
+      left_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child)
+      right_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child + 1)
+      left_nx = size(solution%levels(relation + 1)% &
+        patches(left_index)%state, 2) - 2
+      shared_integral = 0.5_dp * ( &
+        right_integrals(:, child) + left_integrals(:, child + 1))
+      solution%levels(relation + 1)%patches(left_index)% &
+        state(:, left_nx) = &
+        solution%levels(relation + 1)%patches(left_index)% &
+          state(:, left_nx) - &
+        (shared_integral - right_integrals(:, child)) / dx
+      solution%levels(relation + 1)%patches(right_index)%state(:, 1) = &
+        solution%levels(relation + 1)%patches(right_index)%state(:, 1) + &
+        (shared_integral - left_integrals(:, child + 1)) / dx
+      right_integrals(:, child) = shared_integral
+      left_integrals(:, child + 1) = shared_integral
+      touched(child) = .true.
+      touched(child + 1) = .true.
+    end do
+
+    do child = 1, child_count
+      if (.not. touched(child)) cycle
+      left_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child)
+      left_nx = size(solution%levels(relation + 1)% &
+        patches(left_index)%state, 2) - 2
+      call recover_level_temperatures_1d( &
+        species, solution%levels(relation + 1)%patches(left_index)%state, &
+        solution%levels(relation + 1)%patches(left_index)%temperature, &
+        left_nx, local_ok)
+      if (.not. local_ok) then
+        ok = .false.
+        return
+      end if
+    end do
+    ok = .true.
+  end subroutine reconcile_adjacent_child_fluxes
+
   subroutine refresh_patch_tree_ghosts(species, config, solution, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
@@ -1351,6 +1579,12 @@ contains
             return
           end if
         end do
+        call exchange_adjacent_child_ghosts( &
+          config, solution, relation, parent, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
       end do
     end do
     ok = .true.

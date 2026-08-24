@@ -16,6 +16,7 @@ module amr_multipatch_1d_mod
     real(dp) :: x_upper = 0.0_dp
     real(dp) :: coarse_dx = 0.0_dp
     real(dp) :: fine_dx = 0.0_dp
+    logical :: adjacent_patches_allowed = .false.
     type(amr_two_level_hierarchy_1d), allocatable :: patches(:)
   contains
     procedure :: patch_count => amr_patch_set_patch_count
@@ -117,7 +118,11 @@ contains
           spacing_tolerance
       if (.not. valid) return
       if (patch > 1) then
-        valid = self%patches(patch)%fine_coarse_lower > previous_upper + 1
+        if (self%adjacent_patches_allowed) then
+          valid = self%patches(patch)%fine_coarse_lower > previous_upper
+        else
+          valid = self%patches(patch)%fine_coarse_lower > previous_upper + 1
+        end if
         if (.not. valid) return
       end if
       previous_upper = self%patches(patch)%fine_coarse_upper
@@ -126,7 +131,8 @@ contains
 
   subroutine initialize_patch_set_1d( &
       coarse_cells, patch_parent_lower, patch_parent_upper, &
-      refinement_ratio, x_lower, x_upper, patch_set, ok, coarse_level)
+      refinement_ratio, x_lower, x_upper, patch_set, ok, coarse_level, &
+      allow_adjacent)
     integer, intent(in) :: coarse_cells
     integer, intent(in) :: patch_parent_lower(:), patch_parent_upper(:)
     integer, intent(in) :: refinement_ratio
@@ -134,12 +140,16 @@ contains
     type(amr_patch_set_1d), intent(out) :: patch_set
     logical, intent(out) :: ok
     integer, intent(in), optional :: coarse_level
+    logical, intent(in), optional :: allow_adjacent
 
     logical :: local_ok
     integer :: parent_level, patch
 
     parent_level = 0
     if (present(coarse_level)) parent_level = coarse_level
+    patch_set%adjacent_patches_allowed = .false.
+    if (present(allow_adjacent)) &
+      patch_set%adjacent_patches_allowed = allow_adjacent
     patch_set%coarse_level = parent_level
     patch_set%coarse_cells = coarse_cells
     patch_set%refinement_ratio = refinement_ratio
@@ -268,6 +278,18 @@ contains
     coarse_backup = coarse
     register_backup = registers
     do patch = 1, size(registers)
+      if (patch_set%adjacent_patches_allowed) then
+        if (patch > 1) then
+          if (patch_set%patches(patch - 1)%fine_coarse_upper + 1 == &
+              patch_set%patches(patch)%fine_coarse_lower) &
+            registers(patch)%left = 0.0_dp
+        end if
+        if (patch < size(registers)) then
+          if (patch_set%patches(patch)%fine_coarse_upper + 1 == &
+              patch_set%patches(patch + 1)%fine_coarse_lower) &
+            registers(patch)%right = 0.0_dp
+        end if
+      end if
       call reflux_1d( &
         coarse, patch_set%patches(patch), registers(patch), local_ok)
       if (.not. local_ok) then

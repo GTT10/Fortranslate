@@ -37,11 +37,13 @@ program test_amr_patch_tree_reactive_1d
   type(reactive_1d_config) :: config, chemistry_config
   type(reactive_1d_config) :: transport_config, split_control_config
   type(reactive_1d_config) :: tagged_config, invalid_tagged_config
+  type(reactive_1d_config) :: adjacent_config, adjacent_transport_config
   type(amr_patch_level_plan_1d), allocatable :: plans(:)
   type(amr_patch_level_plan_1d), allocatable :: moved_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: invalid_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: empty_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: tagged_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: adjacent_plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
   type(amr_patch_tree_reactive_solution_1d) :: hydro_control
   type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
@@ -51,6 +53,8 @@ program test_amr_patch_tree_reactive_1d
   type(amr_patch_tree_reactive_solution_1d) :: old_tree
   type(amr_patch_tree_reactive_solution_1d) :: tagged_solution
   type(amr_patch_tree_reactive_solution_1d) :: tagged_backup
+  type(amr_patch_tree_reactive_solution_1d) :: adjacent_solution
+  type(amr_patch_tree_reactive_solution_1d) :: adjacent_transport_solution
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp), allocatable :: chemistry_initial_integral(:)
   real(dp), allocatable :: chemistry_final_integral(:)
@@ -60,6 +64,10 @@ program test_amr_patch_tree_reactive_1d
   real(dp), allocatable :: regrid_final_integral(:)
   real(dp), allocatable :: tagged_initial_integral(:)
   real(dp), allocatable :: tagged_final_integral(:)
+  real(dp), allocatable :: adjacent_initial_integral(:)
+  real(dp), allocatable :: adjacent_final_integral(:)
+  real(dp), allocatable :: adjacent_transport_initial_integral(:)
+  real(dp), allocatable :: adjacent_transport_final_integral(:)
   real(dp), allocatable :: q(:)
   real(dp) :: dt, conservation_error, synchronization_error
   real(dp) :: chemistry_dt, chemistry_difference
@@ -68,6 +76,9 @@ program test_amr_patch_tree_reactive_1d
   real(dp) :: transport_conservation_error
   real(dp) :: regrid_conservation_error, overlap_error
   real(dp) :: tagged_conservation_error
+  real(dp) :: adjacent_conservation_error
+  real(dp) :: adjacent_transport_conservation_error
+  real(dp) :: adjacent_dt
   real(dp) :: minimum_temperature, minimum_pressure
   real(dp) :: maximum_closure_error
   logical :: ok, changed
@@ -383,6 +394,92 @@ program test_amr_patch_tree_reactive_1d
     patch_tree_state_difference(tagged_solution, tagged_backup) == 0.0_dp, &
     "invalid tag-driven patch-tree request is transactional")
 
+  call configure_adjacent_case(config, adjacent_config)
+  call configure_adjacent_plans(adjacent_plans)
+  call initialize_patch_tree_reactive_1d( &
+    species, adjacent_config, adjacent_plans, adjacent_solution, ok)
+  call require(ok .and. adjacent_solution%is_valid() .and. &
+    adjacent_solution%level_count() == 2 .and. &
+    size(adjacent_solution%levels(2)%patches) == 2, &
+    "adjacent reactive patch-tree initialization")
+  call check_adjacent_ghost_exchange(adjacent_solution, overlap_error)
+  call require(overlap_error == 0.0_dp, &
+    "adjacent narrow and PPM-wide ghosts come from same-level siblings")
+  allocate(adjacent_initial_integral(reactive_nvar(size(species))))
+  allocate(adjacent_final_integral(reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_solution, adjacent_initial_integral, ok)
+  call require(ok, "pre-adjacent-hydro composite integral")
+  call patch_tree_reactive_timestep_1d( &
+    species, adjacent_config, adjacent_solution, adjacent_dt, ok)
+  call require(ok .and. adjacent_dt > 0.0_dp, &
+    "adjacent patch-tree stable timestep")
+  adjacent_dt = min(0.05_dp * adjacent_dt, 1.0e-8_dp)
+  call advance_patch_tree_reactive_hydro_1d( &
+    species, adjacent_config, adjacent_dt, adjacent_solution, ok)
+  call require(ok .and. adjacent_solution%is_valid() .and. &
+    all(adjacent_solution%level_advances == [1, 4]), &
+    "adjacent PPM patch-tree hydro advance")
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_solution, adjacent_final_integral, ok)
+  call require(ok, "post-adjacent-hydro composite integral")
+  adjacent_conservation_error = maxval(abs( &
+    adjacent_final_integral - adjacent_initial_integral) / &
+    max(1.0_dp, abs(adjacent_initial_integral)))
+  call require(adjacent_conservation_error < conservation_tolerance, &
+    "single owned fine/fine hydro flux conserves the composite state")
+  call check_synchronization(adjacent_solution, synchronization_error)
+  call require(synchronization_error < synchronization_tolerance, &
+    "adjacent hydro parent-child synchronization")
+  call check_adjacent_ghost_exchange(adjacent_solution, overlap_error)
+  call require(overlap_error == 0.0_dp, &
+    "post-hydro adjacent ghost refresh")
+
+  call configure_transport_case(adjacent_config, adjacent_transport_config)
+  adjacent_transport_config%chemistry_enabled = .false.
+  call initialize_patch_tree_reactive_1d( &
+    species, adjacent_transport_config, adjacent_plans, &
+    adjacent_transport_solution, ok)
+  call require(ok .and. adjacent_transport_solution%is_valid(), &
+    "adjacent transport patch-tree initialization")
+  allocate(adjacent_transport_initial_integral( &
+    reactive_nvar(size(species))))
+  allocate(adjacent_transport_final_integral( &
+    reactive_nvar(size(species))))
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_transport_solution, adjacent_transport_initial_integral, ok)
+  call require(ok, "pre-adjacent-transport composite integral")
+  call patch_tree_reactive_timestep_1d( &
+    species, adjacent_transport_config, adjacent_transport_solution, &
+    adjacent_dt, ok, transport)
+  call require(ok .and. adjacent_dt > 0.0_dp, &
+    "adjacent hydro-transport stable timestep")
+  adjacent_dt = min(adjacent_dt, 1.0e-10_dp)
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, adjacent_transport_config, adjacent_dt, &
+    adjacent_transport_solution, ok, transport)
+  call require(ok .and. adjacent_transport_solution%is_valid() .and. &
+    all(adjacent_transport_solution%level_advances == [1, 4]) .and. &
+    all(adjacent_transport_solution%transport_level_advances == [2, 16]), &
+    "adjacent reaction-transport-hydro split accounting")
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_transport_solution, adjacent_transport_final_integral, ok)
+  call require(ok, "post-adjacent-transport composite integral")
+  adjacent_transport_conservation_error = maxval(abs( &
+    adjacent_transport_final_integral - adjacent_transport_initial_integral) / &
+    max(1.0_dp, abs(adjacent_transport_initial_integral)))
+  call require(adjacent_transport_conservation_error < &
+    transport_conservation_tolerance, &
+    "single owned fine/fine transport flux conserves the composite state")
+  call check_synchronization( &
+    adjacent_transport_solution, synchronization_error)
+  call require(synchronization_error < 8.0e-13_dp, &
+    "adjacent transport parent-child synchronization")
+  call check_adjacent_ghost_exchange( &
+    adjacent_transport_solution, overlap_error)
+  call require(overlap_error == 0.0_dp, &
+    "post-transport adjacent ghost refresh")
+
   write(*, '(a,1x,es16.8)') &
     "Patch-tree conservation error:", conservation_error
   write(*, '(a,1x,es16.8)') &
@@ -401,6 +498,11 @@ program test_amr_patch_tree_reactive_1d
     "Patch-tree overlap cells transferred:", accepted_transferred_cells
   write(*, '(a,1x,es16.8)') &
     "Tagged patch-tree regrid conservation:", tagged_conservation_error
+  write(*, '(a,1x,es16.8)') &
+    "Adjacent patch-tree hydro conservation:", adjacent_conservation_error
+  write(*, '(a,1x,es16.8)') &
+    "Adjacent patch-tree transport conservation:", &
+    adjacent_transport_conservation_error
   write(*, '(a)') "test_amr_patch_tree_reactive_1d: PASS"
 
 contains
@@ -463,6 +565,17 @@ contains
     local_config%amr_maximum_patch_gap_cells = 4
   end subroutine configure_tagged_case
 
+  subroutine configure_adjacent_case(base_config, local_config)
+    type(reactive_1d_config), intent(in) :: base_config
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = base_config
+    local_config%amr_reconstruction = "ppm"
+    local_config%ppm_contact_steepening = .false.
+    local_config%ppm_shock_flattening = .false.
+    local_config%amr_hybrid_weno = .false.
+  end subroutine configure_adjacent_case
+
   subroutine configure_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
 
@@ -508,6 +621,59 @@ contains
     local_plans(1)%patches(2)%lower = 18
     local_plans(1)%patches(2)%upper = 25
   end subroutine configure_moved_plans
+
+  subroutine configure_adjacent_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    allocate(local_plans(1))
+    local_plans(1)%refinement_ratio = 2
+    allocate(local_plans(1)%patches(2))
+    local_plans(1)%patches(1)%parent_patch = 1
+    local_plans(1)%patches(1)%lower = 6
+    local_plans(1)%patches(1)%upper = 13
+    local_plans(1)%patches(2)%parent_patch = 1
+    local_plans(1)%patches(2)%lower = 14
+    local_plans(1)%patches(2)%upper = 21
+  end subroutine configure_adjacent_plans
+
+  subroutine check_adjacent_ghost_exchange(local_solution, maximum_error)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: local_solution
+    real(dp), intent(out) :: maximum_error
+
+    integer :: left_nx, right_nx, layer
+
+    call require(local_solution%level_count() >= 2 .and. &
+      size(local_solution%levels(2)%patches) >= 2, &
+      "adjacent ghost-check topology")
+    left_nx = size(local_solution%levels(2)%patches(1)%state, 2) - 2
+    right_nx = size(local_solution%levels(2)%patches(2)%state, 2) - 2
+    maximum_error = max( &
+      maxval(abs(local_solution%levels(2)%patches(1)%state(:, left_nx + 1) - &
+        local_solution%levels(2)%patches(2)%state(:, 1))), &
+      maxval(abs(local_solution%levels(2)%patches(2)%state(:, 0) - &
+        local_solution%levels(2)%patches(1)%state(:, left_nx))), &
+      abs(local_solution%levels(2)%patches(1)%temperature(left_nx + 1) - &
+        local_solution%levels(2)%patches(2)%temperature(1)), &
+      abs(local_solution%levels(2)%patches(2)%temperature(0) - &
+        local_solution%levels(2)%patches(1)%temperature(left_nx)))
+    do layer = 1, 4
+      maximum_error = max(maximum_error, maxval(abs( &
+        local_solution%levels(2)%patches(1)%right_ghost_state(:, layer) - &
+        local_solution%levels(2)%patches(2)%state(:, layer))))
+      maximum_error = max(maximum_error, maxval(abs( &
+        local_solution%levels(2)%patches(2)%left_ghost_state(:, layer) - &
+        local_solution%levels(2)%patches(1)%state(:, left_nx - layer + 1))))
+      maximum_error = max(maximum_error, abs( &
+        local_solution%levels(2)%patches(1)% &
+          right_ghost_temperature(layer) - &
+        local_solution%levels(2)%patches(2)%temperature(layer)))
+      maximum_error = max(maximum_error, abs( &
+        local_solution%levels(2)%patches(2)%left_ghost_temperature(layer) - &
+        local_solution%levels(2)%patches(1)% &
+          temperature(left_nx - layer + 1)))
+    end do
+    call require(right_nx >= 4, "adjacent right patch wide-ghost source")
+  end subroutine check_adjacent_ghost_exchange
 
   subroutine check_synchronization(local_solution, maximum_error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: local_solution
