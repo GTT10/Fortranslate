@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.84.0` milestone contains the serial verification suite, seven optional
+The `0.85.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -177,9 +177,19 @@ Strang sequence applies half reactions only to active cells, performs the EB
 hydro transaction, and applies the second half reaction while leaving covered
 cells bitwise unchanged. Molecular transport and transverse reconstruction
 settings are rejected instead of silently ignored.
+
+The EB and AMR foundations now meet at one qualified static two-level transfer.
+An aligned rectangular fine patch is restricted with fine fluid-volume weights,
+the corresponding composite integral counts uncovered coarse cells and fine
+cells exactly once, and reactive restriction recovers every active parent
+temperature before committing either state or temperature. Covered parents
+retain their original reactive data. This is a serial synchronization kernel,
+not yet a time-advancing EB AMR application.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
-periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, AMR
-coupling, and MPI distribution are not yet connected.
+periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
+prolongation and reflux, dynamic multilevel EB regridding, and MPI distribution
+are not yet connected.
 
 ### MPI one-dimensional verification
 

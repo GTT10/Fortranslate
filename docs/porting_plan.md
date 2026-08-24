@@ -601,7 +601,10 @@ Required capabilities:
   interpolation (`0.83.0`)
 - [x] fluid-volume centroids and second-order StateRedist neighborhood
   reconstruction, centroid limiting, and recipient bounds (`0.84.0`)
-- EB-aware coarse/fine synchronization and multilevel redistribution
+- [x] static aligned two-level EB volume-weighted average-down, composite
+  conservation, and reactive EOS transaction (`0.85.0`)
+- EB coarse/fine flux-register synchronization, reflux, and multilevel
+  redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

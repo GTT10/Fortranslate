@@ -1428,6 +1428,30 @@ only if every active cell passes the general-EOS conversion. Fourth-order
 StateRedist slopes, periodic/ghost-cell neighborhoods, and multilevel
 redistribution are not yet claimed.
 
+## Static two-level EB average-down
+
+One fine rectangle may be aligned with a coarse EB level at integer refinement
+ratio `r`. Before transfer, the hierarchy verifies matching physical bounds and
+spacing and requires each covered parent volume fraction to equal the arithmetic
+average of its `r^2` child fractions. For a parent cell with positive total fine
+fluid measure, component `n` is restricted as
+
+`U_c(n) = sum_f(kappa_f U_f(n)) / sum_f(kappa_f)`.
+
+If every child is covered, the first child value supplies the generic fallback,
+matching the AMReX EB average-down kernel. The reactive wrapper instead retains
+the original covered-parent state and temperature, while every active parent
+must pass conserved-to-primitive EOS recovery before the complete arrays are
+committed.
+
+The composite extensive diagnostic excludes every coarse cell geometrically
+covered by the fine rectangle and adds `kappa_f U_f dx_f dy_f` over the fine
+level. Restricting the fine patch and then integrating the resulting coarse
+level therefore reproduces the same composite integral to roundoff. This
+foundation does not advance either level and does not yet provide EB
+prolongation, ghost fill, subcycling, flux-register reflux, dynamic regridding,
+multiple patches, or distributed ownership.
+
 The complete EB hydro update accepts either `pcm` or `characteristic_plm`.
 PCM supplies the cell primitive state unchanged. Characteristic PLM reuses the
 regular reactive frozen-composition acoustic projection and MUSCL-Hancock

@@ -906,6 +906,17 @@ driver accepts its qualified PCM-or-PLM/outflow contract and can wrap hydro in
 active-cell reaction half steps. Covered cells are excluded from both reactor
 calls, and candidate arrays make the complete reaction--hydro--reaction step
 transactional. Molecular transport remains rejected.
+
+`amr_eb_hierarchy_2d_mod` provides the first bridge from this EB geometry to
+the AMR data model. It describes one aligned rectangular level-two patch by its
+parent bounds and integer refinement ratio. Construction rejects inconsistent
+physical bounds, spacing, dimensions, or parent/child volume measures. The
+generic restriction replaces only covered parent-patch cells with fine
+fluid-volume-weighted states; a composite integral omits that parent region and
+counts the fine patch instead. Its reactive wrapper treats state plus recovered
+temperature as one transaction and retains covered-parent data.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
-neighborhoods, thermal/viscous/catalytic walls, and EB AMR/MPI ownership remain
-outside this subsystem.
+neighborhoods, thermal/viscous/catalytic walls, EB prolongation, flux-register
+reflux, subcycling, dynamic regridding, and EB AMR/MPI ownership remain outside
+this subsystem.

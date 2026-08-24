@@ -1413,3 +1413,23 @@ committed EB applications select second order. This milestone does not claim
 fourth-order slopes, physical/periodic ghost neighborhoods, multilevel
 redistribution, EB coarse/fine flux synchronization, molecular transport, or
 MPI ownership.
+
+## Static two-level EB average-down (`0.85.0`)
+
+- [x] aligned rectangular fine-patch metadata and geometry validation
+- [x] parent/child EB volume-measure consistency gate
+- [x] AMReX-style fine-volume-fraction-weighted state restriction
+- [x] first-child fallback for a fully covered fine block
+- [x] outside-patch coarse-state preservation
+- [x] composite EB integral with single-count coarse/fine coverage
+- [x] exact constant and affine fluid-centroid restriction gates
+- [x] composite-to-restricted conservation gate
+- [x] reactive active-parent EOS and temperature recovery
+- [x] covered-parent preservation and whole-array rollback
+- [x] nonfinite, nonphysical, and misaligned-hierarchy rejection gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This is a serial synchronization foundation for one static two-level rectangle.
+It does not yet advance an EB hierarchy or provide prolongation, ghost fill,
+subcycling, coarse/fine flux registers and reflux, multiple fine patches,
+dynamic regridding, multilevel redistribution, or MPI ownership.

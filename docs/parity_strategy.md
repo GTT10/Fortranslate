@@ -1281,3 +1281,19 @@ values must remain inside the active input range. Invalid order 1 must return a
 zero direct output and must leave a reactive advance state and temperature
 unchanged. The committed circular and chemistry applications must run with
 `state_redist_max_order=2` in GNU Fortran Debug and Release suites.
+
+## 0.85.0 static two-level EB average-down gates
+
+An aligned fine rectangle must reproduce every covered parent EB volume
+fraction by averaging its child fractions. Fine-volume-weighted restriction
+must preserve constant states, reproduce an affine scalar evaluated at fluid
+centroids on every active parent, leave all outside-patch coarse cells bitwise
+unchanged, and make the restricted coarse integral equal the single-count
+coarse/fine composite integral to roundoff. A fully covered child block must
+exercise the AMReX-compatible first-child fallback.
+
+Uniform multispecies reactive data must restrict without changing conserved
+state and must recover temperature on active parents. Covered parents retain
+their input state and temperature. A nonphysical active fine block, a nonfinite
+input, or inconsistent patch alignment must reject the complete operation
+without partial output mutation in GNU Fortran Debug and Release suites.
