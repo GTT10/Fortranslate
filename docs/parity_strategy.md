@@ -1237,3 +1237,15 @@ Its CSV must contain 400 ordered grid cells with finite geometry and primitive
 fields. Invalid CFL values, geometry without cut cells, and direct requests for
 unsupported chemistry must fail without an accepted step in GNU Fortran Debug
 and Release suites.
+
+## 0.82.0 active-cell EB chemistry gates
+
+The chemistry-coupled EB path is accepted only while a plane geometry contains
+regular, cut, and covered cells; two active-cell reaction half-steps surrounding
+the EB hydro update match the regular 2D chemistry application for density,
+velocity, pressure, temperature, total energy, and every species field; and the
+covered fields remain bitwise identical to a chemistry-disabled EB run. The
+reactive result must differ from the inert result, preserve volume-weighted mass
+and total energy, and retain all geometry fields. An unknown Riemann solver
+after the first reaction half-step must restore the complete input state and
+temperature in GNU Fortran Debug and Release suites.

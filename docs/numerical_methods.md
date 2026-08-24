@@ -1426,3 +1426,12 @@ cells. No inverse-volume-fraction factor is added to this bound because the
 weighted StateRedist update removes the explicit small-cell stiffness. The
 last step is clipped to the configured final time. Conserved diagnostics use
 `sum(kappa*U)*dx*dy`; extrema and EOS checks visit active cells only.
+
+With chemistry enabled, one EB interval is
+`reaction(dt/2) -> EB hydro(dt) -> reaction(dt/2)`. The cell-local constant
+volume reactor receives a logical active mask, so covered cells are never
+converted or integrated. Chemistry operates on candidate state and temperature
+arrays and commits only after every active cell succeeds. The outer EB Strang
+operator retains the original inputs until both reaction halves and the hydro
+transaction complete, so a later Riemann or EOS failure also rolls back the
+first reaction half.

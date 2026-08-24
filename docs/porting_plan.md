@@ -596,6 +596,7 @@ Required capabilities:
   (`0.80.0`)
 - [x] namelist-driven plane/circle EB hydro application, active-cell CFL,
   volume-weighted diagnostics, and geometry-aware CSV (`0.81.0`)
+- [x] active-cell chemistry and transactional EB Strang splitting (`0.82.0`)
 - higher-order StateRedist neighborhood reconstruction and limiting
 - thermal, viscous, and catalytic wall boundary conditions
 

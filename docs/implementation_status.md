@@ -1355,3 +1355,20 @@ The standalone `pelef_reactive_eb_2d` path advances stationary embedded
 boundaries through a real input-to-output workflow. It is deliberately limited
 to first-order hydro with outflow outer boundaries. Chemistry, molecular
 transport, higher-order reconstruction, AMR, and MPI remain unclaimed.
+
+## Active-cell EB chemistry splitting (`0.82.0`)
+
+- [x] optional active mask on the shared reactive 2D chemistry operator
+- [x] candidate-array chemistry commit with no partial-cell mutation
+- [x] covered cells excluded from primitive recovery and reactor integration
+- [x] reaction--EB hydro--reaction Strang composition
+- [x] outer rollback when hydro fails after the first reaction half-step
+- [x] elementary and full-mechanism dispatch in the public EB application
+- [x] active-cell field parity with the regular 2D chemistry application
+- [x] bitwise covered-cell parity with a chemistry-disabled EB run
+- [x] volume-weighted mass and total-energy conservation gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The EB application is now genuinely reactive for stationary adiabatic slip
+walls. Molecular transport, higher-order EB hydro, AMR coupling, and MPI
+ownership remain outside this serial single-level path.

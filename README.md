@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.81.0` milestone contains the serial verification suite, seven optional
+The `0.82.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -165,8 +165,11 @@ now reads plane or circular geometry from a namelist, initializes a
 general-EOS multispecies state, advances to a requested final time with an
 active-cell CFL limit, reports volume-weighted diagnostics, and writes cell
 geometry and primitive fields to CSV. This qualified runnable path is PCM
-hydro with zero-gradient outer faces; it rejects chemistry, transport, and
-transverse reconstruction settings instead of silently ignoring them.
+hydro with zero-gradient outer faces and optional active-cell chemistry. Its
+Strang sequence applies half reactions only to active cells, performs the EB
+hydro transaction, and applies the second half reaction while leaving covered
+cells bitwise unchanged. Molecular transport and transverse reconstruction
+settings are rejected instead of silently ignored.
 Higher-order EB reconstruction and face-centroid interpolation,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, AMR
 coupling, and MPI distribution are not yet connected.
@@ -592,6 +595,13 @@ Input-driven first-order reactive EB hydro around a circular obstacle:
   cases/reactive_eb_circle_2d/uniform.nml
 python3 tools/check_reactive_eb_circle_2d.py \
   --input reactive_eb_circle_2d.csv
+```
+
+Active-cell chemistry parity against the regular 2D path:
+
+```bash
+./build/pelef_reactive_eb_2d \
+  cases/reactive_eb_chemistry_2d/reactive.nml
 ```
 
 ## Project records

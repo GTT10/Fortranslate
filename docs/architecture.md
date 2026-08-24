@@ -892,7 +892,10 @@ operator into a standalone time-dependent application: it builds a plane or
 circle level set from the input file, evaluates the general-EOS CFL rate over
 active cells only, advances to the clipped final time, and emits
 volume-fraction-weighted diagnostics and geometry-aware CSV output. The public
-driver accepts only its qualified PCM, outflow, hydro-only contract.
+driver accepts its qualified PCM/outflow contract and can wrap hydro in
+active-cell reaction half steps. Covered cells are excluded from both reactor
+calls, and candidate arrays make the complete reaction--hydro--reaction step
+transactional. Molecular transport remains rejected.
 Higher-order EB reconstruction and
 face-centroid interpolation, higher-order StateRedist, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
