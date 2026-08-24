@@ -32,6 +32,7 @@ module mpi_amr_sparse_patch_1d_mod
 
   integer, parameter :: sparse_patch_migration_tag = 2601
   integer, parameter :: sparse_adjacent_halo_tag = 2602
+  integer, parameter :: sparse_child_parent_tag = 2603
 
   type, public :: mpi_amr_sparse_reactive_level_1d
     type(amr_patch_tree_reactive_patch_1d), allocatable :: patches(:)
@@ -73,7 +74,7 @@ contains
 
   subroutine advance_sparse_patch_tree_chemistry_1d( &
       species, reactions, config, interval, distribution, solution, ok, &
-      local_patch_advances, local_halo_transfers)
+      local_patch_advances, local_halo_transfers, local_parent_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -83,17 +84,20 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_patch_advances
     integer, intent(out), optional :: local_halo_transfers
+    integer, intent(out), optional :: local_parent_transfers
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
     character(len=32) :: boundary
     logical :: local_ok, accepted, mpi_ok
-    integer :: level, patch, nx, advances, halo_transfers
+    integer :: level, patch, nx, advances, halo_transfers, parent_transfers
 
     ok = .false.
     advances = 0
     halo_transfers = 0
+    parent_transfers = 0
     if (present(local_patch_advances)) local_patch_advances = 0
     if (present(local_halo_transfers)) local_halo_transfers = 0
+    if (present(local_parent_transfers)) local_parent_transfers = 0
     local_ok = interval >= 0.0_dp .and. size(species) >= 1 .and. &
       solution%is_valid(distribution)
     call all_ranks_accept_sparse_1d( &
@@ -127,7 +131,7 @@ contains
     end do
 
     call average_down_sparse_reactive_solution_1d( &
-      species, distribution, solution, local_ok)
+      species, distribution, solution, local_ok, parent_transfers)
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) then
@@ -156,6 +160,8 @@ contains
     if (present(local_patch_advances)) local_patch_advances = advances
     if (present(local_halo_transfers)) &
       local_halo_transfers = halo_transfers
+    if (present(local_parent_transfers)) &
+      local_parent_transfers = parent_transfers
   end subroutine advance_sparse_patch_tree_chemistry_1d
 
   subroutine advance_sparse_patch_tree_hydro_1d( &
@@ -755,8 +761,8 @@ contains
     type(amr_level_field_1d), allocatable :: child_fields(:)
     real(dp), allocatable :: child_state(:, :)
     logical :: local_ok
-    integer :: child, child_count, child_index, child_owner, child_nx
-    integer :: parent_owner, parent_nx, ierr
+    integer :: child, child_count, child_index
+    integer :: parent_owner, parent_nx
 
     ok = .false.
     child_count = solution%hierarchy%relations(level)% &
@@ -766,18 +772,13 @@ contains
     do child = 1, child_count
       child_index = solution%hierarchy%relations(level)% &
         child_index(parent_patch, child)
-      child_owner = distribution%owner_of(level, child_index)
-      child_nx = distribution%levels(level + 1)%cell_counts(child_index)
-      allocate(child_state(solution%nvar, child_nx))
-      if (distribution%rank == child_owner) &
-        child_state = solution%levels(level + 1)% &
-          patches(child_index)%state(:, 1:child_nx)
-      call MPI_Bcast(child_state, size(child_state), MPI_DOUBLE_PRECISION, &
-        child_owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
+      call transfer_sparse_child_interior_to_parent_1d( &
+        distribution, solution, level, child_index, parent_owner, &
+        child_state, local_ok)
+      if (.not. local_ok) return
       if (distribution%rank == parent_owner) &
         child_fields(child)%values = child_state
-      deallocate(child_state)
+      if (allocated(child_state)) deallocate(child_state)
     end do
     local_ok = .true.
     if (distribution%rank == parent_owner) then
@@ -867,17 +868,18 @@ contains
   end subroutine reconcile_sparse_adjacent_child_fluxes_1d
 
   subroutine average_down_sparse_reactive_solution_1d( &
-      species, distribution, solution, ok)
+      species, distribution, solution, ok, local_parent_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
+    integer, intent(inout), optional :: local_parent_transfers
 
     type(amr_level_field_1d), allocatable :: children(:)
     real(dp), allocatable :: child_state(:, :)
     logical :: local_ok, accepted, mpi_ok
     integer :: relation, parent, child, child_index, child_count
-    integer :: parent_owner, child_owner, parent_nx, child_nx, ierr
+    integer :: parent_owner, parent_nx
 
     ok = .false.
     do relation = size(solution%hierarchy%relations), 1, -1
@@ -891,19 +893,13 @@ contains
         do child = 1, child_count
           child_index = solution%hierarchy%relations(relation)% &
             child_index(parent, child)
-          child_nx = distribution%levels(relation + 1)% &
-            cell_counts(child_index)
-          allocate(child_state(solution%nvar, child_nx))
-          child_owner = distribution%owner_of(relation, child_index)
-          if (distribution%rank == child_owner) &
-            child_state = solution%levels(relation + 1)% &
-              patches(child_index)%state(:, 1:child_nx)
-          call MPI_Bcast(child_state, size(child_state), &
-            MPI_DOUBLE_PRECISION, child_owner, distribution%comm, ierr)
-          if (ierr /= MPI_SUCCESS) return
+          call transfer_sparse_child_interior_to_parent_1d( &
+            distribution, solution, relation, child_index, parent_owner, &
+            child_state, local_ok, local_parent_transfers)
+          if (.not. local_ok) return
           if (distribution%rank == parent_owner) &
             children(child)%values = child_state
-          deallocate(child_state)
+          if (allocated(child_state)) deallocate(child_state)
         end do
         local_ok = .true.
         if (distribution%rank == parent_owner) then
@@ -926,6 +922,51 @@ contains
     end do
     ok = .true.
   end subroutine average_down_sparse_reactive_solution_1d
+
+  subroutine transfer_sparse_child_interior_to_parent_1d( &
+      distribution, solution, relation, child, parent_owner, child_state, &
+      ok, local_parent_transfers)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: solution
+    integer, intent(in) :: relation, child, parent_owner
+    real(dp), allocatable, intent(out) :: child_state(:, :)
+    logical, intent(out) :: ok
+    integer, intent(inout), optional :: local_parent_transfers
+
+    type(MPI_Status) :: status
+    integer :: child_owner, child_nx, ierr
+
+    ok = .false.
+    child_owner = distribution%owner_of(relation, child)
+    child_nx = distribution%levels(relation + 1)%cell_counts(child)
+    if (child_nx < 1) return
+    if (child_owner == parent_owner) then
+      if (distribution%rank == parent_owner) then
+        allocate(child_state(solution%nvar, child_nx))
+        child_state = solution%levels(relation + 1)% &
+          patches(child)%state(:, 1:child_nx)
+      end if
+      ok = .true.
+      return
+    end if
+
+    if (distribution%rank == child_owner) then
+      call MPI_Send( &
+        solution%levels(relation + 1)%patches(child)%state(:, 1:child_nx), &
+        solution%nvar * child_nx, MPI_DOUBLE_PRECISION, parent_owner, &
+        sparse_child_parent_tag, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      if (present(local_parent_transfers)) &
+        local_parent_transfers = local_parent_transfers + 1
+    else if (distribution%rank == parent_owner) then
+      allocate(child_state(solution%nvar, child_nx))
+      call MPI_Recv( &
+        child_state, size(child_state), MPI_DOUBLE_PRECISION, child_owner, &
+        sparse_child_parent_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end if
+    ok = .true.
+  end subroutine transfer_sparse_child_interior_to_parent_1d
 
   subroutine refresh_sparse_reactive_ghosts_1d( &
       species, config, distribution, solution, ok, local_halo_transfers)
