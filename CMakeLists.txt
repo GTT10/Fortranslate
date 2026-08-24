@@ -27,6 +27,7 @@ add_library(
   src/core/multispecies_state_mod.F90
   src/core/mesh_mod.F90
   src/core/mesh_2d_mod.F90
+  src/eb/eb_geometry_2d_mod.F90
   src/physics/eos_ideal_mod.F90
   src/physics/nasa7_thermo_mod.F90
   src/physics/thermo_database_mod.F90
