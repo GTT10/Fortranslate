@@ -7,21 +7,24 @@ module mpi_amr_sparse_patch_1d_mod
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
-    amr_level_field_1d, accumulate_coarse_flux_1d, &
+    amr_two_level_hierarchy_1d, amr_level_field_1d, &
+    accumulate_coarse_flux_1d, &
     accumulate_fine_flux_1d
   use amr_multipatch_1d_mod, only: &
-    average_down_patch_set_1d, synchronize_patch_set_1d
+    prolong_patch_set_1d, average_down_patch_set_1d, &
+    synchronize_patch_set_1d
   use amr_reactive_1d_mod, only: &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
     advance_amr_level_1d, advance_transport_level_1d
   use amr_patch_tree_1d_mod, only: &
     amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_relation_flux_registers_1d, &
-    initialize_patch_tree_flux_registers_1d
+    initialize_patch_tree_1d, initialize_patch_tree_flux_registers_1d, &
+    patch_tree_child_geometry_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_patch_1d, &
     amr_patch_tree_reactive_solution_1d, fill_one_child_ghosts, &
-    regrid_patch_tree_reactive_1d, regrid_tagged_patch_tree_reactive_1d
+    regrid_tagged_patch_tree_reactive_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -37,6 +40,8 @@ module mpi_amr_sparse_patch_1d_mod
   integer, parameter :: sparse_interval_state_tag = 2605
   integer, parameter :: sparse_boundary_flux_tag = 2606
   integer, parameter :: sparse_flux_correction_tag = 2607
+  integer, parameter :: sparse_regrid_prolongation_tag = 2608
+  integer, parameter :: sparse_regrid_overlap_tag = 2609
 
   type, public :: mpi_amr_sparse_communication_counts_1d
     integer :: interval_state_transfers = 0
@@ -1830,7 +1835,8 @@ contains
 
   subroutine regrid_sparse_patch_tree_reactive_1d( &
       species, config, plans, old_distribution, solution, new_distribution, &
-      changed, transferred_cells, ok)
+      changed, transferred_cells, ok, local_prolongation_transfers, &
+      local_overlap_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_patch_level_plan_1d), intent(in) :: plans(:)
@@ -1840,38 +1846,120 @@ contains
     logical, intent(out) :: changed
     integer, intent(out) :: transferred_cells
     logical, intent(out) :: ok
+    integer, intent(out), optional :: local_prolongation_transfers
+    integer, intent(out), optional :: local_overlap_transfers
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
-    type(amr_patch_tree_reactive_solution_1d) :: replicated
-    logical :: local_ok, local_changed, accepted, mpi_ok
-    integer :: local_transferred
+    type(mpi_amr_sparse_reactive_solution_1d) :: rebuilt
+    type(mpi_amr_patch_distribution_1d) :: rebuilt_distribution
+    type(amr_patch_tree_hierarchy_1d) :: rebuilt_hierarchy
+    real(dp) :: tolerance
+    logical :: local_ok, accepted, mpi_ok
+    integer :: common_levels, prolongation_transfers, overlap_transfers
 
     ok = .false.
     changed = .false.
     transferred_cells = 0
+    prolongation_transfers = 0
+    overlap_transfers = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     new_distribution = old_distribution
-    local_ok = size(species) >= 1 .and. &
-      solution%is_valid(old_distribution)
+    local_ok = size(species) >= 1 .and. config%amr_enabled .and. &
+      solution%is_valid(old_distribution) .and. &
+      config%nx == solution%hierarchy%base_cells
+    if (local_ok) then
+      tolerance = 128.0_dp * epsilon(1.0_dp) * max( &
+        1.0_dp, abs(config%x_lower), abs(config%x_upper), &
+        abs(solution%hierarchy%x_lower), abs(solution%hierarchy%x_upper))
+      local_ok = abs(config%x_lower - solution%hierarchy%x_lower) <= &
+          tolerance .and. &
+        abs(config%x_upper - solution%hierarchy%x_upper) <= tolerance
+    end if
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
     backup = solution
 
-    call materialize_sparse_patch_tree_reactive_1d( &
-      old_distribution, solution, replicated, local_ok)
+    call initialize_patch_tree_1d( &
+      config%nx, config%x_lower, config%x_upper, plans, &
+      rebuilt_hierarchy, local_ok)
+    if (local_ok) local_ok = &
+      sparse_patch_tree_children_are_interior_1d(rebuilt_hierarchy)
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) go to 900
-    call regrid_patch_tree_reactive_1d( &
-      species, config, plans, replicated, local_changed, &
-      local_transferred, local_ok)
+
+    changed = .not. same_sparse_patch_tree_hierarchy_1d( &
+      solution%hierarchy, rebuilt_hierarchy)
+    if (.not. changed) then
+      solution%regrid_evaluations = solution%regrid_evaluations + 1
+      local_ok = solution%is_valid(old_distribution)
+      call all_ranks_accept_sparse_1d( &
+        old_distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      ok = .true.
+      return
+    end if
+
+    call average_down_sparse_reactive_solution_1d( &
+      species, old_distribution, solution, local_ok)
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) go to 900
-    call commit_materialized_sparse_regrid_1d( &
-      old_distribution, backup, replicated, local_changed, &
-      local_transferred, solution, new_distribution, changed, &
-      transferred_cells, ok)
+
+    call initialize_mpi_amr_patch_distribution_1d( &
+      rebuilt_hierarchy, old_distribution%comm, rebuilt_distribution, &
+      local_ok)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    call initialize_direct_sparse_regrid_1d( &
+      species, old_distribution, rebuilt_distribution, solution, &
+      rebuilt_hierarchy, rebuilt, local_ok, prolongation_transfers)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    call transfer_direct_sparse_regrid_overlap_1d( &
+      old_distribution, rebuilt_distribution, solution, rebuilt, &
+      transferred_cells, local_ok, overlap_transfers)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    call average_down_sparse_reactive_solution_1d( &
+      species, rebuilt_distribution, rebuilt, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    call refresh_sparse_reactive_ghosts_1d( &
+      species, config, rebuilt_distribution, rebuilt, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+
+    rebuilt%time = backup%time
+    rebuilt%steps = backup%steps
+    common_levels = min(size(backup%levels), size(rebuilt%levels))
+    rebuilt%level_advances(1:common_levels) = &
+      backup%level_advances(1:common_levels)
+    rebuilt%transport_level_advances(1:common_levels) = &
+      backup%transport_level_advances(1:common_levels)
+    rebuilt%regrid_evaluations = backup%regrid_evaluations + 1
+    rebuilt%regrids = backup%regrids + 1
+    rebuilt%overlap_cells_transferred = &
+      backup%overlap_cells_transferred + transferred_cells
+    local_ok = rebuilt%is_valid(rebuilt_distribution)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    solution = rebuilt
+    new_distribution = rebuilt_distribution
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = prolongation_transfers
+    if (present(local_overlap_transfers)) &
+      local_overlap_transfers = overlap_transfers
+    ok = .true.
     return
 
 900 continue
@@ -1879,8 +1967,365 @@ contains
     new_distribution = old_distribution
     changed = .false.
     transferred_cells = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     ok = .false.
   end subroutine regrid_sparse_patch_tree_reactive_1d
+
+  subroutine initialize_direct_sparse_regrid_1d( &
+      species, old_distribution, new_distribution, old_solution, hierarchy, &
+      rebuilt, ok, local_prolongation_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
+    type(mpi_amr_patch_distribution_1d), intent(in) :: new_distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: old_solution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
+    type(mpi_amr_sparse_reactive_solution_1d), intent(out) :: rebuilt
+    logical, intent(out) :: ok
+    integer, intent(out) :: local_prolongation_transfers
+
+    logical :: local_ok, accepted, mpi_ok
+    integer :: level, relation, parent, patch_count
+    integer :: old_root_owner, new_root_owner, root_nx
+
+    ok = .false.
+    local_prolongation_transfers = 0
+    rebuilt%hierarchy = hierarchy
+    rebuilt%rank = new_distribution%rank
+    rebuilt%nranks = new_distribution%nranks
+    rebuilt%nvar = old_solution%nvar
+    rebuilt%ghost_width = old_solution%ghost_width
+    allocate(rebuilt%level_advances(hierarchy%level_count()))
+    allocate(rebuilt%transport_level_advances(hierarchy%level_count()))
+    rebuilt%level_advances = 0
+    rebuilt%transport_level_advances = 0
+    allocate(rebuilt%levels(hierarchy%level_count()))
+    do level = 1, size(rebuilt%levels)
+      patch_count = hierarchy%level_patch_count(level - 1)
+      allocate(rebuilt%levels(level)%patches(patch_count))
+      allocate(rebuilt%levels(level)%is_local(patch_count))
+      rebuilt%levels(level)%is_local = &
+        new_distribution%levels(level)%owners == new_distribution%rank
+    end do
+
+    old_root_owner = old_distribution%owner_of(0, 1)
+    new_root_owner = new_distribution%owner_of(0, 1)
+    root_nx = new_distribution%levels(1)%cell_counts(1)
+    call migrate_one_patch_1d( &
+      old_distribution%comm, old_distribution%rank, old_root_owner, &
+      new_root_owner, rebuilt%nvar, root_nx, rebuilt%ghost_width, &
+      old_solution%levels(1)%patches(1), &
+      rebuilt%levels(1)%patches(1), local_ok)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    do relation = 1, size(hierarchy%relations)
+      do parent = 1, hierarchy%relations(relation)%parent_patch_count()
+        call prolong_direct_sparse_regrid_parent_1d( &
+          species, new_distribution, rebuilt, relation, parent, local_ok, &
+          local_prolongation_transfers)
+        if (.not. local_ok) return
+      end do
+    end do
+    ok = rebuilt%is_valid(new_distribution)
+  end subroutine initialize_direct_sparse_regrid_1d
+
+  subroutine prolong_direct_sparse_regrid_parent_1d( &
+      species, distribution, solution, relation, parent, ok, &
+      local_prolongation_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, parent
+    logical, intent(out) :: ok
+    integer, intent(inout) :: local_prolongation_transfers
+
+    type(amr_level_field_1d), allocatable :: children(:)
+    type(MPI_Status) :: status
+    logical :: local_ok, accepted, mpi_ok
+    integer :: parent_owner, parent_nx, child, child_index, child_owner
+    integer :: child_nx, ierr
+
+    ok = .false.
+    parent_owner = distribution%owner_of(relation - 1, parent)
+    parent_nx = distribution%levels(relation)%cell_counts(parent)
+    local_ok = parent_owner >= 0 .and. parent_nx >= 1
+    if (local_ok .and. distribution%rank == parent_owner) then
+      call prolong_patch_set_1d( &
+        solution%levels(relation)%patches(parent)%state(:, 1:parent_nx), &
+        solution%hierarchy%relations(relation)%child_sets(parent), &
+        children, local_ok)
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    do child = 1, solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patch_count()
+      child_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child)
+      child_owner = distribution%owner_of(relation, child_index)
+      child_nx = distribution%levels(relation + 1)%cell_counts(child_index)
+      local_ok = child_owner >= 0 .and. child_nx >= 1
+      if (.not. local_ok) then
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        return
+      end if
+
+      if (parent_owner == child_owner) then
+        if (distribution%rank == child_owner) then
+          call allocate_sparse_patch( &
+            solution%levels(relation + 1)%patches(child_index), &
+            solution%nvar, child_nx, solution%ghost_width)
+          solution%levels(relation + 1)%patches(child_index)% &
+            state(:, 1:child_nx) = children(child)%values
+        end if
+      else if (distribution%rank == parent_owner) then
+        call MPI_Send( &
+          children(child)%values, solution%nvar * child_nx, &
+          MPI_DOUBLE_PRECISION, child_owner, sparse_regrid_prolongation_tag, &
+          distribution%comm, ierr)
+        local_ok = ierr == MPI_SUCCESS
+        if (local_ok) local_prolongation_transfers = &
+          local_prolongation_transfers + 1
+      else if (distribution%rank == child_owner) then
+        call allocate_sparse_patch( &
+          solution%levels(relation + 1)%patches(child_index), &
+          solution%nvar, child_nx, solution%ghost_width)
+        call MPI_Recv( &
+          solution%levels(relation + 1)%patches(child_index)% &
+            state(:, 1:child_nx), &
+          solution%nvar * child_nx, MPI_DOUBLE_PRECISION, parent_owner, &
+          sparse_regrid_prolongation_tag, distribution%comm, status, ierr)
+        local_ok = ierr == MPI_SUCCESS
+      end if
+      if (local_ok .and. distribution%rank == child_owner) &
+        call recover_level_temperatures_1d( &
+          species, solution%levels(relation + 1)%patches(child_index)%state, &
+          solution%levels(relation + 1)%patches(child_index)%temperature, &
+          child_nx, local_ok)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
+    end do
+    ok = .true.
+  end subroutine prolong_direct_sparse_regrid_parent_1d
+
+  subroutine transfer_direct_sparse_regrid_overlap_1d( &
+      old_distribution, new_distribution, old_solution, new_solution, &
+      transferred_cells, ok, local_overlap_transfers)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
+    type(mpi_amr_patch_distribution_1d), intent(in) :: new_distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: old_solution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: new_solution
+    integer, intent(out) :: transferred_cells
+    logical, intent(out) :: ok
+    integer, intent(out) :: local_overlap_transfers
+
+    type(amr_two_level_hierarchy_1d) :: old_geometry, new_geometry
+    real(dp) :: old_lower, old_upper, new_lower, new_upper
+    real(dp) :: overlap_lower, overlap_upper, old_dx, new_dx, tolerance
+    real(dp) :: old_offset, new_offset
+    logical :: local_ok, accepted, mpi_ok
+    integer :: level, old_patch, new_patch, common_levels
+    integer :: old_first, new_first, cell_count
+    integer :: old_owner, new_owner
+
+    ok = .false.
+    transferred_cells = 0
+    local_overlap_transfers = 0
+    common_levels = min(size(old_solution%levels), size(new_solution%levels))
+    do level = 2, common_levels
+      old_dx = old_solution%hierarchy%level_dx(level - 1)
+      new_dx = new_solution%hierarchy%level_dx(level - 1)
+      tolerance = 128.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(old_dx), abs(new_dx))
+      if (abs(old_dx - new_dx) > tolerance) cycle
+      do old_patch = 1, size(old_solution%levels(level)%patches)
+        call patch_tree_child_geometry_1d( &
+          old_solution%hierarchy%relations(level - 1), old_patch, &
+          old_geometry, local_ok)
+        if (.not. local_ok) return
+        call sparse_patch_physical_bounds_1d( &
+          old_geometry, old_lower, old_upper)
+        old_owner = old_distribution%owner_of(level - 1, old_patch)
+        do new_patch = 1, size(new_solution%levels(level)%patches)
+          call patch_tree_child_geometry_1d( &
+            new_solution%hierarchy%relations(level - 1), new_patch, &
+            new_geometry, local_ok)
+          if (.not. local_ok) return
+          call sparse_patch_physical_bounds_1d( &
+            new_geometry, new_lower, new_upper)
+          overlap_lower = max(old_lower, new_lower)
+          overlap_upper = min(old_upper, new_upper)
+          if (overlap_upper <= overlap_lower + tolerance) cycle
+          old_offset = (overlap_lower - old_lower) / old_dx
+          new_offset = (overlap_lower - new_lower) / new_dx
+          local_ok = &
+            abs(old_offset - real(nint(old_offset), dp)) <= &
+              tolerance / old_dx .and. &
+            abs(new_offset - real(nint(new_offset), dp)) <= &
+              tolerance / new_dx
+          if (.not. local_ok) return
+          old_first = nint(old_offset) + 1
+          new_first = nint(new_offset) + 1
+          cell_count = nint((overlap_upper - overlap_lower) / old_dx)
+          if (cell_count < 1) cycle
+          new_owner = new_distribution%owner_of(level - 1, new_patch)
+          call transfer_sparse_regrid_overlap_segment_1d( &
+            old_distribution, old_owner, new_owner, old_solution%nvar, &
+            old_solution%levels(level)%patches(old_patch), old_first, &
+            new_solution%levels(level)%patches(new_patch), new_first, &
+            cell_count, local_ok)
+          call all_ranks_accept_sparse_1d( &
+            old_distribution, local_ok, accepted, mpi_ok)
+          if (.not. mpi_ok .or. .not. accepted) return
+          transferred_cells = transferred_cells + cell_count
+          if (old_owner /= new_owner .and. &
+              old_distribution%rank == old_owner) &
+            local_overlap_transfers = local_overlap_transfers + 1
+        end do
+      end do
+    end do
+    ok = .true.
+  end subroutine transfer_direct_sparse_regrid_overlap_1d
+
+  subroutine transfer_sparse_regrid_overlap_segment_1d( &
+      distribution, old_owner, new_owner, nvar, old_patch, old_first, &
+      new_patch, new_first, cell_count, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    integer, intent(in) :: old_owner, new_owner, nvar
+    type(amr_patch_tree_reactive_patch_1d), intent(in) :: old_patch
+    integer, intent(in) :: old_first
+    type(amr_patch_tree_reactive_patch_1d), intent(inout) :: new_patch
+    integer, intent(in) :: new_first, cell_count
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: payload(:)
+    type(MPI_Status) :: status
+    integer :: state_count, ierr
+
+    ok = old_owner >= 0 .and. new_owner >= 0 .and. nvar >= 1 .and. &
+      old_first >= 1 .and. new_first >= 1 .and. cell_count >= 1
+    if (.not. ok) return
+    if (old_owner == new_owner) then
+      if (distribution%rank == old_owner) then
+        new_patch%state(:, new_first:new_first + cell_count - 1) = &
+          old_patch%state(:, old_first:old_first + cell_count - 1)
+        new_patch%temperature(new_first:new_first + cell_count - 1) = &
+          old_patch%temperature(old_first:old_first + cell_count - 1)
+      end if
+      return
+    end if
+    if (distribution%rank /= old_owner .and. &
+        distribution%rank /= new_owner) return
+
+    state_count = nvar * cell_count
+    allocate(payload(state_count + cell_count))
+    if (distribution%rank == old_owner) then
+      payload(1:state_count) = reshape( &
+        old_patch%state(:, old_first:old_first + cell_count - 1), &
+        [state_count])
+      payload(state_count + 1:) = &
+        old_patch%temperature(old_first:old_first + cell_count - 1)
+      call MPI_Send( &
+        payload, size(payload), MPI_DOUBLE_PRECISION, new_owner, &
+        sparse_regrid_overlap_tag, distribution%comm, ierr)
+      ok = ierr == MPI_SUCCESS
+      return
+    end if
+
+    call MPI_Recv( &
+      payload, size(payload), MPI_DOUBLE_PRECISION, old_owner, &
+      sparse_regrid_overlap_tag, distribution%comm, status, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    new_patch%state(:, new_first:new_first + cell_count - 1) = &
+      reshape(payload(1:state_count), [nvar, cell_count])
+    new_patch%temperature(new_first:new_first + cell_count - 1) = &
+      payload(state_count + 1:)
+    ok = .true.
+  end subroutine transfer_sparse_regrid_overlap_segment_1d
+
+  pure logical function same_sparse_patch_tree_hierarchy_1d(first, second) &
+      result(same)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: first, second
+
+    real(dp) :: tolerance
+    integer :: relation, parent, child
+
+    same = first%is_valid() .and. second%is_valid()
+    if (.not. same) return
+    tolerance = 128.0_dp * epsilon(1.0_dp) * max( &
+      1.0_dp, abs(first%x_lower), abs(first%x_upper), &
+      abs(second%x_lower), abs(second%x_upper))
+    same = first%base_cells == second%base_cells .and. &
+      size(first%relations) == size(second%relations) .and. &
+      abs(first%x_lower - second%x_lower) <= tolerance .and. &
+      abs(first%x_upper - second%x_upper) <= tolerance
+    if (.not. same) return
+    do relation = 1, size(first%relations)
+      same = first%relations(relation)%refinement_ratio == &
+          second%relations(relation)%refinement_ratio .and. &
+        first%relations(relation)%parent_patch_count() == &
+          second%relations(relation)%parent_patch_count()
+      if (.not. same) return
+      do parent = 1, first%relations(relation)%parent_patch_count()
+        same = first%relations(relation)%child_sets(parent)%patch_count() == &
+          second%relations(relation)%child_sets(parent)%patch_count()
+        if (.not. same) return
+        do child = 1, first%relations(relation)% &
+            child_sets(parent)%patch_count()
+          same = first%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_lower == &
+                second%relations(relation)%child_sets(parent)% &
+                  patches(child)%fine_coarse_lower .and. &
+            first%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_upper == &
+                second%relations(relation)%child_sets(parent)% &
+                  patches(child)%fine_coarse_upper
+          if (.not. same) return
+        end do
+      end do
+    end do
+  end function same_sparse_patch_tree_hierarchy_1d
+
+  pure logical function sparse_patch_tree_children_are_interior_1d( &
+      hierarchy) result(interior)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
+
+    integer :: relation, parent, child
+
+    interior = hierarchy%is_valid()
+    if (.not. interior) return
+    do relation = 1, size(hierarchy%relations)
+      do parent = 1, hierarchy%relations(relation)%parent_patch_count()
+        do child = 1, hierarchy%relations(relation)% &
+            child_sets(parent)%patch_count()
+          interior = .not. hierarchy%relations(relation)% &
+            child_sets(parent)%patches(child)%touches_left_boundary() .and. &
+            .not. hierarchy%relations(relation)% &
+            child_sets(parent)%patches(child)%touches_right_boundary()
+          if (.not. interior) return
+        end do
+      end do
+    end do
+  end function sparse_patch_tree_children_are_interior_1d
+
+  pure subroutine sparse_patch_physical_bounds_1d(geometry, lower, upper)
+    type(amr_two_level_hierarchy_1d), intent(in) :: geometry
+    real(dp), intent(out) :: lower, upper
+
+    lower = geometry%x_lower + &
+      real(geometry%fine_coarse_lower - 1, dp) * geometry%coarse_dx
+    upper = geometry%x_lower + &
+      real(geometry%fine_coarse_upper, dp) * geometry%coarse_dx
+  end subroutine sparse_patch_physical_bounds_1d
 
   subroutine regrid_tagged_sparse_patch_tree_reactive_1d( &
       species, config, old_distribution, solution, new_distribution, &

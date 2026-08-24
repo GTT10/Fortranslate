@@ -10,10 +10,11 @@ program pelef_mpi_amr_patch_1d
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use amr_hierarchy_1d_mod, only: amr_two_level_hierarchy_1d
   use amr_patch_tree_1d_mod, only: &
     amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_level_fields_1d, initialize_patch_tree_1d, &
-    prolong_patch_tree_1d
+    prolong_patch_tree_1d, patch_tree_child_geometry_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
@@ -136,6 +137,8 @@ program pelef_mpi_amr_patch_1d
   integer :: local_patch_transfers, global_patch_transfers
   integer :: local_sparse_communication(3), global_sparse_communication(3)
   integer :: expected_sparse_communication(3)
+  integer :: local_regrid_communication(2), global_regrid_communication(2)
+  integer :: expected_regrid_communication(2)
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -924,8 +927,10 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok, "sparse identical regrid scatter", rank)
   call regrid_sparse_patch_tree_reactive_1d( &
     species, transport_config, reactive_plans, reactive_distribution, &
-    sparse_regrid, regridded_distribution, changed, transferred_cells, ok)
+    sparse_regrid, regridded_distribution, changed, transferred_cells, ok, &
+    local_regrid_communication(1), local_regrid_communication(2))
   call assert_all(ok .and. .not. changed .and. transferred_cells == 0 .and. &
+    all(local_regrid_communication == 0) .and. &
     sparse_regrid%regrid_evaluations == 1 .and. &
     sparse_regrid%regrids == 0 .and. &
     sparse_regrid%is_valid(regridded_distribution), &
@@ -952,7 +957,19 @@ program pelef_mpi_amr_patch_1d
   call regrid_sparse_patch_tree_reactive_1d( &
     species, transport_config, regrid_reactive_plans, &
     regridded_distribution, sparse_regrid, migrated_distribution, changed, &
-    transferred_cells, ok)
+    transferred_cells, ok, local_regrid_communication(1), &
+    local_regrid_communication(2))
+  call assert_all(ok, "direct sparse topology regrid completed", rank)
+  call MPI_Allreduce( &
+    local_regrid_communication, global_regrid_communication, 2, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call expected_direct_sparse_regrid_communication_1d( &
+    initial_reactive%hierarchy, regridded_distribution, &
+    serial_regrid%hierarchy, migrated_distribution, &
+    expected_regrid_communication, ok)
+  call assert_all(ierr == MPI_SUCCESS .and. ok .and. all( &
+    global_regrid_communication == expected_regrid_communication), &
+    "direct sparse regrid communication accounting", rank)
   regridded_distribution = migrated_distribution
   call assert_all(ok .and. changed .and. &
     transferred_cells == serial_transferred_cells .and. &
@@ -1017,9 +1034,10 @@ program pelef_mpi_amr_patch_1d
   call regrid_sparse_patch_tree_reactive_1d( &
     species, transport_config, invalid_regrid_plans, &
     regridded_distribution, rejected_sparse, migrated_distribution, &
-    changed, transferred_cells, ok)
+    changed, transferred_cells, ok, local_regrid_communication(1), &
+    local_regrid_communication(2))
   call assert_all(.not. ok .and. .not. changed .and. &
-    transferred_cells == 0 .and. &
+    transferred_cells == 0 .and. all(local_regrid_communication == 0) .and. &
     rejected_sparse%is_valid(migrated_distribution), &
     "invalid topology-changing sparse regrid is rejected", rank)
   rejected_reactive = serial_regrid
@@ -1688,6 +1706,84 @@ contains
         child_multiplier, parabolic, counts)
     end do
   end subroutine accumulate_expected_sparse_communication
+
+  subroutine expected_direct_sparse_regrid_communication_1d( &
+      old_hierarchy, old_distribution, new_hierarchy, new_distribution, &
+      counts, local_ok)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: old_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: new_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: new_distribution
+    integer, intent(out) :: counts(2)
+    logical, intent(out) :: local_ok
+
+    type(amr_two_level_hierarchy_1d) :: old_geometry, new_geometry
+    real(dp) :: old_lower, old_upper, new_lower, new_upper
+    real(dp) :: overlap_lower, overlap_upper, old_dx, new_dx, tolerance
+    integer :: relation, parent, local_child, child_index
+    integer :: local_level, old_patch, new_patch, common_levels
+    integer :: old_owner, new_owner
+
+    counts = 0
+    local_ok = old_hierarchy%is_valid() .and. new_hierarchy%is_valid()
+    if (.not. local_ok) return
+    do relation = 1, size(new_hierarchy%relations)
+      do parent = 1, new_hierarchy%relations(relation)%parent_patch_count()
+        do local_child = 1, new_hierarchy%relations(relation)% &
+            child_sets(parent)%patch_count()
+          child_index = new_hierarchy%relations(relation)% &
+            child_index(parent, local_child)
+          if (new_distribution%owner_of(relation - 1, parent) /= &
+              new_distribution%owner_of(relation, child_index)) &
+            counts(1) = counts(1) + 1
+        end do
+      end do
+    end do
+
+    common_levels = min(old_hierarchy%level_count(), &
+      new_hierarchy%level_count())
+    do local_level = 2, common_levels
+      old_dx = old_hierarchy%level_dx(local_level - 1)
+      new_dx = new_hierarchy%level_dx(local_level - 1)
+      tolerance = 128.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(old_dx), abs(new_dx))
+      if (abs(old_dx - new_dx) > tolerance) cycle
+      do old_patch = 1, old_hierarchy%level_patch_count(local_level - 1)
+        call patch_tree_child_geometry_1d( &
+          old_hierarchy%relations(local_level - 1), old_patch, &
+          old_geometry, local_ok)
+        if (.not. local_ok) return
+        call application_patch_physical_bounds_1d( &
+          old_geometry, old_lower, old_upper)
+        old_owner = old_distribution%owner_of(local_level - 1, old_patch)
+        do new_patch = 1, new_hierarchy%level_patch_count(local_level - 1)
+          call patch_tree_child_geometry_1d( &
+            new_hierarchy%relations(local_level - 1), new_patch, &
+            new_geometry, local_ok)
+          if (.not. local_ok) return
+          call application_patch_physical_bounds_1d( &
+            new_geometry, new_lower, new_upper)
+          overlap_lower = max(old_lower, new_lower)
+          overlap_upper = min(old_upper, new_upper)
+          if (overlap_upper <= overlap_lower + tolerance) cycle
+          new_owner = new_distribution%owner_of(local_level - 1, new_patch)
+          if (old_owner /= new_owner) counts(2) = counts(2) + 1
+        end do
+      end do
+    end do
+    local_ok = .true.
+  end subroutine expected_direct_sparse_regrid_communication_1d
+
+  pure subroutine application_patch_physical_bounds_1d( &
+      geometry, lower, upper)
+    type(amr_two_level_hierarchy_1d), intent(in) :: geometry
+    real(dp), intent(out) :: lower, upper
+
+    lower = geometry%x_lower + &
+      real(geometry%fine_coarse_lower - 1, dp) * geometry%coarse_dx
+    upper = geometry%x_lower + &
+      real(geometry%fine_coarse_upper, dp) * geometry%coarse_dx
+  end subroutine application_patch_physical_bounds_1d
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
