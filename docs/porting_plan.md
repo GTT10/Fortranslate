@@ -544,6 +544,8 @@ Reactive application integration:
   and physics synchronization (`0.63.0`)
 - [x] direct sparse parent-state fanout once per distinct remote child owner
   for final ghost refresh (`0.64.0`)
+- [x] broadcast-free sparse recursive hydro/transport with direct interval,
+  boundary-flux, and shared-correction payloads (`0.65.0`)
 
 AMR parity metrics:
 

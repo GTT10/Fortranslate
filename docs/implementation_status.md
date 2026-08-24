@@ -1057,3 +1057,21 @@ Final sparse parent-to-child ghost refresh is now point to point. Recursive
 hydro/transport interval states, face fluxes, level counters, shared-flux
 reconciliation, topology overlap transfer, and the temporary regrid correctness
 replica remain collective work.
+
+## Broadcast-free sparse recursive physics (`0.65.0`)
+
+- [x] packed interval start/end state fanout to distinct child owners only
+- [x] direct child boundary-flux return to the parent owner
+- [x] parent-owner shared-flux construction and direct child correction
+- [x] owner-local coarse/fine flux-register accumulation and reflux
+- [x] one stage-boundary reduction for owner-local level-counter deltas
+- [x] zero `MPI_Bcast` calls in the sparse physics module
+- [x] exact communication counts for hyperbolic and parabolic subcycling
+- [x] unchanged serial parity, conservation, call accounting, and rollback
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Sparse chemistry, hydro, transport, full-physics composition, owner migration,
+same-level halos, parent/child synchronization, and final ghost refresh now
+operate without broadcast-based payload replication. Topology-changing regrid
+still materializes and rebuilds through a temporary all-rank correctness
+replica; direct distributed tagging and overlap transfer remain pending.

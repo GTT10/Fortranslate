@@ -707,6 +707,26 @@ transport interval states, face fluxes, bookkeeping counters, flux
 reconciliation, and topology-changing regrid transfer remain collective
 outside the `0.64.0` boundary.
 
+In `0.65.0`, recursive sparse hydro and molecular transport remove their final
+owner broadcasts. Each patch owner keeps the full update flux and its flux
+register authoritative locally. It packs interval start/end states once for
+each distinct remote child owner, while a child patch sends only its two
+time-integrated boundary flux vectors to its parent owner.
+
+The parent owner computes adjacent shared-face fluxes and sends each resulting
+cell correction only when the affected child has a different owner. Coarse and
+fine register accumulation and final reflux therefore stay on the parent
+owner. Hydro and transport level counters accumulate owner-local deltas during
+recursion and use one array reduction at the stage boundary, replacing the
+per-patch counter broadcasts.
+
+The sparse physics module now contains no `MPI_Bcast`. Exact global counts for
+interval-state fanout, child boundary-flux returns, and shared-flux corrections
+are derived independently from hierarchy ownership and subcycle weights for
+both hyperbolic `r` and parabolic `r^2` recursion. Topology-changing regrid
+transfer and its temporary correctness replica remain outside the `0.65.0`
+boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

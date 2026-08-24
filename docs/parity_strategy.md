@@ -964,3 +964,25 @@ Sparse parent-state fanout is accepted only while:
   composite conservation within `2e-9`, and exact failure rollback;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.65.0 broadcast-free sparse recursive physics gates
+
+Sparse recursive hydro and molecular transport are accepted only while:
+
+- the sparse physics module contains no `MPI_Bcast` call;
+- interval start/end states are packed once per distinct remote child owner
+  for every parent invocation;
+- each remote child invocation sends one packed left/right boundary-flux pair
+  to its parent owner;
+- each adjacent shared face sends a correction only for endpoints not owned by
+  the parent owner;
+- independent hierarchy traversal reproduces all three communicator-wide
+  transfer counts under hydro `r` and transport `r^2` subcycle weights;
+- level counters equal the serial `[1, 12]` hydro and `[1, 24]` transport
+  schedules after one owner-delta reduction per stage;
+- adjacent PPM hydro and molecular transport retain serial field parity within
+  `5e-13` and composite conservation within their existing tolerances;
+- four-level branched parity, exact owner call accounting, and deep failure
+  rollback remain unchanged;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.
