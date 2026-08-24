@@ -1006,3 +1006,25 @@ The replica-free explicit-plan topology transition is accepted only while:
   reports zero completed communication;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.67.0 owner-local sparse tag-planning gates
+
+Tag-driven sparse topology construction is accepted only while:
+
+- each candidate parent is tagged exactly once on its owner;
+- communicator-wide owner evaluation counts equal the independently derived
+  number of evaluated candidate parents;
+- only tagged-cell counts and integer child bounds are agreed globally;
+- candidate child states remain owner-local and every cross-owner
+  prolongation message is counted exactly;
+- the final tagged hierarchy matches the serial parent relationships and patch
+  extents exactly through four levels;
+- the shared direct regrid retains exact state, temperature, narrow/wide ghost,
+  counter, and overlap-accounting parity with the serial tagged rebuild;
+- installed conserved fields use a deterministic temperature-recovery seed;
+- an unchanged tag plan remains a payload-free final commit, while invalid tag
+  configuration restores the solution and owner map with zero reported work;
+- the sparse MPI module contains neither `MPI_Bcast` nor a materialized-tree
+  helper;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

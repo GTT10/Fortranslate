@@ -747,6 +747,24 @@ An unchanged explicit plan only increments evaluation accounting. Tag-driven
 plan construction still materializes a temporary correctness replica and is
 outside the `0.66.0` boundary.
 
+In `0.67.0`, tag-driven regrid also remains field-sparse. A rank-local planning
+copy first performs the qualified distributed average-down. At each candidate
+depth, only a parent owner evaluates its conserved-state gradients and clusters
+tagged cells. Two integer reductions publish tagged counts and child bounds as
+compact topology metadata; no state or temperature field is replicated.
+
+Candidate child states are conservatively prolongated through the same direct
+owner path as explicit regrid. Exact counts cover parent-owner tag evaluations,
+candidate prolongation messages, final topology prolongation, and retained
+overlap transfers. The final plan enters the `0.66.0` direct transactional
+rebuild, so both public topology-change APIs now preserve globally single-copy
+field storage throughout.
+
+Installing a new conserved field resets the temperature recovery seed before
+EOS inversion. This makes rebuilt temperatures independent of stale guesses and
+preserves exact serial/distributed parity even when a tagged conserved state was
+edited without updating its cached temperature.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

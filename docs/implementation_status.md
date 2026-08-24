@@ -1093,3 +1093,21 @@ Explicit-plan topology changes now remain sparse throughout hierarchy rebuild,
 prolongation, overlap retention, average-down, and ghost refresh. No rank
 materializes the complete old or new field tree. Tag-driven planning still uses
 the temporary correctness replica and remains the next distributed regrid gap.
+
+## Owner-local sparse tag planning (`0.67.0`)
+
+- [x] gradient tagging only on each candidate parent owner
+- [x] compact integer plan metadata agreement without field replication
+- [x] owner-local candidate hierarchy prolongation through configured depth
+- [x] exact tag-evaluation and candidate-transfer accounting
+- [x] shared direct explicit-plan commit for the final tagged hierarchy
+- [x] deterministic temperature recovery after conserved-field installation
+- [x] exact tagged hierarchy, field, ghost, and bookkeeping serial parity
+- [x] unchanged-plan no-op and invalid-tag transactional rollback
+- [x] no `MPI_Bcast` or materialized-tree path in the sparse MPI module
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Both explicit and solution-tagged sparse topology changes now keep field data
+globally single-copy from planning through commit. Only compact hierarchy and
+owner-map metadata are replicated; collective logical acceptance remains the
+transaction boundary.

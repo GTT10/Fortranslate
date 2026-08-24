@@ -548,6 +548,8 @@ Reactive application integration:
   boundary-flux, and shared-correction payloads (`0.65.0`)
 - [x] replica-free explicit-plan sparse topology rebuild with owner-local
   prolongation and direct old/new overlap transfer (`0.66.0`)
+- [x] owner-local solution tagging with compact plan agreement and no
+  materialized field tree (`0.67.0`)
 
 AMR parity metrics:
 
