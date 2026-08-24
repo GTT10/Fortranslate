@@ -930,3 +930,20 @@ Sparse adjacent sibling exchange is accepted only while:
   results retain serial parity within `5e-13` and conservation within `2e-9`;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.63.0 point-to-point sparse child-to-parent gates
+
+Sparse child-interior transfer is accepted only while:
+
+- each child owned by a rank different from its parent generates one direct
+  interior-state send to that parent owner during chemistry average-down;
+- the communicator-wide transfer count equals the independently derived
+  cross-owner child count, including zero traffic for the 1-rank case;
+- same-owner pairs copy locally and ranks unrelated to a child/parent pair
+  allocate no interior payload;
+- hydro and molecular-transport reflux synchronization use the same direct
+  transfer helper without changing owner-local subcycle accounting;
+- chemistry, hydro, and transport retain serial field parity within `5e-13`,
+  composite conservation within `2e-9`, and exact failure rollback;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

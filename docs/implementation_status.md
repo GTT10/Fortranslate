@@ -1025,3 +1025,19 @@ Adjacent same-level ghost traffic is now point to point on sparse storage.
 Parent interval streaming, child-to-parent synchronization, flux
 reconciliation, average-down, topology overlap transfer, and the temporary
 regrid correctness replica remain collective work.
+
+## Point-to-point sparse child-to-parent transfer (`0.63.0`)
+
+- [x] one direct interior-state send per cross-owner child/parent pair
+- [x] shared transfer path for chemistry average-down and physics synchronization
+- [x] local interior copy without MPI traffic for same-owner pairs
+- [x] no child payload allocation on unrelated ranks
+- [x] exact global chemistry transfer count from the owner map
+- [x] unchanged sparse chemistry, hydro, and transport serial parity
+- [x] unchanged conservation, subcycle accounting, and rollback gates
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Sparse child interiors now reach only the parent owner that consumes them.
+Parent interval states and fluxes, parent-to-child ghost fill, shared-flux
+reconciliation, topology overlap transfer, and the temporary regrid correctness
+replica remain collective work.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.62.0` milestone contains ten serial verification executables, six
+The `0.63.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -296,6 +296,8 @@ The AMR layer provides:
   per changed patch and exact state, temperature, and ghost reconstruction;
 - packed point-to-point adjacent sparse halo exchange with one bidirectional
   payload per cross-owner sibling face and no traffic on unrelated ranks;
+- direct child-owner to parent-owner sparse interior transfer for chemistry
+  average-down and hydro/transport synchronization;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -346,9 +348,11 @@ The same sparse API now derives arbitrary-depth plans from solution tags and
 commits them through that transition. Same-hierarchy owner changes now send one
 packed patch directly from the old owner to the new owner. Adjacent sparse
 siblings likewise exchange only the one- or four-layer boundary payload needed
-by their two owners. Parent/child interval, synchronization, average-down, and
-regrid communication remain collective, and the temporary regrid replica is a
-later removal target. A periodic child may
+by their two owners. Child interiors used by average-down and synchronization
+now move directly from each child owner to its parent owner. Parent interval
+and flux streaming, parent-to-child ghost fill, and regrid communication remain
+collective, and the temporary regrid replica is a later removal target. A
+periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

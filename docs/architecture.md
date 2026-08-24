@@ -680,6 +680,19 @@ Parent interval streaming, flux reconciliation, average-down, and
 topology-changing regrid transfer remain collective outside the `0.62.0`
 boundary.
 
+In `0.63.0`, child interiors consumed by chemistry average-down and by
+hydro/transport reflux synchronization no longer broadcast from the child
+owner. A shared transfer helper sends the contiguous interior state directly
+to the corresponding parent owner. When both patches have the same owner, the
+state is copied locally; unrelated ranks allocate no child payload.
+
+The deterministic child order keeps blocking sends and receives matched across
+the recursive traversal. Chemistry reports completed remote transfers on child
+owners, and the communicator sum must equal an independently derived
+cross-owner child count. Parent interval and flux streaming, parent-to-child
+ghost fill, flux reconciliation, and topology-changing regrid transfer remain
+collective outside the `0.63.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

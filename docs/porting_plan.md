@@ -540,6 +540,8 @@ Reactive application integration:
   changed patch and exact payload reconstruction (`0.61.0`)
 - [x] point-to-point adjacent sparse sibling halos with exact narrow/PPM
   boundary payloads and cross-owner transfer accounting (`0.62.0`)
+- [x] direct sparse child-interior transfer to parent owners for average-down
+  and physics synchronization (`0.63.0`)
 
 AMR parity metrics:
 
