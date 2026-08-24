@@ -40,6 +40,7 @@ program pelef_mpi_amr_patch_1d
     scatter_owned_patch_tree_reactive_1d, &
     gather_owned_patch_tree_reactive_1d, &
     migrate_owned_patch_tree_reactive_1d, &
+    sparse_patch_tree_reactive_timestep_1d, &
     advance_sparse_patch_tree_chemistry_1d, &
     advance_sparse_patch_tree_hydro_1d, &
     advance_sparse_patch_tree_transport_1d, &
@@ -113,7 +114,8 @@ program pelef_mpi_amr_patch_1d
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   integer(int64), allocatable :: cell_distribution_work(:)
-  real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
+  real(dp) :: reactive_difference, conservation_error, hydro_dt, sparse_dt
+  real(dp) :: adjacent_dt
   real(dp) :: transport_dt, adjacent_transport_dt
   real(dp) :: split_dt
   logical :: ok, changed
@@ -556,6 +558,21 @@ program pelef_mpi_amr_patch_1d
     species, reactive_config, initial_reactive, hydro_dt, ok)
   call assert_all(ok .and. hydro_dt > 0.0_dp, &
     "four-level reactive hydro timestep", rank)
+  call sparse_patch_tree_reactive_timestep_1d( &
+    species, reactive_config, reactive_distribution, sparse_reactive, &
+    sparse_dt, ok)
+  call assert_all(ok .and. abs(sparse_dt - hydro_dt) <= &
+    10.0_dp * epsilon(1.0_dp) * hydro_dt, &
+    "sparse hydro timestep matches serial hierarchy", rank)
+  rejected_sparse = sparse_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_sparse%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  call sparse_patch_tree_reactive_timestep_1d( &
+    species, reactive_config, reactive_distribution, rejected_sparse, &
+    sparse_dt, ok)
+  call assert_all(.not. ok .and. sparse_dt == 0.0_dp, &
+    "invalid owner state rejects sparse timestep collectively", rank)
   hydro_dt = min(0.10_dp * hydro_dt, 2.0e-8_dp)
   call advance_patch_tree_reactive_hydro_1d( &
     species, reactive_config, hydro_dt, serial_hydro, ok)
@@ -661,6 +678,17 @@ program pelef_mpi_amr_patch_1d
     species, transport_config, initial_reactive, transport_dt, ok, transport)
   call assert_all(ok .and. transport_dt > 0.0_dp, &
     "four-level reactive transport timestep", rank)
+  call sparse_patch_tree_reactive_timestep_1d( &
+    species, transport_config, reactive_distribution, sparse_reactive, &
+    sparse_dt, ok, transport)
+  call assert_all(ok .and. abs(sparse_dt - transport_dt) <= &
+    10.0_dp * epsilon(1.0_dp) * transport_dt, &
+    "sparse transport timestep matches serial hierarchy", rank)
+  call sparse_patch_tree_reactive_timestep_1d( &
+    species, transport_config, reactive_distribution, sparse_reactive, &
+    sparse_dt, ok)
+  call assert_all(.not. ok .and. sparse_dt == 0.0_dp, &
+    "missing transport data rejects sparse timestep collectively", rank)
   transport_dt = min(transport_dt, 1.0e-10_dp)
   call advance_patch_tree_transport( &
     species, transport, transport_config, transport_dt, serial_transport, ok)
@@ -1126,6 +1154,10 @@ program pelef_mpi_amr_patch_1d
     1:tagged_reactive_config%nx) = 0.0_dp
   tagged_initial%levels(1)%patches(1)%state(imx, 8) = 10.0_dp
   tagged_initial%levels(1)%patches(1)%state(imx, 24) = -10.0_dp
+  call patch_tree_reactive_timestep_1d( &
+    species, tagged_reactive_config, tagged_initial, hydro_dt, ok)
+  call assert_all(ok .and. hydro_dt > 0.0_dp, &
+    "root-only serial reactive timestep", rank)
   call initialize_mpi_amr_patch_distribution_1d( &
     tagged_initial%hierarchy, MPI_COMM_WORLD, tagged_distribution, ok, 1)
   call assert_all(ok .and. tagged_distribution%subcycle_exponent == 1, &
@@ -1145,6 +1177,12 @@ program pelef_mpi_amr_patch_1d
   call scatter_owned_patch_tree_reactive_1d( &
     tagged_distribution, tagged_initial, tagged_sparse, ok)
   call assert_all(ok, "tag-driven sparse regrid scatter", rank)
+  call sparse_patch_tree_reactive_timestep_1d( &
+    species, tagged_reactive_config, tagged_distribution, tagged_sparse, &
+    sparse_dt, ok)
+  call assert_all(ok .and. abs(sparse_dt - hydro_dt) <= &
+    10.0_dp * epsilon(1.0_dp) * hydro_dt, &
+    "empty-owner ranks preserve the sparse global timestep", rank)
   call regrid_tagged_sparse_patch_tree_reactive_1d( &
     species, tagged_reactive_config, tagged_distribution, tagged_sparse, &
     tagged_regridded_distribution, changed, tagged_cells, &

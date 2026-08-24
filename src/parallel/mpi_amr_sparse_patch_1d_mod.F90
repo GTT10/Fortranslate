@@ -5,7 +5,9 @@ module mpi_amr_sparse_patch_1d_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
-  use reactive_1d_mod, only: advance_reactive_chemistry
+  use reactive_1d_mod, only: &
+    reactive_cfl_timestep, reactive_transport_timestep, &
+    advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, amr_level_field_1d, &
     accumulate_coarse_flux_1d, &
@@ -82,12 +84,81 @@ module mpi_amr_sparse_patch_1d_mod
   public :: migrate_owned_patch_tree_reactive_1d
   public :: regrid_sparse_patch_tree_reactive_1d
   public :: regrid_tagged_sparse_patch_tree_reactive_1d
+  public :: sparse_patch_tree_reactive_timestep_1d
   public :: advance_sparse_patch_tree_chemistry_1d
   public :: advance_sparse_patch_tree_hydro_1d
   public :: advance_sparse_patch_tree_transport_1d
   public :: advance_sparse_patch_tree_reactive_1d
 
 contains
+
+  subroutine sparse_patch_tree_reactive_timestep_1d( &
+      species, config, distribution, solution, dt, ok, transport)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: solution
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+
+    real(dp) :: local_dt, patch_dt, transport_dt, maximum_diffusivity
+    real(dp) :: scale, transport_scale, dx
+    logical :: local_ok, accepted, mpi_ok
+    integer :: ierr, level, patch, nx
+
+    dt = 0.0_dp
+    local_ok = size(species) >= 1 .and. solution%is_valid(distribution)
+    if (config%transport_enabled) then
+      local_ok = local_ok .and. present(transport)
+      if (present(transport)) &
+        local_ok = local_ok .and. size(transport) == size(species)
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    local_dt = huge(1.0_dp)
+    scale = 1.0_dp
+    do level = 1, size(solution%levels)
+      if (level > 1) scale = scale * real( &
+        solution%hierarchy%relations(level - 1)%refinement_ratio, dp)
+      dx = solution%hierarchy%level_dx(level - 1)
+      do patch = 1, size(solution%levels(level)%patches)
+        if (.not. solution%levels(level)%is_local(patch)) cycle
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        call reactive_cfl_timestep( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, dx, &
+          config%cfl, patch_dt, local_ok)
+        if (.not. local_ok) exit
+        local_dt = min(local_dt, scale * patch_dt)
+        if (config%transport_enabled) then
+          call reactive_transport_timestep( &
+            species, transport, &
+            solution%levels(level)%patches(patch)%state, &
+            solution%levels(level)%patches(patch)%temperature, nx, dx, &
+            config%transport_cfl, config%viscosity_enabled, &
+            config%thermal_conduction_enabled, &
+            config%species_diffusion_enabled, transport_dt, &
+            maximum_diffusivity, local_ok)
+          if (.not. local_ok) exit
+          transport_scale = scale * scale
+          local_dt = min(local_dt, transport_scale * transport_dt)
+        end if
+      end do
+      if (.not. local_ok) exit
+    end do
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      local_dt, dt, 1, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. dt > 0.0_dp .and. dt < huge(1.0_dp)
+    if (.not. ok) dt = 0.0_dp
+  end subroutine sparse_patch_tree_reactive_timestep_1d
 
   subroutine advance_sparse_patch_tree_chemistry_1d( &
       species, reactions, config, interval, distribution, solution, ok, &
