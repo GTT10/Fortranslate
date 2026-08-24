@@ -34,6 +34,7 @@ program pelef_mpi_amr_patch_1d
     advance_owned_patch_tree_reactive_1d
   use mpi_amr_sparse_patch_1d_mod, only: &
     mpi_amr_sparse_reactive_solution_1d, &
+    mpi_amr_sparse_communication_counts_1d, &
     scatter_owned_patch_tree_reactive_1d, &
     gather_owned_patch_tree_reactive_1d, &
     migrate_owned_patch_tree_reactive_1d, &
@@ -71,6 +72,7 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_sparse_reactive_solution_1d) :: tagged_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
+  type(mpi_amr_sparse_communication_counts_1d) :: sparse_communication
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: serial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: distributed_reactive
@@ -132,6 +134,8 @@ program pelef_mpi_amr_patch_1d
   integer :: transferred_cells, serial_transferred_cells
   integer :: tagged_cells, serial_tagged_cells
   integer :: local_patch_transfers, global_patch_transfers
+  integer :: local_sparse_communication(3), global_sparse_communication(3)
+  integer :: expected_sparse_communication(3)
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -1267,13 +1271,26 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok, "adjacent PPM sparse hydro owner scatter", rank)
   call advance_sparse_patch_tree_hydro_1d( &
     species, adjacent_reactive_config, adjacent_dt, adjacent_distribution, &
-    sparse_hydro, ok, local_hydro_advances)
+    sparse_hydro, ok, local_hydro_advances, sparse_communication)
   expected_hydro_advances = expected_owned_hydro_advances( &
     adjacent_distribution, adjacent_initial%hierarchy, rank)
   call assert_all(ok .and. &
     local_hydro_advances == expected_hydro_advances .and. &
     all(sparse_hydro%level_advances == [1, 12]), &
     "direct sparse adjacent PPM hydro accounting", rank)
+  local_sparse_communication = [ &
+    sparse_communication%interval_state_transfers, &
+    sparse_communication%boundary_flux_transfers, &
+    sparse_communication%shared_flux_correction_transfers]
+  call MPI_Allreduce( &
+    local_sparse_communication, global_sparse_communication, 3, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call expected_sparse_physics_communication_counts( &
+    adjacent_distribution, adjacent_initial%hierarchy, .false., &
+    expected_sparse_communication)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    all(global_sparse_communication == expected_sparse_communication), &
+    "direct sparse hydro point-to-point communication accounting", rank)
   gathered_reactive = adjacent_initial
   call poison_reactive_solution(gathered_reactive)
   call gather_owned_patch_tree_reactive_1d( &
@@ -1331,13 +1348,27 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok, "adjacent sparse transport owner scatter", rank)
   call advance_sparse_patch_tree_transport_1d( &
     species, transport, adjacent_transport_config, adjacent_transport_dt, &
-    adjacent_distribution, sparse_transport, ok, local_transport_advances)
+    adjacent_distribution, sparse_transport, ok, local_transport_advances, &
+    sparse_communication)
   expected_transport_advances = expected_owned_transport_advances( &
     adjacent_distribution, adjacent_initial%hierarchy, rank)
   call assert_all(ok .and. &
     local_transport_advances == expected_transport_advances .and. &
     all(sparse_transport%transport_level_advances == [1, 24]), &
     "direct sparse adjacent transport accounting", rank)
+  local_sparse_communication = [ &
+    sparse_communication%interval_state_transfers, &
+    sparse_communication%boundary_flux_transfers, &
+    sparse_communication%shared_flux_correction_transfers]
+  call MPI_Allreduce( &
+    local_sparse_communication, global_sparse_communication, 3, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call expected_sparse_physics_communication_counts( &
+    adjacent_distribution, adjacent_initial%hierarchy, .true., &
+    expected_sparse_communication)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    all(global_sparse_communication == expected_sparse_communication), &
+    "direct sparse transport point-to-point communication accounting", rank)
   gathered_reactive = adjacent_initial
   call poison_reactive_solution(gathered_reactive)
   call gather_owned_patch_tree_reactive_1d( &
@@ -1579,6 +1610,84 @@ contains
       end do
     end do
   end function expected_owned_transport_advances
+
+  subroutine expected_sparse_physics_communication_counts( &
+      local_distribution, local_hierarchy, parabolic, counts)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    logical, intent(in) :: parabolic
+    integer, intent(out) :: counts(3)
+
+    counts = 0
+    call accumulate_expected_sparse_communication( &
+      local_distribution, local_hierarchy, 1, 1, 1, parabolic, counts)
+  end subroutine expected_sparse_physics_communication_counts
+
+  recursive subroutine accumulate_expected_sparse_communication( &
+      local_distribution, local_hierarchy, local_level, local_patch, &
+      multiplier, parabolic, counts)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    integer, intent(in) :: local_level, local_patch, multiplier
+    logical, intent(in) :: parabolic
+    integer, intent(inout) :: counts(3)
+
+    logical, allocatable :: recipients(:)
+    integer :: child_count, local_child, child_index, child_owner
+    integer :: left_index, right_index, owner, ratio, subcycles
+    integer :: child_multiplier, recipient
+
+    if (local_level > size(local_hierarchy%relations)) return
+    child_count = local_hierarchy%relations(local_level)% &
+      child_sets(local_patch)%patch_count()
+    if (child_count == 0) return
+    owner = local_distribution%owner_of(local_level - 1, local_patch)
+    ratio = local_hierarchy%relations(local_level)%refinement_ratio
+    subcycles = ratio
+    if (parabolic) subcycles = ratio * ratio
+
+    allocate(recipients(local_distribution%nranks))
+    recipients = .false.
+    do local_child = 1, child_count
+      child_index = local_hierarchy%relations(local_level)% &
+        child_index(local_patch, local_child)
+      child_owner = local_distribution%owner_of(local_level, child_index)
+      recipients(child_owner + 1) = .true.
+    end do
+    do recipient = 0, local_distribution%nranks - 1
+      if (recipient /= owner .and. recipients(recipient + 1)) &
+        counts(1) = counts(1) + multiplier
+    end do
+
+    do local_child = 1, child_count - 1
+      if (local_hierarchy%relations(local_level)% &
+            child_sets(local_patch)%patches(local_child)% &
+              fine_coarse_upper + 1 /= &
+          local_hierarchy%relations(local_level)% &
+            child_sets(local_patch)%patches(local_child + 1)% &
+              fine_coarse_lower) cycle
+      left_index = local_hierarchy%relations(local_level)% &
+        child_index(local_patch, local_child)
+      right_index = local_hierarchy%relations(local_level)% &
+        child_index(local_patch, local_child + 1)
+      if (local_distribution%owner_of(local_level, left_index) /= owner) &
+        counts(3) = counts(3) + multiplier * subcycles
+      if (local_distribution%owner_of(local_level, right_index) /= owner) &
+        counts(3) = counts(3) + multiplier * subcycles
+    end do
+
+    child_multiplier = multiplier * subcycles
+    do local_child = 1, child_count
+      child_index = local_hierarchy%relations(local_level)% &
+        child_index(local_patch, local_child)
+      child_owner = local_distribution%owner_of(local_level, child_index)
+      if (child_owner /= owner) &
+        counts(2) = counts(2) + child_multiplier
+      call accumulate_expected_sparse_communication( &
+        local_distribution, local_hierarchy, local_level + 1, child_index, &
+        child_multiplier, parabolic, counts)
+    end do
+  end subroutine accumulate_expected_sparse_communication
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second

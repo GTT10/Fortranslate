@@ -34,6 +34,15 @@ module mpi_amr_sparse_patch_1d_mod
   integer, parameter :: sparse_adjacent_halo_tag = 2602
   integer, parameter :: sparse_child_parent_tag = 2603
   integer, parameter :: sparse_parent_state_tag = 2604
+  integer, parameter :: sparse_interval_state_tag = 2605
+  integer, parameter :: sparse_boundary_flux_tag = 2606
+  integer, parameter :: sparse_flux_correction_tag = 2607
+
+  type, public :: mpi_amr_sparse_communication_counts_1d
+    integer :: interval_state_transfers = 0
+    integer :: boundary_flux_transfers = 0
+    integer :: shared_flux_correction_transfers = 0
+  end type mpi_amr_sparse_communication_counts_1d
 
   type, public :: mpi_amr_sparse_reactive_level_1d
     type(amr_patch_tree_reactive_patch_1d), allocatable :: patches(:)
@@ -176,7 +185,7 @@ contains
 
   subroutine advance_sparse_patch_tree_hydro_1d( &
       species, config, dt, distribution, solution, ok, &
-      local_patch_advances)
+      local_patch_advances, local_communication)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     real(dp), intent(in) :: dt
@@ -184,8 +193,11 @@ contains
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_patch_advances
+    type(mpi_amr_sparse_communication_counts_1d), intent(out), optional :: &
+      local_communication
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
+    type(mpi_amr_sparse_communication_counts_1d) :: communication
     type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
     real(dp), allocatable :: left_integral(:), right_integral(:)
     logical :: local_ok, accepted, mpi_ok
@@ -194,6 +206,8 @@ contains
     ok = .false.
     advances = 0
     if (present(local_patch_advances)) local_patch_advances = 0
+    if (present(local_communication)) &
+      local_communication = mpi_amr_sparse_communication_counts_1d()
     local_ok = dt > 0.0_dp .and. size(species) >= 1 .and. &
       solution%is_valid(distribution)
     call all_ranks_accept_sparse_1d( &
@@ -212,7 +226,17 @@ contains
     end if
     call advance_sparse_patch_hydro_recursive_1d( &
       species, config, distribution, solution, registers, 1, 1, dt, &
-      left_integral, right_integral, advances, local_ok)
+      left_integral, right_integral, distribution%owner_of(0, 1), advances, &
+      communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    call synchronize_sparse_counter_delta_1d( &
+      distribution, backup%level_advances, solution%level_advances, local_ok)
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) then
@@ -241,12 +265,13 @@ contains
       return
     end if
     if (present(local_patch_advances)) local_patch_advances = advances
+    if (present(local_communication)) local_communication = communication
   end subroutine advance_sparse_patch_tree_hydro_1d
 
   recursive subroutine advance_sparse_patch_hydro_recursive_1d( &
       species, config, distribution, solution, registers, level, &
       parent_patch, interval, left_integral, right_integral, &
-      local_advances, ok)
+      result_owner, local_advances, communication, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
@@ -256,7 +281,10 @@ contains
     integer, intent(in) :: level, parent_patch
     real(dp), intent(in) :: interval
     real(dp), intent(out) :: left_integral(:), right_integral(:)
+    integer, intent(in) :: result_owner
     integer, intent(inout) :: local_advances
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
     logical, intent(out) :: ok
 
     real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
@@ -264,7 +292,6 @@ contains
     real(dp) :: child_interval, alpha, dx
     logical :: local_ok, patch_ok, accepted, mpi_ok, physical_boundary
     integer :: nx, owner, ratio, substep, child, child_count, global_child
-    integer :: ierr
     character(len=32) :: boundary
 
     ok = .false.
@@ -278,11 +305,11 @@ contains
         size(right_integral) /= solution%nvar) return
     nx = distribution%levels(level)%cell_counts(parent_patch)
     owner = distribution%owner_of(level - 1, parent_patch)
-    allocate(state_start(solution%nvar, 0:nx + 1))
-    allocate(state_end(solution%nvar, 0:nx + 1))
-    allocate(flux(solution%nvar, 0:nx))
     patch_ok = .true.
     if (distribution%rank == owner) then
+      allocate(state_start(solution%nvar, 0:nx + 1))
+      allocate(state_end(solution%nvar, 0:nx + 1))
+      allocate(flux(solution%nvar, 0:nx))
       state_start = solution%levels(level)%patches(parent_patch)%state
       dx = solution%hierarchy%level_dx(level - 1)
       physical_boundary = level == 1
@@ -319,25 +346,19 @@ contains
         solution%level_advances(level) = &
           solution%level_advances(level) + 1
         local_advances = local_advances + 1
+        left_integral = interval * flux(:, 0)
+        right_integral = interval * flux(:, nx)
       end if
     end if
     call all_ranks_accept_sparse_1d( &
       distribution, patch_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
-    call MPI_Bcast(state_start, size(state_start), MPI_DOUBLE_PRECISION, &
-      owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast(state_end, size(state_end), MPI_DOUBLE_PRECISION, &
-      owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast(flux, size(flux), MPI_DOUBLE_PRECISION, owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast(solution%level_advances(level), 1, MPI_INTEGER, owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    left_integral = interval * flux(:, 0)
-    right_integral = interval * flux(:, nx)
+    call transfer_sparse_boundary_flux_integrals_1d( &
+      distribution, owner, result_owner, left_integral, right_integral, &
+      communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
     if (level > size(solution%hierarchy%relations)) then
       ok = .true.
       return
@@ -351,18 +372,32 @@ contains
     end if
     ratio = solution%hierarchy%relations(level)%refinement_ratio
     child_interval = interval / real(ratio, dp)
+    local_ok = .true.
+    if (distribution%rank == owner) then
+      do child = 1, child_count
+        call accumulate_coarse_flux_1d( &
+          registers(level)%parents(parent_patch)%children(child), &
+          flux(:, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
+          flux(:, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
+          interval, local_ok)
+        if (.not. local_ok) exit
+      end do
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call distribute_sparse_interval_states_to_child_owners_1d( &
+      distribution, solution, level, parent_patch, owner, state_start, &
+      state_end, communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
     allocate(child_left(solution%nvar, child_count))
     allocate(child_right(solution%nvar, child_count))
-    do child = 1, child_count
-      call accumulate_coarse_flux_1d( &
-        registers(level)%parents(parent_patch)%children(child), &
-        flux(:, solution%hierarchy%relations(level)% &
-          child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
-        flux(:, solution%hierarchy%relations(level)% &
-          child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
-        interval, local_ok)
-      if (.not. local_ok) return
-    end do
+    child_left = 0.0_dp
+    child_right = 0.0_dp
 
     do substep = 1, ratio
       if (trim(config%amr_reconstruction) == "pcm") then
@@ -395,22 +430,29 @@ contains
         call advance_sparse_patch_hydro_recursive_1d( &
           species, config, distribution, solution, registers, level + 1, &
           global_child, child_interval, child_left(:, child), &
-          child_right(:, child), local_advances, local_ok)
+          child_right(:, child), owner, local_advances, communication, &
+          local_ok)
         if (.not. local_ok) return
       end do
       call reconcile_sparse_adjacent_child_fluxes_1d( &
         species, distribution, solution, level, parent_patch, child_left, &
-        child_right, local_ok)
+        child_right, communication, local_ok)
       call all_ranks_accept_sparse_1d( &
         distribution, local_ok, accepted, mpi_ok)
       if (.not. mpi_ok .or. .not. accepted) return
-      do child = 1, child_count
-        call accumulate_fine_flux_1d( &
-          registers(level)%parents(parent_patch)%children(child), &
-          child_left(:, child) / child_interval, &
-          child_right(:, child) / child_interval, child_interval, local_ok)
-        if (.not. local_ok) return
-      end do
+      local_ok = .true.
+      if (distribution%rank == owner) then
+        do child = 1, child_count
+          call accumulate_fine_flux_1d( &
+            registers(level)%parents(parent_patch)%children(child), &
+            child_left(:, child) / child_interval, &
+            child_right(:, child) / child_interval, child_interval, local_ok)
+          if (.not. local_ok) exit
+        end do
+      end if
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
     end do
 
     call synchronize_sparse_parent_1d( &
@@ -423,7 +465,7 @@ contains
 
   subroutine advance_sparse_patch_tree_transport_1d( &
       species, transport, config, interval, distribution, solution, ok, &
-      local_patch_advances)
+      local_patch_advances, local_communication)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(reactive_1d_config), intent(in) :: config
@@ -432,8 +474,11 @@ contains
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_patch_advances
+    type(mpi_amr_sparse_communication_counts_1d), intent(out), optional :: &
+      local_communication
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
+    type(mpi_amr_sparse_communication_counts_1d) :: communication
     type(amr_patch_tree_relation_flux_registers_1d), allocatable :: registers(:)
     real(dp), allocatable :: left_integral(:), right_integral(:)
     logical :: local_ok, accepted, mpi_ok
@@ -442,6 +487,8 @@ contains
     ok = .false.
     advances = 0
     if (present(local_patch_advances)) local_patch_advances = 0
+    if (present(local_communication)) &
+      local_communication = mpi_amr_sparse_communication_counts_1d()
     local_ok = interval > 0.0_dp .and. size(species) >= 1 .and. &
       size(transport) == size(species) .and. &
       solution%is_valid(distribution)
@@ -461,7 +508,18 @@ contains
     end if
     call advance_sparse_patch_transport_recursive_1d( &
       species, transport, config, distribution, solution, registers, 1, 1, &
-      interval, left_integral, right_integral, advances, local_ok)
+      interval, left_integral, right_integral, distribution%owner_of(0, 1), &
+      advances, communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    call synchronize_sparse_counter_delta_1d( &
+      distribution, backup%transport_level_advances, &
+      solution%transport_level_advances, local_ok)
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) then
@@ -488,6 +546,7 @@ contains
       return
     end if
     if (present(local_patch_advances)) local_patch_advances = advances
+    if (present(local_communication)) local_communication = communication
   end subroutine advance_sparse_patch_tree_transport_1d
 
   subroutine advance_sparse_patch_tree_reactive_1d( &
@@ -601,7 +660,7 @@ contains
   recursive subroutine advance_sparse_patch_transport_recursive_1d( &
       species, transport, config, distribution, solution, registers, level, &
       parent_patch, interval, left_integral, right_integral, &
-      local_advances, ok)
+      result_owner, local_advances, communication, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(reactive_1d_config), intent(in) :: config
@@ -612,7 +671,10 @@ contains
     integer, intent(in) :: level, parent_patch
     real(dp), intent(in) :: interval
     real(dp), intent(out) :: left_integral(:), right_integral(:)
+    integer, intent(in) :: result_owner
     integer, intent(inout) :: local_advances
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
     logical, intent(out) :: ok
 
     real(dp), allocatable :: state_start(:, :), state_end(:, :), flux(:, :)
@@ -620,7 +682,7 @@ contains
     real(dp) :: child_interval, alpha, dx, boundary_distance
     logical :: local_ok, patch_ok, accepted, mpi_ok, physical_boundary
     integer :: nx, owner, ratio, subcycles, substep, child, child_count
-    integer :: global_child, ierr
+    integer :: global_child
     character(len=32) :: boundary
 
     ok = .false.
@@ -634,11 +696,11 @@ contains
         size(right_integral) /= solution%nvar) return
     nx = distribution%levels(level)%cell_counts(parent_patch)
     owner = distribution%owner_of(level - 1, parent_patch)
-    allocate(state_start(solution%nvar, 0:nx + 1))
-    allocate(state_end(solution%nvar, 0:nx + 1))
-    allocate(flux(solution%nvar, 0:nx))
     patch_ok = .true.
     if (distribution%rank == owner) then
+      allocate(state_start(solution%nvar, 0:nx + 1))
+      allocate(state_end(solution%nvar, 0:nx + 1))
+      allocate(flux(solution%nvar, 0:nx))
       state_start = solution%levels(level)%patches(parent_patch)%state
       dx = solution%hierarchy%level_dx(level - 1)
       physical_boundary = level == 1
@@ -658,26 +720,19 @@ contains
         solution%transport_level_advances(level) = &
           solution%transport_level_advances(level) + 1
         local_advances = local_advances + 1
+        left_integral = interval * flux(:, 0)
+        right_integral = interval * flux(:, nx)
       end if
     end if
     call all_ranks_accept_sparse_1d( &
       distribution, patch_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
-    call MPI_Bcast(state_start, size(state_start), MPI_DOUBLE_PRECISION, &
-      owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast(state_end, size(state_end), MPI_DOUBLE_PRECISION, &
-      owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast(flux, size(flux), MPI_DOUBLE_PRECISION, owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      solution%transport_level_advances(level), 1, MPI_INTEGER, owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    left_integral = interval * flux(:, 0)
-    right_integral = interval * flux(:, nx)
+    call transfer_sparse_boundary_flux_integrals_1d( &
+      distribution, owner, result_owner, left_integral, right_integral, &
+      communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
     if (level > size(solution%hierarchy%relations)) then
       ok = .true.
       return
@@ -692,18 +747,32 @@ contains
     ratio = solution%hierarchy%relations(level)%refinement_ratio
     subcycles = ratio * ratio
     child_interval = interval / real(subcycles, dp)
+    local_ok = .true.
+    if (distribution%rank == owner) then
+      do child = 1, child_count
+        call accumulate_coarse_flux_1d( &
+          registers(level)%parents(parent_patch)%children(child), &
+          flux(:, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
+          flux(:, solution%hierarchy%relations(level)% &
+            child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
+          interval, local_ok)
+        if (.not. local_ok) exit
+      end do
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call distribute_sparse_interval_states_to_child_owners_1d( &
+      distribution, solution, level, parent_patch, owner, state_start, &
+      state_end, communication, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
     allocate(child_left(solution%nvar, child_count))
     allocate(child_right(solution%nvar, child_count))
-    do child = 1, child_count
-      call accumulate_coarse_flux_1d( &
-        registers(level)%parents(parent_patch)%children(child), &
-        flux(:, solution%hierarchy%relations(level)% &
-          child_sets(parent_patch)%patches(child)%fine_coarse_lower - 1), &
-        flux(:, solution%hierarchy%relations(level)% &
-          child_sets(parent_patch)%patches(child)%fine_coarse_upper), &
-        interval, local_ok)
-      if (.not. local_ok) return
-    end do
+    child_left = 0.0_dp
+    child_right = 0.0_dp
 
     do substep = 1, subcycles
       alpha = (real(substep, dp) - 0.5_dp) / real(subcycles, dp)
@@ -732,22 +801,29 @@ contains
         call advance_sparse_patch_transport_recursive_1d( &
           species, transport, config, distribution, solution, registers, &
           level + 1, global_child, child_interval, child_left(:, child), &
-          child_right(:, child), local_advances, local_ok)
+          child_right(:, child), owner, local_advances, communication, &
+          local_ok)
         if (.not. local_ok) return
       end do
       call reconcile_sparse_adjacent_child_fluxes_1d( &
         species, distribution, solution, level, parent_patch, child_left, &
-        child_right, local_ok)
+        child_right, communication, local_ok)
       call all_ranks_accept_sparse_1d( &
         distribution, local_ok, accepted, mpi_ok)
       if (.not. mpi_ok .or. .not. accepted) return
-      do child = 1, child_count
-        call accumulate_fine_flux_1d( &
-          registers(level)%parents(parent_patch)%children(child), &
-          child_left(:, child) / child_interval, &
-          child_right(:, child) / child_interval, child_interval, local_ok)
-        if (.not. local_ok) return
-      end do
+      local_ok = .true.
+      if (distribution%rank == owner) then
+        do child = 1, child_count
+          call accumulate_fine_flux_1d( &
+            registers(level)%parents(parent_patch)%children(child), &
+            child_left(:, child) / child_interval, &
+            child_right(:, child) / child_interval, child_interval, local_ok)
+          if (.not. local_ok) exit
+        end do
+      end if
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
     end do
 
     call synchronize_sparse_parent_1d( &
@@ -757,6 +833,152 @@ contains
       distribution, local_ok, accepted, mpi_ok)
     ok = mpi_ok .and. accepted
   end subroutine advance_sparse_patch_transport_recursive_1d
+
+  subroutine transfer_sparse_boundary_flux_integrals_1d( &
+      distribution, source_owner, result_owner, left_integral, &
+      right_integral, communication, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    integer, intent(in) :: source_owner, result_owner
+    real(dp), intent(inout) :: left_integral(:), right_integral(:)
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: payload(:)
+    type(MPI_Status) :: status
+    integer :: nvar, ierr
+
+    ok = .false.
+    nvar = size(left_integral)
+    if (nvar < 1 .or. size(right_integral) /= nvar) return
+    if (source_owner < 0 .or. source_owner >= distribution%nranks .or. &
+        result_owner < 0 .or. result_owner >= distribution%nranks) return
+    if (source_owner == result_owner) then
+      ok = .true.
+      return
+    end if
+    if (distribution%rank /= source_owner .and. &
+        distribution%rank /= result_owner) then
+      ok = .true.
+      return
+    end if
+
+    allocate(payload(2 * nvar))
+    if (distribution%rank == source_owner) then
+      payload(1:nvar) = left_integral
+      payload(nvar + 1:2 * nvar) = right_integral
+      call MPI_Send( &
+        payload, size(payload), MPI_DOUBLE_PRECISION, result_owner, &
+        sparse_boundary_flux_tag, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      communication%boundary_flux_transfers = &
+        communication%boundary_flux_transfers + 1
+    else
+      call MPI_Recv( &
+        payload, size(payload), MPI_DOUBLE_PRECISION, source_owner, &
+        sparse_boundary_flux_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      left_integral = payload(1:nvar)
+      right_integral = payload(nvar + 1:2 * nvar)
+    end if
+    ok = .true.
+  end subroutine transfer_sparse_boundary_flux_integrals_1d
+
+  subroutine distribute_sparse_interval_states_to_child_owners_1d( &
+      distribution, solution, relation, parent, source_owner, state_start, &
+      state_end, communication, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: solution
+    integer, intent(in) :: relation, parent, source_owner
+    real(dp), allocatable, intent(inout) :: state_start(:, :), state_end(:, :)
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: payload(:)
+    type(MPI_Status) :: status
+    logical, allocatable :: recipients(:)
+    logical :: has_remote
+    integer :: child, child_count, child_index, child_owner
+    integer :: nx, recipient, value_count, offset, ierr
+
+    ok = .false.
+    child_count = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patch_count()
+    nx = distribution%levels(relation)%cell_counts(parent)
+    if (child_count < 1 .or. nx < 1) return
+    allocate(recipients(distribution%nranks))
+    recipients = .false.
+    do child = 1, child_count
+      child_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child)
+      child_owner = distribution%owner_of(relation, child_index)
+      recipients(child_owner + 1) = .true.
+    end do
+    has_remote = .false.
+    do recipient = 0, distribution%nranks - 1
+      if (recipient /= source_owner .and. recipients(recipient + 1)) &
+        has_remote = .true.
+    end do
+    value_count = 2 * solution%nvar * (nx + 2)
+
+    if (distribution%rank == source_owner) then
+      if (.not. allocated(state_start) .or. .not. allocated(state_end)) return
+      if (size(state_start) /= solution%nvar * (nx + 2) .or. &
+          size(state_end) /= solution%nvar * (nx + 2)) return
+      if (has_remote) then
+        allocate(payload(value_count))
+        offset = 0
+        call append_sparse_payload_2d(state_start, payload, offset)
+        call append_sparse_payload_2d(state_end, payload, offset)
+      end if
+      do recipient = 0, distribution%nranks - 1
+        if (recipient == source_owner .or. .not. recipients(recipient + 1)) &
+          cycle
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, recipient, &
+          sparse_interval_state_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        communication%interval_state_transfers = &
+          communication%interval_state_transfers + 1
+      end do
+    else if (recipients(distribution%rank + 1)) then
+      allocate(state_start(solution%nvar, 0:nx + 1))
+      allocate(state_end(solution%nvar, 0:nx + 1))
+      allocate(payload(value_count))
+      call MPI_Recv( &
+        payload, value_count, MPI_DOUBLE_PRECISION, source_owner, &
+        sparse_interval_state_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      offset = 0
+      call consume_sparse_payload_2d(payload, offset, state_start)
+      call consume_sparse_payload_2d(payload, offset, state_end)
+    end if
+    ok = .true.
+  end subroutine distribute_sparse_interval_states_to_child_owners_1d
+
+  subroutine synchronize_sparse_counter_delta_1d( &
+      distribution, baseline, counter, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    integer, intent(in) :: baseline(:)
+    integer, intent(inout) :: counter(:)
+    logical, intent(out) :: ok
+
+    integer, allocatable :: local_delta(:), global_delta(:)
+    integer :: ierr
+
+    ok = .false.
+    if (size(counter) /= size(baseline) .or. size(counter) < 1) return
+    allocate(local_delta(size(counter)), global_delta(size(counter)))
+    local_delta = counter - baseline
+    if (any(local_delta < 0)) return
+    call MPI_Allreduce( &
+      local_delta, global_delta, size(counter), MPI_INTEGER, MPI_SUM, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    counter = baseline + global_delta
+    ok = all(global_delta >= 0)
+  end subroutine synchronize_sparse_counter_delta_1d
 
   subroutine synchronize_sparse_parent_1d( &
       species, distribution, solution, registers, level, parent_patch, ok)
@@ -808,19 +1030,23 @@ contains
 
   subroutine reconcile_sparse_adjacent_child_fluxes_1d( &
       species, distribution, solution, relation, parent, left_integrals, &
-      right_integrals, ok)
+      right_integrals, communication, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     integer, intent(in) :: relation, parent
     real(dp), intent(inout) :: left_integrals(:, :), right_integrals(:, :)
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
     logical, intent(out) :: ok
 
-    real(dp), allocatable :: shared_integral(:)
+    real(dp), allocatable :: shared_integral(:), left_correction(:)
+    real(dp), allocatable :: right_correction(:)
     logical, allocatable :: touched(:)
     logical :: local_ok
     real(dp) :: dx
     integer :: child, child_count, left_index, right_index, left_nx
+    integer :: parent_owner
 
     ok = .false.
     child_count = solution%hierarchy%relations(relation)% &
@@ -829,8 +1055,10 @@ contains
         size(right_integrals, 1) /= solution%nvar .or. &
         size(left_integrals, 2) /= child_count .or. &
         size(right_integrals, 2) /= child_count) return
-    allocate(shared_integral(solution%nvar), touched(child_count))
+    allocate(shared_integral(solution%nvar), left_correction(solution%nvar))
+    allocate(right_correction(solution%nvar), touched(child_count))
     touched = .false.
+    parent_owner = distribution%owner_of(relation - 1, parent)
     dx = solution%hierarchy%level_dx(relation)
     if (dx <= 0.0_dp) return
     do child = 1, child_count - 1
@@ -842,22 +1070,27 @@ contains
         child_index(parent, child)
       right_index = solution%hierarchy%relations(relation)% &
         child_index(parent, child + 1)
-      shared_integral = 0.5_dp * ( &
-        right_integrals(:, child) + left_integrals(:, child + 1))
-      if (solution%levels(relation + 1)%is_local(left_index)) then
-        left_nx = distribution%levels(relation + 1)%cell_counts(left_index)
-        solution%levels(relation + 1)%patches(left_index)% &
-          state(:, left_nx) = &
-          solution%levels(relation + 1)%patches(left_index)% &
-            state(:, left_nx) - &
-          (shared_integral - right_integrals(:, child)) / dx
-      end if
-      if (solution%levels(relation + 1)%is_local(right_index)) &
-        solution%levels(relation + 1)%patches(right_index)%state(:, 1) = &
-          solution%levels(relation + 1)%patches(right_index)%state(:, 1) + &
+      left_correction = 0.0_dp
+      right_correction = 0.0_dp
+      if (distribution%rank == parent_owner) then
+        shared_integral = 0.5_dp * ( &
+          right_integrals(:, child) + left_integrals(:, child + 1))
+        left_correction = &
+          -(shared_integral - right_integrals(:, child)) / dx
+        right_correction = &
           (shared_integral - left_integrals(:, child + 1)) / dx
-      right_integrals(:, child) = shared_integral
-      left_integrals(:, child + 1) = shared_integral
+        right_integrals(:, child) = shared_integral
+        left_integrals(:, child + 1) = shared_integral
+      end if
+      left_nx = distribution%levels(relation + 1)%cell_counts(left_index)
+      call transfer_and_apply_sparse_flux_correction_1d( &
+        distribution, solution, relation, left_index, left_nx, parent_owner, &
+        left_correction, communication, local_ok)
+      if (.not. local_ok) return
+      call transfer_and_apply_sparse_flux_correction_1d( &
+        distribution, solution, relation, right_index, 1, parent_owner, &
+        right_correction, communication, local_ok)
+      if (.not. local_ok) return
       touched(child) = .true.
       touched(child + 1) = .true.
     end do
@@ -876,6 +1109,51 @@ contains
     end do
     ok = .true.
   end subroutine reconcile_sparse_adjacent_child_fluxes_1d
+
+  subroutine transfer_and_apply_sparse_flux_correction_1d( &
+      distribution, solution, relation, patch, cell, source_owner, &
+      correction, communication, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, patch, cell, source_owner
+    real(dp), intent(inout) :: correction(:)
+    type(mpi_amr_sparse_communication_counts_1d), intent(inout) :: &
+      communication
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    integer :: patch_owner, ierr
+
+    ok = .false.
+    if (size(correction) /= solution%nvar) return
+    patch_owner = distribution%owner_of(relation, patch)
+    if (patch_owner == source_owner) then
+      if (distribution%rank == patch_owner) &
+        solution%levels(relation + 1)%patches(patch)%state(:, cell) = &
+          solution%levels(relation + 1)%patches(patch)%state(:, cell) + &
+          correction
+      ok = .true.
+      return
+    end if
+
+    if (distribution%rank == source_owner) then
+      call MPI_Send( &
+        correction, size(correction), MPI_DOUBLE_PRECISION, patch_owner, &
+        sparse_flux_correction_tag, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      communication%shared_flux_correction_transfers = &
+        communication%shared_flux_correction_transfers + 1
+    else if (distribution%rank == patch_owner) then
+      call MPI_Recv( &
+        correction, size(correction), MPI_DOUBLE_PRECISION, source_owner, &
+        sparse_flux_correction_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      solution%levels(relation + 1)%patches(patch)%state(:, cell) = &
+        solution%levels(relation + 1)%patches(patch)%state(:, cell) + &
+        correction
+    end if
+    ok = .true.
+  end subroutine transfer_and_apply_sparse_flux_correction_1d
 
   subroutine average_down_sparse_reactive_solution_1d( &
       species, distribution, solution, ok, local_parent_transfers)
