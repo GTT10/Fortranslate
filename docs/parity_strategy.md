@@ -119,8 +119,9 @@ Pinned numerical signatures may be updated only with an explained method or data
 The composition-dependent flow path is accepted only when all of the following remain active:
 
 - primitive-to-conserved-to-primitive recovery with nonzero three-component velocity;
-- equal-state physical/Rusanov/HLLC flux identity;
+- equal-state physical/Rusanov/HLLC/PeleC-style flux identity;
 - stationary and moving heterogeneous-composition contact preservation;
+- positive general-EOS PeleC-style shock interface state;
 - exact equality between summed species flux and total mass flux;
 - homogeneous hydro update equal to zero;
 - homogeneous Strang-split field equal to independent zero-dimensional cell chemistry;
@@ -129,6 +130,8 @@ The composition-dependent flow path is accepted only when all of the following r
 - mass-fraction closure;
 - smooth entropy-wave convergence above order 1.75 on both refinement intervals;
 - smooth H2/N2 composition-wave convergence above order 1.70;
+- smooth H2/N2 composition-wave convergence above order 1.70 with the
+  PeleC-style solver selected;
 - discontinuous material-contact HLLC error below the Rusanov error;
 - nonuniform reactive-hotspot generation of finite pressure and velocity responses.
 
@@ -1028,3 +1031,23 @@ Tag-driven sparse topology construction is accepted only while:
   helper;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.68.0 general-EOS PeleC-style Riemann gates
+
+The reactive PeleC-style acoustic solver is accepted only while:
+
+- equal states reproduce the NASA7 physical flux and expose the same density,
+  normal velocity, and pressure at the interface;
+- stationary heterogeneous-composition contacts have zero mass and energy
+  flux and retain the common pressure;
+- moving material contacts reproduce the upwind physical flux, including both
+  transverse momenta and every species;
+- a nonuniform pressure, velocity, temperature, and composition pair produces
+  a finite positive-density/positive-pressure interface state;
+- every interface satisfies exact species-flux closure to total mass flux;
+- invalid conserved composition is rejected and optional interface outputs are
+  reset;
+- y-normal equal-state flux agrees with the rotated physical flux;
+- the 40/80/160-cell H2/N2 composition wave converges above order 1.70 and the
+  160-cell H2 error remains below `4e-6`;
+- the complete GNU Fortran Debug and Release suites pass.

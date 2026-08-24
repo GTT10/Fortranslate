@@ -38,7 +38,7 @@
 - [x] qualified 1D conserved/primitive conversion using NASA7 mixture thermodynamics
 - [x] composition-dependent 1D CFL and Rusanov signal speeds
 - [x] frozen-composition characteristic relations
-- [ ] general-EOS PeleC-style Riemann parity
+- [x] qualified general-EOS PeleC-style Riemann parity
 - [x] periodic two-dimensional general-EOS CTU hydro
 - [x] directional general-EOS HLLC with momentum rotation
 - [x] full-state transverse correction with EOS positivity limiting
@@ -69,7 +69,7 @@
 
 - [x] conserved `rho*Y_k` state coupled to NASA7 thermodynamics
 - [x] temperature recovery from conserved total energy
-- [x] general-EOS physical, Rusanov, and HLLC fluxes
+- [x] general-EOS physical, Rusanov, HLLC, and PeleC-style fluxes
 - [x] exact species-flux closure to total mass flux
 - [x] PCM lower-order baseline
 - [x] frozen-composition characteristic PLM with MC/minmod limiting
@@ -105,7 +105,7 @@
 
 - [x] separate `pelef_reactive_2d` driver and namelist
 - [x] periodic uniform Cartesian reactive state and temperature field
-- [x] x/y directional Rusanov and HLLC fluxes
+- [x] x/y directional Rusanov, HLLC, and PeleC-style fluxes
 - [x] frozen-composition characteristic PLM in both directions
 - [x] time-traced frozen-composition characteristic PPM in both directions
 - [x] optional PeleC shock flattening on both normal predictors
@@ -1111,3 +1111,24 @@ Both explicit and solution-tagged sparse topology changes now keep field data
 globally single-copy from planning through commit. Only compact hierarchy and
 owner-map metadata are replicated; collective logical acceptance remains the
 transaction boundary.
+
+## General-EOS PeleC-style reactive Riemann solver (`0.68.0`)
+
+- [x] left/right NASA7 frozen sound speed and acoustic impedance
+- [x] PeleC star pressure and normal velocity estimate
+- [x] upwind or stationary-averaged species-density origin state
+- [x] EOS-checked star-density correction and inward/outward wave interpolation
+- [x] final interface internal energy rebuilt from the NASA7 mixture EOS
+- [x] exact species-flux closure to the total mass flux
+- [x] equal-state, stationary/moving material-contact, and shock gates
+- [x] x/y directional momentum rotation
+- [x] invalid-state rejection and cleared optional interface outputs
+- [x] 40/80/160-cell composition-wave second-order convergence
+- [x] selectable `pelec` path in reactive 1D and 2D configurations
+- [x] complete Release and Debug CI gates
+
+The reactive acoustic path now follows PeleC `Source/Riemann.H` using the
+available NASA7 ideal-gas-mixture EOS instead of the earlier constant-`gamma`
+reduction. HLLC and Rusanov remain independent selectable baselines. Rotating
+frames, auxiliary/linear advected fields, embedded boundaries, and arbitrary
+PelePhysics EOS models remain outside this qualification.

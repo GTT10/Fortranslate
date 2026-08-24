@@ -28,7 +28,7 @@ pelef_transport_probe
   └─ qualified dilute-gas mixture transport coefficients
 
 pelef_reactive_1d
-  └─ NASA7 general-EOS reactive Euler with PLM/PPM, HLLC, and Strang splitting
+  └─ NASA7 reactive Euler with PLM/PPM, HLLC/PeleC fluxes, and Strang splitting
 
 pelef_reactive_2d
   └─ NASA7 reactive Euler, physical boundaries, transport, and CTU correction
@@ -137,7 +137,7 @@ reconstruction selector
        ├─ optional contact steepening
        └─ optional shock flattening
         ↓
-general-EOS Rusanov or HLLC flux
+general-EOS Rusanov, HLLC, or PeleC-style acoustic flux
         ↓
 conservative finite-volume update
 
@@ -150,6 +150,16 @@ optional transport branch
 Advective species face fluxes close to the total mass flux. Diffusive species
 fluxes use a correction velocity so their sum is zero to roundoff.
 
+The reactive `pelec` selection follows the upstream acoustic construction.
+Each side supplies its NASA7 frozen sound speed and acoustic impedance. The
+solver estimates star pressure and normal velocity, selects an upwind vector
+of species densities (or averages it at a stationary interface), applies the
+star-density pressure correction species by species, and evaluates the star
+sound speed through the mixture EOS. Inward/outward wave interpolation selects
+the final interface density, composition, velocity, and pressure. Total energy
+is then rebuilt from that interface through the NASA7 EOS before assembling
+the conservative flux. Rusanov and HLLC remain separate selectable kernels.
+
 ## Reactive two-dimensional CTU path
 
 The reactive 2D state is stored as `state(variable,nx,ny)` with a synchronized
@@ -157,7 +167,7 @@ The reactive 2D state is stored as `state(variable,nx,ny)` with a synchronized
 the Riemann solver and supports PCM, frozen-composition characteristic PLM, or
 time-traced characteristic PPM. For the y direction, momentum and primitive
 velocity components are rotated into the x-normal ordering, evaluated by the
-same predictor and HLLC/Rusanov kernels, and rotated back.
+same predictor and selected HLLC/Rusanov/PeleC kernel, and rotated back.
 
 ```text
 cell-centered conserved state
@@ -173,14 +183,14 @@ normal predictor selector
        ├─ optional bounded contact steepening
        └─ optional shock flattening
         ↓
-provisional x/y HLLC fluxes
+provisional selected x/y Riemann fluxes
         ↓
 conservative transverse half-step correction
   U_face* = U_face - dt/(2 d_t) (F_t,hi - F_t,lo)
         ↓
 EOS/positivity bisection on the complete conserved face state
         ↓
-final directional HLLC fluxes
+final selected directional Riemann fluxes
         ↓
 unsplit two-dimensional conservative update
 ```
@@ -249,9 +259,9 @@ The homogeneous reactive field must reduce to independent zero-dimensional cell 
 5. Species fluxes close exactly to the shared mass flux.
 6. Chemistry does not independently modify `rhoE` in the adiabatic constant-volume substep.
 7. The current characteristic basis assumes frozen composition across each acoustic solve.
-8. Rusanov remains the robustness baseline. HLLC is the verified
-   contact-resolving general-EOS intermediate; it is not labeled as PeleC
-   Riemann parity.
+8. Rusanov remains the robustness baseline. HLLC is the independent
+   contact-resolving comparison; the PeleC-style path follows the upstream
+   acoustic star-state and wave-interpolation sequence with the NASA7 EOS.
 9. The four-reaction chemistry subset remains a lightweight regression path;
    the selectable ten-species, 29-reaction mechanism is the full H2/O2 path.
 10. Contact steepening is explicitly bounded to half of the canonical detector

@@ -12,7 +12,7 @@ This table maps responsibilities, not source lines.
 | AMReX mesh/geometry responsibility | `mesh_mod`, `mesh_2d_mod` | Uniform 1D and Cartesian 2D meshes |
 | AMReX boundary fill | `boundary_conditions_mod` and periodic wrapping in `ctu_2d_mod` | 1D outflow/periodic and 2D periodic subset |
 | `Source/Riemann.H` LF path | `riemann_rusanov_mod` | Independent Rusanov implementation |
-| `Source/Riemann.H` acoustic solver | `riemann_pelec_mod` | Qualified single-species ideal-gas subset |
+| `Source/Riemann.H` acoustic solver | `riemann_pelec_mod`, `reactive_1d_mod` | Constant-`gamma` subset plus qualified NASA7 mixture star-state/wave-interpolation path |
 | Direction-dependent flux assembly | `directional_flux_mod` | x/y momentum rotation and y fluxes verified |
 | `Source/PLM.H` characteristic projection/tracing | `reconstruction_pelec_plm_mod` | Qualified 1D regular-cell subset |
 | `Source/PLM.H::plm_slope` | `pelec_limited_slope` | Order 2 and 4 formulas verified |
@@ -29,7 +29,7 @@ This table maps responsibilities, not source lines.
 | `Source/React.cpp` reaction-source responsibility | `elementary_kinetics_mod`, `constant_volume_reactor_mod`, `reactive_1d_mod`, `reactive_2d_mod`, `mpi_reactive_1d_mod` | Elementary/full chemistry and serial/distributed Strang coupling verified |
 | PelePhysics generated mechanism kernels | `generate_elementary_mechanism.py`, `src/generated/h2o2_elementary_mechanism_mod.F90` | Normalized JSON generation and cleanliness gate implemented |
 | reversible elementary chemistry | NASA7 equilibrium constants and generated H2/O2 rates | Four-reaction Cantera parity implemented |
-| reactive hydro state/flux path | `reactive_1d_mod`, `reactive_2d_mod`, `pelef_reactive_1d`, `pelef_reactive_2d` | NASA7 conversion, directional Rusanov/HLLC, PLM/PPM normal prediction, CTU, and Strang splitting verified |
+| reactive hydro state/flux path | `reactive_1d_mod`, `reactive_2d_mod`, `pelef_reactive_1d`, `pelef_reactive_2d` | NASA7 conversion, directional Rusanov/HLLC/PeleC-style fluxes, PLM/PPM normal prediction, CTU, and Strang splitting verified |
 | stiff reactor integration | `constant_volume_reactor_mod` adaptive implicit backward-Euler path | Verified with generated Jacobian, step doubling, and rollback; not CVODE parity |
 | third-body/falloff chemistry | `elementary_kinetics_mod`, `h2o2_full_mechanism_mod` | Third-body efficiencies, pressure falloff, and Troe verified |
 | complete mechanism parsing | future Cantera YAML/CHEMKIN parser | Not started |

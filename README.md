@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.67.0` milestone contains ten serial verification executables, six
+The `0.68.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -81,7 +81,8 @@ multicomponent diffusion, or bulk viscosity.
 - safeguarded conserved-to-primitive recovery through `e(Y,T) -> T` inversion;
 - PCM, frozen-composition characteristic PLM, monotone primitive PPM, or
   time-traced frozen-composition characteristic PPM reconstruction;
-- selectable Rusanov or general-EOS HLLC flux with species-flux closure;
+- selectable Rusanov, general-EOS HLLC, or NASA7 PeleC-style acoustic flux
+  with exact species-flux closure;
 - SSPRK3 time integration for the semidiscrete primitive-PPM path;
 - PeleC-style parabolic profile integration over the `u-c`, `u`, and `u+c`
   waves for characteristic PPM;
@@ -103,7 +104,8 @@ multicomponent diffusion, or bulk viscosity.
 
 - uniform periodic Cartesian mesh with the same conserved reactive state as the 1D path;
 - composition-dependent NASA7 pressure, temperature, heat capacities, and frozen sound speed;
-- directional general-EOS Rusanov or HLLC fluxes through explicit momentum rotation;
+- directional general-EOS Rusanov, HLLC, or PeleC-style acoustic fluxes
+  through explicit momentum rotation;
 - PCM, frozen-composition characteristic PLM, or time-traced
   frozen-composition characteristic PPM in both coordinate directions;
 - optional bounded contact steepening and PeleC-style shock flattening on the
@@ -141,23 +143,17 @@ With `PELEF_ENABLE_MPI=ON`, five existing executables verify:
 - ordered gather output, global timestep/conservation reductions, and
   complete-field parity for 1, 2, 4, and 8 ranks.
 
-A sixth MPI executable exercises the AMR distribution bridge. It validates a
-replicated patch-tree description collectively, assigns every root/fine patch
-to one deterministic cell-weighted owner, broadcasts owner-authoritative
-patch fields, and exchanges up to four adjacent-sibling halo layers across
-rank boundaries. It now also advances chemistry on owners alone, reaches
-communicator-wide success/failure consensus after every patch, broadcasts the
-accepted reactive state, averages down deepest-to-root, rebuilds ghosts, and
-rolls every rank back exactly after a rejected owner update. It also drives
-recursive hyperbolic advancement on patch owners alone, broadcasts each
-owner's start state and complete face-flux field, then reuses the serial child
-subcycling, fine/fine flux reconciliation, reflux, average-down, and ghost
-rules on synchronized replicas. The current bridge retains replicated field
-storage. Molecular transport follows the same owner-only recursion with
-parabolic `r^2` subcycling and shared diffusive fluxes. The owner operators are
-now composed as one transactional `R-T-H-T-R` interval, including complete
-bookkeeping synchronization and outer rollback. Sparse rank-local patch
-storage remains the next integration step.
+A sixth MPI executable exercises sparse AMR distribution. Compact hierarchy
+and owner metadata are replicated, but each root/fine field payload exists
+only on its deterministic cell-weighted owner. Point-to-point transfers cover
+same-level halos, parent/child ghost data, boundary fluxes, shared-face
+corrections, average-down, explicit regrid prolongation, retained overlap, and
+owner migration. Chemistry, recursive hydro, parabolic `r^2` transport, and
+the transactional `R-T-H-T-R` interval run on owners alone. Both explicit and
+solution-tagged topology rebuilds remain field-sparse; owner-local tagging
+shares only compact integer plan metadata. The 1/2/4/8-rank gates compare the
+gathered hierarchy, fields, ghosts, counters, conservation, and rollback with
+the serial patch-tree implementation.
 
 ### One-dimensional AMR
 

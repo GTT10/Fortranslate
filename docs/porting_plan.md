@@ -225,6 +225,11 @@ Implement incrementally:
 
 Do not implement all methods at once. Every reconstruction level must re-run the same hydro regression suite.
 
+The `0.68.0` milestone extends item 5 from the constant-`gamma` reduction to
+the NASA7 ideal-gas-mixture reactive state. It retains the upstream acoustic
+star estimate, species-density correction, wave interpolation, and EOS energy
+reconstruction behind a separately selectable `pelec` path.
+
 Primary parity cases:
 
 - Sod
