@@ -19,7 +19,7 @@ program pelef_mpi_amr_patch_1d
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
     patch_tree_reactive_timestep_1d, advance_patch_tree_reactive_hydro_1d, &
     advance_patch_tree_transport, advance_patch_tree_reactive_1d, &
-    patch_tree_reactive_integrals_1d
+    regrid_patch_tree_reactive_1d, patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -38,7 +38,8 @@ program pelef_mpi_amr_patch_1d
     advance_sparse_patch_tree_chemistry_1d, &
     advance_sparse_patch_tree_hydro_1d, &
     advance_sparse_patch_tree_transport_1d, &
-    advance_sparse_patch_tree_reactive_1d
+    advance_sparse_patch_tree_reactive_1d, &
+    regrid_sparse_patch_tree_reactive_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -54,12 +55,14 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_patch_distribution_1d) :: reactive_distribution
   type(mpi_amr_patch_distribution_1d) :: migrated_distribution
   type(mpi_amr_patch_distribution_1d) :: adjacent_distribution
+  type(mpi_amr_patch_distribution_1d) :: regridded_distribution
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_reactive
   type(mpi_amr_sparse_reactive_solution_1d) :: migrated_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_chemistry
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_hydro
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_transport
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_split
+  type(mpi_amr_sparse_reactive_solution_1d) :: sparse_regrid
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
@@ -75,11 +78,14 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_reactive_solution_1d) :: gathered_reactive
   type(amr_patch_tree_reactive_solution_1d) :: serial_split
   type(amr_patch_tree_reactive_solution_1d) :: distributed_split
+  type(amr_patch_tree_reactive_solution_1d) :: serial_regrid
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_serial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_distributed
   type(amr_patch_level_plan_1d), allocatable :: reactive_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: adjacent_reactive_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: regrid_reactive_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: invalid_regrid_plans(:)
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -93,7 +99,7 @@ program pelef_mpi_amr_patch_1d
   real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
   real(dp) :: transport_dt, adjacent_transport_dt
   real(dp) :: split_dt
-  logical :: ok
+  logical :: ok, changed
   integer :: ierr, rank, nranks, level, patch, variable, cell
   integer :: parent, child, left_patch, right_patch, layer, cross_rank_faces
   integer :: local_chemistry_advances, global_chemistry_advances
@@ -107,6 +113,7 @@ program pelef_mpi_amr_patch_1d
   integer :: local_sparse_cells, global_sparse_cells
   integer :: local_sparse_values, global_sparse_values
   integer :: replicated_value_count
+  integer :: transferred_cells, serial_transferred_cells
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -876,6 +883,128 @@ program pelef_mpi_amr_patch_1d
     rejected_reactive, rejected_backup) == 0.0_dp, &
     "outer sparse full-physics rollback is exact", rank)
 
+  serial_regrid = initial_reactive
+  call regrid_patch_tree_reactive_1d( &
+    species, transport_config, reactive_plans, serial_regrid, changed, &
+    serial_transferred_cells, ok)
+  call assert_all(ok .and. .not. changed .and. &
+    serial_transferred_cells == 0 .and. &
+    serial_regrid%regrid_evaluations == 1, &
+    "serial identical regrid reference", rank)
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, initial_reactive, sparse_regrid, ok)
+  call assert_all(ok, "sparse identical regrid scatter", rank)
+  call regrid_sparse_patch_tree_reactive_1d( &
+    species, transport_config, reactive_plans, reactive_distribution, &
+    sparse_regrid, regridded_distribution, changed, transferred_cells, ok)
+  call assert_all(ok .and. .not. changed .and. transferred_cells == 0 .and. &
+    sparse_regrid%regrid_evaluations == 1 .and. &
+    sparse_regrid%regrids == 0 .and. &
+    sparse_regrid%is_valid(regridded_distribution), &
+    "identical sparse regrid is a distributed no-op", rank)
+  gathered_reactive = serial_regrid
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    regridded_distribution, sparse_regrid, gathered_reactive, ok)
+  call assert_all(ok .and. &
+    reactive_solution_difference(gathered_reactive, serial_regrid) == &
+      0.0_dp, "identical sparse regrid matches serial", rank)
+
+  call build_regrid_reactive_plans(regrid_reactive_plans)
+  call regrid_patch_tree_reactive_1d( &
+    species, transport_config, regrid_reactive_plans, serial_regrid, &
+    changed, serial_transferred_cells, ok)
+  call assert_all(ok .and. changed .and. serial_transferred_cells > 0 .and. &
+    all([ &
+      size(serial_regrid%levels(1)%patches), &
+      size(serial_regrid%levels(2)%patches), &
+      size(serial_regrid%levels(3)%patches), &
+      size(serial_regrid%levels(4)%patches)] == [1, 3, 3, 2]), &
+    "serial topology-changing regrid reference", rank)
+  call regrid_sparse_patch_tree_reactive_1d( &
+    species, transport_config, regrid_reactive_plans, &
+    regridded_distribution, sparse_regrid, migrated_distribution, changed, &
+    transferred_cells, ok)
+  regridded_distribution = migrated_distribution
+  call assert_all(ok .and. changed .and. &
+    transferred_cells == serial_transferred_cells .and. &
+    sparse_regrid%is_valid(regridded_distribution), &
+    "topology-changing sparse regrid accepted", rank)
+  call assert_all(sparse_regrid%regrid_evaluations == 2 .and. &
+    sparse_regrid%regrids == 1 .and. &
+    sparse_regrid%overlap_cells_transferred == transferred_cells, &
+    "sparse regrid statistics", rank)
+  owner_changes = 0
+  do level = 0, min(reactive_distribution%level_count(), &
+      regridded_distribution%level_count()) - 1
+    do patch = 1, min( &
+        reactive_distribution%levels(level + 1)%patch_count(), &
+        regridded_distribution%levels(level + 1)%patch_count())
+      if (reactive_distribution%owner_of(level, patch) /= &
+          regridded_distribution%owner_of(level, patch)) &
+        owner_changes = owner_changes + 1
+    end do
+  end do
+  call assert_all(owner_changes > 0, &
+    "topology regrid recomputes patch ownership", rank)
+  local_sparse_patches = sparse_regrid%local_patch_count()
+  local_sparse_cells = sparse_regrid%local_cell_count()
+  local_sparse_values = sparse_regrid%local_value_count()
+  call MPI_Allreduce( &
+    local_sparse_patches, global_sparse_patches, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call MPI_Allreduce( &
+    local_sparse_cells, global_sparse_cells, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call MPI_Allreduce( &
+    local_sparse_values, global_sparse_values, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  replicated_value_count = reactive_solution_value_count(serial_regrid)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_sparse_patches == sum(regridded_distribution%rank_patch_counts) &
+    .and. global_sparse_cells == &
+      sum(regridded_distribution%rank_cell_counts) .and. &
+    global_sparse_values == replicated_value_count, &
+    "regridded sparse payload remains globally single-copy", rank)
+  gathered_reactive = serial_regrid
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    regridded_distribution, sparse_regrid, gathered_reactive, ok)
+  call assert_all(ok .and. &
+    reactive_solution_difference(gathered_reactive, serial_regrid) == &
+      0.0_dp, "topology-changing sparse regrid matches serial", rank)
+  call patch_tree_reactive_integrals_1d( &
+    gathered_reactive, final_integral, ok)
+  call assert_all(ok, "sparse regrid composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral - initial_integral) / &
+    max(1.0_dp, abs(initial_integral)))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "topology-changing sparse regrid conservation", rank)
+
+  invalid_regrid_plans = regrid_reactive_plans
+  invalid_regrid_plans(2)%patches(3)%parent_patch = 4
+  rejected_sparse = sparse_regrid
+  sparse_backup = sparse_regrid
+  call regrid_sparse_patch_tree_reactive_1d( &
+    species, transport_config, invalid_regrid_plans, &
+    regridded_distribution, rejected_sparse, migrated_distribution, &
+    changed, transferred_cells, ok)
+  call assert_all(.not. ok .and. .not. changed .and. &
+    transferred_cells == 0 .and. &
+    rejected_sparse%is_valid(migrated_distribution), &
+    "invalid topology-changing sparse regrid is rejected", rank)
+  rejected_reactive = serial_regrid
+  call gather_owned_patch_tree_reactive_1d( &
+    migrated_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "rejected sparse regrid gather", rank)
+  rejected_backup = serial_regrid
+  call gather_owned_patch_tree_reactive_1d( &
+    regridded_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "topology-changing sparse regrid rollback is exact", rank)
+
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"
   adjacent_reactive_config%amr_reconstruction = "ppm"
@@ -1159,6 +1288,24 @@ contains
     local_plans(3)%patches(2)%lower = 4
     local_plans(3)%patches(2)%upper = 13
   end subroutine build_reactive_plans
+
+  subroutine build_regrid_reactive_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    call build_reactive_plans(local_plans)
+    deallocate(local_plans(1)%patches)
+    allocate(local_plans(1)%patches(3))
+    local_plans(1)%patches(1)%parent_patch = 1
+    local_plans(1)%patches(1)%lower = 6
+    local_plans(1)%patches(1)%upper = 13
+    local_plans(1)%patches(2)%parent_patch = 1
+    local_plans(1)%patches(2)%lower = 14
+    local_plans(1)%patches(2)%upper = 16
+    local_plans(1)%patches(3)%parent_patch = 1
+    local_plans(1)%patches(3)%lower = 18
+    local_plans(1)%patches(3)%upper = 25
+    local_plans(2)%patches(3)%parent_patch = 3
+  end subroutine build_regrid_reactive_plans
 
   subroutine build_adjacent_reactive_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
