@@ -1187,15 +1187,19 @@ contains
 
 
   subroutine advance_reactive_chemistry_2d( &
-      species, reactions, state, temperature, nx, ny, interval, rtol, atol, ok)
+      species, reactions, state, temperature, nx, ny, interval, rtol, atol, &
+      ok, active_mask)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
     integer, intent(in) :: nx, ny
     real(dp), intent(in) :: interval, rtol, atol
     logical, intent(out) :: ok
+    logical, intent(in), optional :: active_mask(:, :)
 
     real(dp), allocatable :: primitive(:), mass_fractions(:)
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
     real(dp) :: rho, kinetic_density, target_energy
     real(dp) :: elapsed, request, accepted, next_step, tolerance
     real(dp) :: checked_temperature, sound_speed
@@ -1203,28 +1207,44 @@ contains
     integer :: i, j, k, substeps, nspecies, newton_iterations, rejected_attempts
 
     ok = .false.
-    if (interval < 0.0_dp) return
+    nspecies = size(species)
+    if (.not. ieee_is_finite(interval) .or. .not. ieee_is_finite(rtol) .or. &
+        .not. ieee_is_finite(atol) .or. interval < 0.0_dp .or. &
+        rtol <= 0.0_dp .or. atol <= 0.0_dp .or. nx < 1 .or. ny < 1 .or. &
+        size(state, 1) /= reactive_nvar(nspecies) .or. &
+        size(state, 2) /= nx .or. size(state, 3) /= ny .or. &
+        any(shape(temperature) /= [nx, ny])) return
+    if (present(active_mask)) then
+      if (any(shape(active_mask) /= [nx, ny])) return
+    end if
     if (interval <= tiny(1.0_dp)) then
       ok = .true.
       return
     end if
-    nspecies = size(species)
     allocate(primitive(reactive_nprim(nspecies)), mass_fractions(nspecies))
+    allocate(candidate_state, source=state)
+    allocate(candidate_temperature, source=temperature)
     tolerance = 50.0_dp * epsilon(1.0_dp) * max(1.0_dp, interval)
     do j = 1, ny
       do i = 1, nx
+        if (present(active_mask)) then
+          if (.not. active_mask(i, j)) cycle
+        end if
         call reactive_conserved_to_primitive( &
-          species, state(:, i, j), temperature(i, j), primitive, &
+          species, candidate_state(:, i, j), candidate_temperature(i, j), &
+          primitive, &
           checked_temperature, sound_speed, local_ok)
         if (.not. local_ok) return
-        rho = state(irho, i, j)
+        rho = candidate_state(irho, i, j)
         do k = 1, nspecies
           mass_fractions(k) = primitive(reactive_mass_fraction_component(k))
         end do
         kinetic_density = 0.5_dp * &
-          (state(imx, i, j)**2 + state(imy, i, j)**2 + &
-           state(imz, i, j)**2) / rho
-        target_energy = (state(iet, i, j) - kinetic_density) / rho
+          (candidate_state(imx, i, j)**2 + &
+           candidate_state(imy, i, j)**2 + &
+           candidate_state(imz, i, j)**2) / rho
+        target_energy = &
+          (candidate_state(iet, i, j) - kinetic_density) / rho
         elapsed = 0.0_dp
         request = interval
         substeps = 0
@@ -1234,12 +1254,14 @@ contains
           if (nspecies == 10) then
             call advance_constant_volume_implicit_adaptive( &
               species, reactions, rho, target_energy, request, rtol, atol, &
-              mass_fractions, temperature(i, j), accepted, next_step, &
+              mass_fractions, candidate_temperature(i, j), accepted, &
+              next_step, &
               newton_iterations, rejected_attempts, local_ok)
           else
             call advance_constant_volume_adaptive( &
               species, reactions, rho, target_energy, request, rtol, atol, &
-              mass_fractions, temperature(i, j), accepted, next_step, local_ok)
+              mass_fractions, candidate_temperature(i, j), accepted, &
+              next_step, local_ok)
           end if
           if (.not. local_ok .or. accepted <= 0.0_dp) return
           elapsed = elapsed + accepted
@@ -1247,19 +1269,22 @@ contains
           substeps = substeps + 1
         end do
         do k = 1, nspecies - 1
-          state(reactive_species_component(k), i, j) = &
+          candidate_state(reactive_species_component(k), i, j) = &
             rho * mass_fractions(k)
         end do
-        state(reactive_species_component(nspecies), i, j) = rho - &
-          sum(state(reactive_species_component(1): &
+        candidate_state(reactive_species_component(nspecies), i, j) = rho - &
+          sum(candidate_state(reactive_species_component(1): &
             reactive_species_component(nspecies - 1), i, j))
         call reactive_conserved_to_primitive( &
-          species, state(:, i, j), temperature(i, j), primitive, &
+          species, candidate_state(:, i, j), candidate_temperature(i, j), &
+          primitive, &
           checked_temperature, sound_speed, local_ok)
         if (.not. local_ok) return
-        temperature(i, j) = checked_temperature
+        candidate_temperature(i, j) = checked_temperature
       end do
     end do
+    state = candidate_state
+    temperature = candidate_temperature
     ok = .true.
   end subroutine advance_reactive_chemistry_2d
 

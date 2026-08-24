@@ -1,23 +1,31 @@
 program test_reactive_eb_2d_driver
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use reactive_1d_mod, only: reactive_nprim, reactive_conserved_to_primitive
-  use reactive_2d_mod, only: initialize_reactive_2d
+  use reactive_2d_mod, only: &
+    initialize_reactive_2d, advance_reactive_chemistry_2d
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell
   use simulation_config_reactive_eb_2d_mod, only: reactive_eb_2d_config
   use reactive_eb_2d_driver_mod, only: &
     build_configured_eb_geometry_2d, &
     compute_reactive_eb_cfl_timestep_2d, reactive_eb_integrals_2d, &
-    reactive_eb_extrema_2d, simulate_reactive_eb_2d
+    reactive_eb_extrema_2d, advance_reactive_eb_strang_2d, &
+    simulate_reactive_eb_2d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   type(reactive_eb_2d_config) :: config
   type(eb_geometry_2d) :: geometry, simulated_geometry
   real(dp), allocatable :: initial_state(:, :, :), initial_temperature(:, :)
   real(dp), allocatable :: state(:, :, :), temperature(:, :)
+  real(dp), allocatable :: reference_state(:, :, :)
+  real(dp), allocatable :: reference_temperature(:, :)
   real(dp), allocatable :: primitive(:), integrals(:), expected_integrals(:)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: dx, dy, base_density, sound_speed, local_temperature
@@ -31,8 +39,10 @@ program test_reactive_eb_2d_driver
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
-  config%flow%nx = 20
-  config%flow%ny = 20
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "elementary mechanism load")
+  config%flow%nx = 8
+  config%flow%ny = 8
   config%flow%x_lower = 0.0_dp
   config%flow%x_upper = 1.0_dp
   config%flow%y_lower = 0.0_dp
@@ -117,8 +127,8 @@ program test_reactive_eb_2d_driver
     5.0e-14_dp * scale, "volume-weighted integral value")
 
   call simulate_reactive_eb_2d( &
-    species, config, state, temperature, simulated_geometry, time, steps, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    species, reactions, config, state, temperature, simulated_geometry, time, &
+    steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
   call require(ok, "runnable EB simulation")
   call require(steps == 1 .and. time == config%flow%final_time, &
     "time loop completion")
@@ -144,13 +154,61 @@ program test_reactive_eb_2d_driver
   call require(maximum_closure_error <= 2.0e-13_dp, &
     "composition closure")
 
-  config%flow%chemistry_enabled = .true.
+  allocate(reference_state, source=initial_state)
+  allocate(reference_temperature, source=initial_temperature)
+  call advance_reactive_chemistry_2d( &
+    species, reactions, reference_state, reference_temperature, &
+    geometry%nx, geometry%ny, 0.5e-9_dp, &
+    config%flow%chemistry_relative_tolerance, &
+    config%flow%chemistry_absolute_tolerance, ok)
+  call require(ok, "first reference chemistry half-step")
+  call advance_reactive_chemistry_2d( &
+    species, reactions, reference_state, reference_temperature, &
+    geometry%nx, geometry%ny, 0.5e-9_dp, &
+    config%flow%chemistry_relative_tolerance, &
+    config%flow%chemistry_absolute_tolerance, ok)
+  call require(ok, "second reference chemistry half-step")
+  call advance_reactive_eb_strang_2d( &
+    species, reactions, initial_state, initial_temperature, geometry, &
+    "hllc", 1.0e-9_dp, .true., &
+    config%flow%chemistry_relative_tolerance, &
+    config%flow%chemistry_absolute_tolerance, state, temperature, ok)
+  call require(ok, "reactive EB Strang step")
+  call require(maxval(abs(reference_state - initial_state)) > 0.0_dp, &
+    "reference chemistry changes state")
+  do j = 1, geometry%ny
+    do i = 1, geometry%nx
+      if (geometry%cell_type(i, j) == eb_covered_cell) then
+        call require(maxval(abs(state(:, i, j) - initial_state(:, i, j))) == &
+          0.0_dp .and. temperature(i, j) == initial_temperature(i, j), &
+          "covered cell remains chemistry-inert")
+      else
+        scale = max(1.0_dp, maxval(abs(reference_state(:, i, j))))
+        call require(maxval(abs(state(:, i, j) - &
+          reference_state(:, i, j))) <= 3.0e-11_dp * scale, &
+          "active chemistry parity")
+        call require(abs(temperature(i, j) - reference_temperature(i, j)) <= &
+          3.0e-8_dp, "active chemistry temperature parity")
+      end if
+    end do
+  end do
+  call advance_reactive_eb_strang_2d( &
+    species, reactions, initial_state, initial_temperature, geometry, &
+    "unknown", 1.0e-9_dp, .true., &
+    config%flow%chemistry_relative_tolerance, &
+    config%flow%chemistry_absolute_tolerance, state, temperature, ok)
+  call require(.not. ok .and. &
+    maxval(abs(state - initial_state)) == 0.0_dp .and. &
+    maxval(abs(temperature - initial_temperature)) == 0.0_dp, &
+    "reactive EB Strang rollback after hydro failure")
+
+  config%flow%transport_enabled = .true.
   call simulate_reactive_eb_2d( &
-    species, config, state, temperature, simulated_geometry, time, steps, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    species, reactions, config, state, temperature, simulated_geometry, time, &
+    steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
   call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
-    "direct API rejects unsupported chemistry")
-  config%flow%chemistry_enabled = .false.
+    "direct API rejects unsupported transport")
+  config%flow%transport_enabled = .false.
 
   config%geometry = "plane"
   config%plane_normal_x = 1.0_dp

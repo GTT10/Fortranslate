@@ -1653,3 +1653,46 @@ set_tests_properties(
   regression_reactive_eb_circle_2d_structure
   PROPERTIES DEPENDS regression_reactive_eb_circle_2d_run
 )
+
+set(REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_chemistry_2d")
+file(MAKE_DIRECTORY "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_chemistry_2d_reference
+  COMMAND $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_chemistry_2d/reference.nml"
+)
+add_test(
+  NAME regression_reactive_eb_chemistry_2d_inert
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_chemistry_2d/inert.nml"
+)
+add_test(
+  NAME regression_reactive_eb_chemistry_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_chemistry_2d/reactive.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_chemistry_2d_reference
+  regression_reactive_eb_chemistry_2d_inert
+  regression_reactive_eb_chemistry_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_eb_chemistry_2d_parity
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_chemistry_2d.py"
+    --reference
+      "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}/reactive_eb_chemistry_reference.csv"
+    --reactive
+      "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}/reactive_eb_chemistry.csv"
+    --inert
+      "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}/reactive_eb_chemistry_inert.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_chemistry_2d_parity
+  PROPERTIES DEPENDS
+    "regression_reactive_eb_chemistry_2d_reference;regression_reactive_eb_chemistry_2d_inert;regression_reactive_eb_chemistry_2d_run"
+)

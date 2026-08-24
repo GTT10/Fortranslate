@@ -99,9 +99,9 @@ contains
       message = "StateRedist target volume fraction must be in (0,1]"
       return
     end if
-    if (config%flow%chemistry_enabled .or. config%flow%transport_enabled) then
+    if (config%flow%transport_enabled) then
       ok = .false.
-      message = "Reactive EB 2D currently supports hydro without chemistry or transport"
+      message = "Reactive EB 2D currently does not support molecular transport"
       return
     end if
     if (trim(config%flow%reconstruction) /= "pcm" .or. &

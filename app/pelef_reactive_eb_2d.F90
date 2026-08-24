@@ -2,8 +2,12 @@ program pelef_reactive_eb_2d
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell
   use simulation_config_reactive_eb_2d_mod, only: &
@@ -16,6 +20,7 @@ program pelef_reactive_eb_2d
   type(reactive_eb_2d_config) :: config
   type(eb_geometry_2d) :: geometry
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: state(:, :, :), temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: time, minimum_dt, base_density, conservation_error
@@ -43,15 +48,19 @@ program pelef_reactive_eb_2d
   case ("elementary")
     call load_h2o2_elementary_thermo(species, ok)
     if (.not. ok) error stop "Failed to load elementary thermodynamics"
+    call load_h2o2_elementary_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load elementary mechanism"
   case ("full_h2o2")
     call load_h2o2_full_thermo(species, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
+    call load_h2o2_full_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
   case default
     error stop "Unknown chemistry model"
   end select
 
   call simulate_reactive_eb_2d( &
-    species, config, state, temperature, geometry, time, steps, &
+    species, reactions, config, state, temperature, geometry, time, steps, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok)
   if (.not. ok) error stop "Reactive EB 2D simulation failed"
   call write_reactive_eb_2d_csv( &
@@ -73,6 +82,9 @@ program pelef_reactive_eb_2d
   write(*, '(a,i0,a,i0)') "Grid: ", geometry%nx, " x ", geometry%ny
   write(*, '(a,1x,a)') "Riemann solver:", &
     trim(config%flow%riemann_solver)
+  write(*, '(a,l2)') "Chemistry: ", config%flow%chemistry_enabled
+  write(*, '(a,1x,a)') "Chemistry model:", &
+    trim(config%flow%chemistry_model)
   write(*, '(a,es24.16)') "StateRedist target volume fraction: ", &
     config%state_redist_target_volume_fraction
   write(*, '(a,i0)') "Regular cells: ", &

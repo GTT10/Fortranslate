@@ -3,10 +3,12 @@ module reactive_eb_2d_driver_mod
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive
-  use reactive_2d_mod, only: initialize_reactive_2d
+  use reactive_2d_mod, only: &
+    initialize_reactive_2d, advance_reactive_chemistry_2d
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
   use eb_reactive_hydro_2d_mod, only: advance_reactive_eb_hydro_2d
@@ -18,6 +20,7 @@ module reactive_eb_2d_driver_mod
   public :: compute_reactive_eb_cfl_timestep_2d
   public :: reactive_eb_integrals_2d
   public :: reactive_eb_extrema_2d
+  public :: advance_reactive_eb_strang_2d
   public :: simulate_reactive_eb_2d
   public :: write_reactive_eb_2d_csv
 
@@ -33,7 +36,6 @@ contains
       config%flow%y_upper > config%flow%y_lower .and. &
       config%flow%final_time > 0.0_dp .and. config%flow%cfl > 0.0_dp .and. &
       config%flow%cfl <= 0.8_dp .and. &
-      .not. config%flow%chemistry_enabled .and. &
       .not. config%flow%transport_enabled .and. &
       trim(config%flow%reconstruction) == "pcm" .and. &
       .not. config%flow%use_transverse_correction .and. &
@@ -221,10 +223,85 @@ contains
     ok = active_cells > 0
   end subroutine reactive_eb_extrema_2d
 
+  subroutine advance_reactive_eb_strang_2d( &
+      species, reactions, state, temperature, geometry, solver, dt, &
+      chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
+      target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: target_volume_fraction
+
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp), allocatable :: hydro_state(:, :, :)
+    real(dp), allocatable :: hydro_temperature(:, :)
+    logical, allocatable :: active_mask(:, :)
+    logical :: local_ok
+
+    new_state = state
+    new_temperature = temperature
+    ok = .false.
+    if (.not. geometry%is_valid() .or. .not. ieee_is_finite(dt) .or. &
+        .not. ieee_is_finite(rtol) .or. .not. ieee_is_finite(atol) .or. &
+        dt < 0.0_dp .or. rtol <= 0.0_dp .or. atol <= 0.0_dp .or. &
+        size(state, 1) /= reactive_nvar(size(species)) .or. &
+        size(state, 2) /= geometry%nx .or. &
+        size(state, 3) /= geometry%ny .or. &
+        any(shape(temperature) /= [geometry%nx, geometry%ny]) .or. &
+        any(shape(new_state) /= shape(state)) .or. &
+        any(shape(new_temperature) /= shape(temperature))) return
+    if (chemistry_enabled .and. size(reactions) < 1) return
+
+    allocate(candidate_state, source=state)
+    allocate(candidate_temperature, source=temperature)
+    allocate(hydro_state, mold=state)
+    allocate(hydro_temperature, mold=temperature)
+    allocate(active_mask(geometry%nx, geometry%ny))
+    active_mask = geometry%cell_type /= eb_covered_cell
+    if (chemistry_enabled) then
+      call advance_reactive_chemistry_2d( &
+        species, reactions, candidate_state, candidate_temperature, &
+        geometry%nx, geometry%ny, 0.5_dp * dt, rtol, atol, local_ok, &
+        active_mask)
+      if (.not. local_ok) return
+    end if
+    if (present(target_volume_fraction)) then
+      call advance_reactive_eb_hydro_2d( &
+        species, candidate_state, candidate_temperature, geometry, solver, &
+        dt, hydro_state, hydro_temperature, local_ok, &
+        target_volume_fraction)
+    else
+      call advance_reactive_eb_hydro_2d( &
+        species, candidate_state, candidate_temperature, geometry, solver, &
+        dt, hydro_state, hydro_temperature, local_ok)
+    end if
+    if (.not. local_ok) return
+    candidate_state = hydro_state
+    candidate_temperature = hydro_temperature
+    if (chemistry_enabled) then
+      call advance_reactive_chemistry_2d( &
+        species, reactions, candidate_state, candidate_temperature, &
+        geometry%nx, geometry%ny, 0.5_dp * dt, rtol, atol, local_ok, &
+        active_mask)
+      if (.not. local_ok) return
+    end if
+    new_state = candidate_state
+    new_temperature = candidate_temperature
+    ok = .true.
+  end subroutine advance_reactive_eb_strang_2d
+
   subroutine simulate_reactive_eb_2d( &
-      species, config, state, temperature, geometry, time, steps, &
+      species, reactions, config, state, temperature, geometry, time, steps, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok)
     type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(out) :: geometry
@@ -273,9 +350,12 @@ contains
         species, state, temperature, geometry, config%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
       dt = min(dt, remaining)
-      call advance_reactive_eb_hydro_2d( &
-        species, state, temperature, geometry, config%flow%riemann_solver, &
-        dt, candidate_state, candidate_temperature, local_ok, &
+      call advance_reactive_eb_strang_2d( &
+        species, reactions, state, temperature, geometry, &
+        config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
+        config%flow%chemistry_relative_tolerance, &
+        config%flow%chemistry_absolute_tolerance, candidate_state, &
+        candidate_temperature, local_ok, &
         config%state_redist_target_volume_fraction)
       if (.not. local_ok) return
       state = candidate_state
