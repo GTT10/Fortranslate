@@ -211,6 +211,23 @@ program test_eb_reactive_redistribution_2d
     "weighted positive receiving density")
   call assert_close(new_temperature(cut_i, 1), temperature_cell, &
     2.0e-9_dp, "weighted cut-cell temperature recovery")
+  do k = 1, nvar
+    original_integral = sum(geometry%volume_fraction * &
+      (state(k, :, :) + conservative_rhs(k, :, :)))
+    redistributed_integral = sum(geometry%volume_fraction * &
+      new_state(k, :, :))
+    tolerance = 5.0e-13_dp * max(1.0_dp, abs(original_integral))
+    call assert_close(redistributed_integral, original_integral, tolerance, &
+      "weighted reactive advance conservation")
+  end do
+
+  call advance_reactive_eb_state_redistributed_2d( &
+    species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
+    new_state, new_temperature, ok, kappa)
+  call require(.not. ok .and. &
+    maxval(abs(new_state - state)) == 0.0_dp .and. &
+    maxval(abs(new_temperature - temperature)) == 0.0_dp, &
+    "custom weighted target forwarding")
 
   conservative_rhs(:, cut_i, 1) = -50.0_dp * state_cell
   call advance_reactive_eb_state_redistributed_2d( &

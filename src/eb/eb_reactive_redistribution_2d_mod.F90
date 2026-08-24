@@ -260,6 +260,8 @@ contains
     allocate(alpha_self(geometry%nx, geometry%ny))
     allocate(alpha_neighbor(geometry%nx, geometry%ny))
     allocate(neighborhood_volume(geometry%nx, geometry%ny))
+    ! Match AMReX StateRedist with max_order=0: build the overlapping
+    ! neighborhoods and their partition before averaging the provisional state.
     call build_state_redistribution_neighborhoods( &
       geometry, target, neighbor_count, neighbor_offset_i, &
       neighbor_offset_j, neighborhood_count, alpha_self, alpha_neighbor, &
@@ -270,6 +272,7 @@ contains
     allocate(candidate(ncomp, geometry%nx, geometry%ny))
     neighborhood_state = 0.0_dp
     candidate = 0.0_dp
+    ! Form each zeroth-order neighborhood state Qhat.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
@@ -289,6 +292,7 @@ contains
       end do
     end do
 
+    ! Scatter every Qhat through the same self/neighbor partition.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
@@ -304,6 +308,7 @@ contains
         end do
       end do
     end do
+    ! Complete the overlapping-neighborhood average at every recipient.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
@@ -351,6 +356,7 @@ contains
     neighborhood_volume = 0.0_dp
     ok = .false.
 
+    ! Build each small-cell merge list from the aperture-difference normal.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
@@ -435,6 +441,8 @@ contains
       end do
     end do
 
+    ! nrs: every active cell belongs to its own neighborhood, plus each
+    ! small-cell merge neighborhood that names it.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         do neighbor = 1, neighbor_count(i, j)
@@ -446,6 +454,7 @@ contains
       end do
     end do
 
+    ! The neighbor weight raises each small neighborhood to the target volume.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
@@ -463,6 +472,7 @@ contains
       end do
     end do
 
+    ! Subtract the shared neighbor partitions from each cell's self partition.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         do neighbor = 1, neighbor_count(i, j)
@@ -475,6 +485,7 @@ contains
       end do
     end do
 
+    ! The same partition defines the neighborhood volume used by Qhat.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
