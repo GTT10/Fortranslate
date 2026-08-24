@@ -14,6 +14,7 @@ program test_reactive_composition_wave
   type(elementary_reaction), allocatable :: reactions(:)
   integer, parameter :: grids(3) = [40, 80, 160]
   real(dp) :: hllc_errors(3), hllc_density_errors(3), orders(2)
+  real(dp) :: pelec_errors(3), pelec_density_errors(3), pelec_orders(2)
   real(dp) :: rusanov_error, rusanov_density_error
   logical :: ok
   integer :: i
@@ -25,15 +26,22 @@ program test_reactive_composition_wave
 
   do i = 1, size(grids)
     call run_grid(grids(i), "hllc", hllc_errors(i), hllc_density_errors(i))
+    call run_grid(grids(i), "pelec", pelec_errors(i), pelec_density_errors(i))
   end do
   call run_grid(80, "rusanov", rusanov_error, rusanov_density_error)
   orders(1) = log(hllc_errors(1) / hllc_errors(2)) / log(2.0_dp)
   orders(2) = log(hllc_errors(2) / hllc_errors(3)) / log(2.0_dp)
+  pelec_orders(1) = log(pelec_errors(1) / pelec_errors(2)) / log(2.0_dp)
+  pelec_orders(2) = log(pelec_errors(2) / pelec_errors(3)) / log(2.0_dp)
 
   write(*, '(a,3(1x,es16.8))') "HLLC composition Y_H2 L1:", hllc_errors
   write(*, '(a,3(1x,es16.8))') "HLLC composition rho relative L1:", &
     hllc_density_errors
   write(*, '(a,2(1x,f10.6))') "observed orders:", orders
+  write(*, '(a,3(1x,es16.8))') "PeleC composition Y_H2 L1:", pelec_errors
+  write(*, '(a,3(1x,es16.8))') "PeleC composition rho relative L1:", &
+    pelec_density_errors
+  write(*, '(a,2(1x,f10.6))') "PeleC observed orders:", pelec_orders
   write(*, '(a,1x,es16.8)') "Rusanov 80-cell Y_H2 L1:", rusanov_error
 
   if (minval(orders) < 1.70_dp) then
@@ -41,6 +49,12 @@ program test_reactive_composition_wave
   end if
   if (hllc_errors(3) > 2.0e-6_dp) then
     error stop "Reactive HLLC composition-wave error is too large"
+  end if
+  if (minval(pelec_orders) < 1.70_dp) then
+    error stop "Reactive PeleC composition wave lost second-order convergence"
+  end if
+  if (pelec_errors(3) > 4.0e-6_dp) then
+    error stop "Reactive PeleC composition-wave error is too large"
   end if
   write(*, '(a)') "test_reactive_composition_wave: PASS"
 
