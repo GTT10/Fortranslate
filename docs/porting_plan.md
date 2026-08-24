@@ -387,6 +387,8 @@ Implement:
 - thermal conductivity
 - species diffusion
 - enthalpy diffusion
+- prescribed zero-net-mass wall species flux as the transport contract for
+  later catalytic surface kinetics (`0.69.0`)
 
 Transport properties must be isolated behind a transport API.
 

@@ -311,7 +311,13 @@ their conservative divergence independently of the CTU hydro operator.
 `reactive_boundary_2d_mod` owns four typed faces and samples periodic, wall,
 inflow, or outflow ghost states. Hydro and molecular transport use explicit
 lower/upper face arrays. Solid walls receive a pressure-only inviscid flux,
-mirrored velocity/temperature transport gradients, and zero species flux.
+mirrored velocity/temperature transport gradients, and zero species flux by
+default. A wall face may instead own a prescribed species mass-flux vector.
+The vector is oriented wall-to-gas, must sum to zero, and is translated to the
+coordinate face orientation by `reactive_transport_2d_mod`; its species
+enthalpy is added to total-energy flux and scaled with the same positivity
+limiter as the species flux. This separates the boundary transport contract
+from future catalytic surface kinetics.
 
 ## Full pressure-dependent H2/O2 chemistry
 

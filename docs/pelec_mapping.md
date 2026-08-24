@@ -63,11 +63,11 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | `Diffterm.H` stress, Fourier, species enthalpy flux | directional face-flux kernels |
 
 
-| PeleC boundary concept | PeleF 0.18.0 |
+| PeleC boundary concept | PeleF 0.18.0 / 0.69.0 |
 |---|---|
 | physical ghost fill | `reactive_boundary_2d_mod` |
 | impermeable wall pressure flux | `reactive_wall_flux_x/y` |
-| wall Fourier/species flux | boundary-aware `reactive_transport_2d_mod` |
+| wall Fourier/species flux | impermeable or prescribed zero-net-mass species flux with coupled enthalpy in `reactive_transport_2d_mod` |
 | fixed inflow / extrapolated outflow | boundary primitive sampling |
 
 | PeleC/PelePhysics chemistry concept | PeleF 0.19.0 |

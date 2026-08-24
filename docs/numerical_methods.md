@@ -852,7 +852,19 @@ to total-energy transport. SSPRK2 advances the diffusion operator.
 A no-slip ghost velocity is reflected about the prescribed wall velocity; a
 slip ghost reflects only the normal component. Solid-wall inviscid flux is
 pressure-only. Adiabatic walls copy temperature and isothermal walls use
-\(T_g=2T_w-T_i\). Species diffusive flux is zero at a solid wall. Fixed
+\(T_g=2T_w-T_i\). Species diffusive flux is zero at a solid wall by default.
+A prescribed wall may instead provide wall-to-gas mass fluxes \(J_k^w\) with
+
+```text
+sum_k J_k^w = 0,
+F_rhoY,k(lower) =  J_k^w,
+F_rhoY,k(upper) = -J_k^w,
+F_E,species = sum_k h_k F_rhoY,k.
+```
+
+The zero-sum constraint preserves the impermeable total-mass and momentum
+wall contract while permitting species conversion. The species positivity
+limiter scales the complete vector and its enthalpy flux together. Fixed
 inflow uses the configured initial primitive state and outflow uses constant
 extrapolation. Periodic boundaries must occur in matched pairs.
 

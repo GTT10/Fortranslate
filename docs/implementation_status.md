@@ -127,6 +127,7 @@
 - [x] characteristic-PPM two-dimensional reacting-hotspot regression
 - [x] slip/no-slip physical walls
 - [x] adiabatic/isothermal wall temperature conditions
+- [x] prescribed zero-net-mass wall species and enthalpy fluxes
 - [x] fixed-state inflow and zero-gradient outflow
 - [ ] complete PeleC multidimensional PPM transverse/corner tracing
 - [x] molecular transport
@@ -289,10 +290,9 @@ The existing `0.9.0` Cantera trajectory and exact-state production-rate comparis
 
 ## Next implementation slice
 
-Add catalytic or prescribed-species wall fluxes and characteristic open-boundary
-handling after the present slip/no-slip, thermal-wall, fixed-inflow, and extrapolated-
-outflow milestone. Complete PeleC multidimensional PPM corner coupling remains a
-separate parity task.
+Add catalytic surface-rate models on top of the prescribed wall-flux contract,
+then characteristic open-boundary handling. Complete PeleC multidimensional
+PPM corner coupling remains a separate parity task.
 
 
 ## Verified `0.17.0` results
@@ -322,7 +322,8 @@ separate parity task.
 - [x] fixed inflow and extrapolated outflow
 - [x] boundary-aware PLM/PPM sampling and explicit face divergence
 - [x] Couette, thermal-wall, and inflow/outflow regressions
-- [ ] catalytic walls, NSCBC, and characteristic non-reflecting outflow
+- [x] prescribed zero-net-mass wall species and enthalpy flux
+- [ ] catalytic surface kinetics, NSCBC, and characteristic non-reflecting outflow
 
 ## Verified `0.18.0` results
 
@@ -1132,3 +1133,18 @@ available NASA7 ideal-gas-mixture EOS instead of the earlier constant-`gamma`
 reduction. HLLC and Rusanov remain independent selectable baselines. Rotating
 frames, auxiliary/linear advected fields, embedded boundaries, and arbitrary
 PelePhysics EOS models remain outside this qualification.
+
+## Prescribed species wall flux (`0.69.0`)
+
+- [x] per-face impermeable/prescribed species-mode configuration
+- [x] wall-to-gas input convention and lower/upper coordinate orientation
+- [x] finite, active-species, and exact zero-net-mass validation
+- [x] rejection on non-wall faces or without enabled species transport
+- [x] species-enthalpy contribution to total-energy flux
+- [x] shared positivity limiting of species and species enthalpy
+- [x] x/y face unit gates, invalid-vector rejection, and application parsing
+- [x] transient inventory, total-mass, cellwise closure, and temperature gates
+- [x] complete Release and Debug CI gates
+
+This is the transport boundary needed by later catalytic-wall models. It does
+not yet calculate surface reaction rates, coverages, or wall chemistry.

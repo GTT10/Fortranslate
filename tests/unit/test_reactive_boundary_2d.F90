@@ -180,6 +180,29 @@ contains
       1.0e-10_dp * max(1.0_dp, abs(flux_y(iet, 1, 0))), &
       "opposite wall energy-flux orientation")
 
+    boundaries%face(boundary_x_lower)%kind = "slip_wall"
+    boundaries%face(boundary_x_upper)%kind = "slip_wall"
+    boundaries%face(boundary_x_lower)%wall_species = "prescribed"
+    boundaries%face(boundary_x_upper)%wall_species = "prescribed"
+    boundaries%face(boundary_x_lower)%prescribed_species_flux = &
+      boundaries%face(boundary_y_lower)%prescribed_species_flux
+    boundaries%face(boundary_x_upper)%prescribed_species_flux = &
+      boundaries%face(boundary_y_upper)%prescribed_species_flux
+    call validate_reactive_boundary_set_2d(boundaries, local_ok)
+    call require(local_ok, "x-normal prescribed wall species flux")
+    call reactive_transport_fluxes_2d_faces( &
+      species, transport, state, temperature, nx, ny, 1.0e-3_dp, 1.0e-3_dp, &
+      0.0_dp, .false., .false., .true., .false., flux_x, flux_y, theta, &
+      local_ok, boundaries)
+    call require(local_ok, "x-normal prescribed wall transport flux")
+    call require(abs(flux_x(reactive_species_component(1), 0, 1) - &
+      2.5e-4_dp) < 1.0e-15_dp, "lower-x wall-to-gas species-flux sign")
+    call require(abs(flux_x(reactive_species_component(1), nx, 1) + &
+      2.5e-4_dp) < 1.0e-15_dp, "upper-x wall-to-gas species-flux sign")
+    call require(abs(flux_x(iet, nx, 1) + flux_x(iet, 0, 1)) < &
+      1.0e-10_dp * max(1.0_dp, abs(flux_x(iet, 0, 1))), &
+      "opposite x-wall energy-flux orientation")
+
     boundaries%face(boundary_y_lower)%prescribed_species_flux(4) = 0.0_dp
     call validate_reactive_boundary_set_2d(boundaries, local_ok)
     call require(.not. local_ok, "unbalanced prescribed wall flux rejection")
@@ -190,6 +213,12 @@ contains
       local_ok, boundaries)
     call require(.not. local_ok, &
       "prescribed wall requires enabled species transport")
+    boundaries%face(boundary_x_lower)%kind = "periodic"
+    boundaries%face(boundary_x_upper)%kind = "periodic"
+    boundaries%face(boundary_x_lower)%wall_species = "impermeable"
+    boundaries%face(boundary_x_upper)%wall_species = "impermeable"
+    boundaries%face(boundary_x_lower)%prescribed_species_flux = 0.0_dp
+    boundaries%face(boundary_x_upper)%prescribed_species_flux = 0.0_dp
     boundaries%face(boundary_y_lower)%wall_species = "impermeable"
     boundaries%face(boundary_y_upper)%wall_species = "impermeable"
     boundaries%face(boundary_y_lower)%prescribed_species_flux = 0.0_dp

@@ -1051,3 +1051,22 @@ The reactive PeleC-style acoustic solver is accepted only while:
 - the 40/80/160-cell H2/N2 composition wave converges above order 1.70 and the
   160-cell H2 error remains below `4e-6`;
 - the complete GNU Fortran Debug and Release suites pass.
+
+## 0.69.0 prescribed species wall-flux gates
+
+The reactive wall transport interface is accepted only while:
+
+- prescribed vectors are finite, match the active mechanism width, occur only
+  on slip/no-slip walls, and sum to zero;
+- positive input is consistently interpreted from the wall into the gas at
+  every lower and upper coordinate face;
+- species fluxes close exactly and add their matching NASA7 species-enthalpy
+  flux to total energy;
+- the positivity limiter scales the entire wall conversion vector and species
+  enthalpy contribution together;
+- disabled species transport and unbalanced input are rejected;
+- a transient lower-wall conversion changes the two selected inventories by
+  the integrated boundary flux while preserving total mass and cellwise
+  species closure;
+- the public 2D application parses and advances the committed namelist case;
+- the complete GNU Fortran Debug and Release suites pass.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.68.0` milestone contains ten serial verification executables, six
+The `0.69.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -120,9 +120,11 @@ multicomponent diffusion, or bulk viscosity.
 
 The reactive 2D path supports matched periodic pairs, slip/no-slip walls,
 adiabatic/isothermal wall temperatures, fixed-state inflow, and zero-gradient
-outflow. Periodic cases retain the qualified characteristic-PPM plus CTU path;
-physical faces use boundary-aware ghost reconstruction, an exact impermeable
-inviscid wall flux, and boundary-aware molecular transport.
+outflow. Walls are species-impermeable by default or may impose a prescribed
+zero-net-mass species-conversion flux with consistent species-enthalpy
+transport. Periodic cases retain the qualified characteristic-PPM plus CTU
+path; physical faces use boundary-aware ghost reconstruction, an exact
+impermeable inviscid wall flux, and boundary-aware molecular transport.
 
 The reactive applications can select either the verified seven-species,
 four-reaction elementary subset or the full ten-species, 29-reaction H2/O2
@@ -549,10 +551,15 @@ python3 tools/check_reactive_hotspot_2d.py \
 ./build/pelef_reactive_2d cases/reactive_boundaries_2d/couette.nml
 ./build/pelef_reactive_2d cases/reactive_boundaries_2d/thermal_channel.nml
 ./build/pelef_reactive_2d cases/reactive_boundaries_2d/inflow_outflow.nml
+./build/pelef_reactive_2d \
+  cases/reactive_boundaries_2d/prescribed_species_wall.nml
 ```
 
-Solid walls are species-impermeable. Slip walls remove tangential viscous
-stress; no-slip walls reflect velocity about a prescribed wall velocity.
+Solid walls are species-impermeable unless `wall_species_* = "prescribed"`
+supplies a zero-sum species mass-flux vector in kg/(m2 s), positive from the
+wall into the gas. Slip walls remove tangential viscous stress; no-slip walls
+reflect velocity about a prescribed wall velocity. Prescribed fluxes provide
+a catalytic-wall transport interface, not a surface-reaction-rate model.
 
 
 ### Full pressure-dependent H2/O2 chemistry
