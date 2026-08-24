@@ -1143,6 +1143,8 @@ program pelef_mpi_amr_patch_1d
   if (rank == 0 .and. reactive_difference /= 0.0_dp) &
     write(*, '(a,1x,es12.5)') "Tagged field difference:", &
       reactive_difference
+  if (rank == 0 .and. reactive_difference /= 0.0_dp) &
+    call report_reactive_field_differences(gathered_reactive, tagged_serial)
   call assert_all(ok .and. reactive_difference == 0.0_dp, &
     "tag-driven sparse regrid matches serial", rank)
   call patch_tree_reactive_integrals_1d( &
@@ -1933,6 +1935,48 @@ contains
       end do
     end do
   end function patch_tree_hierarchy_extent_difference
+
+  subroutine report_reactive_field_differences(first, second)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
+
+    real(dp) :: state_error, temperature_error
+    real(dp) :: ghost_state_error, ghost_temperature_error
+    integer :: local_level, local_patch
+
+    state_error = 0.0_dp
+    temperature_error = 0.0_dp
+    ghost_state_error = 0.0_dp
+    ghost_temperature_error = 0.0_dp
+    do local_level = 1, first%level_count()
+      do local_patch = 1, size(first%levels(local_level)%patches)
+        state_error = max(state_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%state - &
+          second%levels(local_level)%patches(local_patch)%state)))
+        temperature_error = max(temperature_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%temperature - &
+          second%levels(local_level)%patches(local_patch)%temperature)))
+        ghost_state_error = max(ghost_state_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%left_ghost_state - &
+          second%levels(local_level)%patches(local_patch)%left_ghost_state)))
+        ghost_state_error = max(ghost_state_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%right_ghost_state - &
+          second%levels(local_level)%patches(local_patch)%right_ghost_state)))
+        ghost_temperature_error = max(ghost_temperature_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)% &
+            left_ghost_temperature - &
+          second%levels(local_level)%patches(local_patch)% &
+            left_ghost_temperature)))
+        ghost_temperature_error = max(ghost_temperature_error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)% &
+            right_ghost_temperature - &
+          second%levels(local_level)%patches(local_patch)% &
+            right_ghost_temperature)))
+      end do
+    end do
+    write(*, '(a,4(1x,es12.5))') "Tagged component differences:", &
+      state_error, temperature_error, ghost_state_error, &
+      ghost_temperature_error
+  end subroutine report_reactive_field_differences
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
