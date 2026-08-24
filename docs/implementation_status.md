@@ -1433,3 +1433,24 @@ This is a serial synchronization foundation for one static two-level rectangle.
 It does not yet advance an EB hierarchy or provide prolongation, ghost fill,
 subcycling, coarse/fine flux registers and reflux, multiple fine patches,
 dynamic regridding, multilevel redistribution, or MPI ownership.
+
+## EB coarse/fine flux register and cut-cell re-reflux (`0.86.0`)
+
+- [x] coarse/fine boundary face-measure compatibility gate
+- [x] independent time-weighted coarse and fine flux accumulation
+- [x] four-sided open-area and physical-subface flux matching
+- [x] exact one-coarse/two-fine subcycle cancellation gate
+- [x] regular exterior-cell reflux
+- [x] AMReX-style cut-cell `kappa` re-reflux stabilization
+- [x] connected 3-by-3 fluid-volume recipient distribution
+- [x] fine-child transfer for recipients below the fine rectangle
+- [x] raw-to-redistributed composite conservation gate
+- [x] register reset only after successful state commit
+- [x] two-level reactive state and temperature EOS transaction
+- [x] covered-state preservation and nonphysical rollback gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This completes the conservative synchronization kernels for one static serial
+two-level EB rectangle. It does not yet build or advance the hierarchy, fill
+coarse/fine ghosts, prolong initial data, drive fine substeps, regrid, support
+multiple patches or deeper levels, or distribute EB ownership with MPI.

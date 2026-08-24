@@ -1452,6 +1452,37 @@ foundation does not advance either level and does not yet provide EB
 prolongation, ghost fill, subcycling, flux-register reflux, dynamic regridding,
 multiple patches, or distributed ownership.
 
+## EB coarse/fine flux register and re-reflux
+
+The flux register accumulates coarse and fine time intervals independently.
+For a low-x interface, the exterior coarse cell receives the raw state
+correction
+
+`D = sum_c(dt_c a_c F_c)/(kappa_c dx_c)
+     - sum_f(dt_f a_f F_f dy_f)/(kappa_c dx_c dy_c)`.
+
+High-x reverses both signs; the y interfaces use the corresponding `dy_c` and
+fine `dx_f` measures. This form supports fine subcycling without assuming that
+coarse and fine call counts match. When flux and aperture data match physically,
+one coarse interval and all fine subintervals cancel to roundoff.
+
+A regular exterior cell receives `D` directly. For a cut cell, define the raw
+extensive correction `dm = kappa_c D`. Re-reflux adds `dm` to that cell's state,
+then adds `dm(1-kappa_c)/sum_n(kappa_n)` to every connected neighbor in its
+3-by-3 stencil. The resulting fluid-volume-weighted correction is exactly
+`kappa_c D`, while the small cell itself receives only its stable `kappa_c`
+share. A neighbor geometrically covered by the fine rectangle is represented
+by all of its fine children; adding the same state increment to each child
+preserves the parent measure because their volume fractions restrict to the
+coarse value.
+
+The generic operation commits both state arrays and resets the register only
+after all corrections are finite. The reactive wrapper operates on a copied
+register, restores covered-cell data, recovers active coarse and fine
+temperatures, and commits the two levels only after every EOS conversion
+succeeds. This is interface synchronization only; it does not yet compose EB
+level advancement, ghost fill, prolongation, or regridding.
+
 The complete EB hydro update accepts either `pcm` or `characteristic_plm`.
 PCM supplies the cell primitive state unchanged. Characteristic PLM reuses the
 regular reactive frozen-composition acoustic projection and MUSCL-Hancock

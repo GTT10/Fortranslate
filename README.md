@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.85.0` milestone contains the serial verification suite, seven optional
+The `0.86.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -186,10 +186,19 @@ temperature before committing either state or temperature. Covered parents
 retain their original reactive data. This is a serial synchronization kernel,
 not yet a time-advancing EB AMR application.
 
+The same static hierarchy now owns an EB-aware flux register. Coarse and fine
+steps accumulate time-integrated face fluxes independently; open-face fractions
+and physical subface lengths produce one correction on each exterior coarse
+cell. A regular cell receives that correction directly. A cut cell keeps its
+fluid-volume share and redistributes the remainder over connected 3-by-3
+neighbors, with any share landing below the fine patch transferred to all of
+that parent's fine children. Reactive re-reflux commits both levels and both
+temperature fields only after every active cell passes EOS recovery.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-prolongation and reflux, dynamic multilevel EB regridding, and MPI distribution
-are not yet connected.
+prolongation and time advancement, dynamic multilevel EB regridding, and MPI
+distribution are not yet connected.
 
 ### MPI one-dimensional verification
 

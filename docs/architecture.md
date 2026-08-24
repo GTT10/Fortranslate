@@ -916,7 +916,18 @@ fluid-volume-weighted states; a composite integral omits that parent region and
 counts the fine patch instead. Its reactive wrapper treats state plus recovered
 temperature as one transaction and retains covered-parent data.
 
+`amr_eb_flux_register_2d_mod` adds the matching conservative interface path.
+The register stores accumulated state corrections on coarse cells immediately
+outside the patch. Coarse faces contribute their open-area flux with the
+outward finite-volume sign; fine faces contribute the opposite time-integrated
+sum over aligned subfaces. Reflux applies regular-cell corrections directly.
+For a cut interface cell it follows AMReX EB re-reflux: keep the `kappa` share,
+scatter the remaining share over connected neighbors by their fluid volumes,
+and transfer recipients covered by the fine rectangle to the corresponding
+fine children. Candidate registers and level arrays make reactive state and
+temperature recovery atomic.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
-neighborhoods, thermal/viscous/catalytic walls, EB prolongation, flux-register
-reflux, subcycling, dynamic regridding, and EB AMR/MPI ownership remain outside
-this subsystem.
+neighborhoods, thermal/viscous/catalytic walls, EB prolongation, level advance,
+ghost fill, dynamic regridding, and EB AMR/MPI ownership remain outside this
+subsystem.

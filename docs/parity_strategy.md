@@ -1297,3 +1297,21 @@ state and must recover temperature on active parents. Covered parents retain
 their input state and temperature. A nonphysical active fine block, a nonfinite
 input, or inconsistent patch alignment must reject the complete operation
 without partial output mutation in GNU Fortran Debug and Release suites.
+
+## 0.86.0 EB flux-register and re-reflux gates
+
+Coarse and fine constant face fluxes representing the same physical interval
+must cancel at all four open coarse/fine boundaries when one coarse step is
+paired with two fine substeps. A fine-only mismatch crossing a cut interface
+must produce a nonzero raw register, scale the cut-cell self correction by its
+volume fraction, route a connected recipient below the refined rectangle to
+fine children, and preserve the raw fluid-volume-weighted correction in the
+post-reflux composite integral.
+
+A successful generic or reactive reflux must reset the register. Nonfinite flux
+input must leave accumulated register data unchanged. A uniform reactive state
+perturbed proportionally by a small register correction must retain its
+temperature after active-cell EOS recovery and preserve covered states exactly.
+A correction that makes an active state nonphysical must restore both complete
+state arrays, both temperature arrays, and the unconsumed register in GNU
+Fortran Debug and Release suites.
