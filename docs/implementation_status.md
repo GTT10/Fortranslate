@@ -1263,3 +1263,19 @@ small-cell stabilization, wall thermodynamics, AMR, and MPI remain unclaimed.
 This is the embedded-wall contribution to a cut-cell finite-volume operator.
 Cartesian open-face divergence, a complete state update, small-cell
 stabilization, viscous/thermal/catalytic walls, AMR, and MPI remain separate.
+
+## Conservative reactive EB flux divergence (`0.77.0`)
+
+- [x] solid-to-fluid integrated interface-normal vector in every cut cell
+- [x] separate unit-normal and integrated-normal geometry contracts
+- [x] shared Cartesian fluxes weighted by x/y open-face fractions
+- [x] wall and Cartesian contributions divided by the same fluid volume
+- [x] exactly inert covered cells
+- [x] regular, vertical, diagonal, and circular uniform-pressure balance gates
+- [x] finite face-flux and exact array-extent validation
+- [x] rejected-input zero-output transaction contract
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This supplies a conservative semidiscrete cut-cell operator. Flux generation
+near covered neighbors, a complete state update, small-cell stabilization,
+viscous/thermal/catalytic walls, AMR, and MPI remain separate milestones.

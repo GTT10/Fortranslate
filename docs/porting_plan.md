@@ -588,7 +588,7 @@ Required capabilities:
 - [x] face-area fraction (`0.74.0`)
 - [x] cut-interface length, centroid, and fluid normal (`0.75.0`)
 - [x] stationary reactive slip-wall flux and cut-cell source (`0.76.0`)
-- Cartesian face-fraction flux divergence
+- [x] Cartesian face-fraction flux divergence (`0.77.0`)
 - small-cell stabilization
 - thermal, viscous, and catalytic wall boundary conditions
 

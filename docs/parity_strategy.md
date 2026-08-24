@@ -1174,3 +1174,14 @@ must not alter it, and vertical and diagonal geometries must integrate to their
 analytical pressure forces. Non-unit normals and nonphysical cut-cell states
 must be rejected with an all-zero source in GNU Fortran Debug and Release
 suites.
+
+## 0.77.0 conservative reactive EB divergence gates
+
+The semidiscrete cut-cell operator is accepted only while it multiplies every
+Cartesian face flux by the matching open fraction, adds the integrated
+embedded-wall contribution, and divides both by the fluid volume. Uniform
+stationary general-EOS pressure must produce zero volume-integrated residual
+within `2e-10*p*max(dx,dy)` in regular, vertical-plane, diagonal-plane, and
+circular geometries. Covered cells must remain exactly zero, while nonfinite
+face fluxes and incorrect face-array extents must fail transactionally in GNU
+Fortran Debug and Release suites.

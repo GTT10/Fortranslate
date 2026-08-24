@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.76.0` milestone contains the serial verification suite, seven optional
+The `0.77.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -144,8 +144,12 @@ centroid, and a unit normal directed from solid toward fluid. The reactive EB
 kernel recovers the general-EOS pressure and applies the
 stationary impermeable slip-wall momentum flux on an arbitrarily oriented cut
 wall. It also converts the integrated wall flux into a volume-normalized source
-for each cut cell without mass, energy, or species leakage. Cartesian
-face-fraction divergence, time integration, redistribution/small-cell
+for each cut cell without mass, energy, or species leakage. Curved-cell force
+uses the integrated interface-normal vector rather than multiplying total
+length by an averaged unit normal. The conservative divergence combines this
+wall contribution with shared Cartesian fluxes weighted by open-face fraction,
+and preserves a uniform stationary pressure field for planar and circular
+embedded boundaries. Time integration, redistribution/small-cell
 stabilization, thermal/catalytic wall physics, AMR coupling, and MPI
 distribution are not yet connected.
 
