@@ -13,10 +13,59 @@ module eb_reactive_reconstruction_2d_mod
   implicit none
   private
 
+  type, public :: reactive_eb_exterior_state_2d
+    real(dp), allocatable :: x_lower_state(:, :)
+    real(dp), allocatable :: x_upper_state(:, :)
+    real(dp), allocatable :: y_lower_state(:, :)
+    real(dp), allocatable :: y_upper_state(:, :)
+    real(dp), allocatable :: x_lower_temperature(:)
+    real(dp), allocatable :: x_upper_temperature(:)
+    real(dp), allocatable :: y_lower_temperature(:)
+    real(dp), allocatable :: y_upper_temperature(:)
+  contains
+    procedure :: is_valid => reactive_eb_exterior_state_is_valid
+  end type reactive_eb_exterior_state_2d
+
   public :: build_reactive_eb_face_center_fluxes_2d
   public :: interpolate_reactive_eb_face_centroid_fluxes_2d
 
 contains
+
+  pure logical function reactive_eb_exterior_state_is_valid( &
+      self, geometry, nvar) result(valid)
+    class(reactive_eb_exterior_state_2d), intent(in) :: self
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: nvar
+
+    valid = nvar >= 1 .and. allocated(self%x_lower_state) .and. &
+      allocated(self%x_upper_state) .and. allocated(self%y_lower_state) .and. &
+      allocated(self%y_upper_state) .and. &
+      allocated(self%x_lower_temperature) .and. &
+      allocated(self%x_upper_temperature) .and. &
+      allocated(self%y_lower_temperature) .and. &
+      allocated(self%y_upper_temperature)
+    if (.not. valid) return
+    valid = all(shape(self%x_lower_state) == [nvar, geometry%ny]) .and. &
+      all(shape(self%x_upper_state) == [nvar, geometry%ny]) .and. &
+      all(shape(self%y_lower_state) == [nvar, geometry%nx]) .and. &
+      all(shape(self%y_upper_state) == [nvar, geometry%nx]) .and. &
+      size(self%x_lower_temperature) == geometry%ny .and. &
+      size(self%x_upper_temperature) == geometry%ny .and. &
+      size(self%y_lower_temperature) == geometry%nx .and. &
+      size(self%y_upper_temperature) == geometry%nx .and. &
+      all(ieee_is_finite(self%x_lower_state)) .and. &
+      all(ieee_is_finite(self%x_upper_state)) .and. &
+      all(ieee_is_finite(self%y_lower_state)) .and. &
+      all(ieee_is_finite(self%y_upper_state)) .and. &
+      all(ieee_is_finite(self%x_lower_temperature)) .and. &
+      all(ieee_is_finite(self%x_upper_temperature)) .and. &
+      all(ieee_is_finite(self%y_lower_temperature)) .and. &
+      all(ieee_is_finite(self%y_upper_temperature)) .and. &
+      all(self%x_lower_temperature > 0.0_dp) .and. &
+      all(self%x_upper_temperature > 0.0_dp) .and. &
+      all(self%y_lower_temperature > 0.0_dp) .and. &
+      all(self%y_upper_temperature > 0.0_dp)
+  end function reactive_eb_exterior_state_is_valid
 
   pure subroutine rotate_primitive_y_to_x(input, output)
     real(dp), intent(in) :: input(:)
@@ -126,7 +175,7 @@ contains
 
   subroutine build_reactive_eb_face_center_fluxes_2d( &
       species, state, temperature, geometry, solver, reconstruction, &
-      limiter, dt, x_flux, y_flux, ok)
+      limiter, dt, x_flux, y_flux, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(in) :: geometry
@@ -134,6 +183,7 @@ contains
     real(dp), intent(in) :: dt
     real(dp), intent(out) :: x_flux(:, 0:, :), y_flux(:, :, 0:)
     logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: candidate_x(:, :, :), candidate_y(:, :, :)
     real(dp), allocatable :: primitive(:, :, :), sound_speed(:, :)
@@ -170,6 +220,9 @@ contains
         .not. ieee_is_finite(dt) .or. dt < 0.0_dp .or. &
         any(.not. ieee_is_finite(state)) .or. &
         any(.not. ieee_is_finite(temperature))) return
+    if (present(exterior)) then
+      if (.not. exterior%is_valid(geometry, nvar)) return
+    end if
     if (trim(reconstruction) /= "pcm" .and. &
         trim(reconstruction) /= "characteristic_plm") return
     if (trim(reconstruction) == "characteristic_plm" .and. &
@@ -295,10 +348,15 @@ contains
         if (geometry%cell_type(left_i, j) == eb_covered_cell .or. &
             geometry%cell_type(right_i, j) == eb_covered_cell) return
         if (i == 0) then
-          call primitive_face_to_state( &
-            species, primitive(:, 1, j), primitive(:, 1, j), left_state, &
-            left_temperature, local_ok)
-          if (.not. local_ok) return
+          if (present(exterior)) then
+            left_state = exterior%x_lower_state(:, j)
+            left_temperature = exterior%x_lower_temperature(j)
+          else
+            call primitive_face_to_state( &
+              species, primitive(:, 1, j), primitive(:, 1, j), left_state, &
+              left_temperature, local_ok)
+            if (.not. local_ok) return
+          end if
           call primitive_face_to_state( &
             species, x_minus(:, 1, j), primitive(:, 1, j), right_state, &
             right_temperature, local_ok)
@@ -308,10 +366,15 @@ contains
             primitive(:, geometry%nx, j), left_state, left_temperature, &
             local_ok)
           if (.not. local_ok) return
-          call primitive_face_to_state( &
-            species, primitive(:, geometry%nx, j), &
-            primitive(:, geometry%nx, j), right_state, right_temperature, &
-            local_ok)
+          if (present(exterior)) then
+            right_state = exterior%x_upper_state(:, j)
+            right_temperature = exterior%x_upper_temperature(j)
+          else
+            call primitive_face_to_state( &
+              species, primitive(:, geometry%nx, j), &
+              primitive(:, geometry%nx, j), right_state, right_temperature, &
+              local_ok)
+          end if
         else
           call primitive_face_to_state( &
             species, x_plus(:, i, j), primitive(:, i, j), left_state, &
@@ -338,10 +401,15 @@ contains
         if (geometry%cell_type(i, lower_j) == eb_covered_cell .or. &
             geometry%cell_type(i, upper_j) == eb_covered_cell) return
         if (j == 0) then
-          call primitive_face_to_state( &
-            species, primitive(:, i, 1), primitive(:, i, 1), left_state, &
-            left_temperature, local_ok)
-          if (.not. local_ok) return
+          if (present(exterior)) then
+            left_state = exterior%y_lower_state(:, i)
+            left_temperature = exterior%y_lower_temperature(i)
+          else
+            call primitive_face_to_state( &
+              species, primitive(:, i, 1), primitive(:, i, 1), left_state, &
+              left_temperature, local_ok)
+            if (.not. local_ok) return
+          end if
           call primitive_face_to_state( &
             species, y_minus(:, i, 1), primitive(:, i, 1), right_state, &
             right_temperature, local_ok)
@@ -351,10 +419,15 @@ contains
             primitive(:, i, geometry%ny), left_state, left_temperature, &
             local_ok)
           if (.not. local_ok) return
-          call primitive_face_to_state( &
-            species, primitive(:, i, geometry%ny), &
-            primitive(:, i, geometry%ny), right_state, right_temperature, &
-            local_ok)
+          if (present(exterior)) then
+            right_state = exterior%y_upper_state(:, i)
+            right_temperature = exterior%y_upper_temperature(i)
+          else
+            call primitive_face_to_state( &
+              species, primitive(:, i, geometry%ny), &
+              primitive(:, i, geometry%ny), right_state, right_temperature, &
+              local_ok)
+          end if
         else
           call primitive_face_to_state( &
             species, y_plus(:, i, j), primitive(:, i, j), left_state, &

@@ -35,6 +35,13 @@ target_link_libraries(test_amr_eb_flux_register_2d PRIVATE pelef_core)
 add_test(NAME unit_amr_eb_flux_register_2d COMMAND test_amr_eb_flux_register_2d)
 
 add_executable(
+  test_amr_eb_reactive_2d
+  unit/test_amr_eb_reactive_2d.F90
+)
+target_link_libraries(test_amr_eb_reactive_2d PRIVATE pelef_core)
+add_test(NAME unit_amr_eb_reactive_2d COMMAND test_amr_eb_reactive_2d)
+
+add_executable(
   test_eb_reactive_wall_flux_2d
   unit/test_eb_reactive_wall_flux_2d.F90
 )

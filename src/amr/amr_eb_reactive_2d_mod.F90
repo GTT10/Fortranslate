@@ -1,0 +1,411 @@
+module amr_eb_reactive_2d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: &
+    reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use eb_reactive_reconstruction_2d_mod, only: &
+    reactive_eb_exterior_state_2d, &
+    build_reactive_eb_face_center_fluxes_2d, &
+    interpolate_reactive_eb_face_centroid_fluxes_2d
+  use eb_reactive_wall_flux_2d_mod, only: reactive_eb_flux_divergence_2d
+  use eb_reactive_redistribution_2d_mod, only: &
+    advance_reactive_eb_state_redistributed_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
+  use amr_eb_flux_register_2d_mod, only: &
+    amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
+    accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
+    reflux_reactive_eb_state_patch_2d
+  implicit none
+  private
+
+  public :: prolong_reactive_eb_patch_pcm_2d
+  public :: build_reactive_eb_patch_exterior_2d
+  public :: advance_two_level_reactive_eb_hydro_2d
+
+contains
+
+  subroutine prolong_reactive_eb_patch_pcm_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_geometry, patch, fine_state, fine_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(out) :: fine_state(:, :, :), fine_temperature(:, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :), primitive(:)
+    real(dp) :: recovered_temperature, sound_speed
+    logical :: local_ok
+    integer :: coarse_i, coarse_j, fine_i, fine_j, nvar, ratio
+
+    fine_state = 0.0_dp
+    fine_temperature = 0.0_dp
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. size(coarse_state, 1) /= nvar .or. &
+        size(coarse_state, 2) /= coarse_geometry%nx .or. &
+        size(coarse_state, 3) /= coarse_geometry%ny .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(fine_state) /= &
+          [nvar, fine_geometry%nx, fine_geometry%ny]) .or. &
+        any(shape(fine_temperature) /= &
+          [fine_geometry%nx, fine_geometry%ny]) .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
+        any(.not. ieee_is_finite(coarse_state)) .or. &
+        any(.not. ieee_is_finite(coarse_temperature))) return
+
+    allocate(candidate_state, mold=fine_state)
+    allocate(candidate_temperature, mold=fine_temperature)
+    allocate(primitive(reactive_nprim(size(species))))
+    candidate_state = 0.0_dp
+    candidate_temperature = 0.0_dp
+    ratio = patch%refinement_ratio
+    do fine_j = 1, fine_geometry%ny
+      coarse_j = patch%coarse_j_lower + (fine_j - 1) / ratio
+      do fine_i = 1, fine_geometry%nx
+        coarse_i = patch%coarse_i_lower + (fine_i - 1) / ratio
+        candidate_state(:, fine_i, fine_j) = &
+          coarse_state(:, coarse_i, coarse_j)
+        candidate_temperature(fine_i, fine_j) = &
+          coarse_temperature(coarse_i, coarse_j)
+        if (fine_geometry%cell_type(fine_i, fine_j) == eb_covered_cell) cycle
+        if (candidate_temperature(fine_i, fine_j) <= 0.0_dp) return
+        call reactive_conserved_to_primitive( &
+          species, candidate_state(:, fine_i, fine_j), &
+          candidate_temperature(fine_i, fine_j), primitive, &
+          recovered_temperature, sound_speed, local_ok)
+        if (.not. local_ok) return
+        candidate_temperature(fine_i, fine_j) = recovered_temperature
+      end do
+    end do
+    fine_state = candidate_state
+    fine_temperature = candidate_temperature
+    ok = .true.
+  end subroutine prolong_reactive_eb_patch_pcm_2d
+
+  subroutine recover_exterior_cell( &
+      species, start_state, end_state, start_temperature, end_temperature, &
+      alpha, state, temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: start_state(:), end_state(:)
+    real(dp), intent(in) :: start_temperature, end_temperature, alpha
+    real(dp), intent(out) :: state(:), temperature
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: primitive(:)
+    real(dp) :: sound_speed, temperature_guess
+
+    state = (1.0_dp - alpha) * start_state + alpha * end_state
+    temperature = 0.0_dp
+    ok = .false.
+    temperature_guess = (1.0_dp - alpha) * start_temperature + &
+      alpha * end_temperature
+    if (temperature_guess <= 0.0_dp .or. &
+        any(.not. ieee_is_finite(state))) return
+    allocate(primitive(reactive_nprim(size(species))))
+    call reactive_conserved_to_primitive( &
+      species, state, temperature_guess, primitive, temperature, &
+      sound_speed, ok)
+  end subroutine recover_exterior_cell
+
+  subroutine build_reactive_eb_patch_exterior_2d( &
+      species, coarse_start, coarse_start_temperature, coarse_end, &
+      coarse_end_temperature, coarse_geometry, fine_geometry, patch, &
+      alpha, exterior, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_start(:, :, :)
+    real(dp), intent(in) :: coarse_start_temperature(:, :)
+    real(dp), intent(in) :: coarse_end(:, :, :)
+    real(dp), intent(in) :: coarse_end_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(in) :: alpha
+    type(reactive_eb_exterior_state_2d), intent(out) :: exterior
+    logical, intent(out) :: ok
+
+    type(reactive_eb_exterior_state_2d) :: candidate
+    logical :: local_ok
+    integer :: coarse_i, coarse_j, fine_i, fine_j, nvar, ratio
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. .not. ieee_is_finite(alpha) .or. &
+        alpha < 0.0_dp .or. alpha > 1.0_dp .or. &
+        patch%coarse_i_lower <= 1 .or. &
+        patch%coarse_i_upper >= coarse_geometry%nx .or. &
+        patch%coarse_j_lower <= 1 .or. &
+        patch%coarse_j_upper >= coarse_geometry%ny .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
+        any(shape(coarse_start) /= &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_end) /= shape(coarse_start)) .or. &
+        any(shape(coarse_start_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_end_temperature) /= &
+          shape(coarse_start_temperature)) .or. &
+        any(.not. ieee_is_finite(coarse_start)) .or. &
+        any(.not. ieee_is_finite(coarse_end)) .or. &
+        any(.not. ieee_is_finite(coarse_start_temperature)) .or. &
+        any(.not. ieee_is_finite(coarse_end_temperature))) return
+
+    allocate(candidate%x_lower_state(nvar, fine_geometry%ny))
+    allocate(candidate%x_upper_state(nvar, fine_geometry%ny))
+    allocate(candidate%y_lower_state(nvar, fine_geometry%nx))
+    allocate(candidate%y_upper_state(nvar, fine_geometry%nx))
+    allocate(candidate%x_lower_temperature(fine_geometry%ny))
+    allocate(candidate%x_upper_temperature(fine_geometry%ny))
+    allocate(candidate%y_lower_temperature(fine_geometry%nx))
+    allocate(candidate%y_upper_temperature(fine_geometry%nx))
+    candidate%x_lower_state = 0.0_dp
+    candidate%x_upper_state = 0.0_dp
+    candidate%y_lower_state = 0.0_dp
+    candidate%y_upper_state = 0.0_dp
+    candidate%x_lower_temperature = 1.0_dp
+    candidate%x_upper_temperature = 1.0_dp
+    candidate%y_lower_temperature = 1.0_dp
+    candidate%y_upper_temperature = 1.0_dp
+    ratio = patch%refinement_ratio
+
+    do fine_j = 1, fine_geometry%ny
+      coarse_j = patch%coarse_j_lower + (fine_j - 1) / ratio
+      if (fine_geometry%x_face_fraction(0, fine_j) > 0.0_dp) then
+        coarse_i = patch%coarse_i_lower - 1
+        call recover_exterior_cell( &
+          species, coarse_start(:, coarse_i, coarse_j), &
+          coarse_end(:, coarse_i, coarse_j), &
+          coarse_start_temperature(coarse_i, coarse_j), &
+          coarse_end_temperature(coarse_i, coarse_j), alpha, &
+          candidate%x_lower_state(:, fine_j), &
+          candidate%x_lower_temperature(fine_j), local_ok)
+        if (.not. local_ok) return
+      end if
+      if (fine_geometry%x_face_fraction(fine_geometry%nx, fine_j) > 0.0_dp) then
+        coarse_i = patch%coarse_i_upper + 1
+        call recover_exterior_cell( &
+          species, coarse_start(:, coarse_i, coarse_j), &
+          coarse_end(:, coarse_i, coarse_j), &
+          coarse_start_temperature(coarse_i, coarse_j), &
+          coarse_end_temperature(coarse_i, coarse_j), alpha, &
+          candidate%x_upper_state(:, fine_j), &
+          candidate%x_upper_temperature(fine_j), local_ok)
+        if (.not. local_ok) return
+      end if
+    end do
+    do fine_i = 1, fine_geometry%nx
+      coarse_i = patch%coarse_i_lower + (fine_i - 1) / ratio
+      if (fine_geometry%y_face_fraction(fine_i, 0) > 0.0_dp) then
+        coarse_j = patch%coarse_j_lower - 1
+        call recover_exterior_cell( &
+          species, coarse_start(:, coarse_i, coarse_j), &
+          coarse_end(:, coarse_i, coarse_j), &
+          coarse_start_temperature(coarse_i, coarse_j), &
+          coarse_end_temperature(coarse_i, coarse_j), alpha, &
+          candidate%y_lower_state(:, fine_i), &
+          candidate%y_lower_temperature(fine_i), local_ok)
+        if (.not. local_ok) return
+      end if
+      if (fine_geometry%y_face_fraction(fine_i, fine_geometry%ny) > 0.0_dp) then
+        coarse_j = patch%coarse_j_upper + 1
+        call recover_exterior_cell( &
+          species, coarse_start(:, coarse_i, coarse_j), &
+          coarse_end(:, coarse_i, coarse_j), &
+          coarse_start_temperature(coarse_i, coarse_j), &
+          coarse_end_temperature(coarse_i, coarse_j), alpha, &
+          candidate%y_upper_state(:, fine_i), &
+          candidate%y_upper_temperature(fine_i), local_ok)
+        if (.not. local_ok) return
+      end if
+    end do
+    if (.not. candidate%is_valid(fine_geometry, nvar)) return
+    exterior = candidate
+    ok = .true.
+  end subroutine build_reactive_eb_patch_exterior_2d
+
+  subroutine advance_reactive_eb_level_2d( &
+      species, state, temperature, geometry, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, new_state, new_temperature, x_flux, &
+      y_flux, ok, exterior)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt
+    real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
+    real(dp), intent(out) :: x_flux(:, 0:, :), y_flux(:, :, 0:)
+    logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
+
+    real(dp), allocatable :: center_x(:, :, :), center_y(:, :, :)
+    real(dp), allocatable :: conservative_rhs(:, :, :)
+    logical :: local_ok
+    integer :: nvar
+
+    new_state = state
+    new_temperature = temperature
+    x_flux = 0.0_dp
+    y_flux = 0.0_dp
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. size(x_flux, 1) /= nvar .or. &
+        size(x_flux, 2) /= geometry%nx + 1 .or. &
+        size(x_flux, 3) /= geometry%ny .or. &
+        size(y_flux, 1) /= nvar .or. size(y_flux, 2) /= geometry%nx .or. &
+        size(y_flux, 3) /= geometry%ny + 1) return
+    allocate(center_x(nvar, 0:geometry%nx, geometry%ny))
+    allocate(center_y(nvar, geometry%nx, 0:geometry%ny))
+    if (present(exterior)) then
+      call build_reactive_eb_face_center_fluxes_2d( &
+        species, state, temperature, geometry, solver, reconstruction, limiter, &
+        dt, center_x, center_y, local_ok, exterior)
+    else
+      call build_reactive_eb_face_center_fluxes_2d( &
+        species, state, temperature, geometry, solver, reconstruction, limiter, &
+        dt, center_x, center_y, local_ok)
+    end if
+    if (.not. local_ok) return
+    call interpolate_reactive_eb_face_centroid_fluxes_2d( &
+      geometry, center_x, center_y, x_flux, y_flux, local_ok)
+    if (.not. local_ok) return
+    allocate(conservative_rhs(nvar, geometry%nx, geometry%ny))
+    call reactive_eb_flux_divergence_2d( &
+      species, state, temperature, geometry, x_flux, y_flux, &
+      conservative_rhs, local_ok)
+    if (.not. local_ok) return
+    call advance_reactive_eb_state_redistributed_2d( &
+      species, state, temperature, geometry, conservative_rhs, dt, &
+      new_state, new_temperature, local_ok, 0.5_dp, state_redist_max_order)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine advance_reactive_eb_level_2d
+
+  subroutine advance_two_level_reactive_eb_hydro_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, solver, &
+      reconstruction, limiter, state_redist_max_order, dt, new_coarse_state, &
+      new_coarse_temperature, new_fine_state, new_fine_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(in) :: fine_state(:, :, :), fine_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt
+    real(dp), intent(out) :: new_coarse_state(:, :, :)
+    real(dp), intent(out) :: new_coarse_temperature(:, :)
+    real(dp), intent(out) :: new_fine_state(:, :, :)
+    real(dp), intent(out) :: new_fine_temperature(:, :)
+    logical, intent(out) :: ok
+
+    type(amr_eb_flux_register_2d) :: flux_register
+    type(reactive_eb_exterior_state_2d) :: exterior
+    real(dp), allocatable :: coarse_candidate(:, :, :), coarse_work(:, :, :)
+    real(dp), allocatable :: coarse_candidate_temperature(:, :)
+    real(dp), allocatable :: coarse_work_temperature(:, :)
+    real(dp), allocatable :: fine_candidate(:, :, :), fine_work(:, :, :)
+    real(dp), allocatable :: fine_candidate_temperature(:, :)
+    real(dp), allocatable :: fine_work_temperature(:, :)
+    real(dp), allocatable :: coarse_x_flux(:, :, :), coarse_y_flux(:, :, :)
+    real(dp), allocatable :: fine_x_flux(:, :, :), fine_y_flux(:, :, :)
+    real(dp) :: alpha, fine_dt
+    logical :: local_ok
+    integer :: nvar, ratio, substep
+
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    new_fine_state = fine_state
+    new_fine_temperature = fine_temperature
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        patch%coarse_i_lower <= 1 .or. &
+        patch%coarse_i_upper >= coarse_geometry%nx .or. &
+        patch%coarse_j_lower <= 1 .or. &
+        patch%coarse_j_upper >= coarse_geometry%ny .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
+        any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
+        any(shape(new_coarse_temperature) /= shape(coarse_temperature)) .or. &
+        any(shape(new_fine_state) /= shape(fine_state)) .or. &
+        any(shape(new_fine_temperature) /= shape(fine_temperature))) return
+
+    allocate(coarse_candidate, mold=coarse_state)
+    allocate(coarse_candidate_temperature, mold=coarse_temperature)
+    allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+    allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    call advance_reactive_eb_level_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, solver, &
+      reconstruction, limiter, state_redist_max_order, dt, coarse_candidate, &
+      coarse_candidate_temperature, coarse_x_flux, coarse_y_flux, local_ok)
+    if (.not. local_ok) return
+
+    call initialize_amr_eb_flux_register_2d( &
+      coarse_geometry, fine_geometry, patch, nvar, flux_register, local_ok)
+    if (.not. local_ok) return
+    call accumulate_coarse_eb_fluxes_2d( &
+      flux_register, coarse_geometry, fine_geometry, patch, &
+      coarse_x_flux, coarse_y_flux, dt, local_ok)
+    if (.not. local_ok) return
+
+    allocate(fine_candidate, source=fine_state)
+    allocate(fine_candidate_temperature, source=fine_temperature)
+    allocate(fine_work, mold=fine_state)
+    allocate(fine_work_temperature, mold=fine_temperature)
+    allocate(fine_x_flux(nvar, 0:fine_geometry%nx, fine_geometry%ny))
+    allocate(fine_y_flux(nvar, fine_geometry%nx, 0:fine_geometry%ny))
+    ratio = patch%refinement_ratio
+    fine_dt = dt / real(ratio, dp)
+    do substep = 1, ratio
+      if (trim(reconstruction) == "characteristic_plm") then
+        alpha = (real(substep, dp) - 0.5_dp) / real(ratio, dp)
+      else
+        alpha = real(substep - 1, dp) / real(ratio, dp)
+      end if
+      call build_reactive_eb_patch_exterior_2d( &
+        species, coarse_state, coarse_temperature, coarse_candidate, &
+        coarse_candidate_temperature, coarse_geometry, fine_geometry, &
+        patch, alpha, exterior, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_level_2d( &
+        species, fine_candidate, fine_candidate_temperature, fine_geometry, &
+        solver, reconstruction, limiter, state_redist_max_order, fine_dt, &
+        fine_work, fine_work_temperature, fine_x_flux, fine_y_flux, local_ok, &
+        exterior)
+      if (.not. local_ok) return
+      fine_candidate = fine_work
+      fine_candidate_temperature = fine_work_temperature
+      call accumulate_fine_eb_fluxes_2d( &
+        flux_register, coarse_geometry, fine_geometry, patch, &
+        fine_x_flux, fine_y_flux, fine_dt, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    allocate(coarse_work, mold=coarse_state)
+    allocate(coarse_work_temperature, mold=coarse_temperature)
+    call reflux_reactive_eb_state_patch_2d( &
+      species, coarse_candidate, coarse_candidate_temperature, &
+      coarse_geometry, fine_candidate, fine_candidate_temperature, &
+      fine_geometry, patch, flux_register, coarse_work, &
+      coarse_work_temperature, fine_work, fine_work_temperature, local_ok)
+    if (.not. local_ok) return
+    call average_down_reactive_eb_state_patch_2d( &
+      species, coarse_work, coarse_work_temperature, coarse_geometry, &
+      fine_work, fine_geometry, patch, coarse_candidate, &
+      coarse_candidate_temperature, local_ok)
+    if (.not. local_ok) return
+
+    new_coarse_state = coarse_candidate
+    new_coarse_temperature = coarse_candidate_temperature
+    new_fine_state = fine_work
+    new_fine_temperature = fine_work_temperature
+    ok = .true.
+  end subroutine advance_two_level_reactive_eb_hydro_2d
+
+end module amr_eb_reactive_2d_mod

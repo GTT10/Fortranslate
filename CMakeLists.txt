@@ -45,6 +45,7 @@ add_library(
   src/amr/amr_reactive_1d_mod.F90
   src/amr/amr_eb_hierarchy_2d_mod.F90
   src/amr/amr_eb_flux_register_2d_mod.F90
+  src/amr/amr_eb_reactive_2d_mod.F90
   src/boundary/reactive_boundary_2d_mod.F90
   src/transport/reactive_transport_2d_mod.F90
   src/reactive/reactive_2d_mod.F90
