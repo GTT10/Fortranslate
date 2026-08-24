@@ -44,7 +44,7 @@ program test_amr_eb_reactive_2d
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, fine_x_lower, fine_x_upper
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
-  real(dp) :: state_scale, dt, expected_scale
+  real(dp) :: state_scale, integral_scale, dt, expected_scale
   logical :: ok, found_open_boundary
   integer :: i, j, k, nvar
 
@@ -210,6 +210,29 @@ program test_amr_eb_reactive_2d
   call assert_covered_unchanged( &
     fine_state, new_fine_state, fine_geometry, &
     "fine covered-state preservation")
+
+  fine_state = 1.01_dp * &
+    spread(spread(state_cell, 2, fine_nx), 3, fine_ny)
+  fine_temperature = temperature_cell
+  call composite_eb_integral_2d( &
+    coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+    integral_before, ok)
+  call require(ok, "mismatched initial composite integral")
+  dt = 0.02_dp * min(coarse_geometry%dx, coarse_geometry%dy) / sound_speed
+  call advance_two_level_reactive_eb_hydro_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, "hllc", &
+    "pcm", "mc", 2, dt, new_coarse_state, new_coarse_temperature, &
+    new_fine_state, new_fine_temperature, ok, 0.5_dp)
+  call require(ok, "nonmatching coarse/fine EB advance")
+  call composite_eb_integral_2d( &
+    new_coarse_state, coarse_geometry, new_fine_state, fine_geometry, &
+    patch, integral_after, ok)
+  integral_scale = max(1.0_dp, maxval(abs(integral_before)))
+  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
+    5.0e-11_dp * integral_scale, "nonmatching composite conservation")
+  call require(maxval(abs(new_fine_state - fine_state)) > &
+    1.0e-12_dp * state_scale, "nonmatching interface evolves")
 
   call advance_two_level_reactive_eb_hydro_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, &
