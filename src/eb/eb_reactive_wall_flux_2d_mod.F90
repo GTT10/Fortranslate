@@ -5,7 +5,8 @@ module eb_reactive_wall_flux_2d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
-  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_cut_cell
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell
   implicit none
   private
 
@@ -14,6 +15,7 @@ module eb_reactive_wall_flux_2d_mod
 
   public :: reactive_eb_slip_wall_flux_2d
   public :: reactive_eb_slip_wall_source_2d
+  public :: reactive_eb_flux_divergence_2d
 
 contains
 
@@ -106,5 +108,66 @@ contains
     source = candidate
     ok = .true.
   end subroutine reactive_eb_slip_wall_source_2d
+
+  subroutine reactive_eb_flux_divergence_2d( &
+      species, state, temperature, geometry, x_flux, y_flux, rhs, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: x_flux(:, 0:, :), y_flux(:, :, 0:)
+    real(dp), intent(out) :: rhs(:, :, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: candidate(:, :, :), wall_source(:, :, :)
+    real(dp) :: fluid_volume
+    logical :: local_ok
+    integer :: i, j, nvar
+
+    rhs = 0.0_dp
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar <= 0 .or. .not. geometry%is_valid()) return
+    if (size(state, 1) /= nvar .or. &
+        size(state, 2) /= geometry%nx .or. &
+        size(state, 3) /= geometry%ny .or. &
+        any(shape(rhs) /= shape(state)) .or. &
+        any(shape(temperature) /= [geometry%nx, geometry%ny]) .or. &
+        size(x_flux, 1) /= nvar .or. &
+        size(x_flux, 2) /= geometry%nx + 1 .or. &
+        size(x_flux, 3) /= geometry%ny .or. &
+        size(y_flux, 1) /= nvar .or. &
+        size(y_flux, 2) /= geometry%nx .or. &
+        size(y_flux, 3) /= geometry%ny + 1) return
+    if (any(.not. ieee_is_finite(x_flux)) .or. &
+        any(.not. ieee_is_finite(y_flux))) return
+
+    allocate(candidate(nvar, geometry%nx, geometry%ny))
+    allocate(wall_source(nvar, geometry%nx, geometry%ny))
+    call reactive_eb_slip_wall_source_2d( &
+      species, state, temperature, geometry, wall_source, local_ok)
+    if (.not. local_ok) return
+
+    candidate = 0.0_dp
+    do j = 1, geometry%ny
+      do i = 1, geometry%nx
+        if (geometry%cell_type(i, j) == eb_covered_cell) cycle
+        fluid_volume = geometry%volume_fraction(i, j) * &
+          geometry%dx * geometry%dy
+        if (fluid_volume <= 0.0_dp) return
+        candidate(:, i, j) = wall_source(:, i, j) - ( &
+          geometry%dy * ( &
+            geometry%x_face_fraction(i, j) * x_flux(:, i, j) - &
+            geometry%x_face_fraction(i - 1, j) * x_flux(:, i - 1, j)) + &
+          geometry%dx * ( &
+            geometry%y_face_fraction(i, j) * y_flux(:, i, j) - &
+            geometry%y_face_fraction(i, j - 1) * y_flux(:, i, j - 1))) / &
+          fluid_volume
+      end do
+    end do
+    if (any(.not. ieee_is_finite(candidate))) return
+
+    rhs = candidate
+    ok = .true.
+  end subroutine reactive_eb_flux_divergence_2d
 
 end module eb_reactive_wall_flux_2d_mod

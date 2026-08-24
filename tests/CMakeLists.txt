@@ -30,6 +30,16 @@ add_test(
   COMMAND test_eb_reactive_wall_flux_2d
 )
 
+add_executable(
+  test_eb_reactive_flux_divergence_2d
+  unit/test_eb_reactive_flux_divergence_2d.F90
+)
+target_link_libraries(test_eb_reactive_flux_divergence_2d PRIVATE pelef_core)
+add_test(
+  NAME unit_eb_reactive_flux_divergence_2d
+  COMMAND test_eb_reactive_flux_divergence_2d
+)
+
 add_executable(test_amr_hierarchy_1d unit/test_amr_hierarchy_1d.F90)
 target_link_libraries(test_amr_hierarchy_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_hierarchy_1d COMMAND test_amr_hierarchy_1d)
