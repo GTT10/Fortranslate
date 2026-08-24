@@ -5,7 +5,8 @@ module amr_patch_tree_reactive_1d_mod
   use transport_database_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_cfl_timestep, reactive_transport_timestep, &
+    reactive_nvar, reactive_nprim, reactive_cfl_timestep, &
+    reactive_transport_timestep, &
     initialize_reactive_1d, advance_reactive_chemistry
   use amr_hierarchy_1d_mod, only: &
     amr_two_level_hierarchy_1d, amr_level_field_1d, &
