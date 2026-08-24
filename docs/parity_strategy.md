@@ -784,3 +784,20 @@ The rank-local patch container is accepted only while:
   solution;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.55.0 direct sparse MPI AMR chemistry gates
+
+Sparse patch-tree chemistry is accepted only while:
+
+- every rank advances exactly its owner-map patch count and the global sum is
+  exactly one chemistry call per patch;
+- deepest-to-root average-down and owner-local temperature recovery reproduce
+  the serial four-level branched-tree solution within `5e-13`;
+- gathering the sparse result restores state, temperature, normal ghosts,
+  PPM-wide ghosts, and bookkeeping without omitted or duplicate payloads;
+- a six-adjacent-child PPM tree reproduces serial chemistry within `5e-13`
+  while sibling ghost sources cross MPI owners;
+- an invalid deepest-level owner state rejects the operation collectively,
+  reports zero accepted calls, and restores every local sparse payload exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

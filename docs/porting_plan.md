@@ -524,6 +524,8 @@ Reactive application integration:
   bookkeeping synchronization, outer rollback, and serial parity (`0.53.0`)
 - [x] rank-local sparse patch payloads, exact owner scatter/gather, and
   same-hierarchy owner-map migration (`0.54.0`)
+- [x] direct sparse owner chemistry with distributed average-down, ghost
+  refresh, adjacent PPM exchange, rollback, and serial parity (`0.55.0`)
 
 AMR parity metrics:
 

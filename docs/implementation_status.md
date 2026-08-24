@@ -889,3 +889,20 @@ advance. The current physics entry points still use replicated trees, and
 owner migration temporarily broadcasts one patch at a time. Direct sparse
 physics, topology-changing regrid migration, and scalable point-to-point halo
 and flux schedules remain pending.
+
+## Direct chemistry on sparse MPI AMR patches (`0.55.0`)
+
+- [x] chemistry integration only on locally allocated owner payloads
+- [x] exact one-call-per-patch global accounting
+- [x] deepest-to-root child streaming and owner-local average-down
+- [x] owner-local temperature recovery after covered-parent replacement
+- [x] root physical and parent/fine ghost refresh without a full replica
+- [x] cross-owner adjacent normal and four-layer PPM ghost replacement
+- [x] serial parity for four-level branched and adjacent-patch trees
+- [x] exact sparse rollback after a deep owner chemistry failure
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Chemistry is now the first AMR operator to consume sparse storage directly.
+Synchronization currently broadcasts one child, parent, or sibling patch at a
+time. Sparse hydro and transport, point-to-point schedules, and distributed
+topology-changing regrid remain pending.

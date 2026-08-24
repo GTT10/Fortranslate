@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.54.0` milestone contains ten serial verification executables, six
+The `0.55.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -274,6 +274,9 @@ The AMR layer provides:
   failure;
 - rank-local sparse MPI AMR patch payloads, exact owner scatter/gather,
   one-copy global storage accounting, and same-hierarchy owner migration;
+- direct owner-only chemistry on sparse AMR payloads with distributed
+  average-down, parent/child ghost fill, adjacent PPM ghost replacement, and
+  exact collective rollback;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -309,8 +312,12 @@ transaction now composes chemistry, transport, hydro, transport, and chemistry
 and restores its synchronized starting tree after any rejected stage. The
 sparse MPI bridge now removes non-owned patch payloads, reconstructs an exact
 replica on demand, and moves payload ownership when a same-hierarchy owner map
-changes. Direct physics on sparse storage, topology-changing regrid migration,
-and point-to-point communication remain later slices. A periodic child may
+changes. Chemistry is the first operator to run directly on sparse payloads:
+child interiors are synchronized
+deepest-to-root for average-down and parent/sibling data are streamed for
+ghost refresh without materializing a complete tree. Hydro and transport
+remain on the replicated bridge; topology-changing regrid migration and
+point-to-point communication remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

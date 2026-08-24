@@ -573,6 +573,19 @@ Physics still executes through the replicated `0.53.0` entry points. Direct
 sparse physics, topology-changing regrid transfer, and point-to-point
 communication schedules remain outside the `0.54.0` boundary.
 
+In `0.55.0`, `advance_sparse_patch_tree_chemistry_1d` advances only locally
+allocated patch payloads. Deepest-to-root synchronization streams one child
+interior at a time to the parent owner for conservative average-down and
+temperature recovery. Root physical ghosts and parent/fine ghosts are updated
+only on their owners; adjacent sibling state is likewise streamed one source
+patch at a time so normal and PPM-wide ghosts can be replaced locally.
+
+Collective acceptance surrounds every patch and synchronization boundary. A
+failure restores each rank's sparse backup and reports zero accepted calls.
+Hydro, molecular transport, and the combined `R-T-H-T-R` transaction still use
+the replicated bridge. Broadcast-based synchronization remains a temporary
+correctness schedule outside the final point-to-point design.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both
