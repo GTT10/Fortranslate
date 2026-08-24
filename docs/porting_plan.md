@@ -528,6 +528,8 @@ Reactive application integration:
   refresh, adjacent PPM exchange, rollback, and serial parity (`0.55.0`)
 - [x] direct sparse recursive hydro with subcycling, flux registers,
   cross-owner PPM reconciliation, rollback, and serial parity (`0.56.0`)
+- [x] direct sparse recursive molecular transport with cumulative `r^2`
+  subcycling, diffusive reflux, rollback, and serial parity (`0.57.0`)
 
 AMR parity metrics:
 

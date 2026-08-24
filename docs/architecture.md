@@ -600,6 +600,18 @@ the transaction; rejection restores rank-local payloads and all counters.
 Molecular transport and combined full physics remain replicated, and the
 communication schedule is still broadcast-based.
 
+In `0.57.0`, `advance_sparse_patch_tree_transport_1d` applies the same sparse
+recursion boundary to SSPRK2 molecular transport. The owner computes each
+viscous, conductive, and mixture-diffusion patch interval. Parent interval
+states and effective diffusive fluxes are streamed for `r²` child subcycles,
+and adjacent time-integrated diffusive faces are reconciled on their owners.
+
+Compact diffusive registers remain replicated; child interiors return to the
+parent owner for reflux, average-down, and temperature recovery. Final ghosts
+and rollback remain sparse. All three component operators now have direct
+sparse entry points, but their combined `R-T-H-T-R` transaction and the
+communication schedule remain future work.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

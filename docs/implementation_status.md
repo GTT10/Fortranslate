@@ -924,3 +924,20 @@ Chemistry and hydro now run directly on sparse AMR storage. Molecular
 transport and combined full physics still use the replicated bridge.
 Point-to-point communication and topology-changing distributed regrid remain
 pending.
+
+## Direct molecular transport on sparse MPI AMR patches (`0.57.0`)
+
+- [x] owner-only SSPRK2 transport on rank-local sparse payloads
+- [x] cumulative `r^2` recursive subcycling without a full tree replica
+- [x] streamed parent interval states and effective diffusive fluxes
+- [x] replicated compact diffusive flux-register accumulation
+- [x] owner-local diffusive reflux, average-down, and temperature recovery
+- [x] cross-owner adjacent shared diffusive face reconciliation
+- [x] exact local and per-level parabolic subcycle accounting
+- [x] serial parity for four-level branched and adjacent-child trees
+- [x] exact sparse rollback after a deep owner transport failure
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Chemistry, hydro, and molecular transport now all consume sparse AMR storage
+directly. Sparse full-physics composition, point-to-point communication, and
+topology-changing distributed regrid remain pending.

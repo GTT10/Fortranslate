@@ -818,3 +818,21 @@ Sparse recursive hydro is accepted only while:
   accepted updates, and restores every sparse payload and counter exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.57.0 direct sparse MPI AMR transport gates
+
+Sparse recursive molecular transport is accepted only while:
+
+- a four-level branched tree performs exactly 185 owner updates under
+  cumulative `r²` subcycling with counters `[1, 8, 48, 128]`;
+- each rank's call count matches the parabolic weight of its owner patches and
+  the gathered state matches serial transport within `5e-13`;
+- a two-level six-adjacent-child tree performs exactly 25 updates with counters
+  `[1, 24]` and matches serial across shared diffusive owner faces within
+  `5e-13`;
+- gathering reconstructs state, temperature, ghosts, and transport counters
+  after streamed parent data, diffusive registers, reflux, and average-down;
+- a negative deepest-level owner state rejects collectively, reports zero
+  accepted updates, and restores every sparse payload and counter exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.
