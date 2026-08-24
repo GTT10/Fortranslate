@@ -215,36 +215,39 @@ contains
       do j = 1, geometry%ny
         do i = 1, geometry%nx
           if (geometry%cell_type(i, j) == eb_covered_cell) cycle
-          if (i > 1 .and. i < geometry%nx .and. &
-              geometry%cell_type(i - 1, j) /= eb_covered_cell .and. &
-              geometry%cell_type(i + 1, j) /= eb_covered_cell) then
-            dl = primitive(:, i, j) - primitive(:, i - 1, j)
-            dr = primitive(:, i + 1, j) - primitive(:, i, j)
-            call characteristic_limited_slope( &
-              primitive(:, i, j), dl, dr, sound_speed(i, j), limiter, &
-              slope_x(:, i, j), local_ok)
-            if (.not. local_ok) return
-            theta = primitive_slope_scale( &
-              primitive(:, i, j), slope_x(:, i, j), size(species))
-            slope_x(:, i, j) = theta * slope_x(:, i, j)
+          if (i > 1 .and. i < geometry%nx) then
+            if (geometry%cell_type(i - 1, j) /= eb_covered_cell .and. &
+                geometry%cell_type(i + 1, j) /= eb_covered_cell) then
+              dl = primitive(:, i, j) - primitive(:, i - 1, j)
+              dr = primitive(:, i + 1, j) - primitive(:, i, j)
+              call characteristic_limited_slope( &
+                primitive(:, i, j), dl, dr, sound_speed(i, j), limiter, &
+                slope_x(:, i, j), local_ok)
+              if (.not. local_ok) return
+              theta = primitive_slope_scale( &
+                primitive(:, i, j), slope_x(:, i, j), size(species))
+              slope_x(:, i, j) = theta * slope_x(:, i, j)
+            end if
           end if
-          if (j > 1 .and. j < geometry%ny .and. &
-              geometry%cell_type(i, j - 1) /= eb_covered_cell .and. &
-              geometry%cell_type(i, j + 1) /= eb_covered_cell) then
-            call rotate_primitive_y_to_x( &
-              primitive(:, i, j), rotated_center)
-            call rotate_primitive_y_to_x( &
-              primitive(:, i, j) - primitive(:, i, j - 1), rotated_dl)
-            call rotate_primitive_y_to_x( &
-              primitive(:, i, j + 1) - primitive(:, i, j), rotated_dr)
-            call characteristic_limited_slope( &
-              rotated_center, rotated_dl, rotated_dr, sound_speed(i, j), &
-              limiter, rotated_slope, local_ok)
-            if (.not. local_ok) return
-            theta = primitive_slope_scale( &
-              rotated_center, rotated_slope, size(species))
-            rotated_slope = theta * rotated_slope
-            call rotate_primitive_y_to_x(rotated_slope, slope_y(:, i, j))
+          if (j > 1 .and. j < geometry%ny) then
+            if (geometry%cell_type(i, j - 1) /= eb_covered_cell .and. &
+                geometry%cell_type(i, j + 1) /= eb_covered_cell) then
+              call rotate_primitive_y_to_x( &
+                primitive(:, i, j), rotated_center)
+              call rotate_primitive_y_to_x( &
+                primitive(:, i, j) - primitive(:, i, j - 1), rotated_dl)
+              call rotate_primitive_y_to_x( &
+                primitive(:, i, j + 1) - primitive(:, i, j), rotated_dr)
+              call characteristic_limited_slope( &
+                rotated_center, rotated_dl, rotated_dr, sound_speed(i, j), &
+                limiter, rotated_slope, local_ok)
+              if (.not. local_ok) return
+              theta = primitive_slope_scale( &
+                rotated_center, rotated_slope, size(species))
+              rotated_slope = theta * rotated_slope
+              call rotate_primitive_y_to_x( &
+                rotated_slope, slope_y(:, i, j))
+            end if
           end if
         end do
       end do

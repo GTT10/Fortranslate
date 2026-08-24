@@ -185,8 +185,8 @@ program test_eb_reactive_hydro_2d
           geometry%x_face_centroid_y(i, j) == 0.0_dp) cycle
       neighbor = j + merge(1, -1, &
         geometry%x_face_centroid_y(i, j) > 0.0_dp)
-      if (neighbor < 1 .or. neighbor > ny .or. &
-          geometry%x_face_fraction(i, neighbor) <= 0.0_dp) cycle
+      if (neighbor < 1 .or. neighbor > ny) cycle
+      if (geometry%x_face_fraction(i, neighbor) <= 0.0_dp) cycle
       expected = (1.0_dp - abs(geometry%x_face_centroid_y(i, j))) * &
         real(j, dp) + abs(geometry%x_face_centroid_y(i, j)) * &
         real(neighbor, dp)
@@ -201,8 +201,8 @@ program test_eb_reactive_hydro_2d
           geometry%y_face_centroid_x(i, j) == 0.0_dp) cycle
       neighbor = i + merge(1, -1, &
         geometry%y_face_centroid_x(i, j) > 0.0_dp)
-      if (neighbor < 1 .or. neighbor > nx .or. &
-          geometry%y_face_fraction(neighbor, j) <= 0.0_dp) cycle
+      if (neighbor < 1 .or. neighbor > nx) cycle
+      if (geometry%y_face_fraction(neighbor, j) <= 0.0_dp) cycle
       expected = (1.0_dp - abs(geometry%y_face_centroid_x(i, j))) * &
         real(i, dp) + abs(geometry%y_face_centroid_x(i, j)) * &
         real(neighbor, dp)
