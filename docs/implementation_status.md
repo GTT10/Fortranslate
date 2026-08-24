@@ -906,3 +906,21 @@ Chemistry is now the first AMR operator to consume sparse storage directly.
 Synchronization currently broadcasts one child, parent, or sibling patch at a
 time. Sparse hydro and transport, point-to-point schedules, and distributed
 topology-changing regrid remain pending.
+
+## Direct recursive hydro on sparse MPI AMR patches (`0.56.0`)
+
+- [x] owner-only finite-volume updates on rank-local sparse payloads
+- [x] mixed-ratio recursive level subcycling without a full tree replica
+- [x] streamed parent start/end states for time-interpolated child ghosts
+- [x] replicated compact coarse/fine flux-register accumulation
+- [x] owner-local reflux, average-down, and temperature recovery
+- [x] cross-owner adjacent PPM time-integrated face reconciliation
+- [x] exact local and per-level cumulative subcycle accounting
+- [x] serial parity for four-level branched and adjacent PPM trees
+- [x] exact sparse rollback after a deep owner hydro failure
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Chemistry and hydro now run directly on sparse AMR storage. Molecular
+transport and combined full physics still use the replicated bridge.
+Point-to-point communication and topology-changing distributed regrid remain
+pending.

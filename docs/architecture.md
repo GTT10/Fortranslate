@@ -586,6 +586,20 @@ Hydro, molecular transport, and the combined `R-T-H-T-R` transaction still use
 the replicated bridge. Broadcast-based synchronization remains a temporary
 correctness schedule outside the final point-to-point design.
 
+In `0.56.0`, `advance_sparse_patch_tree_hydro_1d` runs the finite-volume patch
+kernel only on the sparse owner. Each recursion broadcasts that patch's
+interval-start state, accepted interval-end state, and effective face flux so
+child owners can apply time-interpolated ghost data and every rank can update
+the same small flux-register metadata. Child recursion, mixed-ratio
+subcycling, and adjacent-face integral reconciliation follow the serial order.
+
+After child subcycles, interiors are streamed to the parent owner for reflux,
+average-down, and temperature recovery. Only the owner mutates the persistent
+parent payload. A sparse final ghost refresh and global time/step update close
+the transaction; rejection restores rank-local payloads and all counters.
+Molecular transport and combined full physics remain replicated, and the
+communication schedule is still broadcast-based.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

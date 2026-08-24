@@ -526,6 +526,8 @@ Reactive application integration:
   same-hierarchy owner-map migration (`0.54.0`)
 - [x] direct sparse owner chemistry with distributed average-down, ghost
   refresh, adjacent PPM exchange, rollback, and serial parity (`0.55.0`)
+- [x] direct sparse recursive hydro with subcycling, flux registers,
+  cross-owner PPM reconciliation, rollback, and serial parity (`0.56.0`)
 
 AMR parity metrics:
 

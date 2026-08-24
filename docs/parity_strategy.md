@@ -801,3 +801,20 @@ Sparse patch-tree chemistry is accepted only while:
   reports zero accepted calls, and restores every local sparse payload exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.56.0 direct sparse MPI AMR hydro gates
+
+Sparse recursive hydro is accepted only while:
+
+- a four-level `1/2/3/2` tree performs exactly 33 owner updates with per-level
+  counts `[1, 4, 12, 16]` and each rank matches its cumulative owner weight;
+- streamed interval states, effective fluxes, replicated registers, owner-local
+  reflux, and average-down reproduce serial hydro within `5e-13`;
+- a two-level six-adjacent-child PPM tree performs exactly 13 updates with
+  counts `[1, 12]` and matches serial across owner boundaries within `5e-13`;
+- gathering after the sparse transaction reconstructs every field, normal and
+  wide ghost, time, step, and level counter;
+- a negative deepest-level owner state rejects collectively, reports zero
+  accepted updates, and restores every sparse payload and counter exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.
