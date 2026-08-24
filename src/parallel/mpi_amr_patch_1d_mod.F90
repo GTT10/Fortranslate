@@ -65,6 +65,7 @@ module mpi_amr_patch_1d_mod
   public :: advance_owned_patch_tree_chemistry_1d
   public :: advance_owned_patch_tree_hydro_1d
   public :: advance_owned_patch_tree_transport_1d
+  public :: advance_owned_patch_tree_reactive_1d
 
 contains
 
@@ -347,7 +348,8 @@ contains
     logical, intent(out) :: ok
 
     logical :: local_ok, accepted, mpi_ok
-    integer :: level, patch, owner, nvar, minimum_nvar, maximum_nvar, ierr
+    integer :: level, patch, owner, root_owner
+    integer :: nvar, minimum_nvar, maximum_nvar, ierr
 
     local_ok = solution%is_valid() .and. &
       mpi_amr_distribution_matches_hierarchy_1d( &
@@ -383,6 +385,55 @@ contains
         end if
       end do
     end do
+    root_owner = distribution%owner_of(0, 1)
+    call MPI_Bcast( &
+      solution%level_advances, size(solution%level_advances), MPI_INTEGER, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%transport_level_advances, &
+      size(solution%transport_level_advances), MPI_INTEGER, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%time, 1, MPI_DOUBLE_PRECISION, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%steps, 1, MPI_INTEGER, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%regrid_evaluations, 1, MPI_INTEGER, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%regrids, 1, MPI_INTEGER, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      solution%overlap_cells_transferred, 1, MPI_INTEGER, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
     ok = solution%is_valid()
   end subroutine synchronize_owned_patch_tree_reactive_1d
 
@@ -942,6 +993,120 @@ contains
     if (.not. local_ok) return
     ok = .true.
   end subroutine advance_owned_patch_transport_recursive_1d
+
+  subroutine advance_owned_patch_tree_reactive_1d( &
+      species, reactions, config, dt, distribution, solution, ok, transport, &
+      local_chemistry_advances, local_hydro_advances, &
+      local_transport_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: dt
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    integer, intent(out), optional :: local_chemistry_advances
+    integer, intent(out), optional :: local_hydro_advances
+    integer, intent(out), optional :: local_transport_advances
+
+    type(amr_patch_tree_reactive_solution_1d) :: backup
+    logical :: local_ok, accepted, mpi_ok
+    integer :: chemistry_advances, hydro_advances, transport_advances
+    integer :: stage_advances
+
+    ok = .false.
+    chemistry_advances = 0
+    hydro_advances = 0
+    transport_advances = 0
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_advances)) local_transport_advances = 0
+    local_ok = dt > 0.0_dp .and. size(species) >= 1 .and. &
+      solution%is_valid() .and. &
+      mpi_amr_distribution_matches_hierarchy_1d( &
+        distribution, solution%hierarchy)
+    if (config%transport_enabled) then
+      local_ok = local_ok .and. present(transport)
+      if (present(transport)) &
+        local_ok = local_ok .and. size(transport) == size(species)
+    end if
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call synchronize_owned_patch_tree_reactive_1d( &
+      distribution, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    backup = solution
+
+    if (config%chemistry_enabled) then
+      call advance_owned_patch_tree_chemistry_1d( &
+        species, reactions, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      chemistry_advances = chemistry_advances + stage_advances
+    end if
+    if (config%transport_enabled) then
+      call advance_owned_patch_tree_transport_1d( &
+        species, transport, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      transport_advances = transport_advances + stage_advances
+    end if
+    call advance_owned_patch_tree_hydro_1d( &
+      species, config, dt, distribution, solution, local_ok, stage_advances)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    hydro_advances = hydro_advances + stage_advances
+    if (config%transport_enabled) then
+      call advance_owned_patch_tree_transport_1d( &
+        species, transport, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      transport_advances = transport_advances + stage_advances
+    end if
+    if (config%chemistry_enabled) then
+      call advance_owned_patch_tree_chemistry_1d( &
+        species, reactions, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      chemistry_advances = chemistry_advances + stage_advances
+    end if
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    local_ok = solution%is_valid()
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    if (present(local_chemistry_advances)) &
+      local_chemistry_advances = chemistry_advances
+    if (present(local_hydro_advances)) &
+      local_hydro_advances = hydro_advances
+    if (present(local_transport_advances)) &
+      local_transport_advances = transport_advances
+    ok = .true.
+    return
+
+900 continue
+    solution = backup
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_advances)) local_transport_advances = 0
+    ok = .false.
+  end subroutine advance_owned_patch_tree_reactive_1d
 
   subroutine broadcast_owned_reactive_patch_1d( &
       distribution, owner, patch, ok)

@@ -18,7 +18,8 @@ program pelef_mpi_amr_patch_1d
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
     patch_tree_reactive_timestep_1d, advance_patch_tree_reactive_hydro_1d, &
-    advance_patch_tree_transport, patch_tree_reactive_integrals_1d
+    advance_patch_tree_transport, advance_patch_tree_reactive_1d, &
+    patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -27,7 +28,8 @@ program pelef_mpi_amr_patch_1d
     synchronize_owned_patch_tree_reactive_1d, &
     advance_owned_patch_tree_chemistry_1d, &
     advance_owned_patch_tree_hydro_1d, &
-    advance_owned_patch_tree_transport_1d
+    advance_owned_patch_tree_transport_1d, &
+    advance_owned_patch_tree_reactive_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -51,6 +53,9 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_reactive_solution_1d) :: distributed_hydro
   type(amr_patch_tree_reactive_solution_1d) :: serial_transport
   type(amr_patch_tree_reactive_solution_1d) :: distributed_transport
+  type(amr_patch_tree_reactive_solution_1d) :: synchronized_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: serial_split
+  type(amr_patch_tree_reactive_solution_1d) :: distributed_split
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_serial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_distributed
@@ -63,10 +68,12 @@ program pelef_mpi_amr_patch_1d
   type(reactive_1d_config) :: adjacent_reactive_config
   type(reactive_1d_config) :: transport_config
   type(reactive_1d_config) :: adjacent_transport_config
+  type(reactive_1d_config) :: invalid_split_config
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
   real(dp) :: transport_dt, adjacent_transport_dt
+  real(dp) :: split_dt
   logical :: ok
   integer :: ierr, rank, nranks, level, patch, variable, cell
   integer :: parent, child, left_patch, right_patch, layer, cross_rank_faces
@@ -76,6 +83,7 @@ program pelef_mpi_amr_patch_1d
   integer :: expected_hydro_advances, cross_owner_hydro_faces
   integer :: local_transport_advances, global_transport_advances
   integer :: expected_transport_advances
+  integer :: root_owner
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -203,6 +211,23 @@ program pelef_mpi_amr_patch_1d
   call initialize_mpi_amr_patch_distribution_1d( &
     initial_reactive%hierarchy, MPI_COMM_WORLD, reactive_distribution, ok)
   call assert_all(ok, "reactive AMR owner distribution", rank)
+
+  synchronized_reactive = initial_reactive
+  root_owner = reactive_distribution%owner_of(0, 1)
+  if (rank /= root_owner) then
+    synchronized_reactive%level_advances = rank + 1
+    synchronized_reactive%transport_level_advances = rank + 2
+    synchronized_reactive%time = real(rank + 1, dp)
+    synchronized_reactive%steps = rank + 3
+    synchronized_reactive%regrid_evaluations = rank + 4
+    synchronized_reactive%regrids = rank + 5
+    synchronized_reactive%overlap_cells_transferred = rank + 6
+  end if
+  call synchronize_owned_patch_tree_reactive_1d( &
+    reactive_distribution, synchronized_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    synchronized_reactive, initial_reactive) == 0.0_dp, &
+    "root-owner AMR bookkeeping synchronization", rank)
 
   serial_reactive = initial_reactive
   distributed_reactive = initial_reactive
@@ -391,6 +416,101 @@ program pelef_mpi_amr_patch_1d
   call assert_all( &
     reactive_solution_difference(rejected_reactive, rejected_backup) == &
       0.0_dp, "global transport rollback is exact", rank)
+
+  split_dt = transport_dt
+  serial_split = initial_reactive
+  distributed_split = initial_reactive
+  call advance_patch_tree_reactive_1d( &
+    species, reactions, transport_config, split_dt, serial_split, ok, &
+    transport)
+  call assert_all(ok .and. serial_split%is_valid(), &
+    "serial four-level full-physics reference", rank)
+  call advance_owned_patch_tree_reactive_1d( &
+    species, reactions, transport_config, split_dt, reactive_distribution, &
+    distributed_split, ok, transport, local_chemistry_advances, &
+    local_hydro_advances, local_transport_advances)
+  call assert_all(ok .and. distributed_split%is_valid(), &
+    "owner-only four-level full-physics transaction", rank)
+  call assert_all(local_chemistry_advances == 2 * &
+    reactive_distribution%rank_patch_counts(rank + 1), &
+    "full split chemistry executes on owners only", rank)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_hydro_advances == expected_hydro_advances, &
+    "full split hydro executes on owners only", rank)
+  expected_transport_advances = expected_owned_transport_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_transport_advances == &
+    2 * expected_transport_advances, &
+    "full split transport executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_chemistry_advances == 16, &
+    "full split global chemistry call count", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. global_hydro_advances == 33, &
+    "full split global hydro call count", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_transport_advances == 370, &
+    "full split global transport call count", rank)
+  call assert_all(all(distributed_split%level_advances == [1, 4, 12, 16]) &
+    .and. all(distributed_split%transport_level_advances == &
+      [2, 16, 96, 256]) .and. distributed_split%steps == 1 .and. &
+    abs(distributed_split%time - split_dt) <= &
+      16.0_dp * epsilon(1.0_dp) * split_dt, &
+    "full split distributed time and subcycle accounting", rank)
+  reactive_difference = reactive_solution_difference( &
+    distributed_split, serial_split)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "distributed full-physics transaction matches serial", rank)
+  call assert_all( &
+    reactive_solution_difference(distributed_split, initial_reactive) > &
+      100.0_dp * epsilon(1.0_dp), &
+    "distributed full-physics transaction changes state", rank)
+  call patch_tree_reactive_integrals_1d( &
+    distributed_split, final_integral, ok)
+  call assert_all(ok, "distributed full-physics composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral(1:5) - initial_integral(1:5)) / &
+    max(1.0_dp, abs(initial_integral(1:5))))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "distributed full-physics conservation", rank)
+
+  rejected_reactive = initial_reactive
+  rejected_backup = initial_reactive
+  call advance_owned_patch_tree_reactive_1d( &
+    species, reactions, transport_config, split_dt, reactive_distribution, &
+    rejected_reactive, ok, local_chemistry_advances = &
+      local_chemistry_advances, &
+    local_hydro_advances = local_hydro_advances, &
+    local_transport_advances = local_transport_advances)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0 .and. &
+    local_hydro_advances == 0 .and. local_transport_advances == 0 .and. &
+    reactive_solution_difference(rejected_reactive, rejected_backup) == &
+      0.0_dp, "missing split transport database is rejected", rank)
+
+  invalid_split_config = transport_config
+  invalid_split_config%amr_reconstruction = "invalid"
+  rejected_reactive = initial_reactive
+  rejected_backup = initial_reactive
+  call advance_owned_patch_tree_reactive_1d( &
+    species, reactions, invalid_split_config, split_dt, &
+    reactive_distribution, rejected_reactive, ok, transport, &
+    local_chemistry_advances, local_hydro_advances, &
+    local_transport_advances)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0 .and. &
+    local_hydro_advances == 0 .and. local_transport_advances == 0, &
+    "post-prefix split hydro failure is rejected globally", rank)
+  call assert_all( &
+    reactive_solution_difference(rejected_reactive, rejected_backup) == &
+      0.0_dp, "outer full-physics rollback is exact", rank)
 
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"
@@ -687,6 +807,12 @@ contains
     error = max(error, real(maxval(abs( &
       first%transport_level_advances - &
       second%transport_level_advances)), dp))
+    error = max(error, real(abs( &
+      first%regrid_evaluations - second%regrid_evaluations), dp))
+    error = max(error, real(abs(first%regrids - second%regrids), dp))
+    error = max(error, real(abs( &
+      first%overlap_cells_transferred - &
+      second%overlap_cells_transferred), dp))
     do local_level = 1, first%level_count()
       if (size(first%levels(local_level)%patches) /= &
           size(second%levels(local_level)%patches)) then
