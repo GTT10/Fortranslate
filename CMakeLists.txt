@@ -40,6 +40,7 @@ add_library(
   src/hydro/reconstruction_weno_mod.F90
   src/reactive/reactive_1d_mod.F90
   src/eb/eb_reactive_wall_flux_2d_mod.F90
+  src/eb/eb_reactive_redistribution_2d_mod.F90
   src/amr/amr_reactive_1d_mod.F90
   src/boundary/reactive_boundary_2d_mod.F90
   src/transport/reactive_transport_2d_mod.F90
