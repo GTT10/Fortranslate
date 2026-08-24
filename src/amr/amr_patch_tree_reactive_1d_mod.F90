@@ -61,6 +61,8 @@ module amr_patch_tree_reactive_1d_mod
   public :: patch_tree_reactive_timestep_1d
   public :: advance_patch_tree_reactive_1d
   public :: advance_patch_tree_reactive_hydro_1d
+  public :: advance_patch_tree_chemistry
+  public :: refresh_patch_tree_ghosts
   public :: plan_tagged_patch_tree_reactive_1d
   public :: regrid_tagged_patch_tree_reactive_1d
   public :: regrid_patch_tree_reactive_1d

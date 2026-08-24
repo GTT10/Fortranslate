@@ -1,15 +1,28 @@
 program pelef_mpi_amr_patch_1d
   use mpi_f08
   use precision_mod, only: dp
+  use state_indices_mod, only: irho
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use amr_patch_tree_1d_mod, only: &
     amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_level_fields_1d, initialize_patch_tree_1d, &
     prolong_patch_tree_1d
+  use amr_patch_tree_reactive_1d_mod, only: &
+    amr_patch_tree_reactive_solution_1d, &
+    initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
+    patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
     synchronize_owned_patch_tree_fields_1d, &
-    exchange_owned_adjacent_patch_halos_1d
+    exchange_owned_adjacent_patch_halos_1d, &
+    synchronize_owned_patch_tree_reactive_1d, &
+    advance_owned_patch_tree_chemistry_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -22,10 +35,24 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_level_halos_1d), allocatable :: halos(:)
   type(mpi_amr_patch_distribution_1d) :: distribution
   type(mpi_amr_patch_distribution_1d) :: comparison_distribution
+  type(mpi_amr_patch_distribution_1d) :: reactive_distribution
+  type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: serial_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: distributed_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: rejected_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: rejected_backup
+  type(amr_patch_level_plan_1d), allocatable :: reactive_plans(:)
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(reactive_1d_config) :: reactive_config
   real(dp) :: root(variable_count, 64)
+  real(dp), allocatable :: initial_integral(:), final_integral(:)
+  real(dp) :: reactive_difference, conservation_error
   logical :: ok
   integer :: ierr, rank, nranks, level, patch, variable, cell
   integer :: parent, child, left_patch, right_patch, layer, cross_rank_faces
+  integer :: local_chemistry_advances, global_chemistry_advances
+  integer :: expected_patch_advances, corrupt_owner
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -138,6 +165,85 @@ program pelef_mpi_amr_patch_1d
       "rank-inconsistent hierarchy is rejected collectively", rank)
   end if
 
+  call load_h2o2_elementary_thermo(species, ok)
+  call assert_all(ok, "reactive AMR thermodynamics", rank)
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call assert_all(ok, "reactive AMR chemistry mechanism", rank)
+  call configure_reactive_case(reactive_config)
+  call build_reactive_plans(reactive_plans)
+  call initialize_patch_tree_reactive_1d( &
+    species, reactive_config, reactive_plans, initial_reactive, ok)
+  call assert_all(ok .and. initial_reactive%is_valid(), &
+    "four-level reactive AMR initialization", rank)
+  call initialize_mpi_amr_patch_distribution_1d( &
+    initial_reactive%hierarchy, MPI_COMM_WORLD, reactive_distribution, ok)
+  call assert_all(ok, "reactive AMR owner distribution", rank)
+
+  serial_reactive = initial_reactive
+  distributed_reactive = initial_reactive
+  allocate(initial_integral( &
+    size(initial_reactive%levels(1)%patches(1)%state, 1)))
+  allocate(final_integral(size(initial_integral)))
+  call patch_tree_reactive_integrals_1d( &
+    initial_reactive, initial_integral, ok)
+  call assert_all(ok, "initial reactive composite integral", rank)
+  call advance_patch_tree_chemistry( &
+    species, reactions, reactive_config, 1.0e-10_dp, serial_reactive, ok)
+  call assert_all(ok .and. serial_reactive%is_valid(), &
+    "serial patch-tree chemistry reference", rank)
+  call advance_owned_patch_tree_chemistry_1d( &
+    species, reactions, reactive_config, 1.0e-10_dp, &
+    reactive_distribution, distributed_reactive, ok, &
+    local_chemistry_advances)
+  call assert_all(ok .and. distributed_reactive%is_valid(), &
+    "owner-only distributed patch-tree chemistry", rank)
+  call assert_all( &
+    local_chemistry_advances == &
+      reactive_distribution%rank_patch_counts(rank + 1), &
+    "only locally owned patches execute chemistry", rank)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, &
+    "owner-only chemistry execution reduction", rank)
+  expected_patch_advances = sum(reactive_distribution%rank_patch_counts)
+  call assert_all(global_chemistry_advances == expected_patch_advances, &
+    "every reactive patch advances exactly once globally", rank)
+  reactive_difference = reactive_solution_difference( &
+    distributed_reactive, serial_reactive)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "distributed chemistry matches serial patch tree", rank)
+  call assert_all( &
+    reactive_solution_difference(distributed_reactive, initial_reactive) > &
+      100.0_dp * epsilon(1.0_dp), &
+    "owner-only chemistry changes the reactive state", rank)
+  call patch_tree_reactive_integrals_1d( &
+    distributed_reactive, final_integral, ok)
+  call assert_all(ok, "distributed reactive composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral(1:5) - initial_integral(1:5)) / &
+    max(1.0_dp, abs(initial_integral(1:5))))
+  call assert_all(conservation_error <= 3.0e-10_dp, &
+    "owner-only chemistry conserves mass momentum energy", rank)
+
+  rejected_reactive = initial_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_reactive%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  call synchronize_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_reactive, ok)
+  call assert_all(ok, "corrupt owner state synchronization", rank)
+  rejected_backup = rejected_reactive
+  call advance_owned_patch_tree_chemistry_1d( &
+    species, reactions, reactive_config, 1.0e-10_dp, &
+    reactive_distribution, rejected_reactive, ok, &
+    local_chemistry_advances)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0, &
+    "owner chemistry failure is rejected globally", rank)
+  call assert_all( &
+    reactive_solution_difference(rejected_reactive, rejected_backup) == &
+      0.0_dp, "global chemistry rollback is exact", rank)
+
   if (rank == 0) write(*, '(a,i0,a)') &
     "pelef_mpi_amr_patch_1d: PASS (", nranks, " ranks)"
   call MPI_Finalize(ierr)
@@ -169,6 +275,127 @@ contains
     call initialize_patch_tree_1d( &
       64, 0.0_dp, 1.0_dp, local_plans, local_hierarchy, local_ok)
   end subroutine build_test_hierarchy
+
+  subroutine configure_reactive_case(local_config)
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = reactive_1d_config()
+    local_config%nx = 32
+    local_config%x_lower = 0.0_dp
+    local_config%x_upper = 0.012_dp
+    local_config%cfl = 0.20_dp
+    local_config%problem = "reactive_hotspot"
+    local_config%riemann_solver = "rusanov"
+    local_config%limiter = "mc"
+    local_config%boundary_condition = "periodic"
+    local_config%chemistry_enabled = .true.
+    local_config%transport_enabled = .false.
+    local_config%chemistry_relative_tolerance = 1.0e-8_dp
+    local_config%chemistry_absolute_tolerance = 1.0e-14_dp
+    local_config%initial_temperature = 1200.0_dp
+    local_config%initial_pressure = 101325.0_dp
+    local_config%initial_velocity = 0.0_dp
+    local_config%hotspot_temperature_rise = 200.0_dp
+    local_config%hotspot_center = 0.006_dp
+    local_config%hotspot_width = 0.0012_dp
+    local_config%amr_enabled = .true.
+    local_config%amr_reconstruction = "pcm"
+  end subroutine configure_reactive_case
+
+  subroutine build_reactive_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    allocate(local_plans(3))
+    local_plans(1)%refinement_ratio = 2
+    allocate(local_plans(1)%patches(2))
+    local_plans(1)%patches(1)%parent_patch = 1
+    local_plans(1)%patches(1)%lower = 4
+    local_plans(1)%patches(1)%upper = 11
+    local_plans(1)%patches(2)%parent_patch = 1
+    local_plans(1)%patches(2)%lower = 20
+    local_plans(1)%patches(2)%upper = 27
+
+    local_plans(2)%refinement_ratio = 2
+    allocate(local_plans(2)%patches(3))
+    local_plans(2)%patches(1)%parent_patch = 1
+    local_plans(2)%patches(1)%lower = 3
+    local_plans(2)%patches(1)%upper = 8
+    local_plans(2)%patches(2)%parent_patch = 1
+    local_plans(2)%patches(2)%lower = 11
+    local_plans(2)%patches(2)%upper = 14
+    local_plans(2)%patches(3)%parent_patch = 2
+    local_plans(2)%patches(3)%lower = 5
+    local_plans(2)%patches(3)%upper = 12
+
+    local_plans(3)%refinement_ratio = 2
+    allocate(local_plans(3)%patches(2))
+    local_plans(3)%patches(1)%parent_patch = 1
+    local_plans(3)%patches(1)%lower = 3
+    local_plans(3)%patches(1)%upper = 10
+    local_plans(3)%patches(2)%parent_patch = 3
+    local_plans(3)%patches(2)%lower = 4
+    local_plans(3)%patches(2)%upper = 13
+  end subroutine build_reactive_plans
+
+  real(dp) function reactive_solution_difference(first, second) result(error)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
+
+    integer :: local_level, local_patch
+
+    error = huge(1.0_dp)
+    if (first%level_count() /= second%level_count()) return
+    if (size(first%level_advances) /= size(second%level_advances)) return
+    if (size(first%transport_level_advances) /= &
+        size(second%transport_level_advances)) return
+    error = abs(first%time - second%time) / max(1.0_dp, abs(second%time))
+    error = max(error, real(abs(first%steps - second%steps), dp))
+    error = max(error, real(maxval(abs( &
+      first%level_advances - second%level_advances)), dp))
+    error = max(error, real(maxval(abs( &
+      first%transport_level_advances - &
+      second%transport_level_advances)), dp))
+    do local_level = 1, first%level_count()
+      if (size(first%levels(local_level)%patches) /= &
+          size(second%levels(local_level)%patches)) then
+        error = huge(1.0_dp)
+        return
+      end if
+      do local_patch = 1, size(first%levels(local_level)%patches)
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%state - &
+          second%levels(local_level)%patches(local_patch)%state) / &
+          max(1.0_dp, abs(second%levels(local_level)% &
+            patches(local_patch)%state))))
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%temperature - &
+          second%levels(local_level)%patches(local_patch)%temperature) / &
+          max(1.0_dp, abs(second%levels(local_level)% &
+            patches(local_patch)%temperature))))
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%left_ghost_state - &
+          second%levels(local_level)%patches(local_patch)%left_ghost_state) / &
+          max(1.0_dp, abs(second%levels(local_level)% &
+            patches(local_patch)%left_ghost_state))))
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)%right_ghost_state - &
+          second%levels(local_level)%patches(local_patch)% &
+            right_ghost_state) / max(1.0_dp, abs(second%levels(local_level)% &
+              patches(local_patch)%right_ghost_state))))
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)% &
+            left_ghost_temperature - second%levels(local_level)% &
+            patches(local_patch)%left_ghost_temperature) / &
+          max(1.0_dp, abs(second%levels(local_level)%patches(local_patch)% &
+            left_ghost_temperature))))
+        error = max(error, maxval(abs( &
+          first%levels(local_level)%patches(local_patch)% &
+            right_ghost_temperature - second%levels(local_level)% &
+            patches(local_patch)%right_ghost_temperature) / &
+          max(1.0_dp, abs(second%levels(local_level)%patches(local_patch)% &
+            right_ghost_temperature))))
+      end do
+    end do
+  end function reactive_solution_difference
 
   pure real(dp) function expected_value( &
       local_level, local_patch, local_variable, local_cell) result(value)

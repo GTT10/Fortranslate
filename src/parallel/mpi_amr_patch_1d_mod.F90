@@ -1,9 +1,17 @@
 module mpi_amr_patch_1d_mod
   use mpi_f08
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use reactive_1d_mod, only: advance_reactive_chemistry
+  use amr_reactive_1d_mod, only: recover_level_temperatures_1d
   use amr_patch_tree_1d_mod, only: &
     amr_patch_tree_hierarchy_1d, amr_patch_tree_level_fields_1d, &
-    patch_tree_fields_are_valid_1d
+    patch_tree_fields_are_valid_1d, average_down_patch_tree_1d
+  use amr_patch_tree_reactive_1d_mod, only: &
+    amr_patch_tree_reactive_patch_1d, &
+    amr_patch_tree_reactive_solution_1d, refresh_patch_tree_ghosts
   implicit none
   private
 
@@ -44,6 +52,8 @@ module mpi_amr_patch_1d_mod
   public :: mpi_amr_distribution_matches_hierarchy_1d
   public :: synchronize_owned_patch_tree_fields_1d
   public :: exchange_owned_adjacent_patch_halos_1d
+  public :: synchronize_owned_patch_tree_reactive_1d
+  public :: advance_owned_patch_tree_chemistry_1d
 
 contains
 
@@ -318,6 +328,257 @@ contains
     end do
     ok = .true.
   end subroutine exchange_owned_adjacent_patch_halos_1d
+
+  subroutine synchronize_owned_patch_tree_reactive_1d( &
+      distribution, solution, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    logical :: local_ok, accepted, mpi_ok
+    integer :: level, patch, owner, nvar, minimum_nvar, maximum_nvar, ierr
+
+    local_ok = solution%is_valid() .and. &
+      mpi_amr_distribution_matches_hierarchy_1d( &
+        distribution, solution%hierarchy)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    ok = mpi_ok .and. accepted
+    if (.not. ok) return
+    nvar = size(solution%levels(1)%patches(1)%state, 1)
+    call MPI_Allreduce( &
+      nvar, minimum_nvar, 1, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      nvar, maximum_nvar, 1, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. minimum_nvar /= maximum_nvar) then
+      ok = .false.
+      return
+    end if
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        owner = distribution%owner_of(level - 1, patch)
+        call broadcast_owned_reactive_patch_1d( &
+          distribution, owner, &
+          solution%levels(level)%patches(patch), local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    ok = solution%is_valid()
+  end subroutine synchronize_owned_patch_tree_reactive_1d
+
+  subroutine advance_owned_patch_tree_chemistry_1d( &
+      species, reactions, config, interval, distribution, solution, ok, &
+      local_patch_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_patch_advances
+
+    type(amr_patch_tree_reactive_solution_1d) :: backup
+    character(len=32) :: boundary
+    logical :: local_ok, patch_ok, accepted, mpi_ok
+    integer :: level, patch, owner, nx, advances
+
+    ok = .false.
+    advances = 0
+    if (present(local_patch_advances)) local_patch_advances = 0
+    local_ok = interval >= 0.0_dp .and. size(species) >= 1 .and. &
+      solution%is_valid() .and. &
+      mpi_amr_distribution_matches_hierarchy_1d( &
+        distribution, solution%hierarchy)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    call synchronize_owned_patch_tree_reactive_1d( &
+      distribution, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    backup = solution
+
+    do level = 1, solution%level_count()
+      boundary = "outflow"
+      if (level == 1) boundary = config%boundary_condition
+      do patch = 1, size(solution%levels(level)%patches)
+        owner = distribution%owner_of(level - 1, patch)
+        patch_ok = .true.
+        if (distribution%rank == owner) then
+          nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+          call advance_reactive_chemistry( &
+            species, reactions, &
+            solution%levels(level)%patches(patch)%state, &
+            solution%levels(level)%patches(patch)%temperature, nx, interval, &
+            config%chemistry_relative_tolerance, &
+            config%chemistry_absolute_tolerance, boundary, patch_ok)
+          if (patch_ok) advances = advances + 1
+        end if
+        call all_ranks_accept_1d( &
+          distribution, patch_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) then
+          solution = backup
+          advances = 0
+          return
+        end if
+        call broadcast_owned_reactive_patch_1d( &
+          distribution, owner, &
+          solution%levels(level)%patches(patch), local_ok)
+        call all_ranks_accept_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) then
+          solution = backup
+          advances = 0
+          return
+        end if
+      end do
+    end do
+
+    call average_down_reactive_solution_1d( &
+      species, config, solution, local_ok)
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    local_ok = solution%is_valid()
+    call all_ranks_accept_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    ok = mpi_ok .and. accepted
+    if (.not. ok) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    if (present(local_patch_advances)) local_patch_advances = advances
+  end subroutine advance_owned_patch_tree_chemistry_1d
+
+  subroutine broadcast_owned_reactive_patch_1d( &
+      distribution, owner, patch, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    integer, intent(in) :: owner
+    type(amr_patch_tree_reactive_patch_1d), intent(inout) :: patch
+    logical, intent(out) :: ok
+
+    integer :: ierr
+
+    ok = owner >= 0 .and. owner < distribution%nranks
+    if (.not. ok) return
+    call MPI_Bcast(patch%state, size(patch%state), MPI_DOUBLE_PRECISION, &
+      owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      patch%temperature, size(patch%temperature), MPI_DOUBLE_PRECISION, &
+      owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      patch%left_ghost_state, size(patch%left_ghost_state), &
+      MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      patch%right_ghost_state, size(patch%right_ghost_state), &
+      MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      patch%left_ghost_temperature, &
+      size(patch%left_ghost_temperature), MPI_DOUBLE_PRECISION, owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Bcast( &
+      patch%right_ghost_temperature, &
+      size(patch%right_ghost_temperature), MPI_DOUBLE_PRECISION, owner, &
+      distribution%comm, ierr)
+    ok = ierr == MPI_SUCCESS
+  end subroutine broadcast_owned_reactive_patch_1d
+
+  subroutine average_down_reactive_solution_1d( &
+      species, config, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
+    logical :: local_ok
+    integer :: level, patch, nx
+
+    ok = solution%is_valid()
+    if (.not. ok) return
+    allocate(fields(solution%level_count()))
+    do level = 1, solution%level_count()
+      allocate(fields(level)%patches(size(solution%levels(level)%patches)))
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        fields(level)%patches(patch)%values = &
+          solution%levels(level)%patches(patch)%state(:, 1:nx)
+      end do
+    end do
+    call average_down_patch_tree_1d( &
+      fields, solution%hierarchy, local_ok)
+    if (.not. local_ok) then
+      ok = .false.
+      return
+    end if
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        solution%levels(level)%patches(patch)%state(:, 1:nx) = &
+          fields(level)%patches(patch)%values
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, local_ok)
+        if (.not. local_ok) then
+          ok = .false.
+          return
+        end if
+      end do
+    end do
+    call refresh_patch_tree_ghosts(species, config, solution, ok)
+  end subroutine average_down_reactive_solution_1d
+
+  subroutine all_ranks_accept_1d( &
+      distribution, local_value, global_value, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    logical, intent(in) :: local_value
+    logical, intent(out) :: global_value, ok
+
+    integer :: ierr
+
+    call MPI_Allreduce( &
+      local_value, global_value, 1, MPI_LOGICAL, MPI_LAND, &
+      distribution%comm, ierr)
+    ok = ierr == MPI_SUCCESS
+    if (.not. ok) global_value = .false.
+  end subroutine all_ranks_accept_1d
 
   pure integer function patch_cell_count_1d( &
       hierarchy, level, patch) result(count)
