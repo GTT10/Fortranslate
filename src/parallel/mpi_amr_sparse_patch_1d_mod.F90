@@ -2019,10 +2019,12 @@ contains
       new_root_owner, rebuilt%nvar, root_nx, rebuilt%ghost_width, &
       old_solution%levels(1)%patches(1), &
       rebuilt%levels(1)%patches(1), local_ok)
-    if (local_ok .and. new_distribution%rank == new_root_owner) &
+    if (local_ok .and. new_distribution%rank == new_root_owner) then
+      rebuilt%levels(1)%patches(1)%temperature(1:root_nx) = 0.0_dp
       call recover_level_temperatures_1d( &
         species, rebuilt%levels(1)%patches(1)%state, &
         rebuilt%levels(1)%patches(1)%temperature, root_nx, local_ok)
+    end if
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return

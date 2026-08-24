@@ -752,6 +752,7 @@ contains
         end if
         solution%levels(level)%patches(patch)%state(:, 1:nx) = &
           fields(level)%patches(patch)%values
+        solution%levels(level)%patches(patch)%temperature(1:nx) = 0.0_dp
         call recover_level_temperatures_1d( &
           species, solution%levels(level)%patches(patch)%state, &
           solution%levels(level)%patches(patch)%temperature, nx, local_ok)
