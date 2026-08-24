@@ -168,14 +168,15 @@ program pelef_mpi_amr_reactive_1d
       if (.not. ok) call abort_run("Sparse MPI AMR regrid failed", 5)
       distribution = new_distribution
     end if
-    if (config%checkpoint_interval > 0 .and. &
-        mod(sparse_solution%steps, config%checkpoint_interval) == 0) then
-      call write_sparse_checkpoint(ok)
-      if (.not. ok) call abort_run("Sparse MPI AMR checkpoint failed", 6)
-      last_checkpoint_step = sparse_solution%steps
-      if (config%checkpoint_stop_after_write) then
-        stopped_after_checkpoint = .true.
-        exit
+    if (config%checkpoint_interval > 0) then
+      if (mod(sparse_solution%steps, config%checkpoint_interval) == 0) then
+        call write_sparse_checkpoint(ok)
+        if (.not. ok) call abort_run("Sparse MPI AMR checkpoint failed", 6)
+        last_checkpoint_step = sparse_solution%steps
+        if (config%checkpoint_stop_after_write) then
+          stopped_after_checkpoint = .true.
+          exit
+        end if
       end if
     end if
   end do
