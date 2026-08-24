@@ -1233,3 +1233,17 @@ I/O, and runtime-measured load balancing remain outside this milestone.
 Cut-face centroids/normals, cut-cell flux divergence, state redistribution,
 small-cell stabilization, embedded-wall conditions, AMR coupling, and MPI
 distribution remain separate milestones.
+
+## Embedded-boundary interface metrics (`0.75.0`)
+
+- [x] physical embedded-boundary length in every cut cell
+- [x] length-weighted physical interface centroid
+- [x] unit `grad(phi)` normal directed from solid toward fluid
+- [x] duplicate suppression for interfaces coincident with the cell diagonal
+- [x] exact vertical and diagonal planar length/centroid/normal gates
+- [x] circular perimeter error reduction from `20x20` to `40x40`
+- [x] circular inward-fluid normal orientation and refinement gate
+- [x] Release and bounds/FPE-checked Debug qualification
+
+These metrics enable the next cut-wall flux milestone. Flux divergence,
+small-cell stabilization, wall thermodynamics, AMR, and MPI remain unclaimed.

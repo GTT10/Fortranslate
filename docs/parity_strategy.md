@@ -1154,3 +1154,12 @@ The EB geometry foundation is accepted only while:
   area error decreases by more than the required second-order margin from
   `20x20` to `40x40`;
 - complete GNU Fortran Debug and Release suites pass.
+
+## 0.75.0 embedded-boundary interface-metric gates
+
+Interface metrics are accepted only while vertical and diagonal planes recover
+analytical boundary length, centroid locus, and positive-fluid unit normal to
+`3e-13`; a circular interface's perimeter error falls below `0.30` of its
+coarse-grid value; every circle normal points inward within `0.02`; and the
+refined maximum orientation error is smaller than the coarse error in GNU
+Fortran Debug and Release suites.

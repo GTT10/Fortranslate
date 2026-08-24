@@ -586,6 +586,7 @@ Required capabilities:
 - [x] cut-cell detection (`0.74.0`)
 - [x] cell-volume fraction (`0.74.0`)
 - [x] face-area fraction (`0.74.0`)
+- [x] cut-interface length, centroid, and fluid normal (`0.75.0`)
 - cut-cell fluxes
 - small-cell stabilization
 - wall boundary conditions

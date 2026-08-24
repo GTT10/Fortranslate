@@ -1366,5 +1366,8 @@ interpolated endpoint values. Fractions within the roundoff classification
 tolerance become covered or regular; all intermediate values are cut cells.
 This construction reproduces any planar interface exactly on the mesh and
 gives second-order integrated-area convergence for the circular level-set
-gate. It is geometry only: no cut-face centroid, normal, boundary flux,
-redistribution, or small-cell time-step treatment is claimed.
+gate. Each triangle's zero contour supplies a physical segment, centroid, and
+normalized `grad(phi)`. A cut cell combines its two segments by physical-length
+weighting; coincident diagonal segments are counted once. The resulting unit
+normal points from solid toward fluid. Boundary flux, redistribution, and
+small-cell time-step treatment are not yet claimed.

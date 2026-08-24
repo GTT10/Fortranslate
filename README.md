@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.74.0` milestone contains ten serial verification executables, seven
+The `0.75.0` milestone contains ten serial verification executables, seven
 optional MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -139,8 +139,10 @@ approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 cell-volume fractions, x/y face-area fractions, and regular/cut/covered cell
 types. Positive level-set values define fluid. Each cell uses two affine
 triangles, so planar interfaces are exact and curved interfaces converge under
-refinement. Cut-cell fluxes, redistribution/small-cell stabilization, wall
-states, AMR coupling, and MPI distribution are not yet connected.
+refinement. Cut cells also carry the physical embedded-boundary length,
+centroid, and a unit normal directed from solid toward fluid. Cut-cell fluxes,
+redistribution/small-cell stabilization, wall states, AMR coupling, and MPI
+distribution are not yet connected.
 
 ### MPI one-dimensional verification
 
