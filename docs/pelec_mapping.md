@@ -40,7 +40,7 @@ This table maps responsibilities, not source lines.
 | `Source/Diffusion.*` multidimensional/AMR/EB responsibility | `reactive_transport_2d_mod` for regular 2D cells and `amr_reactive_1d_mod` for two-level 1D; future EB modules | Regular-grid 2D and conservative two-level 1D AMR transport verified; EB not started |
 | AMReX distributed-box responsibility | `mpi_domain_1d_mod`, `mpi_reactive_transport_1d_mod`, `mpi_reactive_1d_mod`, `mpi_amr_patch_1d_mod`, `mpi_amr_sparse_patch_1d_mod` | Uneven 1D blocks, subcycle-weighted AMR owner maps, rank-local stability limits and storage, broadcast-free sparse physics, direct owner migration, halos, parent/child state and flux traffic, field-sparse explicit/tag-driven topology rebuilds, and rank-neutral checkpoint redistribution verified for 1/2/4/8 ranks |
 | `Source/PeleCAmr.*` hierarchy/synchronization subset | `amr_hierarchy_1d_mod`, `amr_multipatch_1d_mod`, `amr_patch_tree_1d_mod`, `amr_patch_tree_reactive_1d_mod`, `amr_regrid_1d_mod`, `amr_reactive_1d_mod`, `amr_multilevel_reactive_1d_mod`, `amr_multipatch_reactive_1d_mod`, `mpi_amr_patch_1d_mod`, `mpi_amr_sparse_patch_1d_mod` | Runnable solution-driven arbitrary-depth branching, adjacent sibling exchange, complete sparse physics, owner-local tag planning, and direct transactional topology migration |
-| `Source/EB.*` | future `src/eb/` | Not started |
+| `Source/EB.*` | `src/eb/eb_geometry_2d_mod.F90`; future EB flux/stabilization modules | Nodal level-set cut-cell, cell-volume, and Cartesian face-area fractions verified; no EB flow operator yet |
 | `Source/LES.*` | future `src/les/` | Not started |
 | `Source/Particle.cpp` | future `src/particles/` | Not started |
 

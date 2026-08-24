@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.73.0` milestone contains ten serial verification executables, seven
+The `0.74.0` milestone contains ten serial verification executables, seven
 optional MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -132,6 +132,15 @@ four-reaction elementary subset or the full ten-species, 29-reaction H2/O2
 mechanism with third-body, falloff, Troe, and adaptive implicit chemistry. The
 characteristic projection is a qualified frozen-composition ideal-gas-mixture
 approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
+
+### Embedded-boundary geometry foundation
+
+`eb_geometry_2d_mod` converts a nodal level set into bounded Cartesian
+cell-volume fractions, x/y face-area fractions, and regular/cut/covered cell
+types. Positive level-set values define fluid. Each cell uses two affine
+triangles, so planar interfaces are exact and curved interfaces converge under
+refinement. Cut-cell fluxes, redistribution/small-cell stabilization, wall
+states, AMR coupling, and MPI distribution are not yet connected.
 
 ### MPI one-dimensional verification
 

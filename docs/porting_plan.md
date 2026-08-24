@@ -582,10 +582,10 @@ Implement as a separate subsystem after AMR is stable.
 
 Required capabilities:
 
-- geometry representation / level set
-- cut-cell detection
-- cell-volume fraction
-- face-area fraction
+- [x] geometry representation / nodal level set (`0.74.0`)
+- [x] cut-cell detection (`0.74.0`)
+- [x] cell-volume fraction (`0.74.0`)
+- [x] face-area fraction (`0.74.0`)
 - cut-cell fluxes
 - small-cell stabilization
 - wall boundary conditions

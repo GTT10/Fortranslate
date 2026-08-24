@@ -1351,3 +1351,20 @@ Successful call accounting contains two owner visits per patch for chemistry,
 one cumulative `r` schedule for hydro, and two cumulative `r^2` schedules for
 transport. The current implementation composes owner-authoritative replicated
 operators; it does not yet provide sparse storage or patch migration.
+
+## Embedded-boundary geometric fractions
+
+Let nodal `phi > 0` denote fluid and `phi <= 0` denote solid/interface. Each
+Cartesian cell is divided into the triangles `(00,10,11)` and `(00,11,01)`.
+Within a triangle, `phi` is affine. Edges that change sign are intersected by
+linear interpolation, the positive polygon is clipped, and its shoelace area
+contributes to the cell volume fraction. The two triangle areas sum to a value
+in `[0,1]`.
+
+The open fraction of a Cartesian face is the positive length of its linearly
+interpolated endpoint values. Fractions within the roundoff classification
+tolerance become covered or regular; all intermediate values are cut cells.
+This construction reproduces any planar interface exactly on the mesh and
+gives second-order integrated-area convergence for the circular level-set
+gate. It is geometry only: no cut-face centroid, normal, boundary flux,
+redistribution, or small-cell time-step treatment is claimed.

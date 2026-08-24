@@ -1138,3 +1138,19 @@ Restart is accepted only while:
 - both restarted composite CSV fields agree with an uninterrupted one-rank run
   within `5e-13` for every header, row, coordinate, and physical value;
 - complete GNU Fortran Debug and Release suites pass.
+
+## 0.74.0 embedded-boundary geometry gates
+
+The EB geometry foundation is accepted only while:
+
+- uniformly positive and negative nodal level sets produce exactly regular and
+  covered domains with unit and zero cell/face fractions;
+- a vertical off-grid plane produces the exact fluid area, one cut-cell column,
+  and exact cell and face fractions along that column;
+- a diagonal plane produces its analytical fluid area to `3e-13` absolute;
+- every geometry validates physical extents, derived spacing, array shapes and
+  lower bounds, finite bounded fractions, and classification consistency;
+- a circular signed-distance field has nonzero cut cells and its integrated
+  area error decreases by more than the required second-order margin from
+  `20x20` to `40x40`;
+- complete GNU Fortran Debug and Release suites pass.

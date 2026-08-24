@@ -78,7 +78,7 @@ program test_eb_geometry_2d
   call circle_area_error(40, fine_error, fine_cut_cells)
   call require(coarse_error > 0.0_dp .and. fine_error > 0.0_dp, &
     "curved geometry has nontrivial discretization error")
-  call require(fine_error < 0.45_dp * coarse_error, &
+  call require(fine_error < 0.28_dp * coarse_error, &
     "circle area second-order refinement")
   call require(coarse_cut_cells > 0 .and. fine_cut_cells > coarse_cut_cells, &
     "circle cut-cell refinement")

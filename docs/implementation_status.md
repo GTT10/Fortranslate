@@ -1217,3 +1217,19 @@ The initial root setup and final diagnostics/output materialize field data.
 Scheduled checkpoints materialize the sparse tree and rank zero writes one
 formatted file. Parallel plotfiles, atomic multi-file commits, asynchronous
 I/O, and runtime-measured load balancing remain outside this milestone.
+
+## Embedded-boundary geometry foundation (`0.74.0`)
+
+- [x] nodal Cartesian level-set input with an explicit positive-fluid contract
+- [x] bounded cell-volume fractions from clipped affine triangles
+- [x] shared x/y face open-area fractions from endpoint interpolation
+- [x] regular, cut, and covered cell classification
+- [x] self-validating extents, spacing, array bounds, finite values, and types
+- [x] exact all-fluid and all-solid geometry gates
+- [x] machine-precision vertical and diagonal planar-interface area gates
+- [x] refined circular-interface integrated-area convergence gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug gates
+
+Cut-face centroids/normals, cut-cell flux divergence, state redistribution,
+small-cell stabilization, embedded-wall conditions, AMR coupling, and MPI
+distribution remain separate milestones.

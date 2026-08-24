@@ -864,3 +864,17 @@ register. Fine transport uses `r^2` substeps over each half interval. At a
 coarse/fine face, gradients use the actual distance between the adjacent
 coarse and fine cell centers. Reflux and average-down complete each transport
 half step before the next split operator begins.
+
+## Embedded-boundary geometry foundation
+
+The `0.74.0` EB subsystem is independent of the regular-cell hydro path. A
+caller supplies finite level-set values on Cartesian nodes, with positive
+values denoting fluid. `eb_geometry_2d_mod` allocates cell-volume fractions,
+x-face and y-face open-area fractions, and regular/cut/covered classifications.
+
+Each quadrilateral follows one fixed lower-left to upper-right diagonal. The
+level set is affine on both resulting triangles, and each positive polygon is
+clipped and integrated in normalized cell coordinates. Shared faces use the
+same endpoint interpolation once, so neighboring cells reference one open
+fraction. The representation is ready for later cut-cell operators but does
+not yet modify fluxes, conserved updates, wall states, or AMR ownership.
