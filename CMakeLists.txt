@@ -173,6 +173,7 @@ if(PELEF_ENABLE_MPI)
   add_library(
     pelef_mpi_support
     src/parallel/mpi_domain_1d_mod.F90
+    src/parallel/mpi_amr_patch_1d_mod.F90
     src/parallel/mpi_reactive_transport_1d_mod.F90
     src/parallel/mpi_reactive_1d_mod.F90
   )
@@ -200,6 +201,11 @@ if(PELEF_ENABLE_MPI)
   )
   add_executable(pelef_mpi_reactive_1d app/pelef_mpi_reactive_1d.F90)
   target_link_libraries(pelef_mpi_reactive_1d PRIVATE pelef_mpi_support)
+  add_executable(
+    pelef_mpi_amr_patch_1d
+    app/pelef_mpi_amr_patch_1d.F90
+  )
+  target_link_libraries(pelef_mpi_amr_patch_1d PRIVATE pelef_mpi_support)
   install(
     TARGETS
       pelef_mpi_1d
@@ -207,6 +213,7 @@ if(PELEF_ENABLE_MPI)
       pelef_mpi_h2o2_batch
       pelef_mpi_reactive_transport_1d
       pelef_mpi_reactive_1d
+      pelef_mpi_amr_patch_1d
     RUNTIME DESTINATION bin
   )
 endif()
