@@ -297,6 +297,23 @@ program pelef_mpi_amr_patch_1d
   call assert_all(conservation_error <= 3.0e-10_dp, &
     "owner-only four-level hydro conservation", rank)
 
+  rejected_reactive = initial_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_reactive%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  call synchronize_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_reactive, ok)
+  call assert_all(ok, "corrupt hydro owner state synchronization", rank)
+  rejected_backup = rejected_reactive
+  call advance_owned_patch_tree_hydro_1d( &
+    species, reactive_config, hydro_dt, reactive_distribution, &
+    rejected_reactive, ok, local_hydro_advances)
+  call assert_all(.not. ok .and. local_hydro_advances == 0, &
+    "owner hydro failure is rejected globally", rank)
+  call assert_all( &
+    reactive_solution_difference(rejected_reactive, rejected_backup) == &
+      0.0_dp, "global hydro rollback is exact", rank)
+
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"
   adjacent_reactive_config%amr_reconstruction = "ppm"
