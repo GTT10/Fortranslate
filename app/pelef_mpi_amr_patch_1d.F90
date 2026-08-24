@@ -15,6 +15,7 @@ program pelef_mpi_amr_patch_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
+    patch_tree_reactive_timestep_1d, advance_patch_tree_reactive_hydro_1d, &
     patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
@@ -22,7 +23,8 @@ program pelef_mpi_amr_patch_1d
     synchronize_owned_patch_tree_fields_1d, &
     exchange_owned_adjacent_patch_halos_1d, &
     synchronize_owned_patch_tree_reactive_1d, &
-    advance_owned_patch_tree_chemistry_1d
+    advance_owned_patch_tree_chemistry_1d, &
+    advance_owned_patch_tree_hydro_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -36,23 +38,33 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_patch_distribution_1d) :: distribution
   type(mpi_amr_patch_distribution_1d) :: comparison_distribution
   type(mpi_amr_patch_distribution_1d) :: reactive_distribution
+  type(mpi_amr_patch_distribution_1d) :: adjacent_distribution
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: serial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: distributed_reactive
   type(amr_patch_tree_reactive_solution_1d) :: rejected_reactive
   type(amr_patch_tree_reactive_solution_1d) :: rejected_backup
+  type(amr_patch_tree_reactive_solution_1d) :: serial_hydro
+  type(amr_patch_tree_reactive_solution_1d) :: distributed_hydro
+  type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
+  type(amr_patch_tree_reactive_solution_1d) :: adjacent_serial
+  type(amr_patch_tree_reactive_solution_1d) :: adjacent_distributed
   type(amr_patch_level_plan_1d), allocatable :: reactive_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: adjacent_reactive_plans(:)
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(reactive_1d_config) :: reactive_config
+  type(reactive_1d_config) :: adjacent_reactive_config
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
-  real(dp) :: reactive_difference, conservation_error
+  real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
   logical :: ok
   integer :: ierr, rank, nranks, level, patch, variable, cell
   integer :: parent, child, left_patch, right_patch, layer, cross_rank_faces
   integer :: local_chemistry_advances, global_chemistry_advances
   integer :: expected_patch_advances, corrupt_owner
+  integer :: local_hydro_advances, global_hydro_advances
+  integer :: expected_hydro_advances, cross_owner_hydro_faces
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -244,6 +256,117 @@ program pelef_mpi_amr_patch_1d
     reactive_solution_difference(rejected_reactive, rejected_backup) == &
       0.0_dp, "global chemistry rollback is exact", rank)
 
+  serial_hydro = initial_reactive
+  distributed_hydro = initial_reactive
+  call patch_tree_reactive_timestep_1d( &
+    species, reactive_config, initial_reactive, hydro_dt, ok)
+  call assert_all(ok .and. hydro_dt > 0.0_dp, &
+    "four-level reactive hydro timestep", rank)
+  hydro_dt = min(0.10_dp * hydro_dt, 2.0e-8_dp)
+  call advance_patch_tree_reactive_hydro_1d( &
+    species, reactive_config, hydro_dt, serial_hydro, ok)
+  call assert_all(ok .and. serial_hydro%is_valid(), &
+    "serial four-level hydro reference", rank)
+  call advance_owned_patch_tree_hydro_1d( &
+    species, reactive_config, hydro_dt, reactive_distribution, &
+    distributed_hydro, ok, local_hydro_advances)
+  call assert_all(ok .and. distributed_hydro%is_valid(), &
+    "owner-only four-level hydro", rank)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_hydro_advances == expected_hydro_advances, &
+    "four-level hydro executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_hydro_advances == 33, &
+    "four-level hydro global subcycle count", rank)
+  call assert_all(all(distributed_hydro%level_advances == [1, 4, 12, 16]), &
+    "four-level distributed hydro level accounting", rank)
+  reactive_difference = reactive_solution_difference( &
+    distributed_hydro, serial_hydro)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "distributed four-level hydro matches serial", rank)
+  call patch_tree_reactive_integrals_1d( &
+    distributed_hydro, final_integral, ok)
+  call assert_all(ok, "distributed hydro composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral - initial_integral) / &
+    max(1.0_dp, abs(initial_integral)))
+  call assert_all(conservation_error <= 3.0e-10_dp, &
+    "owner-only four-level hydro conservation", rank)
+
+  adjacent_reactive_config = reactive_config
+  adjacent_reactive_config%problem = "entropy_wave"
+  adjacent_reactive_config%amr_reconstruction = "ppm"
+  adjacent_reactive_config%ppm_contact_steepening = .false.
+  adjacent_reactive_config%ppm_shock_flattening = .false.
+  adjacent_reactive_config%amr_hybrid_weno = .false.
+  call build_adjacent_reactive_plans(adjacent_reactive_plans)
+  call initialize_patch_tree_reactive_1d( &
+    species, adjacent_reactive_config, adjacent_reactive_plans, &
+    adjacent_initial, ok)
+  call assert_all(ok .and. adjacent_initial%is_valid(), &
+    "adjacent reactive PPM initialization", rank)
+  call initialize_mpi_amr_patch_distribution_1d( &
+    adjacent_initial%hierarchy, MPI_COMM_WORLD, adjacent_distribution, ok)
+  call assert_all(ok, "adjacent reactive owner distribution", rank)
+  cross_owner_hydro_faces = 0
+  do child = 1, adjacent_initial%hierarchy%relations(1)% &
+      child_sets(1)%patch_count() - 1
+    left_patch = adjacent_initial%hierarchy%relations(1)%child_index(1, child)
+    right_patch = adjacent_initial%hierarchy%relations(1)% &
+      child_index(1, child + 1)
+    if (adjacent_distribution%owner_of(1, left_patch) /= &
+        adjacent_distribution%owner_of(1, right_patch)) &
+      cross_owner_hydro_faces = cross_owner_hydro_faces + 1
+  end do
+  if (nranks > 1) call assert_all(cross_owner_hydro_faces >= 1, &
+    "adjacent reactive face crosses MPI owners", rank)
+  serial_hydro = adjacent_initial
+  distributed_hydro = adjacent_initial
+  call patch_tree_reactive_integrals_1d( &
+    adjacent_initial, initial_integral, ok)
+  call assert_all(ok, "adjacent initial composite integral", rank)
+  call patch_tree_reactive_timestep_1d( &
+    species, adjacent_reactive_config, adjacent_initial, adjacent_dt, ok)
+  call assert_all(ok .and. adjacent_dt > 0.0_dp, &
+    "adjacent reactive hydro timestep", rank)
+  adjacent_dt = min(0.10_dp * adjacent_dt, 2.0e-8_dp)
+  call advance_patch_tree_reactive_hydro_1d( &
+    species, adjacent_reactive_config, adjacent_dt, serial_hydro, ok)
+  call assert_all(ok, "serial adjacent PPM hydro reference", rank)
+  call advance_owned_patch_tree_hydro_1d( &
+    species, adjacent_reactive_config, adjacent_dt, adjacent_distribution, &
+    distributed_hydro, ok, local_hydro_advances)
+  call assert_all(ok .and. distributed_hydro%is_valid(), &
+    "owner-only adjacent PPM hydro", rank)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    adjacent_distribution, adjacent_initial%hierarchy, rank)
+  call assert_all(local_hydro_advances == expected_hydro_advances, &
+    "adjacent PPM hydro executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_hydro_advances == 13, &
+    "adjacent PPM global subcycle count", rank)
+  call assert_all(all(distributed_hydro%level_advances == [1, 12]), &
+    "adjacent PPM distributed level accounting", rank)
+  reactive_difference = reactive_solution_difference( &
+    distributed_hydro, serial_hydro)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "cross-owner adjacent PPM matches serial", rank)
+  call patch_tree_reactive_integrals_1d( &
+    distributed_hydro, final_integral, ok)
+  call assert_all(ok, "adjacent distributed composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral - initial_integral) / &
+    max(1.0_dp, abs(initial_integral)))
+  call assert_all(conservation_error <= 3.0e-10_dp, &
+    "cross-owner adjacent PPM conservation", rank)
+
   if (rank == 0) write(*, '(a,i0,a)') &
     "pelef_mpi_amr_patch_1d: PASS (", nranks, " ranks)"
   call MPI_Finalize(ierr)
@@ -336,6 +459,41 @@ contains
     local_plans(3)%patches(2)%lower = 4
     local_plans(3)%patches(2)%upper = 13
   end subroutine build_reactive_plans
+
+  subroutine build_adjacent_reactive_plans(local_plans)
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
+
+    integer :: entry
+
+    allocate(local_plans(1))
+    local_plans(1)%refinement_ratio = 2
+    allocate(local_plans(1)%patches(6))
+    do entry = 1, 6
+      local_plans(1)%patches(entry)%parent_patch = 1
+      local_plans(1)%patches(entry)%lower = 4 * entry
+      local_plans(1)%patches(entry)%upper = 4 * entry + 3
+    end do
+  end subroutine build_adjacent_reactive_plans
+
+  integer function expected_owned_hydro_advances( &
+      local_distribution, local_hierarchy, local_rank) result(count)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    integer, intent(in) :: local_rank
+
+    integer :: local_level, local_patch, multiplier
+
+    count = 0
+    multiplier = 1
+    do local_level = 0, local_hierarchy%level_count() - 1
+      if (local_level > 0) multiplier = multiplier * &
+        local_hierarchy%relations(local_level)%refinement_ratio
+      do local_patch = 1, local_hierarchy%level_patch_count(local_level)
+        if (local_distribution%owner_of(local_level, local_patch) == &
+            local_rank) count = count + multiplier
+      end do
+    end do
+  end function expected_owned_hydro_advances
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
