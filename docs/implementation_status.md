@@ -1372,3 +1372,23 @@ transport, higher-order reconstruction, AMR, and MPI remain unclaimed.
 The EB application is now genuinely reactive for stationary adiabatic slip
 walls. Molecular transport, higher-order EB hydro, AMR coupling, and MPI
 ownership remain outside this serial single-level path.
+
+## Active-stencil EB PLM and face-centroid fluxes (`0.83.0`)
+
+- [x] normalized tangential centroid offset for every Cartesian EB face
+- [x] PCM-compatible face-center Godunov flux staging
+- [x] frozen-composition characteristic PLM normal prediction
+- [x] two-sided active-cell slope contract with local zero-slope fallback
+- [x] density, pressure, and composition slope scaling and sanitization
+- [x] linear face-center to open-face-centroid flux interpolation
+- [x] exact affine moving-contact mass-flux gates in x and y
+- [x] regular, vertical, diagonal, and circular uniform-state PCM/PLM parity
+- [x] face-centroid sign, magnitude, interpolation, and validity gates
+- [x] unknown-limiter zero-output and complete-step rollback gates
+- [x] input-driven characteristic-PLM circular-obstacle regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This adds the PeleC-ordered face-center Godunov then tangential face-centroid
+interpolation path while keeping PCM as the default API behavior. It does not
+claim PeleC's unsplit EB transverse predictor, PPM, higher-order StateRedist,
+periodic EB neighborhoods, molecular transport, AMR, or MPI ownership.

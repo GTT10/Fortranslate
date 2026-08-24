@@ -1249,3 +1249,21 @@ reactive result must differ from the inert result, preserve volume-weighted mass
 and total energy, and retain all geometry fields. An unknown Riemann solver
 after the first reaction half-step must restore the complete input state and
 temperature in GNU Fortran Debug and Release suites.
+
+## 0.83.0 active-stencil EB PLM and face-centroid gates
+
+The higher-order EB face path is accepted only while regular and covered faces
+have zero centroid offset, a vertical plane gives its analytical partial-face
+offset, diagonal-plane partial offsets have the correct sign and magnitude,
+and an out-of-range or inconsistent centroid invalidates the geometry. A
+synthetic linearly varying face flux must interpolate exactly to each available
+partial-face centroid.
+
+On a regular affine moving contact, characteristic PLM must reproduce the
+analytical time-centered x- and y-mass fluxes and differ measurably from PCM.
+Uniform general-EOS pressure must retain PCM/PLM parity for regular, vertical,
+diagonal, and circular geometries through the complete wall-divergence and
+StateRedist update. An unknown PLM limiter must return zero face fluxes, and an
+invalid hydro selection must retain the caller's state and temperature. The
+committed circular-obstacle application must run through the PLM path in GNU
+Fortran Debug and Release suites.

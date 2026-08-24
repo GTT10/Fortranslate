@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.82.0` milestone contains the serial verification suite, seven optional
+The `0.83.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -157,22 +157,25 @@ state passes EOS recovery. The PeleC-default, zeroth-order weighted StateRedist
 path now forms normal-directed neighborhoods with target volume fraction
 `0.5`, accounts for cells shared by overlapping neighborhoods, conserves every
 volume-weighted state component, and applies the same transactional EOS gate.
-A first-order end-to-end EB hydro path now constructs reactive Riemann fluxes
-only on open Cartesian faces, uses zero-gradient domain faces, combines them
-with the integrated slip-wall pressure force, and completes the step through
-weighted StateRedist and EOS recovery. The `pelef_reactive_eb_2d` application
-now reads plane or circular geometry from a namelist, initializes a
+A selectable PCM or frozen-composition characteristic-PLM EB hydro path now
+constructs reactive Riemann fluxes only on open Cartesian faces, uses
+zero-gradient domain faces, linearly interpolates face-center fluxes to the
+open-face centroid, combines them with the integrated slip-wall pressure
+force, and completes the step through weighted StateRedist and EOS recovery.
+PLM slopes use only two-sided active-cell stencils; cells beside covered or
+outer cells fall back locally to zero slope. The `pelef_reactive_eb_2d`
+application now reads plane or circular geometry from a namelist, initializes a
 general-EOS multispecies state, advances to a requested final time with an
 active-cell CFL limit, reports volume-weighted diagnostics, and writes cell
-geometry and primitive fields to CSV. This qualified runnable path is PCM
-hydro with zero-gradient outer faces and optional active-cell chemistry. Its
+geometry and primitive fields to CSV. This qualified runnable path has
+zero-gradient outer faces and optional active-cell chemistry. Its
 Strang sequence applies half reactions only to active cells, performs the EB
 hydro transaction, and applies the second half reaction while leaving covered
 cells bitwise unchanged. Molecular transport and transverse reconstruction
 settings are rejected instead of silently ignored.
-Higher-order EB reconstruction and face-centroid interpolation,
-periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, AMR
-coupling, and MPI distribution are not yet connected.
+Unsplit transverse prediction, higher-order StateRedist, periodic/ghost-cell
+neighborhoods, thermal/catalytic wall physics, AMR coupling, and MPI
+distribution are not yet connected.
 
 ### MPI one-dimensional verification
 
@@ -588,7 +591,7 @@ characteristic-PPM/CTU path:
   cases/reactive_diagonal_wave_2d/diagonal_composition_ppm.nml
 ```
 
-Input-driven first-order reactive EB hydro around a circular obstacle:
+Input-driven characteristic-PLM reactive EB hydro around a circular obstacle:
 
 ```bash
 ./build/pelef_reactive_eb_2d \

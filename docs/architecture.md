@@ -884,19 +884,23 @@ reactive state. A second path applies zeroth-order weighted StateRedist to the
 provisional conserved state. It derives up to three merge neighbors from the
 face-aperture normal, represents overlapping neighborhoods explicitly, and
 uses partitioned self/neighbor weights before the EOS-validated commit. Flux
-construction is connected by `eb_reactive_hydro_2d_mod`: piecewise-constant
-reactive Riemann states produce fluxes on open Cartesian faces, zero-gradient
-domain faces reuse their adjacent fluid cell, and the divergence feeds the
-weighted StateRedist transaction. `reactive_eb_2d_driver_mod` turns this
+construction is connected by `eb_reactive_hydro_2d_mod` and
+`eb_reactive_reconstruction_2d_mod`. PCM remains the baseline; selectable
+characteristic PLM forms frozen-composition limited slopes only where both
+normal neighbors are active, traces the normal waves, and falls back to zero
+slope beside covered cells and outer boundaries. Riemann fluxes are first
+formed at Cartesian face centers and then linearly interpolated in the
+tangential direction to normalized open-face centroids. Zero-gradient domain
+faces reuse their adjacent fluid cell, and the divergence feeds the weighted
+StateRedist transaction. `reactive_eb_2d_driver_mod` turns this
 operator into a standalone time-dependent application: it builds a plane or
 circle level set from the input file, evaluates the general-EOS CFL rate over
 active cells only, advances to the clipped final time, and emits
 volume-fraction-weighted diagnostics and geometry-aware CSV output. The public
-driver accepts its qualified PCM/outflow contract and can wrap hydro in
+driver accepts its qualified PCM-or-PLM/outflow contract and can wrap hydro in
 active-cell reaction half steps. Covered cells are excluded from both reactor
 calls, and candidate arrays make the complete reaction--hydro--reaction step
 transactional. Molecular transport remains rejected.
-Higher-order EB reconstruction and
-face-centroid interpolation, higher-order StateRedist, periodic ghost
+Unsplit transverse prediction, higher-order StateRedist, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
 outside this subsystem.

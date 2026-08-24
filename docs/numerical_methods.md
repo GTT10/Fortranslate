@@ -1362,8 +1362,13 @@ contributes to the cell volume fraction. The two triangle areas sum to a value
 in `[0,1]`.
 
 The open fraction of a Cartesian face is the positive length of its linearly
-interpolated endpoint values. Fractions within the roundoff classification
-tolerance become covered or regular; all intermediate values are cut cells.
+interpolated endpoint values. If the positive normalized interval is
+`[s0,s1]`, the open fraction is `a=s1-s0` and the stored tangential centroid
+offset is `c=(s0+s1)/2-1/2`. Thus `-0.5 <= c <= 0.5`; x-face offsets are
+normalized by `dy` and y-face offsets by `dx`, matching the AMReX face-centroid
+convention. Full and closed faces store zero offset. Fractions within the
+roundoff classification tolerance become covered or regular; all intermediate
+values are cut cells.
 This construction reproduces any planar interface exactly on the mesh and
 gives second-order integrated-area convergence for the circular level-set
 gate. Each triangle's zero contour supplies a physical segment, centroid, and
@@ -1410,15 +1415,32 @@ only if every active cell passes the general-EOS conversion. Higher-order
 StateRedist slopes, periodic/ghost-cell neighborhoods, and multilevel
 redistribution are not yet claimed.
 
-The complete first-order EB hydro update supplies piecewise-constant left and
-right conserved states to the selected reactive Riemann solver on every face
-with positive aperture. A closed face is exactly zero. At a nonperiodic domain
-face, the adjacent fluid state is used on both sides, giving a zero-gradient
-boundary flux. The open-area-weighted Cartesian divergence and integrated
-slip-wall pressure force form `R`; the update then applies the weighted
-StateRedist transaction to `U_old + dt*R`. This path deliberately precedes
-PeleC-style high-order cut-cell reconstruction, transverse prediction, and
-face-centroid flux interpolation.
+The complete EB hydro update accepts either `pcm` or `characteristic_plm`.
+PCM supplies the cell primitive state unchanged. Characteristic PLM reuses the
+regular reactive frozen-composition acoustic projection and MUSCL-Hancock
+normal trace. A cell receives a limited normal slope only when both stencil
+neighbors are active; otherwise that directional slope is exactly zero. The
+density, pressure, and species bounds are applied before the trace, and each
+traced composition is clipped and normalized before NASA7 conversion.
+
+The selected reactive Riemann solver first produces `F_center` on every
+positive-aperture Cartesian face. A closed face is exactly zero. At a
+nonperiodic domain face, the exterior state is the adjacent cell-center state,
+giving the qualified zero-gradient boundary. In two dimensions, a partial
+face with normalized tangential centroid offset `c` uses
+
+`F_centroid = (1-|c|) F_center(j) + |c| F_center(j+sign(c))`.
+
+The x/y roles are exchanged for a y-face. Interpolation is used only when the
+selected tangential face is in-domain and open; otherwise the local
+face-center flux is retained so no covered-face value enters the stencil. The
+open fraction is applied separately by the conservative divergence, avoiding
+double area weighting. The integrated slip-wall pressure force completes `R`,
+then weighted StateRedist transactionally advances `U_old + dt*R`.
+
+This is a qualified normal characteristic-PLM plus face-centroid interpolation
+path. It does not include PeleC's unsplit EB transverse predictor, PPM, or
+higher-order StateRedist slopes.
 
 The runnable EB driver uses the regular active-cell hyperbolic rate
 `(|u|+c)/dx + (|v|+c)/dy` and takes `dt = CFL/max(rate)`, ignoring covered
