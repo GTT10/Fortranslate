@@ -895,3 +895,21 @@ A solution-driven sparse topology transition is accepted only while:
   and restores both sparse solution and owner distribution exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.61.0 point-to-point sparse owner migration gates
+
+Same-hierarchy sparse migration is accepted only while:
+
+- every patch whose owner changes generates exactly one packed send from its
+  old owner and one receive on its new owner;
+- the 1-rank no-op sends zero messages, while rotated 2/4/8-rank maps report a
+  global direct-transfer count equal to the total patch count;
+- state, temperature, narrow ghosts, and wide ghosts survive packing and
+  unpacking exactly;
+- unchanged owners use local assignment without MPI payload traffic;
+- the migrated sparse container matches the new owner-map cell and patch
+  counts and remains globally single-copy;
+- gathering the migrated owners reconstructs the complete original reactive
+  tree exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

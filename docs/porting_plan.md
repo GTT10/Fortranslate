@@ -536,6 +536,8 @@ Reactive application integration:
   overlap retention, rollback, conservation, and serial parity (`0.59.0`)
 - [x] tag-driven sparse topology rebuild through four levels with collective
   plan agreement, no-op handling, and rollback (`0.60.0`)
+- [x] packed point-to-point same-hierarchy owner migration with one message per
+  changed patch and exact payload reconstruction (`0.61.0`)
 
 AMR parity metrics:
 

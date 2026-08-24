@@ -654,6 +654,18 @@ the original sparse solution and distribution. Tag planning still operates on
 the temporary correctness replica; owner-local tag construction and
 point-to-point topology transfer remain outside the `0.60.0` boundary.
 
+In `0.61.0`, same-hierarchy ownership migration no longer broadcasts every
+patch to every rank. For each changed owner, the old owner packs state,
+temperature, narrow ghosts, and wide ghosts into one contiguous payload and
+sends it directly to the new owner. Unchanged owners copy locally, and ranks
+unrelated to that patch carry no payload buffer.
+
+A collective acceptance boundary follows each ordered patch transfer, so the
+new sparse container is published only after all direct messages and final
+shape checks succeed. This removes replicated migration traffic while keeping
+the deterministic correctness schedule. Physics-stage streaming and topology
+regrid remain collective outside the `0.61.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

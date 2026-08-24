@@ -993,3 +993,19 @@ The sparse public API now covers both explicit and solution-derived topology
 changes. Tag planning and conservative rebuild still operate on a temporary
 all-rank correctness replica. Owner-local tagging, point-to-point overlap
 transfer, and removal of that replica remain pending.
+
+## Point-to-point sparse owner migration (`0.61.0`)
+
+- [x] one packed old-owner to new-owner message per changed patch
+- [x] exact state, temperature, narrow-ghost, and wide-ghost reconstruction
+- [x] local copy without MPI traffic when ownership is unchanged
+- [x] no payload allocation on ranks unrelated to a migrated patch
+- [x] collective acceptance after every ordered direct transfer
+- [x] global transfer count equals the changed-owner patch count
+- [x] one-copy storage and exact replicated gather after migration
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Same-hierarchy rebalancing now uses point-to-point patch payload transfer
+instead of per-patch broadcast. Physics interval data, halo exchange, regrid
+overlap transfer, and temporary topology replicas remain on the collective
+correctness schedule.
