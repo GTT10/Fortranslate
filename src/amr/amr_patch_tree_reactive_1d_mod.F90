@@ -69,6 +69,7 @@ module amr_patch_tree_reactive_1d_mod
   public :: fill_one_child_ghosts
   public :: exchange_adjacent_child_ghosts
   public :: reconcile_adjacent_child_fluxes
+  public :: plan_tagged_reactive_parent_1d
   public :: plan_tagged_patch_tree_reactive_1d
   public :: regrid_tagged_patch_tree_reactive_1d
   public :: regrid_patch_tree_reactive_1d
@@ -599,6 +600,18 @@ contains
     ok = solution%is_valid()
     if (.not. ok) solution = backup
   end subroutine regrid_patch_tree_reactive_1d
+
+  subroutine plan_tagged_reactive_parent_1d( &
+      config, state, collection, ok)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: state(:, :)
+    type(amr_regrid_plan_collection_1d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    ok = valid_tagged_patch_tree_configuration(config, size(state, 1))
+    if (.not. ok) return
+    call build_tagged_parent_collection(config, state, collection, ok)
+  end subroutine plan_tagged_reactive_parent_1d
 
   subroutine build_tagged_parent_collection(config, state, collection, ok)
     type(reactive_1d_config), intent(in) :: config

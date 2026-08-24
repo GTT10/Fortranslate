@@ -139,6 +139,8 @@ program pelef_mpi_amr_patch_1d
   integer :: expected_sparse_communication(3)
   integer :: local_regrid_communication(2), global_regrid_communication(2)
   integer :: expected_regrid_communication(2)
+  integer :: local_tagged_communication(4), global_tagged_communication(4)
+  integer :: expected_tagged_communication(4)
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -1083,7 +1085,20 @@ program pelef_mpi_amr_patch_1d
   call regrid_tagged_sparse_patch_tree_reactive_1d( &
     species, tagged_reactive_config, tagged_distribution, tagged_sparse, &
     tagged_regridded_distribution, changed, tagged_cells, &
-    transferred_cells, ok)
+    transferred_cells, ok, local_tagged_communication(1), &
+    local_tagged_communication(2), local_tagged_communication(3), &
+    local_tagged_communication(4))
+  call assert_all(ok, "distributed sparse tag planning completed", rank)
+  call MPI_Allreduce( &
+    local_tagged_communication, global_tagged_communication, 4, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call expected_tagged_sparse_communication_1d( &
+    tagged_reactive_config, tagged_initial%hierarchy, tagged_distribution, &
+    tagged_serial%hierarchy, tagged_regridded_distribution, &
+    expected_tagged_communication, ok)
+  call assert_all(ierr == MPI_SUCCESS .and. ok .and. all( &
+    global_tagged_communication == expected_tagged_communication), &
+    "distributed sparse tag communication accounting", rank)
   call assert_all(ok .and. changed .and. &
     tagged_cells == serial_tagged_cells .and. &
     transferred_cells == serial_transferred_cells .and. &
@@ -1140,10 +1155,13 @@ program pelef_mpi_amr_patch_1d
   call regrid_tagged_sparse_patch_tree_reactive_1d( &
     species, tagged_reactive_config, tagged_regridded_distribution, &
     tagged_sparse, migrated_distribution, changed, tagged_cells, &
-    transferred_cells, ok)
+    transferred_cells, ok, local_tagged_communication(1), &
+    local_tagged_communication(2), local_tagged_communication(3), &
+    local_tagged_communication(4))
   tagged_regridded_distribution = migrated_distribution
   call assert_all(ok .and. .not. changed .and. &
     tagged_cells == serial_tagged_cells .and. transferred_cells == 0 .and. &
+    all(local_tagged_communication(3:4) == 0) .and. &
     tagged_sparse%regrid_evaluations == 2 .and. &
     tagged_sparse%regrids == 1, &
     "unchanged tag-driven sparse regrid is a no-op", rank)
@@ -1162,9 +1180,11 @@ program pelef_mpi_amr_patch_1d
   call regrid_tagged_sparse_patch_tree_reactive_1d( &
     species, invalid_tagged_config, tagged_regridded_distribution, &
     rejected_sparse, migrated_distribution, changed, tagged_cells, &
-    transferred_cells, ok)
+    transferred_cells, ok, local_tagged_communication(1), &
+    local_tagged_communication(2), local_tagged_communication(3), &
+    local_tagged_communication(4))
   call assert_all(.not. ok .and. .not. changed .and. tagged_cells == 0 .and. &
-    transferred_cells == 0 .and. &
+    transferred_cells == 0 .and. all(local_tagged_communication == 0) .and. &
     rejected_sparse%is_valid(migrated_distribution), &
     "invalid tag-driven sparse regrid is rejected", rank)
   rejected_reactive = tagged_serial
@@ -1706,6 +1726,79 @@ contains
         child_multiplier, parabolic, counts)
     end do
   end subroutine accumulate_expected_sparse_communication
+
+  subroutine expected_tagged_sparse_communication_1d( &
+      local_config, old_hierarchy, old_distribution, new_hierarchy, &
+      new_distribution, counts, local_ok)
+    type(reactive_1d_config), intent(in) :: local_config
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: old_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: new_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: new_distribution
+    integer, intent(out) :: counts(4)
+    logical, intent(out) :: local_ok
+
+    type(amr_patch_tree_hierarchy_1d) :: prefix_hierarchy
+    type(mpi_amr_patch_distribution_1d) :: prefix_distribution
+    integer :: direct_counts(2)
+    integer :: relation, depth, final_relations, evaluated_relations
+
+    counts = 0
+    local_ok = old_hierarchy%is_valid() .and. new_hierarchy%is_valid() .and. &
+      local_config%amr_max_levels >= 2
+    if (.not. local_ok) return
+    final_relations = size(new_hierarchy%relations)
+    evaluated_relations = min( &
+      local_config%amr_max_levels - 1, final_relations + 1)
+    do relation = 1, evaluated_relations
+      counts(1) = counts(1) + &
+        new_hierarchy%level_patch_count(relation - 1)
+    end do
+
+    do depth = 1, final_relations
+      prefix_hierarchy%base_cells = new_hierarchy%base_cells
+      prefix_hierarchy%x_lower = new_hierarchy%x_lower
+      prefix_hierarchy%x_upper = new_hierarchy%x_upper
+      if (allocated(prefix_hierarchy%relations)) &
+        deallocate(prefix_hierarchy%relations)
+      allocate(prefix_hierarchy%relations(depth))
+      prefix_hierarchy%relations = new_hierarchy%relations(1:depth)
+      call initialize_mpi_amr_patch_distribution_1d( &
+        prefix_hierarchy, MPI_COMM_WORLD, prefix_distribution, local_ok)
+      if (.not. local_ok) return
+      counts(2) = counts(2) + &
+        expected_sparse_prolongation_transfers_1d( &
+          prefix_hierarchy, prefix_distribution)
+    end do
+
+    call expected_direct_sparse_regrid_communication_1d( &
+      old_hierarchy, old_distribution, new_hierarchy, new_distribution, &
+      direct_counts, local_ok)
+    if (.not. local_ok) return
+    counts(3:4) = direct_counts
+  end subroutine expected_tagged_sparse_communication_1d
+
+  integer function expected_sparse_prolongation_transfers_1d( &
+      local_hierarchy, local_distribution) result(count)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+
+    integer :: relation, parent, local_child, child_index
+
+    count = 0
+    do relation = 1, size(local_hierarchy%relations)
+      do parent = 1, local_hierarchy%relations(relation)%parent_patch_count()
+        do local_child = 1, local_hierarchy%relations(relation)% &
+            child_sets(parent)%patch_count()
+          child_index = local_hierarchy%relations(relation)% &
+            child_index(parent, local_child)
+          if (local_distribution%owner_of(relation - 1, parent) /= &
+              local_distribution%owner_of(relation, child_index)) &
+            count = count + 1
+        end do
+      end do
+    end do
+  end function expected_sparse_prolongation_transfers_1d
 
   subroutine expected_direct_sparse_regrid_communication_1d( &
       old_hierarchy, old_distribution, new_hierarchy, new_distribution, &

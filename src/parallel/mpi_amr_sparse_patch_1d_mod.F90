@@ -13,18 +13,20 @@ module mpi_amr_sparse_patch_1d_mod
   use amr_multipatch_1d_mod, only: &
     prolong_patch_set_1d, average_down_patch_set_1d, &
     synchronize_patch_set_1d
+  use amr_regrid_1d_mod, only: amr_regrid_plan_collection_1d
   use amr_reactive_1d_mod, only: &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
     advance_amr_level_1d, advance_transport_level_1d
   use amr_patch_tree_1d_mod, only: &
-    amr_patch_level_plan_1d, amr_patch_tree_hierarchy_1d, &
+    amr_child_patch_plan_1d, amr_patch_level_plan_1d, &
+    amr_patch_tree_hierarchy_1d, &
     amr_patch_tree_relation_flux_registers_1d, &
     initialize_patch_tree_1d, initialize_patch_tree_flux_registers_1d, &
     patch_tree_child_geometry_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_patch_1d, &
     amr_patch_tree_reactive_solution_1d, fill_one_child_ghosts, &
-    regrid_tagged_patch_tree_reactive_1d
+    plan_tagged_reactive_parent_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -2329,7 +2331,9 @@ contains
 
   subroutine regrid_tagged_sparse_patch_tree_reactive_1d( &
       species, config, old_distribution, solution, new_distribution, &
-      changed, tagged_cells, transferred_cells, ok)
+      changed, tagged_cells, transferred_cells, ok, &
+      local_tagging_evaluations, local_candidate_transfers, &
+      local_prolongation_transfers, local_overlap_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
@@ -2338,17 +2342,30 @@ contains
     logical, intent(out) :: changed
     integer, intent(out) :: tagged_cells, transferred_cells
     logical, intent(out) :: ok
+    integer, intent(out), optional :: local_tagging_evaluations
+    integer, intent(out), optional :: local_candidate_transfers
+    integer, intent(out), optional :: local_prolongation_transfers
+    integer, intent(out), optional :: local_overlap_transfers
 
-    type(mpi_amr_sparse_reactive_solution_1d) :: backup
-    type(amr_patch_tree_reactive_solution_1d) :: replicated
-    logical :: local_ok, local_changed, accepted, mpi_ok
-    integer :: local_tagged, local_transferred
-    integer :: minimum_tagged, maximum_tagged, ierr
+    type(mpi_amr_sparse_reactive_solution_1d) :: backup, planning_solution
+    type(amr_patch_level_plan_1d), allocatable :: plans(:)
+    logical :: local_ok, accepted, mpi_ok
+    integer :: tagging_evaluations, candidate_transfers
+    integer :: prolongation_transfers, overlap_transfers
 
     ok = .false.
     changed = .false.
     tagged_cells = 0
     transferred_cells = 0
+    tagging_evaluations = 0
+    candidate_transfers = 0
+    prolongation_transfers = 0
+    overlap_transfers = 0
+    if (present(local_tagging_evaluations)) local_tagging_evaluations = 0
+    if (present(local_candidate_transfers)) local_candidate_transfers = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     new_distribution = old_distribution
     local_ok = size(species) >= 1 .and. &
       solution%is_valid(old_distribution)
@@ -2356,33 +2373,35 @@ contains
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
     backup = solution
+    planning_solution = solution
 
-    call materialize_sparse_patch_tree_reactive_1d( &
-      old_distribution, solution, replicated, local_ok)
+    call average_down_sparse_reactive_solution_1d( &
+      species, old_distribution, planning_solution, local_ok)
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) go to 900
-    call regrid_tagged_patch_tree_reactive_1d( &
-      species, config, replicated, local_changed, local_tagged, &
-      local_transferred, local_ok)
+    call plan_tagged_sparse_patch_tree_reactive_1d( &
+      species, config, old_distribution, planning_solution, plans, &
+      tagged_cells, local_ok, tagging_evaluations, candidate_transfers)
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) go to 900
-    call MPI_Allreduce(local_tagged, minimum_tagged, 1, MPI_INTEGER, &
-      MPI_MIN, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) go to 900
-    call MPI_Allreduce(local_tagged, maximum_tagged, 1, MPI_INTEGER, &
-      MPI_MAX, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS .or. minimum_tagged /= maximum_tagged) go to 900
-    call commit_materialized_sparse_regrid_1d( &
-      old_distribution, backup, replicated, local_changed, &
-      local_transferred, solution, new_distribution, changed, &
-      transferred_cells, ok)
-    if (.not. ok) then
-      tagged_cells = 0
-      return
-    end if
-    tagged_cells = local_tagged
+    call regrid_sparse_patch_tree_reactive_1d( &
+      species, config, plans, old_distribution, solution, new_distribution, &
+      changed, transferred_cells, local_ok, prolongation_transfers, &
+      overlap_transfers)
+    call all_ranks_accept_sparse_1d( &
+      old_distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    if (present(local_tagging_evaluations)) &
+      local_tagging_evaluations = tagging_evaluations
+    if (present(local_candidate_transfers)) &
+      local_candidate_transfers = candidate_transfers
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = prolongation_transfers
+    if (present(local_overlap_transfers)) &
+      local_overlap_transfers = overlap_transfers
+    ok = .true.
     return
 
 900 continue
@@ -2391,136 +2410,148 @@ contains
     changed = .false.
     tagged_cells = 0
     transferred_cells = 0
+    if (present(local_tagging_evaluations)) local_tagging_evaluations = 0
+    if (present(local_candidate_transfers)) local_candidate_transfers = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     ok = .false.
   end subroutine regrid_tagged_sparse_patch_tree_reactive_1d
 
-  subroutine commit_materialized_sparse_regrid_1d( &
-      old_distribution, backup, replicated, local_changed, &
-      local_transferred, solution, new_distribution, changed, &
-      transferred_cells, ok)
-    type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
-    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: backup
-    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: replicated
-    logical, intent(in) :: local_changed
-    integer, intent(in) :: local_transferred
-    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
-    type(mpi_amr_patch_distribution_1d), intent(out) :: new_distribution
-    logical, intent(out) :: changed
-    integer, intent(out) :: transferred_cells
-    logical, intent(out) :: ok
-
-    type(mpi_amr_sparse_reactive_solution_1d) :: rebuilt_sparse
-    type(mpi_amr_patch_distribution_1d) :: rebuilt_distribution
-    logical :: local_ok, accepted, mpi_ok
-    integer :: changed_value, minimum_changed, maximum_changed
-    integer :: minimum_transferred, maximum_transferred, ierr
-
-    ok = .false.
-    changed = .false.
-    transferred_cells = 0
-    new_distribution = old_distribution
-    changed_value = merge(1, 0, local_changed)
-    call MPI_Allreduce(changed_value, minimum_changed, 1, MPI_INTEGER, &
-      MPI_MIN, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) go to 900
-    call MPI_Allreduce(changed_value, maximum_changed, 1, MPI_INTEGER, &
-      MPI_MAX, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) go to 900
-    call MPI_Allreduce(local_transferred, minimum_transferred, 1, &
-      MPI_INTEGER, MPI_MIN, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) go to 900
-    call MPI_Allreduce(local_transferred, maximum_transferred, 1, &
-      MPI_INTEGER, MPI_MAX, old_distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) go to 900
-    if (minimum_changed /= maximum_changed .or. &
-        minimum_transferred /= maximum_transferred) go to 900
-    changed = local_changed
-    transferred_cells = local_transferred
-
-    if (.not. changed) then
-      solution%regrid_evaluations = replicated%regrid_evaluations
-      local_ok = solution%is_valid(old_distribution)
-      call all_ranks_accept_sparse_1d( &
-        old_distribution, local_ok, accepted, mpi_ok)
-      if (.not. mpi_ok .or. .not. accepted) go to 900
-      ok = .true.
-      return
-    end if
-
-    call initialize_mpi_amr_patch_distribution_1d( &
-      replicated%hierarchy, old_distribution%comm, rebuilt_distribution, &
-      local_ok)
-    call all_ranks_accept_sparse_1d( &
-      old_distribution, local_ok, accepted, mpi_ok)
-    if (.not. mpi_ok .or. .not. accepted) go to 900
-    call scatter_owned_patch_tree_reactive_1d( &
-      rebuilt_distribution, replicated, rebuilt_sparse, local_ok)
-    call all_ranks_accept_sparse_1d( &
-      old_distribution, local_ok, accepted, mpi_ok)
-    if (.not. mpi_ok .or. .not. accepted) go to 900
-    solution = rebuilt_sparse
-    new_distribution = rebuilt_distribution
-    local_ok = solution%is_valid(new_distribution)
-    call all_ranks_accept_sparse_1d( &
-      old_distribution, local_ok, accepted, mpi_ok)
-    if (.not. mpi_ok .or. .not. accepted) go to 900
-    ok = .true.
-    return
-
-900 continue
-    solution = backup
-    new_distribution = old_distribution
-    changed = .false.
-    transferred_cells = 0
-    ok = .false.
-  end subroutine commit_materialized_sparse_regrid_1d
-
-  subroutine materialize_sparse_patch_tree_reactive_1d( &
-      distribution, sparse, replicated, ok)
+  subroutine plan_tagged_sparse_patch_tree_reactive_1d( &
+      species, config, distribution, solution, plans, tagged_cells, ok, &
+      local_tagging_evaluations, local_candidate_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
-    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: sparse
-    type(amr_patch_tree_reactive_solution_1d), intent(out) :: replicated
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: solution
+    type(amr_patch_level_plan_1d), allocatable, intent(out) :: plans(:)
+    integer, intent(out) :: tagged_cells
     logical, intent(out) :: ok
+    integer, intent(out) :: local_tagging_evaluations
+    integer, intent(out) :: local_candidate_transfers
 
+    type(amr_patch_level_plan_1d), allocatable :: workspace(:)
+    type(amr_child_patch_plan_1d), allocatable :: extended_patches(:)
+    type(amr_patch_tree_hierarchy_1d) :: candidate_hierarchy
+    type(mpi_amr_patch_distribution_1d) :: candidate_distribution
+    type(mpi_amr_sparse_reactive_solution_1d) :: candidate_solution
+    type(amr_regrid_plan_collection_1d) :: collection
+    integer, allocatable :: local_bounds(:), global_bounds(:)
+    integer :: local_header(2), global_header(2)
     logical :: local_ok, accepted, mpi_ok
-    integer :: level, patch, nx
+    integer :: maximum_relations, relation_count, relation
+    integer :: parent_count, parent, parent_owner, parent_nx
+    integer :: child_count, child, entry, offset, ierr, step_transfers
 
     ok = .false.
-    local_ok = sparse%is_valid(distribution)
+    tagged_cells = 0
+    local_tagging_evaluations = 0
+    local_candidate_transfers = 0
+    local_ok = size(species) >= 1 .and. config%amr_max_levels >= 2 .and. &
+      solution%is_valid(distribution) .and. config%nx == &
+        solution%hierarchy%base_cells
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
 
-    replicated%hierarchy = sparse%hierarchy
-    replicated%level_advances = sparse%level_advances
-    replicated%transport_level_advances = sparse%transport_level_advances
-    replicated%time = sparse%time
-    replicated%steps = sparse%steps
-    replicated%regrid_evaluations = sparse%regrid_evaluations
-    replicated%regrids = sparse%regrids
-    replicated%overlap_cells_transferred = &
-      sparse%overlap_cells_transferred
-    allocate(replicated%levels(sparse%hierarchy%level_count()))
-    do level = 1, size(replicated%levels)
-      allocate(replicated%levels(level)%patches( &
-        sparse%hierarchy%level_patch_count(level - 1)))
-      do patch = 1, size(replicated%levels(level)%patches)
-        nx = distribution%levels(level)%cell_counts(patch)
-        call allocate_sparse_patch( &
-          replicated%levels(level)%patches(patch), sparse%nvar, nx, &
-          sparse%ghost_width)
+    maximum_relations = config%amr_max_levels - 1
+    allocate(workspace(maximum_relations))
+    candidate_distribution = distribution
+    candidate_solution = solution
+    relation_count = 0
+    do relation = 1, maximum_relations
+      parent_count = candidate_solution%hierarchy% &
+        level_patch_count(relation - 1)
+      child_count = 0
+      do parent = 1, parent_count
+        parent_owner = candidate_distribution%owner_of(relation - 1, parent)
+        parent_nx = candidate_distribution%levels(relation)% &
+          cell_counts(parent)
+        local_header = 0
+        local_ok = parent_owner >= 0 .and. parent_nx >= 1
+        if (local_ok .and. distribution%rank == parent_owner) then
+          call plan_tagged_reactive_parent_1d( &
+            config, candidate_solution%levels(relation)%patches(parent)% &
+              state(:, 1:parent_nx), collection, local_ok)
+          if (local_ok) then
+            local_header = [collection%tagged_cell_count, &
+              collection%patch_count()]
+            local_tagging_evaluations = local_tagging_evaluations + 1
+          end if
+        end if
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) return
+        call MPI_Allreduce( &
+          local_header, global_header, 2, MPI_INTEGER, MPI_SUM, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS .or. any(global_header < 0)) return
+        tagged_cells = tagged_cells + global_header(1)
+        if (global_header(2) == 0) cycle
+
+        allocate(local_bounds(2 * global_header(2)))
+        allocate(global_bounds(2 * global_header(2)))
+        local_bounds = 0
+        if (distribution%rank == parent_owner) then
+          do child = 1, global_header(2)
+            local_bounds(2 * child - 1) = &
+              collection%plans(child)%patch_lower
+            local_bounds(2 * child) = collection%plans(child)%patch_upper
+          end do
+        end if
+        call MPI_Allreduce( &
+          local_bounds, global_bounds, size(local_bounds), MPI_INTEGER, &
+          MPI_SUM, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        offset = child_count
+        child_count = child_count + global_header(2)
+        allocate(extended_patches(child_count))
+        if (offset > 0) extended_patches(1:offset) = &
+          workspace(relation)%patches
+        do child = 1, global_header(2)
+          entry = offset + child
+          extended_patches(entry)%parent_patch = parent
+          extended_patches(entry)%lower = &
+            global_bounds(2 * child - 1)
+          extended_patches(entry)%upper = &
+            global_bounds(2 * child)
+        end do
+        call move_alloc(extended_patches, workspace(relation)%patches)
+        deallocate(local_bounds, global_bounds)
       end do
+      if (child_count == 0) exit
+
+      workspace(relation)%refinement_ratio = config%amr_refinement_ratio
+      relation_count = relation
+      call initialize_patch_tree_1d( &
+        config%nx, config%x_lower, config%x_upper, &
+        workspace(1:relation_count), candidate_hierarchy, local_ok)
+      if (local_ok) local_ok = &
+        sparse_patch_tree_children_are_interior_1d(candidate_hierarchy)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
+      call initialize_mpi_amr_patch_distribution_1d( &
+        candidate_hierarchy, distribution%comm, candidate_distribution, &
+        local_ok)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
+      call initialize_direct_sparse_regrid_1d( &
+        species, distribution, candidate_distribution, solution, &
+        candidate_hierarchy, candidate_solution, local_ok, step_transfers)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) return
+      local_candidate_transfers = &
+        local_candidate_transfers + step_transfers
     end do
-    local_ok = replicated%is_valid()
-    call all_ranks_accept_sparse_1d( &
-      distribution, local_ok, accepted, mpi_ok)
-    if (.not. mpi_ok .or. .not. accepted) return
-    call gather_owned_patch_tree_reactive_1d( &
-      distribution, sparse, replicated, local_ok)
-    call all_ranks_accept_sparse_1d( &
-      distribution, local_ok, accepted, mpi_ok)
-    ok = mpi_ok .and. accepted
-  end subroutine materialize_sparse_patch_tree_reactive_1d
+
+    allocate(plans(relation_count))
+    if (relation_count > 0) plans = workspace(1:relation_count)
+    ok = .true.
+  end subroutine plan_tagged_sparse_patch_tree_reactive_1d
 
   subroutine copy_sparse_metadata(source, distribution, target)
     type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: source
