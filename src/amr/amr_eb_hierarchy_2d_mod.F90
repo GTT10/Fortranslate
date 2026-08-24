@@ -48,7 +48,7 @@ contains
 
     real(dp) :: expected_x_lower, expected_x_upper
     real(dp) :: expected_y_lower, expected_y_upper, scale, tolerance
-    real(dp) :: restricted_volume_fraction
+    real(dp) :: restricted_face_fraction, restricted_volume_fraction
     integer :: coarse_i, coarse_j, fine_i_lower, fine_i_upper
     integer :: fine_j_lower, fine_j_upper, ratio
 
@@ -106,6 +106,49 @@ contains
           return
         end if
       end do
+    end do
+
+    ! Flux registers require the same open physical measure on each side of
+    ! the coarse/fine interface, not only compatible cell volumes.
+    do coarse_j = self%coarse_j_lower, self%coarse_j_upper
+      fine_j_lower = (coarse_j - self%coarse_j_lower) * ratio + 1
+      fine_j_upper = fine_j_lower + ratio - 1
+      restricted_face_fraction = sum(fine_geometry%x_face_fraction( &
+        0, fine_j_lower:fine_j_upper)) / real(ratio, dp)
+      if (abs(restricted_face_fraction - coarse_geometry%x_face_fraction( &
+          self%coarse_i_lower - 1, coarse_j)) > &
+          geometry_consistency_tolerance) then
+        valid = .false.
+        return
+      end if
+      restricted_face_fraction = sum(fine_geometry%x_face_fraction( &
+        fine_geometry%nx, fine_j_lower:fine_j_upper)) / real(ratio, dp)
+      if (abs(restricted_face_fraction - coarse_geometry%x_face_fraction( &
+          self%coarse_i_upper, coarse_j)) > &
+          geometry_consistency_tolerance) then
+        valid = .false.
+        return
+      end if
+    end do
+    do coarse_i = self%coarse_i_lower, self%coarse_i_upper
+      fine_i_lower = (coarse_i - self%coarse_i_lower) * ratio + 1
+      fine_i_upper = fine_i_lower + ratio - 1
+      restricted_face_fraction = sum(fine_geometry%y_face_fraction( &
+        fine_i_lower:fine_i_upper, 0)) / real(ratio, dp)
+      if (abs(restricted_face_fraction - coarse_geometry%y_face_fraction( &
+          coarse_i, self%coarse_j_lower - 1)) > &
+          geometry_consistency_tolerance) then
+        valid = .false.
+        return
+      end if
+      restricted_face_fraction = sum(fine_geometry%y_face_fraction( &
+        fine_i_lower:fine_i_upper, fine_geometry%ny)) / real(ratio, dp)
+      if (abs(restricted_face_fraction - coarse_geometry%y_face_fraction( &
+          coarse_i, self%coarse_j_upper)) > &
+          geometry_consistency_tolerance) then
+        valid = .false.
+        return
+      end if
     end do
   end function amr_eb_patch_is_valid
 
