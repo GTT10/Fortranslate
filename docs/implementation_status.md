@@ -833,3 +833,23 @@ recursive level-ratio subcycling. The bridge broadcasts complete owner fluxes
 and states, so synchronization and flux-register work still run on replicated
 trees. Owner-only molecular transport, sparse rank-local allocation,
 stage-synchronous point-to-point halos, and regrid migration remain pending.
+
+## Owner-only MPI AMR molecular transport (`0.52.0`)
+
+- [x] shared serial/MPI one-patch SSPRK2 molecular-transport kernel
+- [x] owner-only viscous, conductive, and species-diffusion patch updates
+- [x] exact cumulative `r^2` child subcycling on every relation
+- [x] collective acceptance and owner state/effective-flux broadcasts
+- [x] time-interpolated parent and adjacent-sibling transport ghosts
+- [x] cross-owner shared time-integrated diffusive face fluxes
+- [x] replicated diffusive registers, reflux, average-down, and recovery
+- [x] exact global rollback after a deep owner transport failure
+- [x] exact owner and per-level parabolic call accounting
+- [x] serial parity and conservation for a four-level branched tree
+- [x] serial parity and conservation for six adjacent children
+- [x] 1/2/4/8-rank Release and Debug gates
+
+All three patch-tree physics operators now have owner-only MPI entry points.
+They remain separate qualified transactions over replicated trees. A combined
+distributed full-physics transaction, sparse rank-local storage,
+stage-synchronous point-to-point halos, and regrid migration remain pending.

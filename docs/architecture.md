@@ -531,6 +531,20 @@ rank-local storage, migration after regrid, stage-synchronous point-to-point
 halos, and scalable communication schedules remain outside the `0.51.0`
 qualification boundary.
 
+In `0.52.0`, molecular transport gains the same shared-kernel boundary and
+owner recursion. The owner executes the complete SSPRK2 viscous, conductive,
+and mixture-averaged diffusion update and broadcasts its interval-start state,
+effective face fluxes, accepted patch, and transport counter. Child recursion
+uses the serial parabolic schedule of `r^2` substeps per relation, including
+time-interpolated parent ghosts, adjacent shared diffusive fluxes,
+coarse/fine registers, reflux, average-down, and temperature recovery.
+Collective rejection restores the pre-transport replica on every rank.
+
+Chemistry, hydro, and transport now each have qualified owner-only entry
+points. A single outer transaction composing all three operators, sparse
+rank-local patch allocation, migration after regrid, and scalable
+point-to-point communication remain outside the `0.52.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

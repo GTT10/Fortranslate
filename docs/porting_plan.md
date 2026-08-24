@@ -518,6 +518,8 @@ Reactive application integration:
   reacting-field parity (`0.50.0`)
 - [x] owner-only recursive patch-tree hydro, shared fine/fine flux handling,
   reflux, rollback, and serial PCM/PPM parity (`0.51.0`)
+- [x] owner-only recursive patch-tree molecular transport, cumulative `r^2`
+  subcycling, diffusive reflux, rollback, and serial parity (`0.52.0`)
 
 AMR parity metrics:
 

@@ -42,7 +42,7 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_1d --halo-test
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_1d --halo-test
-      - name: AMR patch ownership and reactive owner gates
+      - name: AMR owner chemistry, hydro, and transport gates
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_patch_1d
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_patch_1d

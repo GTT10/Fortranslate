@@ -725,3 +725,23 @@ Distributed patch-tree hydro is accepted only while:
   `3e-10`;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.52.0 owner-only MPI AMR transport gates
+
+Distributed patch-tree molecular transport is accepted only while:
+
+- a four-level branched tree performs exactly 185 owner patch updates under
+  cumulative `r^2` subcycling and records counts `[1, 8, 48, 128]`;
+- each rank's count equals the parabolic subcycle weight of its owner-map
+  patches, with no duplicated or omitted transport interval;
+- complete distributed state, temperature, ghosts, time, step, and counters
+  agree with the serial recursive SSPRK2 transport operator within `5e-13`;
+- composite mass, momentum, and total energy remain within `2e-9` with
+  viscosity, conduction, species diffusion, and barodiffusion enabled;
+- a deep invalid owner patch is rejected collectively and the complete tree
+  rolls back exactly with zero accepted local calls;
+- a two-level tree with six adjacent children crosses MPI owners, performs
+  exactly 25 updates with counts `[1, 24]`, matches serial within `5e-13`, and
+  conserves within `2e-9` after shared diffusive fluxes and reflux;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

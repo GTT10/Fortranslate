@@ -1296,8 +1296,23 @@ fine/fine time-integrated flux, accumulate coarse/fine registers, reflux, and
 average down. A rejected patch or synchronization step restores the complete
 owner-synchronized solution and reports zero accepted local calls.
 
-The present bridge still stores all patch interiors on every rank. Shared
+At `0.51.0`, the bridge still stores all patch interiors on every rank. Shared
 flux reconciliation and hierarchy synchronization are deterministic replicated
 operations after owner broadcasts, rather than a sparse stage-synchronous
-exchange. It does not claim owner-only molecular transport, sparse storage,
-regrid migration, or scalable point-to-point communication.
+exchange. That milestone does not claim owner-only molecular transport,
+sparse storage, regrid migration, or scalable point-to-point communication.
+
+The `0.52.0` transport operator applies the same ownership rule to the shared
+one-patch SSPRK2 transport kernel. Viscosity, Fourier conduction,
+mixture-averaged species diffusion, barodiffusion, correction velocity, and
+species-enthalpy flux remain coupled exactly as in serial AMR. Each refinement
+relation performs `r^2` child transport intervals, and owner-weighted call
+counts therefore use the square of every cumulative refinement ratio. Owners
+broadcast the interval-start state and the SSPRK2 effective face flux before
+replicas apply adjacent shared-flux correction, diffusive reflux, and
+average-down. Failure at any depth restores the synchronized pre-call tree.
+
+The transport qualification remains owner-authoritative and replicated. It is
+not sparse stage communication and is exposed as a separate distributed
+operator; a single outer chemistry--transport--hydro transaction, regrid
+migration, and scalable point-to-point schedules remain pending.
