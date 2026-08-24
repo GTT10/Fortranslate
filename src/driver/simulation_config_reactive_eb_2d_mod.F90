@@ -17,6 +17,7 @@ module simulation_config_reactive_eb_2d_mod
     real(dp) :: circle_radius = 1.0_dp
     logical :: circle_fluid_inside = .false.
     real(dp) :: state_redist_target_volume_fraction = 0.5_dp
+    integer :: state_redist_max_order = 0
   end type reactive_eb_2d_config
 
   public :: read_reactive_eb_2d_configuration
@@ -34,10 +35,11 @@ contains
     real(dp) :: circle_center_x, circle_center_y, circle_radius
     real(dp) :: state_redist_target_volume_fraction
     logical :: circle_fluid_inside
-    integer :: unit, status
+    integer :: state_redist_max_order, unit, status
     namelist /embedded_boundary/ geometry, plane_normal_x, plane_normal_y, &
       plane_offset, circle_center_x, circle_center_y, circle_radius, &
-      circle_fluid_inside, state_redist_target_volume_fraction
+      circle_fluid_inside, state_redist_target_volume_fraction, &
+      state_redist_max_order
 
     config = reactive_eb_2d_config()
     call read_reactive_2d_configuration(path, config%flow, ok, message)
@@ -53,6 +55,7 @@ contains
     circle_fluid_inside = config%circle_fluid_inside
     state_redist_target_volume_fraction = &
       config%state_redist_target_volume_fraction
+    state_redist_max_order = config%state_redist_max_order
 
     open(newunit=unit, file=trim(path), status="old", action="read", &
       iostat=status)
@@ -99,6 +102,11 @@ contains
       message = "StateRedist target volume fraction must be in (0,1]"
       return
     end if
+    if (state_redist_max_order /= 0 .and. state_redist_max_order /= 2) then
+      ok = .false.
+      message = "StateRedist max order must be 0 or 2"
+      return
+    end if
     if (config%flow%transport_enabled) then
       ok = .false.
       message = "Reactive EB 2D currently does not support molecular transport"
@@ -130,6 +138,7 @@ contains
     config%circle_fluid_inside = circle_fluid_inside
     config%state_redist_target_volume_fraction = &
       state_redist_target_volume_fraction
+    config%state_redist_max_order = state_redist_max_order
     message = ""
     ok = .true.
   end subroutine read_reactive_eb_2d_configuration

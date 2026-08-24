@@ -90,6 +90,8 @@ program pelef_reactive_eb_2d
     trim(config%flow%chemistry_model)
   write(*, '(a,es24.16)') "StateRedist target volume fraction: ", &
     config%state_redist_target_volume_fraction
+  write(*, '(a,i0)') "StateRedist max order: ", &
+    config%state_redist_max_order
   write(*, '(a,i0)') "Regular cells: ", &
     count(geometry%cell_type == eb_regular_cell)
   write(*, '(a,i0)') "Cut cells: ", &

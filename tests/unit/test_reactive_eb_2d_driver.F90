@@ -67,6 +67,7 @@ program test_reactive_eb_2d_driver
   config%circle_center_y = 0.5_dp
   config%circle_radius = 0.23_dp
   config%circle_fluid_inside = .false.
+  config%state_redist_max_order = 2
 
   call build_configured_eb_geometry_2d(config, geometry, ok)
   call require(ok .and. geometry%is_valid(), "configured circle geometry")
@@ -209,6 +210,14 @@ program test_reactive_eb_2d_driver
   call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
     "direct API rejects unsupported transport")
   config%flow%transport_enabled = .false.
+
+  config%state_redist_max_order = 1
+  call simulate_reactive_eb_2d( &
+    species, reactions, config, state, temperature, simulated_geometry, time, &
+    steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "direct API rejects unsupported StateRedist order")
+  config%state_redist_max_order = 2
 
   config%geometry = "plane"
   config%plane_normal_x = 1.0_dp

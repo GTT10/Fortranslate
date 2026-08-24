@@ -41,4 +41,5 @@
   circle_radius = 0.0023
   circle_fluid_inside = .false.
   state_redist_target_volume_fraction = 0.5
+  state_redist_max_order = 2
 /

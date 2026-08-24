@@ -20,6 +20,10 @@ module eb_geometry_2d_mod
     real(dp) :: dx = 0.0_dp
     real(dp) :: dy = 0.0_dp
     real(dp), allocatable :: volume_fraction(:, :)
+    ! Fluid-volume centroid offsets relative to the Cartesian cell center,
+    ! normalized by dx and dy respectively (AMReX convention).
+    real(dp), allocatable :: cell_centroid_x(:, :)
+    real(dp), allocatable :: cell_centroid_y(:, :)
     real(dp), allocatable :: x_face_fraction(:, :)
     real(dp), allocatable :: y_face_fraction(:, :)
     ! Tangential face-centroid offsets relative to the Cartesian face center,
@@ -49,7 +53,7 @@ contains
     type(eb_geometry_2d), intent(out) :: geometry
     logical, intent(out) :: ok
 
-    real(dp) :: fraction, x0, x1, y0, y1
+    real(dp) :: fraction, centroid_x, centroid_y, x0, x1, y0, y1
     logical :: metrics_ok
     integer :: i, j
 
@@ -69,6 +73,8 @@ contains
     geometry%dx = (x_upper - x_lower) / real(geometry%nx, dp)
     geometry%dy = (y_upper - y_lower) / real(geometry%ny, dp)
     allocate(geometry%volume_fraction(1:geometry%nx, 1:geometry%ny))
+    allocate(geometry%cell_centroid_x(1:geometry%nx, 1:geometry%ny))
+    allocate(geometry%cell_centroid_y(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%cell_type(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%x_face_fraction(0:geometry%nx, 1:geometry%ny))
     allocate(geometry%y_face_fraction(1:geometry%nx, 0:geometry%ny))
@@ -110,12 +116,14 @@ contains
 
     do j = 1, geometry%ny
       do i = 1, geometry%nx
-        fraction = cell_positive_fraction( &
+        call cell_positive_metrics( &
           node_level_set(i - 1, j - 1), &
           node_level_set(i, j - 1), &
           node_level_set(i, j), &
-          node_level_set(i - 1, j))
+          node_level_set(i - 1, j), fraction, centroid_x, centroid_y)
         geometry%volume_fraction(i, j) = fraction
+        geometry%cell_centroid_x(i, j) = centroid_x
+        geometry%cell_centroid_y(i, j) = centroid_y
         if (fraction <= eb_classification_tolerance) then
           geometry%cell_type(i, j) = eb_covered_cell
         else if (fraction >= 1.0_dp - eb_classification_tolerance) then
@@ -155,6 +163,8 @@ contains
       self%x_upper > self%x_lower .and. self%y_upper > self%y_lower .and. &
       self%dx > 0.0_dp .and. self%dy > 0.0_dp .and. &
       allocated(self%volume_fraction) .and. &
+      allocated(self%cell_centroid_x) .and. &
+      allocated(self%cell_centroid_y) .and. &
       allocated(self%x_face_fraction) .and. &
       allocated(self%y_face_fraction) .and. &
       allocated(self%x_face_centroid_y) .and. &
@@ -176,6 +186,8 @@ contains
           max(1.0_dp, abs(self%y_lower), abs(self%y_upper))
     if (.not. valid) return
     valid = all(shape(self%volume_fraction) == [self%nx, self%ny]) .and. &
+      all(shape(self%cell_centroid_x) == [self%nx, self%ny]) .and. &
+      all(shape(self%cell_centroid_y) == [self%nx, self%ny]) .and. &
       all(shape(self%x_face_fraction) == [self%nx + 1, self%ny]) .and. &
       all(shape(self%y_face_fraction) == [self%nx, self%ny + 1]) .and. &
       all(shape(self%x_face_centroid_y) == [self%nx + 1, self%ny]) .and. &
@@ -191,6 +203,8 @@ contains
         [self%nx, self%ny]) .and. &
       all(shape(self%cell_type) == [self%nx, self%ny]) .and. &
       all(lbound(self%volume_fraction) == [1, 1]) .and. &
+      all(lbound(self%cell_centroid_x) == [1, 1]) .and. &
+      all(lbound(self%cell_centroid_y) == [1, 1]) .and. &
       all(lbound(self%boundary_length) == [1, 1]) .and. &
       all(lbound(self%boundary_centroid_x) == [1, 1]) .and. &
       all(lbound(self%boundary_centroid_y) == [1, 1]) .and. &
@@ -205,6 +219,8 @@ contains
       all(lbound(self%y_face_centroid_x) == [1, 0])
     if (.not. valid) return
     valid = all(ieee_is_finite(self%volume_fraction)) .and. &
+      all(ieee_is_finite(self%cell_centroid_x)) .and. &
+      all(ieee_is_finite(self%cell_centroid_y)) .and. &
       all(ieee_is_finite(self%x_face_fraction)) .and. &
       all(ieee_is_finite(self%y_face_fraction)) .and. &
       all(ieee_is_finite(self%x_face_centroid_y)) .and. &
@@ -218,6 +234,8 @@ contains
       all(ieee_is_finite(self%boundary_normal_integral_y)) .and. &
       minval(self%volume_fraction) >= -tolerance .and. &
       maxval(self%volume_fraction) <= 1.0_dp + tolerance .and. &
+      maxval(abs(self%cell_centroid_x)) <= 0.5_dp + tolerance .and. &
+      maxval(abs(self%cell_centroid_y)) <= 0.5_dp + tolerance .and. &
       minval(self%x_face_fraction) >= -tolerance .and. &
       maxval(self%x_face_fraction) <= 1.0_dp + tolerance .and. &
       minval(self%y_face_fraction) >= -tolerance .and. &
@@ -227,6 +245,10 @@ contains
       minval(self%boundary_length) >= 0.0_dp .and. &
       all(self%cell_type >= eb_covered_cell) .and. &
       all(self%cell_type <= eb_regular_cell)
+    if (.not. valid) return
+    valid = all(((self%cell_type == eb_cut_cell) .or. &
+      (abs(self%cell_centroid_x) <= 8.0_dp * tolerance .and. &
+       abs(self%cell_centroid_y) <= 8.0_dp * tolerance)))
     if (.not. valid) return
     valid = all((self%volume_fraction >= &
       1.0_dp - eb_classification_tolerance) .eqv. &
@@ -570,34 +592,69 @@ contains
     end if
   end subroutine positive_segment_metrics
 
-  pure real(dp) function cell_positive_fraction( &
-      lower_left, lower_right, upper_right, upper_left) result(fraction)
+  pure subroutine cell_positive_metrics( &
+      lower_left, lower_right, upper_right, upper_left, fraction, &
+      centroid_offset_x, centroid_offset_y)
     real(dp), intent(in) :: lower_left, lower_right, upper_right, upper_left
+    real(dp), intent(out) :: fraction, centroid_offset_x, centroid_offset_y
 
-    fraction = positive_triangle_area( &
+    real(dp) :: first_area, second_area
+    real(dp) :: first_centroid_x, first_centroid_y
+    real(dp) :: second_centroid_x, second_centroid_y
+
+    call positive_triangle_metrics( &
       [0.0_dp, 1.0_dp, 1.0_dp], [0.0_dp, 0.0_dp, 1.0_dp], &
-      [lower_left, lower_right, upper_right]) + &
-      positive_triangle_area( &
-        [0.0_dp, 1.0_dp, 0.0_dp], [0.0_dp, 1.0_dp, 1.0_dp], &
-        [lower_left, upper_right, upper_left])
+      [lower_left, lower_right, upper_right], first_area, &
+      first_centroid_x, first_centroid_y)
+    call positive_triangle_metrics( &
+      [0.0_dp, 1.0_dp, 0.0_dp], [0.0_dp, 1.0_dp, 1.0_dp], &
+      [lower_left, upper_right, upper_left], second_area, &
+      second_centroid_x, second_centroid_y)
+    fraction = first_area + second_area
     fraction = min(1.0_dp, max(0.0_dp, fraction))
-  end function cell_positive_fraction
+    if (fraction > tiny(1.0_dp)) then
+      centroid_offset_x = (first_area * first_centroid_x + &
+        second_area * second_centroid_x) / fraction - 0.5_dp
+      centroid_offset_y = (first_area * first_centroid_y + &
+        second_area * second_centroid_y) / fraction - 0.5_dp
+      centroid_offset_x = min(0.5_dp, max(-0.5_dp, centroid_offset_x))
+      centroid_offset_y = min(0.5_dp, max(-0.5_dp, centroid_offset_y))
+    else
+      centroid_offset_x = 0.0_dp
+      centroid_offset_y = 0.0_dp
+    end if
+    if (fraction >= 1.0_dp - eb_classification_tolerance) then
+      centroid_offset_x = 0.0_dp
+      centroid_offset_y = 0.0_dp
+    end if
+  end subroutine cell_positive_metrics
 
-  pure real(dp) function positive_triangle_area( &
-      vertex_x, vertex_y, vertex_level_set) result(area)
+  pure subroutine positive_triangle_metrics( &
+      vertex_x, vertex_y, vertex_level_set, area, centroid_x, centroid_y)
     real(dp), intent(in) :: vertex_x(3), vertex_y(3)
     real(dp), intent(in) :: vertex_level_set(3)
+    real(dp), intent(out) :: area, centroid_x, centroid_y
 
     real(dp) :: clipped_x(4), clipped_y(4)
     real(dp) :: first_x, first_y, second_x, second_y
-    real(dp) :: first_value, second_value, crossing
+    real(dp) :: first_value, second_value, crossing, cross
+    real(dp) :: signed_area_twice, centroid_numerator_x
+    real(dp) :: centroid_numerator_y
     integer :: edge, next_edge, count, vertex
 
+    area = 0.0_dp
+    centroid_x = 0.0_dp
+    centroid_y = 0.0_dp
     if (maxval(vertex_level_set) <= 0.0_dp) then
-      area = 0.0_dp
       return
     else if (minval(vertex_level_set) > 0.0_dp) then
-      area = 0.5_dp
+      signed_area_twice = &
+        vertex_x(1) * vertex_y(2) - vertex_y(1) * vertex_x(2) + &
+        vertex_x(2) * vertex_y(3) - vertex_y(2) * vertex_x(3) + &
+        vertex_x(3) * vertex_y(1) - vertex_y(3) * vertex_x(1)
+      area = 0.5_dp * abs(signed_area_twice)
+      centroid_x = sum(vertex_x) / 3.0_dp
+      centroid_y = sum(vertex_y) / 3.0_dp
       return
     end if
 
@@ -630,14 +687,24 @@ contains
       end if
     end do
 
-    area = 0.0_dp
     if (count < 3) return
+    signed_area_twice = 0.0_dp
+    centroid_numerator_x = 0.0_dp
+    centroid_numerator_y = 0.0_dp
     do vertex = 1, count
       next_edge = merge(vertex + 1, 1, vertex < count)
-      area = area + clipped_x(vertex) * clipped_y(next_edge) - &
+      cross = clipped_x(vertex) * clipped_y(next_edge) - &
         clipped_y(vertex) * clipped_x(next_edge)
+      signed_area_twice = signed_area_twice + cross
+      centroid_numerator_x = centroid_numerator_x + &
+        (clipped_x(vertex) + clipped_x(next_edge)) * cross
+      centroid_numerator_y = centroid_numerator_y + &
+        (clipped_y(vertex) + clipped_y(next_edge)) * cross
     end do
-    area = min(0.5_dp, max(0.0_dp, 0.5_dp * abs(area)))
-  end function positive_triangle_area
+    if (abs(signed_area_twice) <= tiny(1.0_dp)) return
+    area = min(0.5_dp, max(0.0_dp, 0.5_dp * abs(signed_area_twice)))
+    centroid_x = centroid_numerator_x / (3.0_dp * signed_area_twice)
+    centroid_y = centroid_numerator_y / (3.0_dp * signed_area_twice)
+  end subroutine positive_triangle_metrics
 
 end module eb_geometry_2d_mod

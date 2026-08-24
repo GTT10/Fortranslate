@@ -33,6 +33,7 @@ program test_eb_reactive_redistribution_2d
   real(dp), allocatable :: provisional_state(:, :, :)
   real(dp), allocatable :: redistributed_state(:, :, :)
   real(dp), allocatable :: scalar_state(:, :, :), scalar_redistributed(:, :, :)
+  real(dp), allocatable :: scalar_zeroth_order(:, :, :)
   real(dp) :: level_set(0:nx, 0:ny), mole_fractions(7)
   real(dp) :: overlap_level_set(0:overlap_nx, 0:overlap_ny)
   real(dp) :: reference_rhs(5), temperature_cell, sound_speed
@@ -40,6 +41,7 @@ program test_eb_reactive_redistribution_2d
   real(dp) :: original_integral, redistributed_integral, tolerance
   real(dp) :: alpha, large_kappa, neighborhood_a, neighborhood_b
   real(dp) :: qhat_a, qhat_b, expected_shared
+  real(dp) :: cell_coordinate_x, cell_coordinate_y, linear_error
   logical :: ok
   integer :: i, j, k, nvar
 
@@ -259,6 +261,7 @@ program test_eb_reactive_redistribution_2d
     3.0e-13_dp, "overlap receiving fraction")
   allocate(scalar_state(1, overlap_nx, overlap_ny))
   allocate(scalar_redistributed(1, overlap_nx, overlap_ny))
+  allocate(scalar_zeroth_order(1, overlap_nx, overlap_ny))
   scalar_state = 0.0_dp
   scalar_state(1, 2, 3) = 1.0_dp
   call reactive_eb_weighted_state_redistribute_2d( &
@@ -297,10 +300,75 @@ program test_eb_reactive_redistribution_2d
     mask=overlap_geometry%cell_type == eb_covered_cell) == 0.0_dp, &
     "weighted covered-cell state remains zero")
 
+  do j = 1, overlap_ny
+    do i = 1, overlap_nx
+      cell_coordinate_x = real(i, dp) - 0.5_dp + &
+        overlap_geometry%cell_centroid_x(i, j)
+      cell_coordinate_y = real(j, dp) - 0.5_dp + &
+        overlap_geometry%cell_centroid_y(i, j)
+      scalar_state(1, i, j) = 2.0_dp + 0.17_dp * cell_coordinate_x - &
+        0.11_dp * cell_coordinate_y
+    end do
+  end do
+  call reactive_eb_weighted_state_redistribute_2d( &
+    overlap_geometry, scalar_state, scalar_zeroth_order, ok, 0.5_dp, 0)
+  call require(ok, "zeroth-order affine StateRedist")
+  call reactive_eb_weighted_state_redistribute_2d( &
+    overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, 2)
+  call require(ok, "second-order affine StateRedist")
+  linear_error = maxval(abs(scalar_redistributed - scalar_state), &
+    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1))
+  call require(linear_error <= 2.0e-12_dp, &
+    "second-order affine state preservation")
+  call require(maxval(abs(scalar_zeroth_order - scalar_state), &
+    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) > &
+    1.0e-5_dp, "zeroth-order affine diffusion")
+  original_integral = sum(overlap_geometry%volume_fraction * &
+    scalar_state(1, :, :))
+  redistributed_integral = sum(overlap_geometry%volume_fraction * &
+    scalar_redistributed(1, :, :))
+  call assert_close(redistributed_integral, original_integral, &
+    2.0e-12_dp, "second-order affine conservation")
+
+  scalar_state = 0.0_dp
+  do j = 1, overlap_ny
+    do i = 1, overlap_nx
+      if (overlap_geometry%cell_type(i, j) /= eb_covered_cell .and. &
+          i + j >= 6) scalar_state(1, i, j) = 1.0_dp
+    end do
+  end do
+  call reactive_eb_weighted_state_redistribute_2d( &
+    overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, 2)
+  call require(ok, "limited second-order discontinuous StateRedist")
+  call require(minval(scalar_redistributed, &
+    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) >= &
+    -2.0e-12_dp .and. maxval(scalar_redistributed, &
+    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) <= &
+    1.0_dp + 2.0e-12_dp, "second-order StateRedist monotonicity")
+  original_integral = sum(overlap_geometry%volume_fraction * &
+    scalar_state(1, :, :))
+  redistributed_integral = sum(overlap_geometry%volume_fraction * &
+    scalar_redistributed(1, :, :))
+  call assert_close(redistributed_integral, original_integral, &
+    2.0e-12_dp, "limited second-order conservation")
+
   call reactive_eb_weighted_state_redistribute_2d( &
     overlap_geometry, scalar_state, scalar_redistributed, ok, 0.0_dp)
   call require(.not. ok .and. maxval(abs(scalar_redistributed)) == 0.0_dp, &
     "invalid weighted target transaction")
+  call reactive_eb_weighted_state_redistribute_2d( &
+    overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, 1)
+  call require(.not. ok .and. maxval(abs(scalar_redistributed)) == 0.0_dp, &
+    "invalid StateRedist max-order transaction")
+
+  conservative_rhs = 0.0_dp
+  call advance_reactive_eb_state_redistributed_2d( &
+    species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
+    new_state, new_temperature, ok, 0.5_dp, 1)
+  call require(.not. ok .and. &
+    maxval(abs(new_state - state)) == 0.0_dp .and. &
+    maxval(abs(new_temperature - temperature)) == 0.0_dp, &
+    "invalid max-order reactive advance rollback")
 
   conservative_rhs = 0.0_dp
   conservative_rhs(1, cut_i, 1) = &

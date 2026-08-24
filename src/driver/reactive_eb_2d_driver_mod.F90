@@ -46,7 +46,9 @@ contains
       trim(config%flow%boundary_y_upper) == "outflow" .and. &
       ieee_is_finite(config%state_redist_target_volume_fraction) .and. &
       config%state_redist_target_volume_fraction > 0.0_dp .and. &
-      config%state_redist_target_volume_fraction <= 1.0_dp
+      config%state_redist_target_volume_fraction <= 1.0_dp .and. &
+      (config%state_redist_max_order == 0 .or. &
+       config%state_redist_max_order == 2)
   end function supported_reactive_eb_hydro_config
 
   subroutine build_configured_eb_geometry_2d(config, geometry, ok)
@@ -227,7 +229,7 @@ contains
   subroutine advance_reactive_eb_strang_2d( &
       species, reactions, state, temperature, geometry, solver, dt, &
       chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, reconstruction, limiter)
+      target_volume_fraction, reconstruction, limiter, state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -239,6 +241,7 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: reconstruction, limiter
+    integer, intent(in), optional :: state_redist_max_order
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
@@ -247,6 +250,7 @@ contains
     logical, allocatable :: active_mask(:, :)
     logical :: local_ok
     character(len=32) :: selected_reconstruction, selected_limiter
+    integer :: selected_max_order
 
     new_state = state
     new_temperature = temperature
@@ -266,6 +270,9 @@ contains
     selected_limiter = "mc"
     if (present(reconstruction)) selected_reconstruction = trim(reconstruction)
     if (present(limiter)) selected_limiter = trim(limiter)
+    selected_max_order = 0
+    if (present(state_redist_max_order)) &
+      selected_max_order = state_redist_max_order
 
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
@@ -284,12 +291,14 @@ contains
       call advance_reactive_eb_hydro_2d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
         dt, hydro_state, hydro_temperature, local_ok, &
-        target_volume_fraction, selected_reconstruction, selected_limiter)
+        target_volume_fraction, selected_reconstruction, selected_limiter, &
+        selected_max_order)
     else
       call advance_reactive_eb_hydro_2d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
         dt, hydro_state, hydro_temperature, local_ok, &
-        reconstruction=selected_reconstruction, limiter=selected_limiter)
+        reconstruction=selected_reconstruction, limiter=selected_limiter, &
+        state_redist_max_order=selected_max_order)
     end if
     if (.not. local_ok) return
     candidate_state = hydro_state
@@ -366,7 +375,8 @@ contains
         config%flow%chemistry_absolute_tolerance, candidate_state, &
         candidate_temperature, local_ok, &
         config%state_redist_target_volume_fraction, &
-        config%flow%reconstruction, config%flow%limiter)
+        config%flow%reconstruction, config%flow%limiter, &
+        config%state_redist_max_order)
       if (.not. local_ok) return
       state = candidate_state
       temperature = candidate_temperature

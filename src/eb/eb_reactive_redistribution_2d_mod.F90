@@ -220,12 +220,13 @@ contains
 
   subroutine reactive_eb_weighted_state_redistribute_2d( &
       geometry, provisional_state, redistributed_state, ok, &
-      target_volume_fraction)
+      target_volume_fraction, max_order)
     type(eb_geometry_2d), intent(in) :: geometry
     real(dp), intent(in) :: provisional_state(:, :, :)
     real(dp), intent(out) :: redistributed_state(:, :, :)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
+    integer, intent(in), optional :: max_order
 
     integer, allocatable :: neighbor_count(:, :)
     integer, allocatable :: neighbor_offset_i(:, :, :)
@@ -234,9 +235,13 @@ contains
     real(dp), allocatable :: alpha_self(:, :), alpha_neighbor(:, :)
     real(dp), allocatable :: neighborhood_volume(:, :)
     real(dp), allocatable :: neighborhood_state(:, :, :)
+    real(dp), allocatable :: neighborhood_centroid_x(:, :)
+    real(dp), allocatable :: neighborhood_centroid_y(:, :)
+    real(dp), allocatable :: slope_x(:, :, :), slope_y(:, :, :)
     real(dp), allocatable :: candidate(:, :, :)
     real(dp) :: target
     integer :: i, j, neighbor, neighbor_i, neighbor_j, ncomp
+    integer :: selected_max_order
 
     redistributed_state = 0.0_dp
     ok = .false.
@@ -252,6 +257,9 @@ contains
     if (present(target_volume_fraction)) target = target_volume_fraction
     if (.not. ieee_is_finite(target) .or. &
         target <= 0.0_dp .or. target > 1.0_dp) return
+    selected_max_order = 0
+    if (present(max_order)) selected_max_order = max_order
+    if (selected_max_order /= 0 .and. selected_max_order /= 2) return
 
     allocate(neighbor_count(geometry%nx, geometry%ny))
     allocate(neighbor_offset_i(3, geometry%nx, geometry%ny))
@@ -260,8 +268,8 @@ contains
     allocate(alpha_self(geometry%nx, geometry%ny))
     allocate(alpha_neighbor(geometry%nx, geometry%ny))
     allocate(neighborhood_volume(geometry%nx, geometry%ny))
-    ! Match AMReX StateRedist with max_order=0: build the overlapping
-    ! neighborhoods and their partition before averaging the provisional state.
+    ! Match AMReX StateRedist: build the overlapping neighborhoods and their
+    ! partition before reconstructing the provisional state.
     call build_state_redistribution_neighborhoods( &
       geometry, target, neighbor_count, neighbor_offset_i, &
       neighbor_offset_j, neighborhood_count, alpha_self, alpha_neighbor, &
@@ -269,15 +277,27 @@ contains
     if (.not. ok) return
 
     allocate(neighborhood_state(ncomp, geometry%nx, geometry%ny))
+    allocate(neighborhood_centroid_x(geometry%nx, geometry%ny))
+    allocate(neighborhood_centroid_y(geometry%nx, geometry%ny))
+    allocate(slope_x(ncomp, geometry%nx, geometry%ny))
+    allocate(slope_y(ncomp, geometry%nx, geometry%ny))
     allocate(candidate(ncomp, geometry%nx, geometry%ny))
     neighborhood_state = 0.0_dp
+    neighborhood_centroid_x = 0.0_dp
+    neighborhood_centroid_y = 0.0_dp
+    slope_x = 0.0_dp
+    slope_y = 0.0_dp
     candidate = 0.0_dp
-    ! Form each zeroth-order neighborhood state Qhat.
+    ! Form Qhat and its volume centroid in cell-width coordinates.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
         neighborhood_state(:, i, j) = alpha_self(i, j) * &
           geometry%volume_fraction(i, j) * provisional_state(:, i, j)
+        neighborhood_centroid_x(i, j) = alpha_self(i, j) * &
+          geometry%volume_fraction(i, j) * geometry%cell_centroid_x(i, j)
+        neighborhood_centroid_y(i, j) = alpha_self(i, j) * &
+          geometry%volume_fraction(i, j) * geometry%cell_centroid_y(i, j)
         do neighbor = 1, neighbor_count(i, j)
           neighbor_i = i + neighbor_offset_i(neighbor, i, j)
           neighbor_j = j + neighbor_offset_j(neighbor, i, j)
@@ -286,25 +306,64 @@ contains
             geometry%volume_fraction(neighbor_i, neighbor_j) * &
             provisional_state(:, neighbor_i, neighbor_j) / &
             real(neighborhood_count(neighbor_i, neighbor_j), dp)
+          neighborhood_centroid_x(i, j) = neighborhood_centroid_x(i, j) + &
+            alpha_neighbor(i, j) * &
+            geometry%volume_fraction(neighbor_i, neighbor_j) * &
+            (real(neighbor_i - i, dp) + &
+             geometry%cell_centroid_x(neighbor_i, neighbor_j)) / &
+            real(neighborhood_count(neighbor_i, neighbor_j), dp)
+          neighborhood_centroid_y(i, j) = neighborhood_centroid_y(i, j) + &
+            alpha_neighbor(i, j) * &
+            geometry%volume_fraction(neighbor_i, neighbor_j) * &
+            (real(neighbor_j - j, dp) + &
+             geometry%cell_centroid_y(neighbor_i, neighbor_j)) / &
+            real(neighborhood_count(neighbor_i, neighbor_j), dp)
         end do
         neighborhood_state(:, i, j) = neighborhood_state(:, i, j) / &
           neighborhood_volume(i, j)
+        neighborhood_centroid_x(i, j) = neighborhood_centroid_x(i, j) / &
+          neighborhood_volume(i, j)
+        neighborhood_centroid_y(i, j) = neighborhood_centroid_y(i, j) / &
+          neighborhood_volume(i, j)
       end do
     end do
+    if (selected_max_order == 2) then
+      call build_state_redistribution_slopes( &
+        geometry, neighborhood_state, neighborhood_centroid_x, &
+        neighborhood_centroid_y, slope_x, slope_y, ok)
+      if (.not. ok) return
+    end if
 
-    ! Scatter every Qhat through the same self/neighbor partition.
+    ! Scatter every reconstructed Qhat through the same self/neighbor
+    ! partition. The neighborhood centroid makes the linear correction
+    ! volume conservative by construction.
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
         candidate(:, i, j) = candidate(:, i, j) + &
           alpha_self(i, j) * real(neighborhood_count(i, j), dp) * &
-          neighborhood_state(:, i, j)
+          (neighborhood_state(:, i, j) + &
+           slope_x(:, i, j) * &
+             (geometry%cell_centroid_x(i, j) - &
+              neighborhood_centroid_x(i, j)) + &
+           slope_y(:, i, j) * &
+             (geometry%cell_centroid_y(i, j) - &
+              neighborhood_centroid_y(i, j)))
         do neighbor = 1, neighbor_count(i, j)
           neighbor_i = i + neighbor_offset_i(neighbor, i, j)
           neighbor_j = j + neighbor_offset_j(neighbor, i, j)
           candidate(:, neighbor_i, neighbor_j) = &
             candidate(:, neighbor_i, neighbor_j) + &
-            alpha_neighbor(i, j) * neighborhood_state(:, i, j)
+            alpha_neighbor(i, j) * &
+            (neighborhood_state(:, i, j) + &
+             slope_x(:, i, j) * &
+               (real(neighbor_i - i, dp) + &
+                geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_x(i, j)) + &
+             slope_y(:, i, j) * &
+               (real(neighbor_j - j, dp) + &
+                geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_y(i, j)))
         end do
       end do
     end do
@@ -324,6 +383,251 @@ contains
     redistributed_state = candidate
     ok = .true.
   end subroutine reactive_eb_weighted_state_redistribute_2d
+
+  subroutine build_state_redistribution_slopes( &
+      geometry, neighborhood_state, neighborhood_centroid_x, &
+      neighborhood_centroid_y, slope_x, slope_y, ok)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: neighborhood_state(:, :, :)
+    real(dp), intent(in) :: neighborhood_centroid_x(:, :)
+    real(dp), intent(in) :: neighborhood_centroid_y(:, :)
+    real(dp), intent(out) :: slope_x(:, :, :), slope_y(:, :, :)
+    logical, intent(out) :: ok
+
+    real(dp), parameter :: limiter_epsilon = 1.0e-12_dp
+    real(dp), parameter :: rank_tolerance = &
+      4096.0_dp * epsilon(1.0_dp)
+    real(dp) :: ata_xx, ata_xy, ata_yy, determinant, determinant_scale
+    real(dp) :: delta_x, delta_y, delta_state, atb_x, atb_y
+    real(dp) :: predicted, local_minimum, local_maximum
+    real(dp) :: limiter_x, limiter_y, limiter, small
+    integer :: i, j, ii, jj, neighbor_i, neighbor_j, component, radius
+
+    slope_x = 0.0_dp
+    slope_y = 0.0_dp
+    ok = .false.
+    if (any(.not. ieee_is_finite(neighborhood_state)) .or. &
+        any(.not. ieee_is_finite(neighborhood_centroid_x)) .or. &
+        any(.not. ieee_is_finite(neighborhood_centroid_y))) return
+
+    do j = 1, geometry%ny
+      do i = 1, geometry%nx
+        if (geometry%cell_type(i, j) == eb_covered_cell) cycle
+        radius = 1
+        call build_normal_matrix(radius, ata_xx, ata_xy, ata_yy)
+        determinant = ata_xx * ata_yy - ata_xy * ata_xy
+        determinant_scale = max(1.0_dp, ata_xx * ata_yy)
+        if (abs(determinant) <= rank_tolerance * determinant_scale) then
+          radius = 2
+          call build_normal_matrix(radius, ata_xx, ata_xy, ata_yy)
+          determinant = ata_xx * ata_yy - ata_xy * ata_xy
+          determinant_scale = max(1.0_dp, ata_xx * ata_yy)
+        end if
+
+        do component = 1, size(neighborhood_state, 1)
+          atb_x = 0.0_dp
+          atb_y = 0.0_dp
+          do jj = -radius, radius
+            neighbor_j = j + jj
+            if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
+            do ii = -radius, radius
+              neighbor_i = i + ii
+              if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
+              if (.not. slope_stencil_cell_is_usable( &
+                  geometry, i, j, ii, jj, radius)) cycle
+              delta_x = real(ii, dp) + &
+                neighborhood_centroid_x(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_x(i, j)
+              delta_y = real(jj, dp) + &
+                neighborhood_centroid_y(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_y(i, j)
+              delta_state = neighborhood_state( &
+                component, neighbor_i, neighbor_j) - &
+                neighborhood_state(component, i, j)
+              atb_x = atb_x + delta_x * delta_state
+              atb_y = atb_y + delta_y * delta_state
+            end do
+          end do
+          if (abs(determinant) > rank_tolerance * determinant_scale) then
+            slope_x(component, i, j) = &
+              (atb_x * ata_yy - ata_xy * atb_y) / determinant
+            slope_y(component, i, j) = &
+              (ata_xx * atb_y - atb_x * ata_xy) / determinant
+          else if (ata_xx > rank_tolerance .and. &
+              ata_yy <= rank_tolerance) then
+            slope_x(component, i, j) = atb_x / ata_xx
+          else if (ata_yy > rank_tolerance .and. &
+              ata_xx <= rank_tolerance) then
+            slope_y(component, i, j) = atb_y / ata_yy
+          end if
+
+          ! AMReX StateRedist limits predictions at neighboring neighborhood
+          ! centroids, independently scaling each nonzero slope component.
+          limiter_x = 1.0_dp
+          limiter_y = 1.0_dp
+          do jj = -1, 1
+            neighbor_j = j + jj
+            if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
+            do ii = -1, 1
+              neighbor_i = i + ii
+              if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
+              if (.not. state_redistribution_cells_connected( &
+                  geometry, i, j, ii, jj)) cycle
+              delta_x = real(ii, dp) + &
+                neighborhood_centroid_x(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_x(i, j)
+              delta_y = real(jj, dp) + &
+                neighborhood_centroid_y(neighbor_i, neighbor_j) - &
+                neighborhood_centroid_y(i, j)
+              predicted = neighborhood_state(component, i, j) + &
+                delta_x * slope_x(component, i, j) + &
+                delta_y * slope_y(component, i, j)
+              local_minimum = min(neighborhood_state(component, i, j), &
+                neighborhood_state(component, neighbor_i, neighbor_j))
+              local_maximum = max(neighborhood_state(component, i, j), &
+                neighborhood_state(component, neighbor_i, neighbor_j))
+              small = limiter_epsilon * &
+                max(abs(local_minimum), abs(local_maximum))
+              limiter = 1.0_dp
+              if (predicted - neighborhood_state(component, i, j) > small) then
+                limiter = min(1.0_dp, &
+                  (local_maximum - neighborhood_state(component, i, j)) / &
+                  (predicted - neighborhood_state(component, i, j)))
+              else if (predicted - neighborhood_state(component, i, j) < &
+                  -small) then
+                limiter = min(1.0_dp, &
+                  (local_minimum - neighborhood_state(component, i, j)) / &
+                  (predicted - neighborhood_state(component, i, j)))
+              end if
+              limiter = max(0.0_dp, limiter)
+              if (abs(delta_x) > limiter_epsilon) &
+                limiter_x = min(limiter_x, limiter)
+              if (abs(delta_y) > limiter_epsilon) &
+                limiter_y = min(limiter_y, limiter)
+            end do
+          end do
+          slope_x(component, i, j) = limiter_x * slope_x(component, i, j)
+          slope_y(component, i, j) = limiter_y * slope_y(component, i, j)
+        end do
+      end do
+    end do
+    if (any(.not. ieee_is_finite(slope_x)) .or. &
+        any(.not. ieee_is_finite(slope_y))) return
+    ok = .true.
+
+  contains
+
+    subroutine build_normal_matrix( &
+        stencil_radius, matrix_xx, matrix_xy, matrix_yy)
+      integer, intent(in) :: stencil_radius
+      real(dp), intent(out) :: matrix_xx, matrix_xy, matrix_yy
+
+      matrix_xx = 0.0_dp
+      matrix_xy = 0.0_dp
+      matrix_yy = 0.0_dp
+      do jj = -stencil_radius, stencil_radius
+        neighbor_j = j + jj
+        if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
+        do ii = -stencil_radius, stencil_radius
+          neighbor_i = i + ii
+          if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
+          if (.not. slope_stencil_cell_is_usable( &
+              geometry, i, j, ii, jj, stencil_radius)) cycle
+          delta_x = real(ii, dp) + &
+            neighborhood_centroid_x(neighbor_i, neighbor_j) - &
+            neighborhood_centroid_x(i, j)
+          delta_y = real(jj, dp) + &
+            neighborhood_centroid_y(neighbor_i, neighbor_j) - &
+            neighborhood_centroid_y(i, j)
+          matrix_xx = matrix_xx + delta_x * delta_x
+          matrix_xy = matrix_xy + delta_x * delta_y
+          matrix_yy = matrix_yy + delta_y * delta_y
+        end do
+      end do
+    end subroutine build_normal_matrix
+
+  end subroutine build_state_redistribution_slopes
+
+  pure logical function slope_stencil_cell_is_usable( &
+      geometry, i, j, offset_i, offset_j, radius) result(usable)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: i, j, offset_i, offset_j, radius
+    integer :: neighbor_i, neighbor_j
+
+    usable = .false.
+    if (offset_i == 0 .and. offset_j == 0) return
+    neighbor_i = i + offset_i
+    neighbor_j = j + offset_j
+    if (neighbor_i < 1 .or. neighbor_i > geometry%nx .or. &
+        neighbor_j < 1 .or. neighbor_j > geometry%ny) return
+    if (geometry%cell_type(neighbor_i, neighbor_j) == eb_covered_cell) return
+    if (radius == 1) then
+      usable = state_redistribution_cells_connected( &
+        geometry, i, j, offset_i, offset_j)
+    else
+      usable = .true.
+    end if
+  end function slope_stencil_cell_is_usable
+
+  pure logical function state_redistribution_cells_connected( &
+      geometry, i, j, offset_i, offset_j) result(connected)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: i, j, offset_i, offset_j
+    integer :: neighbor_i, neighbor_j
+    logical :: horizontal_first, vertical_first
+
+    connected = .false.
+    if (abs(offset_i) > 1 .or. abs(offset_j) > 1) return
+    neighbor_i = i + offset_i
+    neighbor_j = j + offset_j
+    if (i < 1 .or. i > geometry%nx .or. j < 1 .or. j > geometry%ny) return
+    if (neighbor_i < 1 .or. neighbor_i > geometry%nx .or. &
+        neighbor_j < 1 .or. neighbor_j > geometry%ny) return
+    if (geometry%cell_type(i, j) == eb_covered_cell .or. &
+        geometry%cell_type(neighbor_i, neighbor_j) == eb_covered_cell) return
+    if (offset_i == 0 .and. offset_j == 0) then
+      connected = .true.
+    else if (offset_j == 0) then
+      connected = cardinal_cells_connected( &
+        geometry, i, j, neighbor_i, neighbor_j)
+    else if (offset_i == 0) then
+      connected = cardinal_cells_connected( &
+        geometry, i, j, neighbor_i, neighbor_j)
+    else
+      horizontal_first = cardinal_cells_connected( &
+        geometry, i, j, neighbor_i, j)
+      if (horizontal_first) horizontal_first = cardinal_cells_connected( &
+        geometry, neighbor_i, j, neighbor_i, neighbor_j)
+      vertical_first = cardinal_cells_connected( &
+        geometry, i, j, i, neighbor_j)
+      if (vertical_first) vertical_first = cardinal_cells_connected( &
+        geometry, i, neighbor_j, neighbor_i, neighbor_j)
+      connected = horizontal_first .or. vertical_first
+    end if
+  end function state_redistribution_cells_connected
+
+  pure logical function cardinal_cells_connected( &
+      geometry, first_i, first_j, second_i, second_j) result(connected)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: first_i, first_j, second_i, second_j
+
+    connected = .false.
+    if (first_i < 1 .or. first_i > geometry%nx .or. &
+        second_i < 1 .or. second_i > geometry%nx .or. &
+        first_j < 1 .or. first_j > geometry%ny .or. &
+        second_j < 1 .or. second_j > geometry%ny) return
+    if (geometry%cell_type(first_i, first_j) == eb_covered_cell .or. &
+        geometry%cell_type(second_i, second_j) == eb_covered_cell) return
+    if (second_i == first_i + 1 .and. second_j == first_j) then
+      connected = geometry%x_face_fraction(first_i, first_j) > 0.0_dp
+    else if (second_i == first_i - 1 .and. second_j == first_j) then
+      connected = geometry%x_face_fraction(second_i, first_j) > 0.0_dp
+    else if (second_j == first_j + 1 .and. second_i == first_i) then
+      connected = geometry%y_face_fraction(first_i, first_j) > 0.0_dp
+    else if (second_j == first_j - 1 .and. second_i == first_i) then
+      connected = geometry%y_face_fraction(first_i, second_j) > 0.0_dp
+    end if
+  end function cardinal_cells_connected
 
   subroutine build_state_redistribution_neighborhoods( &
       geometry, target, neighbor_count, neighbor_offset_i, &
@@ -541,7 +845,7 @@ contains
 
   subroutine advance_reactive_eb_state_redistributed_2d( &
       species, state, temperature, geometry, conservative_rhs, dt, &
-      new_state, new_temperature, ok, target_volume_fraction)
+      new_state, new_temperature, ok, target_volume_fraction, max_order)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(in) :: geometry
@@ -549,6 +853,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
+    integer, intent(in), optional :: max_order
 
     real(dp), allocatable :: provisional_state(:, :, :)
     real(dp), allocatable :: redistributed_state(:, :, :)
@@ -556,7 +861,8 @@ contains
     real(dp), allocatable :: candidate_temperature(:, :), primitive(:)
     real(dp) :: recovered_temperature, sound_speed
     logical :: local_ok
-    integer :: i, j, nvar
+    integer :: i, j, nvar, selected_max_order
+    real(dp) :: selected_target
 
     new_state = 0.0_dp
     new_temperature = 0.0_dp
@@ -587,14 +893,13 @@ contains
           dt * conservative_rhs(:, i, j)
       end do
     end do
-    if (present(target_volume_fraction)) then
-      call reactive_eb_weighted_state_redistribute_2d( &
-        geometry, provisional_state, redistributed_state, local_ok, &
-        target_volume_fraction)
-    else
-      call reactive_eb_weighted_state_redistribute_2d( &
-        geometry, provisional_state, redistributed_state, local_ok)
-    end if
+    selected_target = 0.5_dp
+    if (present(target_volume_fraction)) selected_target = target_volume_fraction
+    selected_max_order = 0
+    if (present(max_order)) selected_max_order = max_order
+    call reactive_eb_weighted_state_redistribute_2d( &
+      geometry, provisional_state, redistributed_state, local_ok, &
+      selected_target, selected_max_order)
     if (.not. local_ok) return
 
     allocate(candidate_state(nvar, geometry%nx, geometry%ny))

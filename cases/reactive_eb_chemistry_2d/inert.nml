@@ -42,4 +42,5 @@
   plane_normal_y = 0.0
   plane_offset = 0.00137
   state_redist_target_volume_fraction = 0.5
+  state_redist_max_order = 2
 /

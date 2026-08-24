@@ -63,7 +63,7 @@ contains
   subroutine advance_reactive_eb_hydro_2d( &
       species, state, temperature, geometry, solver, dt, &
       new_state, new_temperature, ok, target_volume_fraction, &
-      reconstruction, limiter)
+      reconstruction, limiter, state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(in) :: geometry
@@ -73,11 +73,13 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: reconstruction, limiter
+    integer, intent(in), optional :: state_redist_max_order
 
     real(dp), allocatable :: x_flux(:, :, :), y_flux(:, :, :)
     real(dp), allocatable :: conservative_rhs(:, :, :)
     logical :: local_ok
-    integer :: nvar
+    integer :: nvar, selected_max_order
+    real(dp) :: selected_target
 
     new_state = 0.0_dp
     new_temperature = 0.0_dp
@@ -107,15 +109,15 @@ contains
       conservative_rhs, local_ok)
     if (.not. local_ok) return
 
-    if (present(target_volume_fraction)) then
-      call advance_reactive_eb_state_redistributed_2d( &
-        species, state, temperature, geometry, conservative_rhs, dt, &
-        new_state, new_temperature, local_ok, target_volume_fraction)
-    else
-      call advance_reactive_eb_state_redistributed_2d( &
-        species, state, temperature, geometry, conservative_rhs, dt, &
-        new_state, new_temperature, local_ok)
-    end if
+    selected_target = 0.5_dp
+    if (present(target_volume_fraction)) selected_target = target_volume_fraction
+    selected_max_order = 0
+    if (present(state_redist_max_order)) &
+      selected_max_order = state_redist_max_order
+    call advance_reactive_eb_state_redistributed_2d( &
+      species, state, temperature, geometry, conservative_rhs, dt, &
+      new_state, new_temperature, local_ok, selected_target, &
+      selected_max_order)
     if (.not. local_ok) return
     ok = .true.
   end subroutine advance_reactive_eb_hydro_2d
