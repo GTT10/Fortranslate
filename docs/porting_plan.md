@@ -590,7 +590,9 @@ Required capabilities:
 - [x] stationary reactive slip-wall flux and cut-cell source (`0.76.0`)
 - [x] Cartesian face-fraction flux divergence (`0.77.0`)
 - [x] first-order conservative FluxRedist and state update (`0.78.0`)
-- weighted StateRedist with higher-order neighborhood reconstruction
+- [x] zeroth-order weighted StateRedist with overlapping neighborhoods
+  (`0.79.0`)
+- higher-order StateRedist neighborhood reconstruction and limiting
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

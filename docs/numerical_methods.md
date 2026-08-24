@@ -1382,6 +1382,30 @@ is `kappa*Rc + (1-kappa)*Rnc`. The removed extensive update
 and added to each neighbor. Thus the volume-weighted domain update is unchanged
 while the cut-cell contribution no longer contains an unscaled `1/kappa`
 factor. The reactive forward update is committed only after every active cell
-passes conserved-to-primitive EOS recovery. Weighted StateRedist, periodic or
-physical-boundary neighborhoods, and higher-order redistribution are not yet
-claimed.
+passes conserved-to-primitive EOS recovery.
+
+The alternative weighted StateRedist path operates on the provisional state,
+not on its right-hand side. A cell with `0 < kappa < 0.5` selects the dominant
+direction of the aperture-difference normal. If the accumulated fluid volume
+is below `0.5`, or the two normal components have equal magnitude, the
+orthogonal neighbor and then the connecting diagonal are included. This is the
+two-dimensional AMReX `MakeITracker` construction with at most three
+neighbors and no periodic wrapping.
+
+Let `M_i` be the selected neighbors of cell `i`, and let `N_j` count how many
+neighborhoods contain cell `j`, including its own. For a merging cell,
+`beta_i = (0.5-kappa_i)/sum_(j in M_i) kappa_j`. Its self partition is
+`alpha_i = 1-sum_(d: i in M_d) beta_d/N_i`. The weighted neighborhood volume
+and zeroth-order state are
+`Vhat_i = alpha_i*kappa_i + sum_(j in M_i) beta_i*kappa_j/N_j` and
+`Qhat_i = (alpha_i*kappa_i*U_i + sum_(j in M_i)
+beta_i*kappa_j*U_j/N_j)/Vhat_i`. Redistribution returns
+`U'_j = alpha_j*Qhat_j + sum_(i: j in M_i) beta_i*Qhat_i/N_j`.
+The partition makes the volume-weighted sum of `U'` equal that of `U`, while a
+uniform state gives every `Qhat` and every output cell the same value.
+
+The reactive StateRedist advance builds `U = U_old + dt*R`, redistributes all
+conserved components together, and commits state and recovered temperature
+only if every active cell passes the general-EOS conversion. Higher-order
+StateRedist slopes, periodic/ghost-cell neighborhoods, and multilevel
+redistribution are not yet claimed.

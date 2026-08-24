@@ -880,6 +880,10 @@ fraction. Interface length, centroid, representative unit normal, and
 integrated normal support a pressure-only reactive slip wall. The EB operator
 combines open-face and wall fluxes, then the first-order redistribution module
 stabilizes its right-hand side and transactionally recovers the updated
-reactive state. Flux construction beside covered cells, weighted StateRedist,
-thermal/viscous/catalytic walls, and AMR/MPI ownership remain outside this
-subsystem.
+reactive state. A second path applies zeroth-order weighted StateRedist to the
+provisional conserved state. It derives up to three merge neighbors from the
+face-aperture normal, represents overlapping neighborhoods explicitly, and
+uses partitioned self/neighbor weights before the EOS-validated commit. Flux
+construction beside covered cells, higher-order StateRedist, periodic ghost
+neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
+outside this subsystem.

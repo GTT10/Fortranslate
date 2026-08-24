@@ -1198,3 +1198,16 @@ remain exactly inert, and redistribution must have one-face support. A
 volume-fraction `0.05` reactive cell must remain EOS-valid for a step whose raw
 update has negative density; a genuinely nonphysical result must roll back the
 entire state and temperature arrays in GNU Fortran Debug and Release suites.
+
+## 0.79.0 weighted StateRedist gates
+
+The zeroth-order StateRedist path is accepted only while its target volume
+fraction defaults to `0.5`, merge neighborhoods follow the aperture-normal
+ordering, and every recipient is divided by the number of neighborhoods that
+contain it. Two diagonal-plane small cells must share one recipient with the
+analytical `nrs = 3` weighted result. Both that overlapping case and a full
+reactive state must retain every volume-weighted component to `8e-13`
+absolute/relative tolerance, and a uniform active state must remain unchanged.
+A volume-fraction `0.05` provisional state with negative density must become
+EOS-valid, while a stronger nonphysical update, invalid target, or nonfinite
+input must fail transactionally in GNU Fortran Debug and Release suites.

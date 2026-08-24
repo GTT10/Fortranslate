@@ -1296,3 +1296,23 @@ This qualifies the documented first-order AMReX FluxRedist construction on a
 single Cartesian level. PeleC's default weighted StateRedist, boundary/periodic
 redistribution neighborhoods, higher-order reconstruction, EB flux generation,
 AMR coupling, and MPI distribution remain separate milestones.
+
+## Weighted EB state redistribution (`0.79.0`)
+
+- [x] AMReX-style aperture-normal merge-neighborhood construction
+- [x] default target volume fraction `0.5`
+- [x] one, two, and diagonal third-neighbor selection in two dimensions
+- [x] explicit overlapping-neighborhood count (`nrs`)
+- [x] partitioned self and neighbor weights (`alpha`)
+- [x] zeroth-order weighted neighborhood states
+- [x] exact uniform-state preservation and componentwise conservation gates
+- [x] shared-cell analytical gate for two overlapping small-cell neighborhoods
+- [x] EOS-validated provisional reactive-state update with full rollback
+- [x] positive update at volume fraction `0.05` where the raw state is negative
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This matches the current PeleC default combination of `StateRedist` and
+`eb_srd_max_order = 0` on one nonperiodic Cartesian level. Higher-order
+reconstruction and limiting, periodic/physical ghost-cell neighborhoods,
+multilevel redistribution, EB flux generation, AMR coupling, and MPI
+distribution remain separate milestones.
