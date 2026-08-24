@@ -11,9 +11,11 @@ module reactive_transport_2d_mod
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_conserved_to_primitive
   use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
+    reactive_boundary_face_2d, reactive_boundary_set_2d, &
+    initialize_periodic_boundary_set_2d, validate_reactive_boundary_set_2d, &
     sample_reactive_primitive_2d, reactive_boundary_is_periodic, &
-    reactive_boundary_is_wall, reactive_boundary_is_inflow
+    reactive_boundary_is_wall, reactive_boundary_is_inflow, &
+    reactive_boundary_has_prescribed_species_flux
   implicit none
   private
 
@@ -185,6 +187,39 @@ contains
         max(1.0_dp, maxval(abs(species_flux)))
   end subroutine species_face_flux
 
+  subroutine prescribed_wall_species_flux( &
+      face, coordinate_sign, hface, species_flux, enthalpy_flux, ok)
+    type(reactive_boundary_face_2d), intent(in) :: face
+    real(dp), intent(in) :: coordinate_sign, hface(:)
+    real(dp), intent(out) :: species_flux(:), enthalpy_flux
+    logical, intent(out) :: ok
+
+    real(dp) :: scale
+
+    species_flux = 0.0_dp
+    enthalpy_flux = 0.0_dp
+    ok = .false.
+    if (.not. reactive_boundary_has_prescribed_species_flux(face)) return
+    if (.not. allocated(face%prescribed_species_flux)) return
+    if (size(face%prescribed_species_flux) /= size(species_flux) .or. &
+        size(hface) /= size(species_flux)) return
+    if (abs(coordinate_sign) /= 1.0_dp .or. &
+        any(.not. ieee_is_finite(face%prescribed_species_flux))) return
+    scale = max(1.0_dp, maxval(abs(face%prescribed_species_flux)))
+    if (abs(sum(face%prescribed_species_flux)) > &
+        2.0e3_dp * epsilon(1.0_dp) * scale) return
+    species_flux = coordinate_sign * face%prescribed_species_flux
+    if (size(species_flux) > 1) then
+      species_flux(size(species_flux)) = &
+        -sum(species_flux(1:size(species_flux) - 1))
+    else
+      species_flux(1) = 0.0_dp
+    end if
+    enthalpy_flux = sum(hface * species_flux)
+    ok = all(ieee_is_finite(species_flux)) .and. &
+      ieee_is_finite(enthalpy_flux)
+  end subroutine prescribed_wall_species_flux
+
   subroutine transport_face_flux_x( &
       species, transport, primitive, checked_temperature, nx, ny, face_i, j, &
       dx, dy, boundaries, viscosity_enabled, thermal_conduction_enabled, &
@@ -205,7 +240,7 @@ contains
     real(dp), allocatable :: yleft(:), yright(:), yface(:)
     real(dp), allocatable :: xleft(:), xright(:), diffusion(:), hface(:)
     real(dp), allocatable :: species_flux(:)
-    real(dp) :: tleft, tright, ttmp, ttmp2, spacing
+    real(dp) :: tleft, tright, ttmp, ttmp2, spacing, coordinate_sign
     real(dp) :: viscosity, conductivity, density_face, pressure_face
     real(dp) :: dudx, dvdx, dwdx, dudy, dvdy, divu
     real(dp) :: tau_xx, tau_xy, tau_xz, dtdx, uface, vface, wface
@@ -300,11 +335,25 @@ contains
       dtdx = (tright - tleft) / spacing
       flux(iet) = flux(iet) - conductivity * dtdx
     end if
-    if (species_diffusion_enabled .and. .not. wall_face) then
-      call species_face_flux( &
-        species, diffusion, yleft, yright, yface, xleft, xright, hface, &
-        density_face, qleft(5), qright(5), pressure_face, spacing, &
-        barodiffusion_enabled, species_flux, species_energy, local_ok)
+    if (species_diffusion_enabled) then
+      if (wall_face) then
+        species_flux = 0.0_dp
+        species_energy = 0.0_dp
+        local_ok = .true.
+        if (reactive_boundary_has_prescribed_species_flux( &
+            boundaries%face(side))) then
+          coordinate_sign = 1.0_dp
+          if (side == 2) coordinate_sign = -1.0_dp
+          call prescribed_wall_species_flux( &
+            boundaries%face(side), coordinate_sign, hface, species_flux, &
+            species_energy, local_ok)
+        end if
+      else
+        call species_face_flux( &
+          species, diffusion, yleft, yright, yface, xleft, xright, hface, &
+          density_face, qleft(5), qright(5), pressure_face, spacing, &
+          barodiffusion_enabled, species_flux, species_energy, local_ok)
+      end if
       if (.not. local_ok) return
       do k = 1, nspecies
         flux(reactive_species_component(k)) = species_flux(k)
@@ -335,7 +384,7 @@ contains
     real(dp), allocatable :: ylower(:), yupper(:), yface(:)
     real(dp), allocatable :: xlower(:), xupper(:), diffusion(:), hface(:)
     real(dp), allocatable :: species_flux(:)
-    real(dp) :: tlower, tupper, ttmp, ttmp2, spacing
+    real(dp) :: tlower, tupper, ttmp, ttmp2, spacing, coordinate_sign
     real(dp) :: viscosity, conductivity, density_face, pressure_face
     real(dp) :: dudy, dvdy, dwdy, dudx, dvdx, divu
     real(dp) :: tau_yx, tau_yy, tau_yz, dtdy, uface, vface, wface
@@ -430,11 +479,25 @@ contains
       dtdy = (tupper - tlower) / spacing
       flux(iet) = flux(iet) - conductivity * dtdy
     end if
-    if (species_diffusion_enabled .and. .not. wall_face) then
-      call species_face_flux( &
-        species, diffusion, ylower, yupper, yface, xlower, xupper, hface, &
-        density_face, qlower(5), qupper(5), pressure_face, spacing, &
-        barodiffusion_enabled, species_flux, species_energy, local_ok)
+    if (species_diffusion_enabled) then
+      if (wall_face) then
+        species_flux = 0.0_dp
+        species_energy = 0.0_dp
+        local_ok = .true.
+        if (reactive_boundary_has_prescribed_species_flux( &
+            boundaries%face(side))) then
+          coordinate_sign = 1.0_dp
+          if (side == 4) coordinate_sign = -1.0_dp
+          call prescribed_wall_species_flux( &
+            boundaries%face(side), coordinate_sign, hface, species_flux, &
+            species_energy, local_ok)
+        end if
+      else
+        call species_face_flux( &
+          species, diffusion, ylower, yupper, yface, xlower, xupper, hface, &
+          density_face, qlower(5), qupper(5), pressure_face, spacing, &
+          barodiffusion_enabled, species_flux, species_energy, local_ok)
+      end if
       if (.not. local_ok) return
       do k = 1, nspecies
         flux(reactive_species_component(k)) = species_flux(k)
@@ -491,6 +554,17 @@ contains
     else
       call initialize_periodic_boundary_set_2d(nprim, active_boundaries)
     end if
+    call validate_reactive_boundary_set_2d(active_boundaries, local_ok)
+    if (.not. local_ok) return
+    if (.not. species_diffusion_enabled .and. &
+        (reactive_boundary_has_prescribed_species_flux( &
+           active_boundaries%face(1)) .or. &
+         reactive_boundary_has_prescribed_species_flux( &
+           active_boundaries%face(2)) .or. &
+         reactive_boundary_has_prescribed_species_flux( &
+           active_boundaries%face(3)) .or. &
+         reactive_boundary_has_prescribed_species_flux( &
+           active_boundaries%face(4)))) return
     periodic_x = reactive_boundary_is_periodic(active_boundaries%face(1))
     periodic_y = reactive_boundary_is_periodic(active_boundaries%face(3))
     if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &

@@ -1,4 +1,5 @@
 module simulation_config_reactive_2d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   implicit none
   private
@@ -42,6 +43,14 @@ module simulation_config_reactive_2d_mod
     real(dp) :: wall_velocity_x_upper(3) = 0.0_dp
     real(dp) :: wall_velocity_y_lower(3) = 0.0_dp
     real(dp) :: wall_velocity_y_upper(3) = 0.0_dp
+    character(len=24) :: wall_species_x_lower = "impermeable"
+    character(len=24) :: wall_species_x_upper = "impermeable"
+    character(len=24) :: wall_species_y_lower = "impermeable"
+    character(len=24) :: wall_species_y_upper = "impermeable"
+    real(dp) :: prescribed_species_flux_x_lower(10) = 0.0_dp
+    real(dp) :: prescribed_species_flux_x_upper(10) = 0.0_dp
+    real(dp) :: prescribed_species_flux_y_lower(10) = 0.0_dp
+    real(dp) :: prescribed_species_flux_y_upper(10) = 0.0_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -97,13 +106,43 @@ contains
     valid = trim(kind) == "adiabatic" .or. trim(kind) == "isothermal"
   end function valid_thermal_boundary
 
+  pure logical function valid_wall_species_mode(kind) result(valid)
+    character(len=*), intent(in) :: kind
+    valid = trim(kind) == "impermeable" .or. trim(kind) == "prescribed"
+  end function valid_wall_species_mode
+
+  pure logical function valid_wall_species_flux( &
+      mode, boundary_kind, values, nspecies) result(valid)
+    character(len=*), intent(in) :: mode, boundary_kind
+    real(dp), intent(in) :: values(:)
+    integer, intent(in) :: nspecies
+    real(dp) :: scale, tolerance
+
+    valid = .false.
+    if (.not. valid_wall_species_mode(mode) .or. nspecies < 1 .or. &
+        nspecies > size(values) .or. any(.not. ieee_is_finite(values))) return
+    scale = max(1.0_dp, maxval(abs(values)))
+    tolerance = 2.0e3_dp * epsilon(1.0_dp) * scale
+    if (nspecies < size(values)) then
+      if (maxval(abs(values(nspecies + 1:size(values)))) > tolerance) return
+    end if
+    select case (trim(mode))
+    case ("impermeable")
+      valid = maxval(abs(values)) <= tolerance
+    case ("prescribed")
+      valid = (trim(boundary_kind) == "slip_wall" .or. &
+        trim(boundary_kind) == "no_slip_wall") .and. &
+        abs(sum(values(1:nspecies))) <= tolerance
+    end select
+  end function valid_wall_species_flux
+
   subroutine read_reactive_2d_configuration(path, config, ok, message)
     character(len=*), intent(in) :: path
     type(reactive_2d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
 
-    integer :: nx, ny, maximum_steps, unit, status
+    integer :: nx, ny, maximum_steps, unit, status, active_nspecies
     real(dp) :: x_lower, x_upper, y_lower, y_upper, final_time, cfl
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
@@ -111,6 +150,10 @@ contains
     real(dp) :: wall_temperature_y_lower, wall_temperature_y_upper
     real(dp) :: wall_velocity_x_lower(3), wall_velocity_x_upper(3)
     real(dp) :: wall_velocity_y_lower(3), wall_velocity_y_upper(3)
+    real(dp) :: prescribed_species_flux_x_lower(10)
+    real(dp) :: prescribed_species_flux_x_upper(10)
+    real(dp) :: prescribed_species_flux_y_lower(10)
+    real(dp) :: prescribed_species_flux_y_upper(10)
     real(dp) :: initial_temperature, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
@@ -125,12 +168,15 @@ contains
     character(len=24) :: boundary_y_lower, boundary_y_upper
     character(len=24) :: thermal_x_lower, thermal_x_upper
     character(len=24) :: thermal_y_lower, thermal_y_upper
+    character(len=24) :: wall_species_x_lower, wall_species_x_upper
+    character(len=24) :: wall_species_y_lower, wall_species_y_upper
     character(len=256) :: output_file
     logical :: use_transverse_correction, chemistry_enabled
     logical :: transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
+    logical :: has_prescribed_species_wall
     namelist /reactive_2d/ &
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
@@ -143,6 +189,10 @@ contains
       wall_temperature_y_lower, wall_temperature_y_upper, &
       wall_velocity_x_lower, wall_velocity_x_upper, &
       wall_velocity_y_lower, wall_velocity_y_upper, &
+      wall_species_x_lower, wall_species_x_upper, &
+      wall_species_y_lower, wall_species_y_upper, &
+      prescribed_species_flux_x_lower, prescribed_species_flux_x_upper, &
+      prescribed_species_flux_y_lower, prescribed_species_flux_y_upper, &
       ppm_contact_steepening, ppm_shock_flattening, &
       chemistry_relative_tolerance, chemistry_absolute_tolerance, &
       initial_temperature, initial_pressure, initial_velocity_x, &
@@ -192,6 +242,14 @@ contains
     wall_velocity_x_upper = config%wall_velocity_x_upper
     wall_velocity_y_lower = config%wall_velocity_y_lower
     wall_velocity_y_upper = config%wall_velocity_y_upper
+    wall_species_x_lower = config%wall_species_x_lower
+    wall_species_x_upper = config%wall_species_x_upper
+    wall_species_y_lower = config%wall_species_y_lower
+    wall_species_y_upper = config%wall_species_y_upper
+    prescribed_species_flux_x_lower = config%prescribed_species_flux_x_lower
+    prescribed_species_flux_x_upper = config%prescribed_species_flux_x_upper
+    prescribed_species_flux_y_lower = config%prescribed_species_flux_y_lower
+    prescribed_species_flux_y_upper = config%prescribed_species_flux_y_upper
     ppm_contact_steepening = config%ppm_contact_steepening
     ppm_shock_flattening = config%ppm_shock_flattening
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -260,6 +318,38 @@ contains
         trim(chemistry_model) /= "full_h2o2") then
       ok = .false.
       message = "Unknown reactive 2D chemistry model"
+      return
+    end if
+    if (trim(chemistry_model) == "elementary") then
+      active_nspecies = 7
+    else
+      active_nspecies = 10
+    end if
+    if (.not. valid_wall_species_flux( &
+          wall_species_x_lower, boundary_x_lower, &
+          prescribed_species_flux_x_lower, active_nspecies) .or. &
+        .not. valid_wall_species_flux( &
+          wall_species_x_upper, boundary_x_upper, &
+          prescribed_species_flux_x_upper, active_nspecies) .or. &
+        .not. valid_wall_species_flux( &
+          wall_species_y_lower, boundary_y_lower, &
+          prescribed_species_flux_y_lower, active_nspecies) .or. &
+        .not. valid_wall_species_flux( &
+          wall_species_y_upper, boundary_y_upper, &
+          prescribed_species_flux_y_upper, active_nspecies)) then
+      ok = .false.
+      message = "Invalid reactive 2D wall species flux"
+      return
+    end if
+    has_prescribed_species_wall = &
+      trim(wall_species_x_lower) == "prescribed" .or. &
+      trim(wall_species_x_upper) == "prescribed" .or. &
+      trim(wall_species_y_lower) == "prescribed" .or. &
+      trim(wall_species_y_upper) == "prescribed"
+    if (has_prescribed_species_wall .and. &
+        (.not. transport_enabled .or. .not. species_diffusion_enabled)) then
+      ok = .false.
+      message = "Prescribed wall species flux requires species transport"
       return
     end if
     if (trim(chemistry_model) == "elementary" .and. &
@@ -370,6 +460,14 @@ contains
     config%wall_velocity_x_upper = wall_velocity_x_upper
     config%wall_velocity_y_lower = wall_velocity_y_lower
     config%wall_velocity_y_upper = wall_velocity_y_upper
+    config%wall_species_x_lower = trim(wall_species_x_lower)
+    config%wall_species_x_upper = trim(wall_species_x_upper)
+    config%wall_species_y_lower = trim(wall_species_y_lower)
+    config%wall_species_y_upper = trim(wall_species_y_upper)
+    config%prescribed_species_flux_x_lower = prescribed_species_flux_x_lower
+    config%prescribed_species_flux_x_upper = prescribed_species_flux_x_upper
+    config%prescribed_species_flux_y_lower = prescribed_species_flux_y_lower
+    config%prescribed_species_flux_y_upper = prescribed_species_flux_y_upper
     config%ppm_contact_steepening = ppm_contact_steepening
     config%ppm_shock_flattening = ppm_shock_flattening
     config%chemistry_relative_tolerance = chemistry_relative_tolerance

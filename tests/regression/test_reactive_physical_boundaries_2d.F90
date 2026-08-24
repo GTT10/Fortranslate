@@ -2,12 +2,16 @@ program test_reactive_physical_boundaries_2d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use mixture_thermo_mod, only: &
+    mass_fractions_from_mole_fractions, mixture_density
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
   use simulation_config_reactive_2d_mod, only: reactive_2d_config
-  use reactive_1d_mod, only: reactive_nprim, reactive_conserved_to_primitive
+  use reactive_1d_mod, only: &
+    reactive_nprim, reactive_species_component, &
+    reactive_conserved_to_primitive
   use reactive_2d_mod, only: simulate_reactive_2d
   implicit none
 
@@ -25,6 +29,7 @@ program test_reactive_physical_boundaries_2d
   call test_couette_profile()
   call test_thermal_walls()
   call test_uniform_inflow_outflow()
+  call test_prescribed_species_wall()
 
 contains
 
@@ -175,6 +180,85 @@ contains
     call require(maximum_error < 5.0e-12_dp, &
       "uniform fixed inflow/outflow state is preserved")
   end subroutine test_uniform_inflow_outflow
+
+  subroutine test_prescribed_species_wall()
+    type(reactive_2d_config) :: config
+    real(dp), allocatable :: state(:, :, :), temperature(:, :)
+    real(dp) :: mole_fractions(7), mass_fractions(7), density
+    real(dp) :: dx, dy, domain_area, wall_length, expected_transfer
+    real(dp) :: initial_h2, initial_o2, final_h2, final_o2
+    real(dp) :: total_density, total_species, closure_error
+    logical :: local_ok
+    integer :: i, j, k
+
+    call base_config(config)
+    config%nx = 8
+    config%ny = 8
+    config%problem = "uniform_reactor"
+    config%final_time = 5.0e-7_dp
+    config%viscosity_enabled = .false.
+    config%thermal_conduction_enabled = .false.
+    config%species_diffusion_enabled = .true.
+    config%barodiffusion_enabled = .false.
+    config%boundary_y_lower = "slip_wall"
+    config%boundary_y_upper = "slip_wall"
+    config%wall_species_y_lower = "prescribed"
+    config%prescribed_species_flux_y_lower = 0.0_dp
+    config%prescribed_species_flux_y_lower(1) = 5.0e-2_dp
+    config%prescribed_species_flux_y_lower(4) = -5.0e-2_dp
+
+    mole_fractions = [config%x_h2, config%x_h, config%x_o, config%x_o2, &
+      config%x_oh, config%x_h2o, config%x_n2]
+    call mass_fractions_from_mole_fractions( &
+      species, mole_fractions, mass_fractions, local_ok)
+    call require(local_ok, "prescribed-wall composition")
+    density = mixture_density( &
+      species, mass_fractions, config%initial_pressure, &
+      config%initial_temperature, local_ok)
+    call require(local_ok, "prescribed-wall density")
+    domain_area = (config%x_upper - config%x_lower) * &
+      (config%y_upper - config%y_lower)
+    wall_length = config%x_upper - config%x_lower
+    initial_h2 = density * mass_fractions(1) * domain_area
+    initial_o2 = density * mass_fractions(4) * domain_area
+    expected_transfer = 5.0e-2_dp * wall_length * config%final_time
+
+    call run_case(config, state, temperature, dx, dy)
+    final_h2 = sum(state(reactive_species_component(1), :, :)) * dx * dy
+    final_o2 = sum(state(reactive_species_component(4), :, :)) * dx * dy
+    call require(abs((final_h2 - initial_h2) - expected_transfer) <= &
+      2.0e-6_dp * expected_transfer, "prescribed H2 wall inventory")
+    call require(abs((final_o2 - initial_o2) + expected_transfer) <= &
+      2.0e-6_dp * expected_transfer, "prescribed O2 wall inventory")
+    total_density = sum(state(1, :, :)) * dx * dy
+    total_species = 0.0_dp
+    do k = 1, size(species)
+      total_species = total_species + &
+        sum(state(reactive_species_component(k), :, :)) * dx * dy
+    end do
+    call require(abs(total_density - density * domain_area) <= &
+      5.0e-12_dp * max(1.0_dp, density * domain_area), &
+      "prescribed wall total-mass conservation")
+    call require(abs(total_species - total_density) <= &
+      5.0e-12_dp * max(1.0_dp, total_density), &
+      "prescribed wall integrated species closure")
+    closure_error = 0.0_dp
+    do j = 1, config%ny
+      do i = 1, config%nx
+        total_species = 0.0_dp
+        do k = 1, size(species)
+          total_species = total_species + &
+            state(reactive_species_component(k), i, j)
+        end do
+        closure_error = max(closure_error, &
+          abs(total_species - state(1, i, j)) / state(1, i, j))
+      end do
+    end do
+    call require(closure_error < 5.0e-11_dp, &
+      "prescribed wall cellwise species closure")
+    call require(minval(temperature) > 0.0_dp, &
+      "prescribed wall positive temperature")
+  end subroutine test_prescribed_species_wall
 
   subroutine require(condition, message)
     logical, intent(in) :: condition

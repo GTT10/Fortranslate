@@ -11,8 +11,8 @@ program test_reactive_boundary_2d
     reactive_mass_fraction_component, reactive_primitive_to_conserved
   use reactive_boundary_2d_mod, only: &
     reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
-    sample_reactive_primitive_2d, boundary_x_lower, boundary_x_upper, &
-    boundary_y_lower, boundary_y_upper
+    validate_reactive_boundary_set_2d, sample_reactive_primitive_2d, &
+    boundary_x_lower, boundary_x_upper, boundary_y_lower, boundary_y_upper
   use reactive_transport_2d_mod, only: reactive_transport_fluxes_2d_faces
   implicit none
 
@@ -148,6 +148,52 @@ contains
       call require(abs(flux_y(reactive_species_component(k), 1, 0)) < &
         1.0e-20_dp, "impermeable wall species flux")
     end do
+
+    boundaries%face(boundary_y_lower)%wall_species = "prescribed"
+    boundaries%face(boundary_y_upper)%wall_species = "prescribed"
+    boundaries%face(boundary_y_lower)%prescribed_species_flux = 0.0_dp
+    boundaries%face(boundary_y_upper)%prescribed_species_flux = 0.0_dp
+    boundaries%face(boundary_y_lower)%prescribed_species_flux(1) = 2.5e-4_dp
+    boundaries%face(boundary_y_lower)%prescribed_species_flux(4) = -2.5e-4_dp
+    boundaries%face(boundary_y_upper)%prescribed_species_flux(1) = 2.5e-4_dp
+    boundaries%face(boundary_y_upper)%prescribed_species_flux(4) = -2.5e-4_dp
+    call validate_reactive_boundary_set_2d(boundaries, local_ok)
+    call require(local_ok, "balanced prescribed wall species flux")
+    call reactive_transport_fluxes_2d_faces( &
+      species, transport, state, temperature, nx, ny, 1.0e-3_dp, 1.0e-3_dp, &
+      0.0_dp, .false., .false., .true., .false., flux_x, flux_y, theta, &
+      local_ok, boundaries)
+    call require(local_ok, "prescribed wall species transport flux")
+    call require(abs(flux_y(reactive_species_component(1), 1, 0) - &
+      2.5e-4_dp) < 1.0e-15_dp, "lower wall-to-gas species-flux sign")
+    call require(abs(flux_y(reactive_species_component(4), 1, 0) + &
+      2.5e-4_dp) < 1.0e-15_dp, "lower balanced species conversion")
+    call require(abs(flux_y(reactive_species_component(1), 1, ny) + &
+      2.5e-4_dp) < 1.0e-15_dp, "upper wall-to-gas species-flux sign")
+    call require(abs(sum(flux_y( &
+      reactive_species_component(1): &
+      reactive_species_component(size(species)), 1, 0))) < 1.0e-15_dp, &
+      "lower prescribed species-flux closure")
+    call require(abs(flux_y(iet, 1, 0)) > 1.0e-12_dp, &
+      "prescribed species enthalpy flux")
+    call require(abs(flux_y(iet, 1, ny) + flux_y(iet, 1, 0)) < &
+      1.0e-10_dp * max(1.0_dp, abs(flux_y(iet, 1, 0))), &
+      "opposite wall energy-flux orientation")
+
+    boundaries%face(boundary_y_lower)%prescribed_species_flux(4) = 0.0_dp
+    call validate_reactive_boundary_set_2d(boundaries, local_ok)
+    call require(.not. local_ok, "unbalanced prescribed wall flux rejection")
+    boundaries%face(boundary_y_lower)%prescribed_species_flux(4) = -2.5e-4_dp
+    call reactive_transport_fluxes_2d_faces( &
+      species, transport, state, temperature, nx, ny, 1.0e-3_dp, 1.0e-3_dp, &
+      0.0_dp, .false., .false., .false., .false., flux_x, flux_y, theta, &
+      local_ok, boundaries)
+    call require(.not. local_ok, &
+      "prescribed wall requires enabled species transport")
+    boundaries%face(boundary_y_lower)%wall_species = "impermeable"
+    boundaries%face(boundary_y_upper)%wall_species = "impermeable"
+    boundaries%face(boundary_y_lower)%prescribed_species_flux = 0.0_dp
+    boundaries%face(boundary_y_upper)%prescribed_species_flux = 0.0_dp
 
     boundaries%face(boundary_y_lower)%kind = "slip_wall"
     boundaries%face(boundary_y_upper)%kind = "slip_wall"

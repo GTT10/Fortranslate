@@ -1463,6 +1463,24 @@ set_tests_properties(
   PROPERTIES TIMEOUT 300
 )
 
+set(
+  REACTIVE_PRESCRIBED_SPECIES_WALL_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_prescribed_species_wall_2d"
+)
+file(MAKE_DIRECTORY "${REACTIVE_PRESCRIBED_SPECIES_WALL_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_prescribed_species_wall_2d_run
+  COMMAND
+    $<TARGET_FILE:pelef_reactive_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_boundaries_2d/prescribed_species_wall.nml"
+)
+set_tests_properties(
+  regression_reactive_prescribed_species_wall_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_PRESCRIBED_SPECIES_WALL_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+
 
 add_executable(test_pressure_dependent_kinetics unit/test_pressure_dependent_kinetics.F90)
 target_link_libraries(test_pressure_dependent_kinetics PRIVATE pelef_core)

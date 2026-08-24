@@ -1,4 +1,5 @@
 module reactive_boundary_2d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use mixture_thermo_mod, only: &
@@ -20,6 +21,8 @@ module reactive_boundary_2d_mod
     character(len=24) :: thermal = "adiabatic"
     real(dp) :: wall_temperature = 300.0_dp
     real(dp) :: wall_velocity(3) = 0.0_dp
+    character(len=24) :: wall_species = "impermeable"
+    real(dp), allocatable :: prescribed_species_flux(:)
     real(dp) :: inflow_temperature = 300.0_dp
     real(dp), allocatable :: inflow_primitive(:)
   end type reactive_boundary_face_2d
@@ -36,6 +39,7 @@ module reactive_boundary_2d_mod
   public :: reactive_boundary_is_wall
   public :: reactive_boundary_is_inflow
   public :: reactive_boundary_is_outflow
+  public :: reactive_boundary_has_prescribed_species_flux
 
 contains
 
@@ -60,6 +64,13 @@ contains
     is_outflow = trim(face%kind) == "outflow"
   end function reactive_boundary_is_outflow
 
+  pure logical function reactive_boundary_has_prescribed_species_flux(face) &
+      result(has_prescribed_flux)
+    type(reactive_boundary_face_2d), intent(in) :: face
+    has_prescribed_flux = reactive_boundary_is_wall(face) .and. &
+      trim(face%wall_species) == "prescribed"
+  end function reactive_boundary_has_prescribed_species_flux
+
   pure logical function valid_boundary_kind(kind) result(valid)
     character(len=*), intent(in) :: kind
     valid = trim(kind) == "periodic" .or. trim(kind) == "slip_wall" .or. &
@@ -72,9 +83,15 @@ contains
     valid = trim(kind) == "adiabatic" .or. trim(kind) == "isothermal"
   end function valid_thermal_kind
 
+  pure logical function valid_wall_species_kind(kind) result(valid)
+    character(len=*), intent(in) :: kind
+    valid = trim(kind) == "impermeable" .or. trim(kind) == "prescribed"
+  end function valid_wall_species_kind
+
   subroutine validate_reactive_boundary_set_2d(boundaries, ok)
     type(reactive_boundary_set_2d), intent(in) :: boundaries
     logical, intent(out) :: ok
+    real(dp) :: scale, tolerance
     integer :: side
 
     ok = .true.
@@ -83,7 +100,28 @@ contains
       ok = ok .and. valid_thermal_kind(boundaries%face(side)%thermal)
       ok = ok .and. boundaries%face(side)%wall_temperature > 0.0_dp
       ok = ok .and. allocated(boundaries%face(side)%inflow_primitive)
+      ok = ok .and. allocated(boundaries%face(side)%prescribed_species_flux)
       ok = ok .and. boundaries%face(side)%inflow_temperature > 0.0_dp
+      ok = ok .and. valid_wall_species_kind( &
+        boundaries%face(side)%wall_species)
+      if (.not. ok) return
+      ok = ok .and. size(boundaries%face(side)%inflow_primitive) >= 6
+      ok = ok .and. size(boundaries%face(side)%prescribed_species_flux) == &
+        size(boundaries%face(side)%inflow_primitive) - 5
+      ok = ok .and. all(ieee_is_finite( &
+        boundaries%face(side)%prescribed_species_flux))
+      if (.not. ok) return
+      scale = max(1.0_dp, maxval(abs( &
+        boundaries%face(side)%prescribed_species_flux)))
+      tolerance = 2.0e3_dp * epsilon(1.0_dp) * scale
+      if (trim(boundaries%face(side)%wall_species) == "impermeable") then
+        ok = maxval(abs(boundaries%face(side)%prescribed_species_flux)) <= &
+          tolerance
+      else
+        ok = reactive_boundary_is_wall(boundaries%face(side)) .and. &
+          abs(sum(boundaries%face(side)%prescribed_species_flux)) <= tolerance
+      end if
+      if (.not. ok) return
     end do
     ok = ok .and. (reactive_boundary_is_periodic(boundaries%face(boundary_x_lower)) .eqv. &
       reactive_boundary_is_periodic(boundaries%face(boundary_x_upper)))
@@ -94,13 +132,18 @@ contains
   subroutine initialize_periodic_boundary_set_2d(nprimitive, boundaries)
     integer, intent(in) :: nprimitive
     type(reactive_boundary_set_2d), intent(out) :: boundaries
-    integer :: side
+    integer :: side, nspecies
+
+    nspecies = max(1, nprimitive - 5)
 
     do side = 1, 4
       boundaries%face(side)%kind = "periodic"
       boundaries%face(side)%thermal = "adiabatic"
       boundaries%face(side)%wall_temperature = 300.0_dp
       boundaries%face(side)%wall_velocity = 0.0_dp
+      boundaries%face(side)%wall_species = "impermeable"
+      allocate(boundaries%face(side)%prescribed_species_flux(nspecies))
+      boundaries%face(side)%prescribed_species_flux = 0.0_dp
       boundaries%face(side)%inflow_temperature = 300.0_dp
       allocate(boundaries%face(side)%inflow_primitive(nprimitive))
       boundaries%face(side)%inflow_primitive = 0.0_dp
@@ -154,12 +197,41 @@ contains
     boundaries%face(boundary_x_upper)%wall_velocity = config%wall_velocity_x_upper
     boundaries%face(boundary_y_lower)%wall_velocity = config%wall_velocity_y_lower
     boundaries%face(boundary_y_upper)%wall_velocity = config%wall_velocity_y_upper
+    boundaries%face(boundary_x_lower)%wall_species = &
+      trim(config%wall_species_x_lower)
+    boundaries%face(boundary_x_upper)%wall_species = &
+      trim(config%wall_species_x_upper)
+    boundaries%face(boundary_y_lower)%wall_species = &
+      trim(config%wall_species_y_lower)
+    boundaries%face(boundary_y_upper)%wall_species = &
+      trim(config%wall_species_y_upper)
     do side = 1, 4
       boundaries%face(side)%inflow_temperature = config%initial_temperature
       allocate(boundaries%face(side)%inflow_primitive(size(primitive)))
       boundaries%face(side)%inflow_primitive = primitive
+      allocate(boundaries%face(side)%prescribed_species_flux(size(species)))
+      boundaries%face(side)%prescribed_species_flux = 0.0_dp
     end do
+    boundaries%face(boundary_x_lower)%prescribed_species_flux = &
+      config%prescribed_species_flux_x_lower(1:size(species))
+    boundaries%face(boundary_x_upper)%prescribed_species_flux = &
+      config%prescribed_species_flux_x_upper(1:size(species))
+    boundaries%face(boundary_y_lower)%prescribed_species_flux = &
+      config%prescribed_species_flux_y_lower(1:size(species))
+    boundaries%face(boundary_y_upper)%prescribed_species_flux = &
+      config%prescribed_species_flux_y_upper(1:size(species))
     call validate_reactive_boundary_set_2d(boundaries, ok)
+    if (.not. ok) return
+    if ((reactive_boundary_has_prescribed_species_flux( &
+          boundaries%face(boundary_x_lower)) .or. &
+        reactive_boundary_has_prescribed_species_flux( &
+          boundaries%face(boundary_x_upper)) .or. &
+        reactive_boundary_has_prescribed_species_flux( &
+          boundaries%face(boundary_y_lower)) .or. &
+        reactive_boundary_has_prescribed_species_flux( &
+          boundaries%face(boundary_y_upper))) .and. &
+        (.not. config%transport_enabled .or. &
+         .not. config%species_diffusion_enabled)) ok = .false.
   end subroutine build_reactive_boundary_set_2d
 
   recursive subroutine sample_reactive_primitive_2d( &
