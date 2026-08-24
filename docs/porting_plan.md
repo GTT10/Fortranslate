@@ -534,6 +534,8 @@ Reactive application integration:
   rollback, call accounting, conservation, and serial parity (`0.58.0`)
 - [x] explicit-plan topology-changing sparse regrid with rebuilt ownership,
   overlap retention, rollback, conservation, and serial parity (`0.59.0`)
+- [x] tag-driven sparse topology rebuild through four levels with collective
+  plan agreement, no-op handling, and rollback (`0.60.0`)
 
 AMR parity metrics:
 

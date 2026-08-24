@@ -876,3 +876,22 @@ An explicit-plan sparse topology transition is accepted only while:
   solution and distribution exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.60.0 tag-driven sparse MPI AMR regrid gates
+
+A solution-driven sparse topology transition is accepted only while:
+
+- two separated root momentum features produce deterministic disconnected
+  children through four levels with patch counts `[1, 2, 2, 2]`;
+- every rank agrees on the positive tagged-cell count, change decision, and
+  zero initial fine-overlap count;
+- the rebuilt owner payloads, fields, ghosts, counters, and statistics match
+  the serial tag-driven regrid exactly;
+- the returned hierarchy contains seven globally single-copy sparse patches
+  and preserves composite conserved integrals within `2e-9`;
+- repeating the same tag decision reports no topology change or transfer and
+  increments only evaluation bookkeeping;
+- an out-of-range tag component rejects collectively, returns zero counts,
+  and restores both sparse solution and owner distribution exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

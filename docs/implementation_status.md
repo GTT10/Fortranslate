@@ -976,3 +976,20 @@ API. The transition temporarily materializes a full correctness replica on
 each rank before the rebuilt tree is scattered to its new owners. Direct
 tag-driven sparse planning, point-to-point overlap transfer, and removal of
 that temporary replica remain pending.
+
+## Tag-driven sparse MPI AMR regrid (`0.60.0`)
+
+- [x] solution-driven parent-local tag planning through four levels
+- [x] disconnected-feature clustering with deterministic parent relationships
+- [x] collective tagged-cell, topology-change, and overlap-count agreement
+- [x] shared transactional topology commit and rebuilt owner distribution
+- [x] unchanged tag-derived plan no-op with evaluation accounting
+- [x] globally single-copy sparse storage after tag-driven rebuild
+- [x] serial full-field parity and composite conservation
+- [x] invalid-tag rollback for sparse solution and owner distribution
+- [x] 1/2/4/8-rank Release and Debug gates
+
+The sparse public API now covers both explicit and solution-derived topology
+changes. Tag planning and conservative rebuild still operate on a temporary
+all-rank correctness replica. Owner-local tagging, point-to-point overlap
+transfer, and removal of that replica remain pending.

@@ -640,6 +640,20 @@ is again globally single-copy after return, although this correctness-first
 transition temporarily materializes a replica. Direct tag planning and
 point-to-point regrid transfer remain outside the `0.59.0` boundary.
 
+In `0.60.0`, `regrid_tagged_sparse_patch_tree_reactive_1d` materializes the
+current owner state once, applies parent-local gradient tagging and clustering
+through the configured maximum depth, and sends the resulting serial-qualified
+tree through the shared sparse regrid commit helper. Tagged-cell, change, and
+overlap counts must agree across every rank before the solution and owner map
+can commit.
+
+Disconnected root features can therefore generate separate children through
+four levels from the sparse public API. Repeating the same tag decision is a
+no-op except for evaluation accounting, and an invalid tag component restores
+the original sparse solution and distribution. Tag planning still operates on
+the temporary correctness replica; owner-local tag construction and
+point-to-point topology transfer remain outside the `0.60.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both
