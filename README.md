@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.57.0` milestone contains ten serial verification executables, six
+The `0.58.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -283,6 +283,9 @@ The AMR layer provides:
 - direct recursive molecular transport on sparse AMR payloads with cumulative
   `r²` subcycling, diffusive flux registers, cross-owner shared-face
   reconciliation, and exact rollback;
+- a direct sparse `R-T-H-T-R` transaction with owner-only stage execution,
+  exact call accounting, serial parity, missing-database rejection, and outer
+  rollback after a later-stage failure;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -324,8 +327,9 @@ deepest-to-root for average-down and parent/sibling data are streamed for
 ghost refresh without materializing a complete tree. Recursive hydro now uses
 the same sparse storage boundary while streaming interval states and fluxes;
 molecular transport now follows the same structure with its parabolic `r²`
-schedule. The combined full-physics transaction still needs to be moved to
-sparse storage. Topology-changing regrid migration and
+schedule. Their combined `R-T-H-T-R` transaction now remains sparse from its
+outer backup through final acceptance, so normal full-physics advancement no
+longer materializes a complete replica. Topology-changing regrid migration and
 point-to-point communication remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic

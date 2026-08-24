@@ -530,6 +530,8 @@ Reactive application integration:
   cross-owner PPM reconciliation, rollback, and serial parity (`0.56.0`)
 - [x] direct sparse recursive molecular transport with cumulative `r^2`
   subcycling, diffusive reflux, rollback, and serial parity (`0.57.0`)
+- [x] transactional direct sparse `R-T-H-T-R` composition with exact outer
+  rollback, call accounting, conservation, and serial parity (`0.58.0`)
 
 AMR parity metrics:
 

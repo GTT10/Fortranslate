@@ -612,6 +612,19 @@ and rollback remain sparse. All three component operators now have direct
 sparse entry points, but their combined `R-T-H-T-R` transaction and the
 communication schedule remain future work.
 
+In `0.58.0`, `advance_sparse_patch_tree_reactive_1d` composes those direct
+sparse operators as `R(dt/2)-T(dt/2)-H(dt)-T(dt/2)-R(dt/2)`. It validates the
+optional transport database collectively before mutation, takes one outer
+sparse backup, and accepts every stage across the communicator. A rejected
+later stage restores fields, ghosts, time, steps, and both level-counter
+vectors on every rank and reports zero committed operator calls.
+
+The normal distributed full-physics path can therefore stay rank-local from
+entry through final ghost refresh and validity checking. Each component still
+uses its own transactional backup and correctness-first collective streaming;
+topology-changing regrid transfer and point-to-point schedules remain outside
+the `0.58.0` qualification boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

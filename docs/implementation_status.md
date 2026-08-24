@@ -941,3 +941,21 @@ pending.
 Chemistry, hydro, and molecular transport now all consume sparse AMR storage
 directly. Sparse full-physics composition, point-to-point communication, and
 topology-changing distributed regrid remain pending.
+
+## Transactional full physics on sparse MPI AMR patches (`0.58.0`)
+
+- [x] direct sparse `R-T-H-T-R` composition without a replicated-tree bridge
+- [x] collective preflight for interval, hierarchy, and transport database
+- [x] one outer sparse backup covering every operator stage
+- [x] exact local and global chemistry, hydro, and transport call accounting
+- [x] synchronized time, step, hydro, and transport subcycle counters
+- [x] serial full-field parity and composite conservation on four levels
+- [x] missing-transport rejection before mutation
+- [x] exact outer rollback after chemistry and transport precede hydro failure
+- [x] 1/2/4/8-rank Release and Debug gates
+
+The complete qualified physics interval now consumes rank-local AMR payloads
+directly. Component transactions retain their own backups, and their interval
+data and compact registers still use collective communication. Reducing that
+temporary memory and communication cost, point-to-point schedules, and
+topology-changing distributed regrid remain pending.

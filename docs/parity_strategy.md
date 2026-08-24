@@ -836,3 +836,23 @@ Sparse recursive molecular transport is accepted only while:
   accepted updates, and restores every sparse payload and counter exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.58.0 sparse MPI AMR full-physics gates
+
+The sparse `R-T-H-T-R` transaction is accepted only while:
+
+- a four-level branched tree performs exactly 16 chemistry, 33 hydro, and 370
+  transport owner calls across the communicator;
+- per-rank call counts match the owner map and cumulative hyperbolic or
+  parabolic subcycle weights;
+- counters finish at `[1, 4, 12, 16]` for hydro and `[2, 16, 96, 256]` for
+  transport, with exactly one accepted coarse step;
+- gathering the sparse result matches the serial full-physics result within
+  `5e-13` and preserves composite conserved integrals within `2e-9`;
+- a required but missing transport database rejects before mutation and
+  reports zero calls;
+- a hydro failure after valid chemistry and transport prefixes restores every
+  sparse payload, ghost, time, step, and counter exactly and reports zero
+  committed calls;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.
