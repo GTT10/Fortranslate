@@ -1316,3 +1316,26 @@ The transport qualification remains owner-authoritative and replicated. It is
 not sparse stage communication and is exposed as a separate distributed
 operator; a single outer chemistry--transport--hydro transaction, regrid
 migration, and scalable point-to-point schedules remain pending.
+
+The `0.53.0` distributed reactive step is
+
+```text
+owner chemistry(dt/2)
+owner molecular transport(dt/2)
+owner recursive hydro(dt)
+owner molecular transport(dt/2)
+owner chemistry(dt/2)
+```
+
+The complete synchronized solution is copied before the first operator. Each
+inner operator reaches communicator-wide acceptance independently, but only
+the outer call commits the sequence. A missing transport database is rejected
+before mutation. If, for example, chemistry and the first transport interval
+succeed but hydro rejects its reconstruction, every rank restores state,
+temperature, ghosts, time, step, advance counters, and regrid statistics to
+the outer backup. Returned owner-call counts are zero for a rejected sequence.
+
+Successful call accounting contains two owner visits per patch for chemistry,
+one cumulative `r` schedule for hydro, and two cumulative `r^2` schedules for
+transport. The current implementation composes owner-authoritative replicated
+operators; it does not yet provide sparse storage or patch migration.

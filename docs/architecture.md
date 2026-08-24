@@ -545,6 +545,20 @@ points. A single outer transaction composing all three operators, sparse
 rank-local patch allocation, migration after regrid, and scalable
 point-to-point communication remain outside the `0.52.0` boundary.
 
+In `0.53.0`, `advance_owned_patch_tree_reactive_1d` composes the three owner
+operators as `R(dt/2)-T(dt/2)-H(dt)-T(dt/2)-R(dt/2)`. Before taking the outer
+backup, owner synchronization now includes the complete patch fields plus
+time, step, hydro and transport counters, and regrid statistics, with the root
+patch owner authoritative for global bookkeeping. Every stage retains its
+inner collective acceptance, while the outer wrapper restores the common
+pre-step tree and reports zero accepted calls if any later stage fails.
+
+This establishes one qualified distributed full-physics transaction with the
+same operator order and final ghost contract as serial patch-tree AMR. Patch
+arrays and hierarchy operations remain replicated; sparse rank-local
+allocation, migration after regrid, and scalable point-to-point communication
+remain outside the `0.53.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

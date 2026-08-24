@@ -745,3 +745,25 @@ Distributed patch-tree molecular transport is accepted only while:
   conserves within `2e-9` after shared diffusive fluxes and reflux;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.53.0 transactional MPI AMR full-physics gates
+
+The distributed patch-tree `R-T-H-T-R` interval is accepted only while:
+
+- owner synchronization reconstructs root-authoritative time, step, hydro and
+  transport counters, and regrid statistics after non-owner poisoning;
+- a four-level full-physics step executes exactly 16 chemistry, 33 hydro, and
+  370 transport patch calls globally, with each rank matching its owner-map
+  cumulative subcycle weights;
+- level counters are exactly `[1, 4, 12, 16]` for hydro and
+  `[2, 16, 96, 256]` for the two transport half intervals;
+- complete distributed fields and bookkeeping match the serial transactional
+  patch-tree step within `5e-13` and composite mass, momentum, and total energy
+  remain within `2e-9`;
+- omitting the required transport database rejects the request before mutation
+  and reports zero calls;
+- an invalid hydro reconstruction after the first chemistry and transport
+  operators rejects the sequence globally, reports zero committed calls, and
+  restores the outer backup exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

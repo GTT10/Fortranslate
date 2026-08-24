@@ -853,3 +853,22 @@ All three patch-tree physics operators now have owner-only MPI entry points.
 They remain separate qualified transactions over replicated trees. A combined
 distributed full-physics transaction, sparse rank-local storage,
 stage-synchronous point-to-point halos, and regrid migration remain pending.
+
+## Transactional owner-only MPI AMR full physics (`0.53.0`)
+
+- [x] distributed `R-T-H-T-R` composition using qualified owner operators
+- [x] root-owner synchronization of time, step, counters, and regrid metadata
+- [x] one identical outer backup on every rank before the first operator
+- [x] communicator-wide acceptance after every component operator
+- [x] zero accepted-call reporting for a rejected outer transaction
+- [x] missing transport-database rejection before mutation
+- [x] exact rollback after chemistry and transport precede hydro failure
+- [x] exact global chemistry/hydro/transport call accounting
+- [x] serial full-state, temperature, ghost, and bookkeeping parity
+- [x] composite full-physics conservation on a four-level branched tree
+- [x] 1/2/4/8-rank Release and Debug gates
+
+The replicated MPI bridge now covers the complete patch-tree physics interval,
+not only separate operators. Sparse rank-local patch allocation, ownership
+migration after regrid, and scalable point-to-point stage communication remain
+the next distributed-AMR architecture work.

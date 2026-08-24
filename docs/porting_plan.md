@@ -520,6 +520,8 @@ Reactive application integration:
   reflux, rollback, and serial PCM/PPM parity (`0.51.0`)
 - [x] owner-only recursive patch-tree molecular transport, cumulative `r^2`
   subcycling, diffusive reflux, rollback, and serial parity (`0.52.0`)
+- [x] transactional owner-only patch-tree `R-T-H-T-R` composition, complete
+  bookkeeping synchronization, outer rollback, and serial parity (`0.53.0`)
 
 AMR parity metrics:
 

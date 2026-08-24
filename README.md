@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.52.0` milestone contains ten serial verification executables, six
+The `0.53.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -153,10 +153,11 @@ recursive hyperbolic advancement on patch owners alone, broadcasts each
 owner's start state and complete face-flux field, then reuses the serial child
 subcycling, fine/fine flux reconciliation, reflux, average-down, and ghost
 rules on synchronized replicas. The current bridge retains replicated field
-storage. Molecular transport now follows the same owner-only recursion with
-parabolic `r^2` subcycling and shared diffusive fluxes. A single distributed
-full-physics transaction and sparse rank-local patch storage remain the next
-integration steps.
+storage. Molecular transport follows the same owner-only recursion with
+parabolic `r^2` subcycling and shared diffusive fluxes. The owner operators are
+now composed as one transactional `R-T-H-T-R` interval, including complete
+bookkeeping synchronization and outer rollback. Sparse rank-local patch
+storage remains the next integration step.
 
 ### One-dimensional AMR
 
@@ -267,6 +268,10 @@ The AMR layer provides:
 - owner-only recursive MPI patch-tree molecular transport with exact
   parabolic subcycle accounting, cross-owner shared diffusive fluxes, serial
   parity, conservation, and global transactional rollback gates;
+- a transactional owner-only MPI `R-T-H-T-R` interval with complete
+  bookkeeping synchronization, serial full-field parity, exact operator-call
+  accounting, missing-database rejection, and rollback after a later-stage
+  failure;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -297,9 +302,10 @@ recursive hydro patch kernel execute only on those owners with collective
 acceptance and rollback. Owner-authoritative start-state and face-flux
 broadcasts let every replica apply the existing subcycling, shared-flux,
 reflux, and average-down rules deterministically. Owner-only molecular
-transport uses the same structure with `r^2` subcycling. A single distributed
-full-physics transaction and sparse patch storage remain later slices. A
-periodic child may
+transport uses the same structure with `r^2` subcycling. One outer MPI
+transaction now composes chemistry, transport, hydro, transport, and chemistry
+and restores its synchronized starting tree after any rejected stage. Sparse
+patch storage remains a later slice. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.
