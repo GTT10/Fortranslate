@@ -546,6 +546,8 @@ Reactive application integration:
   for final ghost refresh (`0.64.0`)
 - [x] broadcast-free sparse recursive hydro/transport with direct interval,
   boundary-flux, and shared-correction payloads (`0.65.0`)
+- [x] replica-free explicit-plan sparse topology rebuild with owner-local
+  prolongation and direct old/new overlap transfer (`0.66.0`)
 
 AMR parity metrics:
 

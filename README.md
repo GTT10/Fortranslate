@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.65.0` milestone contains ten serial verification executables, six
+The `0.66.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -346,10 +346,11 @@ molecular transport now follows the same structure with its parabolic `r²`
 schedule. Their combined `R-T-H-T-R` transaction now remains sparse from its
 outer backup through final acceptance, so normal full-physics advancement no
 longer materializes a complete replica. Explicit-plan topology changes now
-rebuild the owner distribution transactionally and return to one-copy sparse
-storage; the regrid transition temporarily materializes a correctness replica.
-The same sparse API now derives arbitrary-depth plans from solution tags and
-commits them through that transition. Same-hierarchy owner changes now send one
+construct new patches on their owners, stream parent-prolongated interiors,
+and transfer fine overlap directly from old owners to new owners. The same
+sparse API derives arbitrary-depth plans from solution tags, although that
+tag-planning path still uses a temporary correctness replica. Same-hierarchy
+owner changes now send one
 packed patch directly from the old owner to the new owner. Adjacent sparse
 siblings likewise exchange only the one- or four-layer boundary payload needed
 by their two owners. Child interiors used by average-down and synchronization
@@ -359,8 +360,8 @@ return directly to the parent owner, and shared-face corrections return only to
 the affected child owner. Level counters synchronize from owner-local deltas
 once per physics stage. Final parent-to-child ghost refresh likewise sends one
 parent state to each distinct remote child owner. Sparse physics contains no
-MPI broadcast; topology-changing regrid communication and its temporary replica
-remain later removal targets. A periodic child may
+MPI broadcast, and explicit-plan regrid contains no all-rank field replica;
+distributed tag planning remains the next replica-removal target. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

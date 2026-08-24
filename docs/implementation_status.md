@@ -1075,3 +1075,21 @@ same-level halos, parent/child synchronization, and final ghost refresh now
 operate without broadcast-based payload replication. Topology-changing regrid
 still materializes and rebuilds through a temporary all-rank correctness
 replica; direct distributed tagging and overlap transfer remain pending.
+
+## Direct explicit-plan sparse regrid (`0.66.0`)
+
+- [x] candidate hierarchy construction without materialized patch fields
+- [x] owner-local parent-to-child prolongation through arbitrary depth
+- [x] one direct state message per cross-owner new child
+- [x] direct old-owner to new-owner fine-overlap segment transfer
+- [x] state and temperature preservation for every retained overlap cell
+- [x] exact independent prolongation and overlap message counts
+- [x] unchanged-plan metadata-only no-op
+- [x] exact serial full-field parity and composite conservation
+- [x] transactional solution and owner-map rollback for invalid plans
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Explicit-plan topology changes now remain sparse throughout hierarchy rebuild,
+prolongation, overlap retention, average-down, and ghost refresh. No rank
+materializes the complete old or new field tree. Tag-driven planning still uses
+the temporary correctness replica and remains the next distributed regrid gap.

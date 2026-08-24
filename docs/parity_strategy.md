@@ -986,3 +986,23 @@ Sparse recursive hydro and molecular transport are accepted only while:
   rollback remain unchanged;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.66.0 direct explicit-plan sparse regrid gates
+
+The replica-free explicit-plan topology transition is accepted only while:
+
+- an unchanged plan performs no payload communication and changes only the
+  regrid-evaluation counter;
+- every new child is conservatively prolongated by its parent owner;
+- each cross-owner child receives exactly one packed interior-state payload;
+- every retained fine overlap copies state and temperature from its old owner
+  directly to its new owner;
+- independent old/new hierarchy traversal reproduces the communicator-wide
+  prolongation and overlap message counts exactly;
+- topology, fields, temperatures, narrow/wide ghosts, counters, and transfer
+  accounting match the serial rebuild exactly;
+- composite conservation remains within `2e-9`;
+- an invalid plan restores the sparse solution and owner map exactly and
+  reports zero completed communication;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

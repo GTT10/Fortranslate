@@ -727,6 +727,26 @@ both hyperbolic `r` and parabolic `r^2` recursion. Topology-changing regrid
 transfer and its temporary correctness replica remain outside the `0.65.0`
 boundary.
 
+In `0.66.0`, the explicit-plan sparse regrid path no longer materializes either
+the old or rebuilt field tree on every rank. All ranks construct only the
+compact candidate hierarchy and deterministic owner map. Starting at the root,
+each parent owner applies the qualified conservative prolongation and sends one
+interior-state payload only to a remote child owner; same-owner children remain
+local.
+
+After owner-local child allocation, every same-resolution old/new patch overlap
+is enumerated from replicated geometry metadata. State and temperature cells
+move directly from the old patch owner to the new patch owner, while local
+overlaps copy without MPI. Deepest-to-root sparse average-down and the existing
+point-to-point ghost refresh complete the new hierarchy before transactional
+publication.
+
+The application independently derives exact global counts for cross-owner
+prolongation and overlap messages and retains exact serial full-field parity.
+An unchanged explicit plan only increments evaluation accounting. Tag-driven
+plan construction still materializes a temporary correctness replica and is
+outside the `0.66.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both
