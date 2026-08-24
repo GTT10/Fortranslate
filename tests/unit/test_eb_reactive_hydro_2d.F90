@@ -133,6 +133,17 @@ program test_eb_reactive_hydro_2d
     maxval(abs(new_temperature - temperature_field)) == 0.0_dp, &
     "unknown solver advance transaction")
 
+  call require(geometry%cell_type(1, 1) == eb_covered_cell, &
+    "circular corner is covered")
+  x = geometry%x_face_fraction(0, 1)
+  geometry%x_face_fraction(0, 1) = 1.0_dp
+  call require(geometry%is_valid(), "inconsistent face test geometry")
+  call reactive_eb_outflow_riemann_fluxes_2d( &
+    species, state, temperature_field, geometry, "hllc", x_flux, y_flux, ok)
+  call require(.not. ok .and. maxval(abs(x_flux)) == 0.0_dp .and. &
+    maxval(abs(y_flux)) == 0.0_dp, "open face beside covered cell")
+  geometry%x_face_fraction(0, 1) = x
+
   state(1, 1, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
   call reactive_eb_outflow_riemann_fluxes_2d( &
     species, state, temperature_field, geometry, "hllc", x_flux, y_flux, ok)
