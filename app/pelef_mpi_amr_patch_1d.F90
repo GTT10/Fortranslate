@@ -30,6 +30,11 @@ program pelef_mpi_amr_patch_1d
     advance_owned_patch_tree_hydro_1d, &
     advance_owned_patch_tree_transport_1d, &
     advance_owned_patch_tree_reactive_1d
+  use mpi_amr_sparse_patch_1d_mod, only: &
+    mpi_amr_sparse_reactive_solution_1d, &
+    scatter_owned_patch_tree_reactive_1d, &
+    gather_owned_patch_tree_reactive_1d, &
+    migrate_owned_patch_tree_reactive_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -43,7 +48,10 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_patch_distribution_1d) :: distribution
   type(mpi_amr_patch_distribution_1d) :: comparison_distribution
   type(mpi_amr_patch_distribution_1d) :: reactive_distribution
+  type(mpi_amr_patch_distribution_1d) :: migrated_distribution
   type(mpi_amr_patch_distribution_1d) :: adjacent_distribution
+  type(mpi_amr_sparse_reactive_solution_1d) :: sparse_reactive
+  type(mpi_amr_sparse_reactive_solution_1d) :: migrated_sparse
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: serial_reactive
   type(amr_patch_tree_reactive_solution_1d) :: distributed_reactive
@@ -54,6 +62,7 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_reactive_solution_1d) :: serial_transport
   type(amr_patch_tree_reactive_solution_1d) :: distributed_transport
   type(amr_patch_tree_reactive_solution_1d) :: synchronized_reactive
+  type(amr_patch_tree_reactive_solution_1d) :: gathered_reactive
   type(amr_patch_tree_reactive_solution_1d) :: serial_split
   type(amr_patch_tree_reactive_solution_1d) :: distributed_split
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
@@ -83,7 +92,11 @@ program pelef_mpi_amr_patch_1d
   integer :: expected_hydro_advances, cross_owner_hydro_faces
   integer :: local_transport_advances, global_transport_advances
   integer :: expected_transport_advances
-  integer :: root_owner
+  integer :: root_owner, old_owner, new_owner, owner_changes
+  integer :: local_sparse_patches, global_sparse_patches
+  integer :: local_sparse_cells, global_sparse_cells
+  integer :: local_sparse_values, global_sparse_values
+  integer :: replicated_value_count
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -228,6 +241,93 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok .and. reactive_solution_difference( &
     synchronized_reactive, initial_reactive) == 0.0_dp, &
     "root-owner AMR bookkeeping synchronization", rank)
+
+  gathered_reactive = initial_reactive
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, gathered_reactive, sparse_reactive, ok)
+  call assert_all(ok .and. sparse_reactive%is_valid(reactive_distribution), &
+    "replicated-to-sparse owner scatter", rank)
+  local_sparse_patches = sparse_reactive%local_patch_count()
+  local_sparse_cells = sparse_reactive%local_cell_count()
+  local_sparse_values = sparse_reactive%local_value_count()
+  call assert_all( &
+    local_sparse_patches == reactive_distribution%rank_patch_counts(rank + 1), &
+    "sparse storage contains only locally owned patches", rank)
+  call assert_all( &
+    local_sparse_cells == reactive_distribution%rank_cell_counts(rank + 1), &
+    "sparse storage contains only locally owned cells", rank)
+  call MPI_Allreduce(local_sparse_patches, global_sparse_patches, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, "sparse patch-count reduction", rank)
+  call MPI_Allreduce(local_sparse_cells, global_sparse_cells, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, "sparse cell-count reduction", rank)
+  call MPI_Allreduce(local_sparse_values, global_sparse_values, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, "sparse value-count reduction", rank)
+  replicated_value_count = reactive_solution_value_count(initial_reactive)
+  call assert_all( &
+    global_sparse_patches == sum(reactive_distribution%rank_patch_counts), &
+    "each sparse patch is stored on exactly one rank", rank)
+  call assert_all( &
+    global_sparse_cells == sum(reactive_distribution%rank_cell_counts), &
+    "each sparse cell is stored on exactly one rank", rank)
+  call assert_all(global_sparse_values == replicated_value_count, &
+    "sparse field storage has no replicated patch payload", rank)
+
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_reactive, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, initial_reactive) == 0.0_dp, &
+    "sparse-to-replicated owner gather", rank)
+
+  migrated_distribution = reactive_distribution
+  migrated_distribution%rank_patch_counts = 0
+  migrated_distribution%rank_cell_counts = 0
+  owner_changes = 0
+  do level = 0, initial_reactive%hierarchy%level_count() - 1
+    do patch = 1, initial_reactive%hierarchy%level_patch_count(level)
+      old_owner = reactive_distribution%owner_of(level, patch)
+      new_owner = mod(old_owner + 1, nranks)
+      migrated_distribution%levels(level + 1)%owners(patch) = new_owner
+      migrated_distribution%rank_patch_counts(new_owner + 1) = &
+        migrated_distribution%rank_patch_counts(new_owner + 1) + 1
+      migrated_distribution%rank_cell_counts(new_owner + 1) = &
+        migrated_distribution%rank_cell_counts(new_owner + 1) + &
+          migrated_distribution%levels(level + 1)%cell_counts(patch)
+      if (new_owner /= old_owner) owner_changes = owner_changes + 1
+    end do
+  end do
+  call assert_all(migrated_distribution%is_valid(), &
+    "rotated sparse owner distribution", rank)
+  if (nranks > 1) call assert_all(owner_changes == global_sparse_patches, &
+    "every sparse patch changes owner", rank)
+  call migrate_owned_patch_tree_reactive_1d( &
+    reactive_distribution, migrated_distribution, sparse_reactive, &
+    migrated_sparse, ok)
+  call assert_all(ok .and. migrated_sparse%is_valid(migrated_distribution), &
+    "same-hierarchy sparse owner migration", rank)
+  call assert_all( &
+    migrated_sparse%local_patch_count() == &
+      migrated_distribution%rank_patch_counts(rank + 1), &
+    "migrated sparse patch ownership", rank)
+  call assert_all( &
+    migrated_sparse%local_cell_count() == &
+      migrated_distribution%rank_cell_counts(rank + 1), &
+    "migrated sparse cell ownership", rank)
+  local_sparse_values = migrated_sparse%local_value_count()
+  call MPI_Allreduce(local_sparse_values, &
+    global_sparse_values, 1, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_sparse_values == replicated_value_count, &
+    "migrated sparse field storage remains unique", rank)
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    migrated_distribution, migrated_sparse, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, initial_reactive) == 0.0_dp, &
+    "migrated sparse owner gather", rank)
 
   serial_reactive = initial_reactive
   distributed_reactive = initial_reactive
@@ -855,6 +955,58 @@ contains
       end do
     end do
   end function reactive_solution_difference
+
+  integer function reactive_solution_value_count(solution) result(count)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+
+    integer :: local_level, local_patch
+
+    count = 0
+    do local_level = 1, solution%level_count()
+      do local_patch = 1, size(solution%levels(local_level)%patches)
+        count = count + &
+          size(solution%levels(local_level)%patches(local_patch)%state) + &
+          size(solution%levels(local_level)%patches(local_patch)%temperature) + &
+          size(solution%levels(local_level)%patches(local_patch)% &
+            left_ghost_state) + &
+          size(solution%levels(local_level)%patches(local_patch)% &
+            right_ghost_state) + &
+          size(solution%levels(local_level)%patches(local_patch)% &
+            left_ghost_temperature) + &
+          size(solution%levels(local_level)%patches(local_patch)% &
+            right_ghost_temperature)
+      end do
+    end do
+  end function reactive_solution_value_count
+
+  subroutine poison_reactive_solution(solution)
+    type(amr_patch_tree_reactive_solution_1d), intent(inout) :: solution
+
+    integer :: local_level, local_patch
+
+    solution%level_advances = 101
+    solution%transport_level_advances = 102
+    solution%time = 103.0_dp
+    solution%steps = 104
+    solution%regrid_evaluations = 105
+    solution%regrids = 106
+    solution%overlap_cells_transferred = 107
+    do local_level = 1, solution%level_count()
+      do local_patch = 1, size(solution%levels(local_level)%patches)
+        solution%levels(local_level)%patches(local_patch)%state = stale_value
+        solution%levels(local_level)%patches(local_patch)%temperature = &
+          stale_value
+        solution%levels(local_level)%patches(local_patch)%left_ghost_state = &
+          stale_value
+        solution%levels(local_level)%patches(local_patch)%right_ghost_state = &
+          stale_value
+        solution%levels(local_level)%patches(local_patch)% &
+          left_ghost_temperature = stale_value
+        solution%levels(local_level)%patches(local_patch)% &
+          right_ghost_temperature = stale_value
+      end do
+    end do
+  end subroutine poison_reactive_solution
 
   pure real(dp) function expected_value( &
       local_level, local_patch, local_variable, local_cell) result(value)
