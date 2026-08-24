@@ -513,9 +513,14 @@ separate.
 
 `mpi_amr_patch_1d_mod` adds the first distribution boundary without importing
 MPI into the serial AMR modules. Every rank first proves that the integer patch
-topology and physical root extent are identical. A deterministic greedy
-cell-work schedule then gives each patch exactly one owner; ties go to the
-lowest rank. Generic patch fields remain allocated on every rank in this
+topology and physical root extent are identical. A deterministic greedy work
+schedule then gives each patch exactly one owner; ties go to the lowest rank.
+For level `l`, patch work is its cell count times the cumulative refinement
+ratio raised to exponent 0, 1, or 2. These select storage/cell weighting,
+hyperbolic `r` subcycling, or parabolic `r^2` subcycling respectively. The
+work model and 64-bit per-patch/per-rank totals are validated collectively and
+preserved through explicit and tag-driven sparse regrids. Generic patch fields
+remain allocated on every rank in this
 bridge, but only the owner is authoritative. Collective broadcasts refresh
 the replicas, while adjacent sibling faces broadcast the owner's boundary
 cells into explicit left/right halo objects for up to four stencil layers.

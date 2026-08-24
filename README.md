@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.69.0` milestone contains ten serial verification executables, six
+The `0.70.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -147,7 +147,9 @@ With `PELEF_ENABLE_MPI=ON`, five existing executables verify:
 
 A sixth MPI executable exercises sparse AMR distribution. Compact hierarchy
 and owner metadata are replicated, but each root/fine field payload exists
-only on its deterministic cell-weighted owner. Point-to-point transfers cover
+only on its deterministic work-weighted owner. Patch work may use raw cell
+count, hyperbolic `r` subcycling, or parabolic `r^2` subcycling; explicit and
+tag-driven regrids preserve the selected model. Point-to-point transfers cover
 same-level halos, parent/child ghost data, boundary fluxes, shared-face
 corrections, average-down, explicit regrid prolongation, retained overlap, and
 owner migration. Chemistry, recursive hydro, parabolic `r^2` transport, and
@@ -254,9 +256,10 @@ The AMR layer provides:
   with those internal faces excluded from coarse/fine reflux;
 - adjacent PPM hydro and molecular-transport conservation, synchronization,
   exact exchange, and subcycle-accounting gates;
-- deterministic cell-weighted MPI ownership for every tree patch, collective
-  hierarchy-consensus rejection, owner-authoritative patch synchronization,
-  and four-layer cross-rank adjacent-sibling halo gates;
+- deterministic cell-, hyperbolic-subcycle-, or parabolic-subcycle-weighted
+  MPI ownership for every tree patch, collective hierarchy/work-model
+  consensus rejection, owner-authoritative patch synchronization, and
+  four-layer cross-rank adjacent-sibling halo gates;
 - owner-only patch-tree chemistry with one global advance per patch, serial
   field parity, deepest-to-root synchronization, conservation, and global
   transactional rollback gates;

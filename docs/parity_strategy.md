@@ -1070,3 +1070,23 @@ The reactive wall transport interface is accepted only while:
   species closure;
 - the public 2D application parses and advances the committed namelist case;
 - the complete GNU Fortran Debug and Release suites pass.
+
+## 0.70.0 subcycle-weighted MPI AMR ownership gates
+
+MPI AMR work distribution is accepted only while:
+
+- exponent 0 exactly preserves cell-count work, exponent 1 accumulates `r`,
+  and exponent 2 accumulates `r^2` across hierarchy depth;
+- 64-bit patch work sums exactly to the recorded rank work and global work;
+- all ranks reject inconsistent or out-of-range work exponents collectively;
+- deterministic least-work assignment does not increase maximum estimated
+  parabolic work on the qualification hierarchies;
+- the four-level hierarchy strictly reduces maximum estimated work at 2 and 4
+  ranks relative to the original cell-only owner map;
+- unchanged and changed explicit sparse regrids retain the selected model;
+- owner-local tag planning and its intermediate candidate distributions retain
+  the same model;
+- existing sparse storage, physics, communication-accounting, conservation,
+  serial-parity, and rollback gates remain unchanged;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

@@ -1148,3 +1148,22 @@ PelePhysics EOS models remain outside this qualification.
 
 This is the transport boundary needed by later catalytic-wall models. It does
 not yet calculate surface reaction rates, coverages, or wall chemistry.
+
+## Subcycle-weighted MPI AMR ownership (`0.70.0`)
+
+- [x] 64-bit per-patch and per-rank estimated work metadata
+- [x] cell/storage exponent 0 compatibility mode
+- [x] cumulative hyperbolic `r`-subcycle exponent 1
+- [x] cumulative parabolic `r^2`-subcycle exponent 2
+- [x] deterministic least-work owner selection with lowest-rank tie break
+- [x] collective work-model agreement and invalid-exponent rejection
+- [x] distribution validity checks for cell, patch, and work totals
+- [x] explicit and owner-local tag-driven sparse regrid model preservation
+- [x] reduced four-level maximum estimated work at 2 and 4 ranks
+- [x] non-increasing maximum work at 1 and 8 ranks
+- [x] unchanged sparse physics, migration, conservation, and rollback gates
+- [x] 1/2/4/8-rank Release and Debug MPI gates
+
+The model accounts for deterministic level subcycling, not measured wall-clock
+time. Runtime feedback, heterogeneous CPU/GPU weights, and dynamic work
+stealing remain outside this milestone.

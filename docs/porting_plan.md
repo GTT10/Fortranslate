@@ -557,6 +557,8 @@ Reactive application integration:
   prolongation and direct old/new overlap transfer (`0.66.0`)
 - [x] owner-local solution tagging with compact plan agreement and no
   materialized field tree (`0.67.0`)
+- [x] subcycle-weighted deterministic owner assignment and preservation across
+  sparse explicit/tag-driven regrids (`0.70.0`)
 
 AMR parity metrics:
 
