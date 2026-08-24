@@ -525,6 +525,14 @@ bridge, but only the owner is authoritative. Collective broadcasts refresh
 the replicas, while adjacent sibling faces broadcast the owner's boundary
 cells into explicit left/right halo objects for up to four stencil layers.
 
+For sparse fields, `sparse_patch_tree_reactive_timestep_1d` evaluates
+hyperbolic and optional parabolic stability limits only on allocated owner
+payloads. Each level-local limit is converted to its root-step equivalent with
+cumulative `r` or `r^2` scaling before one communicator-wide minimum
+reduction. Ranks with no local patches contribute the neutral `huge()` value,
+while any invalid owner state or missing transport database is rejected
+collectively before a timestep is published.
+
 This separation establishes rank ownership and communication ordering before
 changing the recursive reactive integrator. In `0.50.0`, the chemistry
 operator uses that ownership directly: every rank walks the same patch order,

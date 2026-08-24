@@ -1090,3 +1090,18 @@ MPI AMR work distribution is accepted only while:
   serial-parity, and rollback gates remain unchanged;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.71.0 distributed sparse MPI AMR timestep gates
+
+The sparse stability decision is accepted only while:
+
+- every owner evaluates exactly its allocated patch states;
+- hyperbolic limits use cumulative `r` scaling and parabolic limits use
+  cumulative `r^2` scaling before the global comparison;
+- one communicator-wide minimum equals the serial replicated-tree result;
+- a root-only hierarchy succeeds with ranks that own no patch payload;
+- a nonphysical owner state is rejected by every rank and returns zero `dt`;
+- enabled transport without a mechanism-width transport database is rejected
+  collectively and returns zero `dt`;
+- hydro-only and transport-enabled results pass with 1, 2, 4, and 8 ranks in
+  GNU Fortran Debug and Release MPI CI.

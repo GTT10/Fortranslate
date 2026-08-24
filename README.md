@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.70.0` milestone contains ten serial verification executables, six
+The `0.71.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -149,7 +149,9 @@ A sixth MPI executable exercises sparse AMR distribution. Compact hierarchy
 and owner metadata are replicated, but each root/fine field payload exists
 only on its deterministic work-weighted owner. Patch work may use raw cell
 count, hyperbolic `r` subcycling, or parabolic `r^2` subcycling; explicit and
-tag-driven regrids preserve the selected model. Point-to-point transfers cover
+tag-driven regrids preserve the selected model. Rank-local hyperbolic and
+parabolic stability limits are reduced to one communicator-wide coarse-step
+limit without gathering patch fields. Point-to-point transfers cover
 same-level halos, parent/child ghost data, boundary fluxes, shared-face
 corrections, average-down, explicit regrid prolongation, retained overlap, and
 owner migration. Chemistry, recursive hydro, parabolic `r^2` transport, and

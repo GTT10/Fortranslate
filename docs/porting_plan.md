@@ -559,6 +559,8 @@ Reactive application integration:
   materialized field tree (`0.67.0`)
 - [x] subcycle-weighted deterministic owner assignment and preservation across
   sparse explicit/tag-driven regrids (`0.70.0`)
+- [x] owner-local sparse hyperbolic/parabolic timestep evaluation with one
+  communicator-wide minimum and no field gather (`0.71.0`)
 
 AMR parity metrics:
 

@@ -1167,3 +1167,20 @@ not yet calculate surface reaction rates, coverages, or wall chemistry.
 The model accounts for deterministic level subcycling, not measured wall-clock
 time. Runtime feedback, heterogeneous CPU/GPU weights, and dynamic work
 stealing remain outside this milestone.
+
+## Distributed sparse MPI AMR timestep (`0.71.0`)
+
+- [x] owner-local hyperbolic CFL evaluation on sparse patch payloads
+- [x] optional owner-local molecular-transport stability evaluation
+- [x] cumulative `r` hyperbolic conversion to the root-step limit
+- [x] cumulative `r^2` parabolic conversion to the root-step limit
+- [x] one communicator-wide minimum reduction without field gathering
+- [x] neutral participation by ranks with no locally owned patches
+- [x] collective invalid-state and missing-transport rejection
+- [x] deterministic zero timestep on every rejected path
+- [x] exact serial patch-tree timestep parity
+- [x] 1/2/4/8-rank Release and Debug MPI gates
+
+This supplies the distributed stability decision needed by a runnable sparse
+MPI AMR driver. Adaptive stepping, stop-time clipping, regrid cadence, output,
+and restart orchestration remain driver responsibilities.
