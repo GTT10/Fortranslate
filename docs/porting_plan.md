@@ -522,6 +522,8 @@ Reactive application integration:
   subcycling, diffusive reflux, rollback, and serial parity (`0.52.0`)
 - [x] transactional owner-only patch-tree `R-T-H-T-R` composition, complete
   bookkeeping synchronization, outer rollback, and serial parity (`0.53.0`)
+- [x] rank-local sparse patch payloads, exact owner scatter/gather, and
+  same-hierarchy owner-map migration (`0.54.0`)
 
 AMR parity metrics:
 

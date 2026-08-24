@@ -767,3 +767,20 @@ The distributed patch-tree `R-T-H-T-R` interval is accepted only while:
   restores the outer backup exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.54.0 sparse MPI AMR storage gates
+
+The rank-local patch container is accepted only while:
+
+- every local sparse patch and cell count equals the distribution metadata;
+- global sums contain every patch and cell exactly once;
+- the global sum of allocated state, temperature, and ghost values equals one
+  replicated tree, independent of MPI rank count;
+- gathering into a fully poisoned replica restores fields, ghosts, time,
+  steps, level counters, transport counters, and regrid statistics exactly;
+- rotating every owner on multi-rank runs reallocates payload only on the new
+  owner and preserves the one-copy global value count;
+- gathering after migration exactly reconstructs the original replicated
+  solution;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

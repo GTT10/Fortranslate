@@ -872,3 +872,20 @@ The replicated MPI bridge now covers the complete patch-tree physics interval,
 not only separate operators. Sparse rank-local patch allocation, ownership
 migration after regrid, and scalable point-to-point stage communication remain
 the next distributed-AMR architecture work.
+
+## Sparse MPI AMR patch storage and owner migration (`0.54.0`)
+
+- [x] replicated hierarchy and owner descriptors with rank-local payloads
+- [x] all six reactive patch arrays absent on every non-owner rank
+- [x] exact owner-authoritative replica-to-sparse scatter
+- [x] exact sparse-to-replicated gather including global bookkeeping
+- [x] global patch, cell, and field-value one-copy accounting
+- [x] same-hierarchy owner-map migration with no retained non-owner payload
+- [x] exact post-migration field, ghost, and bookkeeping reconstruction
+- [x] 1/2/4/8-rank Release and Debug gates
+
+This establishes the storage boundary needed for a truly distributed AMR
+advance. The current physics entry points still use replicated trees, and
+owner migration temporarily broadcasts one patch at a time. Direct sparse
+physics, topology-changing regrid migration, and scalable point-to-point halo
+and flux schedules remain pending.

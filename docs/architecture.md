@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes ten serial verification drivers and five optional MPI drivers
+PeleF exposes ten serial verification drivers and six optional MPI drivers
 over shared numerical and physical-property modules.
 
 ```text
@@ -558,6 +558,20 @@ same operator order and final ghost contract as serial patch-tree AMR. Patch
 arrays and hierarchy operations remain replicated; sparse rank-local
 allocation, migration after regrid, and scalable point-to-point communication
 remain outside the `0.53.0` boundary.
+
+In `0.54.0`, `mpi_amr_sparse_patch_1d_mod` introduces a rank-local reactive
+patch container. Hierarchy and owner-map descriptors remain replicated, but
+the six allocatable field payloads are present only for patches owned by the
+local rank. Scatter first resolves the owner-authoritative replicated tree;
+gather writes local owners into a supplied replica and reuses the qualified
+owner synchronization to reconstruct every patch and global bookkeeping.
+
+Same-hierarchy owner-map changes migrate one complete patch at a time from
+the old owner. The current transition uses a collective broadcast as a
+correctness-first bridge, although only the new owner retains the payload.
+Physics still executes through the replicated `0.53.0` entry points. Direct
+sparse physics, topology-changing regrid transfer, and point-to-point
+communication schedules remain outside the `0.54.0` boundary.
 
 ## Reactive AMR time advancement
 
