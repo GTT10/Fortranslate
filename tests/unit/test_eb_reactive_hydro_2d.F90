@@ -1,7 +1,7 @@
 program test_eb_reactive_hydro_2d
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
-  use state_indices_mod, only: imx, imy
+  use state_indices_mod, only: irho, imx, imy
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
@@ -120,6 +120,18 @@ program test_eb_reactive_hydro_2d
   call require(maxval(abs(x_flux(:, 5, 5) - &
     center_x_flux(:, 5, 5))) > 1.0e-12_dp, &
     "characteristic PLM changes an affine face flux")
+  expected = 35.0_dp * ( &
+    0.28_dp + 0.002_dp * 5.0_dp + 0.001_dp * 5.0_dp + &
+    0.5_dp * 0.002_dp - 0.5_dp * dt / geometry%dx * 35.0_dp * 0.002_dp)
+  call assert_close(x_flux(irho, 5, 5), expected, &
+    2.0e-11_dp * max(1.0_dp, abs(expected)), &
+    "characteristic PLM exact affine x mass flux")
+  expected = 8.0_dp * ( &
+    0.28_dp + 0.002_dp * 5.0_dp + 0.001_dp * 5.0_dp + &
+    0.5_dp * 0.001_dp - 0.5_dp * dt / geometry%dy * 8.0_dp * 0.001_dp)
+  call assert_close(y_flux(irho, 5, 5), expected, &
+    2.0e-11_dp * max(1.0_dp, abs(expected)), &
+    "characteristic PLM exact affine y mass flux")
   call reactive_eb_outflow_riemann_fluxes_2d( &
     species, state, temperature_field, geometry, "hllc", x_flux, y_flux, &
     ok, "characteristic_plm", "unknown", dt)
