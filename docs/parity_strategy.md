@@ -1224,3 +1224,16 @@ pipeline must preserve regular, vertical-plane, diagonal-plane, and circular
 geometries within `dt*2e-10*p*max(dx,dy)` per-cell extensive tolerance. Unknown
 solvers and nonfinite states must fail with zero fluxes or unchanged state and
 temperature in GNU Fortran Debug and Release suites.
+
+## 0.81.0 runnable reactive EB 2D application gates
+
+The public EB path is accepted only while a committed two-namelist input builds
+a circular obstacle with regular, cut, and covered cells; the active-cell CFL
+matches the analytical uniform-state rate; the clipped time loop reaches the
+requested final time; and all conserved components retain their
+volume-fraction-weighted integrals. The stationary run must preserve positive
+density and pressure, 1000 K temperature, zero velocity, and species closure.
+Its CSV must contain 400 ordered grid cells with finite geometry and primitive
+fields. Invalid CFL values, geometry without cut cells, and direct requests for
+unsupported chemistry must fail without an accepted step in GNU Fortran Debug
+and Release suites.

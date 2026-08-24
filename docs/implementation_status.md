@@ -1336,3 +1336,22 @@ reactive Euler update with nonperiodic zero-gradient outer boundaries. It does
 not yet claim high-order cut-cell reconstruction and transverse prediction,
 face-centroid flux interpolation, periodic boundaries, moving walls, transport
 or chemistry splitting, AMR coupling, or MPI distribution.
+
+## Runnable reactive EB 2D application (`0.81.0`)
+
+- [x] combined `reactive_2d` and `embedded_boundary` namelist input
+- [x] configurable plane and inside/outside-circle level sets
+- [x] explicit rejection of geometry without cut cells
+- [x] active-cell general-EOS CFL timestep with exact final-time clipping
+- [x] complete repeated PCM/HLLC/StateRedist hydro advancement
+- [x] componentwise volume-fraction-weighted conserved integrals
+- [x] active-cell density, pressure, temperature, speed, and closure extrema
+- [x] CSV cell centers, volume fraction/type, wall metrics, and flow fields
+- [x] committed circular-obstacle input and output-structure regression
+- [x] direct-API rejection of unsupported chemistry and transport modes
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The standalone `pelef_reactive_eb_2d` path advances stationary embedded
+boundaries through a real input-to-output workflow. It is deliberately limited
+to first-order hydro with outflow outer boundaries. Chemistry, molecular
+transport, higher-order reconstruction, AMR, and MPI remain unclaimed.

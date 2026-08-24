@@ -887,7 +887,13 @@ uses partitioned self/neighbor weights before the EOS-validated commit. Flux
 construction is connected by `eb_reactive_hydro_2d_mod`: piecewise-constant
 reactive Riemann states produce fluxes on open Cartesian faces, zero-gradient
 domain faces reuse their adjacent fluid cell, and the divergence feeds the
-weighted StateRedist transaction. Higher-order EB reconstruction and
+weighted StateRedist transaction. `reactive_eb_2d_driver_mod` turns this
+operator into a standalone time-dependent application: it builds a plane or
+circle level set from the input file, evaluates the general-EOS CFL rate over
+active cells only, advances to the clipped final time, and emits
+volume-fraction-weighted diagnostics and geometry-aware CSV output. The public
+driver accepts only its qualified PCM, outflow, hydro-only contract.
+Higher-order EB reconstruction and
 face-centroid interpolation, higher-order StateRedist, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
 outside this subsystem.

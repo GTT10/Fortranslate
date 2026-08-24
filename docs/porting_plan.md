@@ -594,6 +594,8 @@ Required capabilities:
   (`0.79.0`)
 - [x] piecewise-constant reactive face fluxes and complete EB hydro update
   (`0.80.0`)
+- [x] namelist-driven plane/circle EB hydro application, active-cell CFL,
+  volume-weighted diagnostics, and geometry-aware CSV (`0.81.0`)
 - higher-order StateRedist neighborhood reconstruction and limiting
 - thermal, viscous, and catalytic wall boundary conditions
 

@@ -49,12 +49,18 @@ def main() -> None:
     maximum_closure_error = 0.0
     cut_boundary_length = 0.0
     species_columns = [name for name in rows[0] if name.startswith("Y_")]
-    for row in rows:
+    for index, row in enumerate(rows):
         values = [float(value) for value in row.values()]
         if not all(math.isfinite(value) for value in values):
             raise AssertionError("nonfinite EB output")
         if abs(float(row["time"]) - 1.0e-7) > 2.0e-20:
             raise AssertionError("incorrect final time")
+        expected_x = (index % 20 + 0.5) * 0.01 / 20.0
+        expected_y = (index // 20 + 0.5) * 0.01 / 20.0
+        if abs(float(row["x"]) - expected_x) > 2.0e-16 or abs(
+            float(row["y"]) - expected_y
+        ) > 2.0e-16:
+            raise AssertionError("incorrect EB CSV coordinate order")
         volume_fraction = float(row["volume_fraction"])
         if not 0.0 <= volume_fraction <= 1.0:
             raise AssertionError("invalid volume fraction")
@@ -62,6 +68,18 @@ def main() -> None:
         cell_types.add(cell_type)
         if cell_type == 1:
             cut_boundary_length += float(row["boundary_length"])
+            normal_norm = math.hypot(
+                float(row["boundary_normal_x"]),
+                float(row["boundary_normal_y"]),
+            )
+            if abs(normal_norm - 1.0) > 2.0e-12:
+                raise AssertionError("cut-cell normal is not unit length")
+        elif (
+            float(row["boundary_length"]) != 0.0
+            or float(row["boundary_normal_x"]) != 0.0
+            or float(row["boundary_normal_y"]) != 0.0
+        ):
+            raise AssertionError("non-cut cell has embedded-boundary metrics")
         rho = float(row["rho"])
         pressure = float(row["pressure"])
         temperature = float(row["temperature"])

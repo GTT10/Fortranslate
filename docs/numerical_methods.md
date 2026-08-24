@@ -1419,3 +1419,10 @@ slip-wall pressure force form `R`; the update then applies the weighted
 StateRedist transaction to `U_old + dt*R`. This path deliberately precedes
 PeleC-style high-order cut-cell reconstruction, transverse prediction, and
 face-centroid flux interpolation.
+
+The runnable EB driver uses the regular active-cell hyperbolic rate
+`(|u|+c)/dx + (|v|+c)/dy` and takes `dt = CFL/max(rate)`, ignoring covered
+cells. No inverse-volume-fraction factor is added to this bound because the
+weighted StateRedist update removes the explicit small-cell stiffness. The
+last step is clipped to the configured final time. Conserved diagnostics use
+`sum(kappa*U)*dx*dy`; extrema and EOS checks visit active cells only.
