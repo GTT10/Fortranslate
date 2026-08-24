@@ -19,7 +19,9 @@ def read_csv(path: str) -> tuple[list[str], list[list[float]]]:
     return names, rows
 
 
-def validate_reference(names: list[str], rows: list[list[float]]) -> None:
+def validate_reference(
+    names: list[str], rows: list[list[float]], expected_time: float = 1.0e-10
+) -> None:
     required = {
         "level",
         "cell_dx",
@@ -52,7 +54,10 @@ def validate_reference(names: list[str], rows: list[list[float]]) -> None:
         raise AssertionError("sparse MPI AMR output has non-positive pressure")
     if min(row[column["temperature"]] for row in rows) <= 0.0:
         raise AssertionError("sparse MPI AMR output has non-positive temperature")
-    if any(abs(row[column["time"]] - 1.0e-10) > 5.0e-18 for row in rows):
+    time_tolerance = max(5.0e-18, 5.0e-8 * abs(expected_time))
+    if any(
+        abs(row[column["time"]] - expected_time) > time_tolerance for row in rows
+    ):
         raise AssertionError("sparse MPI AMR output has the wrong final time")
     coordinates = [row[column["x"]] for row in rows]
     if any(right <= left for left, right in zip(coordinates, coordinates[1:])):
@@ -67,14 +72,9 @@ def validate_reference(names: list[str], rows: list[list[float]]) -> None:
         raise AssertionError("sparse MPI AMR output violated species closure")
 
 
-if len(sys.argv) < 3:
-    raise SystemExit(
-        "usage: compare_mpi_sparse_amr_1d.py reference.csv candidate.csv [...]"
-    )
-
-names, reference = read_csv(sys.argv[1])
-validate_reference(names, reference)
-for filename in sys.argv[2:]:
+def compare_rows(
+    names: list[str], reference: list[list[float]], filename: str
+) -> float:
     candidate_names, candidate = read_csv(filename)
     if candidate_names != names or len(candidate) != len(reference):
         raise AssertionError(f"{filename}: sparse MPI AMR output shape mismatch")
@@ -82,8 +82,24 @@ for filename in sys.argv[2:]:
     for left, right in zip(reference, candidate):
         for a, b in zip(left, right):
             maximum = max(maximum, abs(a - b) / max(1.0, abs(a), abs(b)))
-    print(f"{filename}: maximum_relative_difference={maximum:.16e}")
-    if maximum > PARITY_TOLERANCE:
-        raise AssertionError(
-            f"{filename}: sparse MPI AMR rank-count parity failed"
+    return maximum
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) < 3:
+        raise SystemExit(
+            "usage: compare_mpi_sparse_amr_1d.py reference.csv candidate.csv [...]"
         )
+    names, reference = read_csv(argv[1])
+    validate_reference(names, reference)
+    for filename in argv[2:]:
+        maximum = compare_rows(names, reference, filename)
+        print(f"{filename}: maximum_relative_difference={maximum:.16e}")
+        if maximum > PARITY_TOLERANCE:
+            raise AssertionError(
+                f"{filename}: sparse MPI AMR rank-count parity failed"
+            )
+
+
+if __name__ == "__main__":
+    main(sys.argv)

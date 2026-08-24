@@ -34,6 +34,8 @@ module simulation_config_reactive_1d_mod
     integer :: amr_max_levels = 2
     integer :: amr_regrid_interval = 4
     integer :: amr_mpi_work_exponent = 2
+    integer :: checkpoint_interval = 0
+    logical :: checkpoint_stop_after_write = .false.
     integer :: amr_tag_component = 1
     integer :: amr_buffer_cells = 2
     integer :: amr_minimum_patch_cells = 8
@@ -62,6 +64,8 @@ module simulation_config_reactive_1d_mod
     real(dp) :: x_ar = 0.0_dp
     real(dp) :: x_n2 = 0.55643_dp
     character(len=256) :: output_file = "reactive_1d.csv"
+    character(len=256) :: checkpoint_file = ""
+    character(len=256) :: restart_file = ""
   end type reactive_1d_config
 
   public :: read_reactive_1d_configuration
@@ -78,6 +82,7 @@ contains
     integer :: nx, maximum_steps, unit, status
     integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
     integer :: amr_mpi_work_exponent
+    integer :: checkpoint_interval
     integer :: amr_weno_scheme
     integer :: amr_tag_component, amr_buffer_cells
     integer :: amr_minimum_patch_cells, amr_maximum_patch_gap_cells
@@ -94,13 +99,14 @@ contains
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=32) :: chemistry_model, amr_reconstruction
     character(len=32) :: boundary_condition
-    character(len=256) :: output_file
+    character(len=256) :: output_file, checkpoint_file, restart_file
     logical :: chemistry_enabled
     logical :: transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
     logical :: amr_enabled, amr_hybrid_weno, amr_multipatch_enabled
+    logical :: checkpoint_stop_after_write
     real(dp) :: mole_sum
     namelist /reactive_1d/ &
       nx, maximum_steps, x_lower, x_upper, final_time, cfl, problem, &
@@ -114,6 +120,7 @@ contains
       amr_enabled, amr_multipatch_enabled, amr_reconstruction, &
       amr_refinement_ratio, amr_max_levels, amr_regrid_interval, &
       amr_mpi_work_exponent, &
+      checkpoint_interval, checkpoint_stop_after_write, &
       amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
       amr_maximum_patch_gap_cells, &
       amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
@@ -121,7 +128,8 @@ contains
       initial_temperature, initial_pressure, initial_velocity, &
       density_wave_amplitude, composition_wave_amplitude, &
       hotspot_temperature_rise, hotspot_center, hotspot_width, x_h2, x_h, &
-      x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, output_file
+      x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, output_file, &
+      checkpoint_file, restart_file
 
     config = reactive_1d_config()
     nx = config%nx
@@ -154,6 +162,8 @@ contains
     amr_max_levels = config%amr_max_levels
     amr_regrid_interval = config%amr_regrid_interval
     amr_mpi_work_exponent = config%amr_mpi_work_exponent
+    checkpoint_interval = config%checkpoint_interval
+    checkpoint_stop_after_write = config%checkpoint_stop_after_write
     amr_tag_component = config%amr_tag_component
     amr_buffer_cells = config%amr_buffer_cells
     amr_minimum_patch_cells = config%amr_minimum_patch_cells
@@ -184,6 +194,8 @@ contains
     x_ar = config%x_ar
     x_n2 = config%x_n2
     output_file = config%output_file
+    checkpoint_file = config%checkpoint_file
+    restart_file = config%restart_file
 
     message = ""
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -211,8 +223,13 @@ contains
       chemistry_relative_tolerance > 0.0_dp .and. &
       transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
+      checkpoint_interval >= 0 .and. &
       min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
       abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+    if (ok .and. checkpoint_interval > 0) &
+      ok = len_trim(checkpoint_file) > 0
+    if (ok .and. checkpoint_stop_after_write) &
+      ok = checkpoint_interval > 0 .and. len_trim(checkpoint_file) > 0
     if (ok .and. amr_enabled) then
       ok = amr_refinement_ratio >= 2 .and. amr_max_levels >= 2 .and. &
         amr_regrid_interval >= 1 .and. &
@@ -334,6 +351,8 @@ contains
     config%amr_max_levels = amr_max_levels
     config%amr_regrid_interval = amr_regrid_interval
     config%amr_mpi_work_exponent = amr_mpi_work_exponent
+    config%checkpoint_interval = checkpoint_interval
+    config%checkpoint_stop_after_write = checkpoint_stop_after_write
     config%amr_tag_component = amr_tag_component
     config%amr_buffer_cells = amr_buffer_cells
     config%amr_minimum_patch_cells = amr_minimum_patch_cells
@@ -364,6 +383,8 @@ contains
     config%x_ar = x_ar
     config%x_n2 = x_n2
     config%output_file = trim(output_file)
+    config%checkpoint_file = trim(checkpoint_file)
+    config%restart_file = trim(restart_file)
   end subroutine read_reactive_1d_configuration
 
 

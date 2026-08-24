@@ -25,7 +25,9 @@ program test_amr_patch_tree_reactive_1d
     plan_tagged_patch_tree_reactive_1d, &
     regrid_tagged_patch_tree_reactive_1d, &
     regrid_patch_tree_reactive_1d, &
-    patch_tree_reactive_integrals_1d
+    patch_tree_reactive_integrals_1d, &
+    write_patch_tree_reactive_1d_checkpoint, &
+    read_patch_tree_reactive_1d_checkpoint
   implicit none
 
   real(dp), parameter :: conservation_tolerance = 3.0e-10_dp
@@ -45,6 +47,7 @@ program test_amr_patch_tree_reactive_1d
   type(amr_patch_level_plan_1d), allocatable :: tagged_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: adjacent_plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: solution
+  type(amr_patch_tree_reactive_solution_1d) :: checkpoint_solution
   type(amr_patch_tree_reactive_solution_1d) :: hydro_control
   type(amr_patch_tree_reactive_solution_1d) :: chemistry_solution
   type(amr_patch_tree_reactive_solution_1d) :: transport_solution
@@ -121,6 +124,22 @@ program test_amr_patch_tree_reactive_1d
     "patch-tree time and step accounting")
   call require(all(solution%level_advances == [1, 4, 12, 16]), &
     "recursive subcycling counts")
+  call write_patch_tree_reactive_1d_checkpoint( &
+    "amr_patch_tree_reactive.chk", species, solution, ok)
+  call require(ok, "patch-tree checkpoint write")
+  call read_patch_tree_reactive_1d_checkpoint( &
+    "amr_patch_tree_reactive.chk", species, config, checkpoint_solution, ok)
+  call require(ok .and. checkpoint_solution%is_valid(), &
+    "patch-tree checkpoint read")
+  call require(checkpoint_solution%level_count() == solution%level_count() &
+    .and. all(checkpoint_solution%level_advances == &
+      solution%level_advances) .and. &
+    all(checkpoint_solution%transport_level_advances == &
+      solution%transport_level_advances) .and. &
+    checkpoint_solution%steps == solution%steps .and. &
+    checkpoint_solution%time == solution%time .and. &
+    patch_tree_state_difference(solution, checkpoint_solution) <= 5.0e-10_dp, &
+    "patch-tree checkpoint round trip")
 
   call patch_tree_reactive_integrals_1d(solution, final_integral, ok)
   call require(ok, "final patch-tree composite integral")
@@ -527,6 +546,7 @@ contains
     local_config%density_wave_amplitude = 0.08_dp
     local_config%amr_enabled = .true.
     local_config%amr_reconstruction = "pcm"
+    local_config%amr_max_levels = 4
   end subroutine configure_case
 
   subroutine configure_transport_case(base_config, local_config)

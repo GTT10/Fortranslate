@@ -90,5 +90,12 @@ jobs:
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np8.csv
           python3 tools/compare_mpi_sparse_amr_1d.py mpi_sparse_amr_np1.csv mpi_sparse_amr_np2.csv mpi_sparse_amr_np4.csv mpi_sparse_amr_np8.csv
+      - name: Sparse MPI AMR checkpoint restart rank redistribution
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/restart_reference.nml mpi_sparse_amr_restart_reference.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/checkpoint_stop.nml mpi_sparse_amr_checkpoint_stop.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/restart.nml mpi_sparse_amr_restarted_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/restart.nml mpi_sparse_amr_restarted_np8.csv
+          python3 tools/compare_mpi_sparse_amr_restart.py mpi_sparse_amr_restart.chk mpi_sparse_amr_restart_reference.csv mpi_sparse_amr_restarted_np4.csv mpi_sparse_amr_restarted_np8.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2

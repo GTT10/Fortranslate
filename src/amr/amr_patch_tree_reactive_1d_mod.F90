@@ -30,6 +30,10 @@ module amr_patch_tree_reactive_1d_mod
   implicit none
   private
 
+  character(len=*), parameter :: patch_tree_checkpoint_magic = &
+    "PELEF_PATCH_TREE_REACTIVE_1D_CHECKPOINT"
+  integer, parameter :: patch_tree_checkpoint_schema = 1
+
   type, public :: amr_patch_tree_reactive_patch_1d
     real(dp), allocatable :: state(:, :)
     real(dp), allocatable :: temperature(:)
@@ -75,6 +79,8 @@ module amr_patch_tree_reactive_1d_mod
   public :: regrid_tagged_patch_tree_reactive_1d
   public :: regrid_patch_tree_reactive_1d
   public :: patch_tree_reactive_integrals_1d
+  public :: write_patch_tree_reactive_1d_checkpoint
+  public :: read_patch_tree_reactive_1d_checkpoint
   public :: write_patch_tree_reactive_1d_csv
 
 contains
@@ -1408,6 +1414,205 @@ contains
     call composite_integral_patch_tree_1d( &
       fields, solution%hierarchy, integral, ok)
   end subroutine patch_tree_reactive_integrals_1d
+
+  subroutine write_patch_tree_reactive_1d_checkpoint( &
+      path, species, solution, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+    logical, intent(out) :: ok
+
+    integer :: unit, status, nvar, level, patch, cell, nx
+    integer :: relation, parent, child
+
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. solution%is_valid()) return
+    nvar = size(solution%levels(1)%patches(1)%state, 1)
+    if (nvar /= reactive_nvar(size(species))) return
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      patch_tree_checkpoint_schema, size(species), nvar, &
+      solution%level_count()
+    if (status /= 0) go to 900
+    do patch = 1, size(species)
+      write(unit, '(a)', iostat=status) trim(species(patch)%name)
+      if (status /= 0) go to 900
+    end do
+    write(unit, '(i0,1x,2(es27.18e3,1x))', iostat=status) &
+      solution%hierarchy%base_cells, solution%hierarchy%x_lower, &
+      solution%hierarchy%x_upper
+    if (status /= 0) go to 900
+    write(unit, '(es27.18e3,1x,4(i0,1x))', iostat=status) &
+      solution%time, solution%steps, solution%regrid_evaluations, &
+      solution%regrids, solution%overlap_cells_transferred
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) solution%level_advances
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      solution%transport_level_advances
+    if (status /= 0) go to 900
+
+    do relation = 1, size(solution%hierarchy%relations)
+      write(unit, '(*(i0,1x))', iostat=status) &
+        solution%hierarchy%relations(relation)%refinement_ratio, &
+        solution%hierarchy%relations(relation)%child_patch_count()
+      if (status /= 0) go to 900
+      do parent = 1, solution%hierarchy%relations(relation)% &
+          parent_patch_count()
+        do child = 1, solution%hierarchy%relations(relation)% &
+            child_sets(parent)%patch_count()
+          write(unit, '(*(i0,1x))', iostat=status) parent, &
+            solution%hierarchy%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_lower, &
+            solution%hierarchy%relations(relation)%child_sets(parent)% &
+              patches(child)%fine_coarse_upper
+          if (status /= 0) go to 900
+        end do
+      end do
+    end do
+
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        write(unit, '(*(i0,1x))', iostat=status) level, patch, nx
+        if (status /= 0) go to 900
+        do cell = 1, nx
+          write(unit, '(*(es27.18e3,1x))', iostat=status) &
+            solution%levels(level)%patches(patch)%state(:, cell), &
+            solution%levels(level)%patches(patch)%temperature(cell)
+          if (status /= 0) go to 900
+        end do
+      end do
+    end do
+    write(unit, '(a)', iostat=status) "END_CHECKPOINT"
+    if (status /= 0) go to 900
+    close(unit, iostat=status)
+    ok = status == 0
+    return
+
+900 continue
+    close(unit)
+  end subroutine write_patch_tree_reactive_1d_checkpoint
+
+  subroutine read_patch_tree_reactive_1d_checkpoint( &
+      path, species, config, solution, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(amr_patch_tree_reactive_solution_1d), intent(out) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_patch_level_plan_1d), allocatable :: plans(:)
+    integer, allocatable :: level_advances(:), transport_advances(:)
+    character(len=64) :: magic, stored_name, end_marker
+    real(dp) :: stored_time, stored_lower, stored_upper, tolerance
+    logical :: local_ok
+    integer :: unit, status, schema, stored_species, stored_nvar
+    integer :: level_count, base_cells, stored_steps
+    integer :: stored_regrid_evaluations, stored_regrids, stored_overlap
+    integer :: relation, relation_patches, entry
+    integer :: level, patch, cell, nx, stored_level, stored_patch, stored_nx
+
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. config%amr_enabled) return
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) magic
+    if (status /= 0 .or. trim(magic) /= patch_tree_checkpoint_magic) go to 900
+    read(unit, *, iostat=status) &
+      schema, stored_species, stored_nvar, level_count
+    if (status /= 0) go to 900
+    if (schema /= patch_tree_checkpoint_schema .or. &
+        stored_species /= size(species) .or. &
+        stored_nvar /= reactive_nvar(size(species)) .or. &
+        level_count < 1 .or. level_count > config%amr_max_levels) go to 900
+    do patch = 1, stored_species
+      read(unit, '(a)', iostat=status) stored_name
+      if (status /= 0 .or. trim(stored_name) /= trim(species(patch)%name)) &
+        go to 900
+    end do
+    read(unit, *, iostat=status) base_cells, stored_lower, stored_upper
+    if (status /= 0) go to 900
+    tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(config%x_lower), abs(config%x_upper))
+    if (base_cells /= config%nx .or. &
+        abs(stored_lower - config%x_lower) > tolerance .or. &
+        abs(stored_upper - config%x_upper) > tolerance) go to 900
+    read(unit, *, iostat=status) stored_time, stored_steps, &
+      stored_regrid_evaluations, stored_regrids, stored_overlap
+    if (status /= 0 .or. stored_time < 0.0_dp .or. stored_steps < 0 .or. &
+        min(stored_regrid_evaluations, stored_regrids, stored_overlap) < 0) &
+      go to 900
+    allocate(level_advances(level_count), transport_advances(level_count))
+    read(unit, *, iostat=status) level_advances
+    if (status /= 0 .or. any(level_advances < 0)) go to 900
+    read(unit, *, iostat=status) transport_advances
+    if (status /= 0 .or. any(transport_advances < 0)) go to 900
+
+    allocate(plans(level_count - 1))
+    do relation = 1, size(plans)
+      read(unit, *, iostat=status) &
+        plans(relation)%refinement_ratio, relation_patches
+      if (status /= 0 .or. plans(relation)%refinement_ratio < 2 .or. &
+          relation_patches < 1) go to 900
+      allocate(plans(relation)%patches(relation_patches))
+      do entry = 1, relation_patches
+        read(unit, *, iostat=status) &
+          plans(relation)%patches(entry)%parent_patch, &
+          plans(relation)%patches(entry)%lower, &
+          plans(relation)%patches(entry)%upper
+        if (status /= 0) go to 900
+      end do
+    end do
+    call initialize_patch_tree_reactive_1d( &
+      species, config, plans, solution, local_ok)
+    if (.not. local_ok .or. solution%level_count() /= level_count) go to 900
+
+    do level = 1, solution%level_count()
+      do patch = 1, size(solution%levels(level)%patches)
+        nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+        read(unit, *, iostat=status) stored_level, stored_patch, stored_nx
+        if (status /= 0 .or. stored_level /= level .or. &
+            stored_patch /= patch .or. stored_nx /= nx) go to 900
+        do cell = 1, nx
+          read(unit, *, iostat=status) &
+            solution%levels(level)%patches(patch)%state(:, cell), &
+            solution%levels(level)%patches(patch)%temperature(cell)
+          if (status /= 0) go to 900
+        end do
+        call recover_level_temperatures_1d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, nx, local_ok)
+        if (.not. local_ok) go to 900
+      end do
+    end do
+    read(unit, '(a)', iostat=status) end_marker
+    if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    close(unit, iostat=status)
+    if (status /= 0) return
+
+    solution%level_advances = level_advances
+    solution%transport_level_advances = transport_advances
+    solution%time = stored_time
+    solution%steps = stored_steps
+    solution%regrid_evaluations = stored_regrid_evaluations
+    solution%regrids = stored_regrids
+    solution%overlap_cells_transferred = stored_overlap
+    call refresh_patch_tree_ghosts(species, config, solution, local_ok)
+    if (.not. local_ok) return
+    ok = solution%is_valid()
+    return
+
+900 continue
+    close(unit)
+  end subroutine read_patch_tree_reactive_1d_checkpoint
 
   subroutine write_patch_tree_reactive_1d_csv(path, species, solution, ok)
     character(len=*), intent(in) :: path

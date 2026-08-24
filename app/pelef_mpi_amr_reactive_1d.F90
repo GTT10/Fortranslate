@@ -21,6 +21,8 @@ program pelef_mpi_amr_reactive_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_solution_1d, &
     initialize_patch_tree_reactive_1d, patch_tree_reactive_integrals_1d, &
+    write_patch_tree_reactive_1d_checkpoint, &
+    read_patch_tree_reactive_1d_checkpoint, &
     write_patch_tree_reactive_1d_csv
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, &
@@ -41,15 +43,18 @@ program pelef_mpi_amr_reactive_1d
   type(amr_patch_level_plan_1d), allocatable :: empty_plans(:)
   type(amr_patch_tree_reactive_solution_1d) :: root_solution
   type(amr_patch_tree_reactive_solution_1d) :: replicated_solution
+  type(amr_patch_tree_reactive_solution_1d) :: checkpoint_solution
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_solution
   type(mpi_amr_patch_distribution_1d) :: distribution, new_distribution
   real(dp), allocatable :: initial_all(:), final_all(:)
   real(dp) :: initial_integrals(5), final_integrals(5)
   real(dp) :: conservation_error(5), dt, tolerance
   character(len=1024) :: input_path, output_path, message
-  logical :: ok, changed, output_ok
+  logical :: ok, changed, output_ok, restart_run
+  logical :: stopped_after_checkpoint
   integer :: ierr, rank, nranks, argument_count
   integer :: tagged_cells, transferred_cells
+  integer :: last_checkpoint_step
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -95,10 +100,22 @@ program pelef_mpi_amr_reactive_1d
     call abort_run("Unknown chemistry model", 3)
   end select
 
-  allocate(empty_plans(0))
-  call initialize_patch_tree_reactive_1d( &
-    species, config, empty_plans, root_solution, ok)
-  if (.not. ok) call abort_run("Sparse MPI AMR root initialization failed", 4)
+  restart_run = len_trim(config%restart_file) > 0
+  if (restart_run) then
+    call read_patch_tree_reactive_1d_checkpoint( &
+      config%restart_file, species, config, root_solution, ok)
+    if (.not. ok) call abort_run("Sparse MPI AMR restart read failed", 4)
+  else
+    allocate(empty_plans(0))
+    call initialize_patch_tree_reactive_1d( &
+      species, config, empty_plans, root_solution, ok)
+    if (.not. ok) &
+      call abort_run("Sparse MPI AMR root initialization failed", 4)
+  end if
+  tolerance = 50.0_dp * epsilon(1.0_dp) * &
+    max(1.0_dp, config%final_time)
+  if (root_solution%time > config%final_time + tolerance) &
+    call abort_run("Restart time exceeds configured final_time", 4)
   allocate(initial_all(reactive_nvar(size(species))))
   allocate(final_all(reactive_nvar(size(species))))
   call patch_tree_reactive_integrals_1d(root_solution, initial_all, ok)
@@ -112,14 +129,16 @@ program pelef_mpi_amr_reactive_1d
   call scatter_owned_patch_tree_reactive_1d( &
     distribution, root_solution, sparse_solution, ok)
   if (.not. ok) call abort_run("Initial sparse AMR scatter failed", 4)
-  call regrid_tagged_sparse_patch_tree_reactive_1d( &
-    species, config, distribution, sparse_solution, new_distribution, &
-    changed, tagged_cells, transferred_cells, ok)
-  if (.not. ok) call abort_run("Initial sparse AMR tagging failed", 4)
-  distribution = new_distribution
+  if (.not. restart_run) then
+    call regrid_tagged_sparse_patch_tree_reactive_1d( &
+      species, config, distribution, sparse_solution, new_distribution, &
+      changed, tagged_cells, transferred_cells, ok)
+    if (.not. ok) call abort_run("Initial sparse AMR tagging failed", 4)
+    distribution = new_distribution
+  end if
 
-  tolerance = 50.0_dp * epsilon(1.0_dp) * &
-    max(1.0_dp, config%final_time)
+  stopped_after_checkpoint = .false.
+  last_checkpoint_step = -1
   do while (sparse_solution%time < config%final_time - tolerance)
     if (sparse_solution%steps >= config%maximum_steps) &
       call abort_run("Sparse MPI AMR step limit reached", 5)
@@ -149,12 +168,34 @@ program pelef_mpi_amr_reactive_1d
       if (.not. ok) call abort_run("Sparse MPI AMR regrid failed", 5)
       distribution = new_distribution
     end if
+    if (config%checkpoint_interval > 0 .and. &
+        mod(sparse_solution%steps, config%checkpoint_interval) == 0) then
+      call write_sparse_checkpoint(ok)
+      if (.not. ok) call abort_run("Sparse MPI AMR checkpoint failed", 6)
+      last_checkpoint_step = sparse_solution%steps
+      if (config%checkpoint_stop_after_write) then
+        stopped_after_checkpoint = .true.
+        exit
+      end if
+    end if
   end do
-  sparse_solution%time = config%final_time
+  if (.not. stopped_after_checkpoint) sparse_solution%time = config%final_time
 
   call materialize_owned_patch_tree_reactive_1d( &
     distribution, sparse_solution, replicated_solution, ok)
   if (.not. ok) call abort_run("Final sparse AMR gather failed", 6)
+  if (len_trim(config%checkpoint_file) > 0 .and. &
+      last_checkpoint_step /= sparse_solution%steps) then
+    output_ok = .true.
+    if (rank == 0) then
+      call write_patch_tree_reactive_1d_checkpoint( &
+        config%checkpoint_file, species, replicated_solution, output_ok)
+    end if
+    call MPI_Bcast( &
+      output_ok, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. output_ok) &
+      call abort_run("Final sparse MPI AMR checkpoint failed", 6)
+  end if
   call patch_tree_reactive_integrals_1d(replicated_solution, final_all, ok)
   if (.not. ok) call abort_run("Final AMR integral failed", 6)
   final_integrals = final_all([irho, imx, imy, imz, iet])
@@ -185,16 +226,36 @@ program pelef_mpi_amr_reactive_1d
     write(*, '(a,i0)') "Hierarchy changes: ", sparse_solution%regrids
     write(*, '(a,i0)') "MPI work exponent: ", &
       config%amr_mpi_work_exponent
+    write(*, '(a,l2)') "Restarted: ", restart_run
+    write(*, '(a,l2)') "Stopped after checkpoint: ", &
+      stopped_after_checkpoint
     write(*, '(a,es24.16)') "Final time: ", sparse_solution%time
     write(*, '(a,es24.16)') "Maximum conservation error: ", &
       maxval(conservation_error)
     write(*, '(a,1x,a)') "Output:", trim(output_path)
+    if (len_trim(config%checkpoint_file) > 0) &
+      write(*, '(a,1x,a)') "Checkpoint:", trim(config%checkpoint_file)
   end if
 
   call MPI_Finalize(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine write_sparse_checkpoint(checkpoint_ok)
+    logical, intent(out) :: checkpoint_ok
+
+    call materialize_owned_patch_tree_reactive_1d( &
+      distribution, sparse_solution, checkpoint_solution, checkpoint_ok)
+    if (.not. checkpoint_ok) return
+    if (rank == 0) then
+      call write_patch_tree_reactive_1d_checkpoint( &
+        config%checkpoint_file, species, checkpoint_solution, checkpoint_ok)
+    end if
+    call MPI_Bcast( &
+      checkpoint_ok, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)
+    checkpoint_ok = ierr == MPI_SUCCESS .and. checkpoint_ok
+  end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)
     character(len=*), intent(in) :: reason
