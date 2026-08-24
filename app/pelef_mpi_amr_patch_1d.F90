@@ -128,6 +128,7 @@ program pelef_mpi_amr_patch_1d
   integer :: local_parent_state_transfers, global_parent_state_transfers
   integer :: expected_parent_state_transfers
   integer :: root_owner, old_owner, new_owner, owner_changes
+  integer :: hierarchy_difference
   integer :: local_sparse_patches, global_sparse_patches
   integer :: local_sparse_cells, global_sparse_cells
   integer :: local_sparse_values, global_sparse_values
@@ -1099,6 +1100,13 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ierr == MPI_SUCCESS .and. ok .and. all( &
     global_tagged_communication == expected_tagged_communication), &
     "distributed sparse tag communication accounting", rank)
+  hierarchy_difference = patch_tree_hierarchy_extent_difference( &
+    tagged_sparse%hierarchy, tagged_serial%hierarchy)
+  if (rank == 0 .and. hierarchy_difference /= 0) &
+    write(*, '(a,1x,i0)') "Tagged hierarchy difference:", &
+      hierarchy_difference
+  call assert_all(hierarchy_difference == 0, &
+    "distributed sparse tag hierarchy matches serial", rank)
   call assert_all(ok .and. changed .and. &
     tagged_cells == serial_tagged_cells .and. &
     transferred_cells == serial_transferred_cells .and. &
@@ -1130,8 +1138,12 @@ program pelef_mpi_amr_patch_1d
   call poison_reactive_solution(gathered_reactive)
   call gather_owned_patch_tree_reactive_1d( &
     tagged_regridded_distribution, tagged_sparse, gathered_reactive, ok)
-  call assert_all(ok .and. reactive_solution_difference( &
-    gathered_reactive, tagged_serial) == 0.0_dp, &
+  reactive_difference = reactive_solution_difference( &
+    gathered_reactive, tagged_serial)
+  if (rank == 0 .and. reactive_difference /= 0.0_dp) &
+    write(*, '(a,1x,es12.5)') "Tagged field difference:", &
+      reactive_difference
+  call assert_all(ok .and. reactive_difference == 0.0_dp, &
     "tag-driven sparse regrid matches serial", rank)
   call patch_tree_reactive_integrals_1d( &
     tagged_initial, initial_integral, ok)
@@ -1877,6 +1889,50 @@ contains
     upper = geometry%x_lower + &
       real(geometry%fine_coarse_upper, dp) * geometry%coarse_dx
   end subroutine application_patch_physical_bounds_1d
+
+  integer function patch_tree_hierarchy_extent_difference(first, second) &
+      result(difference)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: first, second
+
+    integer :: relation, parent, local_child
+
+    difference = huge(0)
+    if (first%base_cells /= second%base_cells) return
+    if (size(first%relations) /= size(second%relations)) return
+    difference = 0
+    do relation = 1, size(first%relations)
+      if (first%relations(relation)%refinement_ratio /= &
+          second%relations(relation)%refinement_ratio) then
+        difference = huge(0)
+        return
+      end if
+      if (first%relations(relation)%parent_patch_count() /= &
+          second%relations(relation)%parent_patch_count()) then
+        difference = huge(0)
+        return
+      end if
+      do parent = 1, first%relations(relation)%parent_patch_count()
+        if (first%relations(relation)%child_sets(parent)%patch_count() /= &
+            second%relations(relation)%child_sets(parent)%patch_count()) then
+          difference = huge(0)
+          return
+        end if
+        do local_child = 1, first%relations(relation)% &
+            child_sets(parent)%patch_count()
+          difference = max(difference, abs( &
+            first%relations(relation)%child_sets(parent)% &
+              patches(local_child)%fine_coarse_lower - &
+            second%relations(relation)%child_sets(parent)% &
+              patches(local_child)%fine_coarse_lower))
+          difference = max(difference, abs( &
+            first%relations(relation)%child_sets(parent)% &
+              patches(local_child)%fine_coarse_upper - &
+            second%relations(relation)%child_sets(parent)% &
+              patches(local_child)%fine_coarse_upper))
+        end do
+      end do
+    end do
+  end function patch_tree_hierarchy_extent_difference
 
   real(dp) function reactive_solution_difference(first, second) result(error)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: first, second
