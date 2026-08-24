@@ -11,6 +11,8 @@ program test_eb_geometry_2d
   type(eb_geometry_2d) :: geometry
   real(dp) :: level_set(0:nx, 0:ny)
   real(dp) :: area, coarse_error, fine_error
+  real(dp) :: coarse_perimeter_error, fine_perimeter_error
+  real(dp) :: coarse_normal_error, fine_normal_error
   integer :: i, j, coarse_cut_cells, fine_cut_cells
   logical :: ok
 
@@ -25,6 +27,8 @@ program test_eb_geometry_2d
   call require(maxval(abs(geometry%x_face_fraction - 1.0_dp)) == 0.0_dp &
     .and. maxval(abs(geometry%y_face_fraction - 1.0_dp)) == 0.0_dp, &
     "regular face fractions")
+  call require(maxval(abs(geometry%boundary_length)) == 0.0_dp, &
+    "regular embedded-boundary length")
 
   level_set = -1.0_dp
   call build_eb_geometry_2d( &
@@ -37,6 +41,8 @@ program test_eb_geometry_2d
   call require(maxval(abs(geometry%x_face_fraction)) == 0.0_dp .and. &
     maxval(abs(geometry%y_face_fraction)) == 0.0_dp, &
     "covered face fractions")
+  call require(maxval(abs(geometry%boundary_length)) == 0.0_dp, &
+    "covered embedded-boundary length")
 
   do j = 0, ny
     do i = 0, nx
@@ -59,6 +65,21 @@ program test_eb_geometry_2d
   call require(all(geometry%x_face_fraction(3, :) == 0.0_dp) .and. &
     all(geometry%x_face_fraction(4, :) == 1.0_dp), &
     "vertical plane closed and open faces")
+  call assert_close(sum(geometry%boundary_length), 1.0_dp, tolerance, &
+    "vertical plane boundary length")
+  call assert_close(maxval(abs(geometry%boundary_length(4, :) - &
+    geometry%dy)), 0.0_dp, tolerance, "vertical plane cell length")
+  call assert_close(maxval(abs(geometry%boundary_centroid_x(4, :) - &
+    0.37_dp)), 0.0_dp, tolerance, "vertical plane centroid x")
+  do j = 1, ny
+    call assert_close(geometry%boundary_centroid_y(4, j), &
+      (real(j, dp) - 0.5_dp) * geometry%dy, tolerance, &
+      "vertical plane centroid y")
+  end do
+  call assert_close(maxval(abs(geometry%boundary_normal_x(4, :) - &
+    1.0_dp)), 0.0_dp, tolerance, "vertical plane normal x")
+  call assert_close(maxval(abs(geometry%boundary_normal_y(4, :))), &
+    0.0_dp, tolerance, "vertical plane normal y")
 
   do j = 0, ny
     do i = 0, nx
@@ -73,15 +94,34 @@ program test_eb_geometry_2d
   call assert_close(area, 0.68_dp, tolerance, "diagonal plane fluid area")
   call require(count(geometry%cell_type == eb_cut_cell) > 0, &
     "diagonal plane cut cells")
+  call assert_close(sum(geometry%boundary_length), &
+    0.8_dp * sqrt(2.0_dp), tolerance, "diagonal plane boundary length")
+  call assert_close(maxval(abs(geometry%boundary_centroid_x + &
+    geometry%boundary_centroid_y - 0.8_dp), &
+    mask=geometry%cell_type == eb_cut_cell), 0.0_dp, tolerance, &
+    "diagonal plane centroids")
+  call assert_close(maxval(abs(geometry%boundary_normal_x - &
+    1.0_dp / sqrt(2.0_dp)), mask=geometry%cell_type == eb_cut_cell), &
+    0.0_dp, tolerance, "diagonal plane normal x")
+  call assert_close(maxval(abs(geometry%boundary_normal_y - &
+    1.0_dp / sqrt(2.0_dp)), mask=geometry%cell_type == eb_cut_cell), &
+    0.0_dp, tolerance, "diagonal plane normal y")
 
-  call circle_area_error(20, coarse_error, coarse_cut_cells)
-  call circle_area_error(40, fine_error, fine_cut_cells)
+  call circle_errors(20, coarse_error, coarse_perimeter_error, &
+    coarse_normal_error, coarse_cut_cells)
+  call circle_errors(40, fine_error, fine_perimeter_error, &
+    fine_normal_error, fine_cut_cells)
   call require(coarse_error > 0.0_dp .and. fine_error > 0.0_dp, &
     "curved geometry has nontrivial discretization error")
   call require(fine_error < 0.28_dp * coarse_error, &
     "circle area second-order refinement")
   call require(coarse_cut_cells > 0 .and. fine_cut_cells > coarse_cut_cells, &
     "circle cut-cell refinement")
+  call require(fine_perimeter_error < 0.30_dp * coarse_perimeter_error, &
+    "circle perimeter second-order refinement")
+  call require(coarse_normal_error < 0.02_dp .and. &
+    fine_normal_error < coarse_normal_error, &
+    "circle fluid-normal orientation and refinement")
 
   call build_eb_geometry_2d( &
     level_set, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, geometry, ok)
@@ -91,15 +131,17 @@ program test_eb_geometry_2d
 
 contains
 
-  subroutine circle_area_error(n, error, cut_cells)
+  subroutine circle_errors( &
+      n, area_error, perimeter_error, normal_error, cut_cells)
     integer, intent(in) :: n
-    real(dp), intent(out) :: error
+    real(dp), intent(out) :: area_error, perimeter_error, normal_error
     integer, intent(out) :: cut_cells
 
     real(dp), parameter :: radius = 0.27_dp
     type(eb_geometry_2d) :: circle_geometry
     real(dp) :: circle_level_set(0:n, 0:n)
-    real(dp) :: x, y, measured_area, exact_area
+    real(dp) :: x, y, measured_area, exact_area, measured_perimeter
+    real(dp) :: radial_x, radial_y, radial_norm, alignment
     logical :: local_ok
     integer :: local_i, local_j
 
@@ -119,9 +161,30 @@ contains
     measured_area = sum(circle_geometry%volume_fraction) * &
       circle_geometry%dx * circle_geometry%dy
     exact_area = acos(-1.0_dp) * radius * radius
-    error = abs(measured_area - exact_area)
+    area_error = abs(measured_area - exact_area)
+    measured_perimeter = sum(circle_geometry%boundary_length)
+    perimeter_error = abs(measured_perimeter - &
+      2.0_dp * acos(-1.0_dp) * radius)
     cut_cells = count(circle_geometry%cell_type == eb_cut_cell)
-  end subroutine circle_area_error
+    normal_error = 0.0_dp
+    do local_j = 1, n
+      do local_i = 1, n
+        if (circle_geometry%cell_type(local_i, local_j) /= &
+            eb_cut_cell) cycle
+        radial_x = circle_geometry%boundary_centroid_x(local_i, local_j) - &
+          0.5_dp
+        radial_y = circle_geometry%boundary_centroid_y(local_i, local_j) - &
+          0.5_dp
+        radial_norm = sqrt(radial_x**2 + radial_y**2)
+        call require(radial_norm > 0.0_dp, "circle centroid radius")
+        alignment = ( &
+          circle_geometry%boundary_normal_x(local_i, local_j) * radial_x + &
+          circle_geometry%boundary_normal_y(local_i, local_j) * radial_y) / &
+          radial_norm
+        normal_error = max(normal_error, abs(alignment + 1.0_dp))
+      end do
+    end do
+  end subroutine circle_errors
 
   subroutine assert_close(actual, expected, local_tolerance, message)
     real(dp), intent(in) :: actual, expected, local_tolerance
