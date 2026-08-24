@@ -532,6 +532,8 @@ Reactive application integration:
   subcycling, diffusive reflux, rollback, and serial parity (`0.57.0`)
 - [x] transactional direct sparse `R-T-H-T-R` composition with exact outer
   rollback, call accounting, conservation, and serial parity (`0.58.0`)
+- [x] explicit-plan topology-changing sparse regrid with rebuilt ownership,
+  overlap retention, rollback, conservation, and serial parity (`0.59.0`)
 
 AMR parity metrics:
 

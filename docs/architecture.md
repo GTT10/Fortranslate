@@ -625,6 +625,21 @@ uses its own transactional backup and correctness-first collective streaming;
 topology-changing regrid transfer and point-to-point schedules remain outside
 the `0.58.0` qualification boundary.
 
+In `0.59.0`, `regrid_sparse_patch_tree_reactive_1d` adds an explicit-plan
+topology transition around the serial qualified rebuild. It materializes the
+old sparse tree collectively, applies conservative average-down, root
+prolongation, and same-resolution overlap transfer, verifies identical change
+decisions and transfer counts across ranks, then constructs a new deterministic
+owner map and scatters only the rebuilt owners.
+
+An unchanged plan increments only the regrid-evaluation counter and retains
+the existing distribution. A changed plan commits the rebuilt hierarchy,
+payloads, counters, and distribution together; any invalid plan or collective
+failure restores the original sparse solution and owner map. Persistent state
+is again globally single-copy after return, although this correctness-first
+transition temporarily materializes a replica. Direct tag planning and
+point-to-point regrid transfer remain outside the `0.59.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

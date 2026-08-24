@@ -959,3 +959,20 @@ directly. Component transactions retain their own backups, and their interval
 data and compact registers still use collective communication. Reducing that
 temporary memory and communication cost, point-to-point schedules, and
 topology-changing distributed regrid remain pending.
+
+## Topology-changing sparse MPI AMR regrid (`0.59.0`)
+
+- [x] explicit-plan sparse regrid with collective topology agreement
+- [x] unchanged-plan no-op with synchronized evaluation accounting
+- [x] conservative average-down, prolongation, and exact fine-overlap transfer
+- [x] deterministic owner-map rebuild for changed patch counts and geometry
+- [x] one-copy global sparse storage after the topology transition
+- [x] serial full-field parity and composite conservation
+- [x] transactional sparse solution and distribution rollback on invalid plans
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Topology-changing explicit plans can now be committed through the sparse MPI
+API. The transition temporarily materializes a full correctness replica on
+each rank before the rebuilt tree is scattered to its new owners. Direct
+tag-driven sparse planning, point-to-point overlap transfer, and removal of
+that temporary replica remain pending.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.58.0` milestone contains ten serial verification executables, six
+The `0.59.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -286,6 +286,9 @@ The AMR layer provides:
 - a direct sparse `R-T-H-T-R` transaction with owner-only stage execution,
   exact call accounting, serial parity, missing-database rejection, and outer
   rollback after a later-stage failure;
+- transactional topology-changing sparse regrid with rebuilt owner maps,
+  exact overlap retention, one-copy persistent storage, serial parity, and
+  invalid-plan rollback;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -329,8 +332,11 @@ the same sparse storage boundary while streaming interval states and fluxes;
 molecular transport now follows the same structure with its parabolic `r²`
 schedule. Their combined `R-T-H-T-R` transaction now remains sparse from its
 outer backup through final acceptance, so normal full-physics advancement no
-longer materializes a complete replica. Topology-changing regrid migration and
-point-to-point communication remain later slices. A periodic child may
+longer materializes a complete replica. Explicit-plan topology changes now
+rebuild the owner distribution transactionally and return to one-copy sparse
+storage; the regrid transition temporarily materializes a correctness replica.
+Tag-driven sparse planning and point-to-point communication remain later
+slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

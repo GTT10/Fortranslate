@@ -856,3 +856,23 @@ The sparse `R-T-H-T-R` transaction is accepted only while:
   committed calls;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.59.0 topology-changing sparse MPI AMR regrid gates
+
+An explicit-plan sparse topology transition is accepted only while:
+
+- an identical plan leaves fields and ownership unchanged, reports zero
+  transferred cells, and increments only the evaluation counter;
+- a four-level tree changes patch counts from `[1, 2, 3, 2]` to
+  `[1, 3, 3, 2]` and constructs a valid deterministic owner distribution;
+- 4/8-rank cases demonstrate that the rebuilt topology changes at least one
+  common patch owner, while 1/2-rank cases remain valid without requiring a
+  gratuitous reassignment;
+- the transfer count and every gathered field, ghost, and counter match the
+  serial regrid exactly;
+- returned sparse payloads remain globally single-copy and composite
+  conserved integrals remain within `2e-9`;
+- an invalid parent reference rejects collectively and restores both sparse
+  solution and distribution exactly;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.
