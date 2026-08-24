@@ -229,12 +229,13 @@ contains
 
   subroutine advance_reactive_eb_level_2d( &
       species, state, temperature, geometry, solver, reconstruction, limiter, &
-      state_redist_max_order, dt, new_state, new_temperature, x_flux, &
-      y_flux, ok, exterior)
+      state_redist_target_volume_fraction, state_redist_max_order, dt, &
+      new_state, new_temperature, x_flux, y_flux, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(in) :: geometry
     character(len=*), intent(in) :: solver, reconstruction, limiter
+    real(dp), intent(in) :: state_redist_target_volume_fraction
     integer, intent(in) :: state_redist_max_order
     real(dp), intent(in) :: dt
     real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
@@ -280,7 +281,8 @@ contains
     if (.not. local_ok) return
     call advance_reactive_eb_state_redistributed_2d( &
       species, state, temperature, geometry, conservative_rhs, dt, &
-      new_state, new_temperature, local_ok, 0.5_dp, state_redist_max_order)
+      new_state, new_temperature, local_ok, &
+      state_redist_target_volume_fraction, state_redist_max_order)
     if (.not. local_ok) return
     ok = .true.
   end subroutine advance_reactive_eb_level_2d
@@ -289,7 +291,8 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, &
       fine_state, fine_temperature, fine_geometry, patch, solver, &
       reconstruction, limiter, state_redist_max_order, dt, new_coarse_state, &
-      new_coarse_temperature, new_fine_state, new_fine_temperature, ok)
+      new_coarse_temperature, new_fine_state, new_fine_temperature, ok, &
+      state_redist_target_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
@@ -304,6 +307,7 @@ contains
     real(dp), intent(out) :: new_fine_state(:, :, :)
     real(dp), intent(out) :: new_fine_temperature(:, :)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
 
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
@@ -315,7 +319,7 @@ contains
     real(dp), allocatable :: fine_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :), coarse_y_flux(:, :, :)
     real(dp), allocatable :: fine_x_flux(:, :, :), fine_y_flux(:, :, :)
-    real(dp) :: alpha, fine_dt
+    real(dp) :: alpha, fine_dt, selected_target
     logical :: local_ok
     integer :: nvar, ratio, substep
 
@@ -325,7 +329,12 @@ contains
     new_fine_temperature = fine_temperature
     ok = .false.
     nvar = reactive_nvar(size(species))
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
     if (nvar < 1 .or. .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        .not. ieee_is_finite(selected_target) .or. &
+        selected_target <= 0.0_dp .or. selected_target > 1.0_dp .or. &
         patch%coarse_i_lower <= 1 .or. &
         patch%coarse_i_upper >= coarse_geometry%nx .or. &
         patch%coarse_j_lower <= 1 .or. &
@@ -342,8 +351,9 @@ contains
     allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
     call advance_reactive_eb_level_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, solver, &
-      reconstruction, limiter, state_redist_max_order, dt, coarse_candidate, &
-      coarse_candidate_temperature, coarse_x_flux, coarse_y_flux, local_ok)
+      reconstruction, limiter, selected_target, state_redist_max_order, dt, &
+      coarse_candidate, coarse_candidate_temperature, coarse_x_flux, &
+      coarse_y_flux, local_ok)
     if (.not. local_ok) return
 
     call initialize_amr_eb_flux_register_2d( &
@@ -375,9 +385,9 @@ contains
       if (.not. local_ok) return
       call advance_reactive_eb_level_2d( &
         species, fine_candidate, fine_candidate_temperature, fine_geometry, &
-        solver, reconstruction, limiter, state_redist_max_order, fine_dt, &
-        fine_work, fine_work_temperature, fine_x_flux, fine_y_flux, local_ok, &
-        exterior)
+        solver, reconstruction, limiter, selected_target, &
+        state_redist_max_order, fine_dt, fine_work, fine_work_temperature, &
+        fine_x_flux, fine_y_flux, local_ok, exterior)
       if (.not. local_ok) return
       fine_candidate = fine_work
       fine_candidate_temperature = fine_work_temperature

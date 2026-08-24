@@ -223,6 +223,16 @@ program test_amr_eb_reactive_2d
     maxval(abs(new_fine_temperature - fine_temperature)) == 0.0_dp, &
     "two-level advance rollback")
 
+  call advance_two_level_reactive_eb_hydro_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, "hllc", &
+    "pcm", "mc", 0, dt, new_coarse_state, new_coarse_temperature, &
+    new_fine_state, new_fine_temperature, ok, 1.01_dp)
+  call require(.not. ok .and. &
+    maxval(abs(new_coarse_state - coarse_state)) == 0.0_dp .and. &
+    maxval(abs(new_fine_state - fine_state)) == 0.0_dp, &
+    "invalid StateRedist target rollback")
+
   write(*, '(a)') "test_amr_eb_reactive_2d: PASS"
 
 contains
