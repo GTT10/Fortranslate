@@ -23,6 +23,29 @@ module reactive_eb_2d_driver_mod
 
 contains
 
+  pure logical function supported_reactive_eb_hydro_config(config) &
+      result(supported)
+    type(reactive_eb_2d_config), intent(in) :: config
+
+    supported = config%flow%nx >= 4 .and. config%flow%ny >= 4 .and. &
+      config%flow%maximum_steps >= 1 .and. &
+      config%flow%x_upper > config%flow%x_lower .and. &
+      config%flow%y_upper > config%flow%y_lower .and. &
+      config%flow%final_time > 0.0_dp .and. config%flow%cfl > 0.0_dp .and. &
+      config%flow%cfl <= 0.8_dp .and. &
+      .not. config%flow%chemistry_enabled .and. &
+      .not. config%flow%transport_enabled .and. &
+      trim(config%flow%reconstruction) == "pcm" .and. &
+      .not. config%flow%use_transverse_correction .and. &
+      trim(config%flow%boundary_x_lower) == "outflow" .and. &
+      trim(config%flow%boundary_x_upper) == "outflow" .and. &
+      trim(config%flow%boundary_y_lower) == "outflow" .and. &
+      trim(config%flow%boundary_y_upper) == "outflow" .and. &
+      ieee_is_finite(config%state_redist_target_volume_fraction) .and. &
+      config%state_redist_target_volume_fraction > 0.0_dp .and. &
+      config%state_redist_target_volume_fraction <= 1.0_dp
+  end function supported_reactive_eb_hydro_config
+
   subroutine build_configured_eb_geometry_2d(config, geometry, ok)
     type(reactive_eb_2d_config), intent(in) :: config
     type(eb_geometry_2d), intent(out) :: geometry
@@ -222,6 +245,7 @@ contains
     steps = 0
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
+    if (.not. supported_reactive_eb_hydro_config(config)) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return
     call initialize_reactive_2d( &

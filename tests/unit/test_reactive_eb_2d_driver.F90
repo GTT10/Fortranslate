@@ -144,6 +144,14 @@ program test_reactive_eb_2d_driver
   call require(maximum_closure_error <= 2.0e-13_dp, &
     "composition closure")
 
+  config%flow%chemistry_enabled = .true.
+  call simulate_reactive_eb_2d( &
+    species, config, state, temperature, simulated_geometry, time, steps, &
+    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "direct API rejects unsupported chemistry")
+  config%flow%chemistry_enabled = .false.
+
   config%geometry = "plane"
   config%plane_normal_x = 1.0_dp
   config%plane_normal_y = 0.0_dp
