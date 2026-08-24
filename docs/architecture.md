@@ -693,6 +693,20 @@ cross-owner child count. Parent interval and flux streaming, parent-to-child
 ghost fill, flux reconciliation, and topology-changing regrid transfer remain
 collective outside the `0.63.0` boundary.
 
+In `0.64.0`, final sparse ghost refresh no longer broadcasts a complete parent
+state to the communicator. The parent owner derives the distinct ranks that
+own at least one of its children and sends the parent state once to each remote
+recipient. A child owner receives one reusable copy even when it owns several
+children of that parent, and ranks without a related parent or child allocate
+no state buffer.
+
+Same-owner child fill reads the local parent directly. The parent owner counts
+each successful remote-recipient send, and the communicator sum must equal the
+owner-map-derived number of distinct remote child owners. Recursive hydro and
+transport interval states, face fluxes, bookkeeping counters, flux
+reconciliation, and topology-changing regrid transfer remain collective
+outside the `0.64.0` boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

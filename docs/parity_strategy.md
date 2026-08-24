@@ -947,3 +947,20 @@ Sparse child-interior transfer is accepted only while:
   composite conservation within `2e-9`, and exact failure rollback;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.64.0 point-to-point sparse parent-state fanout gates
+
+Sparse parent-state fanout is accepted only while:
+
+- each parent owner sends its complete ghost-refresh state once to every
+  distinct remote rank that owns at least one child;
+- the communicator-wide send count equals an independent owner-map traversal,
+  including zero remote recipients for the 1-rank case;
+- several children of the same parent and remote owner reuse one received
+  parent state;
+- same-owner children use the local state and unrelated ranks allocate no
+  parent-state payload;
+- chemistry, hydro, and transport retain serial field parity within `5e-13`,
+  composite conservation within `2e-9`, and exact failure rollback;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

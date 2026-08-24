@@ -1041,3 +1041,19 @@ Sparse child interiors now reach only the parent owner that consumes them.
 Parent interval states and fluxes, parent-to-child ghost fill, shared-flux
 reconciliation, topology overlap transfer, and the temporary regrid correctness
 replica remain collective work.
+
+## Point-to-point sparse parent-state fanout (`0.64.0`)
+
+- [x] one direct parent-state send per distinct remote child owner
+- [x] one received state reused for every local child of the same parent
+- [x] same-owner parent state consumed without MPI traffic
+- [x] no parent-state allocation on ranks unrelated to the parent or children
+- [x] exact global recipient count derived independently from the owner map
+- [x] unchanged sparse chemistry, hydro, and transport serial parity
+- [x] unchanged conservation, subcycle accounting, and rollback gates
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Final sparse parent-to-child ghost refresh is now point to point. Recursive
+hydro/transport interval states, face fluxes, level counters, shared-flux
+reconciliation, topology overlap transfer, and the temporary regrid correctness
+replica remain collective work.

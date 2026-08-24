@@ -542,6 +542,8 @@ Reactive application integration:
   boundary payloads and cross-owner transfer accounting (`0.62.0`)
 - [x] direct sparse child-interior transfer to parent owners for average-down
   and physics synchronization (`0.63.0`)
+- [x] direct sparse parent-state fanout once per distinct remote child owner
+  for final ghost refresh (`0.64.0`)
 
 AMR parity metrics:
 
