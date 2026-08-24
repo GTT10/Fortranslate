@@ -1,10 +1,18 @@
 module mpi_amr_sparse_patch_1d_mod
   use mpi_f08
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use reactive_1d_mod, only: advance_reactive_chemistry
+  use amr_hierarchy_1d_mod, only: amr_level_field_1d
+  use amr_multipatch_1d_mod, only: average_down_patch_set_1d
+  use amr_reactive_1d_mod, only: &
+    recover_level_temperatures_1d, fill_physical_ghosts_1d
   use amr_patch_tree_1d_mod, only: amr_patch_tree_hierarchy_1d
   use amr_patch_tree_reactive_1d_mod, only: &
     amr_patch_tree_reactive_patch_1d, &
-    amr_patch_tree_reactive_solution_1d
+    amr_patch_tree_reactive_solution_1d, fill_one_child_ghosts
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, &
     mpi_amr_distribution_matches_hierarchy_1d, &
@@ -41,8 +49,343 @@ module mpi_amr_sparse_patch_1d_mod
   public :: scatter_owned_patch_tree_reactive_1d
   public :: gather_owned_patch_tree_reactive_1d
   public :: migrate_owned_patch_tree_reactive_1d
+  public :: advance_sparse_patch_tree_chemistry_1d
 
 contains
+
+  subroutine advance_sparse_patch_tree_chemistry_1d( &
+      species, reactions, config, interval, distribution, solution, ok, &
+      local_patch_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: interval
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_patch_advances
+
+    type(mpi_amr_sparse_reactive_solution_1d) :: backup
+    character(len=32) :: boundary
+    logical :: local_ok, accepted, mpi_ok
+    integer :: level, patch, nx, advances
+
+    ok = .false.
+    advances = 0
+    if (present(local_patch_advances)) local_patch_advances = 0
+    local_ok = interval >= 0.0_dp .and. size(species) >= 1 .and. &
+      solution%is_valid(distribution)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    backup = solution
+
+    do level = 1, size(solution%levels)
+      boundary = "outflow"
+      if (level == 1) boundary = config%boundary_condition
+      do patch = 1, size(solution%levels(level)%patches)
+        local_ok = .true.
+        if (solution%levels(level)%is_local(patch)) then
+          nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+          call advance_reactive_chemistry( &
+            species, reactions, &
+            solution%levels(level)%patches(patch)%state, &
+            solution%levels(level)%patches(patch)%temperature, nx, interval, &
+            config%chemistry_relative_tolerance, &
+            config%chemistry_absolute_tolerance, boundary, local_ok)
+          if (local_ok) advances = advances + 1
+        end if
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) then
+          solution = backup
+          advances = 0
+          return
+        end if
+      end do
+    end do
+
+    call average_down_sparse_reactive_solution_1d( &
+      species, distribution, solution, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    call refresh_sparse_reactive_ghosts_1d( &
+      species, config, distribution, solution, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    local_ok = solution%is_valid(distribution)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    ok = mpi_ok .and. accepted
+    if (.not. ok) then
+      solution = backup
+      advances = 0
+      return
+    end if
+    if (present(local_patch_advances)) local_patch_advances = advances
+  end subroutine advance_sparse_patch_tree_chemistry_1d
+
+  subroutine average_down_sparse_reactive_solution_1d( &
+      species, distribution, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    type(amr_level_field_1d), allocatable :: children(:)
+    real(dp), allocatable :: child_state(:, :)
+    logical :: local_ok, accepted, mpi_ok
+    integer :: relation, parent, child, child_index, child_count
+    integer :: parent_owner, child_owner, parent_nx, child_nx, ierr
+
+    ok = .false.
+    do relation = size(solution%hierarchy%relations), 1, -1
+      do parent = 1, solution%hierarchy%relations(relation)% &
+          parent_patch_count()
+        child_count = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patch_count()
+        if (child_count == 0) cycle
+        parent_owner = distribution%owner_of(relation - 1, parent)
+        allocate(children(child_count))
+        do child = 1, child_count
+          child_index = solution%hierarchy%relations(relation)% &
+            child_index(parent, child)
+          child_nx = distribution%levels(relation + 1)% &
+            cell_counts(child_index)
+          allocate(child_state(solution%nvar, child_nx))
+          child_owner = distribution%owner_of(relation, child_index)
+          if (distribution%rank == child_owner) &
+            child_state = solution%levels(relation + 1)% &
+              patches(child_index)%state(:, 1:child_nx)
+          call MPI_Bcast(child_state, size(child_state), &
+            MPI_DOUBLE_PRECISION, child_owner, distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          if (distribution%rank == parent_owner) &
+            children(child)%values = child_state
+          deallocate(child_state)
+        end do
+        local_ok = .true.
+        if (distribution%rank == parent_owner) then
+          parent_nx = distribution%levels(relation)%cell_counts(parent)
+          call average_down_patch_set_1d( &
+            children, solution%hierarchy%relations(relation)% &
+              child_sets(parent), &
+            solution%levels(relation)%patches(parent)% &
+              state(:, 1:parent_nx), local_ok)
+          if (local_ok) call recover_level_temperatures_1d( &
+            species, solution%levels(relation)%patches(parent)%state, &
+            solution%levels(relation)%patches(parent)%temperature, &
+            parent_nx, local_ok)
+        end if
+        deallocate(children)
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) return
+      end do
+    end do
+    ok = .true.
+  end subroutine average_down_sparse_reactive_solution_1d
+
+  subroutine refresh_sparse_reactive_ghosts_1d( &
+      species, config, distribution, solution, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_1d_config), intent(in) :: config
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: parent_state(:, :)
+    logical :: local_ok, accepted, mpi_ok
+    integer :: relation, parent, child, child_index, child_count
+    integer :: parent_owner, parent_nx, ierr
+
+    ok = .false.
+    local_ok = .true.
+    parent_owner = distribution%owner_of(0, 1)
+    if (distribution%rank == parent_owner) then
+      parent_nx = distribution%levels(1)%cell_counts(1)
+      call fill_physical_ghosts_1d( &
+        solution%levels(1)%patches(1)%state, &
+        solution%levels(1)%patches(1)%temperature, parent_nx, &
+        config%boundary_condition, local_ok)
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    do relation = 1, size(solution%hierarchy%relations)
+      do parent = 1, solution%hierarchy%relations(relation)% &
+          parent_patch_count()
+        child_count = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patch_count()
+        if (child_count == 0) cycle
+        parent_owner = distribution%owner_of(relation - 1, parent)
+        parent_nx = distribution%levels(relation)%cell_counts(parent)
+        allocate(parent_state(solution%nvar, 0:parent_nx + 1))
+        if (distribution%rank == parent_owner) &
+          parent_state = solution%levels(relation)%patches(parent)%state
+        call MPI_Bcast(parent_state, size(parent_state), &
+          MPI_DOUBLE_PRECISION, parent_owner, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_ok = .true.
+        do child = 1, child_count
+          child_index = solution%hierarchy%relations(relation)% &
+            child_index(parent, child)
+          if (.not. solution%levels(relation + 1)% &
+              is_local(child_index)) cycle
+          call fill_one_child_ghosts( &
+            species, config, solution%hierarchy%relations(relation)% &
+              child_sets(parent)%patches(child), &
+            parent_state, parent_state, 1.0_dp, &
+            solution%levels(relation + 1)%patches(child_index), local_ok)
+          if (.not. local_ok) exit
+        end do
+        deallocate(parent_state)
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) return
+        call exchange_sparse_adjacent_child_ghosts_1d( &
+          config, distribution, solution, relation, parent, local_ok)
+        call all_ranks_accept_sparse_1d( &
+          distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) return
+      end do
+    end do
+    ok = .true.
+  end subroutine refresh_sparse_reactive_ghosts_1d
+
+  subroutine exchange_sparse_adjacent_child_ghosts_1d( &
+      config, distribution, solution, relation, parent, ok)
+    type(reactive_1d_config), intent(in) :: config
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, parent
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: source_state(:, :), source_temperature(:)
+    integer :: source, source_index, source_owner, source_nx, child_count
+    integer :: ierr
+
+    ok = .false.
+    child_count = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patch_count()
+    do source = 1, child_count
+      source_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, source)
+      source_owner = distribution%owner_of(relation, source_index)
+      source_nx = distribution%levels(relation + 1)% &
+        cell_counts(source_index)
+      allocate(source_state(solution%nvar, 0:source_nx + 1))
+      allocate(source_temperature(0:source_nx + 1))
+      if (distribution%rank == source_owner) then
+        source_state = solution%levels(relation + 1)% &
+          patches(source_index)%state
+        source_temperature = solution%levels(relation + 1)% &
+          patches(source_index)%temperature
+      end if
+      call MPI_Bcast(source_state, size(source_state), MPI_DOUBLE_PRECISION, &
+        source_owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast(source_temperature, size(source_temperature), &
+        MPI_DOUBLE_PRECISION, source_owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call apply_sparse_adjacent_source_1d( &
+        config, solution, relation, parent, source, source_state, &
+        source_temperature)
+      deallocate(source_state, source_temperature)
+    end do
+    ok = .true.
+  end subroutine exchange_sparse_adjacent_child_ghosts_1d
+
+  subroutine apply_sparse_adjacent_source_1d( &
+      config, solution, relation, parent, source, source_state, &
+      source_temperature)
+    type(reactive_1d_config), intent(in) :: config
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, parent, source
+    real(dp), intent(in) :: source_state(:, 0:), source_temperature(0:)
+
+    integer :: target, target_index, target_nx, source_cell, global_fine
+    integer :: source_lower, source_upper, layer, child_count
+
+    child_count = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patch_count()
+    source_lower = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patches(source)%fine%lower
+    source_upper = solution%hierarchy%relations(relation)% &
+      child_sets(parent)%patches(source)%fine%upper
+    do target = 1, child_count
+      if (target == source) cycle
+      target_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, target)
+      if (.not. solution%levels(relation + 1)%is_local(target_index)) cycle
+      target_nx = size(solution%levels(relation + 1)% &
+        patches(target_index)%state, 2) - 2
+      global_fine = solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patches(target)%fine%lower - 1
+      if (global_fine >= source_lower .and. global_fine <= source_upper) then
+        source_cell = global_fine - source_lower + 1
+        solution%levels(relation + 1)%patches(target_index)%state(:, 0) = &
+          source_state(:, source_cell)
+        solution%levels(relation + 1)% &
+          patches(target_index)%temperature(0) = &
+            source_temperature(source_cell)
+      end if
+      global_fine = solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patches(target)%fine%upper + 1
+      if (global_fine >= source_lower .and. global_fine <= source_upper) then
+        source_cell = global_fine - source_lower + 1
+        solution%levels(relation + 1)% &
+          patches(target_index)%state(:, target_nx + 1) = &
+            source_state(:, source_cell)
+        solution%levels(relation + 1)% &
+          patches(target_index)%temperature(target_nx + 1) = &
+            source_temperature(source_cell)
+      end if
+      if (.not. sparse_uses_wide_ghosts(config)) cycle
+      do layer = 1, solution%ghost_width
+        global_fine = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(target)%fine%lower - layer
+        if (global_fine >= source_lower .and. &
+            global_fine <= source_upper) then
+          source_cell = global_fine - source_lower + 1
+          solution%levels(relation + 1)%patches(target_index)% &
+            left_ghost_state(:, layer) = source_state(:, source_cell)
+          solution%levels(relation + 1)%patches(target_index)% &
+            left_ghost_temperature(layer) = &
+              source_temperature(source_cell)
+        end if
+        global_fine = solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(target)%fine%upper + layer
+        if (global_fine >= source_lower .and. &
+            global_fine <= source_upper) then
+          source_cell = global_fine - source_lower + 1
+          solution%levels(relation + 1)%patches(target_index)% &
+            right_ghost_state(:, layer) = source_state(:, source_cell)
+          solution%levels(relation + 1)%patches(target_index)% &
+            right_ghost_temperature(layer) = &
+              source_temperature(source_cell)
+        end if
+      end do
+    end do
+  end subroutine apply_sparse_adjacent_source_1d
+
+  pure logical function sparse_uses_wide_ghosts(config) result(enabled)
+    type(reactive_1d_config), intent(in) :: config
+
+    enabled = trim(config%amr_reconstruction) == "ppm" .or. &
+      trim(config%amr_reconstruction) == "characteristic_ppm"
+  end function sparse_uses_wide_ghosts
 
   logical function mpi_amr_sparse_reactive_is_valid( &
       self, distribution) result(valid)
