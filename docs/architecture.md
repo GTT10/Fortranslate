@@ -513,10 +513,23 @@ patches finish, every replica performs the same deepest-to-root average-down,
 temperature recovery, and ghost refresh. A backup taken after initial owner
 synchronization makes any rejected owner update a communicator-wide rollback.
 
-Owner-only hydro/transport execution, distributed time-integrated fine/fine
-flux reconciliation, sparse rank-local storage, migration after regrid, and
-scalable point-to-point schedules remain outside the `0.50.0` qualification
-boundary.
+In `0.51.0`, serial and MPI recursion share a one-patch hydro kernel. Every
+rank traverses the same parent, child, and substep order, but only the patch
+owner executes that kernel. Collective acceptance precedes broadcasts of the
+owner's interval-start state, complete face-flux field, accepted patch state,
+and level counter. Synchronized replicas then apply the existing
+time-interpolated child ghost fill, adjacent-sibling exchange and
+time-integrated flux reconciliation, coarse/fine flux-register accumulation,
+reflux, average-down, temperature recovery, and final ghost refresh. The
+owner-synchronized backup makes rejection at any recursion depth a global
+transactional rollback.
+
+This is an owner-authoritative replicated bridge, not a sparse distributed
+stage implementation: parent/child and fine/fine operations still execute on
+every replica after owner broadcasts. Owner-only molecular transport, sparse
+rank-local storage, migration after regrid, stage-synchronous point-to-point
+halos, and scalable communication schedules remain outside the `0.51.0`
+qualification boundary.
 
 ## Reactive AMR time advancement
 

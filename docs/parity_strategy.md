@@ -704,3 +704,24 @@ Distributed patch-tree chemistry is accepted only while:
   the synchronized pre-call backup;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.51.0 owner-only MPI AMR hydro gates
+
+Distributed patch-tree hydro is accepted only while:
+
+- a four-level `1/2/3/2` PCM tree performs exactly 33 owner patch updates and
+  records per-level counts `[1, 4, 12, 16]`;
+- each rank's local update count equals the cumulative subcycle weight of its
+  owner-map patches, so no patch interval is duplicated or omitted;
+- complete distributed state, temperature, ghosts, time, step, and counters
+  agree with serial recursive hydro within `5e-13`;
+- composite conserved quantities remain within `3e-10` after recursive
+  subcycling, shared fluxes, reflux, and average-down;
+- a deep invalid owner patch is rejected collectively and the entire solution
+  rolls back exactly with zero accepted local calls;
+- a two-level PPM tree with six adjacent children crosses at least one MPI
+  owner boundary for every multi-rank run, performs exactly 13 updates with
+  level counts `[1, 12]`, matches serial within `5e-13`, and conserves within
+  `3e-10`;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

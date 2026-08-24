@@ -1284,6 +1284,20 @@ deepest-to-root, recovers thermodynamic temperatures, and rebuilds ghosts.
 Thus each global chemistry interval contains exactly one reactor call per
 patch independent of communicator size.
 
-The present bridge still stores all patch interiors on every rank and does not
-claim sparse storage, owner-only hydro/transport, distributed shared-flux
-correction, or regrid migration.
+The `0.51.0` hydro operator walks the recursive patch-tree schedule
+collectively. On each patch interval, only its owner calls the same one-patch
+PCM/PLM/PPM finite-volume kernel used by serial recursion. After logical-AND
+acceptance, the owner broadcasts the interval-start state, all face fluxes,
+the accepted reactive patch, and the updated level counter. All replicas can
+therefore construct the same interval-end state and boundary flux integrals.
+They fill time-interpolated parent ghosts, overwrite adjacent sibling halos,
+advance child intervals in deterministic order, reconcile each shared
+fine/fine time-integrated flux, accumulate coarse/fine registers, reflux, and
+average down. A rejected patch or synchronization step restores the complete
+owner-synchronized solution and reports zero accepted local calls.
+
+The present bridge still stores all patch interiors on every rank. Shared
+flux reconciliation and hierarchy synchronization are deterministic replicated
+operations after owner broadcasts, rather than a sparse stage-synchronous
+exchange. It does not claim owner-only molecular transport, sparse storage,
+regrid migration, or scalable point-to-point communication.

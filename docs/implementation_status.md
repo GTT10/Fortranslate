@@ -812,3 +812,24 @@ The chemistry operator is the first patch-tree physics path executed only on
 owners. Replicated storage remains intentional for this bridge. Owner-only
 hydro and transport recursion, cross-rank shared-flux reconciliation, sparse
 rank-local storage, and regrid migration remain the next distributed AMR work.
+
+## Owner-only MPI AMR hydro (`0.51.0`)
+
+- [x] shared serial/MPI one-patch PCM/PLM/PPM hydro kernel
+- [x] identical collective parent/child/substep traversal on every rank
+- [x] one finite-volume patch update on the exclusive owner per substep
+- [x] collective patch acceptance and owner state/face-flux broadcasts
+- [x] time-interpolated parent ghosts and adjacent-sibling halo replacement
+- [x] cross-owner shared time-integrated fine/fine flux reconciliation
+- [x] replicated coarse/fine flux registers, reflux, and average-down
+- [x] exact global rollback after a deep owner hydro failure
+- [x] exact owner and per-level cumulative subcycle accounting
+- [x] serial parity and composite conservation for four-level PCM hydro
+- [x] serial parity and conservation for six adjacent PPM children
+- [x] 1/2/4/8-rank Release and Debug gates
+
+The finite-volume update itself now executes only on patch owners, including
+recursive level-ratio subcycling. The bridge broadcasts complete owner fluxes
+and states, so synchronization and flux-register work still run on replicated
+trees. Owner-only molecular transport, sparse rank-local allocation,
+stage-synchronous point-to-point halos, and regrid migration remain pending.

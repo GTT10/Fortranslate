@@ -516,6 +516,8 @@ Reactive application integration:
   (`0.49.0`)
 - [x] owner-only patch-tree chemistry, global acceptance/rollback, and serial
   reacting-field parity (`0.50.0`)
+- [x] owner-only recursive patch-tree hydro, shared fine/fine flux handling,
+  reflux, rollback, and serial PCM/PPM parity (`0.51.0`)
 
 AMR parity metrics:
 

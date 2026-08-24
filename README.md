@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.50.0` milestone contains ten serial verification executables, six
+The `0.51.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -141,16 +141,20 @@ With `PELEF_ENABLE_MPI=ON`, five existing executables verify:
 - ordered gather output, global timestep/conservation reductions, and
   complete-field parity for 1, 2, 4, and 8 ranks.
 
-A sixth MPI executable starts the AMR distribution bridge. It validates a
+A sixth MPI executable exercises the AMR distribution bridge. It validates a
 replicated patch-tree description collectively, assigns every root/fine patch
 to one deterministic cell-weighted owner, broadcasts owner-authoritative
 patch fields, and exchanges up to four adjacent-sibling halo layers across
 rank boundaries. It now also advances chemistry on owners alone, reaches
 communicator-wide success/failure consensus after every patch, broadcasts the
 accepted reactive state, averages down deepest-to-root, rebuilds ghosts, and
-rolls every rank back exactly after a rejected owner update. The current bridge
-retains replicated field storage; owner-only hydro/transport and sparse
-rank-local patch storage remain the next integration step.
+rolls every rank back exactly after a rejected owner update. It also drives
+recursive hyperbolic advancement on patch owners alone, broadcasts each
+owner's start state and complete face-flux field, then reuses the serial child
+subcycling, fine/fine flux reconciliation, reflux, average-down, and ghost
+rules on synchronized replicas. The current bridge retains replicated field
+storage; owner-only molecular transport and sparse rank-local patch storage
+remain the next integration steps.
 
 ### One-dimensional AMR
 
@@ -255,6 +259,9 @@ The AMR layer provides:
 - owner-only patch-tree chemistry with one global advance per patch, serial
   field parity, deepest-to-root synchronization, conservation, and global
   transactional rollback gates;
+- owner-only recursive MPI patch-tree hydro with exact per-owner subcycle
+  accounting, cross-owner adjacent PPM flux reconciliation, serial field
+  parity, conservation, and global transactional rollback gates;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -280,10 +287,12 @@ branching plan transactionally. Independently owned adjacent siblings exchange
 same-level ghosts, reconcile each shared time-integrated interface flux, and
 exclude that internal side from reflux. The first MPI distribution bridge
 assigns a unique owner to every patch and communicates authoritative fields
-and adjacent halos while retaining replicas on all ranks. Chemistry executes
-only on those owners with global acceptance and rollback. Owner-only recursive
-hydro/transport, distributed shared fluxes, and sparse patch storage remain
-later slices. A periodic child may
+and adjacent halos while retaining replicas on all ranks. Chemistry and the
+recursive hydro patch kernel execute only on those owners with collective
+acceptance and rollback. Owner-authoritative start-state and face-flux
+broadcasts let every replica apply the existing subcycling, shared-flux,
+reflux, and average-down rules deterministically. Owner-only molecular
+transport and sparse patch storage remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.
