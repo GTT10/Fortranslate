@@ -1866,8 +1866,8 @@ contains
     type(reactive_1d_config), intent(in) :: config
     integer, intent(in) :: nvar
 
-    valid = config%amr_enabled .and. config%amr_multipatch_enabled .and. &
-      config%amr_max_levels >= 2 .and. config%nx >= 8 .and. &
+    valid = config%amr_enabled .and. config%amr_max_levels >= 2 .and. &
+      config%nx >= 8 .and. &
       config%amr_refinement_ratio >= 2 .and. &
       config%amr_tag_component >= 1 .and. &
       config%amr_tag_component <= nvar .and. &

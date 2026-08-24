@@ -553,7 +553,7 @@ contains
     type(reactive_1d_config), intent(out) :: local_config
 
     local_config = base_config
-    local_config%amr_multipatch_enabled = .true.
+    local_config%amr_multipatch_enabled = .false.
     local_config%amr_max_levels = 4
     local_config%amr_refinement_ratio = 2
     local_config%amr_tag_component = imx
