@@ -22,6 +22,10 @@ module eb_geometry_2d_mod
     real(dp), allocatable :: volume_fraction(:, :)
     real(dp), allocatable :: x_face_fraction(:, :)
     real(dp), allocatable :: y_face_fraction(:, :)
+    ! Tangential face-centroid offsets relative to the Cartesian face center,
+    ! normalized by dy on x-faces and dx on y-faces (AMReX convention).
+    real(dp), allocatable :: x_face_centroid_y(:, :)
+    real(dp), allocatable :: y_face_centroid_x(:, :)
     real(dp), allocatable :: boundary_length(:, :)
     real(dp), allocatable :: boundary_centroid_x(:, :)
     real(dp), allocatable :: boundary_centroid_y(:, :)
@@ -68,6 +72,8 @@ contains
     allocate(geometry%cell_type(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%x_face_fraction(0:geometry%nx, 1:geometry%ny))
     allocate(geometry%y_face_fraction(1:geometry%nx, 0:geometry%ny))
+    allocate(geometry%x_face_centroid_y(0:geometry%nx, 1:geometry%ny))
+    allocate(geometry%y_face_centroid_x(1:geometry%nx, 0:geometry%ny))
     allocate(geometry%boundary_length(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%boundary_centroid_x(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%boundary_centroid_y(1:geometry%nx, 1:geometry%ny))
@@ -87,14 +93,18 @@ contains
 
     do j = 1, geometry%ny
       do i = 0, geometry%nx
-        geometry%x_face_fraction(i, j) = positive_segment_fraction( &
-          node_level_set(i, j - 1), node_level_set(i, j))
+        call positive_segment_metrics( &
+          node_level_set(i, j - 1), node_level_set(i, j), &
+          geometry%x_face_fraction(i, j), &
+          geometry%x_face_centroid_y(i, j))
       end do
     end do
     do j = 0, geometry%ny
       do i = 1, geometry%nx
-        geometry%y_face_fraction(i, j) = positive_segment_fraction( &
-          node_level_set(i - 1, j), node_level_set(i, j))
+        call positive_segment_metrics( &
+          node_level_set(i - 1, j), node_level_set(i, j), &
+          geometry%y_face_fraction(i, j), &
+          geometry%y_face_centroid_x(i, j))
       end do
     end do
 
@@ -147,6 +157,8 @@ contains
       allocated(self%volume_fraction) .and. &
       allocated(self%x_face_fraction) .and. &
       allocated(self%y_face_fraction) .and. &
+      allocated(self%x_face_centroid_y) .and. &
+      allocated(self%y_face_centroid_x) .and. &
       allocated(self%boundary_length) .and. &
       allocated(self%boundary_centroid_x) .and. &
       allocated(self%boundary_centroid_y) .and. &
@@ -166,6 +178,8 @@ contains
     valid = all(shape(self%volume_fraction) == [self%nx, self%ny]) .and. &
       all(shape(self%x_face_fraction) == [self%nx + 1, self%ny]) .and. &
       all(shape(self%y_face_fraction) == [self%nx, self%ny + 1]) .and. &
+      all(shape(self%x_face_centroid_y) == [self%nx + 1, self%ny]) .and. &
+      all(shape(self%y_face_centroid_x) == [self%nx, self%ny + 1]) .and. &
       all(shape(self%boundary_length) == [self%nx, self%ny]) .and. &
       all(shape(self%boundary_centroid_x) == [self%nx, self%ny]) .and. &
       all(shape(self%boundary_centroid_y) == [self%nx, self%ny]) .and. &
@@ -186,11 +200,15 @@ contains
       all(lbound(self%boundary_normal_integral_y) == [1, 1]) .and. &
       all(lbound(self%cell_type) == [1, 1]) .and. &
       all(lbound(self%x_face_fraction) == [0, 1]) .and. &
-      all(lbound(self%y_face_fraction) == [1, 0])
+      all(lbound(self%y_face_fraction) == [1, 0]) .and. &
+      all(lbound(self%x_face_centroid_y) == [0, 1]) .and. &
+      all(lbound(self%y_face_centroid_x) == [1, 0])
     if (.not. valid) return
     valid = all(ieee_is_finite(self%volume_fraction)) .and. &
       all(ieee_is_finite(self%x_face_fraction)) .and. &
       all(ieee_is_finite(self%y_face_fraction)) .and. &
+      all(ieee_is_finite(self%x_face_centroid_y)) .and. &
+      all(ieee_is_finite(self%y_face_centroid_x)) .and. &
       all(ieee_is_finite(self%boundary_length)) .and. &
       all(ieee_is_finite(self%boundary_centroid_x)) .and. &
       all(ieee_is_finite(self%boundary_centroid_y)) .and. &
@@ -204,6 +222,8 @@ contains
       maxval(self%x_face_fraction) <= 1.0_dp + tolerance .and. &
       minval(self%y_face_fraction) >= -tolerance .and. &
       maxval(self%y_face_fraction) <= 1.0_dp + tolerance .and. &
+      maxval(abs(self%x_face_centroid_y)) <= 0.5_dp + tolerance .and. &
+      maxval(abs(self%y_face_centroid_x)) <= 0.5_dp + tolerance .and. &
       minval(self%boundary_length) >= 0.0_dp .and. &
       all(self%cell_type >= eb_covered_cell) .and. &
       all(self%cell_type <= eb_regular_cell)
@@ -214,8 +234,56 @@ contains
       all((self%volume_fraction <= eb_classification_tolerance) .eqv. &
         (self%cell_type == eb_covered_cell))
     if (.not. valid) return
+    valid = validate_face_centroids(self, tolerance)
+    if (.not. valid) return
     valid = validate_interface_metrics(self, tolerance)
   end function eb_geometry_is_valid
+
+  pure logical function validate_face_centroids(self, tolerance) result(valid)
+    class(eb_geometry_2d), intent(in) :: self
+    real(dp), intent(in) :: tolerance
+
+    real(dp) :: expected
+    integer :: i, j
+
+    valid = .true.
+    do j = 1, self%ny
+      do i = 0, self%nx
+        expected = 0.5_dp * (1.0_dp - self%x_face_fraction(i, j))
+        if (abs(abs(self%x_face_centroid_y(i, j)) - expected) > &
+            8.0_dp * tolerance .and. &
+            self%x_face_fraction(i, j) > 0.0_dp .and. &
+            self%x_face_fraction(i, j) < 1.0_dp) then
+          valid = .false.
+          return
+        end if
+        if ((self%x_face_fraction(i, j) == 0.0_dp .or. &
+             self%x_face_fraction(i, j) == 1.0_dp) .and. &
+            abs(self%x_face_centroid_y(i, j)) > 8.0_dp * tolerance) then
+          valid = .false.
+          return
+        end if
+      end do
+    end do
+    do j = 0, self%ny
+      do i = 1, self%nx
+        expected = 0.5_dp * (1.0_dp - self%y_face_fraction(i, j))
+        if (abs(abs(self%y_face_centroid_x(i, j)) - expected) > &
+            8.0_dp * tolerance .and. &
+            self%y_face_fraction(i, j) > 0.0_dp .and. &
+            self%y_face_fraction(i, j) < 1.0_dp) then
+          valid = .false.
+          return
+        end if
+        if ((self%y_face_fraction(i, j) == 0.0_dp .or. &
+             self%y_face_fraction(i, j) == 1.0_dp) .and. &
+            abs(self%y_face_centroid_x(i, j)) > 8.0_dp * tolerance) then
+          valid = .false.
+          return
+        end if
+      end do
+    end do
+  end function validate_face_centroids
 
   pure logical function validate_interface_metrics( &
       self, tolerance) result(valid)
@@ -474,26 +542,33 @@ contains
     point_y(point_count) = y
   end subroutine append_unique_point
 
-  pure real(dp) function positive_segment_fraction( &
-      first_value, second_value) result(fraction)
+  pure subroutine positive_segment_metrics( &
+      first_value, second_value, fraction, centroid_offset)
     real(dp), intent(in) :: first_value, second_value
+    real(dp), intent(out) :: fraction, centroid_offset
 
     real(dp) :: crossing
 
     if (first_value > 0.0_dp .and. second_value > 0.0_dp) then
       fraction = 1.0_dp
+      centroid_offset = 0.0_dp
     else if (first_value <= 0.0_dp .and. second_value <= 0.0_dp) then
       fraction = 0.0_dp
+      centroid_offset = 0.0_dp
     else
       crossing = first_value / (first_value - second_value)
       if (first_value > 0.0_dp) then
         fraction = crossing
+        centroid_offset = -0.5_dp * (1.0_dp - fraction)
       else
         fraction = 1.0_dp - crossing
+        centroid_offset = 0.5_dp * (1.0_dp - fraction)
       end if
       fraction = min(1.0_dp, max(0.0_dp, fraction))
+      if (fraction <= 0.0_dp .or. fraction >= 1.0_dp) &
+        centroid_offset = 0.0_dp
     end if
-  end function positive_segment_fraction
+  end subroutine positive_segment_metrics
 
   pure real(dp) function cell_positive_fraction( &
       lower_left, lower_right, upper_right, upper_left) result(fraction)

@@ -27,6 +27,9 @@ program test_eb_geometry_2d
   call require(maxval(abs(geometry%x_face_fraction - 1.0_dp)) == 0.0_dp &
     .and. maxval(abs(geometry%y_face_fraction - 1.0_dp)) == 0.0_dp, &
     "regular face fractions")
+  call require(maxval(abs(geometry%x_face_centroid_y)) == 0.0_dp .and. &
+    maxval(abs(geometry%y_face_centroid_x)) == 0.0_dp, &
+    "regular face centroids")
   call require(maxval(abs(geometry%boundary_length)) == 0.0_dp, &
     "regular embedded-boundary length")
 
@@ -41,6 +44,9 @@ program test_eb_geometry_2d
   call require(maxval(abs(geometry%x_face_fraction)) == 0.0_dp .and. &
     maxval(abs(geometry%y_face_fraction)) == 0.0_dp, &
     "covered face fractions")
+  call require(maxval(abs(geometry%x_face_centroid_y)) == 0.0_dp .and. &
+    maxval(abs(geometry%y_face_centroid_x)) == 0.0_dp, &
+    "covered face centroids")
   call require(maxval(abs(geometry%boundary_length)) == 0.0_dp, &
     "covered embedded-boundary length")
 
@@ -62,6 +68,9 @@ program test_eb_geometry_2d
   call assert_close( &
     maxval(abs(geometry%y_face_fraction(4, :) - 0.30_dp)), &
     0.0_dp, tolerance, "vertical plane open face fraction")
+  call assert_close( &
+    maxval(abs(geometry%y_face_centroid_x(4, :) - 0.35_dp)), &
+    0.0_dp, tolerance, "vertical plane open face centroid")
   call require(all(geometry%x_face_fraction(3, :) == 0.0_dp) .and. &
     all(geometry%x_face_fraction(4, :) == 1.0_dp), &
     "vertical plane closed and open faces")
@@ -114,6 +123,21 @@ program test_eb_geometry_2d
     0.8_dp, tolerance, "diagonal plane normal integral x")
   call assert_close(sum(geometry%boundary_normal_integral_y), &
     0.8_dp, tolerance, "diagonal plane normal integral y")
+  call assert_close(maxval(abs( &
+    geometry%x_face_centroid_y - &
+      0.5_dp * (1.0_dp - geometry%x_face_fraction)), &
+    mask=geometry%x_face_fraction > 0.0_dp .and. &
+      geometry%x_face_fraction < 1.0_dp), 0.0_dp, tolerance, &
+    "diagonal x-face centroid offsets")
+  call assert_close(maxval(abs( &
+    geometry%y_face_centroid_x - &
+      0.5_dp * (1.0_dp - geometry%y_face_fraction)), &
+    mask=geometry%y_face_fraction > 0.0_dp .and. &
+      geometry%y_face_fraction < 1.0_dp), 0.0_dp, tolerance, &
+    "diagonal y-face centroid offsets")
+
+  geometry%x_face_centroid_y(3, 7) = 0.6_dp
+  call require(.not. geometry%is_valid(), "invalid face centroid rejection")
 
   call circle_errors(20, coarse_error, coarse_perimeter_error, &
     coarse_normal_error, coarse_cut_cells)

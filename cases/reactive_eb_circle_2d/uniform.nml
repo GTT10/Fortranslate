@@ -9,7 +9,7 @@
   final_time = 1.0e-7
   cfl = 0.20
   problem = "uniform_reactor"
-  reconstruction = "pcm"
+  reconstruction = "characteristic_plm"
   riemann_solver = "hllc"
   limiter = "mc"
   use_transverse_correction = .false.

@@ -104,10 +104,11 @@ contains
       message = "Reactive EB 2D currently does not support molecular transport"
       return
     end if
-    if (trim(config%flow%reconstruction) /= "pcm" .or. &
+    if ((trim(config%flow%reconstruction) /= "pcm" .and. &
+         trim(config%flow%reconstruction) /= "characteristic_plm") .or. &
         config%flow%use_transverse_correction) then
       ok = .false.
-      message = "Reactive EB 2D currently requires PCM without transverse correction"
+      message = "Reactive EB 2D supports PCM or characteristic PLM without transverse correction"
       return
     end if
     if (trim(config%flow%boundary_x_lower) /= "outflow" .or. &

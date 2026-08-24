@@ -37,7 +37,8 @@ contains
       config%flow%final_time > 0.0_dp .and. config%flow%cfl > 0.0_dp .and. &
       config%flow%cfl <= 0.8_dp .and. &
       .not. config%flow%transport_enabled .and. &
-      trim(config%flow%reconstruction) == "pcm" .and. &
+      (trim(config%flow%reconstruction) == "pcm" .or. &
+       trim(config%flow%reconstruction) == "characteristic_plm") .and. &
       .not. config%flow%use_transverse_correction .and. &
       trim(config%flow%boundary_x_lower) == "outflow" .and. &
       trim(config%flow%boundary_x_upper) == "outflow" .and. &
@@ -226,7 +227,7 @@ contains
   subroutine advance_reactive_eb_strang_2d( &
       species, reactions, state, temperature, geometry, solver, dt, &
       chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction)
+      target_volume_fraction, reconstruction, limiter)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -237,6 +238,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
+    character(len=*), intent(in), optional :: reconstruction, limiter
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
@@ -244,6 +246,7 @@ contains
     real(dp), allocatable :: hydro_temperature(:, :)
     logical, allocatable :: active_mask(:, :)
     logical :: local_ok
+    character(len=32) :: selected_reconstruction, selected_limiter
 
     new_state = state
     new_temperature = temperature
@@ -258,6 +261,11 @@ contains
         any(shape(new_state) /= shape(state)) .or. &
         any(shape(new_temperature) /= shape(temperature))) return
     if (chemistry_enabled .and. size(reactions) < 1) return
+
+    selected_reconstruction = "pcm"
+    selected_limiter = "mc"
+    if (present(reconstruction)) selected_reconstruction = trim(reconstruction)
+    if (present(limiter)) selected_limiter = trim(limiter)
 
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
@@ -276,11 +284,12 @@ contains
       call advance_reactive_eb_hydro_2d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
         dt, hydro_state, hydro_temperature, local_ok, &
-        target_volume_fraction)
+        target_volume_fraction, selected_reconstruction, selected_limiter)
     else
       call advance_reactive_eb_hydro_2d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
-        dt, hydro_state, hydro_temperature, local_ok)
+        dt, hydro_state, hydro_temperature, local_ok, &
+        reconstruction=selected_reconstruction, limiter=selected_limiter)
     end if
     if (.not. local_ok) return
     candidate_state = hydro_state
@@ -356,7 +365,8 @@ contains
         config%flow%chemistry_relative_tolerance, &
         config%flow%chemistry_absolute_tolerance, candidate_state, &
         candidate_temperature, local_ok, &
-        config%state_redist_target_volume_fraction)
+        config%state_redist_target_volume_fraction, &
+        config%flow%reconstruction, config%flow%limiter)
       if (.not. local_ok) return
       state = candidate_state
       temperature = candidate_temperature

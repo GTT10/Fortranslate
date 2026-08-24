@@ -13,6 +13,8 @@ program test_eb_reactive_hydro_2d
   use eb_reactive_hydro_2d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_2d, &
     advance_reactive_eb_hydro_2d
+  use eb_reactive_reconstruction_2d_mod, only: &
+    interpolate_reactive_eb_face_centroid_fluxes_2d
   implicit none
 
   integer, parameter :: nx = 20
@@ -25,11 +27,13 @@ program test_eb_reactive_hydro_2d
   real(dp), allocatable :: state(:, :, :), temperature_field(:, :)
   real(dp), allocatable :: new_state(:, :, :), new_temperature(:, :)
   real(dp), allocatable :: x_flux(:, :, :), y_flux(:, :, :)
+  real(dp), allocatable :: center_x_flux(:, :, :), center_y_flux(:, :, :)
+  real(dp), allocatable :: pcm_state(:, :, :), pcm_temperature(:, :)
   real(dp) :: level_set(0:nx, 0:ny), mole_fractions(7)
   real(dp) :: temperature, second_temperature, sound_speed, second_sound_speed
-  real(dp) :: x, y, dt, tolerance
-  logical :: ok
-  integer :: i, j, k, nvar
+  real(dp) :: x, y, dt, tolerance, expected
+  logical :: ok, found_x_centroid, found_y_centroid
+  integer :: i, j, k, nvar, neighbor
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -40,6 +44,8 @@ program test_eb_reactive_hydro_2d
   allocate(state(nvar, nx, ny), new_state(nvar, nx, ny))
   allocate(temperature_field(nx, ny), new_temperature(nx, ny))
   allocate(x_flux(nvar, 0:nx, ny), y_flux(nvar, nx, 0:ny))
+  allocate(center_x_flux(nvar, 0:nx, ny), center_y_flux(nvar, nx, 0:ny))
+  allocate(pcm_state(nvar, nx, ny), pcm_temperature(nx, ny))
 
   mole_fractions = [0.29570_dp, 1.0e-5_dp, 1.0e-5_dp, 0.14784_dp, &
     1.0e-5_dp, 0.0_dp, 0.55643_dp]
@@ -92,6 +98,40 @@ program test_eb_reactive_hydro_2d
   state(:, 2, 1) = state_cell
   temperature_field(2, 1) = temperature
 
+  do j = 1, ny
+    do i = 1, nx
+      primitive(1:5) = [ &
+        0.28_dp + 0.002_dp * real(i, dp) + 0.001_dp * real(j, dp), &
+        35.0_dp, 8.0_dp, 0.0_dp, pressure]
+      call reactive_primitive_to_conserved( &
+        species, primitive, state(:, i, j), temperature_field(i, j), &
+        sound_speed, ok)
+      call require(ok, "affine PLM state construction")
+    end do
+  end do
+  call reactive_eb_outflow_riemann_fluxes_2d( &
+    species, state, temperature_field, geometry, "hllc", &
+    center_x_flux, center_y_flux, ok)
+  call require(ok, "affine PCM flux construction")
+  call reactive_eb_outflow_riemann_fluxes_2d( &
+    species, state, temperature_field, geometry, "hllc", x_flux, y_flux, &
+    ok, "characteristic_plm", "mc", dt)
+  call require(ok, "affine characteristic PLM flux construction")
+  call require(maxval(abs(x_flux(:, 5, 5) - &
+    center_x_flux(:, 5, 5))) > 1.0e-12_dp, &
+    "characteristic PLM changes an affine face flux")
+  call reactive_eb_outflow_riemann_fluxes_2d( &
+    species, state, temperature_field, geometry, "hllc", x_flux, y_flux, &
+    ok, "characteristic_plm", "unknown", dt)
+  call require(.not. ok .and. maxval(abs(x_flux)) == 0.0_dp .and. &
+    maxval(abs(y_flux)) == 0.0_dp, "unknown PLM limiter transaction")
+  do j = 1, ny
+    do i = 1, nx
+      state(:, i, j) = state_cell
+      temperature_field(i, j) = temperature
+    end do
+  end do
+
   level_set = 1.0_dp
   call verify_uniform_hydro_step(level_set, "regular domain")
 
@@ -109,6 +149,58 @@ program test_eb_reactive_hydro_2d
     end do
   end do
   call verify_uniform_hydro_step(level_set, "diagonal wall")
+
+  center_x_flux = 0.0_dp
+  center_y_flux = 0.0_dp
+  do j = 1, ny
+    do i = 0, nx
+      center_x_flux(:, i, j) = real(j, dp)
+    end do
+  end do
+  do j = 0, ny
+    do i = 1, nx
+      center_y_flux(:, i, j) = real(i, dp)
+    end do
+  end do
+  call interpolate_reactive_eb_face_centroid_fluxes_2d( &
+    geometry, center_x_flux, center_y_flux, x_flux, y_flux, ok)
+  call require(ok, "diagonal face-centroid interpolation")
+  found_x_centroid = .false.
+  found_y_centroid = .false.
+  do j = 1, ny
+    do i = 0, nx
+      if (geometry%x_face_fraction(i, j) <= 0.0_dp .or. &
+          geometry%x_face_centroid_y(i, j) == 0.0_dp) cycle
+      neighbor = j + merge(1, -1, &
+        geometry%x_face_centroid_y(i, j) > 0.0_dp)
+      if (neighbor < 1 .or. neighbor > ny .or. &
+          geometry%x_face_fraction(i, neighbor) <= 0.0_dp) cycle
+      expected = (1.0_dp - abs(geometry%x_face_centroid_y(i, j))) * &
+        real(j, dp) + abs(geometry%x_face_centroid_y(i, j)) * &
+        real(neighbor, dp)
+      call assert_close(maxval(abs(x_flux(:, i, j) - expected)), &
+        0.0_dp, tolerance, "x-face centroid interpolation value")
+      found_x_centroid = .true.
+    end do
+  end do
+  do j = 0, ny
+    do i = 1, nx
+      if (geometry%y_face_fraction(i, j) <= 0.0_dp .or. &
+          geometry%y_face_centroid_x(i, j) == 0.0_dp) cycle
+      neighbor = i + merge(1, -1, &
+        geometry%y_face_centroid_x(i, j) > 0.0_dp)
+      if (neighbor < 1 .or. neighbor > nx .or. &
+          geometry%y_face_fraction(neighbor, j) <= 0.0_dp) cycle
+      expected = (1.0_dp - abs(geometry%y_face_centroid_x(i, j))) * &
+        real(i, dp) + abs(geometry%y_face_centroid_x(i, j)) * &
+        real(neighbor, dp)
+      call assert_close(maxval(abs(y_flux(:, i, j) - expected)), &
+        0.0_dp, tolerance, "y-face centroid interpolation value")
+      found_y_centroid = .true.
+    end do
+  end do
+  call require(found_x_centroid .and. found_y_centroid, &
+    "partial face-centroid interpolation coverage")
 
   do j = 0, ny
     y = real(j, dp) / real(ny, dp)
@@ -153,6 +245,13 @@ program test_eb_reactive_hydro_2d
   write(*, '(a)') "test_eb_reactive_hydro_2d: PASS"
 
 contains
+
+  subroutine assert_close(actual, expected_value, local_tolerance, message)
+    real(dp), intent(in) :: actual, expected_value, local_tolerance
+    character(len=*), intent(in) :: message
+
+    call require(abs(actual - expected_value) <= local_tolerance, message)
+  end subroutine assert_close
 
   subroutine verify_uniform_hydro_step(node_level_set, label)
     real(dp), intent(in) :: node_level_set(0:nx, 0:ny)
@@ -202,6 +301,17 @@ contains
       species, state, temperature_field, geometry, "hllc", dt, &
       new_state, new_temperature, ok)
     call require(ok, trim(label)//" complete hydro step")
+    pcm_state = new_state
+    pcm_temperature = new_temperature
+    call advance_reactive_eb_hydro_2d( &
+      species, state, temperature_field, geometry, "hllc", dt, &
+      new_state, new_temperature, ok, reconstruction="characteristic_plm", &
+      limiter="mc")
+    call require(ok, trim(label)//" characteristic PLM hydro step")
+    call require(maxval(abs(new_state - pcm_state)) <= &
+      2.0e-12_dp * max(1.0_dp, maxval(abs(pcm_state))) .and. &
+      maxval(abs(new_temperature - pcm_temperature)) <= 2.0e-8_dp, &
+      trim(label)//" PCM/PLM uniform parity")
     change_tolerance = dt * 2.0e-10_dp * pressure * &
       max(geometry%dx, geometry%dy)
     do local_j = 1, ny

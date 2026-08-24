@@ -82,6 +82,9 @@ program pelef_reactive_eb_2d
   write(*, '(a,i0,a,i0)') "Grid: ", geometry%nx, " x ", geometry%ny
   write(*, '(a,1x,a)') "Riemann solver:", &
     trim(config%flow%riemann_solver)
+  write(*, '(a,1x,a)') "Reconstruction:", &
+    trim(config%flow%reconstruction)
+  write(*, '(a,1x,a)') "Limiter:", trim(config%flow%limiter)
   write(*, '(a,l2)') "Chemistry: ", config%flow%chemistry_enabled
   write(*, '(a,1x,a)') "Chemistry model:", &
     trim(config%flow%chemistry_model)

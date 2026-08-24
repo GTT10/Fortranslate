@@ -46,6 +46,7 @@ add_library(
   src/boundary/reactive_boundary_2d_mod.F90
   src/transport/reactive_transport_2d_mod.F90
   src/reactive/reactive_2d_mod.F90
+  src/eb/eb_reactive_reconstruction_2d_mod.F90
   src/eb/eb_reactive_hydro_2d_mod.F90
   src/driver/reactive_eb_2d_driver_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
