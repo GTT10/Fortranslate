@@ -687,3 +687,20 @@ The first distributed patch-tree bridge is accepted only while:
   encoded field exactly on every rank;
 - the complete gate passes with 1, 2, 4, and 8 ranks in both GNU Fortran Debug
   and Release MPI CI.
+
+## 0.50.0 owner-only MPI AMR chemistry gates
+
+Distributed patch-tree chemistry is accepted only while:
+
+- a four-level `1/2/3/2` tree executes each of its eight patches exactly once
+  globally and each rank's call count equals its owner-map patch count;
+- the complete distributed reactive state, temperature, and ghost storage
+  agree with the serial patch-tree chemistry operator within `5e-13`;
+- chemistry changes the reacting state while composite mass, momentum, and
+  total energy remain within `3e-10`;
+- a deliberately invalid state on a deep patch owner is rejected by every
+  rank after earlier owner calls have occurred;
+- rejected state, temperature, ghosts, time, and counters return exactly to
+  the synchronized pre-call backup;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

@@ -1275,7 +1275,15 @@ Those buffers become the opposite sibling's ordered halo layers, with layer
 one nearest the shared face. All ranks enter broadcasts in the same hierarchy
 order, so the schedule is independent of the local owner set.
 
-This is communication and ownership qualification, not yet a distributed
-reactive time advance. The present bridge stores all patch interiors on every
-rank and does not claim sparse storage, owner-only hydro/chemistry/transport,
-distributed shared-flux correction, or regrid migration.
+The `0.50.0` chemistry operator advances each patch on its owner only. After
+each local reactor call, `MPI_Allreduce(MPI_LAND)` accepts or rejects the
+result collectively. An accepted owner broadcasts state, temperature, and
+narrow/wide ghost storage; a rejection restores the owner-synchronized backup
+on every rank. After the last patch, the replicated tree averages down
+deepest-to-root, recovers thermodynamic temperatures, and rebuilds ghosts.
+Thus each global chemistry interval contains exactly one reactor call per
+patch independent of communicator size.
+
+The present bridge still stores all patch interiors on every rank and does not
+claim sparse storage, owner-only hydro/transport, distributed shared-flux
+correction, or regrid migration.

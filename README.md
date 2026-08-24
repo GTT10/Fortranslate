@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.49.0` milestone contains ten serial verification executables, six
+The `0.50.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -145,9 +145,12 @@ A sixth MPI executable starts the AMR distribution bridge. It validates a
 replicated patch-tree description collectively, assigns every root/fine patch
 to one deterministic cell-weighted owner, broadcasts owner-authoritative
 patch fields, and exchanges up to four adjacent-sibling halo layers across
-rank boundaries. The current bridge intentionally retains replicated field
-storage; owner-only reactive advancement and sparse rank-local patch storage
-remain the next integration step.
+rank boundaries. It now also advances chemistry on owners alone, reaches
+communicator-wide success/failure consensus after every patch, broadcasts the
+accepted reactive state, averages down deepest-to-root, rebuilds ghosts, and
+rolls every rank back exactly after a rejected owner update. The current bridge
+retains replicated field storage; owner-only hydro/transport and sparse
+rank-local patch storage remain the next integration step.
 
 ### One-dimensional AMR
 
@@ -249,6 +252,9 @@ The AMR layer provides:
 - deterministic cell-weighted MPI ownership for every tree patch, collective
   hierarchy-consensus rejection, owner-authoritative patch synchronization,
   and four-layer cross-rank adjacent-sibling halo gates;
+- owner-only patch-tree chemistry with one global advance per patch, serial
+  field parity, deepest-to-root synchronization, conservation, and global
+  transactional rollback gates;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -274,8 +280,10 @@ branching plan transactionally. Independently owned adjacent siblings exchange
 same-level ghosts, reconcile each shared time-integrated interface flux, and
 exclude that internal side from reflux. The first MPI distribution bridge
 assigns a unique owner to every patch and communicates authoritative fields
-and adjacent halos while retaining replicas on all ranks. Owner-only recursive
-physics and sparse patch storage remain later slices. A periodic child may
+and adjacent halos while retaining replicas on all ranks. Chemistry executes
+only on those owners with global acceptance and rollback. Owner-only recursive
+hydro/transport, distributed shared fluxes, and sparse patch storage remain
+later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

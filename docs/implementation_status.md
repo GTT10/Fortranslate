@@ -790,6 +790,25 @@ load balancing, and distributed MPI patch ownership remain separate.
 
 This milestone establishes MPI ownership metadata and the communication bridge
 while keeping the serial AMR modules free of MPI. Patch field arrays remain
-replicated on every rank. Owner-only recursive hydro, chemistry, transport,
-distributed fine/fine flux reconciliation, sparse storage, regrid migration,
-and scalable point-to-point exchange remain separate integration work.
+replicated on every rank. At `0.49.0`, owner-only physics, distributed
+fine/fine flux reconciliation, sparse storage, regrid migration, and scalable
+point-to-point exchange remained separate integration work.
+
+## Owner-only MPI AMR chemistry (`0.50.0`)
+
+- [x] full reactive state, temperature, and wide-ghost owner synchronization
+- [x] collective reactive layout and state-width preflight
+- [x] one chemistry integration on the exclusive owner of each patch
+- [x] communicator-wide acceptance after every patch reactor call
+- [x] owner broadcast after each accepted patch update
+- [x] deepest-to-root average-down and temperature recovery
+- [x] physical/coarse-fine/sibling ghost reconstruction after chemistry
+- [x] exact all-rank rollback after a deep owner failure
+- [x] exact global patch-call accounting independent of rank count
+- [x] serial patch-tree reacting-field parity and conservation
+- [x] 1/2/4/8-rank Release and Debug gates
+
+The chemistry operator is the first patch-tree physics path executed only on
+owners. Replicated storage remains intentional for this bridge. Owner-only
+hydro and transport recursion, cross-rank shared-flux reconciliation, sparse
+rank-local storage, and regrid migration remain the next distributed AMR work.

@@ -505,10 +505,18 @@ the replicas, while adjacent sibling faces broadcast the owner's boundary
 cells into explicit left/right halo objects for up to four stencil layers.
 
 This separation establishes rank ownership and communication ordering before
-changing the recursive reactive integrator. Owner-only physics execution,
-distributed time-integrated fine/fine flux reconciliation, sparse rank-local
-storage, migration after regrid, and scalable point-to-point schedules remain
-outside the `0.49.0` qualification boundary.
+changing the recursive reactive integrator. In `0.50.0`, the chemistry
+operator uses that ownership directly: every rank walks the same patch order,
+only the owner integrates a patch, all ranks reduce the local success flag,
+and the owner broadcasts the accepted complete reactive patch. Once all
+patches finish, every replica performs the same deepest-to-root average-down,
+temperature recovery, and ghost refresh. A backup taken after initial owner
+synchronization makes any rejected owner update a communicator-wide rollback.
+
+Owner-only hydro/transport execution, distributed time-integrated fine/fine
+flux reconciliation, sparse rank-local storage, migration after regrid, and
+scalable point-to-point schedules remain outside the `0.50.0` qualification
+boundary.
 
 ## Reactive AMR time advancement
 

@@ -514,6 +514,8 @@ Reactive application integration:
 - [x] deterministic MPI patch owner maps, collective hierarchy consensus,
   owner-authoritative field synchronization, and cross-rank sibling halos
   (`0.49.0`)
+- [x] owner-only patch-tree chemistry, global acceptance/rollback, and serial
+  reacting-field parity (`0.50.0`)
 
 AMR parity metrics:
 
