@@ -1267,3 +1267,17 @@ StateRedist update. An unknown PLM limiter must return zero face fluxes, and an
 invalid hydro selection must retain the caller's state and temperature. The
 committed circular-obstacle application must run through the PLM path in GNU
 Fortran Debug and Release suites.
+
+## 0.84.0 second-order weighted StateRedist gates
+
+The geometry gate requires zero regular/covered cell-centroid offsets, the
+analytical normalized `+0.35` fluid centroid for a vertical-plane cell with
+volume fraction `0.30`, bounded finite offsets, and rejection of an invalid
+centroid. On overlapping diagonal small-cell neighborhoods, `max_order=2`
+must preserve a scalar affine field at every active fluid centroid while the
+zeroth-order result remains measurably diffusive. Both smooth and discontinuous
+inputs must conserve their volume-weighted scalar exactly; limited recipient
+values must remain inside the active input range. Invalid order 1 must return a
+zero direct output and must leave a reactive advance state and temperature
+unchanged. The committed circular and chemistry applications must run with
+`state_redist_max_order=2` in GNU Fortran Debug and Release suites.

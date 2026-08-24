@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.83.0` milestone contains the serial verification suite, seven optional
+The `0.84.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -153,10 +153,14 @@ embedded boundaries. Small-cell time integration now has a conservative
 first-order FluxRedist path: it blends a cut-cell update with its
 volume-weighted face-connected neighborhood, redistributes the removed
 extensive update, and commits a forward update only after every active reactive
-state passes EOS recovery. The PeleC-default, zeroth-order weighted StateRedist
-path now forms normal-directed neighborhoods with target volume fraction
-`0.5`, accounts for cells shared by overlapping neighborhoods, conserves every
-volume-weighted state component, and applies the same transactional EOS gate.
+state passes EOS recovery. Weighted StateRedist forms normal-directed
+neighborhoods with target volume fraction `0.5`, accounts for cells shared by
+overlapping neighborhoods, conserves every volume-weighted state component,
+and applies the same transactional EOS gate. Its default `max_order=0` path
+retains neighborhood averages. Selectable `max_order=2` stores normalized
+fluid-volume centroids, fits limited linear `Qhat` slopes over active
+neighborhoods, evaluates them at every merge recipient, and adds a
+conservation-compatible recipient maximum-principle limiter.
 A selectable PCM or frozen-composition characteristic-PLM EB hydro path now
 constructs reactive Riemann fluxes only on open Cartesian faces, uses
 zero-gradient domain faces, linearly interpolates face-center fluxes to the
@@ -173,9 +177,9 @@ Strang sequence applies half reactions only to active cells, performs the EB
 hydro transaction, and applies the second half reaction while leaving covered
 cells bitwise unchanged. Molecular transport and transverse reconstruction
 settings are rejected instead of silently ignored.
-Unsplit transverse prediction, higher-order StateRedist, periodic/ghost-cell
-neighborhoods, thermal/catalytic wall physics, AMR coupling, and MPI
-distribution are not yet connected.
+Unsplit transverse prediction, fourth-order StateRedist slopes,
+periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, AMR
+coupling, and MPI distribution are not yet connected.
 
 ### MPI one-dimensional verification
 

@@ -1392,3 +1392,24 @@ This adds the PeleC-ordered face-center Godunov then tangential face-centroid
 interpolation path while keeping PCM as the default API behavior. It does not
 claim PeleC's unsplit EB transverse predictor, PPM, higher-order StateRedist,
 periodic EB neighborhoods, molecular transport, AMR, or MPI ownership.
+
+## Second-order weighted EB StateRedist (`0.84.0`)
+
+- [x] normalized fluid-volume centroids from the clipped positive polygons
+- [x] partition-consistent weighted neighborhood centroids (`cent_hat`)
+- [x] selectable `state_redist_max_order = 0` or `2`
+- [x] active connected 3-by-3 least-squares `Qhat` slopes
+- [x] active grown 5-by-5 fallback for a rank-deficient normal matrix
+- [x] AMReX-style pairwise centroid limiter
+- [x] merge-recipient maximum-principle slope scale
+- [x] zero-moment linear scatter through overlapping neighborhoods
+- [x] exact affine-state reproduction and volume-weighted conservation gates
+- [x] discontinuous-state bounds, invalid-order, and rollback gates
+- [x] input-driven second-order circular and chemistry EB regressions
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The API keeps zeroth-order StateRedist as its compatibility default, while the
+committed EB applications select second order. This milestone does not claim
+fourth-order slopes, physical/periodic ghost neighborhoods, multilevel
+redistribution, EB coarse/fine flux synchronization, molecular transport, or
+MPI ownership.

@@ -880,10 +880,15 @@ fraction. Interface length, centroid, representative unit normal, and
 integrated normal support a pressure-only reactive slip wall. The EB operator
 combines open-face and wall fluxes, then the first-order redistribution module
 stabilizes its right-hand side and transactionally recovers the updated
-reactive state. A second path applies zeroth-order weighted StateRedist to the
-provisional conserved state. It derives up to three merge neighbors from the
+reactive state. A second path applies weighted StateRedist to the provisional
+conserved state. It derives up to three merge neighbors from the
 face-aperture normal, represents overlapping neighborhoods explicitly, and
-uses partitioned self/neighbor weights before the EOS-validated commit. Flux
+uses partitioned self/neighbor weights before the EOS-validated commit. The
+geometry also stores normalized fluid-volume centroids. With
+`state_redist_max_order=2`, `Qhat` is located at the matching weighted
+neighborhood centroid, a connected 3-by-3 or active grown 5-by-5 least-squares
+fit supplies linear slopes, and centroid plus merge-recipient limiters bound
+the reconstructed values without changing their zero first moment. Flux
 construction is connected by `eb_reactive_hydro_2d_mod` and
 `eb_reactive_reconstruction_2d_mod`. PCM remains the baseline; selectable
 characteristic PLM forms frozen-composition limited slopes only where both
@@ -901,6 +906,6 @@ driver accepts its qualified PCM-or-PLM/outflow contract and can wrap hydro in
 active-cell reaction half steps. Covered cells are excluded from both reactor
 calls, and candidate arrays make the complete reaction--hydro--reaction step
 transactional. Molecular transport remains rejected.
-Unsplit transverse prediction, higher-order StateRedist, periodic ghost
-neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
+Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
+neighborhoods, thermal/viscous/catalytic walls, and EB AMR/MPI ownership remain
 outside this subsystem.

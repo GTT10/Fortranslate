@@ -1401,17 +1401,30 @@ Let `M_i` be the selected neighbors of cell `i`, and let `N_j` count how many
 neighborhoods contain cell `j`, including its own. For a merging cell,
 `beta_i = (0.5-kappa_i)/sum_(j in M_i) kappa_j`. Its self partition is
 `alpha_i = 1-sum_(d: i in M_d) beta_d/N_i`. The weighted neighborhood volume
-and zeroth-order state are
+and state are
 `Vhat_i = alpha_i*kappa_i + sum_(j in M_i) beta_i*kappa_j/N_j` and
 `Qhat_i = (alpha_i*kappa_i*U_i + sum_(j in M_i)
-beta_i*kappa_j*U_j/N_j)/Vhat_i`. Redistribution returns
-`U'_j = alpha_j*Qhat_j + sum_(i: j in M_i) beta_i*Qhat_i/N_j`.
+beta_i*kappa_j*U_j/N_j)/Vhat_i`. The default `max_order=0` redistribution
+returns `U'_j = alpha_j*Qhat_j + sum_(i: j in M_i) beta_i*Qhat_i/N_j`.
 The partition makes the volume-weighted sum of `U'` equal that of `U`, while a
 uniform state gives every `Qhat` and every output cell the same value.
 
+For `max_order=2`, the same partition locates `Qhat_i` at
+`Xhat_i = (alpha_i*kappa_i*c_i + sum_(j in M_i)
+beta_i*kappa_j*(j-i+c_j)/N_j)/Vhat_i`, where `c` is the normalized
+fluid-volume centroid offset. A least-squares linear fit of neighboring
+`Qhat` values uses the connected 3-by-3 stencil and grows to active cells in a
+5-by-5 stencil when the normal matrix is rank deficient. Pairwise predictions
+at neighboring `Xhat` locations receive the AMReX centroid limiter. A final
+common slope scale bounds every self and merge-recipient evaluation by the
+active input component range. Because `Xhat_i` is the weighted centroid of the
+same recipient partition, the linear corrections have zero volume-weighted
+first moment; conservation and affine-state reproduction therefore hold
+together.
+
 The reactive StateRedist advance builds `U = U_old + dt*R`, redistributes all
 conserved components together, and commits state and recovered temperature
-only if every active cell passes the general-EOS conversion. Higher-order
+only if every active cell passes the general-EOS conversion. Fourth-order
 StateRedist slopes, periodic/ghost-cell neighborhoods, and multilevel
 redistribution are not yet claimed.
 
@@ -1440,7 +1453,7 @@ then weighted StateRedist transactionally advances `U_old + dt*R`.
 
 This is a qualified normal characteristic-PLM plus face-centroid interpolation
 path. It does not include PeleC's unsplit EB transverse predictor, PPM, or
-higher-order StateRedist slopes.
+fourth-order StateRedist slopes.
 
 The runnable EB driver uses the regular active-cell hyperbolic rate
 `(|u|+c)/dx + (|v|+c)/dy` and takes `dt = CFL/max(rate)`, ignoring covered
