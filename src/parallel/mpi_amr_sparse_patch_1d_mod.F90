@@ -30,6 +30,8 @@ module mpi_amr_sparse_patch_1d_mod
   implicit none
   private
 
+  integer, parameter :: sparse_patch_migration_tag = 2601
+
   type, public :: mpi_amr_sparse_reactive_level_1d
     type(amr_patch_tree_reactive_patch_1d), allocatable :: patches(:)
     logical, allocatable :: is_local(:)
@@ -1309,17 +1311,21 @@ contains
   end subroutine gather_owned_patch_tree_reactive_1d
 
   subroutine migrate_owned_patch_tree_reactive_1d( &
-      old_distribution, new_distribution, old_sparse, new_sparse, ok)
+      old_distribution, new_distribution, old_sparse, new_sparse, ok, &
+      local_patch_transfers)
     type(mpi_amr_patch_distribution_1d), intent(in) :: old_distribution
     type(mpi_amr_patch_distribution_1d), intent(in) :: new_distribution
     type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: old_sparse
     type(mpi_amr_sparse_reactive_solution_1d), intent(out) :: new_sparse
     logical, intent(out) :: ok
+    integer, intent(out), optional :: local_patch_transfers
 
     logical :: local_ok, accepted, mpi_ok
-    integer :: level, patch, nx, old_owner, new_owner
+    integer :: level, patch, nx, old_owner, new_owner, transfers
 
     ok = .false.
+    transfers = 0
+    if (present(local_patch_transfers)) local_patch_transfers = 0
     local_ok = old_sparse%is_valid(old_distribution) .and. &
       old_distribution%rank == new_distribution%rank .and. &
       old_distribution%nranks == new_distribution%nranks .and. &
@@ -1339,7 +1345,14 @@ contains
           old_sparse%nvar, nx, old_sparse%ghost_width, &
           old_sparse%levels(level)%patches(patch), &
           new_sparse%levels(level)%patches(patch), local_ok)
-        if (.not. local_ok) return
+        call all_ranks_accept_sparse_1d( &
+          old_distribution, local_ok, accepted, mpi_ok)
+        if (.not. mpi_ok .or. .not. accepted) then
+          new_sparse = mpi_amr_sparse_reactive_solution_1d()
+          return
+        end if
+        if (old_owner /= new_owner .and. &
+            old_distribution%rank == old_owner) transfers = transfers + 1
       end do
     end do
     local_ok = new_sparse%is_valid(new_distribution)
@@ -1347,6 +1360,8 @@ contains
       old_distribution, local_ok, accepted, mpi_ok)
     ok = mpi_ok .and. accepted
     if (.not. ok) new_sparse = mpi_amr_sparse_reactive_solution_1d()
+    if (ok .and. present(local_patch_transfers)) &
+      local_patch_transfers = transfers
   end subroutine migrate_owned_patch_tree_reactive_1d
 
   subroutine regrid_sparse_patch_tree_reactive_1d( &
@@ -1636,52 +1651,146 @@ contains
     type(amr_patch_tree_reactive_patch_1d), intent(inout) :: destination
     logical, intent(out) :: ok
 
-    type(amr_patch_tree_reactive_patch_1d) :: work
+    real(dp), allocatable :: payload(:)
+    type(MPI_Status) :: status
+    integer :: value_count
     integer :: ierr
 
-    call allocate_sparse_patch(work, nvar, nx, ghost_width)
-    if (rank == old_owner) call copy_sparse_patch_values(source, work)
-    call MPI_Bcast(work%state, size(work%state), MPI_DOUBLE_PRECISION, &
-      old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    call MPI_Bcast(work%temperature, size(work%temperature), &
-      MPI_DOUBLE_PRECISION, old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    call MPI_Bcast(work%left_ghost_state, size(work%left_ghost_state), &
-      MPI_DOUBLE_PRECISION, old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    call MPI_Bcast(work%right_ghost_state, size(work%right_ghost_state), &
-      MPI_DOUBLE_PRECISION, old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    call MPI_Bcast( &
-      work%left_ghost_temperature, size(work%left_ghost_temperature), &
-      MPI_DOUBLE_PRECISION, old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    call MPI_Bcast( &
-      work%right_ghost_temperature, size(work%right_ghost_temperature), &
-      MPI_DOUBLE_PRECISION, old_owner, comm, ierr)
-    if (ierr /= MPI_SUCCESS) then
-      ok = .false.
-      return
-    end if
-    if (rank == new_owner) destination = work
     ok = .true.
+    if (old_owner < 0 .or. new_owner < 0 .or. nvar < 1 .or. nx < 1 .or. &
+        ghost_width < 1) then
+      ok = .false.
+      return
+    end if
+    if (old_owner == new_owner) then
+      if (rank == old_owner) destination = source
+      return
+    end if
+    if (rank /= old_owner .and. rank /= new_owner) return
+
+    value_count = nvar * (nx + 2) + (nx + 2) + &
+      2 * nvar * ghost_width + 2 * ghost_width
+    allocate(payload(value_count))
+    if (rank == old_owner) then
+      call pack_sparse_patch_values(source, payload, ok)
+      if (.not. ok) return
+      call MPI_Send(payload, value_count, MPI_DOUBLE_PRECISION, new_owner, &
+        sparse_patch_migration_tag, comm, ierr)
+      ok = ierr == MPI_SUCCESS
+      return
+    end if
+
+    call MPI_Recv(payload, value_count, MPI_DOUBLE_PRECISION, old_owner, &
+      sparse_patch_migration_tag, comm, status, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call allocate_sparse_patch(destination, nvar, nx, ghost_width)
+    call unpack_sparse_patch_values(payload, destination, ok)
   end subroutine migrate_one_patch_1d
+
+  subroutine pack_sparse_patch_values(patch, payload, ok)
+    type(amr_patch_tree_reactive_patch_1d), intent(in) :: patch
+    real(dp), intent(out) :: payload(:)
+    logical, intent(out) :: ok
+
+    integer :: offset, count
+
+    ok = allocated(patch%state) .and. allocated(patch%temperature) .and. &
+      allocated(patch%left_ghost_state) .and. &
+      allocated(patch%right_ghost_state) .and. &
+      allocated(patch%left_ghost_temperature) .and. &
+      allocated(patch%right_ghost_temperature)
+    if (.not. ok) return
+    count = sparse_patch_value_count(patch)
+    ok = size(payload) == count
+    if (.not. ok) return
+    offset = 0
+    call append_sparse_payload_2d(patch%state, payload, offset)
+    call append_sparse_payload_1d(patch%temperature, payload, offset)
+    call append_sparse_payload_2d( &
+      patch%left_ghost_state, payload, offset)
+    call append_sparse_payload_2d( &
+      patch%right_ghost_state, payload, offset)
+    call append_sparse_payload_1d( &
+      patch%left_ghost_temperature, payload, offset)
+    call append_sparse_payload_1d( &
+      patch%right_ghost_temperature, payload, offset)
+    ok = offset == size(payload)
+  end subroutine pack_sparse_patch_values
+
+  subroutine unpack_sparse_patch_values(payload, patch, ok)
+    real(dp), intent(in) :: payload(:)
+    type(amr_patch_tree_reactive_patch_1d), intent(inout) :: patch
+    logical, intent(out) :: ok
+
+    integer :: offset, count
+
+    count = sparse_patch_value_count(patch)
+    ok = size(payload) == count
+    if (.not. ok) return
+    offset = 0
+    call consume_sparse_payload_2d(payload, offset, patch%state)
+    call consume_sparse_payload_1d(payload, offset, patch%temperature)
+    call consume_sparse_payload_2d( &
+      payload, offset, patch%left_ghost_state)
+    call consume_sparse_payload_2d( &
+      payload, offset, patch%right_ghost_state)
+    call consume_sparse_payload_1d( &
+      payload, offset, patch%left_ghost_temperature)
+    call consume_sparse_payload_1d( &
+      payload, offset, patch%right_ghost_temperature)
+    ok = offset == size(payload)
+  end subroutine unpack_sparse_patch_values
+
+  subroutine append_sparse_payload_2d(values, payload, offset)
+    real(dp), intent(in) :: values(:, :)
+    real(dp), intent(inout) :: payload(:)
+    integer, intent(inout) :: offset
+
+    integer :: count
+
+    count = size(values)
+    payload(offset + 1:offset + count) = reshape(values, [count])
+    offset = offset + count
+  end subroutine append_sparse_payload_2d
+
+  subroutine append_sparse_payload_1d(values, payload, offset)
+    real(dp), intent(in) :: values(:)
+    real(dp), intent(inout) :: payload(:)
+    integer, intent(inout) :: offset
+
+    integer :: count
+
+    count = size(values)
+    payload(offset + 1:offset + count) = values
+    offset = offset + count
+  end subroutine append_sparse_payload_1d
+
+  subroutine consume_sparse_payload_2d(payload, offset, values)
+    real(dp), intent(in) :: payload(:)
+    integer, intent(inout) :: offset
+    real(dp), intent(out) :: values(:, :)
+
+    integer :: count
+
+    count = size(values)
+    values = reshape(payload(offset + 1:offset + count), shape(values))
+    offset = offset + count
+  end subroutine consume_sparse_payload_2d
+
+  subroutine consume_sparse_payload_1d(payload, offset, values)
+    real(dp), intent(in) :: payload(:)
+    integer, intent(inout) :: offset
+    real(dp), intent(out) :: values(:)
+
+    integer :: count
+
+    count = size(values)
+    values = payload(offset + 1:offset + count)
+    offset = offset + count
+  end subroutine consume_sparse_payload_1d
 
   subroutine allocate_sparse_patch(patch, nvar, nx, ghost_width)
     type(amr_patch_tree_reactive_patch_1d), intent(out) :: patch
@@ -1700,18 +1809,6 @@ contains
     patch%left_ghost_temperature = 0.0_dp
     patch%right_ghost_temperature = 0.0_dp
   end subroutine allocate_sparse_patch
-
-  subroutine copy_sparse_patch_values(source, destination)
-    type(amr_patch_tree_reactive_patch_1d), intent(in) :: source
-    type(amr_patch_tree_reactive_patch_1d), intent(inout) :: destination
-
-    destination%state = source%state
-    destination%temperature = source%temperature
-    destination%left_ghost_state = source%left_ghost_state
-    destination%right_ghost_state = source%right_ghost_state
-    destination%left_ghost_temperature = source%left_ghost_temperature
-    destination%right_ghost_temperature = source%right_ghost_temperature
-  end subroutine copy_sparse_patch_values
 
   pure logical function sparse_patch_has_shape( &
       patch, nvar, nx, ghost_width) result(valid)

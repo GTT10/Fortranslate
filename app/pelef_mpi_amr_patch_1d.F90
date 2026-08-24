@@ -126,6 +126,7 @@ program pelef_mpi_amr_patch_1d
   integer :: replicated_value_count
   integer :: transferred_cells, serial_transferred_cells
   integer :: tagged_cells, serial_tagged_cells
+  integer :: local_patch_transfers, global_patch_transfers
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -334,9 +335,15 @@ program pelef_mpi_amr_patch_1d
     "every sparse patch changes owner", rank)
   call migrate_owned_patch_tree_reactive_1d( &
     reactive_distribution, migrated_distribution, sparse_reactive, &
-    migrated_sparse, ok)
+    migrated_sparse, ok, local_patch_transfers)
   call assert_all(ok .and. migrated_sparse%is_valid(migrated_distribution), &
     "same-hierarchy sparse owner migration", rank)
+  call MPI_Allreduce( &
+    local_patch_transfers, global_patch_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_patch_transfers == owner_changes, &
+    "one point-to-point payload per changed patch owner", rank)
   call assert_all( &
     migrated_sparse%local_patch_count() == &
       migrated_distribution%rank_patch_counts(rank + 1), &
