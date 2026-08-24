@@ -666,6 +666,20 @@ shape checks succeed. This removes replicated migration traffic while keeping
 the deterministic correctness schedule. Physics-stage streaming and topology
 regrid remain collective outside the `0.61.0` boundary.
 
+In `0.62.0`, adjacent sparse siblings no longer broadcast each complete source
+patch through the communicator. Each adjacent pair packs only the state and
+temperature boundary layers required by the active reconstruction: one layer
+for narrow ghosts or four layers for PPM. Different owners exchange the two
+directional payloads with one blocking `MPI_Sendrecv`; the left owner counts
+the completed pair once, while ranks unrelated to the face allocate nothing.
+
+Siblings on the same owner copy their boundary layers locally. Both paths
+refresh the narrow state/temperature ghost and the optional wide PPM arrays,
+preserving the existing recursive chemistry, hydro, and transport results.
+Parent interval streaming, flux reconciliation, average-down, and
+topology-changing regrid transfer remain collective outside the `0.62.0`
+boundary.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

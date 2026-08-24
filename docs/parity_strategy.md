@@ -913,3 +913,20 @@ Same-hierarchy sparse migration is accepted only while:
   tree exactly;
 - all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
   MPI CI.
+
+## 0.62.0 point-to-point sparse adjacent halo gates
+
+Sparse adjacent sibling exchange is accepted only while:
+
+- each cross-owner adjacent face generates one bidirectional packed exchange,
+  counted once by the left owner;
+- the communicator-wide transfer count equals the independently derived
+  cross-owner face count, including zero traffic for the 1-rank case;
+- PPM sends exactly four state/temperature boundary layers in each direction,
+  while narrow reconstruction paths send one layer;
+- same-owner siblings copy locally and ranks unrelated to a face allocate no
+  send or receive payload;
+- the existing six-adjacent-child chemistry, hydro, and molecular-transport
+  results retain serial parity within `5e-13` and conservation within `2e-9`;
+- all gates pass with 1, 2, 4, and 8 ranks in GNU Fortran Debug and Release
+  MPI CI.

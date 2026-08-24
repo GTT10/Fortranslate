@@ -538,6 +538,8 @@ Reactive application integration:
   plan agreement, no-op handling, and rollback (`0.60.0`)
 - [x] packed point-to-point same-hierarchy owner migration with one message per
   changed patch and exact payload reconstruction (`0.61.0`)
+- [x] point-to-point adjacent sparse sibling halos with exact narrow/PPM
+  boundary payloads and cross-owner transfer accounting (`0.62.0`)
 
 AMR parity metrics:
 

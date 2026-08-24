@@ -1009,3 +1009,19 @@ Same-hierarchy rebalancing now uses point-to-point patch payload transfer
 instead of per-patch broadcast. Physics interval data, halo exchange, regrid
 overlap transfer, and temporary topology replicas remain on the collective
 correctness schedule.
+
+## Point-to-point sparse adjacent halos (`0.62.0`)
+
+- [x] one packed bidirectional exchange per cross-owner adjacent sibling face
+- [x] one-layer narrow and four-layer PPM state/temperature payloads
+- [x] local boundary copy without MPI traffic for same-owner siblings
+- [x] no payload allocation on ranks unrelated to the adjacent face
+- [x] exact global transfer count from the sparse chemistry refresh
+- [x] unchanged cross-owner chemistry, hydro, and transport serial parity
+- [x] unchanged composite conservation and transactional rollback gates
+- [x] 1/2/4/8-rank Release and Debug gates
+
+Adjacent same-level ghost traffic is now point to point on sparse storage.
+Parent interval streaming, child-to-parent synchronization, flux
+reconciliation, average-down, topology overlap transfer, and the temporary
+regrid correctness replica remain collective work.
