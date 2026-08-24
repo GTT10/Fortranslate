@@ -6,10 +6,11 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.72.0` milestone contains ten serial verification executables, seven
+The `0.73.0` milestone contains ten serial verification executables, seven
 optional MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
-molecular transport.
+molecular transport. The sparse MPI driver can write an intermediate
+patch-tree checkpoint and restart it with a different MPI rank count.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -166,7 +167,10 @@ driver. It reads the reactive namelist, builds owner-local tagged patch trees,
 selects distributed hydro/transport timesteps, advances `R-T-H-T-R`, regrids
 at the requested cadence, and writes an ordered composite AMR CSV. Persistent
 field payloads remain globally single-copy during the time loop; a complete
-tree is materialized only for final diagnostics and output.
+tree is materialized for final diagnostics/output and scheduled checkpoints.
+Checkpoints store no owner map: restart rebuilds deterministic ownership for
+the active communicator, allowing a two-rank run to resume on four or eight
+ranks.
 
 ### One-dimensional AMR
 

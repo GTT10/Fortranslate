@@ -563,6 +563,8 @@ Reactive application integration:
   communicator-wide minimum and no field gather (`0.71.0`)
 - [x] namelist-driven sparse MPI AMR time loop, periodic tag regrid, final
   composite diagnostics, and rank-count-invariant CSV output (`0.72.0`)
+- [x] versioned sparse patch-tree checkpoint and owner-map-free restart across
+  different MPI communicator sizes (`0.73.0`)
 
 AMR parity metrics:
 

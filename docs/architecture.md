@@ -794,6 +794,16 @@ EOS inversion. This makes rebuilt temperatures independent of stale guesses and
 preserves exact serial/distributed parity even when a tagged conserved state was
 edited without updating its cached temperature.
 
+The `0.73.0` public driver adds a rank-neutral persistence boundary. At a
+configured coarse-step cadence, all owners participate in the existing
+materialization operation, rank zero writes a versioned patch-tree checkpoint,
+and the sparse solution remains authoritative if the run continues. Restart
+loads the hierarchy and fields without any owner identifiers, validates the
+mechanism layout and root geometry, and schedules the recovered patches over
+the current communicator before normal sparse advancement resumes. Thus
+changing the MPI rank count changes placement, not the persisted numerical
+state.
+
 ## Reactive AMR time advancement
 
 `amr_reactive_1d_mod` owns a coarse reactive state, an optional fine state, both

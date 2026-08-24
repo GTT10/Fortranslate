@@ -1121,3 +1121,20 @@ The public distributed AMR path is accepted only while:
 - CSV headers, row counts, hierarchy levels, coordinates, and all field values
   agree within `5e-13` for 1, 2, 4, and 8 ranks;
 - complete GNU Fortran Debug and Release suites pass.
+
+## 0.73.0 rank-independent sparse MPI AMR restart gates
+
+Restart is accepted only while:
+
+- a serial regression round-trips a four-level branching tree, all interior
+  conserved states and temperatures, time, steps, regrid accounting, overlap
+  accounting, and per-level hydro/transport advances;
+- the file identifies its schema, species names, conserved width, base
+  geometry, hierarchy depth, refinement plans, and every patch payload;
+- a two-rank run writes a three-level intermediate checkpoint and exits cleanly
+  before the requested final time;
+- four- and eight-rank runs restore that file without using the two-rank owner
+  map and finish through the normal sparse physics/regrid loop;
+- both restarted composite CSV fields agree with an uninterrupted one-rank run
+  within `5e-13` for every header, row, coordinate, and physical value;
+- complete GNU Fortran Debug and Release suites pass.

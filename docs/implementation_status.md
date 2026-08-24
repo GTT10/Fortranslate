@@ -1200,5 +1200,20 @@ and restart orchestration remain driver responsibilities.
 
 The normal timestep and regrid path retains globally single-copy patch fields.
 The initial root setup and final diagnostics/output materialize field data.
-Checkpoint/restart, plotfile formats, asynchronous I/O, and runtime-measured
-load balancing remain outside this milestone.
+
+## Rank-independent sparse MPI AMR restart (`0.73.0`)
+
+- [x] versioned, self-describing reactive patch-tree checkpoint format
+- [x] mechanism species-name and conserved-width compatibility checks
+- [x] base geometry, arbitrary-depth hierarchy, state, and temperature restore
+- [x] physical time, step, regrid, overlap, and level-advance accounting restore
+- [x] configurable checkpoint cadence and clean stop-after-write mode
+- [x] owner-map-free restart with deterministic redistribution to active ranks
+- [x] serial checkpoint round-trip regression
+- [x] two-rank checkpoint resumed on four and eight ranks
+- [x] uninterrupted/restarted composite field parity within `5e-13`
+- [x] GNU Fortran Release and bounds/FPE-checked Debug gates
+
+Scheduled checkpoints materialize the sparse tree and rank zero writes one
+formatted file. Parallel plotfiles, atomic multi-file commits, asynchronous
+I/O, and runtime-measured load balancing remain outside this milestone.

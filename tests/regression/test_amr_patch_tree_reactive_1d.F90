@@ -137,6 +137,11 @@ program test_amr_patch_tree_reactive_1d
     all(checkpoint_solution%transport_level_advances == &
       solution%transport_level_advances) .and. &
     checkpoint_solution%steps == solution%steps .and. &
+    checkpoint_solution%regrid_evaluations == &
+      solution%regrid_evaluations .and. &
+    checkpoint_solution%regrids == solution%regrids .and. &
+    checkpoint_solution%overlap_cells_transferred == &
+      solution%overlap_cells_transferred .and. &
     checkpoint_solution%time == solution%time .and. &
     patch_tree_state_difference(solution, checkpoint_solution) <= 5.0e-10_dp, &
     "patch-tree checkpoint round trip")
