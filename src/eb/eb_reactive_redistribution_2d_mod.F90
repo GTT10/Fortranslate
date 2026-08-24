@@ -332,6 +332,11 @@ contains
         geometry, neighborhood_state, neighborhood_centroid_x, &
         neighborhood_centroid_y, slope_x, slope_y, ok)
       if (.not. ok) return
+      call limit_state_redistribution_recipient_slopes( &
+        geometry, provisional_state, neighbor_count, neighbor_offset_i, &
+        neighbor_offset_j, neighborhood_state, neighborhood_centroid_x, &
+        neighborhood_centroid_y, slope_x, slope_y, ok)
+      if (.not. ok) return
     end if
 
     ! Scatter every reconstructed Qhat through the same self/neighbor
@@ -547,6 +552,86 @@ contains
     end subroutine build_normal_matrix
 
   end subroutine build_state_redistribution_slopes
+
+  subroutine limit_state_redistribution_recipient_slopes( &
+      geometry, provisional_state, neighbor_count, neighbor_offset_i, &
+      neighbor_offset_j, neighborhood_state, neighborhood_centroid_x, &
+      neighborhood_centroid_y, slope_x, slope_y, ok)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: provisional_state(:, :, :)
+    integer, intent(in) :: neighbor_count(:, :)
+    integer, intent(in) :: neighbor_offset_i(:, :, :)
+    integer, intent(in) :: neighbor_offset_j(:, :, :)
+    real(dp), intent(in) :: neighborhood_state(:, :, :)
+    real(dp), intent(in) :: neighborhood_centroid_x(:, :)
+    real(dp), intent(in) :: neighborhood_centroid_y(:, :)
+    real(dp), intent(inout) :: slope_x(:, :, :), slope_y(:, :, :)
+    logical, intent(out) :: ok
+
+    real(dp), parameter :: limiter_epsilon = 1.0e-12_dp
+    real(dp) :: component_minimum, component_maximum, limiter
+    real(dp) :: delta_x, delta_y, correction, predicted, small
+    integer :: i, j, component, neighbor, neighbor_i, neighbor_j
+
+    ok = .false.
+    do component = 1, size(provisional_state, 1)
+      component_minimum = minval(provisional_state(component, :, :), &
+        mask=geometry%cell_type /= eb_covered_cell)
+      component_maximum = maxval(provisional_state(component, :, :), &
+        mask=geometry%cell_type /= eb_covered_cell)
+      small = limiter_epsilon * &
+        max(abs(component_minimum), abs(component_maximum))
+      do j = 1, geometry%ny
+        do i = 1, geometry%nx
+          if (geometry%cell_type(i, j) == eb_covered_cell) cycle
+          limiter = 1.0_dp
+          delta_x = geometry%cell_centroid_x(i, j) - &
+            neighborhood_centroid_x(i, j)
+          delta_y = geometry%cell_centroid_y(i, j) - &
+            neighborhood_centroid_y(i, j)
+          call update_recipient_limiter(delta_x, delta_y)
+          do neighbor = 1, neighbor_count(i, j)
+            neighbor_i = i + neighbor_offset_i(neighbor, i, j)
+            neighbor_j = j + neighbor_offset_j(neighbor, i, j)
+            delta_x = real(neighbor_i - i, dp) + &
+              geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
+              neighborhood_centroid_x(i, j)
+            delta_y = real(neighbor_j - j, dp) + &
+              geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
+              neighborhood_centroid_y(i, j)
+            call update_recipient_limiter(delta_x, delta_y)
+          end do
+          slope_x(component, i, j) = limiter * slope_x(component, i, j)
+          slope_y(component, i, j) = limiter * slope_y(component, i, j)
+        end do
+      end do
+    end do
+    if (any(.not. ieee_is_finite(slope_x)) .or. &
+        any(.not. ieee_is_finite(slope_y))) return
+    ok = .true.
+
+  contains
+
+    subroutine update_recipient_limiter(local_delta_x, local_delta_y)
+      real(dp), intent(in) :: local_delta_x, local_delta_y
+
+      correction = local_delta_x * slope_x(component, i, j) + &
+        local_delta_y * slope_y(component, i, j)
+      predicted = neighborhood_state(component, i, j) + correction
+      if (predicted > component_maximum + small .and. correction > 0.0_dp) then
+        limiter = min(limiter, &
+          (component_maximum - neighborhood_state(component, i, j)) / &
+          correction)
+      else if (predicted < component_minimum - small .and. &
+          correction < 0.0_dp) then
+        limiter = min(limiter, &
+          (component_minimum - neighborhood_state(component, i, j)) / &
+          correction)
+      end if
+      limiter = min(1.0_dp, max(0.0_dp, limiter))
+    end subroutine update_recipient_limiter
+
+  end subroutine limit_state_redistribution_recipient_slopes
 
   pure logical function slope_stencil_cell_is_usable( &
       geometry, i, j, offset_i, offset_j, radius) result(usable)
