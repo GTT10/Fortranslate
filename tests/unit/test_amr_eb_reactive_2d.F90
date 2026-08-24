@@ -1,11 +1,12 @@
 program test_amr_eb_reactive_2d
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
   use eb_reactive_reconstruction_2d_mod, only: &
@@ -46,7 +47,7 @@ program test_amr_eb_reactive_2d
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale, dt, expected_scale
   logical :: ok, found_open_boundary
-  integer :: i, j, k, nvar
+  integer :: i, j, k, nvar, component
 
   do j = 0, coarse_ny
     y = real(j, dp) / real(coarse_ny, dp)
@@ -229,8 +230,18 @@ program test_amr_eb_reactive_2d
     new_coarse_state, coarse_geometry, new_fine_state, fine_geometry, &
     patch, integral_after, ok)
   integral_scale = max(1.0_dp, maxval(abs(integral_before)))
-  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
-    5.0e-11_dp * integral_scale, "nonmatching composite conservation")
+  call require(ok .and. &
+    abs(integral_after(irho) - integral_before(irho)) <= &
+      5.0e-11_dp * integral_scale .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+      5.0e-11_dp * integral_scale, &
+    "nonmatching composite mass and energy conservation")
+  do k = 1, size(species)
+    component = reactive_species_component(k)
+    call require(abs(integral_after(component) - &
+      integral_before(component)) <= 5.0e-11_dp * integral_scale, &
+      "nonmatching composite species conservation")
+  end do
   call require(maxval(abs(new_fine_state - fine_state)) > &
     1.0e-12_dp * state_scale, "nonmatching interface evolves")
 
