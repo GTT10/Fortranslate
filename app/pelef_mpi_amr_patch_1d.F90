@@ -565,14 +565,16 @@ program pelef_mpi_amr_patch_1d
     10.0_dp * epsilon(1.0_dp) * hydro_dt, &
     "sparse hydro timestep matches serial hierarchy", rank)
   rejected_sparse = sparse_reactive
-  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  corrupt_owner = reactive_distribution%owner_of(0, 1)
   if (rank == corrupt_owner) &
-    rejected_sparse%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+    rejected_sparse%levels(1)%patches(1)%state(irho, 1) = 0.0_dp
   call sparse_patch_tree_reactive_timestep_1d( &
     species, reactive_config, reactive_distribution, rejected_sparse, &
     sparse_dt, ok)
-  call assert_all(.not. ok .and. sparse_dt == 0.0_dp, &
+  call assert_all(.not. ok, &
     "invalid owner state rejects sparse timestep collectively", rank)
+  call assert_all(sparse_dt == 0.0_dp, &
+    "rejected sparse timestep is cleared collectively", rank)
   hydro_dt = min(0.10_dp * hydro_dt, 2.0e-8_dp)
   call advance_patch_tree_reactive_hydro_1d( &
     species, reactive_config, hydro_dt, serial_hydro, ok)
