@@ -401,8 +401,12 @@ contains
       end do
     end if
 
-    stationary_threshold = tiny_speed * &
-      0.5_dp * (abs(velocity_left) + abs(velocity_right))
+    ! PeleC receives already reconstructed primitive states, whereas this API
+    ! recovers them from total energy. Include the EOS inversion roundoff scale
+    ! so a physically stationary material contact remains exactly stationary.
+    stationary_threshold = max( &
+      tiny_speed * 0.5_dp * (abs(velocity_left) + abs(velocity_right)), &
+      sqrt(epsilon(1.0_dp)) * max(1.0_dp, 0.5_dp * (cl + cr)))
     stationary_interface = abs(velocity_star) <= stationary_threshold
     if (stationary_interface) then
       velocity_star = 0.0_dp
