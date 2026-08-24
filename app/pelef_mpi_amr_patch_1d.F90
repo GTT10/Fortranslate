@@ -119,6 +119,7 @@ program pelef_mpi_amr_patch_1d
   integer :: expected_hydro_advances, cross_owner_hydro_faces
   integer :: local_transport_advances, global_transport_advances
   integer :: expected_transport_advances
+  integer :: local_halo_transfers, global_halo_transfers
   integer :: root_owner, old_owner, new_owner, owner_changes
   integer :: local_sparse_patches, global_sparse_patches
   integer :: local_sparse_cells, global_sparse_cells
@@ -1166,29 +1167,6 @@ program pelef_mpi_amr_patch_1d
   call initialize_mpi_amr_patch_distribution_1d( &
     adjacent_initial%hierarchy, MPI_COMM_WORLD, adjacent_distribution, ok)
   call assert_all(ok, "adjacent reactive owner distribution", rank)
-  serial_reactive = adjacent_initial
-  call advance_patch_tree_chemistry( &
-    species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
-    serial_reactive, ok)
-  call assert_all(ok, "serial adjacent PPM chemistry reference", rank)
-  gathered_reactive = adjacent_initial
-  call scatter_owned_patch_tree_reactive_1d( &
-    adjacent_distribution, gathered_reactive, sparse_reactive, ok)
-  call assert_all(ok, "adjacent PPM sparse owner scatter", rank)
-  call advance_sparse_patch_tree_chemistry_1d( &
-    species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
-    adjacent_distribution, sparse_reactive, ok, local_chemistry_advances)
-  call assert_all(ok .and. &
-    local_chemistry_advances == &
-      adjacent_distribution%rank_patch_counts(rank + 1), &
-    "adjacent PPM sparse chemistry ownership", rank)
-  gathered_reactive = adjacent_initial
-  call poison_reactive_solution(gathered_reactive)
-  call gather_owned_patch_tree_reactive_1d( &
-    adjacent_distribution, sparse_reactive, gathered_reactive, ok)
-  call assert_all(ok .and. reactive_solution_difference( &
-    gathered_reactive, serial_reactive) <= 5.0e-13_dp, &
-    "cross-owner adjacent sparse chemistry matches serial", rank)
   cross_owner_hydro_faces = 0
   do child = 1, adjacent_initial%hierarchy%relations(1)% &
       child_sets(1)%patch_count() - 1
@@ -1201,6 +1179,36 @@ program pelef_mpi_amr_patch_1d
   end do
   if (nranks > 1) call assert_all(cross_owner_hydro_faces >= 1, &
     "adjacent reactive face crosses MPI owners", rank)
+  serial_reactive = adjacent_initial
+  call advance_patch_tree_chemistry( &
+    species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
+    serial_reactive, ok)
+  call assert_all(ok, "serial adjacent PPM chemistry reference", rank)
+  gathered_reactive = adjacent_initial
+  call scatter_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, gathered_reactive, sparse_reactive, ok)
+  call assert_all(ok, "adjacent PPM sparse owner scatter", rank)
+  call advance_sparse_patch_tree_chemistry_1d( &
+    species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
+    adjacent_distribution, sparse_reactive, ok, local_chemistry_advances, &
+    local_halo_transfers)
+  call assert_all(ok .and. &
+    local_chemistry_advances == &
+      adjacent_distribution%rank_patch_counts(rank + 1), &
+    "adjacent PPM sparse chemistry ownership", rank)
+  call MPI_Allreduce( &
+    local_halo_transfers, global_halo_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_halo_transfers == cross_owner_hydro_faces, &
+    "adjacent sparse chemistry sends one payload per cross-owner face", rank)
+  gathered_reactive = adjacent_initial
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, sparse_reactive, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, serial_reactive) <= 5.0e-13_dp, &
+    "cross-owner adjacent sparse chemistry matches serial", rank)
   serial_hydro = adjacent_initial
   distributed_hydro = adjacent_initial
   call patch_tree_reactive_integrals_1d( &

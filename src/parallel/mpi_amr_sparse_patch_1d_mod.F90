@@ -31,6 +31,7 @@ module mpi_amr_sparse_patch_1d_mod
   private
 
   integer, parameter :: sparse_patch_migration_tag = 2601
+  integer, parameter :: sparse_adjacent_halo_tag = 2602
 
   type, public :: mpi_amr_sparse_reactive_level_1d
     type(amr_patch_tree_reactive_patch_1d), allocatable :: patches(:)
@@ -72,7 +73,7 @@ contains
 
   subroutine advance_sparse_patch_tree_chemistry_1d( &
       species, reactions, config, interval, distribution, solution, ok, &
-      local_patch_advances)
+      local_patch_advances, local_halo_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -81,15 +82,18 @@ contains
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_patch_advances
+    integer, intent(out), optional :: local_halo_transfers
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
     character(len=32) :: boundary
     logical :: local_ok, accepted, mpi_ok
-    integer :: level, patch, nx, advances
+    integer :: level, patch, nx, advances, halo_transfers
 
     ok = .false.
     advances = 0
+    halo_transfers = 0
     if (present(local_patch_advances)) local_patch_advances = 0
+    if (present(local_halo_transfers)) local_halo_transfers = 0
     local_ok = interval >= 0.0_dp .and. size(species) >= 1 .and. &
       solution%is_valid(distribution)
     call all_ranks_accept_sparse_1d( &
@@ -132,7 +136,7 @@ contains
       return
     end if
     call refresh_sparse_reactive_ghosts_1d( &
-      species, config, distribution, solution, local_ok)
+      species, config, distribution, solution, local_ok, halo_transfers)
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) then
@@ -150,6 +154,8 @@ contains
       return
     end if
     if (present(local_patch_advances)) local_patch_advances = advances
+    if (present(local_halo_transfers)) &
+      local_halo_transfers = halo_transfers
   end subroutine advance_sparse_patch_tree_chemistry_1d
 
   subroutine advance_sparse_patch_tree_hydro_1d( &
@@ -922,12 +928,13 @@ contains
   end subroutine average_down_sparse_reactive_solution_1d
 
   subroutine refresh_sparse_reactive_ghosts_1d( &
-      species, config, distribution, solution, ok)
+      species, config, distribution, solution, ok, local_halo_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
+    integer, intent(inout), optional :: local_halo_transfers
 
     real(dp), allocatable :: parent_state(:, :)
     logical :: local_ok, accepted, mpi_ok
@@ -980,7 +987,8 @@ contains
           distribution, local_ok, accepted, mpi_ok)
         if (.not. mpi_ok .or. .not. accepted) return
         call exchange_sparse_adjacent_child_ghosts_1d( &
-          config, distribution, solution, relation, parent, local_ok)
+          config, distribution, solution, relation, parent, local_ok, &
+          local_halo_transfers)
         call all_ranks_accept_sparse_1d( &
           distribution, local_ok, accepted, mpi_ok)
         if (.not. mpi_ok .or. .not. accepted) return
@@ -990,120 +998,197 @@ contains
   end subroutine refresh_sparse_reactive_ghosts_1d
 
   subroutine exchange_sparse_adjacent_child_ghosts_1d( &
-      config, distribution, solution, relation, parent, ok)
+      config, distribution, solution, relation, parent, ok, &
+      local_halo_transfers)
     type(reactive_1d_config), intent(in) :: config
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
     integer, intent(in) :: relation, parent
     logical, intent(out) :: ok
+    integer, intent(inout), optional :: local_halo_transfers
 
-    real(dp), allocatable :: source_state(:, :), source_temperature(:)
-    integer :: source, source_index, source_owner, source_nx, child_count
-    integer :: ierr
+    real(dp), allocatable :: send_payload(:), receive_payload(:)
+    type(MPI_Status) :: status
+    logical :: adjacent, wide_ghosts
+    integer :: child, child_count, left_index, right_index
+    integer :: left_owner, right_owner, left_nx, right_nx
+    integer :: width, payload_size, layer, source_cell, offset, peer, ierr
 
     ok = .false.
     child_count = solution%hierarchy%relations(relation)% &
       child_sets(parent)%patch_count()
-    do source = 1, child_count
-      source_index = solution%hierarchy%relations(relation)% &
-        child_index(parent, source)
-      source_owner = distribution%owner_of(relation, source_index)
-      source_nx = distribution%levels(relation + 1)% &
-        cell_counts(source_index)
-      allocate(source_state(solution%nvar, 0:source_nx + 1))
-      allocate(source_temperature(0:source_nx + 1))
-      if (distribution%rank == source_owner) then
-        source_state = solution%levels(relation + 1)% &
-          patches(source_index)%state
-        source_temperature = solution%levels(relation + 1)% &
-          patches(source_index)%temperature
+    wide_ghosts = sparse_uses_wide_ghosts(config)
+    width = 1
+    if (wide_ghosts) width = solution%ghost_width
+    if (width < 1) return
+    payload_size = (solution%nvar + 1) * width
+
+    do child = 1, child_count - 1
+      adjacent = solution%hierarchy%relations(relation)% &
+        child_sets(parent)%patches(child)%fine%upper + 1 == &
+        solution%hierarchy%relations(relation)% &
+          child_sets(parent)%patches(child + 1)%fine%lower
+      if (.not. adjacent) cycle
+      left_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child)
+      right_index = solution%hierarchy%relations(relation)% &
+        child_index(parent, child + 1)
+      left_owner = distribution%owner_of(relation, left_index)
+      right_owner = distribution%owner_of(relation, right_index)
+      left_nx = distribution%levels(relation + 1)%cell_counts(left_index)
+      right_nx = distribution%levels(relation + 1)%cell_counts(right_index)
+      if (left_nx < width .or. right_nx < width) return
+
+      if (left_owner == right_owner) then
+        if (distribution%rank == left_owner) &
+          call copy_local_sparse_adjacent_ghosts_1d( &
+            solution, relation, left_index, right_index, left_nx, right_nx, &
+            width, wide_ghosts)
+        cycle
       end if
-      call MPI_Bcast(source_state, size(source_state), MPI_DOUBLE_PRECISION, &
-        source_owner, distribution%comm, ierr)
+      if (distribution%rank /= left_owner .and. &
+          distribution%rank /= right_owner) cycle
+
+      allocate(send_payload(payload_size), receive_payload(payload_size))
+      if (distribution%rank == left_owner) then
+        peer = right_owner
+        do layer = 1, width
+          source_cell = left_nx - layer + 1
+          offset = (layer - 1) * (solution%nvar + 1)
+          send_payload(offset + 1:offset + solution%nvar) = &
+            solution%levels(relation + 1)%patches(left_index)% &
+              state(:, source_cell)
+          send_payload(offset + solution%nvar + 1) = &
+            solution%levels(relation + 1)%patches(left_index)% &
+              temperature(source_cell)
+        end do
+      else
+        peer = left_owner
+        do layer = 1, width
+          offset = (layer - 1) * (solution%nvar + 1)
+          send_payload(offset + 1:offset + solution%nvar) = &
+            solution%levels(relation + 1)%patches(right_index)%state(:, layer)
+          send_payload(offset + solution%nvar + 1) = &
+            solution%levels(relation + 1)%patches(right_index)% &
+              temperature(layer)
+        end do
+      end if
+      call MPI_Sendrecv( &
+        send_payload, payload_size, MPI_DOUBLE_PRECISION, peer, &
+        sparse_adjacent_halo_tag, receive_payload, payload_size, &
+        MPI_DOUBLE_PRECISION, peer, sparse_adjacent_halo_tag, &
+        distribution%comm, status, ierr)
       if (ierr /= MPI_SUCCESS) return
-      call MPI_Bcast(source_temperature, size(source_temperature), &
-        MPI_DOUBLE_PRECISION, source_owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
-      call apply_sparse_adjacent_source_1d( &
-        config, solution, relation, parent, source, source_state, &
-        source_temperature)
-      deallocate(source_state, source_temperature)
+
+      if (distribution%rank == left_owner) then
+        call unpack_sparse_right_ghosts_1d( &
+          solution, relation, left_index, left_nx, width, wide_ghosts, &
+          receive_payload)
+        if (present(local_halo_transfers)) &
+          local_halo_transfers = local_halo_transfers + 1
+      else
+        call unpack_sparse_left_ghosts_1d( &
+          solution, relation, right_index, width, wide_ghosts, &
+          receive_payload)
+      end if
+      deallocate(send_payload, receive_payload)
     end do
     ok = .true.
   end subroutine exchange_sparse_adjacent_child_ghosts_1d
 
-  subroutine apply_sparse_adjacent_source_1d( &
-      config, solution, relation, parent, source, source_state, &
-      source_temperature)
-    type(reactive_1d_config), intent(in) :: config
+  subroutine copy_local_sparse_adjacent_ghosts_1d( &
+      solution, relation, left_index, right_index, left_nx, right_nx, &
+      width, wide_ghosts)
     type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
-    integer, intent(in) :: relation, parent, source
-    real(dp), intent(in) :: source_state(:, 0:), source_temperature(0:)
+    integer, intent(in) :: relation, left_index, right_index
+    integer, intent(in) :: left_nx, right_nx, width
+    logical, intent(in) :: wide_ghosts
 
-    integer :: target, target_index, target_nx, source_cell, global_fine
-    integer :: source_lower, source_upper, layer, child_count
+    integer :: layer
 
-    child_count = solution%hierarchy%relations(relation)% &
-      child_sets(parent)%patch_count()
-    source_lower = solution%hierarchy%relations(relation)% &
-      child_sets(parent)%patches(source)%fine%lower
-    source_upper = solution%hierarchy%relations(relation)% &
-      child_sets(parent)%patches(source)%fine%upper
-    do target = 1, child_count
-      if (target == source) cycle
-      target_index = solution%hierarchy%relations(relation)% &
-        child_index(parent, target)
-      if (.not. solution%levels(relation + 1)%is_local(target_index)) cycle
-      target_nx = size(solution%levels(relation + 1)% &
-        patches(target_index)%state, 2) - 2
-      global_fine = solution%hierarchy%relations(relation)% &
-        child_sets(parent)%patches(target)%fine%lower - 1
-      if (global_fine >= source_lower .and. global_fine <= source_upper) then
-        source_cell = global_fine - source_lower + 1
-        solution%levels(relation + 1)%patches(target_index)%state(:, 0) = &
-          source_state(:, source_cell)
-        solution%levels(relation + 1)% &
-          patches(target_index)%temperature(0) = &
-            source_temperature(source_cell)
-      end if
-      global_fine = solution%hierarchy%relations(relation)% &
-        child_sets(parent)%patches(target)%fine%upper + 1
-      if (global_fine >= source_lower .and. global_fine <= source_upper) then
-        source_cell = global_fine - source_lower + 1
-        solution%levels(relation + 1)% &
-          patches(target_index)%state(:, target_nx + 1) = &
-            source_state(:, source_cell)
-        solution%levels(relation + 1)% &
-          patches(target_index)%temperature(target_nx + 1) = &
-            source_temperature(source_cell)
-      end if
-      if (.not. sparse_uses_wide_ghosts(config)) cycle
-      do layer = 1, solution%ghost_width
-        global_fine = solution%hierarchy%relations(relation)% &
-          child_sets(parent)%patches(target)%fine%lower - layer
-        if (global_fine >= source_lower .and. &
-            global_fine <= source_upper) then
-          source_cell = global_fine - source_lower + 1
-          solution%levels(relation + 1)%patches(target_index)% &
-            left_ghost_state(:, layer) = source_state(:, source_cell)
-          solution%levels(relation + 1)%patches(target_index)% &
-            left_ghost_temperature(layer) = &
-              source_temperature(source_cell)
-        end if
-        global_fine = solution%hierarchy%relations(relation)% &
-          child_sets(parent)%patches(target)%fine%upper + layer
-        if (global_fine >= source_lower .and. &
-            global_fine <= source_upper) then
-          source_cell = global_fine - source_lower + 1
-          solution%levels(relation + 1)%patches(target_index)% &
-            right_ghost_state(:, layer) = source_state(:, source_cell)
-          solution%levels(relation + 1)%patches(target_index)% &
-            right_ghost_temperature(layer) = &
-              source_temperature(source_cell)
-        end if
-      end do
+    solution%levels(relation + 1)%patches(right_index)%state(:, 0) = &
+      solution%levels(relation + 1)%patches(left_index)%state(:, left_nx)
+    solution%levels(relation + 1)%patches(right_index)%temperature(0) = &
+      solution%levels(relation + 1)%patches(left_index)% &
+        temperature(left_nx)
+    solution%levels(relation + 1)%patches(left_index)% &
+      state(:, left_nx + 1) = &
+        solution%levels(relation + 1)%patches(right_index)%state(:, 1)
+    solution%levels(relation + 1)%patches(left_index)% &
+      temperature(left_nx + 1) = &
+        solution%levels(relation + 1)%patches(right_index)%temperature(1)
+    if (.not. wide_ghosts) return
+    do layer = 1, width
+      solution%levels(relation + 1)%patches(right_index)% &
+        left_ghost_state(:, layer) = solution%levels(relation + 1)% &
+          patches(left_index)%state(:, left_nx - layer + 1)
+      solution%levels(relation + 1)%patches(right_index)% &
+        left_ghost_temperature(layer) = solution%levels(relation + 1)% &
+          patches(left_index)%temperature(left_nx - layer + 1)
+      solution%levels(relation + 1)%patches(left_index)% &
+        right_ghost_state(:, layer) = solution%levels(relation + 1)% &
+          patches(right_index)%state(:, layer)
+      solution%levels(relation + 1)%patches(left_index)% &
+        right_ghost_temperature(layer) = solution%levels(relation + 1)% &
+          patches(right_index)%temperature(layer)
     end do
-  end subroutine apply_sparse_adjacent_source_1d
+  end subroutine copy_local_sparse_adjacent_ghosts_1d
+
+  subroutine unpack_sparse_left_ghosts_1d( &
+      solution, relation, patch, width, wide_ghosts, payload)
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, patch, width
+    logical, intent(in) :: wide_ghosts
+    real(dp), intent(in) :: payload(:)
+
+    integer :: layer, offset
+
+    do layer = 1, width
+      offset = (layer - 1) * (solution%nvar + 1)
+      if (layer == 1) then
+        solution%levels(relation + 1)%patches(patch)%state(:, 0) = &
+          payload(offset + 1:offset + solution%nvar)
+        solution%levels(relation + 1)%patches(patch)%temperature(0) = &
+          payload(offset + solution%nvar + 1)
+      end if
+      if (wide_ghosts) then
+        solution%levels(relation + 1)%patches(patch)% &
+          left_ghost_state(:, layer) = &
+            payload(offset + 1:offset + solution%nvar)
+        solution%levels(relation + 1)%patches(patch)% &
+          left_ghost_temperature(layer) = &
+            payload(offset + solution%nvar + 1)
+      end if
+    end do
+  end subroutine unpack_sparse_left_ghosts_1d
+
+  subroutine unpack_sparse_right_ghosts_1d( &
+      solution, relation, patch, nx, width, wide_ghosts, payload)
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    integer, intent(in) :: relation, patch, nx, width
+    logical, intent(in) :: wide_ghosts
+    real(dp), intent(in) :: payload(:)
+
+    integer :: layer, offset
+
+    do layer = 1, width
+      offset = (layer - 1) * (solution%nvar + 1)
+      if (layer == 1) then
+        solution%levels(relation + 1)%patches(patch)%state(:, nx + 1) = &
+          payload(offset + 1:offset + solution%nvar)
+        solution%levels(relation + 1)%patches(patch)% &
+          temperature(nx + 1) = payload(offset + solution%nvar + 1)
+      end if
+      if (wide_ghosts) then
+        solution%levels(relation + 1)%patches(patch)% &
+          right_ghost_state(:, layer) = &
+            payload(offset + 1:offset + solution%nvar)
+        solution%levels(relation + 1)%patches(patch)% &
+          right_ghost_temperature(layer) = &
+            payload(offset + solution%nvar + 1)
+      end if
+    end do
+  end subroutine unpack_sparse_right_ghosts_1d
 
   pure logical function sparse_uses_wide_ghosts(config) result(enabled)
     type(reactive_1d_config), intent(in) :: config
