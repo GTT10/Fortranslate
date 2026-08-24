@@ -108,6 +108,7 @@ contains
     integer :: ierr, level, patch, nx
 
     dt = 0.0_dp
+    ok = .false.
     local_ok = size(species) >= 1 .and. solution%is_valid(distribution)
     if (config%transport_enabled) then
       local_ok = local_ok .and. present(transport)
