@@ -33,6 +33,7 @@ module simulation_config_reactive_1d_mod
     integer :: amr_refinement_ratio = 2
     integer :: amr_max_levels = 2
     integer :: amr_regrid_interval = 4
+    integer :: amr_mpi_work_exponent = 2
     integer :: amr_tag_component = 1
     integer :: amr_buffer_cells = 2
     integer :: amr_minimum_patch_cells = 8
@@ -76,6 +77,7 @@ contains
 
     integer :: nx, maximum_steps, unit, status
     integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
+    integer :: amr_mpi_work_exponent
     integer :: amr_weno_scheme
     integer :: amr_tag_component, amr_buffer_cells
     integer :: amr_minimum_patch_cells, amr_maximum_patch_gap_cells
@@ -111,6 +113,7 @@ contains
       chemistry_absolute_tolerance, &
       amr_enabled, amr_multipatch_enabled, amr_reconstruction, &
       amr_refinement_ratio, amr_max_levels, amr_regrid_interval, &
+      amr_mpi_work_exponent, &
       amr_tag_component, amr_buffer_cells, amr_minimum_patch_cells, &
       amr_maximum_patch_gap_cells, &
       amr_relative_gradient_threshold, amr_absolute_gradient_threshold, &
@@ -150,6 +153,7 @@ contains
     amr_refinement_ratio = config%amr_refinement_ratio
     amr_max_levels = config%amr_max_levels
     amr_regrid_interval = config%amr_regrid_interval
+    amr_mpi_work_exponent = config%amr_mpi_work_exponent
     amr_tag_component = config%amr_tag_component
     amr_buffer_cells = config%amr_buffer_cells
     amr_minimum_patch_cells = config%amr_minimum_patch_cells
@@ -212,6 +216,7 @@ contains
     if (ok .and. amr_enabled) then
       ok = amr_refinement_ratio >= 2 .and. amr_max_levels >= 2 .and. &
         amr_regrid_interval >= 1 .and. &
+        amr_mpi_work_exponent >= 0 .and. amr_mpi_work_exponent <= 2 .and. &
         amr_tag_component >= 1 .and. amr_buffer_cells >= 0 .and. &
         amr_minimum_patch_cells >= 1 .and. &
         amr_minimum_patch_cells <= nx - 2 .and. &
@@ -328,6 +333,7 @@ contains
     config%amr_refinement_ratio = amr_refinement_ratio
     config%amr_max_levels = amr_max_levels
     config%amr_regrid_interval = amr_regrid_interval
+    config%amr_mpi_work_exponent = amr_mpi_work_exponent
     config%amr_tag_component = amr_tag_component
     config%amr_buffer_cells = amr_buffer_cells
     config%amr_minimum_patch_cells = amr_minimum_patch_cells

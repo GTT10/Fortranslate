@@ -81,6 +81,7 @@ module mpi_amr_sparse_patch_1d_mod
 
   public :: scatter_owned_patch_tree_reactive_1d
   public :: gather_owned_patch_tree_reactive_1d
+  public :: materialize_owned_patch_tree_reactive_1d
   public :: migrate_owned_patch_tree_reactive_1d
   public :: regrid_sparse_patch_tree_reactive_1d
   public :: regrid_tagged_sparse_patch_tree_reactive_1d
@@ -1852,6 +1853,50 @@ contains
       distribution, local_ok, accepted, mpi_ok)
     ok = mpi_ok .and. accepted
   end subroutine gather_owned_patch_tree_reactive_1d
+
+  subroutine materialize_owned_patch_tree_reactive_1d( &
+      distribution, sparse, replicated, ok)
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(in) :: sparse
+    type(amr_patch_tree_reactive_solution_1d), intent(out) :: replicated
+    logical, intent(out) :: ok
+
+    logical :: local_ok, accepted, mpi_ok
+    integer :: level, patch, nx
+
+    ok = .false.
+    local_ok = sparse%is_valid(distribution)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+
+    replicated%hierarchy = sparse%hierarchy
+    replicated%level_advances = sparse%level_advances
+    replicated%transport_level_advances = sparse%transport_level_advances
+    replicated%time = sparse%time
+    replicated%steps = sparse%steps
+    replicated%regrid_evaluations = sparse%regrid_evaluations
+    replicated%regrids = sparse%regrids
+    replicated%overlap_cells_transferred = &
+      sparse%overlap_cells_transferred
+    allocate(replicated%levels(sparse%hierarchy%level_count()))
+    do level = 1, size(replicated%levels)
+      allocate(replicated%levels(level)%patches( &
+        sparse%hierarchy%level_patch_count(level - 1)))
+      do patch = 1, size(replicated%levels(level)%patches)
+        nx = distribution%levels(level)%cell_counts(patch)
+        call allocate_sparse_patch( &
+          replicated%levels(level)%patches(patch), sparse%nvar, nx, &
+          sparse%ghost_width)
+      end do
+    end do
+    local_ok = replicated%is_valid()
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    call gather_owned_patch_tree_reactive_1d( &
+      distribution, sparse, replicated, ok)
+  end subroutine materialize_owned_patch_tree_reactive_1d
 
   subroutine migrate_owned_patch_tree_reactive_1d( &
       old_distribution, new_distribution, old_sparse, new_sparse, ok, &

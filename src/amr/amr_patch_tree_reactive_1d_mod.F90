@@ -25,7 +25,7 @@ module amr_patch_tree_reactive_1d_mod
   use amr_reactive_1d_mod, only: &
     amr_ppm_ghost_width, advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
-    fill_fine_ghosts_1d, fill_fine_wide_ghosts_1d
+    fill_fine_ghosts_1d, fill_fine_wide_ghosts_1d, write_amr_cell
   implicit none
   private
 
@@ -74,6 +74,7 @@ module amr_patch_tree_reactive_1d_mod
   public :: regrid_tagged_patch_tree_reactive_1d
   public :: regrid_patch_tree_reactive_1d
   public :: patch_tree_reactive_integrals_1d
+  public :: write_patch_tree_reactive_1d_csv
 
 contains
 
@@ -1406,6 +1407,107 @@ contains
     call composite_integral_patch_tree_1d( &
       fields, solution%hierarchy, integral, ok)
   end subroutine patch_tree_reactive_integrals_1d
+
+  subroutine write_patch_tree_reactive_1d_csv(path, species, solution, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: q(:)
+    logical :: local_ok
+    integer :: unit, status, k
+
+    ok = .false.
+    if (size(species) < 1 .or. .not. solution%is_valid()) return
+    allocate(q(reactive_nprim(size(species))))
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', advance='no') &
+      "level,cell_dx,time,x,rho,u,v,w,pressure,temperature,rhoE"
+    do k = 1, size(species)
+      write(unit, '(a)', advance='no') ",Y_" // trim(species(k)%name)
+    end do
+    write(unit, '(a)') ""
+    call write_patch_tree_composite_patch_1d( &
+      unit, 1, 1, solution%hierarchy%x_lower, species, solution, q, local_ok)
+    close(unit)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine write_patch_tree_reactive_1d_csv
+
+  recursive subroutine write_patch_tree_composite_patch_1d( &
+      unit, level, patch, patch_lower, species, solution, q, ok)
+    integer, intent(in) :: unit, level, patch
+    real(dp), intent(in) :: patch_lower
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+    real(dp), intent(out) :: q(:)
+    logical, intent(out) :: ok
+
+    type(amr_two_level_hierarchy_1d) :: geometry
+    real(dp) :: dx, child_lower
+    logical :: local_ok
+    integer :: cell, child, child_index, lower, upper, next_parent, nx
+
+    ok = .false.
+    if (level < 1 .or. level > solution%level_count()) return
+    if (patch < 1 .or. patch > size(solution%levels(level)%patches)) return
+    dx = solution%hierarchy%level_dx(level - 1)
+    nx = size(solution%levels(level)%patches(patch)%state, 2) - 2
+    if (dx <= 0.0_dp .or. nx < 1) return
+    next_parent = 1
+    if (level < solution%level_count()) then
+      do child = 1, solution%hierarchy%relations(level)% &
+          child_sets(patch)%patch_count()
+        child_index = solution%hierarchy%relations(level)% &
+          child_index(patch, child)
+        call patch_tree_child_geometry_1d( &
+          solution%hierarchy%relations(level), child_index, geometry, local_ok)
+        if (.not. local_ok) return
+        lower = geometry%fine_coarse_lower
+        upper = geometry%fine_coarse_upper
+        do cell = next_parent, lower - 1
+          call write_patch_tree_cell_1d( &
+            unit, level, patch, cell, patch_lower, dx, species, solution, &
+            q, local_ok)
+          if (.not. local_ok) return
+        end do
+        child_lower = patch_lower + real(lower - 1, dp) * dx
+        call write_patch_tree_composite_patch_1d( &
+          unit, level + 1, child_index, child_lower, species, solution, q, &
+          local_ok)
+        if (.not. local_ok) return
+        next_parent = upper + 1
+      end do
+    end if
+    do cell = next_parent, nx
+      call write_patch_tree_cell_1d( &
+        unit, level, patch, cell, patch_lower, dx, species, solution, q, &
+        local_ok)
+      if (.not. local_ok) return
+    end do
+    ok = .true.
+  end subroutine write_patch_tree_composite_patch_1d
+
+  subroutine write_patch_tree_cell_1d( &
+      unit, level, patch, cell, patch_lower, dx, species, solution, q, ok)
+    integer, intent(in) :: unit, level, patch, cell
+    real(dp), intent(in) :: patch_lower, dx
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution
+    real(dp), intent(out) :: q(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: x
+
+    x = patch_lower + (real(cell, dp) - 0.5_dp) * dx
+    call write_amr_cell( &
+      unit, level - 1, dx, solution%time, x, species, &
+      solution%levels(level)%patches(patch)%state(:, cell), &
+      solution%levels(level)%patches(patch)%temperature(cell), q, ok)
+  end subroutine write_patch_tree_cell_1d
 
   subroutine extract_patch_tree_fields(solution, fields, ok)
     type(amr_patch_tree_reactive_solution_1d), intent(in) :: solution

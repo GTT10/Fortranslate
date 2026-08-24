@@ -207,6 +207,11 @@ if(PELEF_ENABLE_MPI)
     app/pelef_mpi_amr_patch_1d.F90
   )
   target_link_libraries(pelef_mpi_amr_patch_1d PRIVATE pelef_mpi_support)
+  add_executable(
+    pelef_mpi_amr_reactive_1d
+    app/pelef_mpi_amr_reactive_1d.F90
+  )
+  target_link_libraries(pelef_mpi_amr_reactive_1d PRIVATE pelef_mpi_support)
   install(
     TARGETS
       pelef_mpi_1d
@@ -215,6 +220,7 @@ if(PELEF_ENABLE_MPI)
       pelef_mpi_reactive_transport_1d
       pelef_mpi_reactive_1d
       pelef_mpi_amr_patch_1d
+      pelef_mpi_amr_reactive_1d
     RUNTIME DESTINATION bin
   )
 endif()

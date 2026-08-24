@@ -83,5 +83,12 @@ jobs:
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np8.csv
           python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_reactive_np2.csv mpi_reactive_np4.csv mpi_reactive_np8.csv
+      - name: Public sparse MPI AMR driver rank-count parity
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np4.csv
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np8.csv
+          python3 tools/compare_mpi_sparse_amr_1d.py mpi_sparse_amr_np1.csv mpi_sparse_amr_np2.csv mpi_sparse_amr_np4.csv mpi_sparse_amr_np8.csv
       - name: Preserve serial regressions
         run: ctest --test-dir build-mpi --output-on-failure -j 2
