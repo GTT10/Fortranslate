@@ -80,6 +80,10 @@ program test_eb_geometry_2d
     1.0_dp)), 0.0_dp, tolerance, "vertical plane normal x")
   call assert_close(maxval(abs(geometry%boundary_normal_y(4, :))), &
     0.0_dp, tolerance, "vertical plane normal y")
+  call assert_close(maxval(abs(geometry%boundary_normal_integral_x(4, :) - &
+    geometry%dy)), 0.0_dp, tolerance, "vertical plane normal integral x")
+  call assert_close(maxval(abs(geometry%boundary_normal_integral_y(4, :))), &
+    0.0_dp, tolerance, "vertical plane normal integral y")
 
   do j = 0, ny
     do i = 0, nx
@@ -106,6 +110,10 @@ program test_eb_geometry_2d
   call assert_close(maxval(abs(geometry%boundary_normal_y - &
     1.0_dp / sqrt(2.0_dp)), mask=geometry%cell_type == eb_cut_cell), &
     0.0_dp, tolerance, "diagonal plane normal y")
+  call assert_close(sum(geometry%boundary_normal_integral_x), &
+    0.8_dp, tolerance, "diagonal plane normal integral x")
+  call assert_close(sum(geometry%boundary_normal_integral_y), &
+    0.8_dp, tolerance, "diagonal plane normal integral y")
 
   call circle_errors(20, coarse_error, coarse_perimeter_error, &
     coarse_normal_error, coarse_cut_cells)

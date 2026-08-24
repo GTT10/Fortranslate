@@ -101,6 +101,10 @@ contains
         if (.not. local_ok) return
         candidate(:, i, j) = -geometry%boundary_length(i, j) * &
           wall_flux / fluid_volume
+        candidate(imx, i, j) = wall_pressure * &
+          geometry%boundary_normal_integral_x(i, j) / fluid_volume
+        candidate(imy, i, j) = wall_pressure * &
+          geometry%boundary_normal_integral_y(i, j) / fluid_volume
       end do
     end do
     if (any(.not. ieee_is_finite(candidate))) return

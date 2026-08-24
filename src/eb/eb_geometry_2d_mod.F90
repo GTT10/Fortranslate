@@ -27,6 +27,8 @@ module eb_geometry_2d_mod
     real(dp), allocatable :: boundary_centroid_y(:, :)
     real(dp), allocatable :: boundary_normal_x(:, :)
     real(dp), allocatable :: boundary_normal_y(:, :)
+    real(dp), allocatable :: boundary_normal_integral_x(:, :)
+    real(dp), allocatable :: boundary_normal_integral_y(:, :)
     integer, allocatable :: cell_type(:, :)
   contains
     procedure :: is_valid => eb_geometry_is_valid
@@ -71,11 +73,17 @@ contains
     allocate(geometry%boundary_centroid_y(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%boundary_normal_x(1:geometry%nx, 1:geometry%ny))
     allocate(geometry%boundary_normal_y(1:geometry%nx, 1:geometry%ny))
+    allocate(geometry%boundary_normal_integral_x( &
+      1:geometry%nx, 1:geometry%ny))
+    allocate(geometry%boundary_normal_integral_y( &
+      1:geometry%nx, 1:geometry%ny))
     geometry%boundary_length = 0.0_dp
     geometry%boundary_centroid_x = 0.0_dp
     geometry%boundary_centroid_y = 0.0_dp
     geometry%boundary_normal_x = 0.0_dp
     geometry%boundary_normal_y = 0.0_dp
+    geometry%boundary_normal_integral_x = 0.0_dp
+    geometry%boundary_normal_integral_y = 0.0_dp
 
     do j = 1, geometry%ny
       do i = 0, geometry%nx
@@ -117,7 +125,9 @@ contains
             geometry%boundary_centroid_x(i, j), &
             geometry%boundary_centroid_y(i, j), &
             geometry%boundary_normal_x(i, j), &
-            geometry%boundary_normal_y(i, j), metrics_ok)
+            geometry%boundary_normal_y(i, j), &
+            geometry%boundary_normal_integral_x(i, j), &
+            geometry%boundary_normal_integral_y(i, j), metrics_ok)
           if (.not. metrics_ok) return
         end if
       end do
@@ -141,7 +151,10 @@ contains
       allocated(self%boundary_centroid_x) .and. &
       allocated(self%boundary_centroid_y) .and. &
       allocated(self%boundary_normal_x) .and. &
-      allocated(self%boundary_normal_y) .and. allocated(self%cell_type)
+      allocated(self%boundary_normal_y) .and. &
+      allocated(self%boundary_normal_integral_x) .and. &
+      allocated(self%boundary_normal_integral_y) .and. &
+      allocated(self%cell_type)
     if (.not. valid) return
     valid = abs(real(self%nx, dp) * self%dx - &
       (self%x_upper - self%x_lower)) <= tolerance * &
@@ -158,6 +171,10 @@ contains
       all(shape(self%boundary_centroid_y) == [self%nx, self%ny]) .and. &
       all(shape(self%boundary_normal_x) == [self%nx, self%ny]) .and. &
       all(shape(self%boundary_normal_y) == [self%nx, self%ny]) .and. &
+      all(shape(self%boundary_normal_integral_x) == &
+        [self%nx, self%ny]) .and. &
+      all(shape(self%boundary_normal_integral_y) == &
+        [self%nx, self%ny]) .and. &
       all(shape(self%cell_type) == [self%nx, self%ny]) .and. &
       all(lbound(self%volume_fraction) == [1, 1]) .and. &
       all(lbound(self%boundary_length) == [1, 1]) .and. &
@@ -165,6 +182,8 @@ contains
       all(lbound(self%boundary_centroid_y) == [1, 1]) .and. &
       all(lbound(self%boundary_normal_x) == [1, 1]) .and. &
       all(lbound(self%boundary_normal_y) == [1, 1]) .and. &
+      all(lbound(self%boundary_normal_integral_x) == [1, 1]) .and. &
+      all(lbound(self%boundary_normal_integral_y) == [1, 1]) .and. &
       all(lbound(self%cell_type) == [1, 1]) .and. &
       all(lbound(self%x_face_fraction) == [0, 1]) .and. &
       all(lbound(self%y_face_fraction) == [1, 0])
@@ -177,6 +196,8 @@ contains
       all(ieee_is_finite(self%boundary_centroid_y)) .and. &
       all(ieee_is_finite(self%boundary_normal_x)) .and. &
       all(ieee_is_finite(self%boundary_normal_y)) .and. &
+      all(ieee_is_finite(self%boundary_normal_integral_x)) .and. &
+      all(ieee_is_finite(self%boundary_normal_integral_y)) .and. &
       minval(self%volume_fraction) >= -tolerance .and. &
       maxval(self%volume_fraction) <= 1.0_dp + tolerance .and. &
       minval(self%x_face_fraction) >= -tolerance .and. &
@@ -201,7 +222,8 @@ contains
     class(eb_geometry_2d), intent(in) :: self
     real(dp), intent(in) :: tolerance
 
-    real(dp) :: x0, x1, y0, y1, normal_norm, coordinate_tolerance
+    real(dp) :: x0, x1, y0, y1, normal_norm, normal_integral_norm
+    real(dp) :: coordinate_tolerance, metric_tolerance
     integer :: i, j
 
     valid = .true.
@@ -215,6 +237,22 @@ contains
           normal_norm = sqrt(self%boundary_normal_x(i, j)**2 + &
             self%boundary_normal_y(i, j)**2)
           if (abs(normal_norm - 1.0_dp) > 8.0_dp * tolerance) then
+            valid = .false.
+            return
+          end if
+          normal_integral_norm = sqrt( &
+            self%boundary_normal_integral_x(i, j)**2 + &
+            self%boundary_normal_integral_y(i, j)**2)
+          metric_tolerance = 32.0_dp * tolerance * max(self%dx, self%dy)
+          if (normal_integral_norm <= 0.0_dp .or. &
+              normal_integral_norm > &
+                self%boundary_length(i, j) + metric_tolerance .or. &
+              abs(self%boundary_normal_integral_x(i, j) - &
+                normal_integral_norm * self%boundary_normal_x(i, j)) > &
+                  metric_tolerance .or. &
+              abs(self%boundary_normal_integral_y(i, j) - &
+                normal_integral_norm * self%boundary_normal_y(i, j)) > &
+                  metric_tolerance) then
             valid = .false.
             return
           end if
@@ -237,7 +275,9 @@ contains
             self%boundary_centroid_x(i, j) /= 0.0_dp .or. &
             self%boundary_centroid_y(i, j) /= 0.0_dp .or. &
             self%boundary_normal_x(i, j) /= 0.0_dp .or. &
-            self%boundary_normal_y(i, j) /= 0.0_dp) then
+            self%boundary_normal_y(i, j) /= 0.0_dp .or. &
+            self%boundary_normal_integral_x(i, j) /= 0.0_dp .or. &
+            self%boundary_normal_integral_y(i, j) /= 0.0_dp) then
           valid = .false.
           return
         end if
@@ -247,16 +287,17 @@ contains
 
   pure subroutine cell_interface_metrics( &
       vertex_x, vertex_y, vertex_level_set, length, centroid_x, centroid_y, &
-      normal_x, normal_y, ok)
+      normal_x, normal_y, normal_integral_x, normal_integral_y, ok)
     real(dp), intent(in) :: vertex_x(4), vertex_y(4), vertex_level_set(4)
     real(dp), intent(out) :: length, centroid_x, centroid_y
     real(dp), intent(out) :: normal_x, normal_y
+    real(dp), intent(out) :: normal_integral_x, normal_integral_y
     logical, intent(out) :: ok
 
     real(dp) :: segment_length(2), segment_centroid_x(2)
     real(dp) :: segment_centroid_y(2), segment_normal_x(2)
     real(dp) :: segment_normal_y(2), scale, duplicate_tolerance, norm
-    logical :: segment_ok
+    logical :: duplicate_interface, segment_ok
 
     call triangle_interface_metrics( &
       vertex_x([1, 2, 3]), vertex_y([1, 2, 3]), &
@@ -283,12 +324,14 @@ contains
       256.0_dp * epsilon(1.0_dp) * scale, &
       8.0_dp * spacing(maxval(abs(vertex_x))), &
       8.0_dp * spacing(maxval(abs(vertex_y))))
-    if (segment_length(1) > 0.0_dp .and. segment_length(2) > 0.0_dp &
-        .and. abs(segment_length(1) - segment_length(2)) <= &
-          duplicate_tolerance .and. &
-        sqrt((segment_centroid_x(1) - segment_centroid_x(2))**2 + &
-          (segment_centroid_y(1) - segment_centroid_y(2))**2) <= &
-            duplicate_tolerance) then
+    duplicate_interface = &
+      segment_length(1) > 0.0_dp .and. segment_length(2) > 0.0_dp .and. &
+      abs(segment_length(1) - segment_length(2)) <= &
+        duplicate_tolerance .and. &
+      sqrt((segment_centroid_x(1) - segment_centroid_x(2))**2 + &
+        (segment_centroid_y(1) - segment_centroid_y(2))**2) <= &
+          duplicate_tolerance
+    if (duplicate_interface) then
       length = segment_length(1)
       centroid_x = 0.5_dp * &
         (segment_centroid_x(1) + segment_centroid_x(2))
@@ -312,8 +355,17 @@ contains
       ok = .false.
       return
     end if
-    normal_x = normal_x / norm
-    normal_y = normal_y / norm
+    if (duplicate_interface) then
+      normal_integral_x = length * normal_x / norm
+      normal_integral_y = length * normal_y / norm
+    else
+      normal_integral_x = normal_x
+      normal_integral_y = normal_y
+    end if
+    normal_x = normal_integral_x / &
+      sqrt(normal_integral_x**2 + normal_integral_y**2)
+    normal_y = normal_integral_y / &
+      sqrt(normal_integral_x**2 + normal_integral_y**2)
     ok = .true.
   end subroutine cell_interface_metrics
 
