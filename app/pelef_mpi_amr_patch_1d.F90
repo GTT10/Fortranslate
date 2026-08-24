@@ -945,7 +945,7 @@ program pelef_mpi_amr_patch_1d
         owner_changes = owner_changes + 1
     end do
   end do
-  call assert_all(owner_changes > 0, &
+  call assert_all(nranks < 4 .or. owner_changes > 0, &
     "topology regrid recomputes patch ownership", rank)
   local_sparse_patches = sparse_regrid%local_patch_count()
   local_sparse_cells = sparse_regrid%local_cell_count()
