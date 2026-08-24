@@ -492,8 +492,23 @@ used for hyperbolic and molecular-transport recursion.
 
 The qualified patch-tree path covers interior separated or adjacent patches,
 PCM/PPM hydro, elementary chemistry, molecular transport, and explicit or
-tag-driven runtime rebuilds. One-sided periodic-seam refinement and MPI patch
-ownership remain separate.
+tag-driven runtime rebuilds. One-sided periodic-seam refinement remains
+separate.
+
+`mpi_amr_patch_1d_mod` adds the first distribution boundary without importing
+MPI into the serial AMR modules. Every rank first proves that the integer patch
+topology and physical root extent are identical. A deterministic greedy
+cell-work schedule then gives each patch exactly one owner; ties go to the
+lowest rank. Generic patch fields remain allocated on every rank in this
+bridge, but only the owner is authoritative. Collective broadcasts refresh
+the replicas, while adjacent sibling faces broadcast the owner's boundary
+cells into explicit left/right halo objects for up to four stencil layers.
+
+This separation establishes rank ownership and communication ordering before
+changing the recursive reactive integrator. Owner-only physics execution,
+distributed time-integrated fine/fine flux reconciliation, sparse rank-local
+storage, migration after regrid, and scalable point-to-point schedules remain
+outside the `0.49.0` qualification boundary.
 
 ## Reactive AMR time advancement
 

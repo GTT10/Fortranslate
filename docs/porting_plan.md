@@ -511,6 +511,9 @@ Reactive application integration:
   rebuild (`0.47.0`)
 - [x] adjacent patch-tree sibling exchange, shared fine/fine flux ownership,
   and reflux suppression (`0.48.0`)
+- [x] deterministic MPI patch owner maps, collective hierarchy consensus,
+  owner-authoritative field synchronization, and cross-rank sibling halos
+  (`0.49.0`)
 
 AMR parity metrics:
 

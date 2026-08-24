@@ -775,3 +775,21 @@ distributed patch ownership remain separate.
 This milestone qualifies same-process sibling exchange for strictly interior
 patch-tree children. Periodic-seam splitting, physical-boundary children,
 load balancing, and distributed MPI patch ownership remain separate.
+
+## MPI AMR patch distribution bridge (`0.49.0`)
+
+- [x] collective validation of replicated patch-tree topology and extent
+- [x] deterministic cell-weighted owner for every root/fine patch
+- [x] exact one-owner accounting of patch and cell work
+- [x] owner-authoritative full-patch field synchronization
+- [x] parent-local adjacent-sibling discovery in global fine indices
+- [x] owner-authoritative cross-rank halo exchange through four layers
+- [x] identical collective ordering independent of local ownership
+- [x] collective rejection of rank-inconsistent valid hierarchies
+- [x] 1/2/4/8-rank Release and Debug gates
+
+This milestone establishes MPI ownership metadata and the communication bridge
+while keeping the serial AMR modules free of MPI. Patch field arrays remain
+replicated on every rank. Owner-only recursive hydro, chemistry, transport,
+distributed fine/fine flux reconciliation, sparse storage, regrid migration,
+and scalable point-to-point exchange remain separate integration work.

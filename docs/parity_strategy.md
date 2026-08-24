@@ -671,3 +671,19 @@ Independently owned adjacent children are accepted only while:
 - internal fine/fine register sides do not reflux covered parent cells and all
   parent-child relations remain synchronized within `8e-13` in Debug and
   Release CI.
+
+## 0.49.0 MPI AMR patch-distribution gates
+
+The first distributed patch-tree bridge is accepted only while:
+
+- identical valid hierarchy metadata on every rank produces the same owner
+  map, and a hierarchy changed on one rank is rejected collectively;
+- all nine test patches and all 152 represented cells have exactly one owner;
+- communicator sizes 2, 4, and 8 place at least one adjacent sibling face on
+  different owners;
+- with every non-owner interior poisoned, four halo layers on both sides of
+  each adjacent face equal the owner patch's encoded boundary cells exactly;
+- broadcasting each owner-authoritative patch reconstructs the complete
+  encoded field exactly on every rank;
+- the complete gate passes with 1, 2, 4, and 8 ranks in both GNU Fortran Debug
+  and Release MPI CI.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.48.0` milestone contains ten serial verification executables, five
+The `0.49.0` milestone contains ten serial verification executables, six
 optional MPI verification executables, and a runnable one-dimensional reactive
 AMR application with solution-driven dynamic regridding and molecular
 transport.
@@ -130,7 +130,7 @@ approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
 ### MPI one-dimensional verification
 
-With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
+With `PELEF_ENABLE_MPI=ON`, five existing executables verify:
 
 - uneven non-replicated block decomposition and periodic halo exchange;
 - conservative multispecies Euler transport;
@@ -140,6 +140,14 @@ With `PELEF_ENABLE_MPI=ON`, five additional executables verify:
 - transactional reaction--transport--hydro--transport--reaction splitting;
 - ordered gather output, global timestep/conservation reductions, and
   complete-field parity for 1, 2, 4, and 8 ranks.
+
+A sixth MPI executable starts the AMR distribution bridge. It validates a
+replicated patch-tree description collectively, assigns every root/fine patch
+to one deterministic cell-weighted owner, broadcasts owner-authoritative
+patch fields, and exchanges up to four adjacent-sibling halo layers across
+rank boundaries. The current bridge intentionally retains replicated field
+storage; owner-only reactive advancement and sparse rank-local patch storage
+remain the next integration step.
 
 ### One-dimensional AMR
 
@@ -238,6 +246,9 @@ The AMR layer provides:
   with those internal faces excluded from coarse/fine reflux;
 - adjacent PPM hydro and molecular-transport conservation, synchronization,
   exact exchange, and subcycle-accounting gates;
+- deterministic cell-weighted MPI ownership for every tree patch, collective
+  hierarchy-consensus rejection, owner-authoritative patch synchronization,
+  and four-layer cross-rank adjacent-sibling halo gates;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -261,8 +272,10 @@ patch-tree engine can synchronize to the root, tag and cluster every
 prospective parent independently, and rebuild the resulting arbitrary-depth
 branching plan transactionally. Independently owned adjacent siblings exchange
 same-level ghosts, reconcile each shared time-integrated interface flux, and
-exclude that internal side from reflux. MPI patch ownership remains a later
-slice. A periodic child may
+exclude that internal side from reflux. The first MPI distribution bridge
+assigns a unique owner to every patch and communicates authoritative fields
+and adjacent halos while retaining replicas on all ranks. Owner-only recursive
+physics and sparse patch storage remain later slices. A periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
 seam.

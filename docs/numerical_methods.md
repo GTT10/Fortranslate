@@ -1252,3 +1252,30 @@ boundary-cell corrections make both patches use that single owned flux. The
 corresponding register sides are zeroed before reflux because neither is a
 coarse/fine interface. Hydro and molecular transport use the same interface
 ownership rule.
+
+## MPI AMR patch distribution bridge
+
+For each patch in level/flattened-patch order, `0.49.0` assigns the patch to
+the rank with the smallest accumulated owned cell count. The root patch enters
+the same schedule, and a tie selects the lowest rank, making the owner map
+deterministic once the hierarchy and communicator size are fixed. Before
+assignment, communicator-wide minimum/maximum reductions require identical
+base cells, relation ratios, parent/child topology, child bounds, and physical
+root extent on every rank.
+
+Patch values use an owner-authoritative replicated bridge:
+
+```text
+owner patch values --MPI_Bcast--> every rank's patch replica
+```
+
+For an adjacent sibling pair, the owner of the left patch broadcasts its last
+`g` cells and the owner of the right patch broadcasts its first `g` cells.
+Those buffers become the opposite sibling's ordered halo layers, with layer
+one nearest the shared face. All ranks enter broadcasts in the same hierarchy
+order, so the schedule is independent of the local owner set.
+
+This is communication and ownership qualification, not yet a distributed
+reactive time advance. The present bridge stores all patch interiors on every
+rank and does not claim sparse storage, owner-only hydro/chemistry/transport,
+distributed shared-flux correction, or regrid migration.
