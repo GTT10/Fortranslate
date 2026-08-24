@@ -1913,7 +1913,7 @@ contains
 
     call initialize_mpi_amr_patch_distribution_1d( &
       rebuilt_hierarchy, old_distribution%comm, rebuilt_distribution, &
-      local_ok)
+      local_ok, old_distribution%subcycle_exponent)
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) go to 900
@@ -2540,7 +2540,7 @@ contains
       if (.not. mpi_ok .or. .not. accepted) return
       call initialize_mpi_amr_patch_distribution_1d( &
         candidate_hierarchy, distribution%comm, candidate_distribution, &
-        local_ok)
+        local_ok, distribution%subcycle_exponent)
       call all_ranks_accept_sparse_1d( &
         distribution, local_ok, accepted, mpi_ok)
       if (.not. mpi_ok .or. .not. accepted) return

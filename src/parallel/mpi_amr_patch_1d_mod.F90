@@ -1,4 +1,5 @@
 module mpi_amr_patch_1d_mod
+  use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -27,6 +28,7 @@ module mpi_amr_patch_1d_mod
   type, public :: mpi_amr_patch_level_ownership_1d
     integer, allocatable :: owners(:)
     integer, allocatable :: cell_counts(:)
+    integer(int64), allocatable :: work_counts(:)
   contains
     procedure :: patch_count => mpi_amr_level_patch_count
     procedure :: is_valid => mpi_amr_level_ownership_is_valid
@@ -36,9 +38,11 @@ module mpi_amr_patch_1d_mod
     type(MPI_Comm) :: comm = MPI_COMM_NULL
     integer :: rank = -1
     integer :: nranks = 0
+    integer :: subcycle_exponent = 0
     type(mpi_amr_patch_level_ownership_1d), allocatable :: levels(:)
     integer, allocatable :: rank_cell_counts(:)
     integer, allocatable :: rank_patch_counts(:)
+    integer(int64), allocatable :: rank_work_counts(:)
   contains
     procedure :: level_count => mpi_amr_distribution_level_count
     procedure :: owner_of => mpi_amr_distribution_owner_of
@@ -82,12 +86,13 @@ contains
     integer, intent(in) :: nranks
 
     valid = nranks >= 1 .and. allocated(self%owners) .and. &
-      allocated(self%cell_counts)
+      allocated(self%cell_counts) .and. allocated(self%work_counts)
     if (.not. valid) return
     valid = size(self%owners) >= 1 .and. &
       size(self%cell_counts) == size(self%owners) .and. &
+      size(self%work_counts) == size(self%owners) .and. &
       all(self%owners >= 0) .and. all(self%owners < nranks) .and. &
-      all(self%cell_counts >= 1)
+      all(self%cell_counts >= 1) .and. all(self%work_counts >= 1_int64)
   end function mpi_amr_level_ownership_is_valid
 
   pure integer function mpi_amr_distribution_level_count(self) result(count)
@@ -123,21 +128,26 @@ contains
     class(mpi_amr_patch_distribution_1d), intent(in) :: self
 
     integer, allocatable :: cells(:), patches(:)
+    integer(int64), allocatable :: work(:)
     integer :: level, patch, owner
 
     valid = self%rank >= 0 .and. self%nranks >= 1 .and. &
       self%rank < self%nranks .and. allocated(self%levels) .and. &
+      self%subcycle_exponent >= 0 .and. self%subcycle_exponent <= 2 .and. &
       allocated(self%rank_cell_counts) .and. &
-      allocated(self%rank_patch_counts)
+      allocated(self%rank_patch_counts) .and. &
+      allocated(self%rank_work_counts)
     if (.not. valid) return
     valid = size(self%levels) >= 1 .and. &
       size(self%rank_cell_counts) == self%nranks .and. &
-      size(self%rank_patch_counts) == self%nranks
+      size(self%rank_patch_counts) == self%nranks .and. &
+      size(self%rank_work_counts) == self%nranks
     if (.not. valid) return
 
-    allocate(cells(self%nranks), patches(self%nranks))
+    allocate(cells(self%nranks), patches(self%nranks), work(self%nranks))
     cells = 0
     patches = 0
+    work = 0_int64
     do level = 1, size(self%levels)
       valid = self%levels(level)%is_valid(self%nranks)
       if (.not. valid) return
@@ -146,22 +156,28 @@ contains
         cells(owner) = cells(owner) + &
           self%levels(level)%cell_counts(patch)
         patches(owner) = patches(owner) + 1
+        work(owner) = work(owner) + &
+          self%levels(level)%work_counts(patch)
       end do
     end do
     valid = all(cells == self%rank_cell_counts) .and. &
       all(patches == self%rank_patch_counts) .and. &
+      all(work == self%rank_work_counts) .and. &
       sum(self%rank_patch_counts) >= 1
   end function mpi_amr_distribution_is_valid
 
   subroutine initialize_mpi_amr_patch_distribution_1d( &
-      hierarchy, comm, distribution, ok)
+      hierarchy, comm, distribution, ok, subcycle_exponent)
     type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
     type(MPI_Comm), intent(in) :: comm
     type(mpi_amr_patch_distribution_1d), intent(out) :: distribution
     logical, intent(out) :: ok
+    integer, intent(in), optional :: subcycle_exponent
 
     logical :: local_ok
-    integer :: ierr, level, patch, owner
+    integer :: ierr, level, patch, owner, exponent, exponent_min
+    integer :: exponent_max, power, ratio
+    integer(int64) :: level_scale, patch_work
 
     ok = .false.
     distribution%comm = comm
@@ -169,30 +185,62 @@ contains
     if (ierr /= MPI_SUCCESS) return
     call MPI_Comm_size(comm, distribution%nranks, ierr)
     if (ierr /= MPI_SUCCESS .or. distribution%nranks < 1) return
+    exponent = 0
+    if (present(subcycle_exponent)) exponent = subcycle_exponent
+    call MPI_Allreduce( &
+      exponent, exponent_min, 1, MPI_INTEGER, MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      exponent, exponent_max, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. exponent_min /= exponent_max .or. &
+        exponent < 0 .or. exponent > 2) return
+    distribution%subcycle_exponent = exponent
 
     call replicated_hierarchy_matches_1d(hierarchy, comm, local_ok)
     if (.not. local_ok) return
     allocate(distribution%levels(hierarchy%level_count()))
     allocate(distribution%rank_cell_counts(distribution%nranks))
     allocate(distribution%rank_patch_counts(distribution%nranks))
+    allocate(distribution%rank_work_counts(distribution%nranks))
     distribution%rank_cell_counts = 0
     distribution%rank_patch_counts = 0
+    distribution%rank_work_counts = 0_int64
+    level_scale = 1_int64
 
     do level = 0, hierarchy%level_count() - 1
+      if (level > 0) then
+        ratio = hierarchy%relations(level)%refinement_ratio
+        do power = 1, exponent
+          if (level_scale > huge(level_scale) / int(ratio, int64)) return
+          level_scale = level_scale * int(ratio, int64)
+        end do
+      end if
       allocate(distribution%levels(level + 1)%owners( &
         hierarchy%level_patch_count(level)))
       allocate(distribution%levels(level + 1)%cell_counts( &
         hierarchy%level_patch_count(level)))
+      allocate(distribution%levels(level + 1)%work_counts( &
+        hierarchy%level_patch_count(level)))
       do patch = 1, hierarchy%level_patch_count(level)
         distribution%levels(level + 1)%cell_counts(patch) = &
           patch_cell_count_1d(hierarchy, level, patch)
-        owner = minloc(distribution%rank_cell_counts, dim=1)
+        if (int(distribution%levels(level + 1)%cell_counts(patch), int64) > &
+            huge(patch_work) / level_scale) return
+        patch_work = &
+          int(distribution%levels(level + 1)%cell_counts(patch), int64) * &
+          level_scale
+        distribution%levels(level + 1)%work_counts(patch) = patch_work
+        owner = minloc(distribution%rank_work_counts, dim=1)
         distribution%levels(level + 1)%owners(patch) = owner - 1
         distribution%rank_cell_counts(owner) = &
           distribution%rank_cell_counts(owner) + &
           distribution%levels(level + 1)%cell_counts(patch)
         distribution%rank_patch_counts(owner) = &
           distribution%rank_patch_counts(owner) + 1
+        if (distribution%rank_work_counts(owner) > &
+            huge(patch_work) - patch_work) return
+        distribution%rank_work_counts(owner) = &
+          distribution%rank_work_counts(owner) + patch_work
       end do
     end do
     ok = distribution%is_valid() .and. &
@@ -204,19 +252,43 @@ contains
     type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
     type(amr_patch_tree_hierarchy_1d), intent(in) :: hierarchy
 
-    integer :: level, patch
+    integer :: level, patch, exponent, power, ratio
+    integer(int64) :: expected_work, level_scale
 
     matches = distribution%is_valid() .and. hierarchy%is_valid()
     if (.not. matches) return
     matches = distribution%level_count() == hierarchy%level_count()
     if (.not. matches) return
+    exponent = distribution%subcycle_exponent
+    level_scale = 1_int64
     do level = 0, hierarchy%level_count() - 1
+      if (level > 0) then
+        ratio = hierarchy%relations(level)%refinement_ratio
+        do power = 1, exponent
+          if (level_scale > huge(level_scale) / int(ratio, int64)) then
+            matches = .false.
+            return
+          end if
+          level_scale = level_scale * int(ratio, int64)
+        end do
+      end if
       matches = distribution%levels(level + 1)%patch_count() == &
         hierarchy%level_patch_count(level)
       if (.not. matches) return
       do patch = 1, hierarchy%level_patch_count(level)
         matches = distribution%levels(level + 1)%cell_counts(patch) == &
           patch_cell_count_1d(hierarchy, level, patch)
+        if (.not. matches) return
+        if (int(distribution%levels(level + 1)%cell_counts(patch), int64) > &
+            huge(expected_work) / level_scale) then
+          matches = .false.
+          return
+        end if
+        expected_work = &
+          int(distribution%levels(level + 1)%cell_counts(patch), int64) * &
+          level_scale
+        matches = distribution%levels(level + 1)%work_counts(patch) == &
+          expected_work
         if (.not. matches) return
       end do
     end do

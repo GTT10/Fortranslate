@@ -1,4 +1,5 @@
 program pelef_mpi_amr_patch_1d
+  use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx
@@ -56,6 +57,7 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_level_fields_1d), allocatable :: fields(:)
   type(mpi_amr_level_halos_1d), allocatable :: halos(:)
   type(mpi_amr_patch_distribution_1d) :: distribution
+  type(mpi_amr_patch_distribution_1d) :: work_distribution
   type(mpi_amr_patch_distribution_1d) :: comparison_distribution
   type(mpi_amr_patch_distribution_1d) :: reactive_distribution
   type(mpi_amr_patch_distribution_1d) :: migrated_distribution
@@ -110,6 +112,7 @@ program pelef_mpi_amr_patch_1d
   type(reactive_1d_config) :: invalid_tagged_config
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
+  integer(int64), allocatable :: cell_distribution_work(:)
   real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
   real(dp) :: transport_dt, adjacent_transport_dt
   real(dp) :: split_dt
@@ -163,6 +166,36 @@ program pelef_mpi_amr_patch_1d
   call assert_all( &
     sum(distribution%rank_cell_counts) == 152, &
     "owned cell work is conserved", rank)
+  call assert_all( &
+    distribution%subcycle_exponent == 0 .and. &
+      sum(distribution%rank_work_counts) == 152_int64, &
+    "default distribution retains cell-count weighting", rank)
+  call initialize_mpi_amr_patch_distribution_1d( &
+    hierarchy, MPI_COMM_WORLD, work_distribution, ok, 2)
+  call assert_all(ok .and. work_distribution%subcycle_exponent == 2, &
+    "parabolic subcycle-weighted AMR distribution", rank)
+  call assert_all(sum(work_distribution%rank_work_counts) == 416_int64, &
+    "parabolic AMR work is conserved", rank)
+  call effective_distribution_work_counts( &
+    hierarchy, distribution, 2, cell_distribution_work, ok)
+  call assert_all(ok .and. &
+    maxval(work_distribution%rank_work_counts) <= &
+      maxval(cell_distribution_work), &
+    "subcycle weighting does not increase maximum AMR work", rank)
+  if (nranks == 2) then
+    call assert_all( &
+      maxval(work_distribution%rank_work_counts) < &
+        maxval(cell_distribution_work), &
+      "subcycle weighting reduces two-rank AMR work imbalance", rank)
+  end if
+  comparison_distribution = work_distribution
+  comparison_distribution%rank_work_counts(1) = &
+    comparison_distribution%rank_work_counts(1) + 1_int64
+  call assert_all(.not. comparison_distribution%is_valid(), &
+    "inconsistent AMR rank work metadata is rejected", rank)
+  call initialize_mpi_amr_patch_distribution_1d( &
+    hierarchy, MPI_COMM_WORLD, comparison_distribution, ok, 3)
+  call assert_all(.not. ok, "invalid AMR work exponent is rejected", rank)
 
   cross_rank_faces = 0
   do parent = 1, hierarchy%relations(1)%parent_patch_count()
@@ -245,6 +278,11 @@ program pelef_mpi_amr_patch_1d
   end do
 
   if (nranks > 1) then
+    call initialize_mpi_amr_patch_distribution_1d( &
+      hierarchy, MPI_COMM_WORLD, comparison_distribution, ok, &
+      merge(1, 2, rank == nranks - 1))
+    call assert_all(.not. ok, &
+      "rank-inconsistent AMR work exponent is rejected collectively", rank)
     call build_test_hierarchy( &
       rank == nranks - 1, plans, comparison_hierarchy, ok)
     call assert_all(ok, "comparison AMR patch tree", rank)
@@ -267,8 +305,24 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok .and. initial_reactive%is_valid(), &
     "four-level reactive AMR initialization", rank)
   call initialize_mpi_amr_patch_distribution_1d( &
-    initial_reactive%hierarchy, MPI_COMM_WORLD, reactive_distribution, ok)
-  call assert_all(ok, "reactive AMR owner distribution", rank)
+    initial_reactive%hierarchy, MPI_COMM_WORLD, work_distribution, ok)
+  call assert_all(ok, "four-level cell-weighted AMR distribution", rank)
+  call effective_distribution_work_counts( &
+    initial_reactive%hierarchy, work_distribution, 2, &
+    cell_distribution_work, ok)
+  call assert_all(ok, "four-level cell-distribution work accounting", rank)
+  call initialize_mpi_amr_patch_distribution_1d( &
+    initial_reactive%hierarchy, MPI_COMM_WORLD, reactive_distribution, ok, 2)
+  call assert_all(ok .and. reactive_distribution%subcycle_exponent == 2, &
+    "reactive AMR owner distribution", rank)
+  call assert_all(maxval(reactive_distribution%rank_work_counts) <= &
+    maxval(cell_distribution_work), &
+    "four-level work weighting does not increase maximum rank work", rank)
+  if (nranks == 2 .or. nranks == 4) then
+    call assert_all(maxval(reactive_distribution%rank_work_counts) < &
+      maxval(cell_distribution_work), &
+      "four-level work weighting reduces rank imbalance", rank)
+  end if
 
   synchronized_reactive = initial_reactive
   root_owner = reactive_distribution%owner_of(0, 1)
@@ -330,6 +384,7 @@ program pelef_mpi_amr_patch_1d
   migrated_distribution = reactive_distribution
   migrated_distribution%rank_patch_counts = 0
   migrated_distribution%rank_cell_counts = 0
+  migrated_distribution%rank_work_counts = 0_int64
   owner_changes = 0
   do level = 0, initial_reactive%hierarchy%level_count() - 1
     do patch = 1, initial_reactive%hierarchy%level_patch_count(level)
@@ -341,6 +396,9 @@ program pelef_mpi_amr_patch_1d
       migrated_distribution%rank_cell_counts(new_owner + 1) = &
         migrated_distribution%rank_cell_counts(new_owner + 1) + &
           migrated_distribution%levels(level + 1)%cell_counts(patch)
+      migrated_distribution%rank_work_counts(new_owner + 1) = &
+        migrated_distribution%rank_work_counts(new_owner + 1) + &
+          migrated_distribution%levels(level + 1)%work_counts(patch)
       if (new_owner /= old_owner) owner_changes = owner_changes + 1
     end do
   end do
@@ -936,6 +994,7 @@ program pelef_mpi_amr_patch_1d
     all(local_regrid_communication == 0) .and. &
     sparse_regrid%regrid_evaluations == 1 .and. &
     sparse_regrid%regrids == 0 .and. &
+    regridded_distribution%subcycle_exponent == 2 .and. &
     sparse_regrid%is_valid(regridded_distribution), &
     "identical sparse regrid is a distributed no-op", rank)
   gathered_reactive = serial_regrid
@@ -962,7 +1021,9 @@ program pelef_mpi_amr_patch_1d
     regridded_distribution, sparse_regrid, migrated_distribution, changed, &
     transferred_cells, ok, local_regrid_communication(1), &
     local_regrid_communication(2))
-  call assert_all(ok, "direct sparse topology regrid completed", rank)
+  call assert_all(ok .and. &
+    migrated_distribution%subcycle_exponent == 2, &
+    "direct sparse topology regrid preserves work weighting", rank)
   call MPI_Allreduce( &
     local_regrid_communication, global_regrid_communication, 2, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)
@@ -1066,8 +1127,9 @@ program pelef_mpi_amr_patch_1d
   tagged_initial%levels(1)%patches(1)%state(imx, 8) = 10.0_dp
   tagged_initial%levels(1)%patches(1)%state(imx, 24) = -10.0_dp
   call initialize_mpi_amr_patch_distribution_1d( &
-    tagged_initial%hierarchy, MPI_COMM_WORLD, tagged_distribution, ok)
-  call assert_all(ok, "tagged sparse owner distribution", rank)
+    tagged_initial%hierarchy, MPI_COMM_WORLD, tagged_distribution, ok, 1)
+  call assert_all(ok .and. tagged_distribution%subcycle_exponent == 1, &
+    "tagged sparse owner distribution", rank)
   tagged_serial = tagged_initial
   call regrid_tagged_patch_tree_reactive_1d( &
     species, tagged_reactive_config, tagged_serial, changed, &
@@ -1089,7 +1151,9 @@ program pelef_mpi_amr_patch_1d
     transferred_cells, ok, local_tagged_communication(1), &
     local_tagged_communication(2), local_tagged_communication(3), &
     local_tagged_communication(4))
-  call assert_all(ok, "distributed sparse tag planning completed", rank)
+  call assert_all(ok .and. &
+    tagged_regridded_distribution%subcycle_exponent == 1, &
+    "distributed sparse tag planning preserves work weighting", rank)
   call MPI_Allreduce( &
     local_tagged_communication, global_tagged_communication, 4, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)
@@ -1225,8 +1289,9 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ok .and. adjacent_initial%is_valid(), &
     "adjacent reactive PPM initialization", rank)
   call initialize_mpi_amr_patch_distribution_1d( &
-    adjacent_initial%hierarchy, MPI_COMM_WORLD, adjacent_distribution, ok)
-  call assert_all(ok, "adjacent reactive owner distribution", rank)
+    adjacent_initial%hierarchy, MPI_COMM_WORLD, adjacent_distribution, ok, 2)
+  call assert_all(ok .and. adjacent_distribution%subcycle_exponent == 2, &
+    "adjacent reactive owner distribution", rank)
   cross_owner_hydro_faces = 0
   do child = 1, adjacent_initial%hierarchy%relations(1)% &
       child_sets(1)%patch_count() - 1
@@ -1465,6 +1530,57 @@ program pelef_mpi_amr_patch_1d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine effective_distribution_work_counts( &
+      local_hierarchy, local_distribution, exponent, counts, local_ok)
+    type(amr_patch_tree_hierarchy_1d), intent(in) :: local_hierarchy
+    type(mpi_amr_patch_distribution_1d), intent(in) :: local_distribution
+    integer, intent(in) :: exponent
+    integer(int64), allocatable, intent(out) :: counts(:)
+    logical, intent(out) :: local_ok
+
+    integer(int64) :: level_scale, patch_work
+    integer :: local_level, local_patch, owner, power, ratio
+
+    local_ok = local_hierarchy%is_valid() .and. &
+      local_distribution%is_valid() .and. exponent >= 0 .and. exponent <= 2
+    if (.not. local_ok) return
+    allocate(counts(local_distribution%nranks))
+    counts = 0_int64
+    level_scale = 1_int64
+    do local_level = 0, local_hierarchy%level_count() - 1
+      if (local_level > 0) then
+        ratio = local_hierarchy%relations(local_level)%refinement_ratio
+        do power = 1, exponent
+          if (level_scale > huge(level_scale) / int(ratio, int64)) then
+            local_ok = .false.
+            return
+          end if
+          level_scale = level_scale * int(ratio, int64)
+        end do
+      end if
+      do local_patch = 1, local_hierarchy%level_patch_count(local_level)
+        if (int(local_distribution%levels(local_level + 1)% &
+              cell_counts(local_patch), int64) > &
+            huge(patch_work) / level_scale) then
+          local_ok = .false.
+          return
+        end if
+        patch_work = int(local_distribution%levels(local_level + 1)% &
+          cell_counts(local_patch), int64) * level_scale
+        owner = local_distribution%owner_of(local_level, local_patch) + 1
+        if (owner < 1 .or. owner > size(counts)) then
+          local_ok = .false.
+          return
+        end if
+        if (counts(owner) > huge(patch_work) - patch_work) then
+          local_ok = .false.
+          return
+        end if
+        counts(owner) = counts(owner) + patch_work
+      end do
+    end do
+  end subroutine effective_distribution_work_counts
 
   subroutine build_test_hierarchy( &
       shift_last_upper, local_plans, local_hierarchy, local_ok)
@@ -1778,7 +1894,8 @@ contains
       allocate(prefix_hierarchy%relations(depth))
       prefix_hierarchy%relations = new_hierarchy%relations(1:depth)
       call initialize_mpi_amr_patch_distribution_1d( &
-        prefix_hierarchy, MPI_COMM_WORLD, prefix_distribution, local_ok)
+        prefix_hierarchy, MPI_COMM_WORLD, prefix_distribution, local_ok, &
+        new_distribution%subcycle_exponent)
       if (.not. local_ok) return
       counts(2) = counts(2) + &
         expected_sparse_prolongation_transfers_1d( &
