@@ -37,7 +37,8 @@ program pelef_mpi_amr_patch_1d
     migrate_owned_patch_tree_reactive_1d, &
     advance_sparse_patch_tree_chemistry_1d, &
     advance_sparse_patch_tree_hydro_1d, &
-    advance_sparse_patch_tree_transport_1d
+    advance_sparse_patch_tree_transport_1d, &
+    advance_sparse_patch_tree_reactive_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -58,6 +59,7 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_chemistry
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_hydro
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_transport
+  type(mpi_amr_sparse_reactive_solution_1d) :: sparse_split
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
@@ -673,6 +675,73 @@ program pelef_mpi_amr_patch_1d
     transport)
   call assert_all(ok .and. serial_split%is_valid(), &
     "serial four-level full-physics reference", rank)
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, initial_reactive, sparse_split, ok)
+  call assert_all(ok .and. sparse_split%is_valid(reactive_distribution), &
+    "four-level full-physics sparse owner scatter", rank)
+  call advance_sparse_patch_tree_reactive_1d( &
+    species, reactions, transport_config, split_dt, reactive_distribution, &
+    sparse_split, ok, transport, local_chemistry_advances, &
+    local_hydro_advances, local_transport_advances)
+  call assert_all(ok .and. sparse_split%is_valid(reactive_distribution), &
+    "sparse four-level full-physics transaction", rank)
+  call assert_all(local_chemistry_advances == 2 * &
+    reactive_distribution%rank_patch_counts(rank + 1), &
+    "sparse full split chemistry executes on owners only", rank)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_hydro_advances == expected_hydro_advances, &
+    "sparse full split hydro executes on owners only", rank)
+  expected_transport_advances = expected_owned_transport_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(local_transport_advances == &
+    2 * expected_transport_advances, &
+    "sparse full split transport executes on owners only", rank)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_chemistry_advances == 16, &
+    "sparse full split global chemistry call count", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. global_hydro_advances == 33, &
+    "sparse full split global hydro call count", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_transport_advances == 370, &
+    "sparse full split global transport call count", rank)
+  call assert_all(all(sparse_split%level_advances == [1, 4, 12, 16]) &
+    .and. all(sparse_split%transport_level_advances == &
+      [2, 16, 96, 256]) .and. sparse_split%steps == 1 .and. &
+    abs(sparse_split%time - split_dt) <= &
+      16.0_dp * epsilon(1.0_dp) * split_dt, &
+    "sparse full split time and subcycle accounting", rank)
+  gathered_reactive = initial_reactive
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_split, gathered_reactive, ok)
+  call assert_all(ok .and. gathered_reactive%is_valid(), &
+    "sparse full-physics owner gather", rank)
+  reactive_difference = reactive_solution_difference( &
+    gathered_reactive, serial_split)
+  call assert_all(reactive_difference <= 5.0e-13_dp, &
+    "sparse full-physics transaction matches serial", rank)
+  call assert_all( &
+    reactive_solution_difference(gathered_reactive, initial_reactive) > &
+      100.0_dp * epsilon(1.0_dp), &
+    "sparse full-physics transaction changes state", rank)
+  call patch_tree_reactive_integrals_1d( &
+    gathered_reactive, final_integral, ok)
+  call assert_all(ok, "sparse full-physics composite integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral(1:5) - initial_integral(1:5)) / &
+    max(1.0_dp, abs(initial_integral(1:5))))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "sparse full-physics conservation", rank)
   call advance_owned_patch_tree_reactive_1d( &
     species, reactions, transport_config, split_dt, reactive_distribution, &
     distributed_split, ok, transport, local_chemistry_advances, &
@@ -759,6 +828,53 @@ program pelef_mpi_amr_patch_1d
   call assert_all( &
     reactive_solution_difference(rejected_reactive, rejected_backup) == &
       0.0_dp, "outer full-physics rollback is exact", rank)
+
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, initial_reactive, rejected_sparse, ok)
+  call assert_all(ok, "missing-transport sparse split scatter", rank)
+  sparse_backup = rejected_sparse
+  call advance_sparse_patch_tree_reactive_1d( &
+    species, reactions, transport_config, split_dt, reactive_distribution, &
+    rejected_sparse, ok, local_chemistry_advances = &
+      local_chemistry_advances, &
+    local_hydro_advances = local_hydro_advances, &
+    local_transport_advances = local_transport_advances)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0 .and. &
+    local_hydro_advances == 0 .and. local_transport_advances == 0, &
+    "missing sparse split transport database is rejected", rank)
+  rejected_reactive = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "missing-transport sparse split gather", rank)
+  rejected_backup = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "missing-transport sparse split rollback is exact", rank)
+
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, initial_reactive, rejected_sparse, ok)
+  call assert_all(ok, "post-prefix sparse split scatter", rank)
+  sparse_backup = rejected_sparse
+  call advance_sparse_patch_tree_reactive_1d( &
+    species, reactions, invalid_split_config, split_dt, &
+    reactive_distribution, rejected_sparse, ok, transport, &
+    local_chemistry_advances, local_hydro_advances, &
+    local_transport_advances)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0 .and. &
+    local_hydro_advances == 0 .and. local_transport_advances == 0, &
+    "post-prefix sparse split hydro failure is rejected globally", rank)
+  rejected_reactive = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "post-prefix sparse split gather", rank)
+  rejected_backup = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "outer sparse full-physics rollback is exact", rank)
 
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"

@@ -60,6 +60,7 @@ module mpi_amr_sparse_patch_1d_mod
   public :: advance_sparse_patch_tree_chemistry_1d
   public :: advance_sparse_patch_tree_hydro_1d
   public :: advance_sparse_patch_tree_transport_1d
+  public :: advance_sparse_patch_tree_reactive_1d
 
 contains
 
@@ -460,6 +461,114 @@ contains
     end if
     if (present(local_patch_advances)) local_patch_advances = advances
   end subroutine advance_sparse_patch_tree_transport_1d
+
+  subroutine advance_sparse_patch_tree_reactive_1d( &
+      species, reactions, config, dt, distribution, solution, ok, transport, &
+      local_chemistry_advances, local_hydro_advances, &
+      local_transport_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_1d_config), intent(in) :: config
+    real(dp), intent(in) :: dt
+    type(mpi_amr_patch_distribution_1d), intent(in) :: distribution
+    type(mpi_amr_sparse_reactive_solution_1d), intent(inout) :: solution
+    logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    integer, intent(out), optional :: local_chemistry_advances
+    integer, intent(out), optional :: local_hydro_advances
+    integer, intent(out), optional :: local_transport_advances
+
+    type(mpi_amr_sparse_reactive_solution_1d) :: backup
+    logical :: local_ok, accepted, mpi_ok
+    integer :: chemistry_advances, hydro_advances, transport_advances
+    integer :: stage_advances
+
+    ok = .false.
+    chemistry_advances = 0
+    hydro_advances = 0
+    transport_advances = 0
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_advances)) local_transport_advances = 0
+    local_ok = dt > 0.0_dp .and. size(species) >= 1 .and. &
+      solution%is_valid(distribution)
+    if (config%transport_enabled) then
+      local_ok = local_ok .and. present(transport)
+      if (present(transport)) &
+        local_ok = local_ok .and. size(transport) == size(species)
+    end if
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) return
+    backup = solution
+
+    if (config%chemistry_enabled) then
+      call advance_sparse_patch_tree_chemistry_1d( &
+        species, reactions, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      chemistry_advances = chemistry_advances + stage_advances
+    end if
+    if (config%transport_enabled) then
+      call advance_sparse_patch_tree_transport_1d( &
+        species, transport, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      transport_advances = transport_advances + stage_advances
+    end if
+    call advance_sparse_patch_tree_hydro_1d( &
+      species, config, dt, distribution, solution, local_ok, stage_advances)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    hydro_advances = hydro_advances + stage_advances
+    if (config%transport_enabled) then
+      call advance_sparse_patch_tree_transport_1d( &
+        species, transport, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      transport_advances = transport_advances + stage_advances
+    end if
+    if (config%chemistry_enabled) then
+      call advance_sparse_patch_tree_chemistry_1d( &
+        species, reactions, config, 0.5_dp * dt, distribution, solution, &
+        local_ok, stage_advances)
+      call all_ranks_accept_sparse_1d( &
+        distribution, local_ok, accepted, mpi_ok)
+      if (.not. mpi_ok .or. .not. accepted) go to 900
+      chemistry_advances = chemistry_advances + stage_advances
+    end if
+    call refresh_sparse_reactive_ghosts_1d( &
+      species, config, distribution, solution, local_ok)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    local_ok = solution%is_valid(distribution)
+    call all_ranks_accept_sparse_1d( &
+      distribution, local_ok, accepted, mpi_ok)
+    if (.not. mpi_ok .or. .not. accepted) go to 900
+    if (present(local_chemistry_advances)) &
+      local_chemistry_advances = chemistry_advances
+    if (present(local_hydro_advances)) &
+      local_hydro_advances = hydro_advances
+    if (present(local_transport_advances)) &
+      local_transport_advances = transport_advances
+    ok = .true.
+    return
+
+900 continue
+    solution = backup
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_advances)) local_transport_advances = 0
+    ok = .false.
+  end subroutine advance_sparse_patch_tree_reactive_1d
 
   recursive subroutine advance_sparse_patch_transport_recursive_1d( &
       species, transport, config, distribution, solution, registers, level, &
