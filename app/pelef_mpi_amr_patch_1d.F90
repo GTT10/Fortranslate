@@ -35,7 +35,8 @@ program pelef_mpi_amr_patch_1d
     scatter_owned_patch_tree_reactive_1d, &
     gather_owned_patch_tree_reactive_1d, &
     migrate_owned_patch_tree_reactive_1d, &
-    advance_sparse_patch_tree_chemistry_1d
+    advance_sparse_patch_tree_chemistry_1d, &
+    advance_sparse_patch_tree_hydro_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -54,6 +55,7 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_reactive
   type(mpi_amr_sparse_reactive_solution_1d) :: migrated_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_chemistry
+  type(mpi_amr_sparse_reactive_solution_1d) :: sparse_hydro
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
@@ -456,6 +458,31 @@ program pelef_mpi_amr_patch_1d
     species, reactive_config, hydro_dt, serial_hydro, ok)
   call assert_all(ok .and. serial_hydro%is_valid(), &
     "serial four-level hydro reference", rank)
+  gathered_reactive = initial_reactive
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, gathered_reactive, sparse_hydro, ok)
+  call assert_all(ok, "four-level sparse hydro owner scatter", rank)
+  call advance_sparse_patch_tree_hydro_1d( &
+    species, reactive_config, hydro_dt, reactive_distribution, &
+    sparse_hydro, ok, local_hydro_advances)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(ok .and. &
+    local_hydro_advances == expected_hydro_advances .and. &
+    all(sparse_hydro%level_advances == [1, 4, 12, 16]), &
+    "direct sparse four-level hydro accounting", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. global_hydro_advances == 33, &
+    "direct sparse four-level hydro global count", rank)
+  gathered_reactive = initial_reactive
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_hydro, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, serial_hydro) <= 5.0e-13_dp, &
+    "sparse four-level hydro matches serial", rank)
   call advance_owned_patch_tree_hydro_1d( &
     species, reactive_config, hydro_dt, reactive_distribution, &
     distributed_hydro, ok, local_hydro_advances)
@@ -485,6 +512,27 @@ program pelef_mpi_amr_patch_1d
     max(1.0_dp, abs(initial_integral)))
   call assert_all(conservation_error <= 3.0e-10_dp, &
     "owner-only four-level hydro conservation", rank)
+
+  rejected_sparse = sparse_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_sparse%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  sparse_backup = rejected_sparse
+  call advance_sparse_patch_tree_hydro_1d( &
+    species, reactive_config, hydro_dt, reactive_distribution, &
+    rejected_sparse, ok, local_hydro_advances)
+  call assert_all(.not. ok .and. local_hydro_advances == 0, &
+    "sparse hydro failure is rejected globally", rank)
+  rejected_reactive = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "rejected sparse hydro gather", rank)
+  rejected_backup = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "sparse hydro rollback is exact", rank)
 
   rejected_reactive = initial_reactive
   corrupt_owner = reactive_distribution%owner_of(3, 1)
@@ -726,6 +774,26 @@ program pelef_mpi_amr_patch_1d
   call advance_patch_tree_reactive_hydro_1d( &
     species, adjacent_reactive_config, adjacent_dt, serial_hydro, ok)
   call assert_all(ok, "serial adjacent PPM hydro reference", rank)
+  gathered_reactive = adjacent_initial
+  call scatter_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, gathered_reactive, sparse_hydro, ok)
+  call assert_all(ok, "adjacent PPM sparse hydro owner scatter", rank)
+  call advance_sparse_patch_tree_hydro_1d( &
+    species, adjacent_reactive_config, adjacent_dt, adjacent_distribution, &
+    sparse_hydro, ok, local_hydro_advances)
+  expected_hydro_advances = expected_owned_hydro_advances( &
+    adjacent_distribution, adjacent_initial%hierarchy, rank)
+  call assert_all(ok .and. &
+    local_hydro_advances == expected_hydro_advances .and. &
+    all(sparse_hydro%level_advances == [1, 12]), &
+    "direct sparse adjacent PPM hydro accounting", rank)
+  gathered_reactive = adjacent_initial
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, sparse_hydro, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, serial_hydro) <= 5.0e-13_dp, &
+    "cross-owner adjacent sparse PPM hydro matches serial", rank)
   call advance_owned_patch_tree_hydro_1d( &
     species, adjacent_reactive_config, adjacent_dt, adjacent_distribution, &
     distributed_hydro, ok, local_hydro_advances)
