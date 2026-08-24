@@ -1163,3 +1163,14 @@ analytical boundary length, centroid locus, and positive-fluid unit normal to
 coarse-grid value; every circle normal points inward within `0.02`; and the
 refined maximum orientation error is smaller than the coarse error in GNU
 Fortran Debug and Release suites.
+
+## 0.76.0 reactive embedded-boundary slip-wall gates
+
+The reactive cut-wall contribution is accepted only while an oblique unit
+normal produces `-p*n` momentum flux after general-EOS pressure recovery and
+exactly zero mass, z-momentum, energy, and species flux. A 90-degree rotation
+must rotate the momentum flux identically, changing velocity at fixed pressure
+must not alter it, and vertical and diagonal geometries must integrate to their
+analytical pressure forces. Non-unit normals and nonphysical cut-cell states
+must be rejected with an all-zero source in GNU Fortran Debug and Release
+suites.

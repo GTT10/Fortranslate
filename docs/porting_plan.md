@@ -587,9 +587,10 @@ Required capabilities:
 - [x] cell-volume fraction (`0.74.0`)
 - [x] face-area fraction (`0.74.0`)
 - [x] cut-interface length, centroid, and fluid normal (`0.75.0`)
-- cut-cell fluxes
+- [x] stationary reactive slip-wall flux and cut-cell source (`0.76.0`)
+- Cartesian face-fraction flux divergence
 - small-cell stabilization
-- wall boundary conditions
+- thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:
 

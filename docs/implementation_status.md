@@ -1247,3 +1247,19 @@ distribution remain separate milestones.
 
 These metrics enable the next cut-wall flux milestone. Flux divergence,
 small-cell stabilization, wall thermodynamics, AMR, and MPI remain unclaimed.
+
+## Reactive embedded-boundary slip-wall flux (`0.76.0`)
+
+- [x] general-EOS pressure recovery from the reactive conserved state
+- [x] arbitrary-orientation stationary slip-wall momentum flux
+- [x] explicit solid-to-fluid versus fluid-outward normal sign contract
+- [x] cut-interface-length integration and fluid-volume normalization
+- [x] exact zero mass, tangential-z momentum, energy, and species wall fluxes
+- [x] rotational covariance and velocity-independence gates
+- [x] vertical and diagonal integrated pressure-force balance
+- [x] rejected-input zero-output transaction contract
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This is the embedded-wall contribution to a cut-cell finite-volume operator.
+Cartesian open-face divergence, a complete state update, small-cell
+stabilization, viscous/thermal/catalytic walls, AMR, and MPI remain separate.
