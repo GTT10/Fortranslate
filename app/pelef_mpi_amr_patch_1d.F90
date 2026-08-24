@@ -36,7 +36,8 @@ program pelef_mpi_amr_patch_1d
     gather_owned_patch_tree_reactive_1d, &
     migrate_owned_patch_tree_reactive_1d, &
     advance_sparse_patch_tree_chemistry_1d, &
-    advance_sparse_patch_tree_hydro_1d
+    advance_sparse_patch_tree_hydro_1d, &
+    advance_sparse_patch_tree_transport_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -56,6 +57,7 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_sparse_reactive_solution_1d) :: migrated_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_chemistry
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_hydro
+  type(mpi_amr_sparse_reactive_solution_1d) :: sparse_transport
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
@@ -563,6 +565,32 @@ program pelef_mpi_amr_patch_1d
     species, transport, transport_config, transport_dt, serial_transport, ok)
   call assert_all(ok .and. serial_transport%is_valid(), &
     "serial four-level transport reference", rank)
+  gathered_reactive = initial_reactive
+  call scatter_owned_patch_tree_reactive_1d( &
+    reactive_distribution, gathered_reactive, sparse_transport, ok)
+  call assert_all(ok, "four-level sparse transport owner scatter", rank)
+  call advance_sparse_patch_tree_transport_1d( &
+    species, transport, transport_config, transport_dt, &
+    reactive_distribution, sparse_transport, ok, local_transport_advances)
+  expected_transport_advances = expected_owned_transport_advances( &
+    reactive_distribution, initial_reactive%hierarchy, rank)
+  call assert_all(ok .and. &
+    local_transport_advances == expected_transport_advances .and. &
+    all(sparse_transport%transport_level_advances == [1, 8, 48, 128]), &
+    "direct sparse four-level transport accounting", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_transport_advances == 185, &
+    "direct sparse four-level transport global count", rank)
+  gathered_reactive = initial_reactive
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_transport, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, serial_transport) <= 5.0e-13_dp, &
+    "sparse four-level transport matches serial", rank)
   call advance_owned_patch_tree_transport_1d( &
     species, transport, transport_config, transport_dt, &
     reactive_distribution, distributed_transport, ok, &
@@ -598,6 +626,27 @@ program pelef_mpi_amr_patch_1d
     max(1.0_dp, abs(initial_integral(1:5))))
   call assert_all(conservation_error <= 2.0e-9_dp, &
     "owner-only four-level transport conservation", rank)
+
+  rejected_sparse = sparse_reactive
+  corrupt_owner = reactive_distribution%owner_of(3, 1)
+  if (rank == corrupt_owner) &
+    rejected_sparse%levels(4)%patches(1)%state(irho, 1) = -1.0_dp
+  sparse_backup = rejected_sparse
+  call advance_sparse_patch_tree_transport_1d( &
+    species, transport, transport_config, transport_dt, &
+    reactive_distribution, rejected_sparse, ok, local_transport_advances)
+  call assert_all(.not. ok .and. local_transport_advances == 0, &
+    "sparse transport failure is rejected globally", rank)
+  rejected_reactive = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "rejected sparse transport gather", rank)
+  rejected_backup = initial_reactive
+  call gather_owned_patch_tree_reactive_1d( &
+    reactive_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "sparse transport rollback is exact", rank)
 
   rejected_reactive = initial_reactive
   corrupt_owner = reactive_distribution%owner_of(3, 1)
@@ -838,6 +887,26 @@ program pelef_mpi_amr_patch_1d
     species, transport, adjacent_transport_config, adjacent_transport_dt, &
     adjacent_serial, ok)
   call assert_all(ok, "serial adjacent transport reference", rank)
+  gathered_reactive = adjacent_initial
+  call scatter_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, gathered_reactive, sparse_transport, ok)
+  call assert_all(ok, "adjacent sparse transport owner scatter", rank)
+  call advance_sparse_patch_tree_transport_1d( &
+    species, transport, adjacent_transport_config, adjacent_transport_dt, &
+    adjacent_distribution, sparse_transport, ok, local_transport_advances)
+  expected_transport_advances = expected_owned_transport_advances( &
+    adjacent_distribution, adjacent_initial%hierarchy, rank)
+  call assert_all(ok .and. &
+    local_transport_advances == expected_transport_advances .and. &
+    all(sparse_transport%transport_level_advances == [1, 24]), &
+    "direct sparse adjacent transport accounting", rank)
+  gathered_reactive = adjacent_initial
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    adjacent_distribution, sparse_transport, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, adjacent_serial) <= 5.0e-13_dp, &
+    "cross-owner adjacent sparse transport matches serial", rank)
   call advance_owned_patch_tree_transport_1d( &
     species, transport, adjacent_transport_config, adjacent_transport_dt, &
     adjacent_distribution, adjacent_distributed, ok, &
