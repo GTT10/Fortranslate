@@ -1211,3 +1211,16 @@ absolute/relative tolerance, and a uniform active state must remain unchanged.
 A volume-fraction `0.05` provisional state with negative density must become
 EOS-valid, while a stronger nonphysical update, invalid target, or nonfinite
 input must fail transactionally in GNU Fortran Debug and Release suites.
+
+## 0.80.0 complete reactive EB hydro gates
+
+The first-order composed update is accepted only if every positive-aperture
+face uses the requested reactive Riemann solver, every closed face remains
+exactly zero, and nonperiodic domain faces use identical interior states on
+both sides. One nonuniform regular-grid face must match the direct HLLC result.
+For uniform stationary general-EOS pressure, the complete Riemann-flux,
+open-area divergence, integrated-wall-force, weighted-StateRedist, and EOS
+pipeline must preserve regular, vertical-plane, diagonal-plane, and circular
+geometries within `dt*2e-10*p*max(dx,dy)` per-cell extensive tolerance. Unknown
+solvers and nonfinite states must fail with zero fluxes or unchanged state and
+temperature in GNU Fortran Debug and Release suites.

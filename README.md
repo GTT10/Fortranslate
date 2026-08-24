@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.79.0` milestone contains the serial verification suite, seven optional
+The `0.80.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -157,9 +157,12 @@ state passes EOS recovery. The PeleC-default, zeroth-order weighted StateRedist
 path now forms normal-directed neighborhoods with target volume fraction
 `0.5`, accounts for cells shared by overlapping neighborhoods, conserves every
 volume-weighted state component, and applies the same transactional EOS gate.
-Higher-order StateRedist slopes, periodic/ghost-cell neighborhoods, flux
-construction beside covered cells, thermal/catalytic wall physics, AMR
-coupling, and MPI distribution are not yet connected.
+A first-order end-to-end EB hydro path now constructs reactive Riemann fluxes
+only on open Cartesian faces, uses zero-gradient domain faces, combines them
+with the integrated slip-wall pressure force, and completes the step through
+weighted StateRedist and EOS recovery. Higher-order EB reconstruction and face
+centroid interpolation, periodic/ghost-cell neighborhoods, thermal/catalytic
+wall physics, AMR coupling, and MPI distribution are not yet connected.
 
 ### MPI one-dimensional verification
 

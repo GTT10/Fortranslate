@@ -1409,3 +1409,13 @@ conserved components together, and commits state and recovered temperature
 only if every active cell passes the general-EOS conversion. Higher-order
 StateRedist slopes, periodic/ghost-cell neighborhoods, and multilevel
 redistribution are not yet claimed.
+
+The complete first-order EB hydro update supplies piecewise-constant left and
+right conserved states to the selected reactive Riemann solver on every face
+with positive aperture. A closed face is exactly zero. At a nonperiodic domain
+face, the adjacent fluid state is used on both sides, giving a zero-gradient
+boundary flux. The open-area-weighted Cartesian divergence and integrated
+slip-wall pressure force form `R`; the update then applies the weighted
+StateRedist transaction to `U_old + dt*R`. This path deliberately precedes
+PeleC-style high-order cut-cell reconstruction, transverse prediction, and
+face-centroid flux interpolation.

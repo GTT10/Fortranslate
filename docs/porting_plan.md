@@ -592,6 +592,8 @@ Required capabilities:
 - [x] first-order conservative FluxRedist and state update (`0.78.0`)
 - [x] zeroth-order weighted StateRedist with overlapping neighborhoods
   (`0.79.0`)
+- [x] piecewise-constant reactive face fluxes and complete EB hydro update
+  (`0.80.0`)
 - higher-order StateRedist neighborhood reconstruction and limiting
 - thermal, viscous, and catalytic wall boundary conditions
 

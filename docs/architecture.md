@@ -884,6 +884,10 @@ reactive state. A second path applies zeroth-order weighted StateRedist to the
 provisional conserved state. It derives up to three merge neighbors from the
 face-aperture normal, represents overlapping neighborhoods explicitly, and
 uses partitioned self/neighbor weights before the EOS-validated commit. Flux
-construction beside covered cells, higher-order StateRedist, periodic ghost
+construction is connected by `eb_reactive_hydro_2d_mod`: piecewise-constant
+reactive Riemann states produce fluxes on open Cartesian faces, zero-gradient
+domain faces reuse their adjacent fluid cell, and the divergence feeds the
+weighted StateRedist transaction. Higher-order EB reconstruction and
+face-centroid interpolation, higher-order StateRedist, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, and AMR/MPI ownership remain
 outside this subsystem.

@@ -1316,3 +1316,23 @@ This matches the current PeleC default combination of `StateRedist` and
 reconstruction and limiting, periodic/physical ghost-cell neighborhoods,
 multilevel redistribution, EB flux generation, AMR coupling, and MPI
 distribution remain separate milestones.
+
+## Complete first-order reactive EB hydro update (`0.80.0`)
+
+- [x] reactive Riemann fluxes only on positive-aperture Cartesian faces
+- [x] exactly zero closed-face fluxes
+- [x] zero-gradient lower and upper domain-face states
+- [x] rejection of a positive-aperture face touching a covered cell
+- [x] open-area and integrated slip-wall conservative divergence
+- [x] PeleC-default weighted StateRedist on the provisional state
+- [x] general-EOS recovery and whole-step rollback
+- [x] direct interior-face HLLC parity gate
+- [x] regular, vertical, diagonal, and circular stationary-pressure gates
+- [x] unknown-solver and nonfinite-state transaction gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This connects the previously independent EB kernels into one first-order
+reactive Euler update with nonperiodic zero-gradient outer boundaries. It does
+not yet claim high-order cut-cell reconstruction and transverse prediction,
+face-centroid flux interpolation, periodic boundaries, moving walls, transport
+or chemistry splitting, AMR coupling, or MPI distribution.
