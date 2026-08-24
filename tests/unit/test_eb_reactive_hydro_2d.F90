@@ -158,10 +158,13 @@ contains
       x_flux, y_flux, ok)
     call require(ok, trim(label)//" Riemann fluxes")
     flux_tolerance = 2.0e-10_dp * pressure
+    face_flux = 0.0_dp
+    face_flux(imx) = pressure
     do local_j = 1, ny
       do local_i = 0, nx
         if (geometry%x_face_fraction(local_i, local_j) > 0.0_dp) then
-          call require(abs(x_flux(imx, local_i, local_j) - pressure) <= &
+          call require(maxval(abs(x_flux(:, local_i, local_j) - &
+            face_flux)) <= &
             flux_tolerance, trim(label)//" open x-face pressure flux")
         else
           call require(maxval(abs(x_flux(:, local_i, local_j))) == 0.0_dp, &
@@ -169,10 +172,13 @@ contains
         end if
       end do
     end do
+    face_flux = 0.0_dp
+    face_flux(imy) = pressure
     do local_j = 0, ny
       do local_i = 1, nx
         if (geometry%y_face_fraction(local_i, local_j) > 0.0_dp) then
-          call require(abs(y_flux(imy, local_i, local_j) - pressure) <= &
+          call require(maxval(abs(y_flux(:, local_i, local_j) - &
+            face_flux)) <= &
             flux_tolerance, trim(label)//" open y-face pressure flux")
         else
           call require(maxval(abs(y_flux(:, local_i, local_j))) == 0.0_dp, &
@@ -193,6 +199,9 @@ contains
           call require(maxval(abs(new_state(:, local_i, local_j) - &
             state(:, local_i, local_j))) == 0.0_dp, &
             trim(label)//" covered state")
+          call require(new_temperature(local_i, local_j) == &
+            temperature_field(local_i, local_j), &
+            trim(label)//" covered temperature")
           cycle
         end if
         extensive_change = maxval(abs(new_state(:, local_i, local_j) - &
