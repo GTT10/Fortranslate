@@ -7,6 +7,8 @@ module eb_geometry_2d_mod
   integer, parameter, public :: eb_covered_cell = 0
   integer, parameter, public :: eb_cut_cell = 1
   integer, parameter, public :: eb_regular_cell = 2
+  real(dp), parameter :: eb_classification_tolerance = &
+    128.0_dp * epsilon(1.0_dp)
 
   type, public :: eb_geometry_2d
     integer :: nx = 0
@@ -36,8 +38,6 @@ contains
     type(eb_geometry_2d), intent(out) :: geometry
     logical, intent(out) :: ok
 
-    real(dp), parameter :: classification_tolerance = &
-      128.0_dp * epsilon(1.0_dp)
     real(dp) :: fraction
     integer :: i, j
 
@@ -82,9 +82,9 @@ contains
           node_level_set(i, j), &
           node_level_set(i - 1, j))
         geometry%volume_fraction(i, j) = fraction
-        if (fraction <= classification_tolerance) then
+        if (fraction <= eb_classification_tolerance) then
           geometry%cell_type(i, j) = eb_covered_cell
-        else if (fraction >= 1.0_dp - classification_tolerance) then
+        else if (fraction >= 1.0_dp - eb_classification_tolerance) then
           geometry%cell_type(i, j) = eb_regular_cell
         else
           geometry%cell_type(i, j) = eb_cut_cell
@@ -126,9 +126,10 @@ contains
       all(self%cell_type >= eb_covered_cell) .and. &
       all(self%cell_type <= eb_regular_cell)
     if (.not. valid) return
-    valid = all((self%volume_fraction >= 1.0_dp - tolerance) .eqv. &
+    valid = all((self%volume_fraction >= &
+      1.0_dp - eb_classification_tolerance) .eqv. &
       (self%cell_type == eb_regular_cell)) .and. &
-      all((self%volume_fraction <= tolerance) .eqv. &
+      all((self%volume_fraction <= eb_classification_tolerance) .eqv. &
         (self%cell_type == eb_covered_cell))
   end function eb_geometry_is_valid
 
