@@ -876,5 +876,10 @@ Each quadrilateral follows one fixed lower-left to upper-right diagonal. The
 level set is affine on both resulting triangles, and each positive polygon is
 clipped and integrated in normalized cell coordinates. Shared faces use the
 same endpoint interpolation once, so neighboring cells reference one open
-fraction. The representation is ready for later cut-cell operators but does
-not yet modify fluxes, conserved updates, wall states, or AMR ownership.
+fraction. Interface length, centroid, representative unit normal, and
+integrated normal support a pressure-only reactive slip wall. The EB operator
+combines open-face and wall fluxes, then the first-order redistribution module
+stabilizes its right-hand side and transactionally recovers the updated
+reactive state. Flux construction beside covered cells, weighted StateRedist,
+thermal/viscous/catalytic walls, and AMR/MPI ownership remain outside this
+subsystem.

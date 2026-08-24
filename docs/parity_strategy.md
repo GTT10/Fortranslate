@@ -1185,3 +1185,16 @@ within `2e-10*p*max(dx,dy)` in regular, vertical-plane, diagonal-plane, and
 circular geometries. Covered cells must remain exactly zero, while nonfinite
 face fluxes and incorrect face-array extents must fail transactionally in GNU
 Fortran Debug and Release suites.
+
+## 0.78.0 conservative EB FluxRedist gates
+
+The first-order small-cell update is accepted only while a cut cell and its
+positive-aperture face neighbors form a volume-weighted neighborhood update,
+the cut-cell blend removes the inverse-volume stiffness, and the removed
+extensive update is distributed with weights whose volume-weighted sum is one.
+Every conserved component must retain its domain integral to `4e-13` relative,
+a uniform active-cell right-hand side must remain unchanged, covered cells must
+remain exactly inert, and redistribution must have one-face support. A
+volume-fraction `0.05` reactive cell must remain EOS-valid for a step whose raw
+update has negative density; a genuinely nonphysical result must roll back the
+entire state and temperature arrays in GNU Fortran Debug and Release suites.

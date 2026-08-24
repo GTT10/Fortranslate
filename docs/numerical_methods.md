@@ -1369,5 +1369,19 @@ gives second-order integrated-area convergence for the circular level-set
 gate. Each triangle's zero contour supplies a physical segment, centroid, and
 normalized `grad(phi)`. A cut cell combines its two segments by physical-length
 weighting; coincident diagonal segments are counted once. The resulting unit
-normal points from solid toward fluid. Boundary flux, redistribution, and
-small-cell time-step treatment are not yet claimed.
+normal points from solid toward fluid. A separate integrated normal preserves
+the segment-vector sum used by the pressure force. Cartesian fluxes are
+multiplied by their shared open fractions, combined with that wall force, and
+divided by the fluid volume.
+
+The first-order small-cell path follows FluxRedist. For cut-cell volume fraction
+`kappa`, it forms `Rnc` by volume-weighting the conservative right-hand side
+over the cell and its positive-aperture face neighbors. The local stable update
+is `kappa*Rc + (1-kappa)*Rnc`. The removed extensive update
+`kappa*(1-kappa)*(Rc-Rnc)` is divided by the sum of neighbor volume fractions
+and added to each neighbor. Thus the volume-weighted domain update is unchanged
+while the cut-cell contribution no longer contains an unscaled `1/kappa`
+factor. The reactive forward update is committed only after every active cell
+passes conserved-to-primitive EOS recovery. Weighted StateRedist, periodic or
+physical-boundary neighborhoods, and higher-order redistribution are not yet
+claimed.

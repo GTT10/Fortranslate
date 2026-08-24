@@ -1279,3 +1279,20 @@ stabilization, viscous/thermal/catalytic walls, AMR, and MPI remain separate.
 This supplies a conservative semidiscrete cut-cell operator. Flux generation
 near covered neighbors, a complete state update, small-cell stabilization,
 viscous/thermal/catalytic walls, AMR, and MPI remain separate milestones.
+
+## Conservative EB flux redistribution and state update (`0.78.0`)
+
+- [x] face-connected active-cell redistribution neighborhoods
+- [x] volume-fraction-weighted nonconservative neighborhood update
+- [x] stable cut-cell blend with extensive excess-update redistribution
+- [x] exact volume-weighted conservation for every conserved component
+- [x] exact preservation of uniform active-cell right-hand sides
+- [x] exactly inert covered cells and compact one-face support
+- [x] EOS-validated reactive forward update with full rollback
+- [x] positive update at volume fraction `0.05` where the raw update is negative
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This qualifies the documented first-order AMReX FluxRedist construction on a
+single Cartesian level. PeleC's default weighted StateRedist, boundary/periodic
+redistribution neighborhoods, higher-order reconstruction, EB flux generation,
+AMR coupling, and MPI distribution remain separate milestones.

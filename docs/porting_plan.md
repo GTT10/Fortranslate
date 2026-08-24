@@ -589,7 +589,8 @@ Required capabilities:
 - [x] cut-interface length, centroid, and fluid normal (`0.75.0`)
 - [x] stationary reactive slip-wall flux and cut-cell source (`0.76.0`)
 - [x] Cartesian face-fraction flux divergence (`0.77.0`)
-- small-cell stabilization
+- [x] first-order conservative FluxRedist and state update (`0.78.0`)
+- weighted StateRedist with higher-order neighborhood reconstruction
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

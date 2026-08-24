@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.77.0` milestone contains the serial verification suite, seven optional
+The `0.78.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -149,8 +149,12 @@ uses the integrated interface-normal vector rather than multiplying total
 length by an averaged unit normal. The conservative divergence combines this
 wall contribution with shared Cartesian fluxes weighted by open-face fraction,
 and preserves a uniform stationary pressure field for planar and circular
-embedded boundaries. Time integration, redistribution/small-cell
-stabilization, thermal/catalytic wall physics, AMR coupling, and MPI
+embedded boundaries. Small-cell time integration now has a conservative
+first-order FluxRedist path: it blends a cut-cell update with its
+volume-weighted face-connected neighborhood, redistributes the removed
+extensive update, and commits a forward update only after every active reactive
+state passes EOS recovery. Weighted StateRedist, flux construction beside
+covered cells, thermal/catalytic wall physics, AMR coupling, and MPI
 distribution are not yet connected.
 
 ### MPI one-dimensional verification
