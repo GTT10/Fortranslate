@@ -1,7 +1,7 @@
 program pelef_mpi_amr_patch_1d
   use mpi_f08
   use precision_mod, only: dp
-  use state_indices_mod, only: irho
+  use state_indices_mod, only: irho, imx
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -19,7 +19,9 @@ program pelef_mpi_amr_patch_1d
     initialize_patch_tree_reactive_1d, advance_patch_tree_chemistry, &
     patch_tree_reactive_timestep_1d, advance_patch_tree_reactive_hydro_1d, &
     advance_patch_tree_transport, advance_patch_tree_reactive_1d, &
-    regrid_patch_tree_reactive_1d, patch_tree_reactive_integrals_1d
+    regrid_patch_tree_reactive_1d, &
+    regrid_tagged_patch_tree_reactive_1d, &
+    patch_tree_reactive_integrals_1d
   use mpi_amr_patch_1d_mod, only: &
     mpi_amr_patch_distribution_1d, mpi_amr_level_halos_1d, &
     initialize_mpi_amr_patch_distribution_1d, &
@@ -39,7 +41,8 @@ program pelef_mpi_amr_patch_1d
     advance_sparse_patch_tree_hydro_1d, &
     advance_sparse_patch_tree_transport_1d, &
     advance_sparse_patch_tree_reactive_1d, &
-    regrid_sparse_patch_tree_reactive_1d
+    regrid_sparse_patch_tree_reactive_1d, &
+    regrid_tagged_sparse_patch_tree_reactive_1d
   implicit none
 
   integer, parameter :: variable_count = 3
@@ -56,6 +59,8 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_patch_distribution_1d) :: migrated_distribution
   type(mpi_amr_patch_distribution_1d) :: adjacent_distribution
   type(mpi_amr_patch_distribution_1d) :: regridded_distribution
+  type(mpi_amr_patch_distribution_1d) :: tagged_distribution
+  type(mpi_amr_patch_distribution_1d) :: tagged_regridded_distribution
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_reactive
   type(mpi_amr_sparse_reactive_solution_1d) :: migrated_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_chemistry
@@ -63,6 +68,7 @@ program pelef_mpi_amr_patch_1d
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_transport
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_split
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_regrid
+  type(mpi_amr_sparse_reactive_solution_1d) :: tagged_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: rejected_sparse
   type(mpi_amr_sparse_reactive_solution_1d) :: sparse_backup
   type(amr_patch_tree_reactive_solution_1d) :: initial_reactive
@@ -79,6 +85,8 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_tree_reactive_solution_1d) :: serial_split
   type(amr_patch_tree_reactive_solution_1d) :: distributed_split
   type(amr_patch_tree_reactive_solution_1d) :: serial_regrid
+  type(amr_patch_tree_reactive_solution_1d) :: tagged_initial
+  type(amr_patch_tree_reactive_solution_1d) :: tagged_serial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_initial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_serial
   type(amr_patch_tree_reactive_solution_1d) :: adjacent_distributed
@@ -86,6 +94,7 @@ program pelef_mpi_amr_patch_1d
   type(amr_patch_level_plan_1d), allocatable :: adjacent_reactive_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: regrid_reactive_plans(:)
   type(amr_patch_level_plan_1d), allocatable :: invalid_regrid_plans(:)
+  type(amr_patch_level_plan_1d), allocatable :: empty_reactive_plans(:)
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -94,6 +103,8 @@ program pelef_mpi_amr_patch_1d
   type(reactive_1d_config) :: transport_config
   type(reactive_1d_config) :: adjacent_transport_config
   type(reactive_1d_config) :: invalid_split_config
+  type(reactive_1d_config) :: tagged_reactive_config
+  type(reactive_1d_config) :: invalid_tagged_config
   real(dp) :: root(variable_count, 64)
   real(dp), allocatable :: initial_integral(:), final_integral(:)
   real(dp) :: reactive_difference, conservation_error, hydro_dt, adjacent_dt
@@ -114,6 +125,7 @@ program pelef_mpi_amr_patch_1d
   integer :: local_sparse_values, global_sparse_values
   integer :: replicated_value_count
   integer :: transferred_cells, serial_transferred_cells
+  integer :: tagged_cells, serial_tagged_cells
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -1005,6 +1017,133 @@ program pelef_mpi_amr_patch_1d
     rejected_reactive, rejected_backup) == 0.0_dp, &
     "topology-changing sparse regrid rollback is exact", rank)
 
+  call configure_tagged_reactive_case( &
+    reactive_config, tagged_reactive_config)
+  allocate(empty_reactive_plans(0))
+  call initialize_patch_tree_reactive_1d( &
+    species, tagged_reactive_config, empty_reactive_plans, tagged_initial, ok)
+  call assert_all(ok .and. tagged_initial%level_count() == 1, &
+    "root-only tagged sparse regrid initialization", rank)
+  tagged_initial%levels(1)%patches(1)%state(imx, &
+    1:tagged_reactive_config%nx) = 0.0_dp
+  tagged_initial%levels(1)%patches(1)%state(imx, 8) = 10.0_dp
+  tagged_initial%levels(1)%patches(1)%state(imx, 24) = -10.0_dp
+  call initialize_mpi_amr_patch_distribution_1d( &
+    tagged_initial%hierarchy, MPI_COMM_WORLD, tagged_distribution, ok)
+  call assert_all(ok, "tagged sparse owner distribution", rank)
+  tagged_serial = tagged_initial
+  call regrid_tagged_patch_tree_reactive_1d( &
+    species, tagged_reactive_config, tagged_serial, changed, &
+    serial_tagged_cells, serial_transferred_cells, ok)
+  call assert_all(ok .and. changed .and. serial_tagged_cells > 0 .and. &
+    serial_transferred_cells == 0 .and. &
+    all([ &
+      size(tagged_serial%levels(1)%patches), &
+      size(tagged_serial%levels(2)%patches), &
+      size(tagged_serial%levels(3)%patches), &
+      size(tagged_serial%levels(4)%patches)] == [1, 2, 2, 2]), &
+    "serial tag-driven regrid reference", rank)
+  call scatter_owned_patch_tree_reactive_1d( &
+    tagged_distribution, tagged_initial, tagged_sparse, ok)
+  call assert_all(ok, "tag-driven sparse regrid scatter", rank)
+  call regrid_tagged_sparse_patch_tree_reactive_1d( &
+    species, tagged_reactive_config, tagged_distribution, tagged_sparse, &
+    tagged_regridded_distribution, changed, tagged_cells, &
+    transferred_cells, ok)
+  call assert_all(ok .and. changed .and. &
+    tagged_cells == serial_tagged_cells .and. &
+    transferred_cells == serial_transferred_cells .and. &
+    tagged_sparse%is_valid(tagged_regridded_distribution), &
+    "tag-driven sparse topology regrid accepted", rank)
+  call assert_all(tagged_sparse%regrid_evaluations == 1 .and. &
+    tagged_sparse%regrids == 1 .and. &
+    tagged_sparse%overlap_cells_transferred == 0, &
+    "tag-driven sparse regrid statistics", rank)
+  local_sparse_patches = tagged_sparse%local_patch_count()
+  local_sparse_cells = tagged_sparse%local_cell_count()
+  local_sparse_values = tagged_sparse%local_value_count()
+  call MPI_Allreduce( &
+    local_sparse_patches, global_sparse_patches, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call MPI_Allreduce( &
+    local_sparse_cells, global_sparse_cells, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call MPI_Allreduce( &
+    local_sparse_values, global_sparse_values, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  replicated_value_count = reactive_solution_value_count(tagged_serial)
+  call assert_all(ierr == MPI_SUCCESS .and. global_sparse_patches == 7 .and. &
+    global_sparse_cells == &
+      sum(tagged_regridded_distribution%rank_cell_counts) .and. &
+    global_sparse_values == replicated_value_count, &
+    "tag-driven sparse payload remains globally single-copy", rank)
+  gathered_reactive = tagged_serial
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    tagged_regridded_distribution, tagged_sparse, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, tagged_serial) == 0.0_dp, &
+    "tag-driven sparse regrid matches serial", rank)
+  call patch_tree_reactive_integrals_1d( &
+    tagged_initial, initial_integral, ok)
+  call assert_all(ok, "pre-tag-driven sparse regrid integral", rank)
+  call patch_tree_reactive_integrals_1d( &
+    gathered_reactive, final_integral, ok)
+  call assert_all(ok, "post-tag-driven sparse regrid integral", rank)
+  conservation_error = maxval(abs( &
+    final_integral - initial_integral) / &
+    max(1.0_dp, abs(initial_integral)))
+  call assert_all(conservation_error <= 2.0e-9_dp, &
+    "tag-driven sparse regrid conservation", rank)
+
+  call regrid_tagged_patch_tree_reactive_1d( &
+    species, tagged_reactive_config, tagged_serial, changed, &
+    serial_tagged_cells, serial_transferred_cells, ok)
+  call assert_all(ok .and. .not. changed .and. &
+    serial_transferred_cells == 0 .and. &
+    tagged_serial%regrid_evaluations == 2, &
+    "serial unchanged tag-driven regrid reference", rank)
+  call regrid_tagged_sparse_patch_tree_reactive_1d( &
+    species, tagged_reactive_config, tagged_regridded_distribution, &
+    tagged_sparse, migrated_distribution, changed, tagged_cells, &
+    transferred_cells, ok)
+  tagged_regridded_distribution = migrated_distribution
+  call assert_all(ok .and. .not. changed .and. &
+    tagged_cells == serial_tagged_cells .and. transferred_cells == 0 .and. &
+    tagged_sparse%regrid_evaluations == 2 .and. &
+    tagged_sparse%regrids == 1, &
+    "unchanged tag-driven sparse regrid is a no-op", rank)
+  gathered_reactive = tagged_serial
+  call poison_reactive_solution(gathered_reactive)
+  call gather_owned_patch_tree_reactive_1d( &
+    tagged_regridded_distribution, tagged_sparse, gathered_reactive, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    gathered_reactive, tagged_serial) == 0.0_dp, &
+    "unchanged tag-driven sparse regrid matches serial", rank)
+
+  invalid_tagged_config = tagged_reactive_config
+  invalid_tagged_config%amr_tag_component = tagged_sparse%nvar + 1
+  rejected_sparse = tagged_sparse
+  sparse_backup = tagged_sparse
+  call regrid_tagged_sparse_patch_tree_reactive_1d( &
+    species, invalid_tagged_config, tagged_regridded_distribution, &
+    rejected_sparse, migrated_distribution, changed, tagged_cells, &
+    transferred_cells, ok)
+  call assert_all(.not. ok .and. .not. changed .and. tagged_cells == 0 .and. &
+    transferred_cells == 0 .and. &
+    rejected_sparse%is_valid(migrated_distribution), &
+    "invalid tag-driven sparse regrid is rejected", rank)
+  rejected_reactive = tagged_serial
+  call gather_owned_patch_tree_reactive_1d( &
+    migrated_distribution, rejected_sparse, rejected_reactive, ok)
+  call assert_all(ok, "rejected tag-driven sparse regrid gather", rank)
+  rejected_backup = tagged_serial
+  call gather_owned_patch_tree_reactive_1d( &
+    tagged_regridded_distribution, sparse_backup, rejected_backup, ok)
+  call assert_all(ok .and. reactive_solution_difference( &
+    rejected_reactive, rejected_backup) == 0.0_dp, &
+    "tag-driven sparse regrid rollback is exact", rank)
+
   adjacent_reactive_config = reactive_config
   adjacent_reactive_config%problem = "entropy_wave"
   adjacent_reactive_config%amr_reconstruction = "ppm"
@@ -1253,6 +1392,29 @@ contains
     local_config%barodiffusion_enabled = .true.
     local_config%transport_cfl = 0.30_dp
   end subroutine configure_transport_case
+
+  subroutine configure_tagged_reactive_case(base_config, local_config)
+    type(reactive_1d_config), intent(in) :: base_config
+    type(reactive_1d_config), intent(out) :: local_config
+
+    local_config = base_config
+    local_config%nx = 32
+    local_config%problem = "entropy_wave"
+    local_config%chemistry_enabled = .false.
+    local_config%transport_enabled = .false.
+    local_config%initial_velocity = 25.0_dp
+    local_config%density_wave_amplitude = 0.08_dp
+    local_config%amr_multipatch_enabled = .true.
+    local_config%amr_max_levels = 4
+    local_config%amr_refinement_ratio = 2
+    local_config%amr_tag_component = imx
+    local_config%amr_relative_gradient_threshold = 0.20_dp
+    local_config%amr_absolute_gradient_threshold = 1.0_dp
+    local_config%amr_scale_floor = 1.0_dp
+    local_config%amr_buffer_cells = 4
+    local_config%amr_minimum_patch_cells = 8
+    local_config%amr_maximum_patch_gap_cells = 4
+  end subroutine configure_tagged_reactive_case
 
   subroutine build_reactive_plans(local_plans)
     type(amr_patch_level_plan_1d), allocatable, intent(out) :: local_plans(:)
