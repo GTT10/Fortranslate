@@ -60,6 +60,16 @@ add_test(
   COMMAND test_eb_reactive_hydro_2d
 )
 
+add_executable(
+  test_reactive_eb_2d_driver
+  unit/test_reactive_eb_2d_driver.F90
+)
+target_link_libraries(test_reactive_eb_2d_driver PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_eb_2d_driver
+  COMMAND test_reactive_eb_2d_driver
+)
+
 add_executable(test_amr_hierarchy_1d unit/test_amr_hierarchy_1d.F90)
 target_link_libraries(test_amr_hierarchy_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_hierarchy_1d COMMAND test_amr_hierarchy_1d)
@@ -1618,3 +1628,28 @@ add_test(NAME regression_reactive_full_h2o2_parity
     --two-d "${REACTIVE_FULL_WORK_DIRECTORY}/reactive_full_h2o2_2d.csv")
 set_tests_properties(regression_reactive_full_h2o2_parity PROPERTIES
   DEPENDS "regression_reactive_full_h2o2_1d_run;regression_reactive_full_h2o2_2d_run")
+
+set(REACTIVE_EB_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_circle_2d")
+file(MAKE_DIRECTORY "${REACTIVE_EB_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_circle_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_circle_2d/uniform.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_circle_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_EB_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_eb_circle_2d_structure
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_circle_2d.py"
+    --input "${REACTIVE_EB_2D_WORK_DIRECTORY}/reactive_eb_circle_2d.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_circle_2d_structure
+  PROPERTIES DEPENDS regression_reactive_eb_circle_2d_run
+)

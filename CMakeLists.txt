@@ -37,6 +37,7 @@ add_library(
   src/transport/mixture_transport_mod.F90
   src/driver/simulation_config_reactive_1d_mod.F90
   src/driver/simulation_config_reactive_2d_mod.F90
+  src/driver/simulation_config_reactive_eb_2d_mod.F90
   src/hydro/reconstruction_weno_mod.F90
   src/reactive/reactive_1d_mod.F90
   src/eb/eb_reactive_wall_flux_2d_mod.F90
@@ -46,6 +47,7 @@ add_library(
   src/transport/reactive_transport_2d_mod.F90
   src/reactive/reactive_2d_mod.F90
   src/eb/eb_reactive_hydro_2d_mod.F90
+  src/driver/reactive_eb_2d_driver_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
   src/generated/h2o2_elementary_mechanism_mod.F90
   src/generated/h2o2_full_mechanism_mod.F90
@@ -155,13 +157,17 @@ target_link_libraries(pelef_amr_reactive_1d PRIVATE pelef_core)
 add_executable(pelef_reactive_2d app/pelef_reactive_2d.F90)
 target_link_libraries(pelef_reactive_2d PRIVATE pelef_core)
 
+add_executable(pelef_reactive_eb_2d app/pelef_reactive_eb_2d.F90)
+target_link_libraries(pelef_reactive_eb_2d PRIVATE pelef_core)
+
 add_executable(pelef_transport_probe app/pelef_transport_probe.F90)
 target_link_libraries(pelef_transport_probe PRIVATE pelef_core)
 
 install(
   TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef_reactive_1d
     pelef_amr_reactive_1d
-    pelef0d_h2o2_full pelef_reactive_2d pelef_transport_probe
+    pelef0d_h2o2_full pelef_reactive_2d pelef_reactive_eb_2d
+    pelef_transport_probe
   RUNTIME DESTINATION bin
 )
 

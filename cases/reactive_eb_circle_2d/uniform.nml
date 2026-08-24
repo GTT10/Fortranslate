@@ -1,0 +1,44 @@
+&reactive_2d
+  nx = 20
+  ny = 20
+  maximum_steps = 100
+  x_lower = 0.0
+  x_upper = 0.01
+  y_lower = 0.0
+  y_upper = 0.01
+  final_time = 1.0e-7
+  cfl = 0.20
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  limiter = "mc"
+  use_transverse_correction = .false.
+  chemistry_enabled = .false.
+  chemistry_model = "elementary"
+  transport_enabled = .false.
+  boundary_x_lower = "outflow"
+  boundary_x_upper = "outflow"
+  boundary_y_lower = "outflow"
+  boundary_y_upper = "outflow"
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  x_h2 = 0.29570
+  x_h = 1.0e-5
+  x_o = 1.0e-5
+  x_o2 = 0.14784
+  x_oh = 1.0e-5
+  x_h2o = 0.0
+  x_n2 = 0.55643
+  output_file = "reactive_eb_circle_2d.csv"
+/
+
+&embedded_boundary
+  geometry = "circle"
+  circle_center_x = 0.005
+  circle_center_y = 0.005
+  circle_radius = 0.0023
+  circle_fluid_inside = .false.
+  state_redist_target_volume_fraction = 0.5
+/
