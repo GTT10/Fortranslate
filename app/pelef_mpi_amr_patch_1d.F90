@@ -122,6 +122,8 @@ program pelef_mpi_amr_patch_1d
   integer :: local_halo_transfers, global_halo_transfers
   integer :: local_parent_transfers, global_parent_transfers
   integer :: expected_parent_transfers
+  integer :: local_parent_state_transfers, global_parent_state_transfers
+  integer :: expected_parent_state_transfers
   integer :: root_owner, old_owner, new_owner, owner_changes
   integer :: local_sparse_patches, global_sparse_patches
   integer :: local_sparse_cells, global_sparse_cells
@@ -1189,6 +1191,20 @@ program pelef_mpi_amr_patch_1d
     if (adjacent_distribution%owner_of(1, left_patch) /= root_owner) &
       expected_parent_transfers = expected_parent_transfers + 1
   end do
+  expected_parent_state_transfers = 0
+  do new_owner = 0, nranks - 1
+    if (new_owner == root_owner) cycle
+    do child = 1, adjacent_initial%hierarchy%relations(1)% &
+        child_sets(1)%patch_count()
+      left_patch = adjacent_initial%hierarchy%relations(1)% &
+        child_index(1, child)
+      if (adjacent_distribution%owner_of(1, left_patch) == new_owner) then
+        expected_parent_state_transfers = &
+          expected_parent_state_transfers + 1
+        exit
+      end if
+    end do
+  end do
   serial_reactive = adjacent_initial
   call advance_patch_tree_chemistry( &
     species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
@@ -1201,7 +1217,8 @@ program pelef_mpi_amr_patch_1d
   call advance_sparse_patch_tree_chemistry_1d( &
     species, reactions, adjacent_reactive_config, 1.0e-10_dp, &
     adjacent_distribution, sparse_reactive, ok, local_chemistry_advances, &
-    local_halo_transfers, local_parent_transfers)
+    local_halo_transfers, local_parent_transfers, &
+    local_parent_state_transfers)
   call assert_all(ok .and. &
     local_chemistry_advances == &
       adjacent_distribution%rank_patch_counts(rank + 1), &
@@ -1218,6 +1235,12 @@ program pelef_mpi_amr_patch_1d
   call assert_all(ierr == MPI_SUCCESS .and. &
     global_parent_transfers == expected_parent_transfers, &
     "sparse chemistry sends one payload per cross-owner child", rank)
+  call MPI_Allreduce( &
+    local_parent_state_transfers, global_parent_state_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_parent_state_transfers == expected_parent_state_transfers, &
+    "sparse chemistry sends one parent state per remote child owner", rank)
   gathered_reactive = adjacent_initial
   call poison_reactive_solution(gathered_reactive)
   call gather_owned_patch_tree_reactive_1d( &
