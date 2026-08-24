@@ -561,6 +561,8 @@ Reactive application integration:
   sparse explicit/tag-driven regrids (`0.70.0`)
 - [x] owner-local sparse hyperbolic/parabolic timestep evaluation with one
   communicator-wide minimum and no field gather (`0.71.0`)
+- [x] namelist-driven sparse MPI AMR time loop, periodic tag regrid, final
+  composite diagnostics, and rank-count-invariant CSV output (`0.72.0`)
 
 AMR parity metrics:
 

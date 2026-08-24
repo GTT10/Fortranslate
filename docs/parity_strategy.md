@@ -1105,3 +1105,19 @@ The sparse stability decision is accepted only while:
   collectively and returns zero `dt`;
 - hydro-only and transport-enabled results pass with 1, 2, 4, and 8 ranks in
   GNU Fortran Debug and Release MPI CI.
+
+## 0.72.0 runnable sparse MPI AMR application gates
+
+The public distributed AMR path is accepted only while:
+
+- a committed namelist reaches a three-level solution-tagged patch tree;
+- the selected parabolic work exponent survives initial and periodic regrids;
+- stable timesteps are clipped exactly to the configured final time;
+- the full `R-T-H-T-R` interval executes on sparse owner payloads;
+- final materialization preserves composite mass, momentum, and energy;
+- composite CSV cells are strictly ordered and contain each uncovered parent
+  or leaf cell exactly once;
+- density, pressure, temperature, cell spacing, and species closure are valid;
+- CSV headers, row counts, hierarchy levels, coordinates, and all field values
+  agree within `5e-13` for 1, 2, 4, and 8 ranks;
+- complete GNU Fortran Debug and Release suites pass.

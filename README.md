@@ -6,10 +6,10 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.71.0` milestone contains ten serial verification executables, six
-optional MPI verification executables, and a runnable one-dimensional reactive
-AMR application with solution-driven dynamic regridding and molecular
-transport.
+The `0.72.0` milestone contains ten serial verification executables, seven
+optional MPI executables, and runnable serial and sparse-MPI one-dimensional
+reactive AMR applications with solution-driven dynamic regridding and
+molecular transport.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -134,7 +134,7 @@ approximation, not full PeleC/PelePhysics general-EOS characteristic parity.
 
 ### MPI one-dimensional verification
 
-With `PELEF_ENABLE_MPI=ON`, five existing executables verify:
+With `PELEF_ENABLE_MPI=ON`, five domain-decomposed executables verify:
 
 - uneven non-replicated block decomposition and periodic halo exchange;
 - conservative multispecies Euler transport;
@@ -160,6 +160,13 @@ solution-tagged topology rebuilds remain field-sparse; owner-local tagging
 shares only compact integer plan metadata. The 1/2/4/8-rank gates compare the
 gathered hierarchy, fields, ghosts, counters, conservation, and rollback with
 the serial patch-tree implementation.
+
+The seventh executable, `pelef_mpi_amr_reactive_1d`, is the public sparse AMR
+driver. It reads the reactive namelist, builds owner-local tagged patch trees,
+selects distributed hydro/transport timesteps, advances `R-T-H-T-R`, regrids
+at the requested cadence, and writes an ordered composite AMR CSV. Persistent
+field payloads remain globally single-copy during the time loop; a complete
+tree is materialized only for final diagnostics and output.
 
 ### One-dimensional AMR
 
@@ -305,6 +312,9 @@ The AMR layer provides:
   state for sparse child ghost refresh;
 - broadcast-free sparse recursive hydro and transport with owner-local flux
   registers, direct interval/flux/correction payloads, and reduced counters;
+- an input-driven sparse MPI AMR driver with configurable subcycle-weighted
+  ownership, stop-time clipping, periodic owner-local regridding, final
+  conservation diagnostics, and ordered composite patch-tree CSV output;
 - a moving-contact gate demonstrating lower AMR error than PCM.
 
 For PCM/PLM, the reactive AMR application retains its overlap-preserving
@@ -363,7 +373,9 @@ return directly to the parent owner, and shared-face corrections return only to
 the affected child owner. Level counters synchronize from owner-local deltas
 once per physics stage. Final parent-to-child ghost refresh likewise sends one
 parent state to each distinct remote child owner. Sparse physics and both
-explicit-plan and tag-driven regrid contain no all-rank field replica. A
+explicit-plan and tag-driven regrid contain no all-rank field replica. The
+public sparse MPI AMR driver composes those APIs into a complete run; only the
+initial root state and final diagnostic/output tree are materialized. A
 periodic child may
 touch a physical boundary only when it covers the full parent domain;
 one-sided periodic refinement remains excluded because it crosses the periodic
@@ -388,6 +400,8 @@ cmake -S . -B build-mpi \
   -DPELEF_ENABLE_MPI=ON
 cmake --build build-mpi --parallel
 mpiexec -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
+mpiexec -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d \
+  cases/mpi_sparse_amr_hotspot/hotspot.nml sparse_amr_np4.csv
 ```
 
 To enable the live Cantera reference gate:

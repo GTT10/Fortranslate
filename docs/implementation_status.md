@@ -1184,3 +1184,21 @@ stealing remain outside this milestone.
 This supplies the distributed stability decision needed by a runnable sparse
 MPI AMR driver. Adaptive stepping, stop-time clipping, regrid cadence, output,
 and restart orchestration remain driver responsibilities.
+
+## Runnable sparse MPI AMR application (`0.72.0`)
+
+- [x] public namelist-driven `pelef_mpi_amr_reactive_1d` executable
+- [x] configurable cell, hyperbolic, or parabolic ownership weighting
+- [x] initial root scatter followed by owner-local arbitrary-depth tagging
+- [x] distributed stop-time-clipped timestep and `R-T-H-T-R` loop
+- [x] configured periodic owner-local topology rebuilds
+- [x] final sparse-to-replicated diagnostic gather
+- [x] physically ordered arbitrary-depth composite patch-tree CSV output
+- [x] positive density, pressure, temperature, and species-closure checks
+- [x] exact output parity at 1, 2, 4, and 8 ranks
+- [x] GNU Fortran Release and bounds/FPE-checked Debug gates
+
+The normal timestep and regrid path retains globally single-copy patch fields.
+The initial root setup and final diagnostics/output materialize field data.
+Checkpoint/restart, plotfile formats, asynchronous I/O, and runtime-measured
+load balancing remain outside this milestone.
