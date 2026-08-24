@@ -1,7 +1,7 @@
 module reactive_1d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use constants_mod, only: density_floor, pressure_floor
+  use constants_mod, only: density_floor, pressure_floor, tiny_speed
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
   use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
   use mixture_thermo_mod, only: &
@@ -39,6 +39,7 @@ module reactive_1d_mod
   public :: reactive_primitive_to_conserved
   public :: reactive_conserved_to_primitive
   public :: reactive_rusanov_flux_x
+  public :: reactive_pelec_flux_x
   public :: reactive_hllc_flux_x
   public :: reactive_riemann_flux_x
   public :: reactive_ppm_interface_value
@@ -306,6 +307,219 @@ contains
     ok = .true.
   end subroutine reactive_rusanov_flux_x
 
+  subroutine reactive_pelec_flux_x( &
+      species, left_state, right_state, left_temperature_guess, &
+      right_temperature_guess, flux, ok, interface_density, &
+      interface_velocity, interface_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: left_state(:), right_state(:)
+    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+    real(dp), intent(out), optional :: interface_density
+    real(dp), intent(out), optional :: interface_velocity
+    real(dp), intent(out), optional :: interface_pressure
+
+    real(dp), allocatable :: ql(:), qr(:), qorigin(:), qstar(:), qinterface(:)
+    real(dp), allocatable :: interface_state(:), scratch_state(:)
+    real(dp), allocatable :: rho_species_origin(:), rho_species_star(:)
+    real(dp), allocatable :: rho_species_interface(:)
+    real(dp) :: tl, tr, cl, cr, origin_temperature, star_temperature
+    real(dp) :: interface_temperature, interface_sound_speed
+    real(dp) :: rho_left, rho_right, velocity_left, velocity_right
+    real(dp) :: pressure_left, pressure_right, impedance_left, impedance_right
+    real(dp) :: rho_origin, velocity_origin, pressure_origin, sound_origin
+    real(dp) :: transverse_y, transverse_z, pressure_star, velocity_star
+    real(dp) :: density_increment, rho_star, sound_star
+    real(dp) :: wave_out, wave_in, shock_speed, speed_difference
+    real(dp) :: interpolation_fraction, average_sound_speed, regularization
+    real(dp) :: rho_interface, velocity_at_interface, pressure_at_interface
+    real(dp) :: mass_flux, stationary_threshold
+    logical :: left_ok, right_ok, local_ok, stationary_interface
+    integer :: nspecies, nvar, k
+
+    flux = 0.0_dp
+    ok = .false.
+    if (present(interface_density)) interface_density = 0.0_dp
+    if (present(interface_velocity)) interface_velocity = 0.0_dp
+    if (present(interface_pressure)) interface_pressure = 0.0_dp
+    nspecies = size(species)
+    nvar = reactive_nvar(nspecies)
+    if (size(left_state) /= nvar .or. size(right_state) /= nvar .or. &
+        size(flux) /= nvar) return
+
+    allocate(ql(reactive_nprim(nspecies)), qr(reactive_nprim(nspecies)))
+    allocate(qorigin(reactive_nprim(nspecies)))
+    allocate(qstar(reactive_nprim(nspecies)))
+    allocate(qinterface(reactive_nprim(nspecies)))
+    allocate(interface_state(nvar), scratch_state(nvar))
+    allocate(rho_species_origin(nspecies), rho_species_star(nspecies))
+    allocate(rho_species_interface(nspecies))
+    call reactive_conserved_to_primitive( &
+      species, left_state, left_temperature_guess, ql, tl, cl, left_ok)
+    call reactive_conserved_to_primitive( &
+      species, right_state, right_temperature_guess, qr, tr, cr, right_ok)
+    if (.not. (left_ok .and. right_ok)) return
+
+    rho_left = ql(1)
+    velocity_left = ql(2)
+    pressure_left = ql(5)
+    rho_right = qr(1)
+    velocity_right = qr(2)
+    pressure_right = qr(5)
+    impedance_left = max(tiny(1.0_dp), cl * rho_left)
+    impedance_right = max(tiny(1.0_dp), cr * rho_right)
+    pressure_star = max(pressure_floor, &
+      ((impedance_right * pressure_left + impedance_left * pressure_right) + &
+       impedance_left * impedance_right * (velocity_left - velocity_right)) / &
+      (impedance_left + impedance_right))
+    velocity_star = &
+      ((impedance_left * velocity_left + impedance_right * velocity_right) + &
+       pressure_left - pressure_right) / (impedance_left + impedance_right)
+    if (.not. ieee_is_finite(pressure_star) .or. &
+        .not. ieee_is_finite(velocity_star)) return
+
+    if (velocity_star > 0.0_dp) then
+      rho_origin = rho_left
+      velocity_origin = velocity_left
+      pressure_origin = pressure_left
+      transverse_y = ql(3)
+      transverse_z = ql(4)
+      do k = 1, nspecies
+        rho_species_origin(k) = rho_left * &
+          ql(reactive_mass_fraction_component(k))
+      end do
+    else
+      rho_origin = rho_right
+      velocity_origin = velocity_right
+      pressure_origin = pressure_right
+      transverse_y = qr(3)
+      transverse_z = qr(4)
+      do k = 1, nspecies
+        rho_species_origin(k) = rho_right * &
+          qr(reactive_mass_fraction_component(k))
+      end do
+    end if
+
+    stationary_threshold = tiny_speed * &
+      0.5_dp * (abs(velocity_left) + abs(velocity_right))
+    stationary_interface = abs(velocity_star) <= stationary_threshold
+    if (stationary_interface) then
+      velocity_star = 0.0_dp
+      rho_origin = 0.5_dp * (rho_left + rho_right)
+      velocity_origin = 0.5_dp * (velocity_left + velocity_right)
+      pressure_origin = 0.5_dp * (pressure_left + pressure_right)
+      transverse_y = 0.5_dp * (ql(3) + qr(3))
+      transverse_z = 0.5_dp * (ql(4) + qr(4))
+      do k = 1, nspecies
+        rho_species_origin(k) = 0.5_dp * &
+          (rho_left * ql(reactive_mass_fraction_component(k)) + &
+           rho_right * qr(reactive_mass_fraction_component(k)))
+      end do
+    end if
+
+    rho_origin = sum(rho_species_origin)
+    if (.not. ieee_is_finite(rho_origin) .or. rho_origin <= density_floor) return
+    qorigin(1:5) = [rho_origin, velocity_origin, transverse_y, transverse_z, &
+      pressure_origin]
+    do k = 1, nspecies
+      qorigin(reactive_mass_fraction_component(k)) = &
+        rho_species_origin(k) / rho_origin
+    end do
+    call reactive_primitive_to_conserved( &
+      species, qorigin, scratch_state, origin_temperature, sound_origin, &
+      local_ok)
+    if (.not. local_ok .or. sound_origin <= 0.0_dp) return
+
+    density_increment = (pressure_star - pressure_origin) / sound_origin**2
+    do k = 1, nspecies
+      rho_species_star(k) = max(0.0_dp, rho_species_origin(k) + &
+        density_increment * rho_species_origin(k) / rho_origin)
+    end do
+    rho_star = sum(rho_species_star)
+    if (.not. ieee_is_finite(rho_star) .or. rho_star <= density_floor) return
+    qstar(1:5) = [rho_star, velocity_star, transverse_y, transverse_z, &
+      pressure_star]
+    do k = 1, nspecies
+      qstar(reactive_mass_fraction_component(k)) = rho_species_star(k) / rho_star
+    end do
+    call reactive_primitive_to_conserved( &
+      species, qstar, scratch_state, star_temperature, sound_star, local_ok)
+    if (.not. local_ok .or. sound_star <= 0.0_dp) return
+
+    wave_out = sound_origin - sign(1.0_dp, velocity_star) * velocity_origin
+    wave_in = sound_star - sign(1.0_dp, velocity_star) * velocity_star
+    shock_speed = 0.5_dp * (wave_in + wave_out)
+    if (pressure_star >= pressure_origin) then
+      wave_out = shock_speed
+      wave_in = shock_speed
+    end if
+    average_sound_speed = 0.5_dp * (cl + cr)
+    regularization = sqrt(epsilon(1.0_dp)) * &
+      max(1.0_dp, average_sound_speed)
+    if (abs(wave_out - wave_in) < regularization) then
+      speed_difference = regularization
+    else
+      speed_difference = wave_out - wave_in
+    end if
+    interpolation_fraction = max(0.0_dp, min(1.0_dp, &
+      0.5_dp * (1.0_dp + (wave_out + wave_in) / speed_difference)))
+
+    rho_species_interface = interpolation_fraction * rho_species_star + &
+      (1.0_dp - interpolation_fraction) * rho_species_origin
+    velocity_at_interface = interpolation_fraction * velocity_star + &
+      (1.0_dp - interpolation_fraction) * velocity_origin
+    pressure_at_interface = interpolation_fraction * pressure_star + &
+      (1.0_dp - interpolation_fraction) * pressure_origin
+    if (wave_out < 0.0_dp) then
+      rho_species_interface = rho_species_origin
+      velocity_at_interface = velocity_origin
+      pressure_at_interface = pressure_origin
+    end if
+    if (wave_in >= 0.0_dp) then
+      rho_species_interface = rho_species_star
+      velocity_at_interface = velocity_star
+      pressure_at_interface = pressure_star
+    end if
+
+    rho_interface = sum(rho_species_interface)
+    if (.not. ieee_is_finite(rho_interface) .or. &
+        rho_interface <= density_floor .or. &
+        .not. ieee_is_finite(pressure_at_interface) .or. &
+        pressure_at_interface <= pressure_floor) return
+    qinterface(1:5) = [rho_interface, velocity_at_interface, transverse_y, &
+      transverse_z, pressure_at_interface]
+    do k = 1, nspecies
+      qinterface(reactive_mass_fraction_component(k)) = &
+        rho_species_interface(k) / rho_interface
+    end do
+    call reactive_primitive_to_conserved( &
+      species, qinterface, interface_state, interface_temperature, &
+      interface_sound_speed, local_ok)
+    if (.not. local_ok) return
+
+    mass_flux = rho_interface * velocity_at_interface
+    flux(irho) = mass_flux
+    flux(imx) = mass_flux * velocity_at_interface + pressure_at_interface
+    flux(imy) = mass_flux * transverse_y
+    flux(imz) = mass_flux * transverse_z
+    flux(iet) = velocity_at_interface * &
+      (interface_state(iet) + pressure_at_interface)
+    do k = 1, nspecies - 1
+      flux(reactive_species_component(k)) = &
+        rho_species_interface(k) * velocity_at_interface
+    end do
+    flux(reactive_species_component(nspecies)) = mass_flux - &
+      sum(flux(reactive_species_component(1): &
+        reactive_species_component(nspecies - 1)))
+    if (.not. all(ieee_is_finite(flux))) return
+
+    if (present(interface_density)) interface_density = rho_interface
+    if (present(interface_velocity)) interface_velocity = velocity_at_interface
+    if (present(interface_pressure)) interface_pressure = pressure_at_interface
+    ok = .true.
+  end subroutine reactive_pelec_flux_x
+
   subroutine reactive_hllc_flux_x( &
       species, left_state, right_state, left_temperature_guess, &
       right_temperature_guess, flux, ok)
@@ -458,6 +672,10 @@ contains
         right_temperature_guess, flux, ok)
     case ("hllc")
       call reactive_hllc_flux_x( &
+        species, left_state, right_state, left_temperature_guess, &
+        right_temperature_guess, flux, ok)
+    case ("pelec")
+      call reactive_pelec_flux_x( &
         species, left_state, right_state, left_temperature_guess, &
         right_temperature_guess, flux, ok)
     case default

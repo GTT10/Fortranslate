@@ -885,6 +885,10 @@ add_executable(test_reactive_hllc unit/test_reactive_hllc.F90)
 target_link_libraries(test_reactive_hllc PRIVATE pelef_core)
 add_test(NAME unit_reactive_hllc COMMAND test_reactive_hllc)
 
+add_executable(test_reactive_pelec_riemann unit/test_reactive_pelec_riemann.F90)
+target_link_libraries(test_reactive_pelec_riemann PRIVATE pelef_core)
+add_test(NAME unit_reactive_pelec_riemann COMMAND test_reactive_pelec_riemann)
+
 add_executable(test_reactive_ppm unit/test_reactive_ppm.F90)
 target_link_libraries(test_reactive_ppm PRIVATE pelef_core)
 add_test(NAME unit_reactive_ppm COMMAND test_reactive_ppm)

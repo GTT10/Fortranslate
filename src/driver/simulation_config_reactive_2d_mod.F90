@@ -320,7 +320,8 @@ contains
       return
     end if
     if (trim(riemann_solver) /= "rusanov" .and. &
-        trim(riemann_solver) /= "hllc") then
+        trim(riemann_solver) /= "hllc" .and. &
+        trim(riemann_solver) /= "pelec") then
       ok = .false.
       message = "Unknown reactive 2D Riemann solver"
       return
