@@ -1642,3 +1642,28 @@ qualified single-level `reaction-hydro-reaction` EB operator to the root.
 
 This composition contains no molecular transport. Inputs requesting it are
 rejected before timestep selection or state mutation.
+
+## Reactive EB AMR checkpoint transaction
+
+The serial checkpoint is a versioned formatted stream containing a magic
+header, schema number, species names, configuration signature, actual lifecycle
+topology, run metadata, root payload, optional fine payload, and terminal
+marker. The configuration signature fixes the mesh and embedded-boundary
+definition, refinement ratio, chemistry model and tolerances, Riemann and
+reconstruction choices, redistribution settings, and dynamic-regrid policy.
+Final time, maximum step count, output paths, and checkpoint scheduling are not
+part of the signature and may change for continuation.
+
+Restart first validates the header, schema, species ordering, signature, and
+metadata. It reconstructs coarse and fine EB metrics from the input and stored
+actual patch bounds, then reads state into private arrays. Conserved state is
+authoritative: every active temperature is recovered through the general EOS,
+while finite covered data are retained. Only a complete terminal marker and
+successful EOS recovery publish the candidate hierarchy. Any parse,
+compatibility, geometry, or EOS failure returns invalid, unallocated outputs.
+
+An accepted step writes only after any scheduled regrid transaction. Thus a
+checkpoint can encode either an active fine rectangle or a root-only lifecycle
+state. Optional stop-after-write exits without forcing time to the requested
+final value. On restart, stored step and regrid counters preserve cadence and
+the stored minimum timestep preserves the cumulative diagnostic.

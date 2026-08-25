@@ -615,6 +615,8 @@ Required capabilities:
   (`0.90.0`)
 - [x] lifecycle-aware two-level and root-only EB AMR chemistry composition,
   rollback, and regular-reference parity (`0.91.0`)
+- [x] lifecycle-aware serial EB AMR checkpoint, stop, restart, and uninterrupted
+  field parity (`0.92.0`)
 - EB multiple patches, deeper levels, and multilevel
   redistribution
 - thermal, viscous, and catalytic wall boundary conditions

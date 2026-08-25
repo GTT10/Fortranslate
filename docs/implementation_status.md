@@ -1562,3 +1562,24 @@ hierarchy or its root-only lifecycle state. The qualified topology remains one
 strictly internal ratio-aligned fine rectangle. EB AMR molecular transport,
 multiple simultaneous patches, deeper levels, checkpoint/restart, and MPI
 ownership remain future work.
+
+## Reactive EB AMR checkpoint/restart (`0.92.0`)
+
+- [x] versioned formatted checkpoint schema and end marker
+- [x] species-order and reactive-state-size compatibility checks
+- [x] mesh, EB geometry, chemistry, hydro, redistribution, and regrid signature
+- [x] coarse state plus optional active fine state and actual patch bounds
+- [x] root-only lifecycle encoding without fine storage
+- [x] time, step, regrid, minimum-timestep, and base-density metadata
+- [x] geometry reconstruction and active-cell EOS temperature recovery
+- [x] private-candidate read with malformed-file transactional rejection
+- [x] periodic/final writes and optional stop-after-checkpoint control
+- [x] input-driven restart with mutable final time, step budget, and outputs
+- [x] uninterrupted versus reacting fine-to-root restart field parity
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Longer serial EB AMR runs can now stop after a committed checkpoint and resume
+without recreating an obsolete fine patch or losing lifecycle counters. The
+schema is intentionally serial and formatted; distributed checkpoint I/O,
+multiple simultaneous patches, deeper levels, and EB AMR molecular transport
+remain future work.

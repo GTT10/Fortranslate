@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.91.0` milestone contains the serial verification suite, seven optional
+The `0.92.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -14,7 +14,8 @@ patch-tree checkpoint and restart it with a different MPI rank count. The
 serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
 its composite conserved state, and can compose active-cell chemistry with the
-two-level or root-only EB hydrodynamic path.
+two-level or root-only EB hydrodynamic path. Formatted checkpoints preserve
+that lifecycle state for a later serial restart.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -227,6 +228,16 @@ reaction half-step, and final fine-to-coarse average-down. Covered cells are
 masked from chemistry. A root-only lifecycle interval reuses the qualified
 single-level EB Strang path, and any chemistry, hydro, or EOS failure leaves the
 complete hierarchy unchanged.
+
+The EB AMR input can request periodic checkpoints, stop immediately after a
+successful write, or restart from a prior file. A checkpoint records the
+coarse state, optional fine state and current patch bounds, time/step/regrid
+metadata, minimum accepted timestep, base density, species ordering, and the
+physics and regrid settings required for compatible continuation. Restart
+rebuilds both EB geometries from the input, recovers active-cell temperatures
+from the conserved state, and publishes the hierarchy only after the complete
+file and end marker pass validation. Final time, maximum steps, output paths,
+and checkpoint controls may change between runs.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
@@ -695,6 +706,25 @@ python3 tools/check_reactive_eb_amr_chemistry_2d.py \
   --reference reactive_eb_amr_chemistry_reference_2d.csv \
   --coarse reactive_eb_amr_chemistry_coarse_2d.csv \
   --fine reactive_eb_amr_chemistry_fine_2d.csv
+```
+
+Reacting fine-to-root checkpoint/restart parity:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_restart_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_restart_2d/checkpoint_stop.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_restart_2d/restart.nml
+python3 tools/check_reactive_eb_amr_restart_2d.py \
+  --checkpoint reactive_eb_amr_restart.chk \
+  --reference reactive_eb_amr_restart_reference_coarse_2d.csv \
+  --stopped reactive_eb_amr_restart_stopped_coarse_2d.csv \
+  --restarted reactive_eb_amr_restarted_coarse_2d.csv \
+  --fine reactive_eb_amr_restart_reference_fine_2d.csv \
+    reactive_eb_amr_restart_stopped_fine_2d.csv \
+    reactive_eb_amr_restarted_fine_2d.csv
 ```
 
 ## Project records

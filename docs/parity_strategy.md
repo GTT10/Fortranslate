@@ -1406,3 +1406,22 @@ collapse through the root-only path; it requires at least two accepted steps
 and preserves total mass and total energy within `3e-11` scaled tolerance.
 Requesting molecular transport must fail before time, step, or regrid counters
 advance in GNU Fortran Debug and Release suites.
+
+## 0.92.0 reactive EB AMR checkpoint/restart gates
+
+Direct round trips must preserve the complete coarse and fine conserved arrays,
+actual patch bounds, lifecycle flag, time, accepted-step and regrid counters,
+minimum timestep, and base density. Active temperatures recovered from the EOS
+must remain within `3e-12` scaled tolerance. A second round trip begins after a
+reacting fine patch collapses and must restore a valid root with no allocated
+fine state, temperature, geometry, or patch metadata. A file truncated after a
+valid magic header must leave all state outputs unallocated and both geometries
+invalid.
+
+The public split-run gate starts a uniform 1200 K elementary H2/O2 hierarchy
+with one active fine rectangle. After the first reacting interval, the regrid
+transaction removes the untagged fine patch, writes a root-only checkpoint, and
+stops before final time. Restart must continue from the stored time and counters
+through the root-only chemistry/hydro path. Every final CSV value must match an
+uninterrupted reference within `3e-10` scaled tolerance, chemistry must progress,
+species closure must hold, and no inactive fine CSV may be written.

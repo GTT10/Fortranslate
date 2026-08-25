@@ -37,7 +37,7 @@ pelef_reactive_eb_2d
   └─ reactive embedded-boundary hydro with weighted StateRedist
 
 pelef_reactive_eb_amr_2d
-  └─ lifecycle-capable two-level reactive EB AMR hydro and chemistry
+  └─ lifecycle-capable reactive EB AMR hydro, chemistry, and restart
 
 pelef_amr_reactive_1d
   └─ dynamic two-level reactive AMR with PLM, chemistry, and transport
@@ -978,6 +978,17 @@ both levels, and reactive average-down. The entire hierarchy remains private
 until all stages succeed. With no fine patch, the same driver calls the
 qualified single-level EB Strang operator. The application loads either the
 elementary or full H2/O2 reaction set through the existing mechanism path.
+
+In `0.92.0`, the same serial driver owns a versioned formatted checkpoint
+schema. It stores conserved state and temperature on the root and, when active,
+the fine rectangle; actual patch bounds; lifecycle/run counters; species names;
+and a compatibility signature for mesh, EB geometry, chemistry, hydro,
+redistribution, and regrid settings. Restart reconstructs geometry from the
+current input rather than trusting serialized metrics, reads into private
+candidates, recovers every active temperature from conserved state, and commits
+only after the end marker. A root-only checkpoint keeps fine arrays and metadata
+unallocated. Final time, step budget, output paths, and checkpoint scheduling
+are intentionally restart-mutable.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
