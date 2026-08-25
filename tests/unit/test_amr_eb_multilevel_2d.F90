@@ -2,12 +2,13 @@ program test_amr_eb_multilevel_2d
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_is_finite, ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
@@ -59,7 +60,7 @@ program test_amr_eb_multilevel_2d
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: scale, dt
   logical :: ok
-  integer :: i, j, nvar
+  integer :: i, j, k, nvar
 
   do j = 0, root_ny
     y = real(j, dp) / real(root_ny, dp)
@@ -225,8 +226,17 @@ program test_amr_eb_multilevel_2d
     level_one_geometry, root_patch, reactive_level_two_sync, &
     level_two_geometry, level_one_patch, integral_after, ok)
   scale = max(1.0_dp, maxval(abs(integral_before)))
-  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
-    8.0e-10_dp * scale, "three-level hydro composite conservation")
+  call require(ok .and. &
+    abs(integral_after(irho) - integral_before(irho)) <= &
+      8.0e-10_dp * scale .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+      8.0e-10_dp * scale, &
+    "three-level hydro mass and energy conservation")
+  do k = 1, size(species)
+    call require(abs(integral_after(reactive_species_component(k)) - &
+      integral_before(reactive_species_component(k))) <= &
+      8.0e-10_dp * scale, "three-level hydro species conservation")
+  end do
   call require(all(ieee_is_finite(root_temperature_sync)) .and. &
     all(ieee_is_finite(level_one_temperature_sync)) .and. &
     all(ieee_is_finite(level_two_temperature_sync)) .and. &
