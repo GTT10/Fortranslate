@@ -118,14 +118,14 @@ contains
       return
     end if
 
-    if (coarse_i_lower <= 1 .or. &
-        coarse_i_upper >= config%eb%flow%nx .or. &
-        coarse_j_lower <= 1 .or. &
-        coarse_j_upper >= config%eb%flow%ny .or. &
+    if (coarse_i_lower < 1 .or. &
+        coarse_i_upper > config%eb%flow%nx .or. &
+        coarse_j_lower < 1 .or. &
+        coarse_j_upper > config%eb%flow%ny .or. &
         coarse_i_upper < coarse_i_lower .or. &
         coarse_j_upper < coarse_j_lower) then
       ok = .false.
-      message = "EB AMR patch must be a strictly internal coarse rectangle"
+      message = "EB AMR patch must lie inside the coarse domain"
       return
     end if
     if (refinement_ratio < 2) then

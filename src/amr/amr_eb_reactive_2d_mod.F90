@@ -118,7 +118,7 @@ contains
   subroutine build_reactive_eb_patch_exterior_2d( &
       species, coarse_start, coarse_start_temperature, coarse_end, &
       coarse_end_temperature, coarse_geometry, fine_geometry, patch, &
-      alpha, exterior, ok)
+      alpha, exterior, ok, fine_state, fine_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_start(:, :, :)
     real(dp), intent(in) :: coarse_start_temperature(:, :)
@@ -129,19 +129,21 @@ contains
     real(dp), intent(in) :: alpha
     type(reactive_eb_exterior_state_2d), intent(out) :: exterior
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: fine_state(:, :, :)
+    real(dp), intent(in), optional :: fine_temperature(:, :)
 
     type(reactive_eb_exterior_state_2d) :: candidate
-    logical :: local_ok
+    logical :: local_ok, needs_physical_state
     integer :: coarse_i, coarse_j, fine_i, fine_j, nvar, ratio
 
     ok = .false.
     nvar = reactive_nvar(size(species))
+    needs_physical_state = patch%coarse_i_lower == 1 .or. &
+      patch%coarse_i_upper == coarse_geometry%nx .or. &
+      patch%coarse_j_lower == 1 .or. &
+      patch%coarse_j_upper == coarse_geometry%ny
     if (nvar < 1 .or. .not. ieee_is_finite(alpha) .or. &
         alpha < 0.0_dp .or. alpha > 1.0_dp .or. &
-        patch%coarse_i_lower <= 1 .or. &
-        patch%coarse_i_upper >= coarse_geometry%nx .or. &
-        patch%coarse_j_lower <= 1 .or. &
-        patch%coarse_j_upper >= coarse_geometry%ny .or. &
         .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
         any(shape(coarse_start) /= &
           [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
@@ -154,6 +156,17 @@ contains
         any(.not. ieee_is_finite(coarse_end)) .or. &
         any(.not. ieee_is_finite(coarse_start_temperature)) .or. &
         any(.not. ieee_is_finite(coarse_end_temperature))) return
+    if (needs_physical_state) then
+      if (.not. present(fine_state) .or. &
+          .not. present(fine_temperature)) return
+      if (any(shape(fine_state) /= &
+          [nvar, fine_geometry%nx, fine_geometry%ny]) .or. &
+          any(shape(fine_temperature) /= &
+            [fine_geometry%nx, fine_geometry%ny]) .or. &
+          any(.not. ieee_is_finite(fine_state)) .or. &
+          any(.not. ieee_is_finite(fine_temperature)) .or. &
+          any(fine_temperature <= 0.0_dp)) return
+    end if
 
     allocate(candidate%x_lower_state(nvar, fine_geometry%ny))
     allocate(candidate%x_upper_state(nvar, fine_geometry%ny))
@@ -176,51 +189,75 @@ contains
     do fine_j = 1, fine_geometry%ny
       coarse_j = patch%coarse_j_lower + (fine_j - 1) / ratio
       if (fine_geometry%x_face_fraction(0, fine_j) > 0.0_dp) then
-        coarse_i = patch%coarse_i_lower - 1
-        call recover_exterior_cell( &
-          species, coarse_start(:, coarse_i, coarse_j), &
-          coarse_end(:, coarse_i, coarse_j), &
-          coarse_start_temperature(coarse_i, coarse_j), &
-          coarse_end_temperature(coarse_i, coarse_j), alpha, &
-          candidate%x_lower_state(:, fine_j), &
-          candidate%x_lower_temperature(fine_j), local_ok)
-        if (.not. local_ok) return
+        if (patch%coarse_i_lower == 1) then
+          candidate%x_lower_state(:, fine_j) = fine_state(:, 1, fine_j)
+          candidate%x_lower_temperature(fine_j) = fine_temperature(1, fine_j)
+        else
+          coarse_i = patch%coarse_i_lower - 1
+          call recover_exterior_cell( &
+            species, coarse_start(:, coarse_i, coarse_j), &
+            coarse_end(:, coarse_i, coarse_j), &
+            coarse_start_temperature(coarse_i, coarse_j), &
+            coarse_end_temperature(coarse_i, coarse_j), alpha, &
+            candidate%x_lower_state(:, fine_j), &
+            candidate%x_lower_temperature(fine_j), local_ok)
+          if (.not. local_ok) return
+        end if
       end if
       if (fine_geometry%x_face_fraction(fine_geometry%nx, fine_j) > 0.0_dp) then
-        coarse_i = patch%coarse_i_upper + 1
-        call recover_exterior_cell( &
-          species, coarse_start(:, coarse_i, coarse_j), &
-          coarse_end(:, coarse_i, coarse_j), &
-          coarse_start_temperature(coarse_i, coarse_j), &
-          coarse_end_temperature(coarse_i, coarse_j), alpha, &
-          candidate%x_upper_state(:, fine_j), &
-          candidate%x_upper_temperature(fine_j), local_ok)
-        if (.not. local_ok) return
+        if (patch%coarse_i_upper == coarse_geometry%nx) then
+          candidate%x_upper_state(:, fine_j) = &
+            fine_state(:, fine_geometry%nx, fine_j)
+          candidate%x_upper_temperature(fine_j) = &
+            fine_temperature(fine_geometry%nx, fine_j)
+        else
+          coarse_i = patch%coarse_i_upper + 1
+          call recover_exterior_cell( &
+            species, coarse_start(:, coarse_i, coarse_j), &
+            coarse_end(:, coarse_i, coarse_j), &
+            coarse_start_temperature(coarse_i, coarse_j), &
+            coarse_end_temperature(coarse_i, coarse_j), alpha, &
+            candidate%x_upper_state(:, fine_j), &
+            candidate%x_upper_temperature(fine_j), local_ok)
+          if (.not. local_ok) return
+        end if
       end if
     end do
     do fine_i = 1, fine_geometry%nx
       coarse_i = patch%coarse_i_lower + (fine_i - 1) / ratio
       if (fine_geometry%y_face_fraction(fine_i, 0) > 0.0_dp) then
-        coarse_j = patch%coarse_j_lower - 1
-        call recover_exterior_cell( &
-          species, coarse_start(:, coarse_i, coarse_j), &
-          coarse_end(:, coarse_i, coarse_j), &
-          coarse_start_temperature(coarse_i, coarse_j), &
-          coarse_end_temperature(coarse_i, coarse_j), alpha, &
-          candidate%y_lower_state(:, fine_i), &
-          candidate%y_lower_temperature(fine_i), local_ok)
-        if (.not. local_ok) return
+        if (patch%coarse_j_lower == 1) then
+          candidate%y_lower_state(:, fine_i) = fine_state(:, fine_i, 1)
+          candidate%y_lower_temperature(fine_i) = fine_temperature(fine_i, 1)
+        else
+          coarse_j = patch%coarse_j_lower - 1
+          call recover_exterior_cell( &
+            species, coarse_start(:, coarse_i, coarse_j), &
+            coarse_end(:, coarse_i, coarse_j), &
+            coarse_start_temperature(coarse_i, coarse_j), &
+            coarse_end_temperature(coarse_i, coarse_j), alpha, &
+            candidate%y_lower_state(:, fine_i), &
+            candidate%y_lower_temperature(fine_i), local_ok)
+          if (.not. local_ok) return
+        end if
       end if
       if (fine_geometry%y_face_fraction(fine_i, fine_geometry%ny) > 0.0_dp) then
-        coarse_j = patch%coarse_j_upper + 1
-        call recover_exterior_cell( &
-          species, coarse_start(:, coarse_i, coarse_j), &
-          coarse_end(:, coarse_i, coarse_j), &
-          coarse_start_temperature(coarse_i, coarse_j), &
-          coarse_end_temperature(coarse_i, coarse_j), alpha, &
-          candidate%y_upper_state(:, fine_i), &
-          candidate%y_upper_temperature(fine_i), local_ok)
-        if (.not. local_ok) return
+        if (patch%coarse_j_upper == coarse_geometry%ny) then
+          candidate%y_upper_state(:, fine_i) = &
+            fine_state(:, fine_i, fine_geometry%ny)
+          candidate%y_upper_temperature(fine_i) = &
+            fine_temperature(fine_i, fine_geometry%ny)
+        else
+          coarse_j = patch%coarse_j_upper + 1
+          call recover_exterior_cell( &
+            species, coarse_start(:, coarse_i, coarse_j), &
+            coarse_end(:, coarse_i, coarse_j), &
+            coarse_start_temperature(coarse_i, coarse_j), &
+            coarse_end_temperature(coarse_i, coarse_j), alpha, &
+            candidate%y_upper_state(:, fine_i), &
+            candidate%y_upper_temperature(fine_i), local_ok)
+          if (.not. local_ok) return
+        end if
       end if
     end do
     if (.not. candidate%is_valid(fine_geometry, nvar)) return
@@ -336,10 +373,6 @@ contains
     if (nvar < 1 .or. .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
         .not. ieee_is_finite(selected_target) .or. &
         selected_target <= 0.0_dp .or. selected_target > 1.0_dp .or. &
-        patch%coarse_i_lower <= 1 .or. &
-        patch%coarse_i_upper >= coarse_geometry%nx .or. &
-        patch%coarse_j_lower <= 1 .or. &
-        patch%coarse_j_upper >= coarse_geometry%ny .or. &
         .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
         any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
         any(shape(new_coarse_temperature) /= shape(coarse_temperature)) .or. &
@@ -382,7 +415,8 @@ contains
       call build_reactive_eb_patch_exterior_2d( &
         species, coarse_state, coarse_temperature, coarse_candidate, &
         coarse_candidate_temperature, coarse_geometry, fine_geometry, &
-        patch, alpha, exterior, local_ok)
+        patch, alpha, exterior, local_ok, fine_candidate, &
+        fine_candidate_temperature)
       if (.not. local_ok) return
       call advance_reactive_eb_level_2d( &
         species, fine_candidate, fine_candidate_temperature, fine_geometry, &

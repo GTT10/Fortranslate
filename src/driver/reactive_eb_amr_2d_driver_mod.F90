@@ -89,10 +89,10 @@ contains
       config%eb%state_redist_target_volume_fraction <= 1.0_dp .and. &
       (config%eb%state_redist_max_order == 0 .or. &
        config%eb%state_redist_max_order == 2) .and. &
-      config%coarse_i_lower > 1 .and. &
-      config%coarse_i_upper < config%eb%flow%nx .and. &
-      config%coarse_j_lower > 1 .and. &
-      config%coarse_j_upper < config%eb%flow%ny .and. &
+      config%coarse_i_lower >= 1 .and. &
+      config%coarse_i_upper <= config%eb%flow%nx .and. &
+      config%coarse_j_lower >= 1 .and. &
+      config%coarse_j_upper <= config%eb%flow%ny .and. &
       config%coarse_i_upper >= config%coarse_i_lower .and. &
       config%coarse_j_upper >= config%coarse_j_lower .and. &
       config%refinement_ratio >= 2 .and. config%regrid_interval >= 1 .and. &

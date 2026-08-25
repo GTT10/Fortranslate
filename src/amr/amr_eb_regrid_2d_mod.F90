@@ -914,7 +914,9 @@ contains
           species, coarse_state, coarse_temperature, coarse_hydro, &
           coarse_hydro_temperature, coarse_geometry, &
           candidate_set%children(child)%geometry, &
-          candidate_set%children(child)%patch, alpha, exterior, local_ok)
+          candidate_set%children(child)%patch, alpha, exterior, local_ok, &
+          candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature)
         if (.not. local_ok) return
         if (present(failure_context)) write(failure_context, '(a,i0,a,i0)') &
           "fine advance child ", child, " substep ", substep
