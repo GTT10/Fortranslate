@@ -6,7 +6,7 @@
   x_upper = 1.0
   y_lower = 0.0
   y_upper = 1.0
-  final_time = 5.0e-8
+  final_time = 1.0e-8
   cfl = 0.02
   problem = "reactive_double_hotspot"
   reconstruction = "pcm"
@@ -24,11 +24,11 @@
   initial_pressure = 135000.0
   initial_velocity_x = 0.0
   initial_velocity_y = 0.0
-  hotspot_temperature_rise = 350.0
+  hotspot_temperature_rise = 20.0
   hotspot_center_x = 0.25
   hotspot_center_y = 0.55
   hotspot_width = 0.03
-  second_hotspot_temperature_rise = 300.0
+  second_hotspot_temperature_rise = 18.0
   second_hotspot_center_x = 0.75
   second_hotspot_center_y = 0.75
   x_h2 = 0.29570
@@ -47,7 +47,7 @@
   plane_normal_y = 1.0
   plane_offset = 0.78
   state_redist_target_volume_fraction = 0.5
-  state_redist_max_order = 2
+  state_redist_max_order = 0
 /
 
 &eb_amr
@@ -61,8 +61,8 @@
   regrid_at_initialization = .true.
   remove_fine_patch_when_untagged = .true.
   regrid_interval = 1
-  regrid_relative_temperature_gradient = 0.01
-  regrid_absolute_temperature_gradient = 5.0
+  regrid_relative_temperature_gradient = 1.0e-4
+  regrid_absolute_temperature_gradient = 0.1
   regrid_temperature_scale_floor = 1.0
   regrid_buffer_cells = 0
   regrid_minimum_patch_cells_x = 5

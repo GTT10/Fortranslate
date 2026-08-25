@@ -28,7 +28,7 @@ def check_physical(rows: list[dict[str, str]]) -> set[int]:
         values = [float(value) for value in row.values()]
         if not all(math.isfinite(value) for value in values):
             raise AssertionError("nonfinite multipatch EB AMR output")
-        if abs(float(row["time"]) - 5.0e-8) > 2.0e-20:
+        if abs(float(row["time"]) - 1.0e-8) > 2.0e-20:
             raise AssertionError("incorrect multipatch final time")
         if not 0.0 <= float(row["volume_fraction"]) <= 1.0:
             raise AssertionError("invalid multipatch volume fraction")

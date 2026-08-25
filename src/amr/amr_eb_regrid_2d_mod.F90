@@ -916,7 +916,8 @@ contains
           candidate_set%children(child)%geometry, &
           candidate_set%children(child)%patch, alpha, exterior, local_ok)
         if (.not. local_ok) return
-        if (present(failure_context)) failure_context = "fine advance"
+        if (present(failure_context)) write(failure_context, '(a,i0,a,i0)') &
+          "fine advance child ", child, " substep ", substep
         call advance_reactive_eb_level_2d( &
           species, candidate_set%children(child)%state, &
           candidate_set%children(child)%temperature, &
