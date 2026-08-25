@@ -470,10 +470,10 @@ contains
     integer :: fine_nx, fine_ny
 
     ok = .false.
-    if (coarse_i_lower <= 1 .or. &
-        coarse_i_upper >= coarse_geometry%nx .or. &
-        coarse_j_lower <= 1 .or. &
-        coarse_j_upper >= coarse_geometry%ny .or. &
+    if (coarse_i_lower < 1 .or. &
+        coarse_i_upper > coarse_geometry%nx .or. &
+        coarse_j_lower < 1 .or. &
+        coarse_j_upper > coarse_geometry%ny .or. &
         coarse_i_upper < coarse_i_lower .or. &
         coarse_j_upper < coarse_j_lower) return
     fine_x_lower = coarse_geometry%x_lower + &
