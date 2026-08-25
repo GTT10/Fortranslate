@@ -391,6 +391,16 @@ program test_reactive_eb_amr_2d_driver
   call require(conservation_error <= 8.0e-11_dp, &
     "two-level AMR transport conservation")
 
+  config%checkpoint_file = checkpoint_path
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "unqualified AMR transport checkpoint rejection")
+  config%checkpoint_file = ""
+
   config%eb%flow%transport_enabled = .false.
   config%eb%flow%nx = 14
   config%eb%flow%ny = 14

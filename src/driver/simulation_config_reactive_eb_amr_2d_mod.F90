@@ -242,6 +242,12 @@ contains
         "Reactive EB AMR transport currently supports one fine patch"
       return
     end if
+    if (config%eb%flow%transport_enabled .and. &
+        (len_trim(checkpoint_file) > 0 .or. len_trim(restart_file) > 0)) then
+      ok = .false.
+      message = "Reactive EB AMR transport checkpointing is not yet qualified"
+      return
+    end if
 
     config%coarse_i_lower = coarse_i_lower
     config%coarse_i_upper = coarse_i_upper

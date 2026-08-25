@@ -100,7 +100,9 @@ contains
       config%eb%flow%cfl > 0.0_dp .and. config%eb%flow%cfl <= 0.8_dp .and. &
       (.not. config%eb%flow%transport_enabled .or. &
        (.not. config%three_level_enabled .and. &
-        .not. config%multipatch_enabled)) .and. &
+        .not. config%multipatch_enabled .and. &
+        len_trim(config%checkpoint_file) == 0 .and. &
+        len_trim(config%restart_file) == 0)) .and. &
       ieee_is_finite(config%eb%flow%chemistry_relative_tolerance) .and. &
       config%eb%flow%chemistry_relative_tolerance > 0.0_dp .and. &
       ieee_is_finite(config%eb%flow%chemistry_absolute_tolerance) .and. &

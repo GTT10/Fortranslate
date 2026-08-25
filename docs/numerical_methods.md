@@ -1975,5 +1975,35 @@ StateRedist transaction and recovers active temperatures from conserved state.
 Two such stages form SSPRK2. The public reactive EB step uses
 `R(dt/2) -> T(dt/2) -> H(dt) -> T(dt/2) -> R(dt/2)` and publishes only the
 fully valid result. The timestep is the minimum of the hyperbolic and mixture
-transport stability limits. Coarse/fine diffusive flux registers are not yet
-part of this single-level milestone.
+transport stability limits.
+
+## Two-level EB AMR molecular transport
+
+For a coarse transport Euler interval `dt`, the coarse level advances once and
+its EB face-centroid diffusive fluxes enter the interface register with weight
+`dt`. The fine patch advances `r` Euler substeps of size `dt/r`. Before each
+substep, its exterior conserved state is interpolated in time between the
+coarse interval endpoints and converted to primitive transport data. Physical
+outflow sides retain zero-gradient fine data. Each fine flux enters the same
+register with weight `dt/r`.
+
+After the fine substeps, EB-aware reactive reflux applies the integrated
+coarse/fine flux mismatch and StateRedist handles any cut-cell correction.
+Reactive average-down then makes the fine solution authoritative under the
+patch. A second synchronized Euler transaction followed by the arithmetic RK
+average forms SSPRK2. Temperature is recovered through the mixture EOS before
+the final average-down. Consequently each Euler endpoint and the completed RK
+step preserve the composite conserved quantities.
+
+The root transport limit is
+
+```text
+dt_root <= min(dt_transport,coarse, r dt_transport,fine),
+```
+
+because the fine operator takes `r` temporal substeps during each root
+interval. The public two-level driver inserts half intervals of this operator
+around hydrodynamics and inside the chemistry half steps. Missing or mismatched
+transport data, invalid exterior state, reflux failure, or EOS failure rejects
+the whole hierarchy transaction. Three-level and sibling-patch transport are
+not part of this milestone.

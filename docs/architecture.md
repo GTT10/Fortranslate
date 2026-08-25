@@ -1136,10 +1136,20 @@ adiabatic slip and species-impermeable wall for this milestone. Each SSPRK2
 transport stage uses the existing StateRedist/EOS transaction, and the full
 step composes `R/2 -> T/2 -> H -> T/2 -> R/2` without publishing partial work.
 
+In `0.107.0`, `amr_eb_transport_2d_mod` lifts that operator into the
+single-patch two-level hierarchy. A coarse transport Euler stage exposes its
+EB face-centroid fluxes, while each ratio-subcycled fine stage samples
+time-interpolated coarse exterior states. The existing EB flux register
+accumulates both levels' time-integrated diffusive fluxes, then reactive reflux
+and average-down synchronize the hierarchy. Two complete synchronized Euler
+transactions form SSPRK2, so each stage is conservative before the RK average.
+The public driver combines root and ratio-scaled fine transport limits and
+composes this hierarchy operator as `R/2 -> T/2 -> H -> T/2 -> R/2`.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, locally resolved PeleC-style multilevel
-redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
+three-level or multipatch EB AMR molecular transport, locally resolved
+PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
 subsystem. Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.
