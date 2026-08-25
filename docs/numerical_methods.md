@@ -1855,3 +1855,23 @@ separation. Every corrected cell undergoes EOS temperature recovery. Invalid
 composition, energy, or temperature rejects the complete hierarchy. This is a
 qualified global multilevel conservation closure, not parity with PeleC's
 locally resolved multilevel EB redistribution stencil.
+
+## Three-level reactive EB Strang composition
+
+For a root interval `dt`, the static three-level reactive driver applies
+
+`R(dt/2) -> H3(dt) -> R(dt/2) -> A3`,
+
+where `R` advances chemistry independently in every active root, middle, and
+finest cell, `H3` is the recursively subcycled three-level EB hydro
+transaction, and `A3` is reactive deepest-first average-down. Covered cells
+are excluded from each reactor call.
+
+The final `A3` operation is required even though hydro already ends
+synchronized: the second reaction half-step also advances geometrically
+overlapped parent cells, which are not part of the composite solution. The
+finest result therefore replaces its middle footprint before the resulting
+middle field replaces the root footprint, with EOS temperatures recovered at
+both parents. All work uses private candidates; any rejected reactor cell,
+hydro stage, nested EB conservation correction, or final EOS recovery leaves
+every input state and temperature unchanged.

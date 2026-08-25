@@ -634,6 +634,8 @@ Required capabilities:
   regular finest coarse/fine interface (`0.99.0`)
 - [x] EB-cut nested-interface mass, energy, and species conservation closure
   over active middle recipients (`0.100.0`)
+- [x] static three-level active-cell chemistry and recursive EB hydro composed
+  as a transactional Strang step (`0.101.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
