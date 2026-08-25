@@ -238,6 +238,10 @@ program test_amr_eb_multilevel_2d
     level_one_geometry, root_patch, reactive_level_two_sync, &
     level_two_geometry, level_one_patch, integral_after, ok)
   scale = max(1.0_dp, maxval(abs(integral_before)))
+  write(*, '(a,5(es24.16,1x))') &
+    "three-level hydro mass diagnostic: ", integral_before(irho), &
+    integral_after(irho), integral_after(irho) - integral_before(irho), &
+    integral_before(iet), integral_after(iet) - integral_before(iet)
   call require(ok .and. &
     abs(integral_after(irho) - integral_before(irho)) <= &
       8.0e-10_dp * scale .and. &
