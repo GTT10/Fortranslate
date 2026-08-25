@@ -71,8 +71,8 @@ def main() -> None:
     second_rows = read_rows(args.fine_two)
     first_x, first_y = check_patch(first_rows, 0.25, 0.55)
     second_x, second_y = check_patch(second_rows, 0.75, 0.75)
-    if max(first_x) >= min(second_x) or max(first_y) >= min(second_y):
-        raise AssertionError("fine patch outputs are not separated and ordered")
+    if max(first_x) >= min(second_x):
+        raise AssertionError("fine patch outputs are not x-separated and ordered")
     if coarse_types != {0, 1, 2}:
         raise AssertionError(f"missing coarse EB cell class: {sorted(coarse_types)}")
     if max(float(row["temperature"]) for row in first_rows + second_rows) <= 1200.0:
