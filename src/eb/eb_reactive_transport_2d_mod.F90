@@ -116,12 +116,14 @@ contains
     do j = 1, geometry%ny
       do face_i = 0, geometry%nx
         theta_face = 1.0_dp
-        if (face_i >= 1 .and. &
-            geometry%cell_type(face_i, j) /= eb_covered_cell) &
-          theta_face = min(theta_face, theta_cell(face_i, j))
-        if (face_i + 1 <= geometry%nx .and. &
-            geometry%cell_type(face_i + 1, j) /= eb_covered_cell) &
-          theta_face = min(theta_face, theta_cell(face_i + 1, j))
+        if (face_i >= 1) then
+          if (geometry%cell_type(face_i, j) /= eb_covered_cell) &
+            theta_face = min(theta_face, theta_cell(face_i, j))
+        end if
+        if (face_i + 1 <= geometry%nx) then
+          if (geometry%cell_type(face_i + 1, j) /= eb_covered_cell) &
+            theta_face = min(theta_face, theta_cell(face_i + 1, j))
+        end if
         flux_x(:, face_i, j) = theta_face * flux_x(:, face_i, j)
         minimum_theta = min(minimum_theta, theta_face)
       end do
@@ -129,12 +131,14 @@ contains
     do face_j = 0, geometry%ny
       do i = 1, geometry%nx
         theta_face = 1.0_dp
-        if (face_j >= 1 .and. &
-            geometry%cell_type(i, face_j) /= eb_covered_cell) &
-          theta_face = min(theta_face, theta_cell(i, face_j))
-        if (face_j + 1 <= geometry%ny .and. &
-            geometry%cell_type(i, face_j + 1) /= eb_covered_cell) &
-          theta_face = min(theta_face, theta_cell(i, face_j + 1))
+        if (face_j >= 1) then
+          if (geometry%cell_type(i, face_j) /= eb_covered_cell) &
+            theta_face = min(theta_face, theta_cell(i, face_j))
+        end if
+        if (face_j + 1 <= geometry%ny) then
+          if (geometry%cell_type(i, face_j + 1) /= eb_covered_cell) &
+            theta_face = min(theta_face, theta_cell(i, face_j + 1))
+        end if
         flux_y(:, i, face_j) = theta_face * flux_y(:, i, face_j)
         minimum_theta = min(minimum_theta, theta_face)
       end do
