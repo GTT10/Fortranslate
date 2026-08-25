@@ -50,7 +50,7 @@ program test_amr_eb_multipatch_2d
     y = real(j, dp) / real(coarse_ny, dp)
     do i = 0, coarse_nx
       x = real(i, dp) / real(coarse_nx, dp)
-      coarse_level_set(i, j) = x + y - 0.30_dp
+      coarse_level_set(i, j) = x + y - 0.78_dp
     end do
   end do
   call build_eb_geometry_2d( &
@@ -91,7 +91,7 @@ program test_amr_eb_multipatch_2d
   criteria%minimum_patch_cells_y = 2
   criteria%maximum_patch_gap_cells = 0
   old_tags = .false.
-  old_tags(2:3, 2:3) = .true.
+  old_tags(2:3, 4:5) = .true.
   old_tags(7:8, 7:8) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     old_tags, criteria, old_collection, ok)
@@ -191,7 +191,7 @@ program test_amr_eb_multipatch_2d
     8.0e-12_dp * integral_scale, "multipatch average-down conservation")
 
   new_tags = .false.
-  new_tags(3:4, 2:3) = .true.
+  new_tags(3:4, 4:5) = .true.
   new_tags(7:8, 7:8) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     new_tags, criteria, new_collection, ok)
@@ -225,7 +225,7 @@ program test_amr_eb_multipatch_2d
     "unchanged patch exact state retention")
   do j = 1, new_set%children(1)%geometry%ny
     call require(maxval(abs(new_set%children(1)%state(:, 3:4, j) - &
-      spread(new_coarse_state(:, 4, 2 + (j - 1) / ratio), 2, 2))) <= &
+      spread(new_coarse_state(:, 4, 4 + (j - 1) / ratio), 2, 2))) <= &
       5.0e-14_dp * state_scale, &
       "new patch cells use synchronized coarse PCM")
   end do
@@ -297,7 +297,7 @@ contains
       do local_i = 0, fine_nx
         local_x = x_lower + real(local_i, dp) * &
           (x_upper - x_lower) / real(fine_nx, dp)
-        level_set(local_i, local_j) = local_x + local_y - 0.30_dp
+        level_set(local_i, local_j) = local_x + local_y - 0.78_dp
       end do
     end do
     call build_eb_geometry_2d( &
