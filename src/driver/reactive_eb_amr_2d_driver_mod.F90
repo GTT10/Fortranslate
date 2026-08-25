@@ -449,7 +449,7 @@ contains
 
     matches = ieee_is_finite(actual) .and. ieee_is_finite(expected) .and. &
       abs(actual - expected) <= 512.0_dp * epsilon(1.0_dp) * &
-        max(1.0_dp, abs(actual), abs(expected))
+        max(tiny(1.0_dp), abs(actual), abs(expected))
   end function checkpoint_real_matches
 
   subroutine recover_checkpoint_level_temperatures_2d( &
@@ -505,10 +505,13 @@ contains
     integer, intent(in) :: steps, regrids
     logical, intent(out) :: ok
 
+    real(dp) :: time_tolerance
     integer :: unit, status, nvar, i, j, species_index
 
     ok = .false.
     nvar = reactive_nvar(size(species))
+    time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
         .not. coarse_geometry%is_valid() .or. &
@@ -519,9 +522,11 @@ contains
           [coarse_geometry%nx, coarse_geometry%ny]) .or. &
         .not. all(ieee_is_finite(coarse_state)) .or. &
         .not. all(ieee_is_finite(coarse_temperature)) .or. &
-        .not. ieee_is_finite(time) .or. time < 0.0_dp .or. &
-        steps < 1 .or. regrids < 0 .or. &
+        .not. ieee_is_finite(time) .or. time <= 0.0_dp .or. &
+        time > config%eb%flow%final_time + time_tolerance .or. &
+        steps < 1 .or. regrids < 0 .or. regrids > steps + 1 .or. &
         .not. ieee_is_finite(minimum_dt) .or. minimum_dt <= 0.0_dp .or. &
+        minimum_dt > time + time_tolerance .or. &
         .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
     if (fine_active) then
       if (.not. allocated(fine_state) .or. &
@@ -762,12 +767,13 @@ contains
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (status /= 0 .or. .not. ieee_is_finite(stored_time) .or. &
-        stored_time < 0.0_dp .or. &
+        stored_time <= 0.0_dp .or. &
         stored_time > config%eb%flow%final_time + time_tolerance .or. &
         .not. ieee_is_finite(stored_minimum_dt) .or. &
         stored_minimum_dt <= 0.0_dp .or. stored_steps < 1 .or. &
         stored_steps > config%eb%flow%maximum_steps .or. &
-        stored_regrids < 0 .or. &
+        stored_regrids < 0 .or. stored_regrids > stored_steps + 1 .or. &
+        stored_minimum_dt > stored_time + time_tolerance .or. &
         .not. ieee_is_finite(stored_base_density) .or. &
         stored_base_density <= 0.0_dp) go to 900
 
