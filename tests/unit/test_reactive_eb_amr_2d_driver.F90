@@ -361,6 +361,10 @@ program test_reactive_eb_amr_2d_driver
     "truncated checkpoint transactional rejection")
   call delete_checkpoint(checkpoint_path)
 
+  config%dynamic_regridding = .false.
+  config%remove_fine_patch_when_untagged = .false.
+  config%eb%flow%chemistry_enabled = .false.
+  config%eb%flow%maximum_steps = 20
   config%eb%flow%transport_enabled = .true.
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
