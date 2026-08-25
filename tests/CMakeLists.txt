@@ -49,6 +49,13 @@ target_link_libraries(test_amr_eb_regrid_2d PRIVATE pelef_core)
 add_test(NAME unit_amr_eb_regrid_2d COMMAND test_amr_eb_regrid_2d)
 
 add_executable(
+  test_amr_eb_multipatch_2d
+  unit/test_amr_eb_multipatch_2d.F90
+)
+target_link_libraries(test_amr_eb_multipatch_2d PRIVATE pelef_core)
+add_test(NAME unit_amr_eb_multipatch_2d COMMAND test_amr_eb_multipatch_2d)
+
+add_executable(
   test_reactive_eb_amr_2d_driver
   unit/test_reactive_eb_amr_2d_driver.F90
 )

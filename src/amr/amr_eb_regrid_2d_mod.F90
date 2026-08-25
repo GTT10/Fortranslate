@@ -6,7 +6,8 @@ module amr_eb_regrid_2d_mod
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use amr_eb_hierarchy_2d_mod, only: &
-    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
+    amr_eb_patch_2d, build_amr_eb_patch_2d, &
+    average_down_reactive_eb_state_patch_2d
   use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_pcm_2d
   implicit none
   private
@@ -50,11 +51,31 @@ module amr_eb_regrid_2d_mod
     procedure :: is_valid => amr_eb_regrid_plan_collection_is_valid
   end type amr_eb_regrid_plan_collection_2d
 
+  type, public :: reactive_eb_fine_patch_2d
+    type(eb_geometry_2d) :: geometry
+    type(amr_eb_patch_2d) :: patch
+    real(dp), allocatable :: state(:, :, :)
+    real(dp), allocatable :: temperature(:, :)
+  contains
+    procedure :: is_valid => reactive_eb_fine_patch_is_valid
+  end type reactive_eb_fine_patch_2d
+
+  type, public :: reactive_eb_patch_set_2d
+    type(reactive_eb_fine_patch_2d), allocatable :: children(:)
+  contains
+    procedure :: patch_count => reactive_eb_patch_set_patch_count
+    procedure :: is_valid => reactive_eb_patch_set_is_valid
+  end type reactive_eb_patch_set_2d
+
   public :: tag_reactive_eb_temperature_gradient_2d
   public :: build_amr_eb_regrid_plan_2d
   public :: build_amr_eb_regrid_plan_collection_2d
   public :: plan_reactive_eb_temperature_regrid_2d
   public :: plan_reactive_eb_temperature_regrid_collection_2d
+  public :: initialize_reactive_eb_patch_set_2d
+  public :: average_down_reactive_eb_patch_set_2d
+  public :: composite_reactive_eb_patch_set_integral_2d
+  public :: regrid_reactive_eb_patch_set_2d
   public :: collapse_two_level_reactive_eb_patch_2d
   public :: regrid_two_level_reactive_eb_patch_2d
 
@@ -170,6 +191,79 @@ contains
     end function rectangles_are_separated
 
   end function amr_eb_regrid_plan_collection_is_valid
+
+  pure logical function reactive_eb_fine_patch_is_valid( &
+      self, coarse_geometry, nvar) result(valid)
+    class(reactive_eb_fine_patch_2d), intent(in) :: self
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: nvar
+
+    integer :: i, j
+
+    valid = nvar >= 1 .and. &
+      self%patch%is_valid(coarse_geometry, self%geometry) .and. &
+      allocated(self%state) .and. allocated(self%temperature)
+    if (.not. valid) return
+    valid = all(shape(self%state) == &
+      [nvar, self%geometry%nx, self%geometry%ny]) .and. &
+      all(shape(self%temperature) == &
+        [self%geometry%nx, self%geometry%ny]) .and. &
+      all(ieee_is_finite(self%state)) .and. &
+      all(ieee_is_finite(self%temperature))
+    if (.not. valid) return
+    do j = 1, self%geometry%ny
+      do i = 1, self%geometry%nx
+        if (self%geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (self%temperature(i, j) <= 0.0_dp) then
+          valid = .false.
+          return
+        end if
+      end do
+    end do
+  end function reactive_eb_fine_patch_is_valid
+
+  pure integer function reactive_eb_patch_set_patch_count(self) result(count)
+    class(reactive_eb_patch_set_2d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%children)) count = size(self%children)
+  end function reactive_eb_patch_set_patch_count
+
+  pure logical function reactive_eb_patch_set_is_valid( &
+      self, coarse_geometry, nvar) result(valid)
+    class(reactive_eb_patch_set_2d), intent(in) :: self
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: nvar
+
+    integer :: first, second
+
+    valid = coarse_geometry%is_valid() .and. nvar >= 1 .and. &
+      allocated(self%children)
+    if (.not. valid) return
+    do first = 1, size(self%children)
+      valid = self%children(first)%is_valid(coarse_geometry, nvar)
+      if (.not. valid) return
+      do second = first + 1, size(self%children)
+        valid = fine_patches_are_separated( &
+          self%children(first)%patch, self%children(second)%patch)
+        if (.not. valid) return
+      end do
+    end do
+
+  contains
+
+    pure logical function fine_patches_are_separated( &
+        first_patch, second_patch) result(separated)
+      type(amr_eb_patch_2d), intent(in) :: first_patch, second_patch
+
+      separated = &
+        first_patch%coarse_i_upper + 1 < second_patch%coarse_i_lower .or. &
+        second_patch%coarse_i_upper + 1 < first_patch%coarse_i_lower .or. &
+        first_patch%coarse_j_upper + 1 < second_patch%coarse_j_lower .or. &
+        second_patch%coarse_j_upper + 1 < first_patch%coarse_j_lower
+    end function fine_patches_are_separated
+
+  end function reactive_eb_patch_set_is_valid
 
   subroutine tag_reactive_eb_temperature_gradient_2d( &
       temperature, geometry, criteria, tags, ok)
@@ -504,6 +598,291 @@ contains
     call build_amr_eb_regrid_plan_collection_2d( &
       tags, criteria, collection, ok)
   end subroutine plan_reactive_eb_temperature_regrid_collection_2d
+
+  subroutine initialize_reactive_eb_patch_set_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_geometries, collection, refinement_ratio, patch_set, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(eb_geometry_2d), intent(in) :: fine_geometries(:)
+    type(amr_eb_regrid_plan_collection_2d), intent(in) :: collection
+    integer, intent(in) :: refinement_ratio
+    type(reactive_eb_patch_set_2d), intent(out) :: patch_set
+    logical, intent(out) :: ok
+
+    type(reactive_eb_patch_set_2d) :: candidate
+    logical :: local_ok
+    integer :: child, nvar
+
+    patch_set = reactive_eb_patch_set_2d()
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. refinement_ratio < 2 .or. &
+        .not. coarse_geometry%is_valid() .or. &
+        any(shape(coarse_state) /= &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(.not. ieee_is_finite(coarse_state)) .or. &
+        any(.not. ieee_is_finite(coarse_temperature)) .or. &
+        .not. collection%is_valid() .or. &
+        collection%coarse_nx /= coarse_geometry%nx .or. &
+        collection%coarse_ny /= coarse_geometry%ny .or. &
+        size(fine_geometries) /= collection%patch_count()) return
+
+    allocate(candidate%children(collection%patch_count()))
+    do child = 1, collection%patch_count()
+      call build_amr_eb_patch_2d( &
+        coarse_geometry, fine_geometries(child), &
+        collection%plans(child)%coarse_i_lower, &
+        collection%plans(child)%coarse_i_upper, &
+        collection%plans(child)%coarse_j_lower, &
+        collection%plans(child)%coarse_j_upper, refinement_ratio, &
+        candidate%children(child)%patch, local_ok)
+      if (.not. local_ok) return
+      candidate%children(child)%geometry = fine_geometries(child)
+      allocate(candidate%children(child)%state( &
+        nvar, fine_geometries(child)%nx, fine_geometries(child)%ny))
+      allocate(candidate%children(child)%temperature( &
+        fine_geometries(child)%nx, fine_geometries(child)%ny))
+      call prolong_reactive_eb_patch_pcm_2d( &
+        species, coarse_state, coarse_temperature, coarse_geometry, &
+        candidate%children(child)%geometry, &
+        candidate%children(child)%patch, &
+        candidate%children(child)%state, &
+        candidate%children(child)%temperature, local_ok)
+      if (.not. local_ok) return
+    end do
+    if (.not. candidate%is_valid(coarse_geometry, nvar)) return
+    patch_set = candidate
+    ok = .true.
+  end subroutine initialize_reactive_eb_patch_set_2d
+
+  subroutine average_down_reactive_eb_patch_set_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      patch_set, averaged_state, averaged_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    real(dp), intent(out) :: averaged_state(:, :, :)
+    real(dp), intent(out) :: averaged_temperature(:, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp), allocatable :: next_state(:, :, :), next_temperature(:, :)
+    logical :: local_ok
+    integer :: child, nvar
+
+    averaged_state = 0.0_dp
+    averaged_temperature = 0.0_dp
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. &
+        any(shape(coarse_state) /= &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(averaged_state) /= shape(coarse_state)) .or. &
+        any(shape(averaged_temperature) /= shape(coarse_temperature))) return
+    averaged_state = coarse_state
+    averaged_temperature = coarse_temperature
+    if (any(.not. ieee_is_finite(coarse_state)) .or. &
+        any(.not. ieee_is_finite(coarse_temperature)) .or. &
+        .not. patch_set%is_valid(coarse_geometry, nvar)) return
+
+    allocate(candidate_state, source=coarse_state)
+    allocate(candidate_temperature, source=coarse_temperature)
+    allocate(next_state, mold=coarse_state)
+    allocate(next_temperature, mold=coarse_temperature)
+    do child = 1, patch_set%patch_count()
+      call average_down_reactive_eb_state_patch_2d( &
+        species, candidate_state, candidate_temperature, coarse_geometry, &
+        patch_set%children(child)%state, &
+        patch_set%children(child)%geometry, &
+        patch_set%children(child)%patch, next_state, next_temperature, &
+        local_ok)
+      if (.not. local_ok) return
+      candidate_state = next_state
+      candidate_temperature = next_temperature
+    end do
+    averaged_state = candidate_state
+    averaged_temperature = candidate_temperature
+    ok = .true.
+  end subroutine average_down_reactive_eb_patch_set_2d
+
+  subroutine composite_reactive_eb_patch_set_integral_2d( &
+      coarse_state, coarse_geometry, patch_set, integral, ok)
+    real(dp), intent(in) :: coarse_state(:, :, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    real(dp), intent(out) :: integral(:)
+    logical, intent(out) :: ok
+
+    logical, allocatable :: refined(:, :)
+    integer :: child, i, j, nvar
+
+    integral = 0.0_dp
+    ok = .false.
+    nvar = size(coarse_state, 1)
+    if (nvar < 1 .or. size(integral) /= nvar .or. &
+        any(shape(coarse_state) /= &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(.not. ieee_is_finite(coarse_state)) .or. &
+        .not. patch_set%is_valid(coarse_geometry, nvar)) return
+
+    allocate(refined(coarse_geometry%nx, coarse_geometry%ny), &
+      source=.false.)
+    do child = 1, patch_set%patch_count()
+      refined( &
+        patch_set%children(child)%patch%coarse_i_lower: &
+          patch_set%children(child)%patch%coarse_i_upper, &
+        patch_set%children(child)%patch%coarse_j_lower: &
+          patch_set%children(child)%patch%coarse_j_upper) = .true.
+    end do
+    do j = 1, coarse_geometry%ny
+      do i = 1, coarse_geometry%nx
+        if (refined(i, j)) cycle
+        integral = integral + coarse_geometry%volume_fraction(i, j) * &
+          coarse_state(:, i, j) * coarse_geometry%dx * coarse_geometry%dy
+      end do
+    end do
+    do child = 1, patch_set%patch_count()
+      do j = 1, patch_set%children(child)%geometry%ny
+        do i = 1, patch_set%children(child)%geometry%nx
+          integral = integral + &
+            patch_set%children(child)%geometry%volume_fraction(i, j) * &
+            patch_set%children(child)%state(:, i, j) * &
+            patch_set%children(child)%geometry%dx * &
+            patch_set%children(child)%geometry%dy
+        end do
+      end do
+    end do
+    if (any(.not. ieee_is_finite(integral))) then
+      integral = 0.0_dp
+      return
+    end if
+    ok = .true.
+  end subroutine composite_reactive_eb_patch_set_integral_2d
+
+  subroutine regrid_reactive_eb_patch_set_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      old_patch_set, new_fine_geometries, new_collection, &
+      refinement_ratio, new_coarse_state, new_coarse_temperature, &
+      new_patch_set, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: old_patch_set
+    type(eb_geometry_2d), intent(in) :: new_fine_geometries(:)
+    type(amr_eb_regrid_plan_collection_2d), intent(in) :: new_collection
+    integer, intent(in) :: refinement_ratio
+    real(dp), intent(out) :: new_coarse_state(:, :, :)
+    real(dp), intent(out) :: new_coarse_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: new_patch_set
+    logical, intent(out) :: ok
+
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    real(dp), allocatable :: candidate_coarse(:, :, :)
+    real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    real(dp), allocatable :: primitive(:)
+    real(dp) :: geometry_tolerance, recovered_temperature, sound_speed
+    logical :: local_ok
+    integer :: child, old_child, i, j, global_i, global_j
+    integer :: old_i, old_j, nvar, ratio
+
+    new_coarse_state = 0.0_dp
+    new_coarse_temperature = 0.0_dp
+    new_patch_set = reactive_eb_patch_set_2d()
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. &
+        any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
+        any(shape(new_coarse_temperature) /= shape(coarse_temperature))) return
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    if (.not. old_patch_set%is_valid(coarse_geometry, nvar)) return
+
+    allocate(candidate_coarse, mold=coarse_state)
+    allocate(candidate_coarse_temperature, mold=coarse_temperature)
+    call average_down_reactive_eb_patch_set_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      old_patch_set, candidate_coarse, candidate_coarse_temperature, &
+      local_ok)
+    if (.not. local_ok) return
+    call initialize_reactive_eb_patch_set_2d( &
+      species, candidate_coarse, candidate_coarse_temperature, &
+      coarse_geometry, new_fine_geometries, new_collection, &
+      refinement_ratio, candidate_set, local_ok)
+    if (.not. local_ok) return
+
+    geometry_tolerance = 5.0e3_dp * epsilon(1.0_dp)
+    do child = 1, candidate_set%patch_count()
+      ratio = candidate_set%children(child)%patch%refinement_ratio
+      do j = 1, candidate_set%children(child)%geometry%ny
+        global_j = (candidate_set%children(child)%patch%coarse_j_lower - &
+          1) * ratio + j
+        do i = 1, candidate_set%children(child)%geometry%nx
+          global_i = (candidate_set%children(child)%patch%coarse_i_lower - &
+            1) * ratio + i
+          do old_child = 1, old_patch_set%patch_count()
+            if (old_patch_set%children(old_child)%patch%refinement_ratio /= &
+                ratio) cycle
+            old_i = global_i - &
+              (old_patch_set%children(old_child)%patch%coarse_i_lower - &
+                1) * ratio
+            old_j = global_j - &
+              (old_patch_set%children(old_child)%patch%coarse_j_lower - &
+                1) * ratio
+            if (old_i < 1 .or. &
+                old_i > old_patch_set%children(old_child)%geometry%nx .or. &
+                old_j < 1 .or. &
+                old_j > old_patch_set%children(old_child)%geometry%ny) cycle
+            if (candidate_set%children(child)%geometry%cell_type(i, j) /= &
+                old_patch_set%children(old_child)%geometry%cell_type( &
+                  old_i, old_j) .or. &
+                abs( &
+                  candidate_set%children(child)%geometry%volume_fraction( &
+                    i, j) - &
+                  old_patch_set%children(old_child)%geometry%volume_fraction( &
+                    old_i, old_j)) > &
+                  geometry_tolerance) return
+            candidate_set%children(child)%state(:, i, j) = &
+              old_patch_set%children(old_child)%state(:, old_i, old_j)
+            candidate_set%children(child)%temperature(i, j) = &
+              old_patch_set%children(old_child)%temperature(old_i, old_j)
+            exit
+          end do
+        end do
+      end do
+    end do
+
+    allocate(primitive(reactive_nprim(size(species))))
+    do child = 1, candidate_set%patch_count()
+      do j = 1, candidate_set%children(child)%geometry%ny
+        do i = 1, candidate_set%children(child)%geometry%nx
+          if (candidate_set%children(child)%geometry%cell_type(i, j) == &
+              eb_covered_cell) cycle
+          if (candidate_set%children(child)%temperature(i, j) <= 0.0_dp) &
+            return
+          call reactive_conserved_to_primitive( &
+            species, candidate_set%children(child)%state(:, i, j), &
+            candidate_set%children(child)%temperature(i, j), primitive, &
+            recovered_temperature, sound_speed, local_ok)
+          if (.not. local_ok) return
+          candidate_set%children(child)%temperature(i, j) = &
+            recovered_temperature
+        end do
+      end do
+    end do
+    if (.not. candidate_set%is_valid(coarse_geometry, nvar)) return
+    new_coarse_state = candidate_coarse
+    new_coarse_temperature = candidate_coarse_temperature
+    new_patch_set = candidate_set
+    ok = .true.
+  end subroutine regrid_reactive_eb_patch_set_2d
 
   subroutine regrid_two_level_reactive_eb_patch_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
