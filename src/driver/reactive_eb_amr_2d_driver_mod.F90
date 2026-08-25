@@ -32,6 +32,8 @@ module reactive_eb_amr_2d_driver_mod
     composite_three_level_eb_integral_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     advance_three_level_reactive_eb_hydro_2d
+  use amr_eb_multilevel_transport_2d_mod, only: &
+    advance_three_level_reactive_eb_transport_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
     amr_eb_regrid_plan_collection_2d, &
@@ -99,8 +101,7 @@ contains
       ieee_is_finite(config%eb%flow%cfl) .and. &
       config%eb%flow%cfl > 0.0_dp .and. config%eb%flow%cfl <= 0.8_dp .and. &
       (.not. config%eb%flow%transport_enabled .or. &
-       (.not. config%three_level_enabled .and. &
-        .not. config%multipatch_enabled .and. &
+       (.not. config%multipatch_enabled .and. &
         len_trim(config%checkpoint_file) == 0 .and. &
         len_trim(config%restart_file) == 0)) .and. &
       ieee_is_finite(config%eb%flow%chemistry_relative_tolerance) .and. &
@@ -502,7 +503,10 @@ contains
       state_redist_max_order, dt, chemistry_enabled, rtol, atol, &
       new_root_state, new_root_temperature, new_level_one_state, &
       new_level_one_temperature, new_level_two_state, &
-      new_level_two_temperature, ok, target_volume_fraction)
+      new_level_two_temperature, ok, target_volume_fraction, transport, &
+      transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, &
+      minimum_transport_theta, boundaries)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
@@ -527,6 +531,13 @@ contains
     real(dp), intent(out) :: new_level_two_temperature(:, :)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    logical, intent(in), optional :: transport_enabled, viscosity_enabled
+    logical, intent(in), optional :: thermal_conduction_enabled
+    logical, intent(in), optional :: species_diffusion_enabled
+    logical, intent(in), optional :: barodiffusion_enabled
+    real(dp), intent(out), optional :: minimum_transport_theta
+    type(reactive_boundary_set_2d), intent(in), optional :: boundaries
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -540,11 +551,19 @@ contains
     real(dp), allocatable :: hydro_level_one_temperature(:, :)
     real(dp), allocatable :: hydro_level_two(:, :, :)
     real(dp), allocatable :: hydro_level_two_temperature(:, :)
+    real(dp), allocatable :: transport_root(:, :, :)
+    real(dp), allocatable :: transport_root_temperature(:, :)
+    real(dp), allocatable :: transport_level_one(:, :, :)
+    real(dp), allocatable :: transport_level_one_temperature(:, :)
+    real(dp), allocatable :: transport_level_two(:, :, :)
+    real(dp), allocatable :: transport_level_two_temperature(:, :)
     real(dp), allocatable :: synchronized_root(:, :, :)
     real(dp), allocatable :: synchronized_root_temperature(:, :)
     real(dp), allocatable :: synchronized_level_one(:, :, :)
     real(dp), allocatable :: synchronized_level_one_temperature(:, :)
-    logical :: local_ok
+    logical :: local_ok, use_transport, use_viscosity, use_conduction
+    logical :: use_diffusion, use_barodiffusion
+    real(dp) :: selected_target, stage_transport_theta, transport_theta
 
     new_root_state = root_state
     new_root_temperature = root_temperature
@@ -553,7 +572,27 @@ contains
     new_level_two_state = level_two_state
     new_level_two_temperature = level_two_temperature
     ok = .false.
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (chemistry_enabled .and. size(reactions) < 1) return
+    selected_target = 0.5_dp
+    if (present(target_volume_fraction)) &
+      selected_target = target_volume_fraction
+    use_transport = .false.
+    use_viscosity = .true.
+    use_conduction = .true.
+    use_diffusion = .true.
+    use_barodiffusion = .true.
+    if (present(transport_enabled)) use_transport = transport_enabled
+    if (present(viscosity_enabled)) use_viscosity = viscosity_enabled
+    if (present(thermal_conduction_enabled)) &
+      use_conduction = thermal_conduction_enabled
+    if (present(species_diffusion_enabled)) &
+      use_diffusion = species_diffusion_enabled
+    if (present(barodiffusion_enabled)) &
+      use_barodiffusion = barodiffusion_enabled
+    if (use_transport .and. .not. present(transport)) return
+    if (use_transport .and. .not. present(boundaries)) return
+    transport_theta = 1.0_dp
     allocate(root_candidate, source=root_state)
     allocate(root_candidate_temperature, source=root_temperature)
     allocate(level_one_candidate, source=level_one_state)
@@ -573,6 +612,34 @@ contains
         species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
         level_two_candidate, level_two_candidate_temperature, local_ok)
       if (.not. local_ok) return
+    end if
+
+    if (use_transport) then
+      allocate(transport_root, mold=root_state)
+      allocate(transport_root_temperature, mold=root_temperature)
+      allocate(transport_level_one, mold=level_one_state)
+      allocate(transport_level_one_temperature, mold=level_one_temperature)
+      allocate(transport_level_two, mold=level_two_state)
+      allocate(transport_level_two_temperature, mold=level_two_temperature)
+      call advance_three_level_reactive_eb_transport_2d( &
+        species, transport, root_candidate, root_candidate_temperature, &
+        root_geometry, level_one_candidate, level_one_candidate_temperature, &
+        level_one_geometry, root_patch, level_two_candidate, &
+        level_two_candidate_temperature, level_two_geometry, level_one_patch, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, boundaries, selected_target, &
+        state_redist_max_order, transport_root, transport_root_temperature, &
+        transport_level_one, transport_level_one_temperature, &
+        transport_level_two, transport_level_two_temperature, &
+        stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      root_candidate = transport_root
+      root_candidate_temperature = transport_root_temperature
+      level_one_candidate = transport_level_one
+      level_one_candidate_temperature = transport_level_one_temperature
+      level_two_candidate = transport_level_two
+      level_two_candidate_temperature = transport_level_two_temperature
+      transport_theta = min(transport_theta, stage_transport_theta)
     end if
 
     allocate(hydro_root, mold=root_state)
@@ -597,6 +664,28 @@ contains
     level_one_candidate_temperature = hydro_level_one_temperature
     level_two_candidate = hydro_level_two
     level_two_candidate_temperature = hydro_level_two_temperature
+
+    if (use_transport) then
+      call advance_three_level_reactive_eb_transport_2d( &
+        species, transport, root_candidate, root_candidate_temperature, &
+        root_geometry, level_one_candidate, level_one_candidate_temperature, &
+        level_one_geometry, root_patch, level_two_candidate, &
+        level_two_candidate_temperature, level_two_geometry, level_one_patch, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, boundaries, selected_target, &
+        state_redist_max_order, transport_root, transport_root_temperature, &
+        transport_level_one, transport_level_one_temperature, &
+        transport_level_two, transport_level_two_temperature, &
+        stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      root_candidate = transport_root
+      root_candidate_temperature = transport_root_temperature
+      level_one_candidate = transport_level_one
+      level_one_candidate_temperature = transport_level_one_temperature
+      level_two_candidate = transport_level_two
+      level_two_candidate_temperature = transport_level_two_temperature
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
 
     if (chemistry_enabled) then
       call advance_reactive_eb_chemistry_level_2d( &
@@ -635,6 +724,8 @@ contains
     new_level_one_temperature = level_one_candidate_temperature
     new_level_two_state = level_two_candidate
     new_level_two_temperature = level_two_candidate_temperature
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = transport_theta
     ok = .true.
   end subroutine advance_three_level_reactive_eb_strang_2d
 
@@ -2829,7 +2920,7 @@ contains
       level_one_geometry, root_patch, level_two_state, &
       level_two_temperature, level_two_geometry, level_one_patch, time, &
       steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-      base_density, ok, failure_context)
+      base_density, ok, failure_context, transport, minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2850,6 +2941,8 @@ contains
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
     character(len=*), intent(out), optional :: failure_context
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -2858,8 +2951,12 @@ contains
     real(dp), allocatable :: level_two_candidate(:, :, :)
     real(dp), allocatable :: level_two_candidate_temperature(:, :)
     real(dp) :: root_dx, root_dy, dt, remaining, time_tolerance
+    real(dp) :: root_transport_dt, level_one_transport_dt
+    real(dp) :: level_two_transport_dt, maximum_diffusivity
+    real(dp) :: step_transport_theta, local_minimum_transport_theta
     logical :: changed, local_ok, stopped_after_checkpoint
     integer :: nvar, last_checkpoint_step
+    type(reactive_boundary_set_2d) :: boundaries
 
     root_geometry = eb_geometry_2d()
     level_one_geometry = eb_geometry_2d()
@@ -2873,10 +2970,16 @@ contains
     base_density = 0.0_dp
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
+    local_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     ok = .false.
     if (present(failure_context)) failure_context = "validation"
     if (.not. supported_three_level_reactive_eb_amr_config(config)) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
+    if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
+    call build_reactive_boundary_set_2d( &
+      species, config%eb%flow, boundaries, local_ok)
+    if (.not. local_ok) return
 
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "restart"
@@ -2969,6 +3072,37 @@ contains
         root_patch, level_two_state, level_two_temperature, &
         level_two_geometry, level_one_patch, config%eb%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
+      if (config%eb%flow%transport_enabled) then
+        if (present(failure_context)) failure_context = "three-level transport CFL"
+        call reactive_eb_transport_timestep_2d( &
+          species, transport, root_state, root_temperature, root_geometry, &
+          config%eb%flow%transport_cfl, config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, root_transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        call reactive_eb_transport_timestep_2d( &
+          species, transport, level_one_state, level_one_temperature, &
+          level_one_geometry, config%eb%flow%transport_cfl, &
+          config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, level_one_transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        call reactive_eb_transport_timestep_2d( &
+          species, transport, level_two_state, level_two_temperature, &
+          level_two_geometry, config%eb%flow%transport_cfl, &
+          config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, level_two_transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        dt = min(dt, root_transport_dt)
+        dt = min(dt, real(root_patch%refinement_ratio, dp) * &
+          level_one_transport_dt)
+        dt = min(dt, real(root_patch%refinement_ratio * &
+          level_one_patch%refinement_ratio, dp) * level_two_transport_dt)
+      end if
       dt = min(dt, remaining)
       if (allocated(root_candidate)) deallocate(root_candidate)
       if (allocated(root_candidate_temperature)) &
@@ -2986,20 +3120,44 @@ contains
       allocate(level_two_candidate, mold=level_two_state)
       allocate(level_two_candidate_temperature, mold=level_two_temperature)
       if (present(failure_context)) failure_context = "three-level advance"
-      call advance_three_level_reactive_eb_strang_2d( &
-        species, reactions, root_state, root_temperature, root_geometry, &
-        level_one_state, level_one_temperature, level_one_geometry, &
-        root_patch, level_two_state, level_two_temperature, &
-        level_two_geometry, level_one_patch, &
-        config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
-        config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
-        config%eb%flow%chemistry_enabled, &
-        config%eb%flow%chemistry_relative_tolerance, &
-        config%eb%flow%chemistry_absolute_tolerance, root_candidate, &
-        root_candidate_temperature, level_one_candidate, &
-        level_one_candidate_temperature, level_two_candidate, &
-        level_two_candidate_temperature, local_ok, &
-        config%eb%state_redist_target_volume_fraction)
+      if (config%eb%flow%transport_enabled) then
+        call advance_three_level_reactive_eb_strang_2d( &
+          species, reactions, root_state, root_temperature, root_geometry, &
+          level_one_state, level_one_temperature, level_one_geometry, &
+          root_patch, level_two_state, level_two_temperature, &
+          level_two_geometry, level_one_patch, &
+          config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
+          config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, root_candidate, &
+          root_candidate_temperature, level_one_candidate, &
+          level_one_candidate_temperature, level_two_candidate, &
+          level_two_candidate_temperature, local_ok, &
+          config%eb%state_redist_target_volume_fraction, transport, &
+          config%eb%flow%transport_enabled, &
+          config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, &
+          config%eb%flow%barodiffusion_enabled, step_transport_theta, &
+          boundaries)
+      else
+        call advance_three_level_reactive_eb_strang_2d( &
+          species, reactions, root_state, root_temperature, root_geometry, &
+          level_one_state, level_one_temperature, level_one_geometry, &
+          root_patch, level_two_state, level_two_temperature, &
+          level_two_geometry, level_one_patch, &
+          config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
+          config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, root_candidate, &
+          root_candidate_temperature, level_one_candidate, &
+          level_one_candidate_temperature, level_two_candidate, &
+          level_two_candidate_temperature, local_ok, &
+          config%eb%state_redist_target_volume_fraction)
+        step_transport_theta = 1.0_dp
+      end if
       if (.not. local_ok) return
       root_state = root_candidate
       root_temperature = root_candidate_temperature
@@ -3009,6 +3167,8 @@ contains
       level_two_temperature = level_two_candidate_temperature
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
+      local_minimum_transport_theta = min( &
+        local_minimum_transport_theta, step_transport_theta)
       steps = steps + 1
       if (config%dynamic_regridding .and. &
           modulo(steps, config%regrid_interval) == 0) then
@@ -3060,6 +3220,8 @@ contains
       final_integrals, local_ok)
     if (.not. local_ok) return
     ok = steps > 0 .and. ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = local_minimum_transport_theta
     if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_three_level_reactive_eb_amr_2d
 

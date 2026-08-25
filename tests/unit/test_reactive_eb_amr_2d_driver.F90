@@ -625,6 +625,45 @@ program test_reactive_eb_amr_2d_driver
     level_two_patch, config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public three-level CFL selection")
+
+  config%eb%flow%chemistry_enabled = .false.
+  config%eb%flow%transport_enabled = .true.
+  config%eb%flow%viscosity_enabled = .false.
+  config%eb%flow%thermal_conduction_enabled = .true.
+  config%eb%flow%species_diffusion_enabled = .false.
+  config%eb%flow%barodiffusion_enabled = .false.
+  config%eb%flow%problem = "reactive_hotspot"
+  config%eb%flow%hotspot_center_x = 0.5_dp
+  config%eb%flow%hotspot_center_y = 0.5_dp
+  config%eb%flow%hotspot_width = 0.08_dp
+  config%eb%flow%hotspot_temperature_rise = 250.0_dp
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, regrids, initial_integrals, &
+    final_integrals, minimum_dt, base_density, ok)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "missing three-level transport database rejection")
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, regrids, initial_integrals, &
+    final_integrals, minimum_dt, base_density, ok, transport=transport, &
+    minimum_transport_theta=minimum_transport_theta)
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  conservation_error = maxval(abs(final_integrals - initial_integrals)) / scale
+  call require(ok .and. steps >= 1 .and. &
+    time == config%eb%flow%final_time .and. minimum_dt > 0.0_dp, &
+    "public three-level transport time loop")
+  call require(minimum_transport_theta > 0.999999999_dp, &
+    "public three-level transport limiter")
+  call require(conservation_error <= 2.0e-8_dp, &
+    "public three-level transport conservation")
+
+  config%eb%flow%chemistry_enabled = .true.
+  config%eb%flow%transport_enabled = .true.
   config%eb%flow%problem = "reactive_hotspot"
   config%eb%flow%hotspot_center_x = 0.5_dp
   config%eb%flow%hotspot_center_y = 0.5_dp
@@ -648,7 +687,8 @@ program test_reactive_eb_amr_2d_driver
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
       level_two_state, level_two_temperature, level_two_geometry, &
       level_two_patch, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok)
+      final_integrals, minimum_dt, base_density, ok, transport=transport, &
+      minimum_transport_theta=minimum_transport_theta)
   call require(ok .and. steps > 0 .and. regrids > 0 .and. &
     level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
     level_two_patch%coarse_i_lower >= 3 .and. &
@@ -658,6 +698,8 @@ program test_reactive_eb_amr_2d_driver
     (level_two_patch%coarse_i_upper /= 6 .or. &
      level_two_patch%coarse_j_upper /= 6), &
     "public dynamic three-level finest regrid")
+  call require(minimum_transport_theta > 0.999999999_dp, &
+    "public dynamic three-level transport limiter")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 

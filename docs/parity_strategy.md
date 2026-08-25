@@ -1700,3 +1700,22 @@ CSVs must contain finite positive active thermodynamics and species closure
 within `8e-12`; the conducting fine-level temperature span must be measurably
 smaller. These focused gates must pass before all 201 tests in GNU Fortran
 Debug and Release configurations.
+
+## 0.108.0 three-level reactive EB AMR transport gates
+
+The low-level hierarchy gate initializes a nonuniform hotspot on nested root,
+middle, and finest plane-EB meshes. It selects a positive transport limit on
+every level, converts both child limits to the root interval, and advances
+middle and finest transport with nested ratio subcycling and time-interpolated
+parent exterior states. Independent diffusive registers must reflux each
+interface in deepest-first order. Every three-level composite conserved
+integral must remain within a `3e-10` scale-aware tolerance, covered cells must
+remain bitwise unchanged, and an invalid interval must roll back all levels.
+
+The driver gate must reject an omitted transport database and accept the same
+request with the matching seven-species database. The public application runs
+matching inert and conducting 8 by 8 root, 12 by 12 middle, and 16 by 16
+finest hotspots to `2e-7`. All six CSVs must contain finite positive active
+thermodynamics and species closure within `8e-12`; the conducting composite
+hierarchy temperature span must be measurably smaller. These focused gates must pass
+before all 205 tests in GNU Fortran Debug and Release configurations.

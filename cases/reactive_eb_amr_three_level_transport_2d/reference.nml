@@ -1,0 +1,65 @@
+&reactive_2d
+  nx = 8
+  ny = 8
+  maximum_steps = 100
+  x_lower = 0.0
+  x_upper = 0.012
+  y_lower = 0.0
+  y_upper = 0.012
+  final_time = 2.0e-7
+  cfl = 0.10
+  problem = "reactive_hotspot"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  limiter = "mc"
+  use_transverse_correction = .false.
+  chemistry_enabled = .false.
+  chemistry_model = "elementary"
+  transport_enabled = .false.
+  boundary_x_lower = "outflow"
+  boundary_x_upper = "outflow"
+  boundary_y_lower = "outflow"
+  boundary_y_upper = "outflow"
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  hotspot_temperature_rise = 300.0
+  hotspot_center_x = 0.006
+  hotspot_center_y = 0.006
+  hotspot_width = 0.0015
+  x_h2 = 0.29570
+  x_h = 1.0e-5
+  x_o = 1.0e-5
+  x_o2 = 0.14784
+  x_oh = 1.0e-5
+  x_h2o = 0.0
+  x_n2 = 0.55643
+  output_file = "three_level_transport_reference_root.csv"
+/
+
+&embedded_boundary
+  geometry = "plane"
+  plane_normal_x = 1.0
+  plane_normal_y = 0.0
+  plane_offset = 0.00337
+  state_redist_target_volume_fraction = 0.5
+  state_redist_max_order = 2
+/
+
+&eb_amr
+  coarse_i_lower = 2
+  coarse_i_upper = 7
+  coarse_j_lower = 2
+  coarse_j_upper = 7
+  refinement_ratio = 2
+  three_level_enabled = .true.
+  level_two_i_lower = 3
+  level_two_i_upper = 10
+  level_two_j_lower = 3
+  level_two_j_upper = 10
+  multipatch_enabled = .false.
+  dynamic_regridding = .false.
+  fine_output_file = "three_level_transport_reference_middle.csv"
+  level_two_output_file = "three_level_transport_reference_finest.csv"
+/

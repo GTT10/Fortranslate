@@ -1878,3 +1878,23 @@ mixture molecular-transport subset. Three-level and multipatch transport,
 coarse-to-fine spatial slopes, non-outflow refined boundaries, thermal or
 catalytic embedded walls, transport checkpoint/restart, MPI ownership, and
 parallel transport remain separate work.
+
+## Three-level reactive EB AMR molecular transport (`0.108.0`)
+
+- [x] nested root/middle/finest EB transport SSPRK2 transactions
+- [x] cumulative ratio subcycling on middle and finest levels
+- [x] time-interpolated parent exterior states at both interfaces
+- [x] independent time-integrated diffusive flux registers per interface
+- [x] innermost reflux and EB-cut conservation closure per middle substep
+- [x] outer reflux and deepest-first reactive average-down
+- [x] root-equivalent parabolic stability limits from all three levels
+- [x] transactional `R-T-H-T-R` three-level driver composition
+- [x] missing transport-database rejection and exact rollback
+- [x] public inert/conducting three-level hotspot comparison gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public strictly nested three-level EB AMR lifecycle now runs the qualified
+mixture molecular-transport subset for static or movable finest rectangles.
+Multipatch transport, coarse-to-fine spatial slopes, non-outflow refined
+boundaries, thermal or catalytic embedded walls, transport checkpoint/restart,
+MPI ownership, and parallel transport remain separate work.
