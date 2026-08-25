@@ -1953,3 +1953,27 @@ loads all three fields into private candidates, and recovers active
 temperatures from conserved state. Time, minimum timestep, step count, regrid
 count, topology, and fields publish together only after a complete end marker.
 Checkpoint scheduling and output paths remain restart-adjustable.
+
+## Single-level EB molecular transport
+
+The regular mixture transport operator supplies Cartesian face-centered
+viscous stress, Fourier heat flux, mixture-averaged species diffusion,
+barodiffusion, correction velocity, and species enthalpy flux. These fluxes
+are interpolated to the EB face centroids and multiplied by the nodal-geometry
+open-face fractions. No diffusive source is added on the cut face itself, so
+the qualified embedded wall is adiabatic, free slip, and impermeable to every
+species.
+
+For an active cell with fluid volume `V`, the conservative transport source is
+the negative open-area flux sum divided by `V`. Before divergence, each
+species' outgoing integrated flux is compared with 90 percent of its
+fluid-volume inventory. The minimum adjacent-cell factor scales the complete
+coupled face flux, retaining species/enthalpy and viscous-work consistency.
+
+Each Euler transport stage passes that source through the established EB
+StateRedist transaction and recovers active temperatures from conserved state.
+Two such stages form SSPRK2. The public reactive EB step uses
+`R(dt/2) -> T(dt/2) -> H(dt) -> T(dt/2) -> R(dt/2)` and publishes only the
+fully valid result. The timestep is the minimum of the hyperbolic and mixture
+transport stability limits. Coarse/fine diffusive flux registers are not yet
+part of this single-level milestone.

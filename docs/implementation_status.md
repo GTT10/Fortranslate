@@ -1839,3 +1839,22 @@ than the configured seed and retains regrid accounting across the split.
 Finest removal or siblings, dynamic middle/root topology, molecular transport,
 arbitrary depth, parallel checkpoint I/O, and MPI ownership remain separate
 work.
+
+## Single-level reactive EB molecular transport (`0.106.0`)
+
+- [x] mixture viscosity, thermal conduction, and species diffusion flux reuse
+- [x] barodiffusion and correction-velocity species mass closure
+- [x] Cartesian-face to EB face-centroid interpolation
+- [x] open-area and fluid-volume conservative divergence
+- [x] adiabatic slip and species-impermeable embedded-wall closure
+- [x] EB fluid-inventory species positivity limiter
+- [x] SSPRK2 StateRedist and all-active-cell EOS recovery
+- [x] transport stability limit in the public timestep selection
+- [x] transactional chemistry/transport/hydro symmetric composition
+- [x] public hotspot conduction and nonuniform conservation gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public single-level EB application now runs the qualified molecular
+transport subset. Thermal, viscous, catalytic, or prescribed-flux embedded
+walls, EB AMR diffusive reflux, dynamic transport topology, MPI ownership, and
+parallel transport remain separate work.
