@@ -656,7 +656,10 @@ Required capabilities:
   (`0.109.0`)
 - [x] deterministic MPI ownership of root tiles and sibling EB patches with
   subcycle-weighted work and owner-authoritative synchronization (`0.110.0`)
-- direct owner-only MPI EB AMR physics and sparse rank-local field storage
+- [x] owner-only active-cell MPI chemistry for root tiles and sibling EB
+  patches with collective commit and rollback (`0.111.0`)
+- owner-only MPI EB AMR hydro and molecular transport
+- sparse rank-local EB field storage
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

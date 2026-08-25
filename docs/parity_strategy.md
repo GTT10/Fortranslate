@@ -1755,3 +1755,20 @@ work exponent must reject collectively, and exponent three must reject on all
 ranks. The executable must pass with OpenMPI at one, two, four, and eight
 ranks in GNU Fortran Release and bounds/FPE-checked Debug builds before the
 complete 208-test serial regression in each MPI configuration.
+
+## 0.111.0 owner-only MPI reactive EB AMR chemistry gates
+
+The ownership executable builds a serial active-cell chemistry reference for
+the same plane-EB root and two separated ratio-two children. Its MPI path must
+call the reactor exactly once on the exclusive owner of every root tile and
+child patch. Each rank's committed call count must equal its owner-map entity
+count, and the global sum must equal the complete entity count.
+
+After each accepted owner transaction, the owner state and EOS-recovered
+temperature are broadcast. A fine-to-root average-down then must match the
+serial patch-set reference to `5e-13` of the field scale for the root and both
+children, while at least one reactive species changes measurably. Corrupting
+the density on the owner of the last root tile must reject collectively after
+earlier entities have advanced and must leave every rank's original root and
+child fields bitwise unchanged. The gate runs at one, two, four, and eight
+ranks in GNU Fortran Release and bounds/FPE-checked Debug configurations.
