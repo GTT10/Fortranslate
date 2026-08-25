@@ -605,8 +605,10 @@ Required capabilities:
   conservation, and reactive EOS transaction (`0.85.0`)
 - [x] EB open-face flux register, subcycle accumulation, cut-cell re-reflux,
   fine-recipient transfer, and reactive transaction (`0.86.0`)
-- EB hierarchy prolongation, time advancement, dynamic regridding, and
-  multilevel redistribution
+- [x] EB PCM prolongation, coarse-time patch-boundary fill, ratio subcycling,
+  hydro reflux, and average-down (`0.87.0`)
+- EB dynamic regridding, multiple patches, deeper levels, and multilevel
+  redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

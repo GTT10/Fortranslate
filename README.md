@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.86.0` milestone contains the serial verification suite, seven optional
+The `0.87.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -195,10 +195,20 @@ neighbors, with any share landing below the fine patch transferred to all of
 that parent's fine children. Reactive re-reflux commits both levels and both
 temperature fields only after every active cell passes EOS recovery.
 
+The static hierarchy can now initialize its fine rectangle by piecewise-
+constant coarse injection and advance reactive EB hydrodynamics over one
+coarse interval. The coarse level takes one step while the fine level takes
+`r` steps. Each fine-patch boundary face obtains a time-interpolated conserved
+state from the adjacent coarse cell, followed by EOS temperature recovery.
+The fluxes that actually advanced both levels feed the EB flux register;
+re-reflux and reactive average-down then synchronize the hierarchy in one
+transaction.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-prolongation and time advancement, dynamic multilevel EB regridding, and MPI
-distribution are not yet connected.
+coarse-to-fine spatial interpolation, AMR chemistry/transport composition,
+dynamic multilevel EB regridding, multiple patches, and MPI distribution are
+not yet connected.
 
 ### MPI one-dimensional verification
 

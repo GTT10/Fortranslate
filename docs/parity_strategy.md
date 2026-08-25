@@ -1315,3 +1315,25 @@ temperature after active-cell EOS recovery and preserve covered states exactly.
 A correction that makes an active state nonphysical must restore both complete
 state arrays, both temperature arrays, and the unconsumed register in GNU
 Fortran Debug and Release suites.
+
+## 0.87.0 static two-level reactive EB advance gates
+
+Piecewise-constant prolongation of a uniform multispecies state must inject the
+same conserved data into every child, recover active-child temperature, and
+return to the original parent state through EB average-down. A proportional
+coarse-state change sampled at one-quarter of the coarse interval must produce
+the exact interpolated conserved state at every open fine-patch boundary and
+must pass EOS recovery; an interpolation time outside `[0,1]` must fail.
+
+A uniform stationary H2/O2/N2 field must survive one characteristic-PLM coarse
+step and two fine substeps across a diagonal embedded boundary. Reflux and
+average-down must preserve every composite conserved integral, both level
+states, active temperatures, and covered data to roundoff. An unknown Riemann
+solver must restore both complete state arrays and both temperature arrays in
+GNU Fortran Debug and Release suites.
+
+A second hierarchy with a one-percent full-state jump inside the fine patch
+must evolve measurably at its coarse/fine boundary while preserving composite
+mass, total energy, and every species inventory through fine subcycling and EB
+re-reflux. Momentum is not invariant because the embedded wall carries the
+pressure reaction force.

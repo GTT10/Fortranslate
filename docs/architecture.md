@@ -927,7 +927,17 @@ and transfer recipients covered by the fine rectangle to the corresponding
 fine children. Candidate registers and level arrays make reactive state and
 temperature recovery atomic.
 
+`amr_eb_reactive_2d_mod` composes those kernels into one static two-level
+hydrodynamic interval. Piecewise-constant prolongation injects each parent
+state into its `r` by `r` children and recovers active-child temperature. The
+coarse level advances once, and the fine patch advances `r` times with
+`dt_f=dt_c/r`. At every fine substep, its four exterior face-state arrays are
+filled from adjacent coarse cells at an interpolated coarse time. The exact
+centroid fluxes used by both level advances accumulate into the register;
+reactive re-reflux and EB average-down complete a single all-or-nothing state
+and temperature update.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
-neighborhoods, thermal/viscous/catalytic walls, EB prolongation, level advance,
-ghost fill, dynamic regridding, and EB AMR/MPI ownership remain outside this
-subsystem.
+neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
+AMR chemistry/transport composition, dynamic regridding, multiple patches,
+deeper levels, and EB AMR/MPI ownership remain outside this subsystem.

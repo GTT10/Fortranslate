@@ -1454,3 +1454,27 @@ This completes the conservative synchronization kernels for one static serial
 two-level EB rectangle. It does not yet build or advance the hierarchy, fill
 coarse/fine ghosts, prolong initial data, drive fine substeps, regrid, support
 multiple patches or deeper levels, or distribute EB ownership with MPI.
+
+## Static two-level reactive EB hydrodynamic advance (`0.87.0`)
+
+- [x] piecewise-constant coarse-to-fine state initialization
+- [x] active fine-child EOS temperature recovery
+- [x] one coarse step paired with `r` fine hyperbolic substeps
+- [x] conserved coarse-time interpolation at fine-patch exterior faces
+- [x] EOS recovery for every open exterior face state
+- [x] PCM or characteristic-PLM fine-level reconstruction
+- [x] configurable weighted-StateRedist target volume fraction
+- [x] exact advancing centroid fluxes supplied to the EB register
+- [x] reactive cut-cell re-reflux followed by EB average-down
+- [x] hierarchy-wide state and temperature transaction
+- [x] constant-state prolong/restrict and subcycled preservation gates
+- [x] nonmatching interface mass, energy, and species conservation gate
+- [x] composite conservation and covered-state preservation gates
+- [x] invalid interpolation-time and solver rollback gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This is the first complete hydrodynamic interval for one static, aligned,
+strictly internal fine rectangle. Coarse exterior data is piecewise constant in
+space and interpolated in time. Chemistry, molecular transport, automatic
+timestep selection, dynamic regridding, multiple patches, deeper levels, and
+MPI ownership are not yet composed with this EB hierarchy.

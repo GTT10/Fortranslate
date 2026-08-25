@@ -1483,6 +1483,40 @@ temperatures, and commits the two levels only after every EOS conversion
 succeeds. This is interface synchronization only; it does not yet compose EB
 level advancement, ghost fill, prolongation, or regridding.
 
+## Static two-level reactive EB hydrodynamic advance
+
+Piecewise-constant prolongation initializes child `f` from its parent `c` as
+`U_f=U_c`. Covered child data is retained as injected; every active child is
+accepted only after conserved-to-primitive EOS recovery supplies a valid
+temperature.
+
+One coarse interval uses the sequence
+
+`A_c(dt) -> [G_c(alpha_m), A_f(dt/r)] for m=1..r -> reflux -> average-down`,
+
+where `A` is the existing centroid-flux and weighted-StateRedist EB hydro
+operator. For PCM, `alpha_m=(m-1)/r`; for the time-centered characteristic-PLM
+trace, `alpha_m=(m-1/2)/r`. At every open fine-patch boundary face, `G_c`
+forms the adjacent exterior state
+
+`U_ext(alpha)=(1-alpha) U_c^n + alpha U_c^(n+1)`
+
+and recovers its temperature with the mixture EOS. Spatial transfer is
+piecewise constant: the `r` fine faces belonging to one coarse face sample the
+same adjacent coarse cell. Closed faces never consume their placeholder
+exterior values.
+
+The coarse step contributes its actual centroid fluxes for `dt`; each fine
+substep contributes its own actual centroid fluxes for `dt/r`. The established
+EB re-reflux then corrects the coarse/fine mismatch, and reactive EB
+average-down replaces the refined parent region. Caller outputs remain equal
+to their inputs unless every level advance, accumulation, EOS recovery,
+re-reflux, and restriction succeeds. This qualified composition covers one
+strictly internal aligned rectangle and hydrodynamics only; it does not yet
+include coarse spatial slopes, physical-domain-touching fine patches,
+chemistry, molecular transport, regridding, multiple patches, deeper levels,
+or MPI ownership.
+
 The complete EB hydro update accepts either `pcm` or `characteristic_plm`.
 PCM supplies the cell primitive state unchanged. Characteristic PLM reuses the
 regular reactive frozen-composition acoustic projection and MUSCL-Hancock
