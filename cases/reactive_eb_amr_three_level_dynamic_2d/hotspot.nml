@@ -56,10 +56,10 @@
   coarse_j_upper = 11
   refinement_ratio = 2
   three_level_enabled = .true.
-  level_two_i_lower = 3
-  level_two_i_upper = 6
-  level_two_j_lower = 3
-  level_two_j_upper = 6
+  level_two_i_lower = 6
+  level_two_i_upper = 9
+  level_two_j_lower = 6
+  level_two_j_upper = 9
   multipatch_enabled = .false.
   dynamic_regridding = .true.
   regrid_at_initialization = .true.
