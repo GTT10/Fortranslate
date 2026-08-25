@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.96.0` milestone contains the serial verification suite, seven optional
+The `0.97.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -24,7 +24,9 @@ checkpoint preserves the complete ordered patch set for transactional serial
 restart. A configured static fine rectangle may also meet an outflow physical
 boundary: its physical-side exterior state is extrapolated from the current
 fine boundary cell while the remaining coarse/fine sides retain coarse-time
-interpolation and conservative reflux.
+interpolation and conservative reflux. Temperature-gradient tagging and both
+single- and multipatch planners can now create such outflow-side rectangles
+dynamically, including one-sided gradient detection on root boundary cells.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -252,8 +254,9 @@ The two-level EB kernel can also cluster disconnected tag components into a
 deterministically ordered collection of separated fine rectangles. Buffer and
 minimum-size expansion are applied per component, nearby candidates are
 coalesced to preserve the 3-by-3 redistribution neighborhood contract, and
-planner candidates that meet a physical boundary are still rejected. A
-configured static single patch may meet an outflow side. A patch-set transaction
+clamped to the complete root domain. Boundary cells use available one-sided
+temperature differences, so a single- or multipatch plan may meet any outflow
+side. A patch-set transaction
 supports PCM creation, exact old/new fine-overlap retention, conservative
 average-down, composite integration, movement, repartition, and removal.
 Hydrodynamics advances the root once, subcycles every child with its own EB

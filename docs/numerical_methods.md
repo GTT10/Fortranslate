@@ -1772,6 +1772,15 @@ substep, rather than being frozen at the start of the coarse interval. Exterior
 construction validates its dimensions, finiteness, and positive temperature
 before advancing. Because a physical side has no uncovered coarse neighbor,
 the EB flux register skips it and refluxes only the remaining coarse/fine
-interfaces. Dynamic tag clustering continues to require strictly internal
-rectangles; physical-side planner expansion and coalescing remain separate
-work.
+interfaces.
+
+From `0.97.0`, the temperature tagger evaluates every active root cell. An
+interior cell compares its four cardinal neighbors as before; a boundary cell
+uses only cardinal neighbors that exist inside the domain, and all covered
+neighbors remain excluded. Plan bounding, buffering, and minimum-size growth
+use the complete root index range. Multipatch flood fill likewise traverses
+boundary tags, preserves deterministic scan order, and coalesces candidates
+under the same two-cell redistribution separation rule. Both single-patch and
+patch-set topology transactions can therefore create, move, or resize an
+outflow-side fine rectangle. Patch-set hydro uses the evolving child state on
+each physical side and root-time interpolation on every remaining interface.

@@ -1041,10 +1041,20 @@ no correction is accumulated or applied at the physical boundary. Fine state
 and temperature are passed explicitly to exterior construction and validated
 before the substep publishes any candidate hierarchy.
 
+In `0.97.0`, temperature-gradient tagging visits every active root cell. At a
+physical side it compares only in-domain active neighbors, giving a one-sided
+gradient without fabricating a root ghost value. Single- and multipatch plan
+bounds, buffer expansion, minimum-size growth, and component flood fill clamp
+to indices `1:nx` and `1:ny`. The patch-set hydro transaction accepts those
+domain-inclusive children and reuses the 0.96 physical-side exterior closure;
+its flux registers continue to act only on true coarse/fine interfaces.
+Topology replacement, child ordering, rollback, and collection separation are
+unchanged.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, deeper levels, dynamically planned physical-side
-patches, and EB AMR/MPI ownership remain outside this subsystem. The public
-application, CSV output, and checkpoint schema retain the single-patch path by
-default; the public application, CSV output, and dedicated restart schema
-select the patch-set path explicitly.
+EB AMR molecular transport, deeper levels, non-outflow refined boundaries, and
+EB AMR/MPI ownership remain outside this subsystem. The public application,
+CSV output, and checkpoint schema retain the single-patch path by default; the
+public application, CSV output, and dedicated restart schema select the
+patch-set path explicitly.

@@ -626,8 +626,9 @@ Required capabilities:
 - [x] configured static two-level EB fine patch on an outflow physical
   boundary, including physical-side ghost closure, interface-only reflux, and
   public output qualification (`0.96.0`)
+- [x] one-sided physical-boundary tagging and dynamic single-/multipatch
+  planning, topology changes, hydro, and output (`0.97.0`)
 - deeper EB levels and multilevel redistribution
-- dynamic EB patch planning at physical boundaries
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

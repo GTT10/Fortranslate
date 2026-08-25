@@ -1513,3 +1513,22 @@ pass before all 177 tests in GNU Fortran Debug and Release configurations.
 Existing planner tests continue to reject physical-boundary tag collections,
 making the qualified scope a configured static single patch rather than
 dynamic boundary refinement.
+
+## 0.97.0 reactive EB AMR dynamic physical-boundary gates
+
+Unit gates place a temperature jump on a root boundary cell and require a
+one-sided tag plus a domain-inclusive single-patch plan. Direct collection
+planning must accept a boundary tag. The two-child hydro and Strang gate moves
+its first plane-EB child onto the x-lower outflow side, requires composite mass,
+energy, and species conservation, exact synchronization, and whole-hierarchy
+rollback, then moves that child inward while retaining every aligned overlap
+cell exactly and filling only newly exposed cells from the synchronized root.
+
+The public case starts with one hotspot beside x-lower and a second interior
+hotspot. Initialization and accepted-step planning must produce two ordered,
+separated children, with the first exactly aligned to x-lower. Root and child
+outputs must reach the requested time with finite positive thermodynamics,
+species closure, ratio-two spacing, aligned inferred bounds, all EB classes,
+retained hotspot temperatures, and the established two-cell separation. The
+focused eleven-test application gate must pass before all 179 tests in GNU
+Fortran Debug and Release configurations.

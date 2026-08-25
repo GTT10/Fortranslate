@@ -1665,3 +1665,22 @@ rectangle that meets an outflow physical boundary. Dynamic tag planning still
 requires strictly internal patches. EB molecular transport, deeper EB levels,
 physical-side dynamic clustering, non-outflow refined boundaries, and
 distributed ownership remain separate work.
+
+## Reactive EB AMR dynamic physical-boundary planning (`0.97.0`)
+
+- [x] one-sided temperature-gradient tags on active root boundary cells
+- [x] domain-inclusive single-patch plan validation, buffering, and growth
+- [x] domain-inclusive multipatch flood fill, clustering, and coalescing
+- [x] full-domain minimum patch sizes accepted by input and runtime validation
+- [x] physical-side child support in patch-set hydro and Strang transactions
+- [x] conservative topology movement away from a physical side
+- [x] unit gates for boundary tags, plans, multipatch hydro, and overlap transfer
+- [x] public boundary-plus-interior double-hotspot dynamic application
+- [x] aligned child output, separation, EB classes, positivity, and closure gates
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The serial EB AMR application can now dynamically refine an outflow boundary
+with either one child or a separated patch set. EB molecular transport, deeper
+EB levels, non-outflow refined boundaries, distributed ownership, and explicit
+physical-side checkpoint parity remain separate work.
