@@ -1712,5 +1712,30 @@ With chemistry enabled, the patch-set Strang interval is
 Every reaction call masks covered EB cells. Coarse state, all fine states, all
 temperatures, and patch metadata are private candidates until every reaction,
 hydro, reflux, EOS, and synchronization stage succeeds. This kernel currently
-has no molecular-transport stage and is not yet selected by the public EB AMR
-application or checkpoint schema.
+has no molecular-transport stage.
+
+## Public reactive EB multipatch lifecycle
+
+Multipatch mode begins from the configured seed rectangle so initialization
+has a valid hierarchy even when initial tagging is disabled. With initial
+tagging enabled, and later at every `regrid_interval`, the root temperature
+produces a new collection plan. An identical collection is a no-op. Empty tags
+retain the current set unless `remove_fine_patch_when_untagged` is enabled; in
+that case the empty-set topology transaction conservatively returns all child
+data to the root.
+
+The public coarse timestep is
+
+`dt = min(dt_root, min_p(r_p * dt_child,p), remaining_time)`.
+
+The accepted-step transaction advances that interval with the set-wide Strang
+operator. Time, minimum-timestep, step, and regrid counters change only after
+the physics or topology operation commits. The composite initial and final
+integrals use every uncovered root cell and every active child exactly once.
+
+The executable writes the synchronized root through the existing EB CSV path.
+For child index `p`, it inserts `_patchNNNN` before the configured fine-output
+extension and writes that child's actual geometry and state. Child order is
+the deterministic collection order. Multipatch checkpoint/restart requests
+are rejected because checkpoint schema one cannot represent a child
+collection.

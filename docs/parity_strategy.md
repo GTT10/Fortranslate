@@ -1450,3 +1450,27 @@ species change and mass/energy conservation within `5e-10`, and proves final
 synchronization. An invalid hydro solver after the first chemistry half-step
 must restore every coarse/fine state and temperature bitwise in GNU Fortran
 Debug and Release suites.
+
+## 0.94.0 reactive EB AMR multipatch application gates
+
+The public EB AMR driver must convert its configured seed rectangle into a
+valid patch set, optionally replace it from disconnected temperature-gradient
+tags, and select the minimum root/all-child CFL timestep. Periodic planning
+must retain an identical collection, conservatively replace a changed
+collection, and remove every child only when the configured empty-tag policy
+allows it. Time, accepted-step, minimum-timestep, and regrid accounting may
+change only after a complete set-wide physics or topology transaction commits.
+
+An input-driven double-hotspot case over a plane EB must produce two ordered,
+separated 10 by 10 ratio-two children over a 14 by 14 root. The public run must
+advance chemistry and hydrodynamics, preserve composite mass and total energy,
+retain finite positive thermodynamics and species closure, and exercise a
+periodic regrid. Output gates require one synchronized root CSV and exactly two
+fine CSV files whose deterministic patch suffixes, coordinates, row counts,
+temperature features, EB classes, and simulation time match the committed
+hierarchy.
+
+Configuration must reject multipatch checkpoint or restart requests before
+initialization because formatted checkpoint schema one owns at most one fine
+rectangle. The focused public-driver and input/output gates must pass before
+the complete GNU Fortran Debug and Release regression suites.

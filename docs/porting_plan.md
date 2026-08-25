@@ -619,8 +619,10 @@ Required capabilities:
   field parity (`0.92.0`)
 - [x] deterministic two-level EB multipatch planning, conservative topology
   changes, subcycled hydro/reflux, and Strang chemistry kernel (`0.93.0`)
-- EB multipatch application/checkpoint integration, deeper levels, and
-  multilevel redistribution
+- [x] input-driven two-level EB multipatch lifecycle, CFL selection, periodic
+  regridding, chemistry/hydro advance, and per-child output (`0.94.0`)
+- EB multipatch checkpoint/restart, deeper levels, and multilevel
+  redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

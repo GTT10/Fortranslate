@@ -1008,9 +1008,23 @@ matching driver transaction applies masked reaction half-steps to the root and
 all children around that hydro update, synchronizes after the second reaction,
 and exposes no partial hierarchy on failure.
 
+In `0.94.0`, the public EB AMR executable dispatches to this representation
+when `multipatch_enabled` is true. A configured rectangle seeds the initial
+set, after which the collection planner may replace it at initialization and
+at the accepted-step regrid cadence. The timestep routine reduces the active
+root CFL limit with `r` times every child limit. Each accepted interval calls
+the set-wide Strang transaction, and a committed periodic regrid replaces the
+root and complete child collection together. Output iterates children in
+planner order and adds a stable patch number before the CSV extension.
+
+The version-one formatted checkpoint has one optional child payload. Rather
+than encode an incomplete patch set, configuration and runtime validation
+reject checkpoint or restart controls whenever multipatch mode is enabled.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, deeper levels, and EB AMR/MPI ownership remain
 outside this subsystem. The public application, CSV output, and checkpoint
-schema still use the single-patch lifecycle rather than the new patch-set
-kernel.
+schema retain the single-patch path by default; the public application and CSV
+output select the patch-set path explicitly, while the checkpoint schema does
+not yet support it.

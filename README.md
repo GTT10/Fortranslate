@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.93.0` milestone contains the serial verification suite, seven optional
+The `0.94.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -15,10 +15,11 @@ serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
 its composite conserved state, and can compose active-cell chemistry with the
 two-level or root-only EB hydrodynamic path. Formatted checkpoints preserve
-that lifecycle state for a later serial restart. A separately qualified
-two-level EB kernel now clusters disconnected tags into multiple fine
-rectangles and advances their reactive hydrodynamics and chemistry
-transactionally with one flux register per child.
+that lifecycle state for a later serial restart. With multipatch mode enabled,
+the same application clusters disconnected tags into multiple fine rectangles,
+selects a set-wide CFL limit, advances their reactive hydrodynamics and
+chemistry transactionally with one flux register per child, periodically
+rebuilds the set, and writes one CSV per active child.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -255,13 +256,21 @@ Strang transaction applies active-cell chemistry on the root and every child
 around that hydrodynamic interval and restores the complete hierarchy after
 any rejected stage.
 
+Setting `multipatch_enabled = .true.` connects that patch set to the public
+`pelef_reactive_eb_amr_2d` lifecycle. The input exposes the maximum tag gap,
+the initial and periodic planners can replace the configured seed rectangle
+with zero or more children, the timestep is the minimum root/child CFL limit,
+and accepted steps retain the existing regrid cadence and counters. Fine CSV
+paths receive deterministic `_patch0001`, `_patch0002`, ... suffixes. The
+formatted checkpoint schema remains single-patch, so multipatch inputs that
+request checkpoint or restart are rejected before initialization.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
 coarse-to-fine spatial interpolation, EB AMR molecular transport, deeper EB
 levels, and MPI distribution are not yet connected. The public EB AMR
-application and its checkpoint schema still own at most one fine rectangle;
-the qualified multipatch kernel will be connected to that lifecycle in a later
-milestone.
+application now owns multiple fine rectangles when explicitly enabled; its
+checkpoint schema still owns at most one fine rectangle.
 
 ### MPI one-dimensional verification
 

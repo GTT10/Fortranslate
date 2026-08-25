@@ -1606,3 +1606,23 @@ rectangles over one EB root. The public EB AMR application, its runtime
 configuration, CSV layout, and checkpoint schema still select the qualified
 single-patch lifecycle. Connecting this patch set to that lifecycle, deeper
 levels, EB AMR molecular transport, and MPI ownership remain separate work.
+
+## Reactive EB AMR multipatch application (`0.94.0`)
+
+- [x] `multipatch_enabled` runtime dispatch and maximum tag-gap input
+- [x] configured seed rectangle converted to transactional patch-set ownership
+- [x] initial and periodic disconnected-temperature-tag regridding
+- [x] empty-set removal policy and unchanged-collection no-op behavior
+- [x] root plus all-child active-cell CFL timestep selection
+- [x] public set-wide Strang chemistry/hydro time loop and regrid counters
+- [x] deterministic per-child CSV names, geometry, state, and diagnostics
+- [x] explicit multipatch checkpoint/restart rejection before initialization
+- [x] two-hotspot plane-EB input case producing two separated fine rectangles
+- [x] public mass, energy, positivity, species-closure, and output gates
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The serial EB AMR executable can now select either the existing single-patch
+checkpoint-capable lifecycle or a dynamic two-level patch set. Multipatch
+checkpoint/restart, EB molecular transport, deeper levels, physical-boundary
+fine patches, and distributed ownership remain separate work.
