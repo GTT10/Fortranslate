@@ -644,7 +644,7 @@ program pelef_mpi_eb_amr_patch_2d
   allocate(full_reference_temperature, mold=coarse_temperature)
   call advance_reactive_eb_patch_set_strang_2d( &
     species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
-    transport_start_set, "hllc", "pcm", "mc", 2, transport_dt, .true., &
+    patch_set, "hllc", "pcm", "mc", 2, transport_dt, .true., &
     1.0e-8_dp, 1.0e-14_dp, full_reference_state, &
     full_reference_temperature, full_reference_set, ok, &
     target_volume_fraction=0.5_dp, failure_context=full_failure_context, &
@@ -658,7 +658,7 @@ program pelef_mpi_eb_amr_patch_2d
 
   allocate(full_mpi_state, source=coarse_state)
   allocate(full_mpi_temperature, source=coarse_temperature)
-  full_mpi_set = transport_start_set
+  full_mpi_set = patch_set
   call advance_owned_reactive_eb_patch_set_strang_2d( &
     species, reactions, transport, distribution, full_mpi_state, &
     full_mpi_temperature, coarse_geometry, full_mpi_set, "hllc", "pcm", &
@@ -680,14 +680,14 @@ program pelef_mpi_eb_amr_patch_2d
   expected_global_transport = 4
   do child = 1, distribution%child_count()
     expected_global_hydro = expected_global_hydro + &
-      transport_start_set%children(child)%patch%refinement_ratio
+      patch_set%children(child)%patch%refinement_ratio
     expected_global_transport = expected_global_transport + 4 * &
-      transport_start_set%children(child)%patch%refinement_ratio
+      patch_set%children(child)%patch%refinement_ratio
     if (distribution%child_is_local(child)) then
       expected_local_hydro = expected_local_hydro + &
-        transport_start_set%children(child)%patch%refinement_ratio
+        patch_set%children(child)%patch%refinement_ratio
       expected_local_transport = expected_local_transport + 4 * &
-        transport_start_set%children(child)%patch%refinement_ratio
+      patch_set%children(child)%patch%refinement_ratio
     end if
   end do
   call MPI_Allreduce( &
@@ -734,14 +734,14 @@ program pelef_mpi_eb_amr_patch_2d
   do child = 1, full_reference_set%patch_count()
     full_change = max(full_change, maxval(abs( &
       full_reference_set%children(child)%state - &
-      transport_start_set%children(child)%state)))
+      patch_set%children(child)%state)))
   end do
   call assert_all(full_change > 1.0e-14_dp * full_scale, &
     "MPI EB AMR full physics changes hierarchy", rank)
 
   allocate(full_failed_state, source=coarse_state)
   allocate(full_failed_temperature, source=coarse_temperature)
-  full_failed_set = transport_start_set
+  full_failed_set = patch_set
   allocate(full_failed_backup_state, source=full_failed_state)
   allocate(full_failed_backup_temperature, source=full_failed_temperature)
   full_failed_backup_set = full_failed_set
