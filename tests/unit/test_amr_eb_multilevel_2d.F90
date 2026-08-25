@@ -206,6 +206,18 @@ program test_amr_eb_multilevel_2d
     "three-level reactive rollback")
 
   level_two_temperature(1, 1) = temperature_cell
+  primitive(2:4) = 0.0_dp
+  call reactive_primitive_to_conserved( &
+    species, primitive, state_cell, temperature_cell, sound_speed, ok)
+  call require(ok, "stationary three-level hydro state")
+  reactive_root = spread(spread(state_cell, 2, root_nx), 3, root_ny)
+  reactive_level_one = 1.01_dp * &
+    spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
+  reactive_level_two = 0.99_dp * &
+    spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+  root_temperature = temperature_cell
+  level_one_temperature = temperature_cell
+  level_two_temperature = temperature_cell
   call composite_three_level_eb_integral_2d( &
     reactive_root, root_geometry, reactive_level_one, level_one_geometry, &
     root_patch, reactive_level_two, level_two_geometry, level_one_patch, &
