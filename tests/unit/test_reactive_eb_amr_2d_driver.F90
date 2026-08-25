@@ -198,8 +198,6 @@ program test_reactive_eb_amr_2d_driver
     "re-created fine patch collapses on empty tags")
   call reactive_eb_integrals_2d( &
     coarse_state, coarse_geometry, lifecycle_integrals, ok)
-  lifecycle_integrals = lifecycle_integrals * &
-    coarse_geometry%dx * coarse_geometry%dy
   call require(ok .and. maxval(abs(lifecycle_integrals - &
     final_integrals)) <= 3.0e-12_dp * scale, &
     "re-created patch collapse conservation")

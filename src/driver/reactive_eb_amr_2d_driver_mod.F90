@@ -138,7 +138,6 @@ contains
     end if
     call reactive_eb_integrals_2d( &
       coarse_state, coarse_geometry, integrals, ok)
-    if (ok) integrals = integrals * coarse_geometry%dx * coarse_geometry%dy
   end subroutine compute_reactive_eb_amr_integrals_2d
 
   subroutine build_reactive_eb_amr_patch_geometry_2d( &
