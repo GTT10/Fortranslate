@@ -1982,3 +1982,25 @@ is still synchronized by root tiles. Owner-only molecular transport, sparse
 fields, decomposed root-level StateRedist, point-to-point coarse/fine traffic,
 topology migration, parallel checkpoint I/O, and a public distributed time
 loop remain separate work.
+
+## Owner-only MPI reactive EB AMR molecular transport (`0.113.0`)
+
+- [x] collective transport-record, boundary, switch, interval, and StateRedist consensus
+- [x] owner-authoritative start-state synchronization before SSPRK2 blending
+- [x] one complete root EB transport Euler update per stage on one physics owner
+- [x] ratio-subcycled fine transport on each exclusive child owner
+- [x] owner-local coarse/fine time-integrated diffusive flux registers
+- [x] deterministic child reflux and root-owner EB-cut conservation closure
+- [x] owner-side SSPRK2 blend, EOS recovery, and final reactive average-down
+- [x] exact local and global committed Euler-advance accounting
+- [x] serial multipatch EB transport state, temperature, and limiter parity
+- [x] exact all-rank rollback after a late child-owner failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Reactive EB chemistry, finite-volume hydro, and qualified mixture molecular
+transport now all have direct owner-only MPI transactions. Complete EB fields
+and topology remain replicated. Sparse rank-local storage, decomposed
+root-level StateRedist, point-to-point coarse/fine and halo traffic, dynamic
+topology migration, parallel checkpoint I/O, and a public distributed EB AMR
+time loop remain separate work.

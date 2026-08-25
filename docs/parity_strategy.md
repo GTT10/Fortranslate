@@ -1795,3 +1795,28 @@ advance rejects collectively. Every rank must retain its original root and
 child payloads bitwise and report zero committed advances. The gate runs at
 one, two, four, and eight ranks in GNU Fortran Release and
 bounds/FPE-checked Debug configurations.
+
+## 0.113.0 owner-only MPI reactive EB AMR transport gates
+
+The MPI path must reproduce the serial multipatch SSPRK2 molecular-transport
+transaction for a plane-EB root and two separated ratio-two children with
+different density, temperature, and velocity states. Before advancement,
+nonowners hold deliberately stale finite replicas; owner synchronization must
+still recover the serial start hierarchy.
+
+In each Euler stage the exclusive root physics owner advances the complete EB
+level once. Each child owner must execute both fine substeps, accumulate its
+coarse and fine time-integrated diffusive fluxes, reflux in child order, and
+publish the corrected child and root. The root owner performs the set-wide
+average-down and the EB-cut composite conservation closure. Across two SSPRK2
+stages, the qualified hierarchy must report exactly ten committed Euler-level
+advances. State, temperature, and limiter minima must match the serial
+transaction within their scale-aware tolerances and the nonuniform hierarchy
+must change measurably.
+
+The final child owner receives a finite but EOS-invalid density field after
+the root and earlier child candidates can execute. The transaction must reject
+communicator-wide, leave every rank's caller-owned root and child fields
+bitwise unchanged, and report zero committed advances. The gate runs at one,
+two, four, and eight ranks in GNU Fortran Release and bounds/FPE-checked Debug
+configurations.

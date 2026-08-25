@@ -1200,13 +1200,24 @@ root and child. The root owner performs the final set-wide average-down. Every
 stage is collective and the caller's fields are published only after the
 complete transaction succeeds.
 
+In `0.113.0`, the same ownership boundary encloses molecular transport. Each
+SSPRK2 Euler stage advances the complete root once on its physics owner, then
+advances every child on its owner with ratio subcycling, time-interpolated root
+exterior data, and a private coarse/fine diffusive flux register. Refluxes are
+published in deterministic child order. The root owner applies one set-wide
+average-down and, when an interface crosses the embedded boundary, the
+qualified global composite conservation closure. The two synchronized Euler
+transactions are blended and EOS-recovered on the same owners. Transport
+records, boundary data, switches, timestep, and StateRedist controls must agree
+bitwise across ranks before any physics starts.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-owner-only MPI EB transport, sparse EB field storage, and distributed EB flux
+sparse EB field storage, point-to-point payloads, and distributed EB flux
 registers remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.
