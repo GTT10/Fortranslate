@@ -69,7 +69,7 @@ program test_amr_eb_multipatch_2d
   call mass_fractions_from_mole_fractions( &
     species, mole_fractions, mass_fractions, ok)
   call require(ok, "multipatch composition conversion")
-  primitive(1:5) = [0.31_dp, 2.0_dp, -1.0_dp, 0.0_dp, 135000.0_dp]
+  primitive(1:5) = [0.31_dp, 0.0_dp, 0.0_dp, 0.0_dp, 135000.0_dp]
   do i = 1, size(species)
     primitive(reactive_mass_fraction_component(i)) = mass_fractions(i)
   end do
@@ -113,6 +113,10 @@ program test_amr_eb_multipatch_2d
     old_geometries, old_collection, ratio, old_set, ok)
   call require(ok .and. old_set%is_valid(coarse_geometry, nvar) .and. &
     old_set%patch_count() == 2, "initialize reactive EB patch set")
+  old_set%children(1)%state = 1.01_dp * old_set%children(1)%state
+  old_set%children(2)%state = 0.99_dp * old_set%children(2)%state
+  call require(old_set%is_valid(coarse_geometry, nvar), &
+    "nonmatching multipatch hydro state")
 
   call composite_reactive_eb_patch_set_integral_2d( &
     coarse_state, coarse_geometry, old_set, integral_before, ok)
@@ -258,7 +262,7 @@ program test_amr_eb_multipatch_2d
     maxval(abs(new_coarse_temperature - coarse_temperature)) == 0.0_dp, &
     "invalid multipatch regrid rollback")
   old_set%children(1)%state(:, 1, 1) = &
-    (1.0_dp + 1.0e-3_dp * 13.0_dp) * state_cell
+    1.01_dp * (1.0_dp + 1.0e-3_dp * 13.0_dp) * state_cell
 
   new_tags = .false.
   call build_amr_eb_regrid_plan_collection_2d( &
