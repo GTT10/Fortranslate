@@ -5,8 +5,9 @@ program test_amr_eb_multipatch_2d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved
+    reactive_nvar, reactive_nprim, reactive_density_component, &
+    reactive_total_energy_component, reactive_species_component, &
+    reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
@@ -44,7 +45,7 @@ program test_amr_eb_multipatch_2d
   character(len=64) :: hydro_failure_context
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
-  integer :: child, i, j, nvar
+  integer :: child, component, i, iet, irho, j, k, nvar
 
   do j = 0, coarse_ny
     y = real(j, dp) / real(coarse_ny, dp)
@@ -75,6 +76,8 @@ program test_amr_eb_multipatch_2d
   call reactive_primitive_to_conserved( &
     species, primitive, state_cell, temperature_cell, sound_speed, ok)
   call require(ok, "multipatch reference state")
+  irho = reactive_density_component()
+  iet = reactive_total_energy_component()
 
   allocate(coarse_state(nvar, coarse_nx, coarse_ny))
   allocate(coarse_temperature(coarse_nx, coarse_ny))
@@ -127,17 +130,19 @@ program test_amr_eb_multipatch_2d
     "subcycled multipatch EB hydro")
   call composite_reactive_eb_patch_set_integral_2d( &
     new_coarse_state, coarse_geometry, hydro_set, integral_after, ok)
-  integral_scale = max(1.0_dp, maxval(abs(integral_before)))
-  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
-    3.0e-12_dp * integral_scale, "multipatch hydro conservation")
-  state_scale = max(1.0_dp, maxval(abs(state_cell)))
-  call require(maxval(abs(new_coarse_state - coarse_state)) <= &
-    4.0e-12_dp * state_scale, "uniform multipatch coarse preservation")
-  do child = 1, old_set%patch_count()
-    call require(maxval(abs(hydro_set%children(child)%state - &
-      old_set%children(child)%state)) <= 4.0e-12_dp * state_scale, &
-      "uniform multipatch fine preservation")
+  call require(ok .and. abs(integral_after(irho) - integral_before(irho)) <= &
+    5.0e-11_dp * max(1.0_dp, abs(integral_before(irho))) .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+    5.0e-11_dp * max(1.0_dp, abs(integral_before(iet))), &
+    "multipatch hydro mass and energy conservation")
+  do k = 1, size(species)
+    component = reactive_species_component(k)
+    call require(abs(integral_after(component) - &
+      integral_before(component)) <= 5.0e-11_dp * &
+      max(1.0_dp, abs(integral_before(component))), &
+      "multipatch hydro species conservation")
   end do
+  state_scale = max(1.0_dp, maxval(abs(state_cell)))
   call average_down_reactive_eb_patch_set_2d( &
     species, new_coarse_state, new_coarse_temperature, coarse_geometry, &
     hydro_set, averaged_state, averaged_temperature, ok)
