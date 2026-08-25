@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.106.0` milestone contains the serial verification suite, seven optional
+The `0.107.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -27,6 +27,10 @@ fine boundary cell while the remaining coarse/fine sides retain coarse-time
 interpolation and conservative reflux. Temperature-gradient tagging and both
 single- and multipatch planners can now create such outflow-side rectangles
 dynamically, including one-sided gradient detection on root boundary cells.
+The single-patch two-level lifecycle also accepts mixture molecular transport:
+coarse and fine EB levels advance SSPRK2 transport with ratio subcycling,
+time-interpolated coarse exterior states, open-area diffusive reflux, and
+average-down inside the transactional `R-T-H-T-R` composition.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -220,10 +224,10 @@ general-EOS multispecies state, advances to a requested final time with an
 active-cell CFL limit, reports volume-weighted diagnostics, and writes cell
 geometry and primitive fields to CSV. This qualified runnable path has
 zero-gradient outer faces and optional active-cell chemistry. Its
-Strang sequence applies half reactions only to active cells, performs the EB
-hydro transaction, and applies the second half reaction while leaving covered
-cells bitwise unchanged. Molecular transport and transverse reconstruction
-settings are rejected instead of silently ignored.
+Strang sequence applies half reactions only to active cells and can insert
+SSPRK2 molecular-transport half steps around the EB hydro transaction while
+leaving covered cells bitwise unchanged. Transverse reconstruction settings
+remain rejected instead of silently ignored.
 
 The EB and AMR foundations now meet at one qualified static two-level transfer.
 An aligned rectangular fine patch is restricted with fine fluid-volume weights,
@@ -326,11 +330,12 @@ the middle patch fixed, retains the finest patch, ignores tags outside its
 two-cell-safe planning region, and does not yet support checkpoint/restart.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
-periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-coarse-to-fine spatial interpolation, EB AMR molecular transport, dynamic
-middle/root topology, arbitrary-depth EB levels, and MPI distribution are not
-yet connected. The public EB AMR application now owns either restartable
-sibling rectangles or an
+periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
+coarse-to-fine spatial slopes, three-level or multipatch EB AMR molecular
+transport, dynamic middle/root topology, arbitrary-depth EB levels,
+transport-enabled checkpoint/restart, and MPI distribution are not yet
+connected. The public EB AMR application now owns
+either restartable sibling rectangles or an
 explicit three-level hierarchy with an optionally dynamic finest patch.
 
 ### MPI one-dimensional verification
@@ -773,6 +778,20 @@ Runnable two-level reactive EB AMR hydrodynamics:
 python3 tools/check_reactive_eb_amr_2d.py \
   --coarse reactive_eb_amr_coarse_2d.csv \
   --fine reactive_eb_amr_fine_2d.csv
+```
+
+Two-level reactive EB AMR thermal conduction and diffusive reflux:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_transport_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_transport_2d/transport.nml
+python3 tools/check_reactive_eb_amr_transport_2d.py \
+  --reference-coarse reactive_eb_amr_transport_reference_coarse.csv \
+  --reference-fine reactive_eb_amr_transport_reference_fine.csv \
+  --transport-coarse reactive_eb_amr_transport_coarse.csv \
+  --transport-fine reactive_eb_amr_transport_fine.csv
 ```
 
 Temperature-tagged conservative fine-patch movement:

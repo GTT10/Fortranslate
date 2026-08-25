@@ -1858,3 +1858,23 @@ The public single-level EB application now runs the qualified molecular
 transport subset. Thermal, viscous, catalytic, or prescribed-flux embedded
 walls, EB AMR diffusive reflux, dynamic transport topology, MPI ownership, and
 parallel transport remain separate work.
+
+## Two-level reactive EB AMR molecular transport (`0.107.0`)
+
+- [x] coarse and fine EB transport SSPRK2 transactions
+- [x] ratio-subcycled fine transport intervals
+- [x] time-interpolated coarse exterior states on fine patch boundaries
+- [x] reusable EB face-centroid diffusive flux outputs
+- [x] time-integrated coarse/fine diffusive flux register
+- [x] conservative reflux and reactive average-down after each Euler stage
+- [x] transport stability limits from both levels
+- [x] transactional `R-T-H-T-R` driver composition
+- [x] missing transport-database rejection and exact rollback
+- [x] public inert/conducting hotspot comparison gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public single-patch two-level EB AMR lifecycle now runs the qualified
+mixture molecular-transport subset. Three-level and multipatch transport,
+coarse-to-fine spatial slopes, non-outflow refined boundaries, thermal or
+catalytic embedded walls, transport checkpoint/restart, MPI ownership, and
+parallel transport remain separate work.

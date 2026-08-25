@@ -21,6 +21,19 @@ module reactive_transport_2d_mod
 
   real(dp), parameter :: species_safety = 0.90_dp
 
+  type, public :: reactive_transport_exterior_2d
+    real(dp), allocatable :: x_lower_primitive(:, :)
+    real(dp), allocatable :: x_upper_primitive(:, :)
+    real(dp), allocatable :: y_lower_primitive(:, :)
+    real(dp), allocatable :: y_upper_primitive(:, :)
+    real(dp), allocatable :: x_lower_temperature(:)
+    real(dp), allocatable :: x_upper_temperature(:)
+    real(dp), allocatable :: y_lower_temperature(:)
+    real(dp), allocatable :: y_upper_temperature(:)
+  contains
+    procedure :: is_valid => reactive_transport_exterior_is_valid
+  end type reactive_transport_exterior_2d
+
   public :: reactive_transport_timestep_2d
   public :: reactive_transport_fluxes_2d_faces
   public :: reactive_transport_fluxes_2d
@@ -28,6 +41,87 @@ module reactive_transport_2d_mod
   public :: advance_reactive_transport_2d
 
 contains
+
+  pure logical function reactive_transport_exterior_is_valid( &
+      self, nprimitive, nx, ny) result(valid)
+    class(reactive_transport_exterior_2d), intent(in) :: self
+    integer, intent(in) :: nprimitive, nx, ny
+
+    valid = nprimitive >= 1 .and. nx >= 1 .and. ny >= 1 .and. &
+      allocated(self%x_lower_primitive) .and. &
+      allocated(self%x_upper_primitive) .and. &
+      allocated(self%y_lower_primitive) .and. &
+      allocated(self%y_upper_primitive) .and. &
+      allocated(self%x_lower_temperature) .and. &
+      allocated(self%x_upper_temperature) .and. &
+      allocated(self%y_lower_temperature) .and. &
+      allocated(self%y_upper_temperature)
+    if (.not. valid) return
+    valid = all(shape(self%x_lower_primitive) == [nprimitive, ny]) .and. &
+      all(shape(self%x_upper_primitive) == [nprimitive, ny]) .and. &
+      all(shape(self%y_lower_primitive) == [nprimitive, nx]) .and. &
+      all(shape(self%y_upper_primitive) == [nprimitive, nx]) .and. &
+      size(self%x_lower_temperature) == ny .and. &
+      size(self%x_upper_temperature) == ny .and. &
+      size(self%y_lower_temperature) == nx .and. &
+      size(self%y_upper_temperature) == nx .and. &
+      all(ieee_is_finite(self%x_lower_primitive)) .and. &
+      all(ieee_is_finite(self%x_upper_primitive)) .and. &
+      all(ieee_is_finite(self%y_lower_primitive)) .and. &
+      all(ieee_is_finite(self%y_upper_primitive)) .and. &
+      all(ieee_is_finite(self%x_lower_temperature)) .and. &
+      all(ieee_is_finite(self%x_upper_temperature)) .and. &
+      all(ieee_is_finite(self%y_lower_temperature)) .and. &
+      all(ieee_is_finite(self%y_upper_temperature)) .and. &
+      all(self%x_lower_temperature > 0.0_dp) .and. &
+      all(self%x_upper_temperature > 0.0_dp) .and. &
+      all(self%y_lower_temperature > 0.0_dp) .and. &
+      all(self%y_upper_temperature > 0.0_dp)
+  end function reactive_transport_exterior_is_valid
+
+  subroutine sample_transport_primitive_2d( &
+      primitive, temperature, nx, ny, i, j, boundaries, sampled, &
+      sampled_temperature, ok, exterior)
+    real(dp), intent(in) :: primitive(:, :, :), temperature(:, :)
+    integer, intent(in) :: nx, ny, i, j
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(out) :: sampled(:), sampled_temperature
+    logical, intent(out) :: ok
+    type(reactive_transport_exterior_2d), intent(in), optional :: exterior
+
+    integer :: mapped_i, mapped_j
+
+    if (.not. present(exterior) .or. &
+        (i >= 1 .and. i <= nx .and. j >= 1 .and. j <= ny)) then
+      call sample_reactive_primitive_2d( &
+        primitive, temperature, nx, ny, i, j, boundaries, sampled, &
+        sampled_temperature, ok)
+      return
+    end if
+    sampled = 0.0_dp
+    sampled_temperature = 0.0_dp
+    ok = .false.
+    if (.not. exterior%is_valid(size(primitive, 1), nx, ny)) return
+    mapped_i = min(nx, max(1, i))
+    mapped_j = min(ny, max(1, j))
+    if (i < 1) then
+      sampled = exterior%x_lower_primitive(:, mapped_j)
+      sampled_temperature = exterior%x_lower_temperature(mapped_j)
+    else if (i > nx) then
+      sampled = exterior%x_upper_primitive(:, mapped_j)
+      sampled_temperature = exterior%x_upper_temperature(mapped_j)
+    else if (j < 1) then
+      sampled = exterior%y_lower_primitive(:, mapped_i)
+      sampled_temperature = exterior%y_lower_temperature(mapped_i)
+    else if (j > ny) then
+      sampled = exterior%y_upper_primitive(:, mapped_i)
+      sampled_temperature = exterior%y_upper_temperature(mapped_i)
+    else
+      return
+    end if
+    ok = all(ieee_is_finite(sampled)) .and. &
+      ieee_is_finite(sampled_temperature) .and. sampled_temperature > 0.0_dp
+  end subroutine sample_transport_primitive_2d
 
   pure integer function periodic_index(index, extent) result(wrapped)
     integer, intent(in) :: index, extent
@@ -224,7 +318,7 @@ contains
       species, transport, primitive, checked_temperature, nx, ny, face_i, j, &
       dx, dy, boundaries, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok)
+      species_energy, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: primitive(:, :, :), checked_temperature(:, :)
@@ -235,6 +329,7 @@ contains
     logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
     real(dp), intent(out) :: flux(:), species_energy
     logical, intent(out) :: ok
+    type(reactive_transport_exterior_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: qleft(:), qright(:), qtmp(:), qtmp2(:)
     real(dp), allocatable :: yleft(:), yright(:), yface(:)
@@ -259,13 +354,13 @@ contains
     allocate(xleft(nspecies), xright(nspecies), diffusion(nspecies))
     allocate(hface(nspecies), species_flux(nspecies))
 
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i, j, boundaries, &
-      qleft, tleft, local_ok)
+      qleft, tleft, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i + 1, j, boundaries, &
-      qright, tright, local_ok)
+      qright, tright, local_ok, exterior)
     if (.not. local_ok) return
 
     spacing = dx
@@ -293,23 +388,23 @@ contains
     dvdx = (qright(3) - qleft(3)) / spacing
     dwdx = (qright(4) - qleft(4)) / spacing
 
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i, j + 1, boundaries, &
-      qtmp, ttmp, local_ok)
+      qtmp, ttmp, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i, j - 1, boundaries, &
-      qtmp2, ttmp2, local_ok)
+      qtmp2, ttmp2, local_ok, exterior)
     if (.not. local_ok) return
     dudy = 0.5_dp * (qtmp(2) - qtmp2(2)) / (2.0_dp * dy)
     dvdy = 0.5_dp * (qtmp(3) - qtmp2(3)) / (2.0_dp * dy)
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i + 1, j + 1, &
-      boundaries, qtmp, ttmp, local_ok)
+      boundaries, qtmp, ttmp, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, face_i + 1, j - 1, &
-      boundaries, qtmp2, ttmp2, local_ok)
+      boundaries, qtmp2, ttmp2, local_ok, exterior)
     if (.not. local_ok) return
     dudy = dudy + 0.5_dp * (qtmp(2) - qtmp2(2)) / (2.0_dp * dy)
     dvdy = dvdy + 0.5_dp * (qtmp(3) - qtmp2(3)) / (2.0_dp * dy)
@@ -368,7 +463,7 @@ contains
       species, transport, primitive, checked_temperature, nx, ny, i, face_j, &
       dx, dy, boundaries, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok)
+      species_energy, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: primitive(:, :, :), checked_temperature(:, :)
@@ -379,6 +474,7 @@ contains
     logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
     real(dp), intent(out) :: flux(:), species_energy
     logical, intent(out) :: ok
+    type(reactive_transport_exterior_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: qlower(:), qupper(:), qtmp(:), qtmp2(:)
     real(dp), allocatable :: ylower(:), yupper(:), yface(:)
@@ -403,13 +499,13 @@ contains
     allocate(xlower(nspecies), xupper(nspecies), diffusion(nspecies))
     allocate(hface(nspecies), species_flux(nspecies))
 
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i, face_j, boundaries, &
-      qlower, tlower, local_ok)
+      qlower, tlower, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i, face_j + 1, boundaries, &
-      qupper, tupper, local_ok)
+      qupper, tupper, local_ok, exterior)
     if (.not. local_ok) return
 
     spacing = dy
@@ -437,23 +533,23 @@ contains
     dvdy = (qupper(3) - qlower(3)) / spacing
     dwdy = (qupper(4) - qlower(4)) / spacing
 
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i + 1, face_j, boundaries, &
-      qtmp, ttmp, local_ok)
+      qtmp, ttmp, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i - 1, face_j, boundaries, &
-      qtmp2, ttmp2, local_ok)
+      qtmp2, ttmp2, local_ok, exterior)
     if (.not. local_ok) return
     dudx = 0.5_dp * (qtmp(2) - qtmp2(2)) / (2.0_dp * dx)
     dvdx = 0.5_dp * (qtmp(3) - qtmp2(3)) / (2.0_dp * dx)
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i + 1, face_j + 1, &
-      boundaries, qtmp, ttmp, local_ok)
+      boundaries, qtmp, ttmp, local_ok, exterior)
     if (.not. local_ok) return
-    call sample_reactive_primitive_2d( &
+    call sample_transport_primitive_2d( &
       primitive, checked_temperature, nx, ny, i - 1, face_j + 1, &
-      boundaries, qtmp2, ttmp2, local_ok)
+      boundaries, qtmp2, ttmp2, local_ok, exterior)
     if (.not. local_ok) return
     dudx = dudx + 0.5_dp * (qtmp(2) - qtmp2(2)) / (2.0_dp * dx)
     dvdx = dvdx + 0.5_dp * (qtmp(3) - qtmp2(3)) / (2.0_dp * dx)
@@ -512,7 +608,7 @@ contains
       species, transport, state, temperature, nx, ny, dx, dy, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux_x, flux_y, &
-      minimum_theta, ok, boundaries)
+      minimum_theta, ok, boundaries, exterior)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -524,6 +620,7 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    type(reactive_transport_exterior_2d), intent(in), optional :: exterior
 
     type(reactive_boundary_set_2d) :: active_boundaries
     real(dp), allocatable :: primitive(:, :, :), checked_temperature(:, :)
@@ -556,6 +653,9 @@ contains
     end if
     call validate_reactive_boundary_set_2d(active_boundaries, local_ok)
     if (.not. local_ok) return
+    if (present(exterior)) then
+      if (.not. exterior%is_valid(nprim, nx, ny)) return
+    end if
     if (.not. species_diffusion_enabled .and. &
         (reactive_boundary_has_prescribed_species_flux( &
            active_boundaries%face(1)) .or. &
@@ -590,7 +690,7 @@ contains
           j, dx, dy, active_boundaries, viscosity_enabled, &
           thermal_conduction_enabled, species_diffusion_enabled, &
           barodiffusion_enabled, flux_x(:, face_i, j), &
-          species_energy_x(face_i, j), local_ok)
+          species_energy_x(face_i, j), local_ok, exterior)
         if (.not. local_ok) return
       end do
     end do
@@ -601,7 +701,7 @@ contains
           face_j, dx, dy, active_boundaries, viscosity_enabled, &
           thermal_conduction_enabled, species_diffusion_enabled, &
           barodiffusion_enabled, flux_y(:, i, face_j), &
-          species_energy_y(i, face_j), local_ok)
+          species_energy_y(i, face_j), local_ok, exterior)
         if (.not. local_ok) return
       end do
     end do

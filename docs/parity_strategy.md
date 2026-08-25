@@ -1680,3 +1680,23 @@ inert result. A separate uniform-field gate exercises viscosity, conduction,
 species diffusion, and barodiffusion together and requires state preservation
 and composite conservation. These focused gates must pass before all 197 tests
 in GNU Fortran Debug and Release configurations.
+
+## 0.107.0 two-level reactive EB AMR transport gates
+
+The low-level hierarchy gate initializes a nonuniform hotspot on nested
+coarse/fine plane-EB meshes. It selects positive transport limits on both
+levels, advances fine transport with ratio subcycling and time-interpolated
+coarse exterior states, and requires the fine active-temperature span to
+decrease. Diffusive reflux and reactive average-down must retain every
+composite conserved integral within a `2e-10` scale-aware tolerance, preserve
+covered cells bitwise, and roll back both levels for an invalid interval.
+
+The driver gate must reject transport when its database is omitted, accept the
+same request with the matching seven-species database, reach final time under
+the combined coarse/fine parabolic limit, keep an active fine patch, and retain
+composite conservation. The public application runs matching inert and
+conducting 12 by 12 root plus 20 by 20 fine-patch hotspots to `2e-7`. All four
+CSVs must contain finite positive active thermodynamics and species closure
+within `8e-12`; the conducting fine-level temperature span must be measurably
+smaller. These focused gates must pass before all 201 tests in GNU Fortran
+Debug and Release configurations.

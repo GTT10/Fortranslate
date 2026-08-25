@@ -646,7 +646,10 @@ Required capabilities:
   and regrid cadence (`0.105.0`)
 - [x] single-level EB mixture molecular transport with open-area divergence,
   StateRedist, and symmetric reactive composition (`0.106.0`)
-- coarse/fine EB diffusive flux registers and transport reflux
+- [x] two-level single-patch EB molecular transport with fine subcycling,
+  time-interpolated exterior states, diffusive reflux, and average-down
+  (`0.107.0`)
+- three-level and multipatch EB molecular transport
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
