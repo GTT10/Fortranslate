@@ -1829,3 +1829,29 @@ This regular-interface condition avoids silently applying the two-level EB
 register to an EB-cut nested interface, which needs a dedicated geometric
 correction. Root and middle geometry may still contain regular, cut, and
 covered cells.
+
+## EB-cut nested-interface conservation closure
+
+For an EB-cut finest interface, the inner two-level update first performs its
+normal flux-register reflux and average-down. Let `I0` be the middle/finest
+composite integral before the middle interval, and let `B` be the signed,
+time-integrated Cartesian flux through the exterior boundary of the middle
+mesh. The conservative target for components without an EB wall source is
+
+`Itarget = I0 + B`.
+
+The closure compares this target with the post-sync composite integral.
+Density, total energy, and every species residual are retained; momentum is
+excluded because the embedded slip wall supplies a physical pressure force.
+The sum of species residuals must agree with the density residual to scaled
+roundoff. A final species component absorbs only that roundoff difference so
+each corrected recipient retains local density/species closure.
+
+The residual conserved density is divided by the total fluid volume of active
+middle cells outside the finest rectangle and added uniformly to those cells.
+This recipient set keeps the correction authoritative after finest-to-middle
+average-down and away from the nested interface by the established two-cell
+separation. Every corrected cell undergoes EOS temperature recovery. Invalid
+composition, energy, or temperature rejects the complete hierarchy. This is a
+qualified global multilevel conservation closure, not parity with PeleC's
+locally resolved multilevel EB redistribution stencil.

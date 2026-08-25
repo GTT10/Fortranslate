@@ -1070,11 +1070,21 @@ finest patch must remain two middle cells from the middle boundary and its
 coarse/fine interface must be fully regular. These checks reject the known
 unsupported EB-cut nested-interface case before any state is published.
 
+In `0.100.0`, the regular-interface restriction is replaced by a conservative
+EB-cut closure. Before each middle update, the module records the authoritative
+middle/finest composite integral. After inner reflux and average-down it adds
+the time-integrated flux through the middle domain boundary to form the
+expected integral. Any remaining density, total-energy, and species residual
+is spread uniformly per fluid volume over active middle cells outside the
+finest patch. Species corrections close to the density correction, and every
+recipient temperature is recovered through the EOS before publication.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, EB-cut nested-interface reflux, arbitrary depth,
-three-level chemistry/lifecycle ownership, non-outflow refined boundaries, and
-EB AMR/MPI ownership remain outside this subsystem. The public application,
+EB AMR molecular transport, locally resolved PeleC-style multilevel
+redistribution, arbitrary depth, three-level chemistry/lifecycle ownership,
+non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
+subsystem. The public application,
 CSV output, and checkpoint schema retain the single-patch path by default; the
 public application, CSV output, and dedicated restart schema select the
 patch-set path explicitly.

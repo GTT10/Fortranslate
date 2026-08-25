@@ -1,13 +1,17 @@
 module amr_eb_multilevel_reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
-  use reactive_1d_mod, only: reactive_nvar
-  use eb_geometry_2d_mod, only: eb_geometry_2d
+  use reactive_1d_mod, only: &
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_conserved_to_primitive
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
   use amr_eb_hierarchy_2d_mod, only: &
-    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
+    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d, &
+    composite_eb_integral_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_reactive_eb_state_2d
   use amr_eb_flux_register_2d_mod, only: &
@@ -69,6 +73,8 @@ contains
     real(dp), allocatable :: level_one_uncorrected_temperature(:, :)
     real(dp), allocatable :: level_one_refluxed(:, :, :)
     real(dp), allocatable :: level_one_refluxed_temperature(:, :)
+    real(dp), allocatable :: level_one_closed(:, :, :)
+    real(dp), allocatable :: level_one_closed_temperature(:, :)
     real(dp), allocatable :: level_two_candidate(:, :, :)
     real(dp), allocatable :: level_two_candidate_temperature(:, :)
     real(dp), allocatable :: level_two_work(:, :, :)
@@ -80,6 +86,7 @@ contains
     real(dp), allocatable :: level_one_y_flux(:, :, :)
     real(dp), allocatable :: level_two_x_flux(:, :, :)
     real(dp), allocatable :: level_two_y_flux(:, :, :)
+    real(dp), allocatable :: level_one_integral_before(:)
     real(dp) :: level_one_dt, level_two_dt, alpha, selected_target
     logical :: local_ok
     integer :: nvar, level_one_ratio, level_two_ratio
@@ -104,7 +111,6 @@ contains
           level_one_geometry, level_two_geometry) .or. &
         .not. level_two_patch_is_separated( &
           level_one_patch, level_one_geometry) .or. &
-        .not. level_two_interface_is_regular(level_two_geometry) .or. &
         any(shape(root_state) /= &
           [nvar, root_geometry%nx, root_geometry%ny]) .or. &
         any(shape(root_temperature) /= &
@@ -162,6 +168,8 @@ contains
     allocate(level_one_uncorrected_temperature, mold=level_one_temperature)
     allocate(level_one_refluxed, mold=level_one_state)
     allocate(level_one_refluxed_temperature, mold=level_one_temperature)
+    allocate(level_one_closed, mold=level_one_state)
+    allocate(level_one_closed_temperature, mold=level_one_temperature)
     allocate(level_one_x_flux( &
       nvar, 0:level_one_geometry%nx, level_one_geometry%ny))
     allocate(level_one_y_flux( &
@@ -176,12 +184,18 @@ contains
       nvar, 0:level_two_geometry%nx, level_two_geometry%ny))
     allocate(level_two_y_flux( &
       nvar, level_two_geometry%nx, 0:level_two_geometry%ny))
+    allocate(level_one_integral_before(nvar))
 
     level_one_ratio = root_patch%refinement_ratio
     level_two_ratio = level_one_patch%refinement_ratio
     level_one_dt = dt / real(level_one_ratio, dp)
     level_two_dt = level_one_dt / real(level_two_ratio, dp)
     do level_one_substep = 1, level_one_ratio
+      call composite_eb_integral_2d( &
+        level_one_candidate, level_one_geometry, level_two_candidate, &
+        level_two_geometry, level_one_patch, level_one_integral_before, &
+        local_ok)
+      if (.not. local_ok) return
       level_one_start = level_one_candidate
       level_one_start_temperature = level_one_candidate_temperature
       alpha = substep_time_alpha( &
@@ -256,6 +270,17 @@ contains
       if (.not. local_ok) return
       level_two_candidate = level_two_refluxed
       level_two_candidate_temperature = level_two_refluxed_temperature
+      if (.not. level_two_interface_is_regular(level_two_geometry)) then
+        call close_cut_interface_conservation_2d( &
+          species, level_one_integral_before, level_one_candidate, &
+          level_one_candidate_temperature, level_one_geometry, &
+          level_two_candidate, level_two_geometry, level_one_patch, &
+          level_one_x_flux, level_one_y_flux, level_one_dt, &
+          level_one_closed, level_one_closed_temperature, local_ok)
+        if (.not. local_ok) return
+        level_one_candidate = level_one_closed
+        level_one_candidate_temperature = level_one_closed_temperature
+      end if
     end do
 
     allocate(root_refluxed, mold=root_state)
@@ -325,5 +350,130 @@ contains
       all(abs(geometry%y_face_fraction(:, geometry%ny) - 1.0_dp) <= &
         tolerance)
   end function level_two_interface_is_regular
+
+  subroutine close_cut_interface_conservation_2d( &
+      species, integral_before, parent_state, parent_temperature, &
+      parent_geometry, child_state, child_geometry, patch, x_flux, y_flux, &
+      dt, closed_state, closed_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: integral_before(:)
+    real(dp), intent(in) :: parent_state(:, :, :)
+    real(dp), intent(in) :: parent_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: parent_geometry, child_geometry
+    real(dp), intent(in) :: child_state(:, :, :)
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(in) :: x_flux(:, 0:, :), y_flux(:, :, 0:), dt
+    real(dp), intent(out) :: closed_state(:, :, :)
+    real(dp), intent(out) :: closed_temperature(:, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: current_integral(:), boundary_change(:)
+    real(dp), allocatable :: residual(:), correction(:), primitive(:)
+    real(dp) :: recipient_volume, recovered_temperature, sound_speed
+    real(dp) :: scale, closure_tolerance, species_residual
+    logical :: local_ok
+    integer :: i, j, k, nvar, component
+
+    closed_state = parent_state
+    closed_temperature = parent_temperature
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. size(integral_before) /= nvar .or. &
+        any(shape(parent_state) /= &
+          [nvar, parent_geometry%nx, parent_geometry%ny]) .or. &
+        any(shape(parent_temperature) /= &
+          [parent_geometry%nx, parent_geometry%ny]) .or. &
+        any(shape(child_state) /= &
+          [nvar, child_geometry%nx, child_geometry%ny]) .or. &
+        any(shape(x_flux) /= &
+          [nvar, parent_geometry%nx + 1, parent_geometry%ny]) .or. &
+        any(shape(y_flux) /= &
+          [nvar, parent_geometry%nx, parent_geometry%ny + 1]) .or. &
+        any(shape(closed_state) /= shape(parent_state)) .or. &
+        any(shape(closed_temperature) /= shape(parent_temperature)) .or. &
+        .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        any(.not. ieee_is_finite(integral_before)) .or. &
+        any(.not. ieee_is_finite(x_flux)) .or. &
+        any(.not. ieee_is_finite(y_flux))) return
+
+    allocate(current_integral(nvar), boundary_change(nvar))
+    allocate(residual(nvar), correction(nvar))
+    call composite_eb_integral_2d( &
+      parent_state, parent_geometry, child_state, child_geometry, patch, &
+      current_integral, local_ok)
+    if (.not. local_ok) return
+    boundary_change = 0.0_dp
+    do j = 1, parent_geometry%ny
+      boundary_change = boundary_change + dt * parent_geometry%dy * &
+        (parent_geometry%x_face_fraction(0, j) * x_flux(:, 0, j) - &
+         parent_geometry%x_face_fraction(parent_geometry%nx, j) * &
+           x_flux(:, parent_geometry%nx, j))
+    end do
+    do i = 1, parent_geometry%nx
+      boundary_change = boundary_change + dt * parent_geometry%dx * &
+        (parent_geometry%y_face_fraction(i, 0) * y_flux(:, i, 0) - &
+         parent_geometry%y_face_fraction(i, parent_geometry%ny) * &
+           y_flux(:, i, parent_geometry%ny))
+    end do
+    residual = integral_before + boundary_change - current_integral
+    correction = 0.0_dp
+    correction(irho) = residual(irho)
+    correction(iet) = residual(iet)
+    species_residual = 0.0_dp
+    do k = 1, size(species)
+      component = reactive_species_component(k)
+      correction(component) = residual(component)
+      species_residual = species_residual + residual(component)
+    end do
+    scale = max(1.0_dp, abs(residual(irho)), abs(species_residual))
+    closure_tolerance = 4096.0_dp * epsilon(1.0_dp) * scale
+    if (abs(residual(irho) - species_residual) > closure_tolerance) return
+    component = reactive_species_component(size(species))
+    correction(component) = correction(component) + &
+      residual(irho) - species_residual
+
+    recipient_volume = 0.0_dp
+    do j = 1, parent_geometry%ny
+      do i = 1, parent_geometry%nx
+        if (cell_is_inside_patch(patch, i, j) .or. &
+            parent_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        recipient_volume = recipient_volume + &
+          parent_geometry%volume_fraction(i, j) * &
+          parent_geometry%dx * parent_geometry%dy
+      end do
+    end do
+    if (.not. ieee_is_finite(recipient_volume) .or. &
+        recipient_volume <= tiny(1.0_dp)) return
+    correction = correction / recipient_volume
+    if (any(.not. ieee_is_finite(correction))) return
+
+    allocate(primitive(reactive_nprim(size(species))))
+    do j = 1, parent_geometry%ny
+      do i = 1, parent_geometry%nx
+        if (cell_is_inside_patch(patch, i, j) .or. &
+            parent_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        closed_state(:, i, j) = closed_state(:, i, j) + correction
+        call reactive_conserved_to_primitive( &
+          species, closed_state(:, i, j), closed_temperature(i, j), &
+          primitive, recovered_temperature, sound_speed, local_ok)
+        if (.not. local_ok) then
+          closed_state = parent_state
+          closed_temperature = parent_temperature
+          return
+        end if
+        closed_temperature(i, j) = recovered_temperature
+      end do
+    end do
+    ok = .true.
+  end subroutine close_cut_interface_conservation_2d
+
+  pure logical function cell_is_inside_patch(patch, i, j) result(inside)
+    type(amr_eb_patch_2d), intent(in) :: patch
+    integer, intent(in) :: i, j
+
+    inside = i >= patch%coarse_i_lower .and. &
+      i <= patch%coarse_i_upper .and. &
+      j >= patch%coarse_j_lower .and. j <= patch%coarse_j_upper
+  end function cell_is_inside_patch
 
 end module amr_eb_multilevel_reactive_2d_mod

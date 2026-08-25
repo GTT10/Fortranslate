@@ -632,7 +632,9 @@ Required capabilities:
   average-down, reactive EOS recovery, and rollback (`0.98.0`)
 - [x] static three-level reactive EB recursive subcycling and reflux with a
   regular finest coarse/fine interface (`0.99.0`)
-- EB-cut nested-interface reflux and arbitrary-depth EB redistribution
+- [x] EB-cut nested-interface mass, energy, and species conservation closure
+  over active middle recipients (`0.100.0`)
+- locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:
