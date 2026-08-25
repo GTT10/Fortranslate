@@ -9,6 +9,7 @@ program test_reactive_eb_amr_2d_driver
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_cut_cell
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, composite_eb_integral_2d
+  use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use reactive_eb_amr_2d_driver_mod, only: &
@@ -17,7 +18,9 @@ program test_reactive_eb_amr_2d_driver
     regrid_reactive_eb_amr_hierarchy_2d, &
     write_reactive_eb_amr_2d_checkpoint, &
     read_reactive_eb_amr_2d_checkpoint, &
-    simulate_reactive_eb_amr_2d
+    simulate_reactive_eb_amr_2d, &
+    compute_reactive_eb_patch_set_cfl_timestep_2d, &
+    simulate_reactive_eb_amr_patch_set_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
   implicit none
 
@@ -27,6 +30,7 @@ program test_reactive_eb_amr_2d_driver
   type(eb_geometry_2d) :: checkpoint_fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(amr_eb_patch_2d) :: checkpoint_patch
+  type(reactive_eb_patch_set_2d) :: multipatch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -346,6 +350,74 @@ program test_reactive_eb_amr_2d_driver
     minimum_dt, base_density, ok)
   call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
     time == 0.0_dp, "unsupported AMR transport rejection")
+
+  config%eb%flow%transport_enabled = .false.
+  config%eb%flow%nx = 14
+  config%eb%flow%ny = 14
+  config%eb%flow%x_lower = 0.0_dp
+  config%eb%flow%x_upper = 1.0_dp
+  config%eb%flow%y_lower = 0.0_dp
+  config%eb%flow%y_upper = 1.0_dp
+  config%eb%flow%problem = "reactive_double_hotspot"
+  config%eb%flow%initial_temperature = 1200.0_dp
+  config%eb%flow%initial_pressure = 135000.0_dp
+  config%eb%flow%hotspot_temperature_rise = 350.0_dp
+  config%eb%flow%hotspot_center_x = 0.25_dp
+  config%eb%flow%hotspot_center_y = 0.25_dp
+  config%eb%flow%hotspot_width = 0.03_dp
+  config%eb%flow%second_hotspot_temperature_rise = 300.0_dp
+  config%eb%flow%second_hotspot_center_x = 0.75_dp
+  config%eb%flow%second_hotspot_center_y = 0.75_dp
+  config%eb%flow%initial_velocity_x = 0.0_dp
+  config%eb%flow%initial_velocity_y = 0.0_dp
+  config%eb%flow%reconstruction = "pcm"
+  config%eb%flow%chemistry_enabled = .true.
+  config%eb%flow%final_time = 5.0e-8_dp
+  config%eb%flow%cfl = 0.02_dp
+  config%eb%flow%maximum_steps = 5
+  config%eb%plane_offset = 0.78_dp
+  config%coarse_i_lower = 2
+  config%coarse_i_upper = 6
+  config%coarse_j_lower = 2
+  config%coarse_j_upper = 6
+  config%multipatch_enabled = .true.
+  config%dynamic_regridding = .true.
+  config%regrid_at_initialization = .true.
+  config%remove_fine_patch_when_untagged = .true.
+  config%regrid_interval = 1
+  config%regrid_relative_temperature_gradient = 0.01_dp
+  config%regrid_absolute_temperature_gradient = 5.0_dp
+  config%regrid_temperature_scale_floor = 1.0_dp
+  config%regrid_buffer_cells = 0
+  config%regrid_minimum_patch_cells_x = 5
+  config%regrid_minimum_patch_cells_y = 5
+  config%regrid_maximum_patch_gap_cells = 0
+  config%checkpoint_interval = 0
+  config%checkpoint_stop_after_write = .false.
+  config%checkpoint_file = ""
+  config%restart_file = ""
+  call simulate_reactive_eb_amr_patch_set_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, multipatch_set, time, steps, regrids, &
+    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  call require(ok .and. multipatch_set%patch_count() == 2 .and. &
+    multipatch_set%is_valid(coarse_geometry, size(coarse_state, 1)) .and. &
+    steps == 1 .and. regrids >= 1, &
+    "public multipatch EB AMR lifecycle")
+  call require(count( &
+    multipatch_set%children(1)%geometry%cell_type == eb_cut_cell) > 0, &
+    "public multipatch EB cut-cell coverage")
+  scale = max(1.0_dp, abs(initial_integrals(irho)))
+  call require(abs(final_integrals(irho) - initial_integrals(irho)) <= &
+    5.0e-10_dp * scale, "public multipatch mass conservation")
+  scale = max(1.0_dp, abs(initial_integrals(iet)))
+  call require(abs(final_integrals(iet) - initial_integrals(iet)) <= &
+    5.0e-10_dp * scale, "public multipatch energy conservation")
+  call compute_reactive_eb_patch_set_cfl_timestep_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    multipatch_set, config%eb%flow%cfl, cfl_dt, ok)
+  call require(ok .and. cfl_dt > 0.0_dp, &
+    "public multipatch CFL selection")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 

@@ -69,6 +69,9 @@ module simulation_config_reactive_2d_mod
     real(dp) :: hotspot_center_x = 0.005_dp
     real(dp) :: hotspot_center_y = 0.005_dp
     real(dp) :: hotspot_width = 0.0012_dp
+    real(dp) :: second_hotspot_temperature_rise = 250.0_dp
+    real(dp) :: second_hotspot_center_x = 0.0075_dp
+    real(dp) :: second_hotspot_center_y = 0.005_dp
     real(dp) :: x_h2 = 0.29570_dp
     real(dp) :: x_h = 1.0e-5_dp
     real(dp) :: x_o = 1.0e-5_dp
@@ -161,6 +164,8 @@ contains
     real(dp) :: vortex_center_x, vortex_center_y, vortex_radius
     real(dp) :: hotspot_temperature_rise, hotspot_center_x
     real(dp) :: hotspot_center_y, hotspot_width
+    real(dp) :: second_hotspot_temperature_rise
+    real(dp) :: second_hotspot_center_x, second_hotspot_center_y
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, mole_sum
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=32) :: chemistry_model
@@ -200,7 +205,9 @@ contains
       composition_wave_amplitude, vortex_strength, &
       vortex_center_x, vortex_center_y, vortex_radius, &
       hotspot_temperature_rise, hotspot_center_x, hotspot_center_y, &
-      hotspot_width, x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
+      hotspot_width, second_hotspot_temperature_rise, &
+      second_hotspot_center_x, second_hotspot_center_y, &
+      x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
       x_ar, x_n2, output_file
 
     config = reactive_2d_config()
@@ -268,6 +275,10 @@ contains
     hotspot_center_x = config%hotspot_center_x
     hotspot_center_y = config%hotspot_center_y
     hotspot_width = config%hotspot_width
+    second_hotspot_temperature_rise = &
+      config%second_hotspot_temperature_rise
+    second_hotspot_center_x = config%second_hotspot_center_x
+    second_hotspot_center_y = config%second_hotspot_center_y
     x_h2 = config%x_h2
     x_h = config%x_h
     x_o = config%x_o
@@ -303,7 +314,9 @@ contains
       initial_pressure > 0.0_dp .and. density_wave_amplitude >= 0.0_dp .and. &
       density_wave_amplitude < 0.9_dp .and. vortex_radius > 0.0_dp .and. &
       composition_wave_amplitude >= 0.0_dp .and. &
-      hotspot_width > 0.0_dp .and. transport_cfl > 0.0_dp .and. &
+      hotspot_width > 0.0_dp .and. &
+      second_hotspot_temperature_rise >= 0.0_dp .and. &
+      transport_cfl > 0.0_dp .and. &
       min(wall_temperature_x_lower, wall_temperature_x_upper, &
         wall_temperature_y_lower, wall_temperature_y_upper) > 0.0_dp .and. &
       transport_cfl <= 0.5_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
@@ -368,6 +381,7 @@ contains
         trim(problem) /= "diagonal_composition_wave" .and. &
         trim(problem) /= "reactive_vortex" .and. &
         trim(problem) /= "reactive_hotspot" .and. &
+        trim(problem) /= "reactive_double_hotspot" .and. &
         trim(problem) /= "uniform_reactor" .and. &
         trim(problem) /= "couette_channel" .and. &
         trim(problem) /= "thermal_channel" .and. &
@@ -486,6 +500,10 @@ contains
     config%hotspot_center_x = hotspot_center_x
     config%hotspot_center_y = hotspot_center_y
     config%hotspot_width = hotspot_width
+    config%second_hotspot_temperature_rise = &
+      second_hotspot_temperature_rise
+    config%second_hotspot_center_x = second_hotspot_center_x
+    config%second_hotspot_center_y = second_hotspot_center_y
     config%x_h2 = x_h2
     config%x_h = x_h
     config%x_o = x_o

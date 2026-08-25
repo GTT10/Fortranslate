@@ -13,6 +13,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: coarse_j_lower = 2
     integer :: coarse_j_upper = 3
     integer :: refinement_ratio = 2
+    logical :: multipatch_enabled = .false.
     logical :: dynamic_regridding = .false.
     logical :: regrid_at_initialization = .true.
     logical :: remove_fine_patch_when_untagged = .false.
@@ -23,6 +24,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: regrid_buffer_cells = 1
     integer :: regrid_minimum_patch_cells_x = 2
     integer :: regrid_minimum_patch_cells_y = 2
+    integer :: regrid_maximum_patch_gap_cells = 0
     integer :: checkpoint_interval = 0
     logical :: checkpoint_stop_after_write = .false.
     character(len=1024) :: checkpoint_file = ""
@@ -46,23 +48,26 @@ contains
     integer :: regrid_interval, regrid_buffer_cells
     integer :: regrid_minimum_patch_cells_x
     integer :: regrid_minimum_patch_cells_y
+    integer :: regrid_maximum_patch_gap_cells
     integer :: checkpoint_interval
     integer :: unit, status
     real(dp) :: regrid_relative_temperature_gradient
     real(dp) :: regrid_absolute_temperature_gradient
     real(dp) :: regrid_temperature_scale_floor
-    logical :: dynamic_regridding, regrid_at_initialization
+    logical :: multipatch_enabled, dynamic_regridding
+    logical :: regrid_at_initialization
     logical :: remove_fine_patch_when_untagged
     logical :: checkpoint_stop_after_write
     character(len=1024) :: checkpoint_file, restart_file, fine_output_file
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, refinement_ratio, &
-      dynamic_regridding, regrid_at_initialization, &
+      multipatch_enabled, dynamic_regridding, regrid_at_initialization, &
       remove_fine_patch_when_untagged, regrid_interval, &
       regrid_relative_temperature_gradient, &
       regrid_absolute_temperature_gradient, &
       regrid_temperature_scale_floor, regrid_buffer_cells, &
       regrid_minimum_patch_cells_x, regrid_minimum_patch_cells_y, &
+      regrid_maximum_patch_gap_cells, &
       checkpoint_interval, checkpoint_stop_after_write, checkpoint_file, &
       restart_file, fine_output_file
 
@@ -76,6 +81,7 @@ contains
     coarse_j_lower = config%coarse_j_lower
     coarse_j_upper = config%coarse_j_upper
     refinement_ratio = config%refinement_ratio
+    multipatch_enabled = config%multipatch_enabled
     dynamic_regridding = config%dynamic_regridding
     regrid_at_initialization = config%regrid_at_initialization
     remove_fine_patch_when_untagged = &
@@ -90,6 +96,8 @@ contains
     regrid_buffer_cells = config%regrid_buffer_cells
     regrid_minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
     regrid_minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
+    regrid_maximum_patch_gap_cells = &
+      config%regrid_maximum_patch_gap_cells
     checkpoint_interval = config%checkpoint_interval
     checkpoint_stop_after_write = config%checkpoint_stop_after_write
     checkpoint_file = config%checkpoint_file
@@ -126,6 +134,7 @@ contains
       return
     end if
     if (regrid_interval < 1 .or. regrid_buffer_cells < 0 .or. &
+        regrid_maximum_patch_gap_cells < 0 .or. &
         regrid_minimum_patch_cells_x < 1 .or. &
         regrid_minimum_patch_cells_x > config%eb%flow%nx - 2 .or. &
         regrid_minimum_patch_cells_y < 1 .or. &
@@ -146,12 +155,24 @@ contains
       message = "Fine-patch removal requires dynamic EB AMR regridding"
       return
     end if
+    if (multipatch_enabled .and. .not. dynamic_regridding) then
+      ok = .false.
+      message = "EB AMR multipatch mode requires dynamic regridding"
+      return
+    end if
     if (checkpoint_interval < 0 .or. &
         (checkpoint_interval > 0 .and. len_trim(checkpoint_file) == 0) .or. &
         (checkpoint_stop_after_write .and. &
          (checkpoint_interval < 1 .or. len_trim(checkpoint_file) == 0))) then
       ok = .false.
       message = "Invalid EB AMR checkpoint controls"
+      return
+    end if
+    if (multipatch_enabled .and. &
+        (checkpoint_interval > 0 .or. checkpoint_stop_after_write .or. &
+         len_trim(checkpoint_file) > 0 .or. len_trim(restart_file) > 0)) then
+      ok = .false.
+      message = "EB AMR multipatch checkpoint/restart is not yet supported"
       return
     end if
     if (len_trim(fine_output_file) == 0 .or. &
@@ -171,6 +192,7 @@ contains
     config%coarse_j_lower = coarse_j_lower
     config%coarse_j_upper = coarse_j_upper
     config%refinement_ratio = refinement_ratio
+    config%multipatch_enabled = multipatch_enabled
     config%dynamic_regridding = dynamic_regridding
     config%regrid_at_initialization = regrid_at_initialization
     config%remove_fine_patch_when_untagged = &
@@ -184,6 +206,8 @@ contains
     config%regrid_buffer_cells = regrid_buffer_cells
     config%regrid_minimum_patch_cells_x = regrid_minimum_patch_cells_x
     config%regrid_minimum_patch_cells_y = regrid_minimum_patch_cells_y
+    config%regrid_maximum_patch_gap_cells = &
+      regrid_maximum_patch_gap_cells
     config%checkpoint_interval = checkpoint_interval
     config%checkpoint_stop_after_write = checkpoint_stop_after_write
     config%checkpoint_file = trim(checkpoint_file)

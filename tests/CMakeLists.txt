@@ -1755,6 +1755,36 @@ set_tests_properties(
   PROPERTIES DEPENDS regression_reactive_eb_amr_dynamic_2d_run
 )
 
+set(REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_multipatch_2d")
+file(MAKE_DIRECTORY "${REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_amr_multipatch_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_multipatch_2d/double_hotspot.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_multipatch_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_eb_amr_multipatch_2d_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_amr_multipatch_2d.py"
+    --coarse
+      "${REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY}/reactive_eb_amr_multipatch_coarse_2d.csv"
+    --fine-one
+      "${REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY}/reactive_eb_amr_multipatch_fine_2d_patch0001.csv"
+    --fine-two
+      "${REACTIVE_EB_AMR_MULTIPATCH_2D_WORK_DIRECTORY}/reactive_eb_amr_multipatch_fine_2d_patch0002.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_multipatch_2d_check
+  PROPERTIES DEPENDS regression_reactive_eb_amr_multipatch_2d_run
+)
+
 set(REACTIVE_EB_AMR_DEGRID_2D_WORK_DIRECTORY
   "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_degrid_2d")
 file(MAKE_DIRECTORY "${REACTIVE_EB_AMR_DEGRID_2D_WORK_DIRECTORY}")

@@ -1472,7 +1472,7 @@ contains
     real(dp), allocatable :: mole_fractions(:), mass_fractions(:), primitive(:)
     real(dp), allocatable :: local_mass_fractions(:)
     real(dp) :: x, y, rho, pressure, u, v, w, local_temperature
-    real(dp) :: sound_speed, rx, ry, radius_squared, factor
+    real(dp) :: sound_speed, rx, ry, rx2, ry2, radius_squared, factor
     logical :: local_ok
     integer :: i, j, k, nvar, nprimitive
 
@@ -1532,6 +1532,25 @@ contains
           local_temperature = config%initial_temperature + &
             config%hotspot_temperature_rise * exp(-0.5_dp * &
             (rx * rx + ry * ry) / (config%hotspot_width**2))
+          rho = mixture_density( &
+            species, local_mass_fractions, pressure, local_temperature, local_ok)
+          if (.not. local_ok) return
+        case ("reactive_double_hotspot")
+          rx = periodic_displacement( &
+            x, config%hotspot_center_x, config%x_upper - config%x_lower)
+          ry = periodic_displacement( &
+            y, config%hotspot_center_y, config%y_upper - config%y_lower)
+          rx2 = periodic_displacement( &
+            x, config%second_hotspot_center_x, &
+            config%x_upper - config%x_lower)
+          ry2 = periodic_displacement( &
+            y, config%second_hotspot_center_y, &
+            config%y_upper - config%y_lower)
+          local_temperature = config%initial_temperature + &
+            config%hotspot_temperature_rise * exp(-0.5_dp * &
+            (rx * rx + ry * ry) / (config%hotspot_width**2)) + &
+            config%second_hotspot_temperature_rise * exp(-0.5_dp * &
+            (rx2 * rx2 + ry2 * ry2) / (config%hotspot_width**2))
           rho = mixture_density( &
             species, local_mass_fractions, pressure, local_temperature, local_ok)
           if (.not. local_ok) return

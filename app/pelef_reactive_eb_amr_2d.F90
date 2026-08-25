@@ -11,26 +11,29 @@ program pelef_reactive_eb_amr_2d
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell
   use amr_eb_hierarchy_2d_mod, only: amr_eb_patch_2d
+  use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
   use simulation_config_reactive_eb_2d_mod, only: reactive_eb_2d_config
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config, read_reactive_eb_amr_2d_configuration
   use reactive_eb_2d_driver_mod, only: write_reactive_eb_2d_csv
-  use reactive_eb_amr_2d_driver_mod, only: simulate_reactive_eb_amr_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    simulate_reactive_eb_amr_2d, simulate_reactive_eb_amr_patch_set_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
   type(reactive_eb_2d_config) :: fine_output_config
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
+  type(reactive_eb_patch_set_2d) :: patch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: time, minimum_dt, base_density, conservation_error
-  character(len=1024) :: input_path, message
+  character(len=1024) :: input_path, message, patch_output_file
   logical :: fine_active, ok
-  integer :: regrids, steps
+  integer :: child, regrids, steps
 
   if (command_argument_count() /= 1) then
     write(*, '(a)') "Usage: pelef_reactive_eb_amr_2d <input.nml>"
@@ -58,18 +61,50 @@ program pelef_reactive_eb_amr_2d
   case default
     error stop "Unknown chemistry model"
   end select
-  call simulate_reactive_eb_amr_2d( &
-    species, reactions, config, coarse_state, coarse_temperature, &
-    coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
-    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-    base_density, ok)
+  if (config%multipatch_enabled) then
+    call simulate_reactive_eb_amr_patch_set_2d( &
+      species, reactions, config, coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
+      final_integrals, minimum_dt, base_density, ok)
+    fine_active = .false.
+  else
+    call simulate_reactive_eb_amr_2d( &
+      species, reactions, config, coarse_state, coarse_temperature, &
+      coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+      fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+      minimum_dt, base_density, ok)
+  end if
   if (.not. ok) error stop "Reactive EB AMR 2D simulation failed"
   call write_reactive_eb_2d_csv( &
     config%eb%flow%output_file, species, config%eb, coarse_state, &
     coarse_temperature, coarse_geometry, time, ok)
   if (.not. ok) error stop "Reactive EB AMR coarse output failed"
-  if (fine_active) then
+  if (config%multipatch_enabled) then
+    do child = 1, patch_set%patch_count()
+      call make_patch_output_path( &
+        config%fine_output_file, child, patch_output_file)
+      fine_output_config = config%eb
+      fine_output_config%flow%nx = &
+        patch_set%children(child)%geometry%nx
+      fine_output_config%flow%ny = &
+        patch_set%children(child)%geometry%ny
+      fine_output_config%flow%x_lower = &
+        patch_set%children(child)%geometry%x_lower
+      fine_output_config%flow%x_upper = &
+        patch_set%children(child)%geometry%x_upper
+      fine_output_config%flow%y_lower = &
+        patch_set%children(child)%geometry%y_lower
+      fine_output_config%flow%y_upper = &
+        patch_set%children(child)%geometry%y_upper
+      fine_output_config%flow%output_file = trim(patch_output_file)
+      call write_reactive_eb_2d_csv( &
+        patch_output_file, species, fine_output_config, &
+        patch_set%children(child)%state, &
+        patch_set%children(child)%temperature, &
+        patch_set%children(child)%geometry, time, ok)
+      if (.not. ok) error stop "Reactive EB AMR patch output failed"
+    end do
+  else if (fine_active) then
     fine_output_config = config%eb
     fine_output_config%flow%nx = fine_geometry%nx
     fine_output_config%flow%ny = fine_geometry%ny
@@ -89,7 +124,21 @@ program pelef_reactive_eb_amr_2d
   write(*, '(a)') "PeleF " // pelef_version // " reactive EB AMR 2D"
   write(*, '(a,i0,a,i0)') &
     "Coarse grid: ", coarse_geometry%nx, " x ", coarse_geometry%ny
-  if (fine_active) then
+  if (config%multipatch_enabled) then
+    write(*, '(a,i0)') "Fine patches: ", patch_set%patch_count()
+    do child = 1, patch_set%patch_count()
+      write(*, '(a,i0,a,i0,a,i0)') "Fine patch ", child, ": ", &
+        patch_set%children(child)%geometry%nx, " x ", &
+        patch_set%children(child)%geometry%ny
+      write(*, '(a,i0,a,4(i0,1x))') "Fine patch ", child, &
+        " coarse bounds: ", &
+        patch_set%children(child)%patch%coarse_i_lower, &
+        patch_set%children(child)%patch%coarse_i_upper, &
+        patch_set%children(child)%patch%coarse_j_lower, &
+        patch_set%children(child)%patch%coarse_j_upper
+    end do
+    write(*, '(a,i0)') "Refinement ratio: ", config%refinement_ratio
+  else if (fine_active) then
     write(*, '(a,i0,a,i0)') &
       "Fine grid: ", fine_geometry%nx, " x ", fine_geometry%ny
     write(*, '(a,4(i0,1x))') "Coarse patch bounds: ", &
@@ -105,7 +154,16 @@ program pelef_reactive_eb_amr_2d
     count(coarse_geometry%cell_type == eb_cut_cell)
   write(*, '(a,i0)') "Coarse covered cells: ", &
     count(coarse_geometry%cell_type == eb_covered_cell)
-  if (fine_active) then
+  if (config%multipatch_enabled) then
+    do child = 1, patch_set%patch_count()
+      write(*, '(a,i0,a,i0)') "Fine patch ", child, " regular cells: ", &
+        count(patch_set%children(child)%geometry%cell_type == eb_regular_cell)
+      write(*, '(a,i0,a,i0)') "Fine patch ", child, " cut cells: ", &
+        count(patch_set%children(child)%geometry%cell_type == eb_cut_cell)
+      write(*, '(a,i0,a,i0)') "Fine patch ", child, " covered cells: ", &
+        count(patch_set%children(child)%geometry%cell_type == eb_covered_cell)
+    end do
+  else if (fine_active) then
     write(*, '(a,i0)') "Fine regular cells: ", &
       count(fine_geometry%cell_type == eb_regular_cell)
     write(*, '(a,i0)') "Fine cut cells: ", &
@@ -126,7 +184,16 @@ program pelef_reactive_eb_amr_2d
     conservation_error
   write(*, '(a,1x,a)') "Coarse output:", &
     trim(config%eb%flow%output_file)
-  if (fine_active) then
+  if (config%multipatch_enabled) then
+    do child = 1, patch_set%patch_count()
+      call make_patch_output_path( &
+        config%fine_output_file, child, patch_output_file)
+      write(*, '(a,i0,a,1x,a)') &
+        "Fine patch ", child, " output:", trim(patch_output_file)
+    end do
+    if (patch_set%patch_count() == 0) &
+      write(*, '(a)') "Fine output: inactive"
+  else if (fine_active) then
     write(*, '(a,1x,a)') "Fine output:", trim(config%fine_output_file)
   else
     write(*, '(a)') "Fine output: inactive"
@@ -135,4 +202,26 @@ program pelef_reactive_eb_amr_2d
     write(*, '(a,1x,a)') "Checkpoint:", trim(config%checkpoint_file)
   if (len_trim(config%restart_file) > 0) &
     write(*, '(a,1x,a)') "Restart source:", trim(config%restart_file)
+
+contains
+
+  subroutine make_patch_output_path(base_path, patch_index, output_path)
+    character(len=*), intent(in) :: base_path
+    integer, intent(in) :: patch_index
+    character(len=*), intent(out) :: output_path
+
+    character(len=16) :: index_text
+    integer :: dot
+
+    output_path = ""
+    write(index_text, '(i4.4)') patch_index
+    dot = scan(trim(base_path), ".", back=.true.)
+    if (dot > 1) then
+      output_path = trim(base_path(:dot - 1)) // "_patch" // &
+        trim(index_text) // trim(base_path(dot:))
+    else
+      output_path = trim(base_path) // "_patch" // trim(index_text) // ".csv"
+    end if
+  end subroutine make_patch_output_path
+
 end program pelef_reactive_eb_amr_2d
