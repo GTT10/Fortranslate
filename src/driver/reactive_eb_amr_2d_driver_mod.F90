@@ -447,9 +447,11 @@ contains
       result(matches)
     real(dp), intent(in) :: actual, expected
 
-    matches = ieee_is_finite(actual) .and. ieee_is_finite(expected) .and. &
-      abs(actual - expected) <= 512.0_dp * epsilon(1.0_dp) * &
-        max(tiny(1.0_dp), abs(actual), abs(expected))
+    matches = .false.
+    if (.not. ieee_is_finite(actual) .or. &
+        .not. ieee_is_finite(expected)) return
+    matches = abs(actual - expected) <= 512.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(actual), abs(expected))
   end function checkpoint_real_matches
 
   subroutine recover_checkpoint_level_temperatures_2d( &
@@ -524,14 +526,15 @@ contains
         .not. all(ieee_is_finite(coarse_temperature)) .or. &
         .not. ieee_is_finite(time) .or. time <= 0.0_dp .or. &
         time > config%eb%flow%final_time + time_tolerance .or. &
-        steps < 1 .or. regrids < 0 .or. regrids > steps + 1 .or. &
+        steps < 1 .or. regrids < 0 .or. &
+        real(regrids, dp) > real(steps, dp) + 1.0_dp .or. &
         .not. ieee_is_finite(minimum_dt) .or. minimum_dt <= 0.0_dp .or. &
         minimum_dt > time + time_tolerance .or. &
         .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
     if (fine_active) then
       if (.not. allocated(fine_state) .or. &
-          .not. allocated(fine_temperature) .or. &
-          .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
+          .not. allocated(fine_temperature)) return
+      if (.not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
           size(fine_state, 1) /= nvar .or. &
           size(fine_state, 2) /= fine_geometry%nx .or. &
           size(fine_state, 3) /= fine_geometry%ny .or. &
@@ -681,6 +684,36 @@ contains
     integer :: stored_steps, stored_regrids, i, j, species_index
     logical :: local_ok
 
+    magic = ""
+    stored_name = ""
+    stored_geometry = ""
+    stored_chemistry_model = ""
+    stored_solver = ""
+    stored_reconstruction = ""
+    stored_limiter = ""
+    end_marker = ""
+    stored_domain = 0.0_dp
+    stored_geometry_values = 0.0_dp
+    stored_numerics = 0.0_dp
+    stored_time = 0.0_dp
+    stored_minimum_dt = 0.0_dp
+    stored_base_density = 0.0_dp
+    schema = 0
+    stored_species = 0
+    stored_nvar = 0
+    stored_fine_flag = 0
+    stored_nx = 0
+    stored_ny = 0
+    stored_ratio = 0
+    stored_circle_inside = 0
+    stored_flags = 0
+    stored_patch = 0
+    stored_coarse_nx = 0
+    stored_coarse_ny = 0
+    stored_fine_nx = 0
+    stored_fine_ny = 0
+    stored_steps = 0
+    stored_regrids = 0
     coarse_geometry = eb_geometry_2d()
     fine_geometry = eb_geometry_2d()
     patch = amr_eb_patch_2d()
@@ -766,15 +799,17 @@ contains
       stored_steps, stored_regrids, stored_base_density
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
-    if (status /= 0 .or. .not. ieee_is_finite(stored_time) .or. &
-        stored_time <= 0.0_dp .or. &
-        stored_time > config%eb%flow%final_time + time_tolerance .or. &
+    if (status /= 0) go to 900
+    if (.not. ieee_is_finite(stored_time) .or. &
         .not. ieee_is_finite(stored_minimum_dt) .or. &
+        .not. ieee_is_finite(stored_base_density)) go to 900
+    if (stored_time <= 0.0_dp .or. &
+        stored_time > config%eb%flow%final_time + time_tolerance .or. &
         stored_minimum_dt <= 0.0_dp .or. stored_steps < 1 .or. &
         stored_steps > config%eb%flow%maximum_steps .or. &
-        stored_regrids < 0 .or. stored_regrids > stored_steps + 1 .or. &
+        stored_regrids < 0 .or. &
+        real(stored_regrids, dp) > real(stored_steps, dp) + 1.0_dp .or. &
         stored_minimum_dt > stored_time + time_tolerance .or. &
-        .not. ieee_is_finite(stored_base_density) .or. &
         stored_base_density <= 0.0_dp) go to 900
 
     call build_configured_eb_geometry_2d( &

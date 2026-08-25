@@ -320,7 +320,7 @@ program test_reactive_eb_amr_2d_driver
     checkpoint_patch%refinement_ratio == 0 .and. &
     all(checkpoint_coarse_state == coarse_state), &
     "root-only checkpoint round trip")
-  call write_invalid_checkpoint(checkpoint_path)
+  call write_truncated_checkpoint(checkpoint_path)
   call read_reactive_eb_amr_2d_checkpoint( &
     checkpoint_path, species, config, checkpoint_coarse_state, &
     checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
@@ -335,7 +335,7 @@ program test_reactive_eb_amr_2d_driver
     .not. allocated(checkpoint_fine_temperature) .and. &
     .not. checkpoint_coarse_geometry%is_valid() .and. &
     .not. checkpoint_fine_geometry%is_valid(), &
-    "invalid checkpoint transactional rejection")
+    "truncated checkpoint transactional rejection")
   call delete_checkpoint(checkpoint_path)
 
   config%eb%flow%transport_enabled = .true.
@@ -351,19 +351,20 @@ program test_reactive_eb_amr_2d_driver
 
 contains
 
-  subroutine write_invalid_checkpoint(path)
+  subroutine write_truncated_checkpoint(path)
     character(len=*), intent(in) :: path
 
     integer :: unit, status
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       iostat=status)
-    if (status /= 0) error stop "Could not create invalid checkpoint"
-    write(unit, '(a)', iostat=status) "INVALID_CHECKPOINT"
-    if (status /= 0) error stop "Could not write invalid checkpoint"
+    if (status /= 0) error stop "Could not create truncated checkpoint"
+    write(unit, '(a)', iostat=status) &
+      "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT"
+    if (status /= 0) error stop "Could not write truncated checkpoint"
     close(unit, iostat=status)
-    if (status /= 0) error stop "Could not close invalid checkpoint"
-  end subroutine write_invalid_checkpoint
+    if (status /= 0) error stop "Could not close truncated checkpoint"
+  end subroutine write_truncated_checkpoint
 
   subroutine delete_checkpoint(path)
     character(len=*), intent(in) :: path
