@@ -1542,3 +1542,23 @@ The public serial driver may now transition between one root level and one
 strictly internal ratio-aligned fine rectangle. Multiple simultaneous patches,
 deeper levels, EB AMR chemistry/transport, checkpoint/restart, and MPI ownership
 remain future work.
+
+## Reactive EB AMR chemistry composition (`0.91.0`)
+
+- [x] elementary and full H2/O2 mechanism loading in the EB AMR application
+- [x] active-cell reaction half-steps on both coarse and fine levels
+- [x] `reaction-hydro-reaction` composition around EB subcycling and reflux
+- [x] post-reaction reactive fine-to-coarse average-down
+- [x] covered-cell chemistry exclusion on independently built EB geometries
+- [x] hierarchy-wide state and temperature rollback after a later hydro failure
+- [x] root-only chemistry through the qualified single-level EB Strang path
+- [x] reacting fine-patch-collapse lifecycle with mass and energy gates
+- [x] regular-grid reference parity on active coarse and fine EB AMR cells
+- [x] explicit unsupported-molecular-transport rejection before any step
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The serial application now advances chemistry on either its active two-level
+hierarchy or its root-only lifecycle state. The qualified topology remains one
+strictly internal ratio-aligned fine rectangle. EB AMR molecular transport,
+multiple simultaneous patches, deeper levels, checkpoint/restart, and MPI
+ownership remain future work.

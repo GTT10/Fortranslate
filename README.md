@@ -6,14 +6,15 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.90.0` milestone contains the serial verification suite, seven optional
+The `0.91.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
 patch-tree checkpoint and restart it with a different MPI rank count. The
 serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
-its composite conserved state.
+its composite conserved state, and can compose active-cell chemistry with the
+two-level or root-only EB hydrodynamic path.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -220,10 +221,17 @@ the child into the root, releases its arrays and geometry, advances with the
 single-level CFL and hydro path, and re-creates the patch by PCM when tags
 return. Fine CSV output is omitted while the child is inactive.
 
+With chemistry enabled, each active AMR interval applies a reaction half-step
+on both levels, the existing subcycled EB hydro/reflux transaction, a second
+reaction half-step, and final fine-to-coarse average-down. Covered cells are
+masked from chemistry. A root-only lifecycle interval reuses the qualified
+single-level EB Strang path, and any chemistry, hydro, or EOS failure leaves the
+complete hierarchy unchanged.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-coarse-to-fine spatial interpolation, AMR chemistry/transport composition,
-multiple EB fine patches, deeper levels, and MPI
+coarse-to-fine spatial interpolation, EB AMR molecular transport, multiple EB
+fine patches, deeper levels, and MPI
 distribution are not yet connected.
 
 ### MPI one-dimensional verification
@@ -656,7 +664,7 @@ Active-cell chemistry parity against the regular 2D path:
   cases/reactive_eb_chemistry_2d/reactive.nml
 ```
 
-Runnable static two-level reactive EB AMR hydrodynamics:
+Runnable two-level reactive EB AMR hydrodynamics:
 
 ```bash
 ./build/pelef_reactive_eb_amr_2d \
@@ -674,6 +682,19 @@ Temperature-tagged conservative fine-patch movement:
 python3 tools/check_reactive_eb_amr_dynamic_2d.py \
   --coarse reactive_eb_amr_dynamic_coarse_2d.csv \
   --fine reactive_eb_amr_dynamic_fine_2d.csv
+```
+
+Active-cell chemistry parity on both EB AMR levels:
+
+```bash
+./build/pelef_reactive_2d \
+  cases/reactive_eb_amr_chemistry_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_chemistry_2d/amr.nml
+python3 tools/check_reactive_eb_amr_chemistry_2d.py \
+  --reference reactive_eb_amr_chemistry_reference_2d.csv \
+  --coarse reactive_eb_amr_chemistry_coarse_2d.csv \
+  --fine reactive_eb_amr_chemistry_fine_2d.csv
 ```
 
 ## Project records

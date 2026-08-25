@@ -37,7 +37,7 @@ pelef_reactive_eb_2d
   └─ reactive embedded-boundary hydro with weighted StateRedist
 
 pelef_reactive_eb_amr_2d
-  └─ static or temperature-tagged two-level reactive EB AMR hydro
+  └─ lifecycle-capable two-level reactive EB AMR hydro and chemistry
 
 pelef_amr_reactive_1d
   └─ dynamic two-level reactive AMR with PLM, chemistry, and transport
@@ -970,7 +970,16 @@ by PCM from the synchronized root. The timestep and advance dispatch select the
 two-level or single-level EB path from this lifecycle state, and inactive fine
 output is omitted.
 
+In `0.91.0`, `reactive_eb_amr_2d_driver_mod` composes chemistry around that
+lifecycle-aware hydro dispatch. When a fine patch is active, candidate coarse
+and fine states each receive a masked reaction half-step, followed by the
+existing subcycled EB hydro/reflux transaction, a second reaction half-step on
+both levels, and reactive average-down. The entire hierarchy remains private
+until all stages succeed. With no fine patch, the same driver calls the
+qualified single-level EB Strang operator. The application loads either the
+elementary or full H2/O2 reaction set through the existing mechanism path.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-AMR chemistry/transport composition, multiple patches,
+EB AMR molecular transport, multiple patches,
 deeper levels, and EB AMR/MPI ownership remain outside this subsystem.

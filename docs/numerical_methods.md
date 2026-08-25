@@ -1618,3 +1618,27 @@ builds a new aligned geometry and uses PCM prolongation from the synchronized
 root before publishing the child. Conserved diagnostics likewise select either
 the two-level composite integral or the root volume-weighted integral. The
 default policy continues to retain an untagged patch for backward compatibility.
+
+## Reactive chemistry on the EB AMR lifecycle
+
+For an active two-level hierarchy, one accepted coarse interval is
+
+`R_c,f(dt/2) -> H_EB-AMR(dt) -> R_c,f(dt/2) -> average-down`,
+
+where `R_c,f` applies the cell-local constant-volume reactor independently to
+active coarse and fine cells, and `H_EB-AMR` is the existing coarse step, `r`
+fine substeps, EB re-reflux, and reactive average-down transaction. Each level
+constructs its chemistry mask from the EB cell types, so covered state and
+temperature are never passed to the reactor. The final average-down restores
+the coarse representation beneath the reacted fine patch.
+
+All four output arrays initially contain the caller's input. Reaction and hydro
+operate on private candidates, and those outputs are replaced only after both
+reaction halves, EB hydro synchronization, EOS recovery, and final restriction
+succeed. Thus a failure after the first reaction half, including an invalid
+Riemann solver, rolls back the complete coarse/fine state and temperature. If
+the lifecycle has no fine patch, the driver instead applies the already
+qualified single-level `reaction-hydro-reaction` EB operator to the root.
+
+This composition contains no molecular transport. Inputs requesting it are
+rejected before timestep selection or state mutation.

@@ -613,6 +613,8 @@ Required capabilities:
   resizing, retained fine overlap, and periodic regrid cadence (`0.89.0`)
 - [x] optional fine-patch collapse, root-only advance, and PCM re-creation
   (`0.90.0`)
+- [x] lifecycle-aware two-level and root-only EB AMR chemistry composition,
+  rollback, and regular-reference parity (`0.91.0`)
 - EB multiple patches, deeper levels, and multilevel
   redistribution
 - thermal, viscous, and catalytic wall boundary conditions

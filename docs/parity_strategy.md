@@ -1387,3 +1387,22 @@ integral. Removing the tag must collapse the re-created patch back to the same
 root integral. GNU Fortran Debug and Release suites must also prove that the
 inactive driver selects the single-level CFL and hydro path without accessing
 unallocated fine storage.
+
+## 0.91.0 reactive EB AMR chemistry gates
+
+An 8 by 8 uniform 1200 K elementary H2/O2 reactor is advanced once through the
+regular 2D path and through a ratio-two EB AMR hierarchy whose 10 by 10 fine
+patch crosses a plane boundary. Every active coarse and fine EB cell must match
+the regular reference density, velocity, pressure, temperature, total energy,
+and species mass fractions within `8e-10` scaled tolerance. Both EB levels must
+contain regular, cut, and covered cells, the reaction must change temperature,
+and active species closure must remain within `5e-13`.
+
+A direct transaction gate lets the first chemistry half-step succeed and then
+requests an unknown hydro solver. Failure must leave both full state arrays and
+both temperature arrays bitwise equal to their inputs. A second gate advances
+chemistry first with an active fine patch and then after conservative patch
+collapse through the root-only path; it requires at least two accepted steps
+and preserves total mass and total energy within `3e-11` scaled tolerance.
+Requesting molecular transport must fail before time, step, or regrid counters
+advance in GNU Fortran Debug and Release suites.
