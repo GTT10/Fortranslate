@@ -931,8 +931,11 @@ contains
     real(dp), allocatable :: euler_temperature(:, :)
     real(dp), allocatable :: stage_state(:, :, :)
     real(dp), allocatable :: stage_temperature(:, :)
+    real(dp), allocatable :: start_state(:, :, :)
+    real(dp), allocatable :: start_temperature(:, :)
     real(dp), allocatable :: synchronized_state(:, :, :)
     real(dp), allocatable :: synchronized_temperature(:, :)
+    type(reactive_eb_patch_set_2d) :: start_set
     real(dp) :: selected_target, theta_one, theta_two
     logical :: accepted, entity_ok, global_ok, local_ok
     integer :: advances_one, advances_two, child, ierr, nvar, owner
@@ -957,11 +960,21 @@ contains
       return
     end if
 
+    allocate(start_state, mold=coarse_state)
+    allocate(start_temperature, mold=coarse_temperature)
+    call synchronize_owned_reactive_eb_patch_set_2d( &
+      distribution, size(species), coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, start_state, start_temperature, &
+      start_set, local_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
     allocate(stage_state, mold=coarse_state)
     allocate(stage_temperature, mold=coarse_temperature)
     call advance_owned_reactive_eb_patch_set_transport_euler_2d( &
-      species, transport, distribution, coarse_state, coarse_temperature, &
-      coarse_geometry, patch_set, interval, viscosity_enabled, &
+      species, transport, distribution, start_state, start_temperature, &
+      coarse_geometry, start_set, interval, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, state_redist_max_order, &
       selected_target, stage_state, stage_temperature, stage_set, theta_one, &
@@ -983,13 +996,13 @@ contains
     root_owner = distribution%root_level_owner()
     allocate(candidate_state, mold=coarse_state)
     allocate(candidate_temperature, mold=coarse_temperature)
-    candidate_set = patch_set
+    candidate_set = start_set
     entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
     if (distribution%rank == root_owner .and. entity_ok) then
-      candidate_state = 0.5_dp * (coarse_state + euler_state)
+      candidate_state = 0.5_dp * (start_state + euler_state)
       call recover_transport_temperature_2d( &
         species, candidate_state, &
-        0.5_dp * (coarse_temperature + euler_temperature), &
+        0.5_dp * (start_temperature + euler_temperature), &
         coarse_geometry, candidate_temperature, entity_ok)
     end if
     call all_ranks_accept_eb_2d( &
@@ -1009,11 +1022,11 @@ contains
       entity_ok = owner >= 0 .and. owner < distribution%nranks
       if (distribution%rank == owner .and. entity_ok) then
         candidate_set%children(child)%state = 0.5_dp * &
-          (patch_set%children(child)%state + &
+          (start_set%children(child)%state + &
            euler_set%children(child)%state)
         call recover_transport_temperature_2d( &
           species, candidate_set%children(child)%state, &
-          0.5_dp * (patch_set%children(child)%temperature + &
+          0.5_dp * (start_set%children(child)%temperature + &
             euler_set%children(child)%temperature), &
           candidate_set%children(child)%geometry, &
           candidate_set%children(child)%temperature, entity_ok)

@@ -513,6 +513,30 @@ program pelef_mpi_eb_amr_patch_2d
   allocate(transport_mpi_state, source=coarse_state)
   allocate(transport_mpi_temperature, source=coarse_temperature)
   transport_mpi_set = transport_start_set
+  do tile = 1, distribution%root_tile_count()
+    if (.not. distribution%root_tile_is_local(tile)) then
+      transport_mpi_state(:, :, &
+        distribution%root_tiles(tile)%j_lower: &
+          distribution%root_tiles(tile)%j_upper) = 0.75_dp * &
+        transport_mpi_state(:, :, &
+          distribution%root_tiles(tile)%j_lower: &
+            distribution%root_tiles(tile)%j_upper)
+      transport_mpi_temperature(:, &
+        distribution%root_tiles(tile)%j_lower: &
+          distribution%root_tiles(tile)%j_upper) = 0.9_dp * &
+        transport_mpi_temperature(:, &
+          distribution%root_tiles(tile)%j_lower: &
+            distribution%root_tiles(tile)%j_upper)
+    end if
+  end do
+  do child = 1, distribution%child_count()
+    if (.not. distribution%child_is_local(child)) then
+      transport_mpi_set%children(child)%state = 0.75_dp * &
+        transport_mpi_set%children(child)%state
+      transport_mpi_set%children(child)%temperature = 0.9_dp * &
+        transport_mpi_set%children(child)%temperature
+    end if
+  end do
   call advance_owned_reactive_eb_patch_set_transport_2d( &
     species, transport, distribution, transport_mpi_state, &
     transport_mpi_temperature, coarse_geometry, transport_mpi_set, &
