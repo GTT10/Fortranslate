@@ -95,6 +95,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: advance_owned_reactive_eb_patch_set_strang_2d
   public :: scatter_owned_reactive_eb_patch_set_2d
   public :: materialize_owned_reactive_eb_patch_set_2d
+  public :: advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
 
 contains
 
@@ -490,6 +491,181 @@ contains
     patch_set = candidate_set
     ok = .true.
   end subroutine materialize_owned_reactive_eb_patch_set_2d
+
+  subroutine advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
+      species, reactions, interval, relative_tolerance, absolute_tolerance, &
+      distribution, sparse_patch_set, coarse_geometry, patch_set_template, &
+      ok, local_entity_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: interval, relative_tolerance, absolute_tolerance
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_advances
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: backup, candidate, synchronized
+    type(reactive_eb_patch_set_2d) :: materialized_set
+    real(dp), allocatable :: averaged_state(:, :, :)
+    real(dp), allocatable :: averaged_temperature(:, :)
+    real(dp), allocatable :: materialized_state(:, :, :)
+    real(dp), allocatable :: materialized_temperature(:, :)
+    real(dp), allocatable :: fallback_state(:, :, :)
+    real(dp), allocatable :: fallback_temperature(:, :)
+    real(dp) :: controls(3), control_maximum(3), control_minimum(3)
+    logical, allocatable :: active_mask(:, :)
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: advances, child, ierr, integer_controls(2)
+    integer :: integer_maximum(2), integer_minimum(2)
+    integer :: j_lower, j_upper, root_owner, tile
+
+    ok = .false.
+    advances = 0
+    if (present(local_entity_advances)) local_entity_advances = 0
+    controls = [interval, relative_tolerance, absolute_tolerance]
+    integer_controls = [size(species), size(reactions)]
+    local_ok = interval >= 0.0_dp .and. relative_tolerance > 0.0_dp .and. &
+      absolute_tolerance > 0.0_dp .and. all(ieee_is_finite(controls)) .and. &
+      size(species) >= 1 .and. size(reactions) >= 1 .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      controls, control_minimum, 3, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      controls, control_maximum, 3, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_minimum, 2, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_maximum, 2, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(control_minimum /= control_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    backup = sparse_patch_set
+    candidate = sparse_patch_set
+    do tile = 1, distribution%root_tile_count()
+      entity_ok = .true.
+      if (distribution%root_tile_is_local(tile)) then
+        j_lower = distribution%root_tiles(tile)%j_lower
+        j_upper = distribution%root_tiles(tile)%j_upper
+        allocate(active_mask(coarse_geometry%nx, j_upper - j_lower + 1))
+        active_mask = coarse_geometry%cell_type(:, j_lower:j_upper) /= &
+          eb_covered_cell
+        call advance_reactive_chemistry_2d( &
+          species, reactions, candidate%root_tiles(tile)%state, &
+          candidate%root_tiles(tile)%temperature, coarse_geometry%nx, &
+          j_upper - j_lower + 1, interval, relative_tolerance, &
+          absolute_tolerance, entity_ok, active_mask)
+        deallocate(active_mask)
+        if (entity_ok) advances = advances + 1
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) then
+        sparse_patch_set = backup
+        return
+      end if
+    end do
+    do child = 1, distribution%child_count()
+      entity_ok = .true.
+      if (distribution%child_is_local(child)) then
+        allocate(active_mask( &
+          patch_set_template%children(child)%geometry%nx, &
+          patch_set_template%children(child)%geometry%ny))
+        active_mask = &
+          patch_set_template%children(child)%geometry%cell_type /= &
+            eb_covered_cell
+        call advance_reactive_chemistry_2d( &
+          species, reactions, candidate%children(child)%state, &
+          candidate%children(child)%temperature, &
+          patch_set_template%children(child)%geometry%nx, &
+          patch_set_template%children(child)%geometry%ny, interval, &
+          relative_tolerance, absolute_tolerance, entity_ok, active_mask)
+        deallocate(active_mask)
+        if (entity_ok) advances = advances + 1
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) then
+        sparse_patch_set = backup
+        return
+      end if
+    end do
+
+    allocate(fallback_state( &
+      candidate%nvar, coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
+    allocate(fallback_temperature( &
+      coarse_geometry%nx, coarse_geometry%ny), source=1.0_dp)
+    allocate(materialized_state, mold=fallback_state)
+    allocate(materialized_temperature, mold=fallback_temperature)
+    call materialize_owned_reactive_eb_patch_set_2d( &
+      distribution, candidate, fallback_state, fallback_temperature, &
+      coarse_geometry, patch_set_template, materialized_state, &
+      materialized_temperature, materialized_set, local_ok)
+    if (.not. local_ok) then
+      sparse_patch_set = backup
+      return
+    end if
+    allocate(averaged_state, mold=materialized_state)
+    allocate(averaged_temperature, mold=materialized_temperature)
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) call &
+      average_down_reactive_eb_patch_set_2d( &
+        species, materialized_state, materialized_temperature, &
+        coarse_geometry, materialized_set, averaged_state, &
+        averaged_temperature, entity_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      sparse_patch_set = backup
+      return
+    end if
+    call MPI_Bcast( &
+      averaged_state, size(averaged_state), MPI_DOUBLE_PRECISION, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      sparse_patch_set = backup
+      return
+    end if
+    call MPI_Bcast( &
+      averaged_temperature, size(averaged_temperature), &
+      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      sparse_patch_set = backup
+      return
+    end if
+    call scatter_owned_reactive_eb_patch_set_2d( &
+      distribution, size(species), averaged_state, averaged_temperature, &
+      coarse_geometry, materialized_set, synchronized, local_ok)
+    if (.not. local_ok) then
+      sparse_patch_set = backup
+      return
+    end if
+    local_ok = synchronized%is_valid( &
+      distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      sparse_patch_set = backup
+      return
+    end if
+    sparse_patch_set = synchronized
+    ok = .true.
+    if (present(local_entity_advances)) local_entity_advances = advances
+  end subroutine advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
 
   subroutine initialize_mpi_amr_eb_patch_distribution_2d( &
       coarse_geometry, patch_set, comm, distribution, ok, &
