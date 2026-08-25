@@ -262,26 +262,35 @@ contains
     real(dp), allocatable :: candidate_fine(:, :, :)
     real(dp), allocatable :: candidate_fine_temperature(:, :)
     real(dp), allocatable :: primitive(:)
-    real(dp) :: recovered_temperature, sound_speed
+    real(dp) :: geometry_tolerance, recovered_temperature, sound_speed
     logical :: local_ok
     integer :: global_i, global_j, i, j, old_i, old_j, nvar, ratio
 
-    new_coarse_state = coarse_state
-    new_coarse_temperature = coarse_temperature
-    new_fine_state = 0.0_dp
-    new_fine_temperature = 0.0_dp
     ok = .false.
     nvar = reactive_nvar(size(species))
-    if (nvar < 1 .or. old_patch%refinement_ratio /= &
-        new_patch%refinement_ratio .or. &
-        .not. old_patch%is_valid(coarse_geometry, old_fine_geometry) .or. &
-        .not. new_patch%is_valid(coarse_geometry, new_fine_geometry) .or. &
-        any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
+    if (any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
         any(shape(new_coarse_temperature) /= shape(coarse_temperature)) .or. &
         any(shape(new_fine_state) /= &
           [nvar, new_fine_geometry%nx, new_fine_geometry%ny]) .or. &
         any(shape(new_fine_temperature) /= &
           [new_fine_geometry%nx, new_fine_geometry%ny])) return
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    new_fine_state = 0.0_dp
+    new_fine_temperature = 0.0_dp
+    if (nvar < 1 .or. &
+        any(shape(coarse_state) /= &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(old_fine_state) /= &
+          [nvar, old_fine_geometry%nx, old_fine_geometry%ny]) .or. &
+        any(shape(old_fine_temperature) /= &
+          [old_fine_geometry%nx, old_fine_geometry%ny]) .or. &
+        old_patch%refinement_ratio /= &
+        new_patch%refinement_ratio .or. &
+        .not. old_patch%is_valid(coarse_geometry, old_fine_geometry) .or. &
+        .not. new_patch%is_valid(coarse_geometry, new_fine_geometry)) return
 
     allocate(candidate_coarse, mold=coarse_state)
     allocate(candidate_coarse_temperature, mold=coarse_temperature)
@@ -299,6 +308,7 @@ contains
     if (.not. local_ok) return
 
     ratio = new_patch%refinement_ratio
+    geometry_tolerance = 5.0e3_dp * epsilon(1.0_dp)
     do j = 1, new_fine_geometry%ny
       global_j = (new_patch%coarse_j_lower - 1) * ratio + j
       old_j = global_j - (old_patch%coarse_j_lower - 1) * ratio
@@ -307,6 +317,11 @@ contains
         global_i = (new_patch%coarse_i_lower - 1) * ratio + i
         old_i = global_i - (old_patch%coarse_i_lower - 1) * ratio
         if (old_i < 1 .or. old_i > old_fine_geometry%nx) cycle
+        if (new_fine_geometry%cell_type(i, j) /= &
+            old_fine_geometry%cell_type(old_i, old_j) .or. &
+            abs(new_fine_geometry%volume_fraction(i, j) - &
+              old_fine_geometry%volume_fraction(old_i, old_j)) > &
+              geometry_tolerance) return
         candidate_fine(:, i, j) = old_fine_state(:, old_i, old_j)
         candidate_fine_temperature(i, j) = &
           old_fine_temperature(old_i, old_j)

@@ -37,6 +37,7 @@ program test_amr_eb_regrid_2d
   real(dp), allocatable :: new_coarse_state(:, :, :), new_fine_state(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :)
   real(dp), allocatable :: old_fine_temperature(:, :)
+  real(dp), allocatable :: invalid_old_fine_temperature(:, :)
   real(dp), allocatable :: new_coarse_temperature(:, :)
   real(dp), allocatable :: new_fine_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
@@ -201,6 +202,20 @@ program test_amr_eb_regrid_2d
     maxval(abs(new_fine_state)) == 0.0_dp .and. &
     maxval(abs(new_fine_temperature)) == 0.0_dp, &
     "invalid old hierarchy regrid rollback")
+
+  old_fine_state(:, 5, 5) = 1.01_dp * state_cell
+  allocate(invalid_old_fine_temperature(1, 1), source=temperature_cell)
+  call regrid_two_level_reactive_eb_patch_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    old_fine_state, invalid_old_fine_temperature, old_fine_geometry, &
+    old_patch, new_fine_geometry, new_patch, new_coarse_state, &
+    new_coarse_temperature, new_fine_state, new_fine_temperature, ok)
+  call require(.not. ok .and. &
+    maxval(abs(new_coarse_state - coarse_state)) == 0.0_dp .and. &
+    maxval(abs(new_coarse_temperature - coarse_temperature)) == 0.0_dp .and. &
+    maxval(abs(new_fine_state)) == 0.0_dp .and. &
+    maxval(abs(new_fine_temperature)) == 0.0_dp, &
+    "invalid old-temperature shape rollback")
 
   write(*, '(a)') "test_amr_eb_regrid_2d: PASS"
 
