@@ -568,24 +568,24 @@ program pelef_mpi_eb_amr_patch_2d
     sparse_failed_set%local_value_count() == &
       sparse_failed_backup_set%local_value_count(), &
     "MPI EB AMR late sparse chemistry rollback", rank)
+  ok = .true.
   do tile = 1, distribution%root_tile_count()
     if (.not. distribution%root_tile_is_local(tile)) cycle
-    call assert_all( &
-      all(sparse_failed_set%root_tiles(tile)%state == &
+    ok = ok .and. all(sparse_failed_set%root_tiles(tile)%state == &
         sparse_failed_backup_set%root_tiles(tile)%state) .and. &
       all(sparse_failed_set%root_tiles(tile)%temperature == &
-        sparse_failed_backup_set%root_tiles(tile)%temperature), &
-      "MPI EB AMR sparse chemistry root rollback", rank)
+        sparse_failed_backup_set%root_tiles(tile)%temperature)
   end do
+  call assert_all(ok, "MPI EB AMR sparse chemistry root rollback", rank)
+  ok = .true.
   do child = 1, distribution%child_count()
     if (.not. distribution%child_is_local(child)) cycle
-    call assert_all( &
-      all(sparse_failed_set%children(child)%state == &
+    ok = ok .and. all(sparse_failed_set%children(child)%state == &
         sparse_failed_backup_set%children(child)%state) .and. &
       all(sparse_failed_set%children(child)%temperature == &
-        sparse_failed_backup_set%children(child)%temperature), &
-      "MPI EB AMR sparse chemistry child rollback", rank)
+        sparse_failed_backup_set%children(child)%temperature)
   end do
+  call assert_all(ok, "MPI EB AMR sparse chemistry child rollback", rank)
 
   hydro_start_set = patch_set
   do child = 1, hydro_start_set%patch_count()
