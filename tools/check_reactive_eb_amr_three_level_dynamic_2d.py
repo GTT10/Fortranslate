@@ -42,10 +42,10 @@ def main() -> None:
 
     load(args.root, 12 * 12)
     load(args.middle, 20 * 20)
-    finest = load(args.finest, 28 * 28)
+    finest = load(args.finest, 22 * 28)
     x_coordinates = sorted({float(row["x"]) for row in finest})
     y_coordinates = sorted({float(row["y"]) for row in finest})
-    if len(x_coordinates) != 28 or len(y_coordinates) != 28:
+    if len(x_coordinates) != 22 or len(y_coordinates) != 28:
         raise AssertionError("finest patch did not regrid to the tagged rectangle")
     if not (x_coordinates[0] < 0.00437 < x_coordinates[-1]):
         raise AssertionError("finest patch does not cross the embedded boundary")
