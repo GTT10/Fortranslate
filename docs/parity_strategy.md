@@ -1719,3 +1719,21 @@ finest hotspots to `2e-7`. All six CSVs must contain finite positive active
 thermodynamics and species closure within `8e-12`; the conducting composite
 hierarchy temperature span must be measurably smaller. These focused gates must pass
 before all 205 tests in GNU Fortran Debug and Release configurations.
+
+## 0.109.0 multipatch reactive EB AMR transport gates
+
+The low-level gate initializes two separated ratio-two fine patches over a
+plane-EB root and imposes a double temperature hotspot across the composite
+hierarchy. The coarse transport stage must run once, while each child owns an
+independent diffusive register and fine subcycle. A set-wide EB-cut closure
+must retain every composite conserved integral within a `5e-10` scale-aware
+tolerance. Covered cells remain bitwise unchanged, the conduction-only
+species limiter remains inactive, the hierarchy temperature span decreases,
+and an invalid interval rolls back the root and every child exactly.
+
+The public application runs matching inert and conducting 14 by 14 root plus
+two 10 by 10 sibling-patch double hotspots to `2e-7`. All six CSVs must retain
+finite positive active thermodynamics, identical EB classification, and
+species closure within `8e-12`. The conducting composite hierarchy
+temperature span must be measurably smaller. These focused gates must pass
+before all 208 tests in GNU Fortran Debug and Release configurations.

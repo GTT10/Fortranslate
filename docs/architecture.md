@@ -1155,10 +1155,22 @@ Euler stage restricts finest to middle before middle to root. The public
 driver selects the minimum root-equivalent stability limit across all three
 levels and retains the symmetric `R-T-H-T-R` composition.
 
+In `0.109.0`, `amr_eb_multipatch_transport_2d_mod` advances the root
+transport stage once and gives every separated sibling patch an independent
+ratio-subcycled fine transaction and diffusive flux register. All children
+sample the same time-interpolated root candidate. Their disjoint reflux
+updates are accumulated before one patch-set average-down. If an embedded
+boundary crosses any child interface, one set-wide composite residual closure
+corrects active unrefined root recipients, closes density against species, and
+recovers every corrected temperature through the EOS. Two complete
+synchronized Euler transactions form SSPRK2, and the public driver includes
+all child parabolic limits in the root timestep.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-multipatch EB AMR molecular transport, locally resolved
-PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
+same-level diffusive exchange for touching siblings, locally resolved
+PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
+lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
 subsystem. Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.
