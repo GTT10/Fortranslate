@@ -2096,3 +2096,24 @@ The public sparse transaction now covers the complete qualified physics split.
 Hydro and transport still operate inside one replicated compatibility window;
 direct sparse hydro/transport, point-to-point traffic, time-loop control,
 regridding, checkpointing, and output remain separate work.
+
+## Direct hydro on sparse MPI reactive EB AMR storage (`0.119.0`)
+
+- [x] root-tile assembly into a level-wide StateRedist temporary
+- [x] one root-owner hydro update and root flux synchronization
+- [x] owner-local child exterior construction and ratio subcycling
+- [x] owner-local coarse/fine flux-register accumulation and reflux
+- [x] no allocation or synchronization of nonowner child payloads
+- [x] direct corrected-root scatter and sparse reactive average-down
+- [x] unchanged committed sparse allocation count
+- [x] exact local and global level-advance accounting
+- [x] serial multipatch hydro state and temperature parity
+- [x] exact rollback after a late final-child failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Fine-level hydro now remains owner-local throughout the transaction. Root state
+and flux arrays are still level-wide broadcasts because root EB StateRedist is
+not decomposed; direct sparse transport, root halo/redistribution decomposition,
+targeted traffic, time-loop control, regridding, checkpointing, and output
+remain separate work.

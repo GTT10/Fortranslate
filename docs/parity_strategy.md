@@ -1908,3 +1908,19 @@ bitwise unchanged, all three published operator counts must remain zero, and
 the limiter fallback must remain exactly one. The gate runs in GNU Fortran
 Release and bounds/FPE-checked Debug configurations before the complete
 208-test regression.
+
+## 0.119.0 direct sparse MPI reactive EB AMR hydro gates
+
+Starting from sparse root tiles and owner-only fine children, direct hydro must
+retain each rank's exact stored-value count. Materialization only after commit
+must match serial multipatch hydro root and child state and temperature within
+`8e-12` field scale at one, two, four, and eight ranks. Local and communicator
+counts must equal one root-owner update plus each child refinement ratio on its
+exclusive owner.
+
+The rejection gate places finite negative density on the final child owner.
+The root and any earlier children may advance first, but every local sparse
+root and child field must remain bitwise unchanged and the published advance
+count must remain zero. The gate runs in GNU Fortran Release and
+bounds/FPE-checked Debug configurations before the complete 208-test
+regression.

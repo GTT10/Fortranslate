@@ -672,6 +672,8 @@ Required capabilities:
   average-down without complete hierarchy materialization (`0.117.0`)
 - [x] sparse-input/output MPI EB AMR full-physics transaction with one central
   replicated `T-H-T` compatibility window (`0.118.0`)
+- [x] direct sparse MPI EB AMR hydro with root-level temporary synchronization
+  and owner-local child subcycling/reflux (`0.119.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
