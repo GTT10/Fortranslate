@@ -1813,6 +1813,59 @@ set_tests_properties(
     "regression_reactive_eb_amr_chemistry_2d_reference;regression_reactive_eb_amr_chemistry_2d_run"
 )
 
+set(REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_restart_2d")
+file(MAKE_DIRECTORY "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_amr_restart_2d_reference
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_restart_2d/reference.nml"
+)
+add_test(
+  NAME regression_reactive_eb_amr_restart_2d_checkpoint_stop
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_restart_2d/checkpoint_stop.nml"
+)
+add_test(
+  NAME regression_reactive_eb_amr_restart_2d_restart
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_restart_2d/restart.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_restart_2d_reference
+  regression_reactive_eb_amr_restart_2d_checkpoint_stop
+  regression_reactive_eb_amr_restart_2d_restart
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+set_tests_properties(
+  regression_reactive_eb_amr_restart_2d_restart
+  PROPERTIES DEPENDS regression_reactive_eb_amr_restart_2d_checkpoint_stop
+)
+add_test(
+  NAME regression_reactive_eb_amr_restart_2d_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_amr_restart_2d.py"
+    --checkpoint
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restart.chk"
+    --reference
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restart_reference_coarse_2d.csv"
+    --stopped
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restart_stopped_coarse_2d.csv"
+    --restarted
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restarted_coarse_2d.csv"
+    --fine
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restart_reference_fine_2d.csv"
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restart_stopped_fine_2d.csv"
+      "${REACTIVE_EB_AMR_RESTART_2D_WORK_DIRECTORY}/reactive_eb_amr_restarted_fine_2d.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_restart_2d_check
+  PROPERTIES DEPENDS
+    "regression_reactive_eb_amr_restart_2d_reference;regression_reactive_eb_amr_restart_2d_checkpoint_stop;regression_reactive_eb_amr_restart_2d_restart"
+)
+
 set(REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY
   "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_chemistry_2d")
 file(MAKE_DIRECTORY "${REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY}")

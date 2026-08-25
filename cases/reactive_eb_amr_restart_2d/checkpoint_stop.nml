@@ -1,0 +1,68 @@
+&reactive_2d
+  nx = 8
+  ny = 8
+  maximum_steps = 100
+  x_lower = 0.0
+  x_upper = 0.008
+  y_lower = 0.0
+  y_upper = 0.008
+  final_time = 2.0e-7
+  cfl = 0.05
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  limiter = "mc"
+  use_transverse_correction = .false.
+  chemistry_enabled = .true.
+  chemistry_model = "elementary"
+  transport_enabled = .false.
+  boundary_x_lower = "outflow"
+  boundary_x_upper = "outflow"
+  boundary_y_lower = "outflow"
+  boundary_y_upper = "outflow"
+  chemistry_relative_tolerance = 2.0e-7
+  chemistry_absolute_tolerance = 1.0e-12
+  initial_temperature = 1200.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  x_h2 = 0.29570
+  x_h = 1.0e-5
+  x_o = 1.0e-5
+  x_o2 = 0.14784
+  x_oh = 1.0e-5
+  x_h2o = 0.0
+  x_n2 = 0.55643
+  output_file = "reactive_eb_amr_restart_stopped_coarse_2d.csv"
+/
+
+&embedded_boundary
+  geometry = "plane"
+  plane_normal_x = 1.0
+  plane_normal_y = 0.0
+  plane_offset = 0.00337
+  state_redist_target_volume_fraction = 0.5
+  state_redist_max_order = 2
+/
+
+&eb_amr
+  coarse_i_lower = 2
+  coarse_i_upper = 6
+  coarse_j_lower = 2
+  coarse_j_upper = 6
+  refinement_ratio = 2
+  dynamic_regridding = .true.
+  regrid_at_initialization = .false.
+  remove_fine_patch_when_untagged = .true.
+  regrid_interval = 1
+  regrid_relative_temperature_gradient = 0.02
+  regrid_absolute_temperature_gradient = 5.0
+  regrid_temperature_scale_floor = 1.0
+  regrid_buffer_cells = 1
+  regrid_minimum_patch_cells_x = 4
+  regrid_minimum_patch_cells_y = 4
+  checkpoint_interval = 1
+  checkpoint_stop_after_write = .true.
+  checkpoint_file = "reactive_eb_amr_restart.chk"
+  fine_output_file = "reactive_eb_amr_restart_stopped_fine_2d.csv"
+/
