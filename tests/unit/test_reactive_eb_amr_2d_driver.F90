@@ -12,6 +12,7 @@ program test_reactive_eb_amr_2d_driver
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use reactive_eb_amr_2d_driver_mod, only: &
+    advance_two_level_reactive_eb_strang_2d, &
     compute_reactive_eb_amr_cfl_timestep_2d, &
     regrid_reactive_eb_amr_hierarchy_2d, &
     simulate_reactive_eb_amr_2d
@@ -27,6 +28,10 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp), allocatable :: lifecycle_integrals(:)
+  real(dp), allocatable :: rollback_coarse_state(:, :, :)
+  real(dp), allocatable :: rollback_coarse_temperature(:, :)
+  real(dp), allocatable :: rollback_fine_state(:, :, :)
+  real(dp), allocatable :: rollback_fine_temperature(:, :)
   real(dp), allocatable :: reference_state(:)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, conservation_error, scale
   logical :: changed, fine_active, ok
@@ -111,6 +116,27 @@ program test_reactive_eb_amr_2d_driver
     config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > config%eb%flow%final_time, &
     "two-level CFL selection")
+
+  allocate(rollback_coarse_state, mold=coarse_state)
+  allocate(rollback_coarse_temperature, mold=coarse_temperature)
+  allocate(rollback_fine_state, mold=fine_state)
+  allocate(rollback_fine_temperature, mold=fine_temperature)
+  call advance_two_level_reactive_eb_strang_2d( &
+    species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, "unknown", &
+    config%eb%flow%reconstruction, config%eb%flow%limiter, &
+    config%eb%state_redist_max_order, config%eb%flow%final_time, .true., &
+    config%eb%flow%chemistry_relative_tolerance, &
+    config%eb%flow%chemistry_absolute_tolerance, rollback_coarse_state, &
+    rollback_coarse_temperature, rollback_fine_state, &
+    rollback_fine_temperature, ok, &
+    config%eb%state_redist_target_volume_fraction)
+  call require(.not. ok .and. &
+    all(rollback_coarse_state == coarse_state) .and. &
+    all(rollback_coarse_temperature == coarse_temperature) .and. &
+    all(rollback_fine_state == fine_state) .and. &
+    all(rollback_fine_temperature == fine_temperature), &
+    "two-level chemistry transaction rollback")
 
   config%eb%flow%nx = 12
   config%eb%flow%ny = 12
