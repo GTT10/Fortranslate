@@ -3,6 +3,9 @@ program pelef_reactive_eb_2d
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport, &
+    load_h2o2_full_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_elementary_mechanism_mod, only: &
@@ -21,9 +24,11 @@ program pelef_reactive_eb_2d
   type(eb_geometry_2d) :: geometry
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: state(:, :, :), temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: time, minimum_dt, base_density, conservation_error
+  real(dp) :: minimum_transport_theta
   real(dp) :: minimum_density, maximum_density
   real(dp) :: minimum_pressure, maximum_pressure
   real(dp) :: minimum_temperature, maximum_temperature
@@ -50,18 +55,23 @@ program pelef_reactive_eb_2d
     if (.not. ok) error stop "Failed to load elementary thermodynamics"
     call load_h2o2_elementary_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load elementary mechanism"
+    call load_h2o2_elementary_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load elementary transport"
   case ("full_h2o2")
     call load_h2o2_full_thermo(species, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
     call load_h2o2_full_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
+    call load_h2o2_full_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 transport"
   case default
     error stop "Unknown chemistry model"
   end select
 
   call simulate_reactive_eb_2d( &
     species, reactions, config, state, temperature, geometry, time, steps, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+    transport, minimum_transport_theta)
   if (.not. ok) error stop "Reactive EB 2D simulation failed"
   call write_reactive_eb_2d_csv( &
     config%flow%output_file, species, config, state, temperature, &
@@ -88,6 +98,19 @@ program pelef_reactive_eb_2d
   write(*, '(a,l2)') "Chemistry: ", config%flow%chemistry_enabled
   write(*, '(a,1x,a)') "Chemistry model:", &
     trim(config%flow%chemistry_model)
+  write(*, '(a,l2)') "Molecular transport: ", &
+    config%flow%transport_enabled
+  if (config%flow%transport_enabled) then
+    write(*, '(a,l2)') "Viscosity: ", config%flow%viscosity_enabled
+    write(*, '(a,l2)') "Thermal conduction: ", &
+      config%flow%thermal_conduction_enabled
+    write(*, '(a,l2)') "Species diffusion: ", &
+      config%flow%species_diffusion_enabled
+    write(*, '(a,l2)') "Barodiffusion: ", &
+      config%flow%barodiffusion_enabled
+    write(*, '(a,es24.16)') "Minimum transport limiter theta: ", &
+      minimum_transport_theta
+  end if
   write(*, '(a,es24.16)') "StateRedist target volume fraction: ", &
     config%state_redist_target_volume_fraction
   write(*, '(a,i0)') "StateRedist max order: ", &

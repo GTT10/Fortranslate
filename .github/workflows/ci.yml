@@ -51,5 +51,11 @@ jobs:
           --tests-regex '^(unit_reactive_eb_amr_2d_driver|regression_reactive_eb_amr_(multipatch_2d_(run|check)|multipatch_restart_2d_(reference|checkpoint_stop|restart|check)|physical_boundary_2d_(run|check)|dynamic_physical_boundary_2d_(run|check)|three_level_2d_(reference|run|check)|three_level_restart_2d_(reference|checkpoint_stop|restart|check)|three_level_dynamic_2d_(run|check)|three_level_dynamic_restart_2d_(reference|checkpoint_stop|restart|check)))$'
           --output-on-failure
 
+      - name: Test reactive EB molecular transport gate
+        run: >-
+          ctest --test-dir build
+          --tests-regex '^(unit_reactive_eb_2d_driver|regression_reactive_eb_transport_2d_(reference|run|check))$'
+          --output-on-failure
+
       - name: Test
         run: ctest --test-dir build --output-on-failure

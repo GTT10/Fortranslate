@@ -107,11 +107,6 @@ contains
       message = "StateRedist max order must be 0 or 2"
       return
     end if
-    if (config%flow%transport_enabled) then
-      ok = .false.
-      message = "Reactive EB 2D currently does not support molecular transport"
-      return
-    end if
     if ((trim(config%flow%reconstruction) /= "pcm" .and. &
          trim(config%flow%reconstruction) /= "characteristic_plm") .or. &
         config%flow%use_transverse_correction) then
