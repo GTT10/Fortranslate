@@ -15,8 +15,8 @@ substep and, within every middle interval, advance the finest level once per
 middle substep. Give each parent/child interface an independent diffusive flux
 register. Complete finest reflux, EB-cut conservation closure, and
 middle/finest average-down before accumulating the middle result into the root
-transaction. Finish with outer reflux and deepest-first three-level
-average-down.
+transaction. Finish with outer reflux, deepest-first three-level average-down,
+and the same EB-cut closure at the outer interface when required.
 
 Compose two complete synchronized Euler transactions as SSPRK2. Convert the
 middle and finest parabolic limits to root time by the cumulative refinement

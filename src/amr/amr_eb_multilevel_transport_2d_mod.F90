@@ -16,7 +16,8 @@ module amr_eb_multilevel_transport_2d_mod
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d, &
     composite_eb_integral_2d
   use amr_eb_multilevel_2d_mod, only: &
-    average_down_three_level_reactive_eb_state_2d
+    average_down_three_level_reactive_eb_state_2d, &
+    composite_three_level_eb_integral_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -75,6 +76,8 @@ contains
     real(dp), allocatable :: root_rhs(:, :, :), root_x_flux(:, :, :)
     real(dp), allocatable :: root_y_flux(:, :, :), root_refluxed(:, :, :)
     real(dp), allocatable :: root_refluxed_temperature(:, :)
+    real(dp), allocatable :: root_closed(:, :, :)
+    real(dp), allocatable :: root_closed_temperature(:, :)
     real(dp), allocatable :: level_one_candidate(:, :, :)
     real(dp), allocatable :: level_one_candidate_temperature(:, :)
     real(dp), allocatable :: level_one_start(:, :, :)
@@ -98,6 +101,7 @@ contains
     real(dp), allocatable :: level_two_x_flux(:, :, :)
     real(dp), allocatable :: level_two_y_flux(:, :, :)
     real(dp), allocatable :: level_one_integral_before(:)
+    real(dp), allocatable :: root_integral_before(:)
     real(dp) :: level_one_dt, level_two_dt, alpha
     real(dp) :: root_theta, level_one_theta, level_two_theta
     logical :: local_ok
@@ -130,6 +134,13 @@ contains
         any(shape(new_level_two_state) /= shape(level_two_state)) .or. &
         any(shape(new_level_two_temperature) /= &
           shape(level_two_temperature))) return
+
+    allocate(root_integral_before(nvar))
+    call composite_three_level_eb_integral_2d( &
+      root_state, root_geometry, level_one_state, level_one_geometry, &
+      root_patch, level_two_state, level_two_geometry, level_one_patch, &
+      root_integral_before, local_ok)
+    if (.not. local_ok) return
 
     allocate(root_candidate, mold=root_state)
     allocate(root_temperature_work, mold=root_temperature)
@@ -313,6 +324,18 @@ contains
       root_candidate, root_temperature_work, level_one_candidate, &
       level_one_candidate_temperature, local_ok)
     if (.not. local_ok) return
+    if (.not. level_two_interface_is_regular(level_one_geometry)) then
+      allocate(root_closed, mold=root_state)
+      allocate(root_closed_temperature, mold=root_temperature)
+      call close_cut_interface_conservation_2d( &
+        species, root_integral_before, root_candidate, &
+        root_temperature_work, root_geometry, level_one_candidate, &
+        level_one_geometry, root_patch, root_x_flux, root_y_flux, dt, &
+        root_closed, root_closed_temperature, local_ok)
+      if (.not. local_ok) return
+      root_candidate = root_closed
+      root_temperature_work = root_closed_temperature
+    end if
 
     new_root_state = root_candidate
     new_root_temperature = root_temperature_work
