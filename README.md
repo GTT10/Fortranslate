@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.109.0` milestone contains the serial verification suite, seven optional
+The `0.110.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -379,6 +379,16 @@ Checkpoints store no owner map: restart rebuilds deterministic ownership for
 the active communicator, allowing a two-rank run to resume on four or eight
 ranks.
 
+The eighth executable, `pelef_mpi_eb_amr_patch_2d`, establishes the first
+two-dimensional EB AMR distribution boundary. It partitions the root into
+contiguous y-tiles, assigns separated fine siblings as independent entities,
+and balances raw, hyperbolic, or parabolic subcycle-weighted work with 64-bit
+accounting. Geometry and patch metadata remain replicated, while root-tile and
+child state/temperature payloads are synchronized from one authoritative
+owner. Its 1/2/4/8-rank gate checks collective topology agreement, exact
+ownership accounting, authoritative payload recovery, and transactional
+rejection of invalid or inconsistent work models.
+
 ### One-dimensional AMR
 
 The AMR layer provides:
@@ -615,6 +625,7 @@ cmake --build build-mpi --parallel
 mpiexec -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
 mpiexec -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d \
   cases/mpi_sparse_amr_hotspot/hotspot.nml sparse_amr_np4.csv
+mpiexec -n 4 ./build-mpi/pelef_mpi_eb_amr_patch_2d
 ```
 
 To enable the live Cantera reference gate:
