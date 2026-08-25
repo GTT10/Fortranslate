@@ -98,6 +98,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: materialize_owned_reactive_eb_patch_set_2d
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
+  public :: advance_sparse_owned_reactive_eb_patch_set_strang_2d
 
 contains
 
@@ -764,6 +765,117 @@ contains
     ok = .true.
     if (present(local_entity_advances)) local_entity_advances = advances
   end subroutine advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
+
+  subroutine advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
+      species, reactions, transport, distribution, sparse_patch_set, &
+      coarse_geometry, patch_set_template, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, rtol, atol, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, ok, local_chemistry_advances, &
+      local_hydro_advances, local_transport_euler_advances, &
+      minimum_transport_theta, state_redist_target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_chemistry_advances
+    integer, intent(out), optional :: local_hydro_advances
+    integer, intent(out), optional :: local_transport_euler_advances
+    real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    type(reactive_eb_patch_set_2d) :: materialized_set
+    real(dp), allocatable :: fallback_state(:, :, :)
+    real(dp), allocatable :: fallback_temperature(:, :)
+    real(dp), allocatable :: materialized_state(:, :, :)
+    real(dp), allocatable :: materialized_temperature(:, :)
+    real(dp) :: selected_target, theta, theta_one, theta_two
+    logical :: local_ok
+    integer :: chemistry_one, chemistry_two, hydro_advances
+    integer :: transport_one, transport_two
+
+    ok = .false.
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_euler_advances)) &
+      local_transport_euler_advances = 0
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    candidate = sparse_patch_set
+
+    call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
+      species, reactions, 0.5_dp * dt, rtol, atol, distribution, candidate, &
+      coarse_geometry, patch_set_template, local_ok, chemistry_one)
+    if (.not. local_ok) return
+
+    allocate(fallback_state( &
+      candidate%nvar, coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
+    allocate(fallback_temperature( &
+      coarse_geometry%nx, coarse_geometry%ny), source=1.0_dp)
+    allocate(materialized_state, mold=fallback_state)
+    allocate(materialized_temperature, mold=fallback_temperature)
+    call materialize_owned_reactive_eb_patch_set_2d( &
+      distribution, candidate, fallback_state, fallback_temperature, &
+      coarse_geometry, patch_set_template, materialized_state, &
+      materialized_temperature, materialized_set, local_ok)
+    if (.not. local_ok) return
+
+    call advance_owned_reactive_eb_patch_set_transport_2d( &
+      species, transport, distribution, materialized_state, &
+      materialized_temperature, coarse_geometry, materialized_set, &
+      0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_max_order, local_ok, transport_one, theta_one, &
+      selected_target)
+    if (.not. local_ok) return
+    call advance_owned_reactive_eb_patch_set_hydro_2d( &
+      species, distribution, materialized_state, materialized_temperature, &
+      coarse_geometry, materialized_set, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, local_ok, hydro_advances, selected_target)
+    if (.not. local_ok) return
+    call advance_owned_reactive_eb_patch_set_transport_2d( &
+      species, transport, distribution, materialized_state, &
+      materialized_temperature, coarse_geometry, materialized_set, &
+      0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_max_order, local_ok, transport_two, theta_two, &
+      selected_target)
+    if (.not. local_ok) return
+
+    call scatter_owned_reactive_eb_patch_set_2d( &
+      distribution, size(species), materialized_state, &
+      materialized_temperature, coarse_geometry, materialized_set, &
+      candidate, local_ok)
+    if (.not. local_ok) return
+    call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
+      species, reactions, 0.5_dp * dt, rtol, atol, distribution, candidate, &
+      coarse_geometry, patch_set_template, local_ok, chemistry_two)
+    if (.not. local_ok) return
+
+    theta = min(theta_one, theta_two)
+    sparse_patch_set = candidate
+    ok = .true.
+    if (present(local_chemistry_advances)) &
+      local_chemistry_advances = chemistry_one + chemistry_two
+    if (present(local_hydro_advances)) &
+      local_hydro_advances = hydro_advances
+    if (present(local_transport_euler_advances)) &
+      local_transport_euler_advances = transport_one + transport_two
+    if (present(minimum_transport_theta)) minimum_transport_theta = theta
+  end subroutine advance_sparse_owned_reactive_eb_patch_set_strang_2d
 
   subroutine initialize_mpi_amr_eb_patch_distribution_2d( &
       coarse_geometry, patch_set, comm, distribution, ok, &

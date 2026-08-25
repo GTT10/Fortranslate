@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.117.0` milestone contains the serial verification suite, eight optional
+The `0.118.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -53,6 +53,10 @@ average-down communicates numerical state. Each child owner broadcasts one
 coarse-footprint restriction buffer, and intersecting root tile owners recover
 temperature and apply it locally. Chemistry no longer materializes a complete
 hierarchy.
+The complete sparse `R-T-H-T-R` transaction retains sparse input and output.
+Its two chemistry stages stay on sparse owners; one complete temporary
+hierarchy is used only for the central transport-hydro-transport compatibility
+window and is discarded before the final chemistry commit.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root

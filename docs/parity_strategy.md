@@ -1889,3 +1889,22 @@ earlier child restrictions, preserve every local root and child allocation
 bitwise, and retain its exact local value count. The gate runs in GNU Fortran
 Release and bounds/FPE-checked Debug configurations before the complete
 208-test regression.
+
+## 0.118.0 sparse MPI reactive EB AMR full-physics gates
+
+Starting from an owner-only sparse hierarchy, the complete `R-T-H-T-R`
+transaction must retain the exact local sparse value count and match the
+serial multipatch full-physics root and child state and temperature within
+`5e-11` field scale. The transport limiter minimum must match within `3e-13`.
+At one, two, four, and eight ranks, local and communicator counts must equal
+two chemistry calls per root tile and child, one root plus ratio-subcycled
+child hydro update, and four root plus ratio-subcycled child transport Euler
+updates.
+
+The rollback transaction uses valid chemistry and transport controls but an
+invalid hydro solver. Chemistry and the first transport stage may execute in
+the candidate compatibility window, but the sparse caller state must remain
+bitwise unchanged, all three published operator counts must remain zero, and
+the limiter fallback must remain exactly one. The gate runs in GNU Fortran
+Release and bounds/FPE-checked Debug configurations before the complete
+208-test regression.
