@@ -1,12 +1,12 @@
 program test_amr_eb_multipatch_2d
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_density_component, &
-    reactive_total_energy_component, reactive_species_component, &
+    reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
@@ -45,7 +45,7 @@ program test_amr_eb_multipatch_2d
   character(len=64) :: hydro_failure_context
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
-  integer :: child, component, i, iet, irho, j, k, nvar
+  integer :: child, component, i, j, k, nvar
 
   do j = 0, coarse_ny
     y = real(j, dp) / real(coarse_ny, dp)
@@ -76,8 +76,6 @@ program test_amr_eb_multipatch_2d
   call reactive_primitive_to_conserved( &
     species, primitive, state_cell, temperature_cell, sound_speed, ok)
   call require(ok, "multipatch reference state")
-  irho = reactive_density_component()
-  iet = reactive_total_energy_component()
 
   allocate(coarse_state(nvar, coarse_nx, coarse_ny))
   allocate(coarse_temperature(coarse_nx, coarse_ny))
