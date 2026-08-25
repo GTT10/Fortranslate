@@ -9,6 +9,10 @@ program pelef_mpi_eb_amr_patch_2d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -24,13 +28,16 @@ program pelef_mpi_eb_amr_patch_2d
     initialize_reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
     advance_reactive_eb_patch_set_hydro_2d
+  use amr_eb_multipatch_transport_2d_mod, only: &
+    advance_reactive_eb_patch_set_transport_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
     synchronize_owned_reactive_eb_patch_set_2d, &
     advance_owned_reactive_eb_patch_set_chemistry_2d, &
-    advance_owned_reactive_eb_patch_set_hydro_2d
+    advance_owned_reactive_eb_patch_set_hydro_2d, &
+    advance_owned_reactive_eb_patch_set_transport_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -46,11 +53,18 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  type(reactive_boundary_set_2d) :: boundaries
   type(reactive_eb_patch_set_2d) :: chemistry_set, reference_set
   type(reactive_eb_patch_set_2d) :: failed_set, failed_backup_set
   type(reactive_eb_patch_set_2d) :: hydro_start_set, hydro_reference_set
   type(reactive_eb_patch_set_2d) :: hydro_mpi_set, hydro_failed_set
   type(reactive_eb_patch_set_2d) :: hydro_failed_backup_set
+  type(reactive_eb_patch_set_2d) :: transport_start_set
+  type(reactive_eb_patch_set_2d) :: transport_reference_set
+  type(reactive_eb_patch_set_2d) :: transport_mpi_set
+  type(reactive_eb_patch_set_2d) :: transport_failed_set
+  type(reactive_eb_patch_set_2d) :: transport_failed_backup_set
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -76,10 +90,21 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: hydro_failed_temperature(:, :)
   real(dp), allocatable :: hydro_failed_backup_state(:, :, :)
   real(dp), allocatable :: hydro_failed_backup_temperature(:, :)
+  real(dp), allocatable :: transport_reference_state(:, :, :)
+  real(dp), allocatable :: transport_reference_temperature(:, :)
+  real(dp), allocatable :: transport_mpi_state(:, :, :)
+  real(dp), allocatable :: transport_mpi_temperature(:, :)
+  real(dp), allocatable :: transport_failed_state(:, :, :)
+  real(dp), allocatable :: transport_failed_temperature(:, :)
+  real(dp), allocatable :: transport_failed_backup_state(:, :, :)
+  real(dp), allocatable :: transport_failed_backup_temperature(:, :)
   logical, allocatable :: active_mask(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
   real(dp) :: hydro_dt, hydro_change, hydro_scale
+  real(dp) :: transport_dt, transport_change, transport_scale
+  real(dp) :: transport_theta, transport_reference_theta
+  real(dp) :: child_sound_speed, child_temperature
   logical :: tags(coarse_nx, coarse_ny), ok
   integer :: child, component, global_advances, i, ierr, j
   integer :: local_advances, nvar, rank, nranks, tile
@@ -109,7 +134,11 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ok, "MPI EB AMR thermodynamic database", rank)
   call load_h2o2_elementary_mechanism(reactions, ok)
   call assert_all(ok, "MPI EB AMR chemistry mechanism", rank)
+  call load_h2o2_elementary_transport(transport, ok)
+  call assert_all(ok, "MPI EB AMR transport database", rank)
   nvar = reactive_nvar(size(species))
+  call initialize_periodic_boundary_set_2d( &
+    reactive_nprim(size(species)), boundaries)
   allocate(primitive(reactive_nprim(size(species))))
   allocate(mass_fractions(size(species)), state_cell(nvar))
   mole_fractions = [0.29570_dp, 1.0e-5_dp, 1.0e-5_dp, 0.14784_dp, &
@@ -455,6 +484,116 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR late hydro failure child rollback", rank)
   end do
 
+  transport_start_set = patch_set
+  do child = 1, transport_start_set%patch_count()
+    primitive(1) = 0.31_dp + 0.015_dp * real(3 - 2 * child, dp)
+    primitive(2) = 0.035_dp * real(3 - 2 * child, dp)
+    call reactive_primitive_to_conserved( &
+      species, primitive, state_cell, child_temperature, child_sound_speed, ok)
+    call assert_all(ok, "MPI EB AMR transport child state", rank)
+    transport_start_set%children(child)%state = spread( &
+      spread(state_cell, 2, &
+        transport_start_set%children(child)%geometry%nx), 3, &
+      transport_start_set%children(child)%geometry%ny)
+    transport_start_set%children(child)%temperature = child_temperature
+  end do
+  call assert_all(transport_start_set%is_valid(coarse_geometry, nvar), &
+    "MPI EB AMR transport start hierarchy", rank)
+  transport_dt = 0.25_dp * hydro_dt
+  allocate(transport_reference_state, mold=coarse_state)
+  allocate(transport_reference_temperature, mold=coarse_temperature)
+  call advance_reactive_eb_patch_set_transport_2d( &
+    species, transport, coarse_state, coarse_temperature, coarse_geometry, &
+    transport_start_set, transport_dt, .true., .true., .true., .true., &
+    boundaries, 0.5_dp, 2, transport_reference_state, &
+    transport_reference_temperature, transport_reference_set, &
+    transport_reference_theta, ok)
+  call assert_all(ok, "serial EB AMR transport reference", rank)
+
+  allocate(transport_mpi_state, source=coarse_state)
+  allocate(transport_mpi_temperature, source=coarse_temperature)
+  transport_mpi_set = transport_start_set
+  call advance_owned_reactive_eb_patch_set_transport_2d( &
+    species, transport, distribution, transport_mpi_state, &
+    transport_mpi_temperature, coarse_geometry, transport_mpi_set, &
+    transport_dt, .true., .true., .true., .true., boundaries, 2, ok, &
+    local_advances, transport_theta, 0.5_dp)
+  call assert_all(ok, "MPI owner-only EB AMR transport", rank)
+  expected_local_advances = 0
+  if (rank == distribution%root_level_owner()) &
+    expected_local_advances = expected_local_advances + 2
+  expected_global_advances = 2
+  do child = 1, distribution%child_count()
+    expected_global_advances = expected_global_advances + 2 * &
+      transport_start_set%children(child)%patch%refinement_ratio
+    if (distribution%child_is_local(child)) &
+      expected_local_advances = expected_local_advances + 2 * &
+        transport_start_set%children(child)%patch%refinement_ratio
+  end do
+  call MPI_Allreduce( &
+    local_advances, global_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_advances == expected_local_advances .and. &
+    global_advances == expected_global_advances, &
+    "MPI EB AMR one transport Euler advance per owner interval", rank)
+  transport_scale = max(1.0_dp, maxval(abs(transport_reference_state)))
+  call assert_all(maxval(abs(transport_mpi_state - &
+    transport_reference_state)) <= 2.0e-11_dp * transport_scale .and. &
+    maxval(abs(transport_mpi_temperature - &
+      transport_reference_temperature)) <= 2.0e-11_dp * &
+        max(1.0_dp, maxval(abs(transport_reference_temperature))) .and. &
+    abs(transport_theta - transport_reference_theta) <= &
+      2.0e-13_dp * max(1.0_dp, abs(transport_reference_theta)), &
+    "MPI EB AMR transport serial root parity", rank)
+  do child = 1, transport_mpi_set%patch_count()
+    call assert_all(maxval(abs(transport_mpi_set%children(child)%state - &
+      transport_reference_set%children(child)%state)) <= &
+        2.0e-11_dp * transport_scale .and. &
+      maxval(abs(transport_mpi_set%children(child)%temperature - &
+        transport_reference_set%children(child)%temperature)) <= &
+          2.0e-11_dp * max(1.0_dp, maxval(abs( &
+            transport_reference_set%children(child)%temperature))), &
+      "MPI EB AMR transport serial child parity", rank)
+  end do
+  transport_change = maxval(abs( &
+    transport_reference_state - coarse_state))
+  do child = 1, transport_reference_set%patch_count()
+    transport_change = max(transport_change, maxval(abs( &
+      transport_reference_set%children(child)%state - &
+      transport_start_set%children(child)%state)))
+  end do
+  call assert_all(transport_change > 1.0e-14_dp * transport_scale, &
+    "MPI EB AMR transport changes nonuniform hierarchy", rank)
+
+  allocate(transport_failed_state, source=coarse_state)
+  allocate(transport_failed_temperature, source=coarse_temperature)
+  transport_failed_set = transport_start_set
+  child = transport_failed_set%patch_count()
+  if (distribution%child_is_local(child)) &
+    transport_failed_set%children(child)%state(irho, :, :) = -1.0_dp
+  allocate(transport_failed_backup_state, source=transport_failed_state)
+  allocate(transport_failed_backup_temperature, &
+    source=transport_failed_temperature)
+  transport_failed_backup_set = transport_failed_set
+  call advance_owned_reactive_eb_patch_set_transport_2d( &
+    species, transport, distribution, transport_failed_state, &
+    transport_failed_temperature, coarse_geometry, transport_failed_set, &
+    transport_dt, .true., .true., .true., .true., boundaries, 2, ok, &
+    local_advances, transport_theta, 0.5_dp)
+  call assert_all(.not. ok .and. local_advances == 0 .and. &
+    all(transport_failed_state == transport_failed_backup_state) .and. &
+    all(transport_failed_temperature == &
+      transport_failed_backup_temperature), &
+    "MPI EB AMR late transport failure root rollback", rank)
+  do child = 1, transport_failed_set%patch_count()
+    call assert_all(all(transport_failed_set%children(child)%state == &
+      transport_failed_backup_set%children(child)%state) .and. &
+      all(transport_failed_set%children(child)%temperature == &
+        transport_failed_backup_set%children(child)%temperature), &
+      "MPI EB AMR late transport failure child rollback", rank)
+  end do
+
   invalid_distribution = distribution
   invalid_distribution%root_tiles(1)%owner = nranks
   call synchronize_owned_reactive_eb_patch_set_2d( &
@@ -480,7 +619,7 @@ program pelef_mpi_eb_amr_patch_2d
 
   if (rank == 0) then
     write(*, '(a)') "PeleF " // pelef_version // &
-      " MPI EB AMR owner physics 2D: PASS"
+      " MPI EB AMR owner chemistry/hydro/transport 2D: PASS"
     write(*, '(a,i0)') "MPI ranks: ", nranks
     write(*, '(a,i0)') "Root tiles: ", distribution%root_tile_count()
     write(*, '(a,i0)') "Fine sibling patches: ", distribution%child_count()
