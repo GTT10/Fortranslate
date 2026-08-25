@@ -663,7 +663,7 @@ program test_reactive_eb_amr_2d_driver
     "public three-level transport conservation")
 
   config%eb%flow%chemistry_enabled = .true.
-  config%eb%flow%transport_enabled = .false.
+  config%eb%flow%transport_enabled = .true.
   config%eb%flow%problem = "reactive_hotspot"
   config%eb%flow%hotspot_center_x = 0.5_dp
   config%eb%flow%hotspot_center_y = 0.5_dp
@@ -687,7 +687,8 @@ program test_reactive_eb_amr_2d_driver
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
       level_two_state, level_two_temperature, level_two_geometry, &
       level_two_patch, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok)
+      final_integrals, minimum_dt, base_density, ok, transport=transport, &
+      minimum_transport_theta=minimum_transport_theta)
   call require(ok .and. steps > 0 .and. regrids > 0 .and. &
     level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
     level_two_patch%coarse_i_lower >= 3 .and. &
@@ -697,6 +698,8 @@ program test_reactive_eb_amr_2d_driver
     (level_two_patch%coarse_i_upper /= 6 .or. &
      level_two_patch%coarse_j_upper /= 6), &
     "public dynamic three-level finest regrid")
+  call require(minimum_transport_theta > 0.999999999_dp, &
+    "public dynamic three-level transport limiter")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
