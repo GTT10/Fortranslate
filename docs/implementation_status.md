@@ -1478,3 +1478,25 @@ strictly internal fine rectangle. Coarse exterior data is piecewise constant in
 space and interpolated in time. Chemistry, molecular transport, automatic
 timestep selection, dynamic regridding, multiple patches, deeper levels, and
 MPI ownership are not yet composed with this EB hierarchy.
+
+## Runnable static two-level reactive EB AMR application (`0.88.0`)
+
+- [x] `eb_amr` namelist for internal patch bounds and refinement ratio
+- [x] shared configured plane/circle level-set builder on arbitrary regions
+- [x] independently reconstructed coarse and fine EB geometry
+- [x] qualified patch construction and PCM fine initialization
+- [x] coarse stability limit from both coarse and fine active states
+- [x] final-time clipping and maximum-step rejection
+- [x] repeated transactional two-level hydrodynamic advance
+- [x] initial/final composite conserved diagnostics
+- [x] separate synchronized coarse and fine geometry/state CSV output
+- [x] installed `pelef_reactive_eb_amr_2d` executable
+- [x] input-driven diagonal-EB regression and CSV structural checker
+- [x] direct unsupported-chemistry rejection gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The static hierarchy is now runnable rather than only callable as a kernel.
+The app remains hydrodynamics-only and owns one strictly internal aligned fine
+rectangle. Chemistry, molecular transport, automatic tagging/regridding,
+multiple patches, deeper levels, checkpoint/restart, and MPI ownership remain
+future EB AMR work.

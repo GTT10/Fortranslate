@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.87.0
+  VERSION 0.88.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -176,6 +176,7 @@ install(
   TARGETS pelef pelef2d pelef_ms pelef0d pelef0d_h2o2 pelef_reactive_1d
     pelef_amr_reactive_1d
     pelef0d_h2o2_full pelef_reactive_2d pelef_reactive_eb_2d
+    pelef_reactive_eb_amr_2d
     pelef_transport_probe
   RUNTIME DESTINATION bin
 )

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.87.0` milestone contains the serial verification suite, seven optional
+The `0.88.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -203,6 +203,13 @@ state from the adjacent coarse cell, followed by EOS temperature recovery.
 The fluxes that actually advanced both levels feed the EB flux register;
 re-reflux and reactive average-down then synchronize the hierarchy in one
 transaction.
+
+`pelef_reactive_eb_amr_2d` makes that hierarchy runnable from one input file.
+It builds a strictly internal static fine rectangle, initializes it from the
+coarse state, selects each coarse timestep from both level CFL limits, advances
+until the clipped final time, and writes separate synchronized coarse and fine
+geometry/state CSV files. The committed regression exercises the complete
+configuration, time-loop, output, and structural-check path.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
@@ -638,6 +645,16 @@ Active-cell chemistry parity against the regular 2D path:
 ```bash
 ./build/pelef_reactive_eb_2d \
   cases/reactive_eb_chemistry_2d/reactive.nml
+```
+
+Runnable static two-level reactive EB AMR hydrodynamics:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_2d/uniform.nml
+python3 tools/check_reactive_eb_amr_2d.py \
+  --coarse reactive_eb_amr_coarse_2d.csv \
+  --fine reactive_eb_amr_fine_2d.csv
 ```
 
 ## Project records

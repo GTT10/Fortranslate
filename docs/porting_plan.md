@@ -607,6 +607,8 @@ Required capabilities:
   fine-recipient transfer, and reactive transaction (`0.86.0`)
 - [x] EB PCM prolongation, coarse-time patch-boundary fill, ratio subcycling,
   hydro reflux, and average-down (`0.87.0`)
+- [x] input-driven static EB AMR hierarchy, two-level CFL time loop, and
+  coarse/fine output (`0.88.0`)
 - EB dynamic regridding, multiple patches, deeper levels, and multilevel
   redistribution
 - thermal, viscous, and catalytic wall boundary conditions

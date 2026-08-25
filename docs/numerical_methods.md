@@ -1517,6 +1517,28 @@ include coarse spatial slopes, physical-domain-touching fine patches,
 chemistry, molecular transport, regridding, multiple patches, deeper levels,
 or MPI ownership.
 
+## Runnable static EB AMR timestep selection
+
+For each accepted hierarchy step, the driver evaluates the existing active-cell
+hyperbolic CFL limit independently on both levels. If `dt_c` and `dt_f` are
+those limits and the refinement ratio is `r`, the public coarse interval is
+
+`dt = min(dt_c, r dt_f, t_final-t)`.
+
+The fine operator therefore receives `dt/r <= dt_f` on every one of its `r`
+substeps. Stability is recomputed from the synchronized hierarchy after each
+accepted interval. A maximum-step bound rejects an unfinished run, and no
+output hierarchy is reported as successful unless the final time is reached
+with a positive finite minimum accepted timestep.
+
+The input defines one strictly internal rectangle with inclusive one-based
+coarse indices. Its physical bounds follow exactly from the root spacing. The
+same analytic plane or circle level set is sampled on the root nodes and the
+refined patch nodes before the existing geometry-measure compatibility gate is
+applied. Initial PCM prolongation, every time interval, and final composite
+diagnostics reuse the qualified two-level transactions. Separate CSV files
+retain the complete synchronized parent and child layouts for inspection.
+
 The complete EB hydro update accepts either `pcm` or `characteristic_plm`.
 PCM supplies the cell primitive state unchanged. Characteristic PLM reuses the
 regular reactive frozen-composition acoustic projection and MUSCL-Hancock

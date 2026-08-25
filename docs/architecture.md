@@ -937,6 +937,16 @@ centroid fluxes used by both level advances accumulate into the register;
 reactive re-reflux and EB average-down complete a single all-or-nothing state
 and temperature update.
 
+`simulation_config_reactive_eb_amr_2d_mod`,
+`reactive_eb_amr_2d_driver_mod`, and `pelef_reactive_eb_amr_2d` provide the
+first runnable hierarchy shell. A third namelist group supplies inclusive
+coarse patch bounds, refinement ratio, and fine output path. Initialization
+builds the same configured level set independently on both resolutions, checks
+the AMR geometry contract, and prolongs the reactive state. Every coarse
+timestep is the smaller of the root stability limit and `r` times the fine
+stability limit, then clipped to the requested final time. The app writes the
+synchronized parent and child fields separately after the time loop.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 AMR chemistry/transport composition, dynamic regridding, multiple patches,

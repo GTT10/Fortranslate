@@ -1337,3 +1337,18 @@ must evolve measurably at its coarse/fine boundary while preserving composite
 mass, total energy, and every species inventory through fine subcycling and EB
 re-reflux. Momentum is not invariant because the embedded wall carries the
 pressure reaction force.
+
+## 0.88.0 runnable static reactive EB AMR gates
+
+The public input must construct a 12 by 12 root and an 18 by 18 ratio-two fine
+rectangle from the same diagonal level set, with regular, cut, and covered
+cells on both levels. A uniform general-EOS mixture must complete the requested
+final time in a CFL-valid coarse step, preserve the composite conserved state,
+and retain stationary pressure, temperature, velocity, and composition on both
+levels.
+
+The installed application must write separate coarse and fine CSV files at the
+accepted final time. The checker validates row counts, physical coordinates,
+all three EB cell classes, finite positive thermodynamics, stationary fields,
+and species closure. Enabling chemistry through the direct static driver must
+fail before any accepted step in GNU Fortran Debug and Release suites.
