@@ -142,6 +142,16 @@ add_test(
   COMMAND test_amr_eb_transport_2d
 )
 
+add_executable(
+  test_amr_eb_multilevel_transport_2d
+  unit/test_amr_eb_multilevel_transport_2d.F90
+)
+target_link_libraries(test_amr_eb_multilevel_transport_2d PRIVATE pelef_core)
+add_test(
+  NAME unit_amr_eb_multilevel_transport_2d
+  COMMAND test_amr_eb_multilevel_transport_2d
+)
+
 add_executable(test_amr_hierarchy_1d unit/test_amr_hierarchy_1d.F90)
 target_link_libraries(test_amr_hierarchy_1d PRIVATE pelef_core)
 add_test(NAME unit_amr_hierarchy_1d COMMAND test_amr_hierarchy_1d)

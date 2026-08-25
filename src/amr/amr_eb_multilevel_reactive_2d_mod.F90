@@ -24,6 +24,8 @@ module amr_eb_multilevel_reactive_2d_mod
   private
 
   public :: advance_three_level_reactive_eb_hydro_2d
+  public :: level_two_interface_is_regular
+  public :: close_cut_interface_conservation_2d
 
 contains
 

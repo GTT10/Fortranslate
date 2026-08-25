@@ -25,6 +25,7 @@ module amr_eb_transport_2d_mod
 
   public :: advance_two_level_reactive_eb_transport_euler_2d
   public :: advance_two_level_reactive_eb_transport_2d
+  public :: recover_transport_temperature_2d
 
 contains
 
