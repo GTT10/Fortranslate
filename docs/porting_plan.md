@@ -611,7 +611,9 @@ Required capabilities:
   coarse/fine output (`0.88.0`)
 - [x] temperature-gradient tagging, conservative single-patch movement and
   resizing, retained fine overlap, and periodic regrid cadence (`0.89.0`)
-- EB fine-patch removal, multiple patches, deeper levels, and multilevel
+- [x] optional fine-patch collapse, root-only advance, and PCM re-creation
+  (`0.90.0`)
+- EB multiple patches, deeper levels, and multilevel
   redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 

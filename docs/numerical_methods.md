@@ -1606,5 +1606,15 @@ therefore preserves the root integral in newly refined cells. Exact copying by
 global fine index restores all same-resolution overlap after PCM, avoiding
 unnecessary diffusion. State and temperature arrays on both levels commit only
 after the new patch geometry is valid, every candidate is finite, and EOS
-recovery succeeds on every active new fine cell. Empty tags retain the current
-patch rather than deleting the only fine level.
+recovery succeeds on every active new fine cell.
+
+Fine-patch removal is optional. On an empty plan, the lifecycle transaction
+average-downs the complete child into a candidate root, recovers all affected
+active temperatures, and only then commits the root and releases the fine state,
+temperature, geometry, and patch metadata. While no fine patch exists, the
+coarse timestep is the root active-cell CFL limit and the existing single-level
+reactive EB hydro operator advances the state. If tags later return, the driver
+builds a new aligned geometry and uses PCM prolongation from the synchronized
+root before publishing the child. Conserved diagnostics likewise select either
+the two-level composite integral or the root volume-weighted integral. The
+default policy continues to retain an untagged patch for backward compatibility.

@@ -6,13 +6,14 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.89.0` milestone contains the serial verification suite, seven optional
+The `0.90.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
 patch-tree checkpoint and restart it with a different MPI rank count. The
-serial two-dimensional EB AMR driver can move and resize one fine rectangle
-from temperature-gradient tags while preserving its composite conserved state.
+serial two-dimensional EB AMR driver can create, move, resize, remove, and
+re-create one fine rectangle from temperature-gradient tags while preserving
+its composite conserved state.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -214,11 +215,15 @@ geometry/state CSV files. Optional solution-driven regridding tags active
 coarse cells by relative and absolute temperature jumps, buffers their bounding
 rectangle, averages the old fine patch down, injects the new patch from coarse
 data, and retains every overlapping same-resolution fine cell exactly.
+When configured to remove an untagged patch, the driver conservatively collapses
+the child into the root, releases its arrays and geometry, advances with the
+single-level CFL and hydro path, and re-creates the patch by PCM when tags
+return. Fine CSV output is omitted while the child is inactive.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
 coarse-to-fine spatial interpolation, AMR chemistry/transport composition,
-multiple EB fine patches, deeper levels, fine-patch removal, and MPI
+multiple EB fine patches, deeper levels, and MPI
 distribution are not yet connected.
 
 ### MPI one-dimensional verification

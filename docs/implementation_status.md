@@ -1524,3 +1524,21 @@ around root temperature structure. It remains hydrodynamics-only and retains
 the existing patch when tags disappear. Multiple patches, deeper levels,
 fine-patch removal, EB AMR chemistry/transport, checkpoint/restart, and MPI
 ownership remain future work.
+
+## Optional reactive EB AMR fine-patch lifecycle (`0.90.0`)
+
+- [x] optional initial regrid evaluation and untagged-patch removal policy
+- [x] transactional fine-to-root collapse through reactive EB average-down
+- [x] fine state, temperature, geometry, and patch-metadata release
+- [x] root-only active-cell CFL selection and reactive EB hydro advance
+- [x] PCM fine-patch re-creation when root temperature tags return
+- [x] lifecycle-aware composite/root conserved diagnostics
+- [x] inactive fine-output suppression and application diagnostics
+- [x] time-loop degrid regression with released-storage verification
+- [x] direct create-collapse conservation and EOS gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public serial driver may now transition between one root level and one
+strictly internal ratio-aligned fine rectangle. Multiple simultaneous patches,
+deeper levels, EB AMR chemistry/transport, checkpoint/restart, and MPI ownership
+remain future work.

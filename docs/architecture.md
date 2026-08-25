@@ -961,10 +961,16 @@ internal region and grown to configured minimum extents. Before replacing the
 patch, the old fine data are volume-weighted into the root. PCM initializes the
 new fine rectangle, then matching global fine indices restore exact old overlap.
 The new hierarchy is committed only after all active new fine cells pass EOS
-recovery. The driver invokes this planner at initialization and at a configured
-accepted-step cadence; an empty or unchanged plan retains the current patch.
+recovery. The driver invokes this planner optionally at initialization and at a
+configured accepted-step cadence. An unchanged plan retains the current patch.
+With fine-patch removal enabled, an empty plan average-downs the complete child,
+releases its state, temperature, geometry, and patch metadata, and leaves one
+root level. A later active plan rebuilds the fine geometry and initializes it
+by PCM from the synchronized root. The timestep and advance dispatch select the
+two-level or single-level EB path from this lifecycle state, and inactive fine
+output is omitted.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-AMR chemistry/transport composition, fine-patch removal, multiple patches,
+AMR chemistry/transport composition, multiple patches,
 deeper levels, and EB AMR/MPI ownership remain outside this subsystem.

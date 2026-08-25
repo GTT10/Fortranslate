@@ -1372,3 +1372,18 @@ temperature maximum, commit at least one regrid, and write a new aligned fine
 rectangle that contains the hotspot. Both output levels must retain finite
 positive thermodynamics and species closure in GNU Fortran Debug and Release
 suites.
+
+## 0.90.0 reactive EB AMR fine-patch lifecycle gates
+
+With initial regrid evaluation disabled, a uniform two-level case must advance
+one accepted interval, produce an empty tag plan, conservatively collapse its
+fine patch, release all fine arrays and metadata, and finish with a valid
+root-only conserved integral. The application must write the synchronized root
+CSV and omit the configured fine CSV.
+
+Starting from that root-only state, a new temperature tag must build a valid
+strictly internal fine geometry and PCM state without changing the composite
+integral. Removing the tag must collapse the re-created patch back to the same
+root integral. GNU Fortran Debug and Release suites must also prove that the
+inactive driver selects the single-level CFL and hydro path without accessing
+unallocated fine storage.
