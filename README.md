@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.107.0` milestone contains the serial verification suite, seven optional
+The `0.108.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -27,9 +27,10 @@ fine boundary cell while the remaining coarse/fine sides retain coarse-time
 interpolation and conservative reflux. Temperature-gradient tagging and both
 single- and multipatch planners can now create such outflow-side rectangles
 dynamically, including one-sided gradient detection on root boundary cells.
-The single-patch two-level lifecycle also accepts mixture molecular transport:
-coarse and fine EB levels advance SSPRK2 transport with ratio subcycling,
-time-interpolated coarse exterior states, open-area diffusive reflux, and
+The single-patch two-level and strictly nested three-level lifecycles also
+accept mixture molecular transport. Every parent/child pair advances SSPRK2
+transport with ratio subcycling, time-interpolated parent exterior states,
+an independent open-area diffusive flux register, reflux, and deepest-first
 average-down inside the transactional `R-T-H-T-R` composition.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
@@ -331,7 +332,7 @@ two-cell-safe planning region, and does not yet support checkpoint/restart.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
-coarse-to-fine spatial slopes, three-level or multipatch EB AMR molecular
+coarse-to-fine spatial slopes, multipatch EB AMR molecular
 transport, dynamic middle/root topology, arbitrary-depth EB levels,
 transport-enabled checkpoint/restart, and MPI distribution are not yet
 connected. The public EB AMR application now owns

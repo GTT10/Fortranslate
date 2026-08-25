@@ -649,7 +649,9 @@ Required capabilities:
 - [x] two-level single-patch EB molecular transport with fine subcycling,
   time-interpolated exterior states, diffusive reflux, and average-down
   (`0.107.0`)
-- three-level and multipatch EB molecular transport
+- [x] three-level single-patch EB molecular transport with nested subcycling,
+  per-interface diffusive reflux, and deepest-first synchronization (`0.108.0`)
+- multipatch EB molecular transport
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

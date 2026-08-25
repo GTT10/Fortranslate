@@ -235,11 +235,10 @@ contains
       message = "Three-level outputs must be nonempty and distinct"
       return
     end if
-    if (config%eb%flow%transport_enabled .and. &
-        (three_level_enabled .or. multipatch_enabled)) then
+    if (config%eb%flow%transport_enabled .and. multipatch_enabled) then
       ok = .false.
       message = &
-        "Reactive EB AMR transport currently supports one fine patch"
+        "Reactive EB AMR transport does not yet support sibling patches"
       return
     end if
     if (config%eb%flow%transport_enabled .and. &

@@ -80,7 +80,8 @@ program pelef_reactive_eb_amr_2d
       coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
       level_two_state, level_two_temperature, level_two_geometry, &
       level_two_patch, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok, message)
+      final_integrals, minimum_dt, base_density, ok, message, transport, &
+      minimum_transport_theta)
     fine_active = .true.
   else if (config%multipatch_enabled) then
     call simulate_reactive_eb_amr_patch_set_2d( &

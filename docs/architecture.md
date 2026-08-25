@@ -1146,9 +1146,18 @@ transactions form SSPRK2, so each stage is conservative before the RK average.
 The public driver combines root and ratio-scaled fine transport limits and
 composes this hierarchy operator as `R/2 -> T/2 -> H -> T/2 -> R/2`.
 
+In `0.108.0`, `amr_eb_multilevel_transport_2d_mod` applies the same transport
+transaction recursively to a root, middle, and finest hierarchy. Each middle
+substep owns a complete finest subcycle and closes its inner flux register
+before contributing middle flux to the outer register. EB-cut finest
+interfaces reuse the conservative residual closure, and each synchronized
+Euler stage restricts finest to middle before middle to root. The public
+driver selects the minimum root-equivalent stability limit across all three
+levels and retains the symmetric `R-T-H-T-R` composition.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-three-level or multipatch EB AMR molecular transport, locally resolved
+multipatch EB AMR molecular transport, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
 subsystem. Dynamic three-level mode changes only the finest patch inside a
