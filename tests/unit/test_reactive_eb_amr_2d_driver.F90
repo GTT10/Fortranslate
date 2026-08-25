@@ -23,7 +23,7 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp), allocatable :: lifecycle_integrals(:)
   real(dp), allocatable :: reference_state(:)
-  real(dp) :: time, minimum_dt, base_density, cfl_dt, scale
+  real(dp) :: time, minimum_dt, base_density, cfl_dt, conservation_error, scale
   logical :: changed, fine_active, ok
   integer :: initial_i_lower, initial_i_upper
   integer :: initial_j_lower, initial_j_upper, regrids, steps
@@ -166,8 +166,11 @@ program test_reactive_eb_amr_2d_driver
     .not. fine_geometry%is_valid() .and. patch%refinement_ratio == 0, &
     "inactive fine storage released")
   scale = max(1.0_dp, maxval(abs(initial_integrals)))
-  call require(maxval(abs(final_integrals - initial_integrals)) <= &
-    3.0e-12_dp * scale, "fine-patch removal conservation")
+  conservation_error = maxval(abs(final_integrals - initial_integrals)) / scale
+  write(*, '(a,1x,es16.8)') &
+    "Fine-patch removal conservation error:", conservation_error
+  call require(conservation_error <= 3.0e-12_dp, &
+    "fine-patch removal conservation")
 
   allocate(lifecycle_integrals(size(final_integrals)))
   coarse_temperature = 1000.0_dp
