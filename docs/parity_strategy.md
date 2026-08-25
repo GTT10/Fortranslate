@@ -1873,3 +1873,19 @@ zero committed calls. All rank-dependent comparisons must aggregate locally
 before entering collectives. The gate runs in GNU Fortran Release and
 bounds/FPE-checked Debug configurations before the complete 208-test
 regression.
+
+## 0.117.0 direct sparse MPI reactive EB AMR average-down gates
+
+The direct sparse chemistry result must retain the exact local sparse value
+count and materialize bitwise-identically to serial patch-set chemistry for
+root state, root temperature, child state, and child temperature at one, two,
+four, and eight ranks. This exercises child-owner volume-weighted restriction,
+coarse-footprint broadcast, covered-cell preservation, and root-owner EOS
+temperature recovery without a complete temporary hierarchy.
+
+The rejection gate gives the final child owner finite negative-density state.
+The independent sparse average-down call must reject collectively after any
+earlier child restrictions, preserve every local root and child allocation
+bitwise, and retain its exact local value count. The gate runs in GNU Fortran
+Release and bounds/FPE-checked Debug configurations before the complete
+208-test regression.

@@ -2058,3 +2058,22 @@ Chemistry is the first 2D EB operator to consume persistent sparse owner
 payloads directly. Average-down still uses a complete temporary hierarchy;
 direct child-to-root synchronization, sparse hydro and transport, public time
 advancement, regridding, checkpointing, and output remain separate work.
+
+## Direct average-down on sparse MPI reactive EB AMR storage (`0.117.0`)
+
+- [x] child-owner volume-fraction-weighted conserved restriction
+- [x] one coarse-footprint buffer broadcast per child
+- [x] root-tile-owner application over exact child intersections
+- [x] covered coarse-cell preservation
+- [x] owner-local EOS temperature recovery
+- [x] no complete temporary root or child hierarchy
+- [x] unchanged sparse input/output allocation count
+- [x] bitwise parity with replicated reactive average-down
+- [x] exact rollback after a late child restriction fails EOS recovery
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Sparse chemistry now remains below the complete materialization boundary from
+input through commit. Restriction buffers are still communicator broadcasts;
+point-to-point child/root traffic, sparse hydro and transport, public time
+advancement, regridding, checkpointing, and output remain separate work.
