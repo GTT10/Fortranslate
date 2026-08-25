@@ -119,7 +119,7 @@ program test_amr_eb_multipatch_2d
   dt = 0.02_dp * min(coarse_geometry%dx, coarse_geometry%dy) / sound_speed
   call advance_reactive_eb_patch_set_hydro_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, old_set, &
-    "hllc", "characteristic_plm", "mc", 2, dt, new_coarse_state, &
+    "hllc", "pcm", "mc", 2, dt, new_coarse_state, &
     new_coarse_temperature, hydro_set, ok, &
     failure_context=hydro_failure_context)
   if (.not. ok) write(*, '(a)') trim(hydro_failure_context)
@@ -147,7 +147,7 @@ program test_amr_eb_multipatch_2d
 
   call advance_reactive_eb_patch_set_hydro_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, old_set, &
-    "invalid", "characteristic_plm", "mc", 2, dt, new_coarse_state, &
+    "invalid", "pcm", "mc", 2, dt, new_coarse_state, &
     new_coarse_temperature, failed_set, ok)
   call require(.not. ok .and. &
     maxval(abs(new_coarse_state - coarse_state)) == 0.0_dp .and. &
