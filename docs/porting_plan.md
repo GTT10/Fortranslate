@@ -666,6 +666,8 @@ Required capabilities:
   exact per-operator committed accounting (`0.114.0`)
 - [x] sparse rank-local EB root-tile and child payload storage with explicit
   replicated materialization boundary (`0.115.0`)
+- [x] direct active-cell chemistry on sparse MPI EB owners with transactional
+  materialize/average-down/re-scatter synchronization (`0.116.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

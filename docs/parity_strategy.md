@@ -1856,3 +1856,20 @@ rank-zero-owned root payload must reject collectively before output commit;
 every returned fallback root and child field must remain bitwise unchanged.
 The gate runs in GNU Fortran Release and bounds/FPE-checked Debug
 configurations before the complete 208-test regression.
+
+## 0.116.0 direct sparse MPI reactive EB AMR chemistry gates
+
+The sparse chemistry path must react only locally allocated root tiles and
+children, with covered cells masked, and report exactly the distribution's
+local entity count. The communicator sum must equal all root tiles and both
+children once. After temporary synchronization and sparse re-scatter,
+materialization must match the serial patch-set chemistry root and child fields
+bitwise at one, two, four, and eight ranks.
+
+For rollback, the last child owner receives a finite negative-density payload.
+Root and earlier child reactors may execute, but collective rejection must
+restore every locally allocated sparse state and temperature bitwise and report
+zero committed calls. All rank-dependent comparisons must aggregate locally
+before entering collectives. The gate runs in GNU Fortran Release and
+bounds/FPE-checked Debug configurations before the complete 208-test
+regression.

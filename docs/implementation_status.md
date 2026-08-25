@@ -2040,3 +2040,21 @@ Persistent EB state can now be represented without nonowner numerical
 replicas. Owner-only physics still accepts complete temporary fields, so direct
 sparse chemistry/hydro/transport, point-to-point materialization, public time
 advancement, regridding, checkpointing, and output remain separate work.
+
+## Direct chemistry on sparse MPI reactive EB AMR storage (`0.116.0`)
+
+- [x] direct active-cell chemistry on owned sparse root tiles
+- [x] direct active-cell chemistry on owned sparse children
+- [x] no nonowner state allocation during reactor execution
+- [x] collective interval, tolerance, species, and reaction-width consensus
+- [x] exact local and global owner reactor accounting
+- [x] post-reaction materialize, root-owner average-down, and sparse re-scatter
+- [x] bitwise serial patch-set chemistry parity
+- [x] exact sparse rollback after a late child-owner reactor failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Chemistry is the first 2D EB operator to consume persistent sparse owner
+payloads directly. Average-down still uses a complete temporary hierarchy;
+direct child-to-root synchronization, sparse hydro and transport, public time
+advancement, regridding, checkpointing, and output remain separate work.
