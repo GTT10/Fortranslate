@@ -1236,6 +1236,14 @@ succeed. Post-reaction fine-to-root average-down currently materializes one
 temporary hierarchy on every rank; the result is immediately scattered back
 to owner-only payloads before commit.
 
+In `0.117.0`, sparse reactive average-down removes that complete temporary
+hierarchy. Each child owner computes the volume-fraction-weighted conserved
+state over its coarse footprint and broadcasts only that restriction buffer.
+Intersecting root tile owners retain covered cells, recover active-cell
+temperature from their local coarse guess, and publish only after every child
+is accepted collectively. The child payloads and unrefined root cells remain
+owner-local and unchanged.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

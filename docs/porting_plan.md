@@ -668,6 +668,8 @@ Required capabilities:
   replicated materialization boundary (`0.115.0`)
 - [x] direct active-cell chemistry on sparse MPI EB owners with transactional
   materialize/average-down/re-scatter synchronization (`0.116.0`)
+- [x] direct sparse child-owner restriction and root-tile-owner reactive
+  average-down without complete hierarchy materialization (`0.117.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
