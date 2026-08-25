@@ -1024,18 +1024,19 @@ contains
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
-      if (config%checkpoint_interval > 0 .and. &
-          modulo(steps, config%checkpoint_interval) == 0) then
-        call write_reactive_eb_amr_2d_checkpoint( &
-          config%checkpoint_file, species, config, coarse_state, &
-          coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
-          fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
-          base_density, local_ok)
-        if (.not. local_ok) return
-        last_checkpoint_step = steps
-        if (config%checkpoint_stop_after_write) then
-          stopped_after_checkpoint = .true.
-          exit
+      if (config%checkpoint_interval > 0) then
+        if (modulo(steps, config%checkpoint_interval) == 0) then
+          call write_reactive_eb_amr_2d_checkpoint( &
+            config%checkpoint_file, species, config, coarse_state, &
+            coarse_temperature, coarse_geometry, fine_state, &
+            fine_temperature, fine_geometry, patch, fine_active, time, steps, &
+            regrids, minimum_dt, base_density, local_ok)
+          if (.not. local_ok) return
+          last_checkpoint_step = steps
+          if (config%checkpoint_stop_after_write) then
+            stopped_after_checkpoint = .true.
+            exit
+          end if
         end if
       end if
     end do
