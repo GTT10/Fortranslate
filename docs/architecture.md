@@ -1177,12 +1177,23 @@ from its owner. Invalid maps or inconsistent work exponents are rejected
 collectively before owner-dependent communication, and outputs remain
 unchanged on failure.
 
+In `0.111.0`, that bridge executes reactive source integration directly on
+owners. The root chemistry field is decomposed over the same y-tiles used by
+the distribution, and each fine sibling is advanced as one owner entity.
+Covered cells are masked, every owner reactor transaction is accepted
+collectively before its state and recovered temperature are broadcast, and a
+set-wide fine-to-root average-down restores the composite hierarchy. Inputs
+are not published until every entity and the final synchronization succeed,
+so a late owner rejection rolls every rank back exactly. The bridge also
+rejects rank-inconsistent interval, tolerance, species-width, or
+reaction-width controls before owner execution.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
-non-outflow refined boundaries, direct MPI EB physics, sparse EB field
+non-outflow refined boundaries, owner-only MPI EB hydro and transport, sparse EB field
 storage, and distributed EB flux registers remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

@@ -3,24 +3,32 @@ program pelef_mpi_eb_amr_patch_2d
   use mpi_f08
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
+  use state_indices_mod, only: irho
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved
-  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_mass_fraction_component, reactive_primitive_to_conserved
+  use reactive_2d_mod, only: advance_reactive_chemistry_2d
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
     reactive_eb_patch_set_2d, build_amr_eb_regrid_plan_collection_2d, &
-    initialize_reactive_eb_patch_set_2d
+    initialize_reactive_eb_patch_set_2d, &
+    average_down_reactive_eb_patch_set_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
-    synchronize_owned_reactive_eb_patch_set_2d
+    synchronize_owned_reactive_eb_patch_set_2d, &
+    advance_owned_reactive_eb_patch_set_chemistry_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -35,6 +43,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(reactive_eb_patch_set_2d) :: chemistry_set, reference_set
+  type(reactive_eb_patch_set_2d) :: failed_set, failed_backup_set
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -42,9 +53,22 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: local_coarse_temperature(:, :)
   real(dp), allocatable :: synchronized_coarse_state(:, :, :)
   real(dp), allocatable :: synchronized_coarse_temperature(:, :)
+  real(dp), allocatable :: chemistry_coarse_state(:, :, :)
+  real(dp), allocatable :: chemistry_coarse_temperature(:, :)
+  real(dp), allocatable :: reference_coarse_state(:, :, :)
+  real(dp), allocatable :: reference_coarse_temperature(:, :)
+  real(dp), allocatable :: averaged_coarse_state(:, :, :)
+  real(dp), allocatable :: averaged_coarse_temperature(:, :)
+  real(dp), allocatable :: failed_coarse_state(:, :, :)
+  real(dp), allocatable :: failed_coarse_temperature(:, :)
+  real(dp), allocatable :: failed_backup_state(:, :, :)
+  real(dp), allocatable :: failed_backup_temperature(:, :)
+  logical, allocatable :: active_mask(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
+  real(dp) :: chemistry_interval, chemistry_change, state_scale
   logical :: tags(coarse_nx, coarse_ny), ok
-  integer :: child, i, ierr, j, nvar, rank, nranks, tile
+  integer :: child, component, global_advances, i, ierr, j
+  integer :: local_advances, nvar, rank, nranks, tile
   integer :: inconsistent_exponent
 
   call MPI_Init(ierr)
@@ -68,6 +92,8 @@ program pelef_mpi_eb_amr_patch_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call assert_all(ok, "MPI EB AMR thermodynamic database", rank)
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call assert_all(ok, "MPI EB AMR chemistry mechanism", rank)
   nvar = reactive_nvar(size(species))
   allocate(primitive(reactive_nprim(size(species))))
   allocate(mass_fractions(size(species)), state_cell(nvar))
@@ -212,6 +238,112 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR child temperature payload", rank)
   end do
 
+  allocate(chemistry_coarse_state, source=coarse_state)
+  allocate(chemistry_coarse_temperature, source=coarse_temperature)
+  allocate(reference_coarse_state, source=coarse_state)
+  allocate(reference_coarse_temperature, source=coarse_temperature)
+  allocate(averaged_coarse_state, mold=coarse_state)
+  allocate(averaged_coarse_temperature, mold=coarse_temperature)
+  chemistry_set = patch_set
+  reference_set = patch_set
+  chemistry_interval = &
+    0.02_dp * min(coarse_geometry%dx, coarse_geometry%dy) / sound_speed
+  active_mask = coarse_geometry%cell_type /= eb_covered_cell
+  call advance_reactive_chemistry_2d( &
+    species, reactions, reference_coarse_state, &
+    reference_coarse_temperature, coarse_geometry%nx, coarse_geometry%ny, &
+    chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, ok, active_mask)
+  call assert_all(ok, "serial EB AMR root chemistry reference", rank)
+  deallocate(active_mask)
+  do child = 1, reference_set%patch_count()
+    active_mask = reference_set%children(child)%geometry%cell_type /= &
+      eb_covered_cell
+    call advance_reactive_chemistry_2d( &
+      species, reactions, reference_set%children(child)%state, &
+      reference_set%children(child)%temperature, &
+      reference_set%children(child)%geometry%nx, &
+      reference_set%children(child)%geometry%ny, chemistry_interval, &
+      1.0e-8_dp, 1.0e-14_dp, ok, active_mask)
+    call assert_all(ok, "serial EB AMR child chemistry reference", rank)
+    deallocate(active_mask)
+  end do
+  call average_down_reactive_eb_patch_set_2d( &
+    species, reference_coarse_state, reference_coarse_temperature, &
+    coarse_geometry, reference_set, averaged_coarse_state, &
+    averaged_coarse_temperature, ok)
+  call assert_all(ok, "serial EB AMR chemistry average down", rank)
+  reference_coarse_state = averaged_coarse_state
+  reference_coarse_temperature = averaged_coarse_temperature
+
+  call advance_owned_reactive_eb_patch_set_chemistry_2d( &
+    species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
+    distribution, chemistry_coarse_state, chemistry_coarse_temperature, &
+    coarse_geometry, chemistry_set, ok, local_advances)
+  call assert_all(ok, "MPI owner-only EB AMR chemistry", rank)
+  call MPI_Allreduce( &
+    local_advances, global_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_advances == distribution%rank_entity_counts(rank + 1) .and. &
+    global_advances == distribution%root_tile_count() + &
+      distribution%child_count(), &
+    "MPI EB AMR one chemistry call per owner entity", rank)
+  state_scale = max(1.0_dp, maxval(abs(reference_coarse_state)))
+  call assert_all(maxval(abs(chemistry_coarse_state - &
+    reference_coarse_state)) <= 5.0e-13_dp * state_scale .and. &
+    maxval(abs(chemistry_coarse_temperature - &
+      reference_coarse_temperature)) <= 5.0e-13_dp * &
+        max(1.0_dp, maxval(abs(reference_coarse_temperature))), &
+    "MPI EB AMR chemistry serial root parity", rank)
+  do child = 1, chemistry_set%patch_count()
+    call assert_all(maxval(abs(chemistry_set%children(child)%state - &
+      reference_set%children(child)%state)) <= 5.0e-13_dp * state_scale .and. &
+      maxval(abs(chemistry_set%children(child)%temperature - &
+        reference_set%children(child)%temperature)) <= 5.0e-13_dp * &
+          max(1.0_dp, maxval(abs( &
+            reference_set%children(child)%temperature))), &
+      "MPI EB AMR chemistry serial child parity", rank)
+  end do
+  chemistry_change = 0.0_dp
+  do child = 1, chemistry_set%patch_count()
+    do i = 1, size(species)
+      component = reactive_species_component(i)
+      chemistry_change = max(chemistry_change, maxval(abs( &
+        chemistry_set%children(child)%state(component, :, :) - &
+        patch_set%children(child)%state(component, :, :))))
+    end do
+  end do
+  call assert_all(chemistry_change > 1.0e-14_dp * state_scale, &
+    "MPI EB AMR chemistry changes species", rank)
+
+  allocate(failed_coarse_state, source=coarse_state)
+  allocate(failed_coarse_temperature, source=coarse_temperature)
+  failed_set = patch_set
+  tile = distribution%root_tile_count()
+  if (distribution%root_tile_is_local(tile)) then
+    failed_coarse_state(irho, :, &
+      distribution%root_tiles(tile)%j_lower: &
+        distribution%root_tiles(tile)%j_upper) = -1.0_dp
+  end if
+  allocate(failed_backup_state, source=failed_coarse_state)
+  allocate(failed_backup_temperature, source=failed_coarse_temperature)
+  failed_backup_set = failed_set
+  call advance_owned_reactive_eb_patch_set_chemistry_2d( &
+    species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
+    distribution, failed_coarse_state, failed_coarse_temperature, &
+    coarse_geometry, failed_set, ok, local_advances)
+  call assert_all(.not. ok .and. local_advances == 0 .and. &
+    all(failed_coarse_state == failed_backup_state) .and. &
+    all(failed_coarse_temperature == failed_backup_temperature), &
+    "MPI EB AMR owner chemistry failure rollback", rank)
+  do child = 1, failed_set%patch_count()
+    call assert_all(all(failed_set%children(child)%state == &
+      failed_backup_set%children(child)%state) .and. &
+      all(failed_set%children(child)%temperature == &
+        failed_backup_set%children(child)%temperature), &
+      "MPI EB AMR child chemistry rollback", rank)
+  end do
+
   invalid_distribution = distribution
   invalid_distribution%root_tiles(1)%owner = nranks
   call synchronize_owned_reactive_eb_patch_set_2d( &
@@ -237,7 +369,7 @@ program pelef_mpi_eb_amr_patch_2d
 
   if (rank == 0) then
     write(*, '(a)') "PeleF " // pelef_version // &
-      " MPI EB AMR ownership 2D: PASS"
+      " MPI EB AMR ownership and chemistry 2D: PASS"
     write(*, '(a,i0)') "MPI ranks: ", nranks
     write(*, '(a,i0)') "Root tiles: ", distribution%root_tile_count()
     write(*, '(a,i0)') "Fine sibling patches: ", distribution%child_count()

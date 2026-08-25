@@ -48,7 +48,7 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_patch_1d
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_patch_1d
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_patch_1d
-      - name: EB AMR 2D ownership gates
+      - name: EB AMR 2D ownership and chemistry gates
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_eb_amr_patch_2d
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_eb_amr_patch_2d

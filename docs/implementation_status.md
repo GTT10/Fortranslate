@@ -1939,3 +1939,24 @@ replicated synchronization bridge. Direct rank-local EB physics, sparse field
 storage, point-to-point coarse/fine traffic, distributed flux registers,
 topology migration, parallel checkpoint I/O, and a public distributed time
 loop remain separate work.
+
+## Owner-only MPI reactive EB AMR chemistry (`0.111.0`)
+
+- [x] replicated chemistry-control and mechanism-width consensus
+- [x] active-cell root chemistry split across owned y-tiles
+- [x] one active-cell chemistry update on each exclusive child owner
+- [x] collective acceptance after every owner reactor transaction
+- [x] owner-authoritative state and recovered-temperature broadcasts
+- [x] replicated fine-to-root reactive average-down after chemistry
+- [x] exact local and global committed entity-call accounting
+- [x] serial patch-set chemistry and rank-count field parity
+- [x] exact all-rank rollback after a late root-owner rejection
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Reactive source integration now executes only on the owner of each root tile
+or fine sibling, while the correctness bridge retains replicated field
+storage. Owner-only EB hydrodynamics and molecular transport, sparse fields,
+point-to-point coarse/fine traffic, distributed flux registers, topology
+migration, parallel checkpoint I/O, and a public distributed time loop remain
+separate work.
