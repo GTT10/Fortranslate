@@ -378,7 +378,9 @@ program test_reactive_eb_amr_2d_driver
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &
     max(1.0_dp, abs(initial_integrals)))
   call require(ok, "runnable two-level AMR transport")
-  call require(steps == 1, "two-level AMR transport step count")
+  call require(steps >= 1 .and. &
+    time == config%eb%flow%final_time .and. minimum_dt > 0.0_dp, &
+    "two-level AMR transport time loop")
   call require(fine_active, "two-level AMR transport fine patch")
   call require(minimum_transport_theta > 0.999999999_dp, &
     "two-level AMR transport limiter")
