@@ -69,7 +69,7 @@ def main() -> None:
     coarse_types = check_physical(coarse_rows)
     first_rows = read_rows(args.fine_one)
     second_rows = read_rows(args.fine_two)
-    first_x, first_y = check_patch(first_rows, 0.25, 0.25)
+    first_x, first_y = check_patch(first_rows, 0.25, 0.55)
     second_x, second_y = check_patch(second_rows, 0.75, 0.75)
     if max(first_x) >= min(second_x) or max(first_y) >= min(second_y):
         raise AssertionError("fine patch outputs are not separated and ordered")

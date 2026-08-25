@@ -363,7 +363,7 @@ program test_reactive_eb_amr_2d_driver
   config%eb%flow%initial_pressure = 135000.0_dp
   config%eb%flow%hotspot_temperature_rise = 350.0_dp
   config%eb%flow%hotspot_center_x = 0.25_dp
-  config%eb%flow%hotspot_center_y = 0.25_dp
+  config%eb%flow%hotspot_center_y = 0.55_dp
   config%eb%flow%hotspot_width = 0.03_dp
   config%eb%flow%second_hotspot_temperature_rise = 300.0_dp
   config%eb%flow%second_hotspot_center_x = 0.75_dp
@@ -400,6 +400,9 @@ program test_reactive_eb_amr_2d_driver
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, multipatch_set, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  write(*, '(a,l2,a,i0,a,i0,a,i0)') &
+    "Public multipatch result: ok=", ok, ", patches=", &
+    multipatch_set%patch_count(), ", steps=", steps, ", regrids=", regrids
   call require(ok .and. multipatch_set%patch_count() == 2 .and. &
     multipatch_set%is_valid(coarse_geometry, size(coarse_state, 1)) .and. &
     steps == 1 .and. regrids >= 1, &
