@@ -62,7 +62,7 @@
   remove_fine_patch_when_untagged = .true.
   regrid_interval = 1
   regrid_relative_temperature_gradient = 1.0e-4
-  regrid_absolute_temperature_gradient = 0.1
+  regrid_absolute_temperature_gradient = 5.0
   regrid_temperature_scale_floor = 1.0
   regrid_buffer_cells = 0
   regrid_minimum_patch_cells_x = 5
