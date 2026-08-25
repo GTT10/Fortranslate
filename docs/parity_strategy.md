@@ -1772,3 +1772,26 @@ the density on the owner of the last root tile must reject collectively after
 earlier entities have advanced and must leave every rank's original root and
 child fields bitwise unchanged. The gate runs at one, two, four, and eight
 ranks in GNU Fortran Release and bounds/FPE-checked Debug configurations.
+
+## 0.112.0 owner-only MPI reactive EB AMR hydro gates
+
+The MPI path must reproduce the serial multipatch EB hydro transaction for a
+nonmatching root plus two separated ratio-two children. The exclusive root
+physics owner advances the complete weighted-StateRedist level exactly once.
+Each child owner must execute both fine substeps, accumulate the matching
+coarse and fine time-integrated fluxes, reflux the authoritative root
+candidate in child order, and publish its corrected child. The root owner then
+performs one patch-set average-down.
+
+Each rank's committed advance count must equal one when it owns the root
+physics interval plus the refinement ratio of every locally owned child. The
+global count must be five for the qualified hierarchy. Root and child state
+and temperature fields must match the serial transaction within `8e-12` of
+their field scales and must change measurably from the nonuniform input.
+
+The owner of the final child receives a finite but EOS-invalid density field.
+The root and earlier child candidate work must complete before that fine
+advance rejects collectively. Every rank must retain its original root and
+child payloads bitwise and report zero committed advances. The gate runs at
+one, two, four, and eight ranks in GNU Fortran Release and
+bounds/FPE-checked Debug configurations.

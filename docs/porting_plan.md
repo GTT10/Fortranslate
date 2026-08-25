@@ -658,7 +658,9 @@ Required capabilities:
   subcycle-weighted work and owner-authoritative synchronization (`0.110.0`)
 - [x] owner-only active-cell MPI chemistry for root tiles and sibling EB
   patches with collective commit and rollback (`0.111.0`)
-- owner-only MPI EB AMR hydro and molecular transport
+- [x] owner-only MPI EB AMR hydro with one root physics owner, child-owner
+  subcycling, flux-register reflux, and rollback (`0.112.0`)
+- owner-only MPI EB AMR molecular transport
 - sparse rank-local EB field storage
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions

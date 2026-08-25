@@ -1188,12 +1188,25 @@ so a late owner rejection rolls every rank back exactly. The bridge also
 rejects rank-inconsistent interval, tolerance, species-width, or
 reaction-width controls before owner execution.
 
+In `0.112.0`, the root EB level becomes one exclusive physics entity while
+its storage synchronization remains tiled. Weighted StateRedist uses
+overlapping, potentially second-order level neighborhoods, so one root owner
+preserves the qualified serial redistribution instead of treating tile edges
+as artificial boundaries. That owner advances the root once and broadcasts
+the state, recovered temperature, and face-centroid fluxes. Each child owner
+then performs its own ratio subcycles, accumulates an owner-local flux
+register, refluxes the current root candidate, and publishes the corrected
+root and child. The root owner performs the final set-wide average-down. Every
+stage is collective and the caller's fields are published only after the
+complete transaction succeeds.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
-non-outflow refined boundaries, owner-only MPI EB hydro and transport, sparse EB field
-storage, and distributed EB flux registers remain outside this subsystem.
+non-outflow refined boundaries, decomposed root-level MPI StateRedist,
+owner-only MPI EB transport, sparse EB field storage, and distributed EB flux
+registers remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

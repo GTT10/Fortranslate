@@ -1960,3 +1960,25 @@ storage. Owner-only EB hydrodynamics and molecular transport, sparse fields,
 point-to-point coarse/fine traffic, distributed flux registers, topology
 migration, parallel checkpoint I/O, and a public distributed time loop remain
 separate work.
+
+## Owner-only MPI reactive EB AMR hydrodynamics (`0.112.0`)
+
+- [x] collective solver, reconstruction, limiter, timestep, and StateRedist consensus
+- [x] one complete root-level EB finite-volume update on an exclusive physics owner
+- [x] one ratio-subcycled fine update on each exclusive child owner
+- [x] owner-local coarse/fine time-integrated flux registers
+- [x] sequential cross-owner child reflux with authoritative broadcasts
+- [x] root-owner fine-to-root reactive average-down
+- [x] exact owner and global committed level-advance accounting
+- [x] serial multipatch EB hydro field parity
+- [x] exact all-rank rollback after a late child-owner failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Reactive EB source and finite-volume hydro operators now both have direct
+owner-only MPI transactions. The root remains one level-wide physics entity
+because weighted StateRedist owns overlapping level neighborhoods; its storage
+is still synchronized by root tiles. Owner-only molecular transport, sparse
+fields, decomposed root-level StateRedist, point-to-point coarse/fine traffic,
+topology migration, parallel checkpoint I/O, and a public distributed time
+loop remain separate work.

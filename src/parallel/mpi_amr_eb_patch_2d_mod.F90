@@ -8,6 +8,14 @@ module mpi_amr_eb_patch_2d_mod
   use reactive_1d_mod, only: reactive_nvar
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use eb_reactive_reconstruction_2d_mod, only: &
+    reactive_eb_exterior_state_2d
+  use amr_eb_reactive_2d_mod, only: &
+    build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
+  use amr_eb_flux_register_2d_mod, only: &
+    amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
+    accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
+    reflux_reactive_eb_state_patch_2d
   use amr_eb_regrid_2d_mod, only: &
     reactive_eb_patch_set_2d, average_down_reactive_eb_patch_set_2d
   implicit none
@@ -41,6 +49,7 @@ module mpi_amr_eb_patch_2d_mod
     procedure :: root_tile_count => mpi_amr_eb_root_tile_count
     procedure :: child_count => mpi_amr_eb_child_count
     procedure :: child_owner => mpi_amr_eb_child_owner
+    procedure :: root_level_owner => mpi_amr_eb_root_level_owner
     procedure :: root_tile_is_local => mpi_amr_eb_root_tile_is_local
     procedure :: child_is_local => mpi_amr_eb_child_is_local
     procedure :: is_valid => mpi_amr_eb_distribution_is_valid
@@ -50,6 +59,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
   public :: advance_owned_reactive_eb_patch_set_chemistry_2d
+  public :: advance_owned_reactive_eb_patch_set_hydro_2d
 
 contains
 
@@ -94,6 +104,15 @@ contains
     if (child < 1 .or. child > size(self%child_owners)) return
     owner = self%child_owners(child)
   end function mpi_amr_eb_child_owner
+
+  pure integer function mpi_amr_eb_root_level_owner(self) result(owner)
+    class(mpi_amr_eb_patch_distribution_2d), intent(in) :: self
+
+    owner = -1
+    if (.not. allocated(self%root_tiles)) return
+    if (size(self%root_tiles) < 1) return
+    owner = self%root_tiles(1)%owner
+  end function mpi_amr_eb_root_level_owner
 
   pure logical function mpi_amr_eb_root_tile_is_local( &
       self, tile) result(local)
@@ -570,6 +589,301 @@ contains
     ok = .true.
     if (present(local_entity_advances)) local_entity_advances = advances
   end subroutine advance_owned_reactive_eb_patch_set_chemistry_2d
+
+  subroutine advance_owned_reactive_eb_patch_set_hydro_2d( &
+      species, distribution, coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, ok, local_level_advances, &
+      state_redist_target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    real(dp), intent(inout) :: coarse_state(:, :, :)
+    real(dp), intent(inout) :: coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(inout) :: patch_set
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_level_advances
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+
+    type(amr_eb_flux_register_2d) :: flux_register
+    type(reactive_eb_exterior_state_2d) :: exterior
+    type(reactive_eb_patch_set_2d) :: candidate_set, synchronized_set
+    real(dp), allocatable :: averaged_state(:, :, :)
+    real(dp), allocatable :: averaged_temperature(:, :)
+    real(dp), allocatable :: coarse_corrected(:, :, :)
+    real(dp), allocatable :: coarse_corrected_temperature(:, :)
+    real(dp), allocatable :: coarse_work(:, :, :)
+    real(dp), allocatable :: coarse_work_temperature(:, :)
+    real(dp), allocatable :: coarse_x_flux(:, :, :)
+    real(dp), allocatable :: coarse_y_flux(:, :, :)
+    real(dp), allocatable :: fine_work(:, :, :)
+    real(dp), allocatable :: fine_work_temperature(:, :)
+    real(dp), allocatable :: fine_x_flux(:, :, :)
+    real(dp), allocatable :: fine_y_flux(:, :, :)
+    real(dp), allocatable :: root_start(:, :, :)
+    real(dp), allocatable :: root_start_temperature(:, :)
+    real(dp), allocatable :: root_hydro(:, :, :)
+    real(dp), allocatable :: root_hydro_temperature(:, :)
+    real(dp) :: alpha, fine_dt, numeric_controls(2)
+    real(dp) :: numeric_maximum(2), numeric_minimum(2), selected_target
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: advances, character_index, child, ierr, integer_controls(2)
+    integer :: integer_maximum(2), integer_minimum(2)
+    integer :: nvar, owner, ratio, root_owner, substep
+    integer :: string_codes(32, 3), string_maximum(32, 3)
+    integer :: string_minimum(32, 3)
+
+    ok = .false.
+    advances = 0
+    if (present(local_level_advances)) local_level_advances = 0
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    nvar = reactive_nvar(size(species))
+    numeric_controls = [dt, selected_target]
+    integer_controls = [state_redist_max_order, size(species)]
+    string_codes = 0
+    local_ok = len_trim(solver) >= 1 .and. len_trim(solver) <= 32 .and. &
+      len_trim(reconstruction) >= 1 .and. &
+      len_trim(reconstruction) <= 32 .and. &
+      len_trim(limiter) >= 1 .and. len_trim(limiter) <= 32
+    if (local_ok) then
+      do character_index = 1, len_trim(solver)
+        string_codes(character_index, 1) = &
+          iachar(solver(character_index:character_index))
+      end do
+      do character_index = 1, len_trim(reconstruction)
+        string_codes(character_index, 2) = &
+          iachar(reconstruction(character_index:character_index))
+      end do
+      do character_index = 1, len_trim(limiter)
+        string_codes(character_index, 3) = &
+          iachar(limiter(character_index:character_index))
+      end do
+    end if
+    local_ok = local_ok .and. size(species) >= 1 .and. &
+      all(ieee_is_finite(numeric_controls)) .and. dt > 0.0_dp .and. &
+      selected_target > 0.0_dp .and. selected_target <= 1.0_dp .and. &
+      (state_redist_max_order == 0 .or. state_redist_max_order == 2) .and. &
+      all(shape(coarse_state) == &
+        [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(shape(coarse_temperature) == &
+        [coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      distribution%is_valid(coarse_geometry, patch_set)
+    call MPI_Allreduce( &
+      local_ok, global_ok, 1, MPI_LOGICAL, MPI_LAND, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. global_ok) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_minimum, 2, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_maximum, 2, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_minimum, 2, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_maximum, 2, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+    call MPI_Allreduce( &
+      string_codes, string_minimum, size(string_codes), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      string_codes, string_maximum, size(string_codes), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(string_minimum /= string_maximum)) return
+
+    allocate(root_start, mold=coarse_state)
+    allocate(root_start_temperature, mold=coarse_temperature)
+    call synchronize_owned_reactive_eb_patch_set_2d( &
+      distribution, size(species), coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, root_start, root_start_temperature, &
+      synchronized_set, local_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    candidate_set = synchronized_set
+
+    allocate(root_hydro, mold=coarse_state)
+    allocate(root_hydro_temperature, mold=coarse_temperature)
+    allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+    allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) then
+      call advance_reactive_eb_level_2d( &
+        species, root_start, root_start_temperature, coarse_geometry, &
+        trim(solver), trim(reconstruction), trim(limiter), selected_target, &
+        state_redist_max_order, dt, root_hydro, root_hydro_temperature, &
+        coarse_x_flux, coarse_y_flux, entity_ok)
+      if (entity_ok) advances = advances + 1
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Bcast( &
+      root_hydro, size(root_hydro), MPI_DOUBLE_PRECISION, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      root_hydro_temperature, size(root_hydro_temperature), &
+      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      coarse_x_flux, size(coarse_x_flux), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      coarse_y_flux, size(coarse_y_flux), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+
+    allocate(coarse_corrected, source=root_hydro)
+    allocate(coarse_corrected_temperature, source=root_hydro_temperature)
+    allocate(coarse_work, mold=coarse_state)
+    allocate(coarse_work_temperature, mold=coarse_temperature)
+    do child = 1, candidate_set%patch_count()
+      owner = distribution%child_owner(child)
+      entity_ok = owner >= 0 .and. owner < distribution%nranks
+      if (distribution%rank == owner .and. entity_ok) then
+        call initialize_amr_eb_flux_register_2d( &
+          coarse_geometry, candidate_set%children(child)%geometry, &
+          candidate_set%children(child)%patch, nvar, flux_register, entity_ok)
+        if (entity_ok) call accumulate_coarse_eb_fluxes_2d( &
+          flux_register, coarse_geometry, &
+          candidate_set%children(child)%geometry, &
+          candidate_set%children(child)%patch, coarse_x_flux, coarse_y_flux, &
+          dt, entity_ok)
+        if (allocated(fine_work)) deallocate(fine_work)
+        if (allocated(fine_work_temperature)) &
+          deallocate(fine_work_temperature)
+        if (allocated(fine_x_flux)) deallocate(fine_x_flux)
+        if (allocated(fine_y_flux)) deallocate(fine_y_flux)
+        allocate(fine_work, mold=candidate_set%children(child)%state)
+        allocate(fine_work_temperature, &
+          mold=candidate_set%children(child)%temperature)
+        allocate(fine_x_flux(nvar, &
+          0:candidate_set%children(child)%geometry%nx, &
+          candidate_set%children(child)%geometry%ny))
+        allocate(fine_y_flux(nvar, &
+          candidate_set%children(child)%geometry%nx, &
+          0:candidate_set%children(child)%geometry%ny))
+        ratio = candidate_set%children(child)%patch%refinement_ratio
+        fine_dt = dt / real(ratio, dp)
+        do substep = 1, ratio
+          if (.not. entity_ok) exit
+          if (trim(reconstruction) == "characteristic_plm") then
+            alpha = (real(substep, dp) - 0.5_dp) / real(ratio, dp)
+          else
+            alpha = real(substep - 1, dp) / real(ratio, dp)
+          end if
+          call build_reactive_eb_patch_exterior_2d( &
+            species, root_start, root_start_temperature, root_hydro, &
+            root_hydro_temperature, coarse_geometry, &
+            candidate_set%children(child)%geometry, &
+            candidate_set%children(child)%patch, alpha, exterior, entity_ok, &
+            candidate_set%children(child)%state, &
+            candidate_set%children(child)%temperature)
+          if (.not. entity_ok) exit
+          call advance_reactive_eb_level_2d( &
+            species, candidate_set%children(child)%state, &
+            candidate_set%children(child)%temperature, &
+            candidate_set%children(child)%geometry, trim(solver), &
+            trim(reconstruction), trim(limiter), selected_target, &
+            state_redist_max_order, fine_dt, fine_work, &
+            fine_work_temperature, fine_x_flux, fine_y_flux, entity_ok, &
+            exterior)
+          if (.not. entity_ok) exit
+          advances = advances + 1
+          candidate_set%children(child)%state = fine_work
+          candidate_set%children(child)%temperature = fine_work_temperature
+          call accumulate_fine_eb_fluxes_2d( &
+            flux_register, coarse_geometry, &
+            candidate_set%children(child)%geometry, &
+            candidate_set%children(child)%patch, fine_x_flux, fine_y_flux, &
+            fine_dt, entity_ok)
+        end do
+        if (entity_ok) call reflux_reactive_eb_state_patch_2d( &
+          species, coarse_corrected, coarse_corrected_temperature, &
+          coarse_geometry, candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature, &
+          candidate_set%children(child)%geometry, &
+          candidate_set%children(child)%patch, flux_register, coarse_work, &
+          coarse_work_temperature, fine_work, fine_work_temperature, entity_ok)
+        if (entity_ok) then
+          coarse_corrected = coarse_work
+          coarse_corrected_temperature = coarse_work_temperature
+          candidate_set%children(child)%state = fine_work
+          candidate_set%children(child)%temperature = fine_work_temperature
+        end if
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call MPI_Bcast( &
+        coarse_corrected, size(coarse_corrected), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        coarse_corrected_temperature, size(coarse_corrected_temperature), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_set%children(child)%state, &
+        size(candidate_set%children(child)%state), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_set%children(child)%temperature, &
+        size(candidate_set%children(child)%temperature), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+
+    allocate(averaged_state, mold=coarse_state)
+    allocate(averaged_temperature, mold=coarse_temperature)
+    entity_ok = .true.
+    if (distribution%rank == root_owner) call &
+      average_down_reactive_eb_patch_set_2d( &
+        species, coarse_corrected, coarse_corrected_temperature, &
+        coarse_geometry, candidate_set, averaged_state, &
+        averaged_temperature, entity_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Bcast( &
+      averaged_state, size(averaged_state), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      averaged_temperature, size(averaged_temperature), &
+      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    local_ok = candidate_set%is_valid(coarse_geometry, nvar) .and. &
+      all(ieee_is_finite(averaged_state)) .and. &
+      all(ieee_is_finite(averaged_temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    coarse_state = averaged_state
+    coarse_temperature = averaged_temperature
+    patch_set = candidate_set
+    ok = .true.
+    if (present(local_level_advances)) local_level_advances = advances
+  end subroutine advance_owned_reactive_eb_patch_set_hydro_2d
 
   subroutine all_ranks_accept_eb_2d( &
       distribution, local_acceptance, accepted, mpi_ok)
