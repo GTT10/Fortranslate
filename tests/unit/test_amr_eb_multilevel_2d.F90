@@ -27,8 +27,8 @@ program test_amr_eb_multilevel_2d
     (root_i_upper - root_i_lower + 1) * ratio
   integer, parameter :: level_one_ny = &
     (root_j_upper - root_j_lower + 1) * ratio
-  integer, parameter :: level_one_i_lower = 6, level_one_i_upper = 10
-  integer, parameter :: level_one_j_lower = 6, level_one_j_upper = 10
+  integer, parameter :: level_one_i_lower = 3, level_one_i_upper = 10
+  integer, parameter :: level_one_j_lower = 3, level_one_j_upper = 10
   integer, parameter :: level_two_nx = &
     (level_one_i_upper - level_one_i_lower + 1) * ratio
   integer, parameter :: level_two_ny = &
@@ -81,6 +81,13 @@ program test_amr_eb_multilevel_2d
     level_one_j_lower, level_one_j_upper, ratio, level_two_geometry, &
     level_one_patch, ok)
   call require(ok, "three-level finest geometry")
+  call require( &
+    any(level_two_geometry%x_face_fraction(0, :) < 1.0_dp) .or. &
+    any(level_two_geometry%x_face_fraction(level_two_geometry%nx, :) < &
+      1.0_dp) .or. &
+    any(level_two_geometry%y_face_fraction(:, 0) < 1.0_dp) .or. &
+    any(level_two_geometry%y_face_fraction(:, level_two_geometry%ny) < &
+      1.0_dp), "cut finest coarse/fine interface")
 
   allocate(root_state(1, root_nx, root_ny), source=1.0_dp)
   allocate(level_one_state(1, level_one_nx, level_one_ny), source=2.0_dp)
@@ -292,20 +299,6 @@ program test_amr_eb_multilevel_2d
     all(reactive_level_two_sync == reactive_level_two) .and. &
     all(level_two_temperature_sync == level_two_temperature), &
     "three-level hydro rollback")
-
-  level_two_geometry%x_face_fraction(0, 1) = 0.5_dp
-  call advance_three_level_reactive_eb_hydro_2d( &
-    species, reactive_root, root_temperature, root_geometry, &
-    reactive_level_one, level_one_temperature, level_one_geometry, &
-    root_patch, reactive_level_two, level_two_temperature, &
-    level_two_geometry, level_one_patch, "hllc", "pcm", "mc", 2, dt, &
-    reactive_root_sync, root_temperature_sync, reactive_level_one_sync, &
-    level_one_temperature_sync, reactive_level_two_sync, &
-    level_two_temperature_sync, ok)
-  call require(.not. ok .and. all(reactive_root_sync == reactive_root) .and. &
-    all(reactive_level_one_sync == reactive_level_one) .and. &
-    all(reactive_level_two_sync == reactive_level_two), &
-    "cut finest-interface rejection")
 
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 
