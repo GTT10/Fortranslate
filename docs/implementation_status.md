@@ -2004,3 +2004,21 @@ and topology remain replicated. Sparse rank-local storage, decomposed
 root-level StateRedist, point-to-point coarse/fine and halo traffic, dynamic
 topology migration, parallel checkpoint I/O, and a public distributed EB AMR
 time loop remain separate work.
+
+## Owner-only MPI reactive EB AMR full physics (`0.114.0`)
+
+- [x] outer owner-only `R-T-H-T-R` transaction
+- [x] two owner chemistry half-steps
+- [x] two owner SSPRK2 transport half-steps
+- [x] one owner hydro interval between transport stages
+- [x] deferred root, child, limiter, and counter publication
+- [x] exact chemistry, hydro, and transport owner accounting
+- [x] serial multipatch full-physics state and temperature parity
+- [x] exact outer rollback after chemistry and transport precede hydro failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The replicated MPI EB AMR bridge now provides individual owner operators and
+their complete reactive split composition. Sparse EB fields, point-to-point
+halo and coarse/fine traffic, a distributed public timestep loop, dynamic
+topology migration, and parallel checkpoint/output remain separate work.

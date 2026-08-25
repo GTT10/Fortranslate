@@ -662,6 +662,8 @@ Required capabilities:
   subcycling, flux-register reflux, and rollback (`0.112.0`)
 - [x] owner-only MPI EB AMR molecular transport with SSPRK2 stages,
   child-owner diffusive reflux, EB-cut closure, and rollback (`0.113.0`)
+- [x] owner-only MPI EB AMR `R-T-H-T-R` composition with outer rollback and
+  exact per-operator committed accounting (`0.114.0`)
 - sparse rank-local EB field storage
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions

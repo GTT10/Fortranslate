@@ -30,6 +30,8 @@ program pelef_mpi_eb_amr_patch_2d
     advance_reactive_eb_patch_set_hydro_2d
   use amr_eb_multipatch_transport_2d_mod, only: &
     advance_reactive_eb_patch_set_transport_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    advance_reactive_eb_patch_set_strang_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
@@ -37,7 +39,8 @@ program pelef_mpi_eb_amr_patch_2d
     synchronize_owned_reactive_eb_patch_set_2d, &
     advance_owned_reactive_eb_patch_set_chemistry_2d, &
     advance_owned_reactive_eb_patch_set_hydro_2d, &
-    advance_owned_reactive_eb_patch_set_transport_2d
+    advance_owned_reactive_eb_patch_set_transport_2d, &
+    advance_owned_reactive_eb_patch_set_strang_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -65,6 +68,8 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: transport_mpi_set
   type(reactive_eb_patch_set_2d) :: transport_failed_set
   type(reactive_eb_patch_set_2d) :: transport_failed_backup_set
+  type(reactive_eb_patch_set_2d) :: full_reference_set, full_mpi_set
+  type(reactive_eb_patch_set_2d) :: full_failed_set, full_failed_backup_set
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -98,6 +103,14 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: transport_failed_temperature(:, :)
   real(dp), allocatable :: transport_failed_backup_state(:, :, :)
   real(dp), allocatable :: transport_failed_backup_temperature(:, :)
+  real(dp), allocatable :: full_reference_state(:, :, :)
+  real(dp), allocatable :: full_reference_temperature(:, :)
+  real(dp), allocatable :: full_mpi_state(:, :, :)
+  real(dp), allocatable :: full_mpi_temperature(:, :)
+  real(dp), allocatable :: full_failed_state(:, :, :)
+  real(dp), allocatable :: full_failed_temperature(:, :)
+  real(dp), allocatable :: full_failed_backup_state(:, :, :)
+  real(dp), allocatable :: full_failed_backup_temperature(:, :)
   logical, allocatable :: active_mask(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
@@ -105,11 +118,20 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: transport_dt, transport_change, transport_scale
   real(dp) :: transport_theta, transport_reference_theta
   real(dp) :: child_sound_speed, child_temperature
+  real(dp) :: full_reference_theta, full_theta, full_scale, full_change
   logical :: tags(coarse_nx, coarse_ny), ok
   integer :: child, component, global_advances, i, ierr, j
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
+  integer :: local_chemistry_advances, local_hydro_advances
+  integer :: local_transport_advances
+  integer :: global_chemistry_advances, global_hydro_advances
+  integer :: global_transport_advances
+  integer :: expected_local_chemistry, expected_local_hydro
+  integer :: expected_local_transport, expected_global_chemistry
+  integer :: expected_global_hydro, expected_global_transport
   integer :: inconsistent_exponent
+  character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -616,6 +638,131 @@ program pelef_mpi_eb_amr_patch_2d
       all(transport_failed_set%children(child)%temperature == &
         transport_failed_backup_set%children(child)%temperature), &
       "MPI EB AMR late transport failure child rollback", rank)
+  end do
+
+  allocate(full_reference_state, mold=coarse_state)
+  allocate(full_reference_temperature, mold=coarse_temperature)
+  call advance_reactive_eb_patch_set_strang_2d( &
+    species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+    patch_set, "hllc", "pcm", "mc", 2, transport_dt, .true., &
+    1.0e-8_dp, 1.0e-14_dp, full_reference_state, &
+    full_reference_temperature, full_reference_set, ok, &
+    target_volume_fraction=0.5_dp, failure_context=full_failure_context, &
+    transport=transport, &
+    transport_enabled=.true., viscosity_enabled=.true., &
+    thermal_conduction_enabled=.true., species_diffusion_enabled=.true., &
+    barodiffusion_enabled=.true., &
+    minimum_transport_theta=full_reference_theta, boundaries=boundaries)
+  call assert_all(ok, "serial EB AMR full-physics reference: " // &
+    trim(full_failure_context), rank)
+
+  allocate(full_mpi_state, source=coarse_state)
+  allocate(full_mpi_temperature, source=coarse_temperature)
+  full_mpi_set = patch_set
+  call advance_owned_reactive_eb_patch_set_strang_2d( &
+    species, reactions, transport, distribution, full_mpi_state, &
+    full_mpi_temperature, coarse_geometry, full_mpi_set, "hllc", "pcm", &
+    "mc", 2, transport_dt, 1.0e-8_dp, 1.0e-14_dp, .true., .true., &
+    .true., .true., boundaries, ok, local_chemistry_advances, &
+    local_hydro_advances, local_transport_advances, full_theta, 0.5_dp)
+  call assert_all(ok, "MPI owner-only EB AMR full physics", rank)
+  expected_local_chemistry = 2 * &
+    distribution%rank_entity_counts(rank + 1)
+  expected_global_chemistry = 2 * &
+    (distribution%root_tile_count() + distribution%child_count())
+  expected_local_hydro = 0
+  expected_local_transport = 0
+  if (rank == distribution%root_level_owner()) then
+    expected_local_hydro = 1
+    expected_local_transport = 4
+  end if
+  expected_global_hydro = 1
+  expected_global_transport = 4
+  do child = 1, distribution%child_count()
+    expected_global_hydro = expected_global_hydro + &
+      patch_set%children(child)%patch%refinement_ratio
+    expected_global_transport = expected_global_transport + 4 * &
+      patch_set%children(child)%patch%refinement_ratio
+    if (distribution%child_is_local(child)) then
+      expected_local_hydro = expected_local_hydro + &
+        patch_set%children(child)%patch%refinement_ratio
+      expected_local_transport = expected_local_transport + 4 * &
+      patch_set%children(child)%patch%refinement_ratio
+    end if
+  end do
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, &
+    "MPI EB AMR full chemistry count reduction", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, &
+    "MPI EB AMR full hydro count reduction", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_chemistry_advances == expected_local_chemistry .and. &
+    global_chemistry_advances == expected_global_chemistry .and. &
+    local_hydro_advances == expected_local_hydro .and. &
+    global_hydro_advances == expected_global_hydro .and. &
+    local_transport_advances == expected_local_transport .and. &
+    global_transport_advances == expected_global_transport, &
+    "MPI EB AMR full-physics owner accounting", rank)
+  full_scale = max(1.0_dp, maxval(abs(full_reference_state)))
+  call assert_all(maxval(abs(full_mpi_state - full_reference_state)) <= &
+    5.0e-11_dp * full_scale .and. &
+    maxval(abs(full_mpi_temperature - full_reference_temperature)) <= &
+      5.0e-11_dp * max(1.0_dp, &
+        maxval(abs(full_reference_temperature))) .and. &
+    abs(full_theta - full_reference_theta) <= &
+      3.0e-13_dp * max(1.0_dp, abs(full_reference_theta)), &
+    "MPI EB AMR full-physics serial root parity", rank)
+  do child = 1, full_mpi_set%patch_count()
+    call assert_all(maxval(abs(full_mpi_set%children(child)%state - &
+      full_reference_set%children(child)%state)) <= &
+        5.0e-11_dp * full_scale .and. &
+      maxval(abs(full_mpi_set%children(child)%temperature - &
+        full_reference_set%children(child)%temperature)) <= &
+          5.0e-11_dp * max(1.0_dp, maxval(abs( &
+            full_reference_set%children(child)%temperature))), &
+      "MPI EB AMR full-physics serial child parity", rank)
+  end do
+  full_change = maxval(abs(full_reference_state - coarse_state))
+  do child = 1, full_reference_set%patch_count()
+    full_change = max(full_change, maxval(abs( &
+      full_reference_set%children(child)%state - &
+      patch_set%children(child)%state)))
+  end do
+  call assert_all(full_change > 1.0e-14_dp * full_scale, &
+    "MPI EB AMR full physics changes hierarchy", rank)
+
+  allocate(full_failed_state, source=coarse_state)
+  allocate(full_failed_temperature, source=coarse_temperature)
+  full_failed_set = patch_set
+  allocate(full_failed_backup_state, source=full_failed_state)
+  allocate(full_failed_backup_temperature, source=full_failed_temperature)
+  full_failed_backup_set = full_failed_set
+  call advance_owned_reactive_eb_patch_set_strang_2d( &
+    species, reactions, transport, distribution, full_failed_state, &
+    full_failed_temperature, coarse_geometry, full_failed_set, &
+    "missing_solver", "pcm", "mc", 2, transport_dt, 1.0e-8_dp, &
+    1.0e-14_dp, .true., .true., .true., .true., boundaries, ok, &
+    local_chemistry_advances, local_hydro_advances, &
+    local_transport_advances, full_theta, 0.5_dp)
+  call assert_all(.not. ok .and. local_chemistry_advances == 0 .and. &
+    local_hydro_advances == 0 .and. local_transport_advances == 0 .and. &
+    all(full_failed_state == full_failed_backup_state) .and. &
+    all(full_failed_temperature == full_failed_backup_temperature), &
+    "MPI EB AMR late full-physics root rollback", rank)
+  do child = 1, full_failed_set%patch_count()
+    call assert_all(all(full_failed_set%children(child)%state == &
+      full_failed_backup_set%children(child)%state) .and. &
+      all(full_failed_set%children(child)%temperature == &
+        full_failed_backup_set%children(child)%temperature), &
+      "MPI EB AMR late full-physics child rollback", rank)
   end do
 
   invalid_distribution = distribution
