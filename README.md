@@ -6,11 +6,13 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.88.0` milestone contains the serial verification suite, seven optional
+The `0.89.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
-patch-tree checkpoint and restart it with a different MPI rank count.
+patch-tree checkpoint and restart it with a different MPI rank count. The
+serial two-dimensional EB AMR driver can move and resize one fine rectangle
+from temperature-gradient tags while preserving its composite conserved state.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -205,17 +207,19 @@ re-reflux and reactive average-down then synchronize the hierarchy in one
 transaction.
 
 `pelef_reactive_eb_amr_2d` makes that hierarchy runnable from one input file.
-It builds a strictly internal static fine rectangle, initializes it from the
-coarse state, selects each coarse timestep from both level CFL limits, advances
-until the clipped final time, and writes separate synchronized coarse and fine
-geometry/state CSV files. The committed regression exercises the complete
-configuration, time-loop, output, and structural-check path.
+It builds a strictly internal fine rectangle, initializes it from the coarse
+state, selects each coarse timestep from both level CFL limits, advances until
+the clipped final time, and writes separate synchronized coarse and fine
+geometry/state CSV files. Optional solution-driven regridding tags active
+coarse cells by relative and absolute temperature jumps, buffers their bounding
+rectangle, averages the old fine patch down, injects the new patch from coarse
+data, and retains every overlapping same-resolution fine cell exactly.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
 coarse-to-fine spatial interpolation, AMR chemistry/transport composition,
-dynamic multilevel EB regridding, multiple patches, and MPI distribution are
-not yet connected.
+multiple EB fine patches, deeper levels, fine-patch removal, and MPI
+distribution are not yet connected.
 
 ### MPI one-dimensional verification
 
@@ -655,6 +659,16 @@ Runnable static two-level reactive EB AMR hydrodynamics:
 python3 tools/check_reactive_eb_amr_2d.py \
   --coarse reactive_eb_amr_coarse_2d.csv \
   --fine reactive_eb_amr_fine_2d.csv
+```
+
+Temperature-tagged conservative fine-patch movement:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_2d/dynamic_hotspot.nml
+python3 tools/check_reactive_eb_amr_dynamic_2d.py \
+  --coarse reactive_eb_amr_dynamic_coarse_2d.csv \
+  --fine reactive_eb_amr_dynamic_fine_2d.csv
 ```
 
 ## Project records

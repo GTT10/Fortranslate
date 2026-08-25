@@ -1352,3 +1352,23 @@ accepted final time. The checker validates row counts, physical coordinates,
 all three EB cell classes, finite positive thermodynamics, stationary fields,
 and species closure. Enabling chemistry through the direct static driver must
 fail before any accepted step in GNU Fortran Debug and Release suites.
+
+## 0.89.0 solution-driven reactive EB AMR regrid gates
+
+A single-cell temperature hotspot must produce the expected five-point active
+tag set while root-boundary and covered cells remain untagged. The buffered
+bounding rectangle must remain strictly internal and obey configured minimum
+extents. A uniform temperature field must return a valid inactive plan.
+
+Moving a ratio-two patch must first restrict all old fine data, preserve the
+complete composite conserved integral, copy every overlapping fine state
+exactly, initialize every newly refined active cell by PCM from its synchronized
+parent, and leave retired fine regions represented by average-downed root data.
+A nonfinite old fine state must reject the transaction without changing root
+outputs or publishing a partial new patch.
+
+The public moving-hotspot case must start with a fine patch away from its
+temperature maximum, commit at least one regrid, and write a new aligned fine
+rectangle that contains the hotspot. Both output levels must retain finite
+positive thermodynamics and species closure in GNU Fortran Debug and Release
+suites.

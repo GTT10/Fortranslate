@@ -1500,3 +1500,27 @@ The app remains hydrodynamics-only and owns one strictly internal aligned fine
 rectangle. Chemistry, molecular transport, automatic tagging/regridding,
 multiple patches, deeper levels, checkpoint/restart, and MPI ownership remain
 future EB AMR work.
+
+## Solution-driven two-level reactive EB AMR regridding (`0.89.0`)
+
+- [x] active-cell four-neighbor temperature-gradient tagging
+- [x] combined relative threshold and absolute noise floor
+- [x] covered-cell and physical-boundary exclusion
+- [x] buffered, minimum-size, strictly internal rectangular patch planning
+- [x] old fine-patch reactive EB average-down before topology replacement
+- [x] new fine-patch PCM initialization from the synchronized root
+- [x] exact same-resolution fine-state and temperature overlap retention
+- [x] active new-fine EOS validation and whole-hierarchy transaction
+- [x] initial and periodic accepted-step regrid cadence
+- [x] unchanged-patch and empty-tag retention without false regrid counts
+- [x] public namelist controls and committed regrid count diagnostics
+- [x] moving-hotspot application regression and geometry-aware CSV checker
+- [x] composite conservation, new-cell PCM, retired-cell restriction, and
+  nonfinite rollback gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The serial application now moves or resizes one ratio-aligned fine rectangle
+around root temperature structure. It remains hydrodynamics-only and retains
+the existing patch when tags disappear. Multiple patches, deeper levels,
+fine-patch removal, EB AMR chemistry/transport, checkpoint/restart, and MPI
+ownership remain future work.

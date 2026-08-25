@@ -609,7 +609,9 @@ Required capabilities:
   hydro reflux, and average-down (`0.87.0`)
 - [x] input-driven static EB AMR hierarchy, two-level CFL time loop, and
   coarse/fine output (`0.88.0`)
-- EB dynamic regridding, multiple patches, deeper levels, and multilevel
+- [x] temperature-gradient tagging, conservative single-patch movement and
+  resizing, retained fine overlap, and periodic regrid cadence (`0.89.0`)
+- EB fine-patch removal, multiple patches, deeper levels, and multilevel
   redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 

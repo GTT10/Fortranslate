@@ -1581,3 +1581,30 @@ arrays and commits only after every active cell succeeds. The outer EB Strang
 operator retains the original inputs until both reaction halves and the hydro
 transaction complete, so a later Riemann or EOS failure also rolls back the
 first reaction half.
+
+## Temperature-tagged EB AMR patch replacement
+
+For each active root cell at least one cell away from the physical boundary,
+the regrid indicator is the largest temperature jump to an active Cartesian
+neighbor,
+
+`g_ij = max_neighbor |T_neighbor - T_ij|`.
+
+A cell is tagged when `g_ij` exceeds the configured absolute floor and
+`g_ij / max(T_ij, T_neighbor, T_floor)` meets the relative threshold. Covered
+cells never tag and never enter a neighbor jump. The planner takes one bounding
+box around all tags, grows it by the requested buffer, enforces minimum x/y
+extents, and clamps it to the strictly internal root region required by the
+coarse exterior-state fill.
+
+Replacing old patch `P_old` by `P_new` uses
+
+`average-down(P_old) -> PCM(P_new) -> retain(P_old intersect P_new)`.
+
+The first operation transfers regions that lose refinement into the root. PCM
+therefore preserves the root integral in newly refined cells. Exact copying by
+global fine index restores all same-resolution overlap after PCM, avoiding
+unnecessary diffusion. State and temperature arrays on both levels commit only
+after the new patch geometry is valid, every candidate is finite, and EOS
+recovery succeeds on every active new fine cell. Empty tags retain the current
+patch rather than deleting the only fine level.

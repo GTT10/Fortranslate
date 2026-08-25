@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes ten serial verification drivers and six optional MPI drivers
+PeleF exposes twelve serial verification drivers and seven optional MPI drivers
 over shared numerical and physical-property modules.
 
 ```text
@@ -32,6 +32,12 @@ pelef_reactive_1d
 
 pelef_reactive_2d
   └─ NASA7 reactive Euler, physical boundaries, transport, and CTU correction
+
+pelef_reactive_eb_2d
+  └─ reactive embedded-boundary hydro with weighted StateRedist
+
+pelef_reactive_eb_amr_2d
+  └─ static or temperature-tagged two-level reactive EB AMR hydro
 
 pelef_amr_reactive_1d
   └─ dynamic two-level reactive AMR with PLM, chemistry, and transport
@@ -940,14 +946,25 @@ and temperature update.
 `simulation_config_reactive_eb_amr_2d_mod`,
 `reactive_eb_amr_2d_driver_mod`, and `pelef_reactive_eb_amr_2d` provide the
 first runnable hierarchy shell. A third namelist group supplies inclusive
-coarse patch bounds, refinement ratio, and fine output path. Initialization
-builds the same configured level set independently on both resolutions, checks
-the AMR geometry contract, and prolongs the reactive state. Every coarse
-timestep is the smaller of the root stability limit and `r` times the fine
-stability limit, then clipped to the requested final time. The app writes the
-synchronized parent and child fields separately after the time loop.
+coarse patch bounds, refinement ratio, fine output path, and optional dynamic
+regridding controls. Initialization builds the same configured level set
+independently on both resolutions, checks the AMR geometry contract, and
+prolongs the reactive state. Every coarse timestep is the smaller of the root
+stability limit and `r` times the fine stability limit, then clipped to the
+requested final time. The app writes the synchronized parent and child fields
+separately after the time loop.
+
+`amr_eb_regrid_2d_mod` adds the single-patch topology transaction. Four-neighbor
+temperature jumps tag active internal root cells through combined relative and
+absolute thresholds. A buffered tag bounding box is clamped to the strictly
+internal region and grown to configured minimum extents. Before replacing the
+patch, the old fine data are volume-weighted into the root. PCM initializes the
+new fine rectangle, then matching global fine indices restore exact old overlap.
+The new hierarchy is committed only after all active new fine cells pass EOS
+recovery. The driver invokes this planner at initialization and at a configured
+accepted-step cadence; an empty or unchanged plan retains the current patch.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-AMR chemistry/transport composition, dynamic regridding, multiple patches,
+AMR chemistry/transport composition, fine-patch removal, multiple patches,
 deeper levels, and EB AMR/MPI ownership remain outside this subsystem.
