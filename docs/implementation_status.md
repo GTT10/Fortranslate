@@ -2077,3 +2077,22 @@ Sparse chemistry now remains below the complete materialization boundary from
 input through commit. Restriction buffers are still communicator broadcasts;
 point-to-point child/root traffic, sparse hydro and transport, public time
 advancement, regridding, checkpointing, and output remain separate work.
+
+## Sparse MPI reactive EB AMR full-physics transaction (`0.118.0`)
+
+- [x] sparse input and output for the complete `R-T-H-T-R` split
+- [x] first direct sparse chemistry half-step
+- [x] one complete temporary hierarchy across the central `T-H-T` window
+- [x] immediate owner re-scatter before final direct sparse chemistry
+- [x] unchanged committed sparse allocation count
+- [x] deferred chemistry, hydro, transport, and limiter publication
+- [x] exact owner and global operator accounting
+- [x] serial multipatch full-physics state, temperature, and limiter parity
+- [x] exact outer rollback when hydro rejects after chemistry and transport
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public sparse transaction now covers the complete qualified physics split.
+Hydro and transport still operate inside one replicated compatibility window;
+direct sparse hydro/transport, point-to-point traffic, time-loop control,
+regridding, checkpointing, and output remain separate work.

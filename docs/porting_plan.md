@@ -670,6 +670,8 @@ Required capabilities:
   materialize/average-down/re-scatter synchronization (`0.116.0`)
 - [x] direct sparse child-owner restriction and root-tile-owner reactive
   average-down without complete hierarchy materialization (`0.117.0`)
+- [x] sparse-input/output MPI EB AMR full-physics transaction with one central
+  replicated `T-H-T` compatibility window (`0.118.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

@@ -1244,6 +1244,14 @@ temperature from their local coarse guess, and publish only after every child
 is accepted collectively. The child payloads and unrefined root cells remain
 owner-local and unchanged.
 
+In `0.118.0`, a sparse outer transaction composes the complete reactive split.
+The first chemistry half-step executes and synchronizes directly on sparse
+owners. One complete temporary hierarchy then spans both transport half-steps
+and the intervening hydro step. The result is scattered back to owners before
+the final direct sparse chemistry half-step. Caller state, operator counts,
+and the limiter minimum are published only after the entire `R-T-H-T-R`
+sequence succeeds.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
