@@ -1228,6 +1228,14 @@ temporary complete patch set and commits it only after collective validation.
 This establishes a sparse persistent-storage boundary while legacy physics
 still consumes complete temporary arrays.
 
+In `0.116.0`, chemistry consumes the sparse persistent representation
+directly. Every root tile and child is reacted only where its owner allocation
+exists, using the corresponding EB active mask. Entity acceptance remains
+collective and the input sparse object is retained until all local reactors
+succeed. Post-reaction fine-to-root average-down currently materializes one
+temporary hierarchy on every rank; the result is immediately scattered back
+to owner-only payloads before commit.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

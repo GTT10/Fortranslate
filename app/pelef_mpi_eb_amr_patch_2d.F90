@@ -43,7 +43,8 @@ program pelef_mpi_eb_amr_patch_2d
     advance_owned_reactive_eb_patch_set_transport_2d, &
     advance_owned_reactive_eb_patch_set_strang_2d, &
     scatter_owned_reactive_eb_patch_set_2d, &
-    materialize_owned_reactive_eb_patch_set_2d
+    materialize_owned_reactive_eb_patch_set_2d, &
+    advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -61,6 +62,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_patch_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: invalid_sparse_patch_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_chemistry_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_failed_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_failed_backup_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -443,6 +447,42 @@ program pelef_mpi_eb_amr_patch_2d
   reference_coarse_state = averaged_coarse_state
   reference_coarse_temperature = averaged_coarse_temperature
 
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, sparse_chemistry_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse chemistry scatter", rank)
+  call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
+    species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
+    distribution, sparse_chemistry_set, coarse_geometry, patch_set, ok, &
+    local_advances)
+  call assert_all(ok .and. sparse_chemistry_set%is_valid( &
+    distribution, coarse_geometry, patch_set), &
+    "MPI EB AMR direct sparse chemistry", rank)
+  call MPI_Allreduce( &
+    local_advances, global_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_advances == distribution%rank_entity_counts(rank + 1) .and. &
+    global_advances == distribution%root_tile_count() + &
+      distribution%child_count(), &
+    "MPI EB AMR sparse chemistry owner accounting", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    distribution, sparse_chemistry_set, coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, materialized_coarse_state, &
+    materialized_coarse_temperature, materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == reference_coarse_state) .and. &
+    all(materialized_coarse_temperature == reference_coarse_temperature), &
+    "MPI EB AMR sparse chemistry serial root parity", rank)
+  do child = 1, distribution%child_count()
+    call assert_all( &
+      all(materialized_patch_set%children(child)%state == &
+        reference_set%children(child)%state) .and. &
+      all(materialized_patch_set%children(child)%temperature == &
+        reference_set%children(child)%temperature), &
+      "MPI EB AMR sparse chemistry serial child parity", rank)
+  end do
+
   call advance_owned_reactive_eb_patch_set_chemistry_2d( &
     species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
     distribution, chemistry_coarse_state, chemistry_coarse_temperature, &
@@ -511,6 +551,41 @@ program pelef_mpi_eb_amr_patch_2d
         failed_backup_set%children(child)%temperature), &
       "MPI EB AMR child chemistry rollback", rank)
   end do
+
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, sparse_failed_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse chemistry failure scatter", rank)
+  child = distribution%child_count()
+  if (distribution%child_is_local(child)) &
+    sparse_failed_set%children(child)%state(irho, :, :) = -1.0_dp
+  sparse_failed_backup_set = sparse_failed_set
+  call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
+    species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
+    distribution, sparse_failed_set, coarse_geometry, patch_set, ok, &
+    local_advances)
+  call assert_all(.not. ok .and. local_advances == 0 .and. &
+    sparse_failed_set%local_value_count() == &
+      sparse_failed_backup_set%local_value_count(), &
+    "MPI EB AMR late sparse chemistry rollback", rank)
+  ok = .true.
+  do tile = 1, distribution%root_tile_count()
+    if (.not. distribution%root_tile_is_local(tile)) cycle
+    ok = ok .and. all(sparse_failed_set%root_tiles(tile)%state == &
+        sparse_failed_backup_set%root_tiles(tile)%state) .and. &
+      all(sparse_failed_set%root_tiles(tile)%temperature == &
+        sparse_failed_backup_set%root_tiles(tile)%temperature)
+  end do
+  call assert_all(ok, "MPI EB AMR sparse chemistry root rollback", rank)
+  ok = .true.
+  do child = 1, distribution%child_count()
+    if (.not. distribution%child_is_local(child)) cycle
+    ok = ok .and. all(sparse_failed_set%children(child)%state == &
+        sparse_failed_backup_set%children(child)%state) .and. &
+      all(sparse_failed_set%children(child)%temperature == &
+        sparse_failed_backup_set%children(child)%temperature)
+  end do
+  call assert_all(ok, "MPI EB AMR sparse chemistry child rollback", rank)
 
   hydro_start_set = patch_set
   do child = 1, hydro_start_set%patch_count()

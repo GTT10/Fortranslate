@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.115.0` milestone contains the serial verification suite, eight optional
+The `0.116.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -47,6 +47,10 @@ The 2D EB bridge also has a rank-local sparse payload container. Each rank
 allocates conserved state and temperature only for its owned root tiles and
 children; an explicit materialization boundary reconstructs the replicated
 hierarchy when a legacy operator or output path still requires it.
+Chemistry now runs directly on those sparse owner allocations. Root tiles and
+children are reacted locally with covered cells masked; only post-reaction
+average-down crosses the temporary materialization boundary, after which the
+committed persistent solution is sparse again.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
