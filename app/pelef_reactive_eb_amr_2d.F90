@@ -65,7 +65,7 @@ program pelef_reactive_eb_amr_2d
     call simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok)
+      final_integrals, minimum_dt, base_density, ok, message)
     fine_active = .false.
   else
     call simulate_reactive_eb_amr_2d( &
@@ -74,7 +74,11 @@ program pelef_reactive_eb_amr_2d
       fine_active, time, steps, regrids, initial_integrals, final_integrals, &
       minimum_dt, base_density, ok)
   end if
-  if (.not. ok) error stop "Reactive EB AMR 2D simulation failed"
+  if (.not. ok) then
+    if (config%multipatch_enabled) &
+      write(*, '(a,1x,a)') "Multipatch failure stage:", trim(message)
+    error stop "Reactive EB AMR 2D simulation failed"
+  end if
   call write_reactive_eb_2d_csv( &
     config%eb%flow%output_file, species, config%eb, coarse_state, &
     coarse_temperature, coarse_geometry, time, ok)

@@ -55,6 +55,7 @@ program test_reactive_eb_amr_2d_driver
   integer :: checkpoint_regrids, checkpoint_steps
   character(len=*), parameter :: checkpoint_path = &
     "reactive_eb_amr_2d_driver.chk"
+  character(len=64) :: multipatch_failure_context
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -399,10 +400,13 @@ program test_reactive_eb_amr_2d_driver
   call simulate_reactive_eb_amr_patch_set_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, multipatch_set, time, steps, regrids, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+    multipatch_failure_context)
   write(*, '(a,l2,a,i0,a,i0,a,i0)') &
     "Public multipatch result: ok=", ok, ", patches=", &
     multipatch_set%patch_count(), ", steps=", steps, ", regrids=", regrids
+  if (.not. ok) write(*, '(a,1x,a)') &
+    "Public multipatch failure stage:", trim(multipatch_failure_context)
   call require(ok .and. multipatch_set%patch_count() == 2 .and. &
     multipatch_set%is_valid(coarse_geometry, size(coarse_state, 1)) .and. &
     steps == 1 .and. regrids >= 1, &

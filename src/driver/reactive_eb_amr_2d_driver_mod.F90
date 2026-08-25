@@ -1421,7 +1421,7 @@ contains
   subroutine simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok)
+      final_integrals, minimum_dt, base_density, ok, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -1434,6 +1434,7 @@ contains
     real(dp), allocatable, intent(out) :: initial_integrals(:)
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
 
     type(amr_eb_regrid_plan_collection_2d) :: initial_collection
     type(reactive_eb_patch_set_2d) :: candidate_set
@@ -1451,12 +1452,15 @@ contains
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
     patch_set = reactive_eb_patch_set_2d()
+    if (present(failure_context)) failure_context = "input validation"
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         .not. config%multipatch_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
+    if (present(failure_context)) failure_context = "coarse geometry"
     call build_configured_eb_geometry_2d( &
       config%eb, coarse_geometry, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "coarse initialization"
     call initialize_reactive_2d( &
       species, config%eb%flow, coarse_state, coarse_temperature, &
       coarse_dx, coarse_dy, base_density, local_ok)
@@ -1466,18 +1470,22 @@ contains
         abs(coarse_dy - coarse_geometry%dy) > &
         8.0_dp * epsilon(1.0_dp) * coarse_geometry%dy) return
     nvar = size(coarse_state, 1)
+    if (present(failure_context)) failure_context = "initial patch plan"
     call build_initial_reactive_eb_patch_collection_2d( &
       config, initial_collection)
     if (.not. initial_collection%is_valid()) return
+    if (present(failure_context)) failure_context = "initial fine geometries"
     call build_reactive_eb_patch_set_geometries_2d( &
       config, coarse_geometry, initial_collection, fine_geometries, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "initial patch set"
     call initialize_reactive_eb_patch_set_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
       fine_geometries, initial_collection, config%refinement_ratio, &
       patch_set, local_ok)
     if (.not. local_ok) return
     if (config%regrid_at_initialization) then
+      if (present(failure_context)) failure_context = "initial regrid"
       call regrid_reactive_eb_amr_patch_set_2d( &
         species, config, coarse_state, coarse_temperature, coarse_geometry, &
         patch_set, changed, local_ok)
@@ -1485,6 +1493,7 @@ contains
       if (changed) regrids = regrids + 1
     end if
     allocate(initial_integrals(nvar), final_integrals(nvar))
+    if (present(failure_context)) failure_context = "initial integral"
     call composite_reactive_eb_patch_set_integral_2d( &
       coarse_state, coarse_geometry, patch_set, initial_integrals, local_ok)
     if (.not. local_ok) return
@@ -1496,6 +1505,7 @@ contains
       remaining = config%eb%flow%final_time - time
       if (remaining <= time_tolerance) exit
       if (steps >= config%eb%flow%maximum_steps) return
+      if (present(failure_context)) failure_context = "CFL selection"
       call compute_reactive_eb_patch_set_cfl_timestep_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
         patch_set, config%eb%flow%cfl, dt, local_ok)
@@ -1505,6 +1515,7 @@ contains
       if (allocated(candidate_temperature)) deallocate(candidate_temperature)
       allocate(candidate_state, mold=coarse_state)
       allocate(candidate_temperature, mold=coarse_temperature)
+      if (present(failure_context)) failure_context = "patch-set advance"
       call advance_reactive_eb_patch_set_strang_2d( &
         species, reactions, coarse_state, coarse_temperature, &
         coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
@@ -1514,7 +1525,7 @@ contains
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, candidate_state, &
         candidate_temperature, candidate_set, local_ok, &
-        config%eb%state_redist_target_volume_fraction)
+        config%eb%state_redist_target_volume_fraction, failure_context)
       if (.not. local_ok) return
       coarse_state = candidate_state
       coarse_temperature = candidate_temperature
@@ -1523,6 +1534,7 @@ contains
       minimum_dt = min(minimum_dt, dt)
       steps = steps + 1
       if (modulo(steps, config%regrid_interval) == 0) then
+        if (present(failure_context)) failure_context = "periodic regrid"
         call regrid_reactive_eb_amr_patch_set_2d( &
           species, config, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, changed, local_ok)
@@ -1531,11 +1543,13 @@ contains
       end if
     end do
     time = config%eb%flow%final_time
+    if (present(failure_context)) failure_context = "final integral"
     call composite_reactive_eb_patch_set_integral_2d( &
       coarse_state, coarse_geometry, patch_set, final_integrals, local_ok)
     if (.not. local_ok) return
     ok = steps > 0 .and. patch_set%is_valid(coarse_geometry, nvar) .and. &
       ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+    if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_reactive_eb_amr_patch_set_2d
 
 end module reactive_eb_amr_2d_driver_mod
