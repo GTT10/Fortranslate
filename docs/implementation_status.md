@@ -1702,3 +1702,25 @@ The EB AMR transfer layer now synchronizes one static three-level hierarchy.
 It does not yet own a three-level lifecycle or perform recursive hydro
 subcycling, flux-register reflux, chemistry, regridding, checkpointing, output,
 transport, or MPI distribution.
+
+## Static three-level reactive EB hydrodynamics (`0.99.0`)
+
+- [x] one root, `r1` middle, and `r1*r2` finest hydro updates
+- [x] parent-time interpolation at both nested interfaces
+- [x] independent root/middle and middle/finest EB flux registers
+- [x] inner reflux and synchronization after every middle interval
+- [x] outer reflux followed by deepest-to-root EOS synchronization
+- [x] composite mass, total-energy, and species conservation gate
+- [x] finite positive temperatures and final synchronization gate
+- [x] whole-hierarchy solver-failure rollback
+- [x] two-cell finest separation and regular-interface validation
+- [x] explicit EB-cut finest-interface rejection
+- [x] focused gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The static serial kernel now advances a three-level reactive EB hierarchy when
+the finest coarse/fine interface lies entirely in regular fluid. EB-cut nested
+interfaces require a dedicated multilevel geometric reflux correction and are
+rejected. Chemistry composition, a public lifecycle, regridding,
+checkpoint/restart, output, transport, arbitrary depth, and MPI ownership
+remain separate work.

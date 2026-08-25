@@ -1549,3 +1549,20 @@ nonfinite finest state or nonpositive finest temperature must reject the whole
 operation and return both parent fields unchanged. The focused two-test EB
 hierarchy gate must pass before all 180 tests in GNU Fortran Debug and Release
 configurations.
+
+## 0.99.0 static three-level reactive EB hydro gates
+
+A ratio-two middle rectangle and a ratio-two finest rectangle produce one root
+update, two middle updates, and four finest updates. The finest rectangle is
+two middle cells from the middle boundary and its complete interface has unit
+open-area fraction. Distinct conservative scalings on the three levels must
+evolve through both nested interfaces while composite mass, total energy, and
+every species remain conserved. Root and middle must finish synchronized from
+the deepest level, and all three temperature fields must remain finite and
+positive.
+
+An unknown Riemann solver must leave all three state and temperature fields
+unchanged. Mutating one finest boundary face to a fractional EB area must
+reject the hierarchy before advancement and retain every input field. The
+focused multipatch/multilevel gate must pass before all 180 tests in GNU
+Fortran Debug and Release configurations.

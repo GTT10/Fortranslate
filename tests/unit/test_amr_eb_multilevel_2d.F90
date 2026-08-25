@@ -2,12 +2,13 @@ program test_amr_eb_multilevel_2d
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_is_finite, ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
@@ -15,6 +16,8 @@ program test_amr_eb_multilevel_2d
     average_down_three_level_eb_state_2d, &
     average_down_three_level_reactive_eb_state_2d, &
     composite_three_level_eb_integral_2d
+  use amr_eb_multilevel_reactive_2d_mod, only: &
+    advance_three_level_reactive_eb_hydro_2d
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
@@ -24,8 +27,8 @@ program test_amr_eb_multilevel_2d
     (root_i_upper - root_i_lower + 1) * ratio
   integer, parameter :: level_one_ny = &
     (root_j_upper - root_j_lower + 1) * ratio
-  integer, parameter :: level_one_i_lower = 3, level_one_i_upper = 10
-  integer, parameter :: level_one_j_lower = 3, level_one_j_upper = 10
+  integer, parameter :: level_one_i_lower = 6, level_one_i_upper = 10
+  integer, parameter :: level_one_j_lower = 6, level_one_j_upper = 10
   integer, parameter :: level_two_nx = &
     (level_one_i_upper - level_one_i_lower + 1) * ratio
   integer, parameter :: level_two_ny = &
@@ -47,15 +50,17 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: reactive_level_two(:, :, :)
   real(dp), allocatable :: reactive_root_sync(:, :, :)
   real(dp), allocatable :: reactive_level_one_sync(:, :, :)
+  real(dp), allocatable :: reactive_level_two_sync(:, :, :)
   real(dp), allocatable :: root_temperature(:, :)
   real(dp), allocatable :: level_one_temperature(:, :)
   real(dp), allocatable :: level_two_temperature(:, :)
   real(dp), allocatable :: root_temperature_sync(:, :)
   real(dp), allocatable :: level_one_temperature_sync(:, :)
+  real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
-  real(dp) :: scale
+  real(dp) :: scale, dt
   logical :: ok
-  integer :: i, j, nvar
+  integer :: i, j, k, nvar
 
   do j = 0, root_ny
     y = real(j, dp) / real(root_ny, dp)
@@ -140,6 +145,7 @@ program test_amr_eb_multilevel_2d
   allocate(reactive_level_two(nvar, level_two_nx, level_two_ny))
   allocate(reactive_root_sync(nvar, root_nx, root_ny))
   allocate(reactive_level_one_sync(nvar, level_one_nx, level_one_ny))
+  allocate(reactive_level_two_sync(nvar, level_two_nx, level_two_ny))
   allocate(root_temperature(root_nx, root_ny), source=temperature_cell)
   allocate(level_one_temperature( &
     level_one_nx, level_one_ny), source=temperature_cell)
@@ -147,6 +153,7 @@ program test_amr_eb_multilevel_2d
     level_two_nx, level_two_ny), source=temperature_cell)
   allocate(root_temperature_sync(root_nx, root_ny))
   allocate(level_one_temperature_sync(level_one_nx, level_one_ny))
+  allocate(level_two_temperature_sync(level_two_nx, level_two_ny))
   reactive_root = spread(spread(state_cell, 2, root_nx), 3, root_ny)
   reactive_level_one = 1.01_dp * &
     spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
@@ -197,6 +204,108 @@ program test_amr_eb_multilevel_2d
     all(reactive_level_one_sync == reactive_level_one) .and. &
     all(level_one_temperature_sync == level_one_temperature), &
     "three-level reactive rollback")
+
+  level_two_temperature(1, 1) = temperature_cell
+  primitive(2:4) = 0.0_dp
+  call reactive_primitive_to_conserved( &
+    species, primitive, state_cell, temperature_cell, sound_speed, ok)
+  call require(ok, "stationary three-level hydro state")
+  reactive_root = spread(spread(state_cell, 2, root_nx), 3, root_ny)
+  reactive_level_one = 1.01_dp * &
+    spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
+  reactive_level_two = 0.99_dp * &
+    spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+  root_temperature = temperature_cell
+  level_one_temperature = temperature_cell
+  level_two_temperature = temperature_cell
+  call composite_three_level_eb_integral_2d( &
+    reactive_root, root_geometry, reactive_level_one, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_geometry, level_one_patch, &
+    integral_before, ok)
+  call require(ok, "three-level hydro initial composite integral")
+  dt = 0.015_dp * min(root_geometry%dx, root_geometry%dy) / sound_speed
+  call advance_three_level_reactive_eb_hydro_2d( &
+    species, reactive_root, root_temperature, root_geometry, &
+    reactive_level_one, level_one_temperature, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_temperature, &
+    level_two_geometry, level_one_patch, "hllc", "pcm", "mc", 2, dt, &
+    reactive_root_sync, root_temperature_sync, reactive_level_one_sync, &
+    level_one_temperature_sync, reactive_level_two_sync, &
+    level_two_temperature_sync, ok)
+  call require(ok, "recursive three-level reactive EB hydro")
+  call composite_three_level_eb_integral_2d( &
+    reactive_root_sync, root_geometry, reactive_level_one_sync, &
+    level_one_geometry, root_patch, reactive_level_two_sync, &
+    level_two_geometry, level_one_patch, integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(integral_before)))
+  call require(ok .and. &
+    abs(integral_after(irho) - integral_before(irho)) <= &
+      8.0e-10_dp * scale .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+      8.0e-10_dp * scale, &
+    "three-level hydro mass and energy conservation")
+  do k = 1, size(species)
+    call require(abs(integral_after(reactive_species_component(k)) - &
+      integral_before(reactive_species_component(k))) <= &
+      8.0e-10_dp * scale, "three-level hydro species conservation")
+  end do
+  call require(all(ieee_is_finite(root_temperature_sync)) .and. &
+    all(ieee_is_finite(level_one_temperature_sync)) .and. &
+    all(ieee_is_finite(level_two_temperature_sync)) .and. &
+    all(root_temperature_sync > 0.0_dp) .and. &
+    all(level_one_temperature_sync > 0.0_dp) .and. &
+    all(level_two_temperature_sync > 0.0_dp), &
+    "three-level hydro thermodynamics")
+
+  call average_down_three_level_reactive_eb_state_2d( &
+    species, reactive_root_sync, root_temperature_sync, root_geometry, &
+    reactive_level_one_sync, level_one_temperature_sync, &
+    level_one_geometry, root_patch, reactive_level_two_sync, &
+    level_two_temperature_sync, level_two_geometry, level_one_patch, &
+    reactive_root, root_temperature, reactive_level_one, &
+    level_one_temperature, ok)
+  call require(ok .and. maxval(abs(reactive_root - &
+    reactive_root_sync)) <= 2.0e-12_dp * scale .and. &
+    maxval(abs(reactive_level_one - reactive_level_one_sync)) <= &
+      2.0e-12_dp * scale, "three-level hydro final synchronization")
+
+  reactive_root = spread(spread(state_cell, 2, root_nx), 3, root_ny)
+  reactive_level_one = 1.01_dp * &
+    spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
+  reactive_level_two = 0.99_dp * &
+    spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+  root_temperature = temperature_cell
+  level_one_temperature = temperature_cell
+  level_two_temperature = temperature_cell
+  call advance_three_level_reactive_eb_hydro_2d( &
+    species, reactive_root, root_temperature, root_geometry, &
+    reactive_level_one, level_one_temperature, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_temperature, &
+    level_two_geometry, level_one_patch, "unknown", "pcm", "mc", 2, dt, &
+    reactive_root_sync, root_temperature_sync, reactive_level_one_sync, &
+    level_one_temperature_sync, reactive_level_two_sync, &
+    level_two_temperature_sync, ok)
+  call require(.not. ok .and. all(reactive_root_sync == reactive_root) .and. &
+    all(root_temperature_sync == root_temperature) .and. &
+    all(reactive_level_one_sync == reactive_level_one) .and. &
+    all(level_one_temperature_sync == level_one_temperature) .and. &
+    all(reactive_level_two_sync == reactive_level_two) .and. &
+    all(level_two_temperature_sync == level_two_temperature), &
+    "three-level hydro rollback")
+
+  level_two_geometry%x_face_fraction(0, 1) = 0.5_dp
+  call advance_three_level_reactive_eb_hydro_2d( &
+    species, reactive_root, root_temperature, root_geometry, &
+    reactive_level_one, level_one_temperature, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_temperature, &
+    level_two_geometry, level_one_patch, "hllc", "pcm", "mc", 2, dt, &
+    reactive_root_sync, root_temperature_sync, reactive_level_one_sync, &
+    level_one_temperature_sync, reactive_level_two_sync, &
+    level_two_temperature_sync, ok)
+  call require(.not. ok .and. all(reactive_root_sync == reactive_root) .and. &
+    all(reactive_level_one_sync == reactive_level_one) .and. &
+    all(reactive_level_two_sync == reactive_level_two), &
+    "cut finest-interface rejection")
 
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 

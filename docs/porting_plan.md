@@ -630,7 +630,9 @@ Required capabilities:
   planning, topology changes, hydro, and output (`0.97.0`)
 - [x] static three-level EB composite integration, deepest-to-root
   average-down, reactive EOS recovery, and rollback (`0.98.0`)
-- three-level hydro subcycling/reflux and arbitrary-depth EB redistribution
+- [x] static three-level reactive EB recursive subcycling and reflux with a
+  regular finest coarse/fine interface (`0.99.0`)
+- EB-cut nested-interface reflux and arbitrary-depth EB redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:
