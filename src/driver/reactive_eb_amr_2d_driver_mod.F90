@@ -2571,7 +2571,7 @@ contains
       level_one_geometry, root_patch, level_two_state, &
       level_two_temperature, level_two_geometry, level_one_patch, time, &
       steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-      base_density, ok)
+      base_density, ok, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2591,6 +2591,7 @@ contains
     real(dp), allocatable, intent(out) :: initial_integrals(:)
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -2615,10 +2616,12 @@ contains
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
     ok = .false.
+    if (present(failure_context)) failure_context = "validation"
     if (.not. supported_three_level_reactive_eb_amr_config(config)) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
 
     if (len_trim(config%restart_file) > 0) then
+      if (present(failure_context)) failure_context = "restart"
       call read_reactive_eb_amr_three_level_2d_checkpoint( &
         config%restart_file, species, config, root_state, root_temperature, &
         root_geometry, level_one_state, level_one_temperature, &
@@ -2628,19 +2631,23 @@ contains
       if (.not. local_ok) return
       nvar = size(root_state, 1)
     else
+      if (present(failure_context)) failure_context = "root geometry"
       call build_configured_eb_geometry_2d(config%eb, root_geometry, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "middle geometry"
     call build_reactive_eb_amr_patch_geometry_2d( &
       config, root_geometry, config%coarse_i_lower, &
       config%coarse_i_upper, config%coarse_j_lower, &
       config%coarse_j_upper, level_one_geometry, root_patch, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "finest geometry"
     call build_reactive_eb_amr_patch_geometry_2d( &
       config, level_one_geometry, config%level_two_i_lower, &
       config%level_two_i_upper, config%level_two_j_lower, &
       config%level_two_j_upper, level_two_geometry, level_one_patch, local_ok)
     if (.not. local_ok) return
 
+    if (present(failure_context)) failure_context = "root initialization"
     call initialize_reactive_2d( &
       species, config%eb%flow, root_state, root_temperature, root_dx, &
       root_dy, base_density, local_ok)
@@ -2654,6 +2661,7 @@ contains
       nvar, level_one_geometry%nx, level_one_geometry%ny))
     allocate(level_one_temperature( &
       level_one_geometry%nx, level_one_geometry%ny))
+    if (present(failure_context)) failure_context = "middle prolongation"
     call prolong_reactive_eb_patch_pcm_2d( &
       species, root_state, root_temperature, root_geometry, &
       level_one_geometry, root_patch, level_one_state, &
@@ -2663,6 +2671,7 @@ contains
       nvar, level_two_geometry%nx, level_two_geometry%ny))
     allocate(level_two_temperature( &
       level_two_geometry%nx, level_two_geometry%ny))
+    if (present(failure_context)) failure_context = "finest prolongation"
     call prolong_reactive_eb_patch_pcm_2d( &
       species, level_one_state, level_one_temperature, level_one_geometry, &
       level_two_geometry, level_one_patch, level_two_state, &
@@ -2670,6 +2679,7 @@ contains
     if (.not. local_ok) return
       if (config%dynamic_regridding .and. &
           config%regrid_at_initialization) then
+        if (present(failure_context)) failure_context = "initial finest regrid"
         call regrid_three_level_reactive_eb_amr_finest_2d( &
           species, config, level_one_state, level_one_temperature, &
           level_one_geometry, level_two_state, level_two_temperature, &
@@ -2681,6 +2691,7 @@ contains
     end if
 
     allocate(initial_integrals(nvar), final_integrals(nvar))
+    if (present(failure_context)) failure_context = "initial composite integral"
     call composite_three_level_eb_integral_2d( &
       root_state, root_geometry, level_one_state, level_one_geometry, &
       root_patch, level_two_state, level_two_geometry, level_one_patch, &
@@ -2693,6 +2704,7 @@ contains
       remaining = config%eb%flow%final_time - time
       if (remaining <= time_tolerance) exit
       if (steps >= config%eb%flow%maximum_steps) return
+      if (present(failure_context)) failure_context = "three-level CFL"
       call compute_three_level_reactive_eb_cfl_timestep_2d( &
         species, root_state, root_temperature, root_geometry, &
         level_one_state, level_one_temperature, level_one_geometry, &
@@ -2715,6 +2727,7 @@ contains
       allocate(level_one_candidate_temperature, mold=level_one_temperature)
       allocate(level_two_candidate, mold=level_two_state)
       allocate(level_two_candidate_temperature, mold=level_two_temperature)
+      if (present(failure_context)) failure_context = "three-level advance"
       call advance_three_level_reactive_eb_strang_2d( &
         species, reactions, root_state, root_temperature, root_geometry, &
         level_one_state, level_one_temperature, level_one_geometry, &
@@ -2741,6 +2754,7 @@ contains
       steps = steps + 1
       if (config%dynamic_regridding .and. &
           modulo(steps, config%regrid_interval) == 0) then
+        if (present(failure_context)) failure_context = "scheduled finest regrid"
         call regrid_three_level_reactive_eb_amr_finest_2d( &
           species, config, level_one_state, level_one_temperature, &
           level_one_geometry, level_two_state, level_two_temperature, &
@@ -2750,6 +2764,7 @@ contains
       end if
       if (config%checkpoint_interval > 0) then
         if (modulo(steps, config%checkpoint_interval) == 0) then
+          if (present(failure_context)) failure_context = "scheduled checkpoint"
           call write_reactive_eb_amr_three_level_2d_checkpoint( &
             config%checkpoint_file, species, config, root_state, &
             root_temperature, root_geometry, level_one_state, &
@@ -2769,6 +2784,7 @@ contains
     if (.not. stopped_after_checkpoint) time = config%eb%flow%final_time
     if (len_trim(config%checkpoint_file) > 0 .and. &
         last_checkpoint_step /= steps) then
+      if (present(failure_context)) failure_context = "final checkpoint"
       call write_reactive_eb_amr_three_level_2d_checkpoint( &
         config%checkpoint_file, species, config, root_state, &
         root_temperature, root_geometry, level_one_state, &
@@ -2777,12 +2793,14 @@ contains
         level_one_patch, time, steps, minimum_dt, base_density, local_ok)
       if (.not. local_ok) return
     end if
+    if (present(failure_context)) failure_context = "final composite integral"
     call composite_three_level_eb_integral_2d( &
       root_state, root_geometry, level_one_state, level_one_geometry, &
       root_patch, level_two_state, level_two_geometry, level_one_patch, &
       final_integrals, local_ok)
     if (.not. local_ok) return
     ok = steps > 0 .and. ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+    if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_three_level_reactive_eb_amr_2d
 
   subroutine simulate_reactive_eb_amr_patch_set_2d( &
