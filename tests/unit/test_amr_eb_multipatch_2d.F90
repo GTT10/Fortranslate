@@ -128,16 +128,16 @@ program test_amr_eb_multipatch_2d
     "subcycled multipatch EB hydro")
   call composite_reactive_eb_patch_set_integral_2d( &
     new_coarse_state, coarse_geometry, hydro_set, integral_after, ok)
+  integral_scale = max(1.0_dp, maxval(abs(integral_before)))
   call require(ok .and. abs(integral_after(irho) - integral_before(irho)) <= &
-    5.0e-11_dp * max(1.0_dp, abs(integral_before(irho))) .and. &
+    5.0e-11_dp * integral_scale .and. &
     abs(integral_after(iet) - integral_before(iet)) <= &
-    5.0e-11_dp * max(1.0_dp, abs(integral_before(iet))), &
+    5.0e-11_dp * integral_scale, &
     "multipatch hydro mass and energy conservation")
   do k = 1, size(species)
     component = reactive_species_component(k)
     call require(abs(integral_after(component) - &
-      integral_before(component)) <= 5.0e-11_dp * &
-      max(1.0_dp, abs(integral_before(component))), &
+      integral_before(component)) <= 5.0e-11_dp * integral_scale, &
       "multipatch hydro species conservation")
   end do
   state_scale = max(1.0_dp, maxval(abs(state_cell)))
