@@ -22,15 +22,19 @@ program test_reactive_eb_amr_2d_driver
     read_reactive_eb_amr_patch_set_2d_checkpoint, &
     simulate_reactive_eb_amr_2d, &
     compute_reactive_eb_patch_set_cfl_timestep_2d, &
-    simulate_reactive_eb_amr_patch_set_2d
+    simulate_reactive_eb_amr_patch_set_2d, &
+    compute_three_level_reactive_eb_cfl_timestep_2d, &
+    simulate_three_level_reactive_eb_amr_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
+  type(eb_geometry_2d) :: level_two_geometry
   type(eb_geometry_2d) :: checkpoint_coarse_geometry
   type(eb_geometry_2d) :: checkpoint_fine_geometry
   type(amr_eb_patch_2d) :: patch
+  type(amr_eb_patch_2d) :: level_two_patch
   type(amr_eb_patch_2d) :: checkpoint_patch
   type(reactive_eb_patch_set_2d) :: multipatch_set
   type(reactive_eb_patch_set_2d) :: checkpoint_multipatch_set
@@ -39,6 +43,8 @@ program test_reactive_eb_amr_2d_driver
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
+  real(dp), allocatable :: level_two_state(:, :, :)
+  real(dp), allocatable :: level_two_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp), allocatable :: lifecycle_integrals(:)
   real(dp), allocatable :: rollback_coarse_state(:, :, :)
@@ -508,6 +514,80 @@ program test_reactive_eb_amr_2d_driver
     .not. allocated(checkpoint_multipatch_set%children), &
     "truncated multipatch checkpoint transactional rejection")
   call delete_checkpoint(patch_set_checkpoint_path)
+
+  config = reactive_eb_amr_2d_config()
+  config%eb%flow%nx = 8
+  config%eb%flow%ny = 8
+  config%eb%flow%x_lower = 0.0_dp
+  config%eb%flow%x_upper = 1.0_dp
+  config%eb%flow%y_lower = 0.0_dp
+  config%eb%flow%y_upper = 1.0_dp
+  config%eb%flow%final_time = 1.0e-8_dp
+  config%eb%flow%cfl = 0.02_dp
+  config%eb%flow%maximum_steps = 5
+  config%eb%flow%problem = "uniform_reactor"
+  config%eb%flow%reconstruction = "pcm"
+  config%eb%flow%limiter = "mc"
+  config%eb%flow%riemann_solver = "hllc"
+  config%eb%flow%use_transverse_correction = .false.
+  config%eb%flow%chemistry_enabled = .true.
+  config%eb%flow%transport_enabled = .false.
+  config%eb%flow%boundary_x_lower = "outflow"
+  config%eb%flow%boundary_x_upper = "outflow"
+  config%eb%flow%boundary_y_lower = "outflow"
+  config%eb%flow%boundary_y_upper = "outflow"
+  config%eb%flow%initial_temperature = 1350.0_dp
+  config%eb%flow%initial_pressure = 135000.0_dp
+  config%eb%flow%initial_velocity_x = 0.0_dp
+  config%eb%flow%initial_velocity_y = 0.0_dp
+  config%eb%geometry = "plane"
+  config%eb%plane_normal_x = 1.0_dp
+  config%eb%plane_normal_y = 1.0_dp
+  config%eb%plane_offset = 0.78_dp
+  config%eb%state_redist_target_volume_fraction = 0.5_dp
+  config%eb%state_redist_max_order = 2
+  config%coarse_i_lower = 2
+  config%coarse_i_upper = 7
+  config%coarse_j_lower = 2
+  config%coarse_j_upper = 7
+  config%refinement_ratio = 2
+  config%three_level_enabled = .true.
+  config%level_two_i_lower = 3
+  config%level_two_i_upper = 10
+  config%level_two_j_lower = 3
+  config%level_two_j_upper = 10
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok)
+  call require(ok .and. steps == 1 .and. &
+    time == config%eb%flow%final_time .and. &
+    minimum_dt == config%eb%flow%final_time, &
+    "public three-level time loop")
+  call require(coarse_geometry%nx == 8 .and. coarse_geometry%ny == 8 .and. &
+    fine_geometry%nx == 12 .and. fine_geometry%ny == 12 .and. &
+    level_two_geometry%nx == 16 .and. level_two_geometry%ny == 16 .and. &
+    patch%is_valid(coarse_geometry, fine_geometry) .and. &
+    level_two_patch%is_valid(fine_geometry, level_two_geometry), &
+    "public three-level hierarchy")
+  call require(count(coarse_geometry%cell_type == eb_cut_cell) > 0 .and. &
+    count(fine_geometry%cell_type == eb_cut_cell) > 0 .and. &
+    count(level_two_geometry%cell_type == eb_cut_cell) > 0, &
+    "public three-level EB coverage")
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(abs(final_integrals(irho) - initial_integrals(irho)) <= &
+    2.0e-8_dp * scale .and. &
+    abs(final_integrals(iet) - initial_integrals(iet)) <= &
+      2.0e-8_dp * scale, "public three-level conservation")
+  call compute_three_level_reactive_eb_cfl_timestep_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, config%eb%flow%cfl, cfl_dt, ok)
+  call require(ok .and. cfl_dt > 0.0_dp, &
+    "public three-level CFL selection")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 

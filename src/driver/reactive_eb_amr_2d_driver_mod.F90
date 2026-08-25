@@ -22,7 +22,8 @@ module reactive_eb_amr_2d_driver_mod
     prolong_reactive_eb_patch_pcm_2d, &
     advance_two_level_reactive_eb_hydro_2d
   use amr_eb_multilevel_2d_mod, only: &
-    average_down_three_level_reactive_eb_state_2d
+    average_down_three_level_reactive_eb_state_2d, &
+    composite_three_level_eb_integral_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     advance_three_level_reactive_eb_hydro_2d
   use amr_eb_regrid_2d_mod, only: &
@@ -49,6 +50,7 @@ module reactive_eb_amr_2d_driver_mod
   integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 1
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
+  public :: compute_three_level_reactive_eb_cfl_timestep_2d
   public :: compute_reactive_eb_patch_set_cfl_timestep_2d
   public :: advance_two_level_reactive_eb_strang_2d
   public :: advance_three_level_reactive_eb_strang_2d
@@ -61,6 +63,7 @@ module reactive_eb_amr_2d_driver_mod
   public :: read_reactive_eb_amr_patch_set_2d_checkpoint
   public :: simulate_reactive_eb_amr_2d
   public :: simulate_reactive_eb_amr_patch_set_2d
+  public :: simulate_three_level_reactive_eb_amr_2d
 
 contains
 
@@ -124,6 +127,35 @@ contains
         len_trim(config%checkpoint_file) > 0))
   end function supported_reactive_eb_amr_config
 
+  pure logical function supported_three_level_reactive_eb_amr_config( &
+      config) result(supported)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+
+    integer :: level_one_nx, level_one_ny
+
+    level_one_nx = (config%coarse_i_upper - config%coarse_i_lower + 1) * &
+      config%refinement_ratio
+    level_one_ny = (config%coarse_j_upper - config%coarse_j_lower + 1) * &
+      config%refinement_ratio
+    supported = supported_reactive_eb_amr_config(config) .and. &
+      config%three_level_enabled .and. .not. config%multipatch_enabled .and. &
+      .not. config%dynamic_regridding .and. &
+      config%checkpoint_interval == 0 .and. &
+      .not. config%checkpoint_stop_after_write .and. &
+      len_trim(config%checkpoint_file) == 0 .and. &
+      len_trim(config%restart_file) == 0 .and. &
+      config%level_two_i_lower >= 3 .and. &
+      config%level_two_i_upper <= level_one_nx - 2 .and. &
+      config%level_two_j_lower >= 3 .and. &
+      config%level_two_j_upper <= level_one_ny - 2 .and. &
+      config%level_two_i_upper >= config%level_two_i_lower .and. &
+      config%level_two_j_upper >= config%level_two_j_lower .and. &
+      len_trim(config%level_two_output_file) > 0 .and. &
+      trim(config%level_two_output_file) /= &
+        trim(config%eb%flow%output_file) .and. &
+      trim(config%level_two_output_file) /= trim(config%fine_output_file)
+  end function supported_three_level_reactive_eb_amr_config
+
   subroutine compute_reactive_eb_amr_cfl_timestep_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
       fine_state, fine_temperature, fine_geometry, refinement_ratio, &
@@ -155,6 +187,53 @@ contains
     dt = min(coarse_dt, real(refinement_ratio, dp) * fine_dt)
     ok = ieee_is_finite(dt) .and. dt > 0.0_dp
   end subroutine compute_reactive_eb_amr_cfl_timestep_2d
+
+  subroutine compute_three_level_reactive_eb_cfl_timestep_2d( &
+      species, root_state, root_temperature, root_geometry, &
+      level_one_state, level_one_temperature, level_one_geometry, &
+      root_patch, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, cfl, dt, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    real(dp), intent(in) :: level_one_state(:, :, :)
+    real(dp), intent(in) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: level_one_geometry
+    type(amr_eb_patch_2d), intent(in) :: root_patch
+    real(dp), intent(in) :: level_two_state(:, :, :)
+    real(dp), intent(in) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(in) :: level_one_patch
+    real(dp), intent(in) :: cfl
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+
+    real(dp) :: root_dt, level_one_dt, level_two_dt
+    logical :: local_ok
+
+    dt = 0.0_dp
+    ok = .false.
+    if (.not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
+        .not. level_one_patch%is_valid( &
+          level_one_geometry, level_two_geometry)) return
+    call compute_reactive_eb_cfl_timestep_2d( &
+      species, root_state, root_temperature, root_geometry, cfl, &
+      root_dt, local_ok)
+    if (.not. local_ok) return
+    call compute_reactive_eb_cfl_timestep_2d( &
+      species, level_one_state, level_one_temperature, level_one_geometry, &
+      cfl, level_one_dt, local_ok)
+    if (.not. local_ok) return
+    call compute_reactive_eb_cfl_timestep_2d( &
+      species, level_two_state, level_two_temperature, level_two_geometry, &
+      cfl, level_two_dt, local_ok)
+    if (.not. local_ok) return
+    dt = min(root_dt, &
+      real(root_patch%refinement_ratio, dp) * level_one_dt, &
+      real(root_patch%refinement_ratio * &
+        level_one_patch%refinement_ratio, dp) * level_two_dt)
+    ok = ieee_is_finite(dt) .and. dt > 0.0_dp
+  end subroutine compute_three_level_reactive_eb_cfl_timestep_2d
 
   subroutine compute_reactive_eb_patch_set_cfl_timestep_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
@@ -1789,7 +1868,7 @@ contains
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
     if (.not. supported_reactive_eb_amr_config(config)) return
-    if (config%multipatch_enabled) return
+    if (config%multipatch_enabled .or. config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (len_trim(config%restart_file) > 0) then
       call read_reactive_eb_amr_2d_checkpoint( &
@@ -1950,6 +2029,167 @@ contains
     ok = steps > 0 .and. ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
   end subroutine simulate_reactive_eb_amr_2d
 
+  subroutine simulate_three_level_reactive_eb_amr_2d( &
+      species, reactions, config, root_state, root_temperature, &
+      root_geometry, level_one_state, level_one_temperature, &
+      level_one_geometry, root_patch, level_two_state, &
+      level_two_temperature, level_two_geometry, level_one_patch, time, &
+      steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(out) :: root_state(:, :, :)
+    real(dp), allocatable, intent(out) :: root_temperature(:, :)
+    type(eb_geometry_2d), intent(out) :: root_geometry
+    real(dp), allocatable, intent(out) :: level_one_state(:, :, :)
+    real(dp), allocatable, intent(out) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(out) :: level_one_geometry
+    type(amr_eb_patch_2d), intent(out) :: root_patch
+    real(dp), allocatable, intent(out) :: level_two_state(:, :, :)
+    real(dp), allocatable, intent(out) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(out) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(out) :: level_one_patch
+    real(dp), intent(out) :: time, minimum_dt, base_density
+    integer, intent(out) :: steps
+    real(dp), allocatable, intent(out) :: initial_integrals(:)
+    real(dp), allocatable, intent(out) :: final_integrals(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: root_candidate(:, :, :)
+    real(dp), allocatable :: root_candidate_temperature(:, :)
+    real(dp), allocatable :: level_one_candidate(:, :, :)
+    real(dp), allocatable :: level_one_candidate_temperature(:, :)
+    real(dp), allocatable :: level_two_candidate(:, :, :)
+    real(dp), allocatable :: level_two_candidate_temperature(:, :)
+    real(dp) :: root_dx, root_dy, dt, remaining, time_tolerance
+    logical :: local_ok
+    integer :: nvar
+
+    root_geometry = eb_geometry_2d()
+    level_one_geometry = eb_geometry_2d()
+    level_two_geometry = eb_geometry_2d()
+    root_patch = amr_eb_patch_2d()
+    level_one_patch = amr_eb_patch_2d()
+    time = 0.0_dp
+    steps = 0
+    minimum_dt = 0.0_dp
+    base_density = 0.0_dp
+    ok = .false.
+    if (.not. supported_three_level_reactive_eb_amr_config(config)) return
+    if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
+
+    call build_configured_eb_geometry_2d(config%eb, root_geometry, local_ok)
+    if (.not. local_ok) return
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, root_geometry, config%coarse_i_lower, &
+      config%coarse_i_upper, config%coarse_j_lower, &
+      config%coarse_j_upper, level_one_geometry, root_patch, local_ok)
+    if (.not. local_ok) return
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, level_one_geometry, config%level_two_i_lower, &
+      config%level_two_i_upper, config%level_two_j_lower, &
+      config%level_two_j_upper, level_two_geometry, level_one_patch, local_ok)
+    if (.not. local_ok) return
+
+    call initialize_reactive_2d( &
+      species, config%eb%flow, root_state, root_temperature, root_dx, &
+      root_dy, base_density, local_ok)
+    if (.not. local_ok) return
+    if (abs(root_dx - root_geometry%dx) > &
+        8.0_dp * epsilon(1.0_dp) * root_geometry%dx .or. &
+        abs(root_dy - root_geometry%dy) > &
+        8.0_dp * epsilon(1.0_dp) * root_geometry%dy) return
+    nvar = size(root_state, 1)
+    allocate(level_one_state( &
+      nvar, level_one_geometry%nx, level_one_geometry%ny))
+    allocate(level_one_temperature( &
+      level_one_geometry%nx, level_one_geometry%ny))
+    call prolong_reactive_eb_patch_pcm_2d( &
+      species, root_state, root_temperature, root_geometry, &
+      level_one_geometry, root_patch, level_one_state, &
+      level_one_temperature, local_ok)
+    if (.not. local_ok) return
+    allocate(level_two_state( &
+      nvar, level_two_geometry%nx, level_two_geometry%ny))
+    allocate(level_two_temperature( &
+      level_two_geometry%nx, level_two_geometry%ny))
+    call prolong_reactive_eb_patch_pcm_2d( &
+      species, level_one_state, level_one_temperature, level_one_geometry, &
+      level_two_geometry, level_one_patch, level_two_state, &
+      level_two_temperature, local_ok)
+    if (.not. local_ok) return
+
+    allocate(initial_integrals(nvar), final_integrals(nvar))
+    call composite_three_level_eb_integral_2d( &
+      root_state, root_geometry, level_one_state, level_one_geometry, &
+      root_patch, level_two_state, level_two_geometry, level_one_patch, &
+      initial_integrals, local_ok)
+    if (.not. local_ok) return
+    minimum_dt = huge(1.0_dp)
+    time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(config%eb%flow%final_time))
+
+    do
+      remaining = config%eb%flow%final_time - time
+      if (remaining <= time_tolerance) exit
+      if (steps >= config%eb%flow%maximum_steps) return
+      call compute_three_level_reactive_eb_cfl_timestep_2d( &
+        species, root_state, root_temperature, root_geometry, &
+        level_one_state, level_one_temperature, level_one_geometry, &
+        root_patch, level_two_state, level_two_temperature, &
+        level_two_geometry, level_one_patch, config%eb%flow%cfl, dt, local_ok)
+      if (.not. local_ok) return
+      dt = min(dt, remaining)
+      if (allocated(root_candidate)) deallocate(root_candidate)
+      if (allocated(root_candidate_temperature)) &
+        deallocate(root_candidate_temperature)
+      if (allocated(level_one_candidate)) deallocate(level_one_candidate)
+      if (allocated(level_one_candidate_temperature)) &
+        deallocate(level_one_candidate_temperature)
+      if (allocated(level_two_candidate)) deallocate(level_two_candidate)
+      if (allocated(level_two_candidate_temperature)) &
+        deallocate(level_two_candidate_temperature)
+      allocate(root_candidate, mold=root_state)
+      allocate(root_candidate_temperature, mold=root_temperature)
+      allocate(level_one_candidate, mold=level_one_state)
+      allocate(level_one_candidate_temperature, mold=level_one_temperature)
+      allocate(level_two_candidate, mold=level_two_state)
+      allocate(level_two_candidate_temperature, mold=level_two_temperature)
+      call advance_three_level_reactive_eb_strang_2d( &
+        species, reactions, root_state, root_temperature, root_geometry, &
+        level_one_state, level_one_temperature, level_one_geometry, &
+        root_patch, level_two_state, level_two_temperature, &
+        level_two_geometry, level_one_patch, &
+        config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
+        config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
+        config%eb%flow%chemistry_enabled, &
+        config%eb%flow%chemistry_relative_tolerance, &
+        config%eb%flow%chemistry_absolute_tolerance, root_candidate, &
+        root_candidate_temperature, level_one_candidate, &
+        level_one_candidate_temperature, level_two_candidate, &
+        level_two_candidate_temperature, local_ok, &
+        config%eb%state_redist_target_volume_fraction)
+      if (.not. local_ok) return
+      root_state = root_candidate
+      root_temperature = root_candidate_temperature
+      level_one_state = level_one_candidate
+      level_one_temperature = level_one_candidate_temperature
+      level_two_state = level_two_candidate
+      level_two_temperature = level_two_candidate_temperature
+      time = time + dt
+      minimum_dt = min(minimum_dt, dt)
+      steps = steps + 1
+    end do
+
+    time = config%eb%flow%final_time
+    call composite_three_level_eb_integral_2d( &
+      root_state, root_geometry, level_one_state, level_one_geometry, &
+      root_patch, level_two_state, level_two_geometry, level_one_patch, &
+      final_integrals, local_ok)
+    if (.not. local_ok) return
+    ok = steps > 0 .and. ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+  end subroutine simulate_three_level_reactive_eb_amr_2d
+
   subroutine simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
@@ -1988,7 +2228,8 @@ contains
     patch_set = reactive_eb_patch_set_2d()
     if (present(failure_context)) failure_context = "input validation"
     if (.not. supported_reactive_eb_amr_config(config) .or. &
-        .not. config%multipatch_enabled) return
+        .not. config%multipatch_enabled .or. &
+        config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
