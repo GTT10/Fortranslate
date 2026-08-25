@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.105.0
+  VERSION 0.106.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -55,6 +55,7 @@ add_library(
   src/reactive/reactive_2d_mod.F90
   src/eb/eb_reactive_reconstruction_2d_mod.F90
   src/eb/eb_reactive_hydro_2d_mod.F90
+  src/eb/eb_reactive_transport_2d_mod.F90
   src/driver/reactive_eb_2d_driver_mod.F90
   src/driver/reactive_eb_amr_2d_driver_mod.F90
   src/chemistry/elementary_kinetics_mod.F90

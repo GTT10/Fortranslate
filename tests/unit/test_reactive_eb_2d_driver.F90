@@ -2,6 +2,8 @@ program test_reactive_eb_2d_driver
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
@@ -20,6 +22,7 @@ program test_reactive_eb_2d_driver
 
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   type(reactive_eb_2d_config) :: config
   type(eb_geometry_2d) :: geometry, simulated_geometry
   real(dp), allocatable :: initial_state(:, :, :), initial_temperature(:, :)
@@ -34,6 +37,7 @@ program test_reactive_eb_2d_driver
   real(dp) :: minimum_pressure, maximum_pressure
   real(dp) :: minimum_temperature, maximum_temperature
   real(dp) :: maximum_speed, maximum_closure_error, scale
+  real(dp) :: minimum_transport_theta
   logical :: ok
   integer :: i, j, steps, first_i, first_j
 
@@ -41,6 +45,8 @@ program test_reactive_eb_2d_driver
   call require(ok, "thermodynamic database load")
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "elementary mechanism load")
+  call load_h2o2_elementary_transport(transport, ok)
+  call require(ok, "transport database load")
   config%flow%nx = 8
   config%flow%ny = 8
   config%flow%x_lower = 0.0_dp
@@ -208,7 +214,20 @@ program test_reactive_eb_2d_driver
     species, reactions, config, state, temperature, simulated_geometry, time, &
     steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
   call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
-    "direct API rejects unsupported transport")
+    "transport run requires a database")
+  call simulate_reactive_eb_2d( &
+    species, reactions, config, state, temperature, simulated_geometry, time, &
+    steps, initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+    transport, minimum_transport_theta)
+  call require(ok .and. steps == 1 .and. &
+    minimum_transport_theta > 0.999999999_dp, &
+    "uniform EB molecular transport")
+  scale = max(1.0_dp, maxval(abs(initial_state)))
+  call require(maxval(abs(state - initial_state)) <= 3.0e-11_dp * scale, &
+    "uniform EB transport state preservation")
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(maxval(abs(final_integrals - initial_integrals)) <= &
+    3.0e-12_dp * scale, "uniform EB transport conservation")
   config%flow%transport_enabled = .false.
 
   config%state_redist_max_order = 1

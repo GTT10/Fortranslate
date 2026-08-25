@@ -644,6 +644,9 @@ Required capabilities:
   fixed middle level (`0.104.0`)
 - [x] transactional checkpoint/restart of dynamic three-level finest topology
   and regrid cadence (`0.105.0`)
+- [x] single-level EB mixture molecular transport with open-area divergence,
+  StateRedist, and symmetric reactive composition (`0.106.0`)
+- coarse/fine EB diffusive flux registers and transport reflux
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

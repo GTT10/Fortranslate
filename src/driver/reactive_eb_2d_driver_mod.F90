@@ -4,14 +4,19 @@ module reactive_eb_2d_driver_mod
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive
   use reactive_2d_mod, only: &
     initialize_reactive_2d, advance_reactive_chemistry_2d
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, build_reactive_boundary_set_2d
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
   use eb_reactive_hydro_2d_mod, only: advance_reactive_eb_hydro_2d
+  use eb_reactive_transport_2d_mod, only: &
+    reactive_eb_transport_timestep_2d, advance_reactive_eb_transport_2d
   use simulation_config_reactive_eb_2d_mod, only: reactive_eb_2d_config
   implicit none
   private
@@ -37,7 +42,12 @@ contains
       config%flow%y_upper > config%flow%y_lower .and. &
       config%flow%final_time > 0.0_dp .and. config%flow%cfl > 0.0_dp .and. &
       config%flow%cfl <= 0.8_dp .and. &
-      .not. config%flow%transport_enabled .and. &
+      (.not. config%flow%transport_enabled .or. &
+       (config%flow%transport_cfl > 0.0_dp .and. &
+        config%flow%transport_cfl <= 0.5_dp .and. &
+        (config%flow%viscosity_enabled .or. &
+         config%flow%thermal_conduction_enabled .or. &
+         config%flow%species_diffusion_enabled))) .and. &
       (trim(config%flow%reconstruction) == "pcm" .or. &
        trim(config%flow%reconstruction) == "characteristic_plm") .and. &
       .not. config%flow%use_transverse_correction .and. &
@@ -243,7 +253,10 @@ contains
   subroutine advance_reactive_eb_strang_2d( &
       species, reactions, state, temperature, geometry, solver, dt, &
       chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, reconstruction, limiter, state_redist_max_order)
+      target_volume_fraction, reconstruction, limiter, state_redist_max_order, &
+      transport, transport_enabled, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, minimum_transport_theta, boundaries)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -256,19 +269,29 @@ contains
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: reconstruction, limiter
     integer, intent(in), optional :: state_redist_max_order
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    logical, intent(in), optional :: transport_enabled, viscosity_enabled
+    logical, intent(in), optional :: thermal_conduction_enabled
+    logical, intent(in), optional :: species_diffusion_enabled
+    logical, intent(in), optional :: barodiffusion_enabled
+    real(dp), intent(out), optional :: minimum_transport_theta
+    type(reactive_boundary_set_2d), intent(in), optional :: boundaries
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
     real(dp), allocatable :: hydro_state(:, :, :)
     real(dp), allocatable :: hydro_temperature(:, :)
     logical, allocatable :: active_mask(:, :)
-    logical :: local_ok
+    logical :: local_ok, use_transport, use_viscosity, use_conduction
+    logical :: use_diffusion, use_barodiffusion
     character(len=32) :: selected_reconstruction, selected_limiter
     integer :: selected_max_order
+    real(dp) :: transport_theta, stage_transport_theta, selected_target
 
     new_state = state
     new_temperature = temperature
     ok = .false.
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (.not. geometry%is_valid() .or. .not. ieee_is_finite(dt) .or. &
         .not. ieee_is_finite(rtol) .or. .not. ieee_is_finite(atol) .or. &
         dt < 0.0_dp .or. rtol <= 0.0_dp .or. atol <= 0.0_dp .or. &
@@ -287,6 +310,25 @@ contains
     selected_max_order = 0
     if (present(state_redist_max_order)) &
       selected_max_order = state_redist_max_order
+    selected_target = 0.5_dp
+    if (present(target_volume_fraction)) &
+      selected_target = target_volume_fraction
+    use_transport = .false.
+    use_viscosity = .true.
+    use_conduction = .true.
+    use_diffusion = .true.
+    use_barodiffusion = .true.
+    if (present(transport_enabled)) use_transport = transport_enabled
+    if (present(viscosity_enabled)) use_viscosity = viscosity_enabled
+    if (present(thermal_conduction_enabled)) &
+      use_conduction = thermal_conduction_enabled
+    if (present(species_diffusion_enabled)) &
+      use_diffusion = species_diffusion_enabled
+    if (present(barodiffusion_enabled)) &
+      use_barodiffusion = barodiffusion_enabled
+    if (use_transport .and. .not. present(transport)) return
+    if (use_transport .and. .not. present(boundaries)) return
+    transport_theta = 1.0_dp
 
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
@@ -300,6 +342,15 @@ contains
         geometry%nx, geometry%ny, 0.5_dp * dt, rtol, atol, local_ok, &
         active_mask)
       if (.not. local_ok) return
+    end if
+    if (use_transport) then
+      call advance_reactive_eb_transport_2d( &
+        species, transport, candidate_state, candidate_temperature, geometry, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, boundaries, selected_target, selected_max_order, &
+        stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      transport_theta = min(transport_theta, stage_transport_theta)
     end if
     if (present(target_volume_fraction)) then
       call advance_reactive_eb_hydro_2d( &
@@ -317,6 +368,15 @@ contains
     if (.not. local_ok) return
     candidate_state = hydro_state
     candidate_temperature = hydro_temperature
+    if (use_transport) then
+      call advance_reactive_eb_transport_2d( &
+        species, transport, candidate_state, candidate_temperature, geometry, &
+        0.5_dp * dt, use_viscosity, use_conduction, use_diffusion, &
+        use_barodiffusion, boundaries, selected_target, selected_max_order, &
+        stage_transport_theta, local_ok)
+      if (.not. local_ok) return
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, candidate_state, candidate_temperature, &
@@ -326,12 +386,15 @@ contains
     end if
     new_state = candidate_state
     new_temperature = candidate_temperature
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = transport_theta
     ok = .true.
   end subroutine advance_reactive_eb_strang_2d
 
   subroutine simulate_reactive_eb_2d( &
       species, reactions, config, state, temperature, geometry, time, steps, &
-      initial_integrals, final_integrals, minimum_dt, base_density, ok)
+      initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+      transport, minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_2d_config), intent(in) :: config
@@ -342,19 +405,30 @@ contains
     real(dp), allocatable, intent(out) :: initial_integrals(:)
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
     real(dp) :: dx, dy, dt, remaining, time_tolerance
+    real(dp) :: transport_dt, maximum_diffusivity
+    real(dp) :: step_transport_theta, local_minimum_transport_theta
     logical :: local_ok
     integer :: nvar
+    type(reactive_boundary_set_2d) :: boundaries
 
     ok = .false.
     time = 0.0_dp
     steps = 0
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
+    local_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (.not. supported_reactive_eb_hydro_config(config)) return
+    if (config%flow%transport_enabled .and. .not. present(transport)) return
+    call build_reactive_boundary_set_2d( &
+      species, config%flow, boundaries, local_ok)
+    if (.not. local_ok) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return
     call initialize_reactive_2d( &
@@ -381,27 +455,58 @@ contains
       call compute_reactive_eb_cfl_timestep_2d( &
         species, state, temperature, geometry, config%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
+      if (config%flow%transport_enabled) then
+        call reactive_eb_transport_timestep_2d( &
+          species, transport, state, temperature, geometry, &
+          config%flow%transport_cfl, config%flow%viscosity_enabled, &
+          config%flow%thermal_conduction_enabled, &
+          config%flow%species_diffusion_enabled, transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        dt = min(dt, transport_dt)
+      end if
       dt = min(dt, remaining)
-      call advance_reactive_eb_strang_2d( &
-        species, reactions, state, temperature, geometry, &
-        config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
-        config%flow%chemistry_relative_tolerance, &
-        config%flow%chemistry_absolute_tolerance, candidate_state, &
-        candidate_temperature, local_ok, &
-        config%state_redist_target_volume_fraction, &
-        config%flow%reconstruction, config%flow%limiter, &
-        config%state_redist_max_order)
+      if (config%flow%transport_enabled) then
+        call advance_reactive_eb_strang_2d( &
+          species, reactions, state, temperature, geometry, &
+          config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
+          config%flow%chemistry_relative_tolerance, &
+          config%flow%chemistry_absolute_tolerance, candidate_state, &
+          candidate_temperature, local_ok, &
+          config%state_redist_target_volume_fraction, &
+          config%flow%reconstruction, config%flow%limiter, &
+          config%state_redist_max_order, transport, &
+          config%flow%transport_enabled, config%flow%viscosity_enabled, &
+          config%flow%thermal_conduction_enabled, &
+          config%flow%species_diffusion_enabled, &
+          config%flow%barodiffusion_enabled, step_transport_theta, boundaries)
+      else
+        call advance_reactive_eb_strang_2d( &
+          species, reactions, state, temperature, geometry, &
+          config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
+          config%flow%chemistry_relative_tolerance, &
+          config%flow%chemistry_absolute_tolerance, candidate_state, &
+          candidate_temperature, local_ok, &
+          config%state_redist_target_volume_fraction, &
+          config%flow%reconstruction, config%flow%limiter, &
+          config%state_redist_max_order)
+        step_transport_theta = 1.0_dp
+      end if
       if (.not. local_ok) return
       state = candidate_state
       temperature = candidate_temperature
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
+      local_minimum_transport_theta = min( &
+        local_minimum_transport_theta, step_transport_theta)
       steps = steps + 1
     end do
     time = config%flow%final_time
     call reactive_eb_integrals_2d( &
       state, geometry, final_integrals, local_ok)
     if (.not. local_ok) return
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = local_minimum_transport_theta
     ok = steps > 0 .and. ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
   end subroutine simulate_reactive_eb_2d
 

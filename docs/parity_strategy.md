@@ -1661,3 +1661,22 @@ and terminal marker. Every root, middle, and finest CSV field must agree with
 the uninterrupted run within a `3e-10` scale-aware tolerance. These four
 focused gates must pass before all 193 tests in GNU Fortran Debug and Release
 configurations.
+
+## 0.106.0 single-level reactive EB transport gates
+
+The low-level gate initializes a nonuniform temperature hotspot on a plane-EB
+mesh, chooses a positive mixture transport stability limit, and advances
+thermal conduction through the EB SSPRK2/StateRedist transaction. The active
+temperature span must decrease while every fluid-volume-weighted conserved
+integral remains fixed within an `8e-12` scale-aware tolerance. Covered cells
+must remain bitwise unchanged, the species limiter must remain inactive for
+the conduction-only case, and a negative interval must roll back exactly.
+
+The public application runs matching inert and conducting 16 by 16 plane-EB
+hotspots to `2e-7`. Both outputs must retain finite fields, regular/cut/covered
+classes, positive active thermodynamics, and species closure within `8e-12`.
+The conducting active-temperature span must be measurably smaller than the
+inert result. A separate uniform-field gate exercises viscosity, conduction,
+species diffusion, and barodiffusion together and requires state preservation
+and composite conservation. These focused gates must pass before all 197 tests
+in GNU Fortran Debug and Release configurations.

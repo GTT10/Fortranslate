@@ -1126,6 +1126,16 @@ finest geometry from the stored bounds, recovers all temperatures through the
 EOS, and publishes only after the end marker and every compatibility check
 succeed. Restored step and regrid counts preserve accepted-step cadence.
 
+In `0.106.0`, the single-level reactive EB driver accepts the established
+mixture molecular-transport database. Regular Cartesian diffusive fluxes are
+evaluated with the configured physical boundaries and interpolated to open
+face centroids. An EB-aware limiter budgets outgoing species against each
+cell's fluid-volume inventory and scales the complete coupled face flux. The
+open-area divergence has no embedded-face contribution, which defines an
+adiabatic slip and species-impermeable wall for this milestone. Each SSPRK2
+transport stage uses the existing StateRedist/EOS transaction, and the full
+step composes `R/2 -> T/2 -> H -> T/2 -> R/2` without publishing partial work.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel

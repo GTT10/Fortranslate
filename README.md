@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.105.0` milestone contains the serial verification suite, seven optional
+The `0.106.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -53,6 +53,11 @@ resize the finest patch transactionally after initialization and accepted
 steps. A distinct dynamic three-level checkpoint stores that committed finest
 rectangle, regrid count and compatibility controls so a split run resumes the
 actual hierarchy and cadence rather than the configured seed.
+The single-level reactive EB application now also composes mixture viscosity,
+thermal conduction, species diffusion, and barodiffusion with chemistry and
+hydrodynamics. Diffusive Cartesian-face fluxes are interpolated to EB face
+centroids, weighted by open area, stabilized with EB-aware species limiting
+and StateRedist, and use an adiabatic slip/impermeable embedded-wall closure.
 
 ### `pelef`: one-dimensional Euler solver
 
