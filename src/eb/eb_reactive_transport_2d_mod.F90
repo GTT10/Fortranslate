@@ -8,9 +8,11 @@ module eb_reactive_transport_2d_mod
     reactive_conserved_to_primitive
   use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
   use reactive_transport_2d_mod, only: &
-    reactive_transport_fluxes_2d_faces, reactive_transport_timestep_2d
+    reactive_transport_exterior_2d, reactive_transport_fluxes_2d_faces, &
+    reactive_transport_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_reconstruction_2d_mod, only: &
+    reactive_eb_exterior_state_2d, &
     interpolate_reactive_eb_face_centroid_fluxes_2d
   use eb_reactive_redistribution_2d_mod, only: &
     advance_reactive_eb_state_redistributed_2d
@@ -20,11 +22,93 @@ module eb_reactive_transport_2d_mod
   real(dp), parameter :: eb_species_safety = 0.90_dp
 
   public :: reactive_eb_transport_timestep_2d
+  public :: reactive_eb_transport_fluxes_rhs_2d
   public :: reactive_eb_transport_rhs_2d
   public :: reactive_eb_transport_euler_update_2d
   public :: advance_reactive_eb_transport_2d
 
 contains
+
+  subroutine recover_transport_exterior_cell( &
+      species, exterior_state, exterior_temperature, fallback_state, &
+      fallback_temperature, primitive, temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: exterior_state(:), exterior_temperature
+    real(dp), intent(in) :: fallback_state(:), fallback_temperature
+    real(dp), intent(out) :: primitive(:), temperature
+    logical, intent(out) :: ok
+
+    real(dp) :: sound_speed
+
+    call reactive_conserved_to_primitive( &
+      species, exterior_state, exterior_temperature, primitive, &
+      temperature, sound_speed, ok)
+    if (ok) return
+    call reactive_conserved_to_primitive( &
+      species, fallback_state, fallback_temperature, primitive, &
+      temperature, sound_speed, ok)
+  end subroutine recover_transport_exterior_cell
+
+  subroutine build_reactive_transport_exterior_2d( &
+      species, state, temperature, geometry, eb_exterior, exterior, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    type(reactive_eb_exterior_state_2d), intent(in) :: eb_exterior
+    type(reactive_transport_exterior_2d), intent(out) :: exterior
+    logical, intent(out) :: ok
+
+    type(reactive_transport_exterior_2d) :: candidate
+    logical :: local_ok
+    integer :: i, j, nprim, nvar
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    nprim = reactive_nprim(size(species))
+    if (nvar < 1 .or. .not. geometry%is_valid() .or. &
+        any(shape(state) /= [nvar, geometry%nx, geometry%ny]) .or. &
+        any(shape(temperature) /= [geometry%nx, geometry%ny]) .or. &
+        .not. eb_exterior%is_valid(geometry, nvar)) return
+    allocate(candidate%x_lower_primitive(nprim, geometry%ny))
+    allocate(candidate%x_upper_primitive(nprim, geometry%ny))
+    allocate(candidate%y_lower_primitive(nprim, geometry%nx))
+    allocate(candidate%y_upper_primitive(nprim, geometry%nx))
+    allocate(candidate%x_lower_temperature(geometry%ny))
+    allocate(candidate%x_upper_temperature(geometry%ny))
+    allocate(candidate%y_lower_temperature(geometry%nx))
+    allocate(candidate%y_upper_temperature(geometry%nx))
+    do j = 1, geometry%ny
+      call recover_transport_exterior_cell( &
+        species, eb_exterior%x_lower_state(:, j), &
+        eb_exterior%x_lower_temperature(j), state(:, 1, j), &
+        temperature(1, j), candidate%x_lower_primitive(:, j), &
+        candidate%x_lower_temperature(j), local_ok)
+      if (.not. local_ok) return
+      call recover_transport_exterior_cell( &
+        species, eb_exterior%x_upper_state(:, j), &
+        eb_exterior%x_upper_temperature(j), state(:, geometry%nx, j), &
+        temperature(geometry%nx, j), candidate%x_upper_primitive(:, j), &
+        candidate%x_upper_temperature(j), local_ok)
+      if (.not. local_ok) return
+    end do
+    do i = 1, geometry%nx
+      call recover_transport_exterior_cell( &
+        species, eb_exterior%y_lower_state(:, i), &
+        eb_exterior%y_lower_temperature(i), state(:, i, 1), &
+        temperature(i, 1), candidate%y_lower_primitive(:, i), &
+        candidate%y_lower_temperature(i), local_ok)
+      if (.not. local_ok) return
+      call recover_transport_exterior_cell( &
+        species, eb_exterior%y_upper_state(:, i), &
+        eb_exterior%y_upper_temperature(i), state(:, i, geometry%ny), &
+        temperature(i, geometry%ny), candidate%y_upper_primitive(:, i), &
+        candidate%y_upper_temperature(i), local_ok)
+      if (.not. local_ok) return
+    end do
+    if (.not. candidate%is_valid(nprim, geometry%nx, geometry%ny)) return
+    exterior = candidate
+    ok = .true.
+  end subroutine build_reactive_transport_exterior_2d
 
   subroutine reactive_eb_transport_timestep_2d( &
       species, transport, state, temperature, geometry, transport_cfl, &
@@ -149,11 +233,11 @@ contains
       minimum_theta <= 1.0_dp
   end subroutine limit_reactive_eb_transport_fluxes_2d
 
-  subroutine reactive_eb_transport_rhs_2d( &
+  subroutine reactive_eb_transport_fluxes_rhs_2d( &
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
-      minimum_theta, ok)
+      x_flux, y_flux, minimum_theta, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -163,37 +247,58 @@ contains
     logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
     type(reactive_boundary_set_2d), intent(in) :: boundaries
     real(dp), intent(out) :: rhs(:, :, :)
+    real(dp), intent(out) :: x_flux(:, 0:, :), y_flux(:, :, 0:)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: center_x(:, :, :), center_y(:, :, :)
-    real(dp), allocatable :: centroid_x(:, :, :), centroid_y(:, :, :)
+    type(reactive_transport_exterior_2d) :: transport_exterior
     real(dp) :: regular_theta, fluid_volume
     logical :: local_ok
     integer :: i, j, nvar
 
     rhs = 0.0_dp
+    x_flux = 0.0_dp
+    y_flux = 0.0_dp
     minimum_theta = 1.0_dp
     ok = .false.
     nvar = reactive_nvar(size(species))
     if (nvar <= 0 .or. .not. geometry%is_valid() .or. &
-        any(shape(rhs) /= shape(state))) return
+        any(shape(rhs) /= shape(state)) .or. &
+        size(x_flux, 1) /= nvar .or. &
+        size(x_flux, 2) /= geometry%nx + 1 .or. &
+        size(x_flux, 3) /= geometry%ny .or. &
+        size(y_flux, 1) /= nvar .or. &
+        size(y_flux, 2) /= geometry%nx .or. &
+        size(y_flux, 3) /= geometry%ny + 1) return
     allocate(center_x(nvar, 0:geometry%nx, geometry%ny))
     allocate(center_y(nvar, geometry%nx, 0:geometry%ny))
-    allocate(centroid_x(nvar, 0:geometry%nx, geometry%ny))
-    allocate(centroid_y(nvar, geometry%nx, 0:geometry%ny))
-    call reactive_transport_fluxes_2d_faces( &
-      species, transport, state, temperature, geometry%nx, geometry%ny, &
-      geometry%dx, geometry%dy, dt, viscosity_enabled, &
-      thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, center_x, center_y, regular_theta, local_ok, &
-      boundaries)
+    if (present(exterior)) then
+      call build_reactive_transport_exterior_2d( &
+        species, state, temperature, geometry, exterior, &
+        transport_exterior, local_ok)
+      if (.not. local_ok) return
+      call reactive_transport_fluxes_2d_faces( &
+        species, transport, state, temperature, geometry%nx, geometry%ny, &
+        geometry%dx, geometry%dy, dt, viscosity_enabled, &
+        thermal_conduction_enabled, species_diffusion_enabled, &
+        barodiffusion_enabled, center_x, center_y, regular_theta, local_ok, &
+        boundaries, transport_exterior)
+    else
+      call reactive_transport_fluxes_2d_faces( &
+        species, transport, state, temperature, geometry%nx, geometry%ny, &
+        geometry%dx, geometry%dy, dt, viscosity_enabled, &
+        thermal_conduction_enabled, species_diffusion_enabled, &
+        barodiffusion_enabled, center_x, center_y, regular_theta, local_ok, &
+        boundaries)
+    end if
     if (.not. local_ok) return
     call interpolate_reactive_eb_face_centroid_fluxes_2d( &
-      geometry, center_x, center_y, centroid_x, centroid_y, local_ok)
+      geometry, center_x, center_y, x_flux, y_flux, local_ok)
     if (.not. local_ok) return
     call limit_reactive_eb_transport_fluxes_2d( &
-      species, state, geometry, dt, centroid_x, centroid_y, minimum_theta, &
+      species, state, geometry, dt, x_flux, y_flux, minimum_theta, &
       local_ok)
     if (.not. local_ok) return
     minimum_theta = min(minimum_theta, regular_theta)
@@ -206,16 +311,45 @@ contains
         if (fluid_volume <= 0.0_dp) return
         rhs(:, i, j) = -( &
           geometry%dy * ( &
-            geometry%x_face_fraction(i, j) * centroid_x(:, i, j) - &
+            geometry%x_face_fraction(i, j) * x_flux(:, i, j) - &
             geometry%x_face_fraction(i - 1, j) * &
-              centroid_x(:, i - 1, j)) + &
+              x_flux(:, i - 1, j)) + &
           geometry%dx * ( &
-            geometry%y_face_fraction(i, j) * centroid_y(:, i, j) - &
+            geometry%y_face_fraction(i, j) * y_flux(:, i, j) - &
             geometry%y_face_fraction(i, j - 1) * &
-              centroid_y(:, i, j - 1))) / fluid_volume
+              y_flux(:, i, j - 1))) / fluid_volume
       end do
     end do
     ok = all(ieee_is_finite(rhs))
+  end subroutine reactive_eb_transport_fluxes_rhs_2d
+
+  subroutine reactive_eb_transport_rhs_2d( &
+      species, transport, state, temperature, geometry, dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+      minimum_theta, ok, exterior)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(out) :: rhs(:, :, :)
+    real(dp), intent(out) :: minimum_theta
+    logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
+
+    real(dp), allocatable :: x_flux(:, :, :), y_flux(:, :, :)
+
+    allocate(x_flux(size(state, 1), 0:geometry%nx, geometry%ny))
+    allocate(y_flux(size(state, 1), geometry%nx, 0:geometry%ny))
+    call reactive_eb_transport_fluxes_rhs_2d( &
+      species, transport, state, temperature, geometry, dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+      x_flux, y_flux, minimum_theta, ok, exterior)
   end subroutine reactive_eb_transport_rhs_2d
 
   subroutine reactive_eb_transport_euler_update_2d( &
@@ -223,7 +357,7 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, boundaries, &
       target_volume_fraction, max_order, new_state, new_temperature, &
-      minimum_theta, ok)
+      minimum_theta, ok, exterior)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -236,6 +370,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: rhs(:, :, :)
     logical :: local_ok
@@ -251,7 +386,7 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
-      minimum_theta, local_ok)
+      minimum_theta, local_ok, exterior)
     if (.not. local_ok) return
     call advance_reactive_eb_state_redistributed_2d( &
       species, state, temperature, geometry, rhs, dt, new_state, &
