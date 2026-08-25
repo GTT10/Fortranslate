@@ -990,7 +990,27 @@ only after the end marker. A root-only checkpoint keeps fine arrays and metadata
 unallocated. Final time, step budget, output paths, and checkpoint scheduling
 are intentionally restart-mutable.
 
+In `0.93.0`, `amr_eb_regrid_2d_mod` adds a separate two-level multipatch
+kernel. A deterministic flood fill clusters disconnected root tags with a
+configurable maximum gap. Each cluster is buffered and expanded independently;
+candidate rectangles whose two-cell separation would violate the EB
+redistribution neighborhood are coalesced. The resulting collection owns an
+ordered set of fine geometries, patch metadata, conserved states, and
+temperatures. Topology replacement first averages the old set into a private
+root, builds every new child by PCM, and then copies exact same-resolution data
+over every old/new patch intersection before an EOS-validated commit.
+
+The multipatch hydro transaction advances the root exactly once and advances
+each child through `r` substeps using coarse-time-interpolated exterior states.
+Each child owns a distinct EB flux register. The transaction refluxes the
+children into a private root in order and then average-downs the full set. A
+matching driver transaction applies masked reaction half-steps to the root and
+all children around that hydro update, synchronizes after the second reaction,
+and exposes no partial hierarchy on failure.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, multiple patches,
-deeper levels, and EB AMR/MPI ownership remain outside this subsystem.
+EB AMR molecular transport, deeper levels, and EB AMR/MPI ownership remain
+outside this subsystem. The public application, CSV output, and checkpoint
+schema still use the single-patch lifecycle rather than the new patch-set
+kernel.

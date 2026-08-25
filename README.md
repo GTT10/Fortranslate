@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.92.0` milestone contains the serial verification suite, seven optional
+The `0.93.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -15,7 +15,10 @@ serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
 its composite conserved state, and can compose active-cell chemistry with the
 two-level or root-only EB hydrodynamic path. Formatted checkpoints preserve
-that lifecycle state for a later serial restart.
+that lifecycle state for a later serial restart. A separately qualified
+two-level EB kernel now clusters disconnected tags into multiple fine
+rectangles and advances their reactive hydrodynamics and chemistry
+transactionally with one flux register per child.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -239,11 +242,26 @@ from the conserved state, and publishes the hierarchy only after the complete
 file and end marker pass validation. Final time, maximum steps, output paths,
 and checkpoint controls may change between runs.
 
+The two-level EB kernel can also cluster disconnected tag components into a
+deterministically ordered collection of separated fine rectangles. Buffer and
+minimum-size expansion are applied per component, nearby candidates are
+coalesced to preserve the 3-by-3 redistribution neighborhood contract, and
+invalid physical-boundary patches are rejected. A patch-set transaction
+supports PCM creation, exact old/new fine-overlap retention, conservative
+average-down, composite integration, movement, repartition, and removal.
+Hydrodynamics advances the root once, subcycles every child with its own EB
+flux register, then refluxes and averages down all children. The matching
+Strang transaction applies active-cell chemistry on the root and every child
+around that hydrodynamic interval and restores the complete hierarchy after
+any rejected stage.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-coarse-to-fine spatial interpolation, EB AMR molecular transport, multiple EB
-fine patches, deeper levels, and MPI
-distribution are not yet connected.
+coarse-to-fine spatial interpolation, EB AMR molecular transport, deeper EB
+levels, and MPI distribution are not yet connected. The public EB AMR
+application and its checkpoint schema still own at most one fine rectangle;
+the qualified multipatch kernel will be connected to that lifecycle in a later
+milestone.
 
 ### MPI one-dimensional verification
 

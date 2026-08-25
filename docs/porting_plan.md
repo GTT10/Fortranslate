@@ -617,8 +617,10 @@ Required capabilities:
   rollback, and regular-reference parity (`0.91.0`)
 - [x] lifecycle-aware serial EB AMR checkpoint, stop, restart, and uninterrupted
   field parity (`0.92.0`)
-- EB multiple patches, deeper levels, and multilevel
-  redistribution
+- [x] deterministic two-level EB multipatch planning, conservative topology
+  changes, subcycled hydro/reflux, and Strang chemistry kernel (`0.93.0`)
+- EB multipatch application/checkpoint integration, deeper levels, and
+  multilevel redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

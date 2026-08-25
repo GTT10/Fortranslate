@@ -1583,3 +1583,26 @@ without recreating an obsolete fine patch or losing lifecycle counters. The
 schema is intentionally serial and formatted; distributed checkpoint I/O,
 multiple simultaneous patches, deeper levels, and EB AMR molecular transport
 remain future work.
+
+## Reactive EB AMR multipatch kernel (`0.93.0`)
+
+- [x] deterministic disconnected-tag clustering with configurable gap joining
+- [x] per-cluster buffer/minimum-size expansion and strict boundary rejection
+- [x] candidate coalescing for the 3-by-3 redistribution separation contract
+- [x] ordered multipatch geometry, state, temperature, and validity ownership
+- [x] conservative PCM creation and exact old/new fine-overlap retention
+- [x] conservative patch-set movement, repartition, removal, and average-down
+- [x] composite integration without double-counting multiply refined parents
+- [x] one root advance and refinement-ratio subcycling for every child
+- [x] independent EB flux registers, sequential reflux, and final average-down
+- [x] hierarchy-wide hydrodynamic rollback with failure-stage diagnostics
+- [x] active-cell Strang chemistry on the root and every child
+- [x] post-reaction synchronization and whole-hierarchy rollback
+- [x] mass, energy, species, overlap, synchronization, and failure gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The serial kernel now represents and advances multiple separated fine
+rectangles over one EB root. The public EB AMR application, its runtime
+configuration, CSV layout, and checkpoint schema still select the qualified
+single-patch lifecycle. Connecting this patch set to that lifecycle, deeper
+levels, EB AMR molecular transport, and MPI ownership remain separate work.

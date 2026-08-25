@@ -1667,3 +1667,50 @@ checkpoint can encode either an active fine rectangle or a root-only lifecycle
 state. Optional stop-after-write exits without forcing time to the requested
 final value. On restart, stored step and regrid counters preserve cadence and
 the stored minimum timestep preserves the cumulative diagnostic.
+
+## Two-level reactive EB patch sets
+
+The patch-set planner scans tagged root cells in deterministic index order and
+clusters cells connected within a Chebyshev reach of
+`maximum_patch_gap_cells + 1`. Each component receives its own buffered,
+minimum-size bounding rectangle. Rectangles that would leave fewer than two
+coarse cells of separation in both directions are merged, because EB
+re-reflux can redistribute a cut-cell correction over a 3-by-3 neighborhood.
+The planner rejects any result that cannot remain strictly inside the root
+physical boundary.
+
+A valid patch set contains separated, ratio-aligned children over one root.
+Its composite integral is
+
+`I = sum(uncovered root fluid volumes * U_c)`
+`  + sum(all child fluid volumes * U_f)`,
+
+so a root cell covered by any child contributes only through fine children.
+Topology replacement applies
+
+`average-down(old set) -> PCM(new set) -> retain(all old/new intersections)`.
+
+The exact-overlap step uses global fine indices and may copy from any old child
+to any new child, so movement, resizing, splitting, and repartition preserve
+same-resolution data wherever physical fine cells coincide. Removal is the
+empty new-set case. Candidate root and child arrays commit only after geometry,
+finiteness, and active-cell EOS checks succeed.
+
+For one coarse hydro interval, the root advances once. Every child then takes
+`r` steps of `dt/r` with exterior states interpolated between the old and new
+root states. Child `p` accumulates the exact coarse and fine face fluxes in its
+own register `F_p`. The private root is corrected by each `F_p` in deterministic
+child order and the complete set is average-downed after all corrections. The
+required two-cell patch separation prevents redistribution neighborhoods from
+coupling two independently refluxed interfaces.
+
+With chemistry enabled, the patch-set Strang interval is
+
+`R_root,children(dt/2) -> H_patch-set(dt)`
+`  -> R_root,children(dt/2) -> average-down(all children)`.
+
+Every reaction call masks covered EB cells. Coarse state, all fine states, all
+temperatures, and patch metadata are private candidates until every reaction,
+hydro, reflux, EOS, and synchronization stage succeeds. This kernel currently
+has no molecular-transport stage and is not yet selected by the public EB AMR
+application or checkpoint schema.

@@ -1425,3 +1425,28 @@ stops before final time. Restart must continue from the stored time and counters
 through the root-only chemistry/hydro path. Every final CSV value must match an
 uninterrupted reference within `3e-10` scaled tolerance, chemistry must progress,
 species closure must hold, and no inactive fine CSV may be written.
+
+## 0.93.0 reactive EB AMR multipatch kernel gates
+
+Planner gates require two disconnected tag clusters to produce two ordered
+rectangles independent of tag insertion order. Empty tags produce an empty
+collection, a configured tag-gap joins nearby components, candidates within
+the two-cell EB redistribution safety region coalesce, and any rectangle that
+cannot stay strictly internal is rejected.
+
+A ratio-two plane-EB hierarchy uses two separated 10 by 10 fine patches over a
+14 by 14 root. Topology gates require set-wide average-down and removal to
+preserve the composite integral, movement to retain every aligned old/new fine
+cell exactly, unchanged children to remain bitwise identical, newly exposed
+cells to equal PCM parent injection, and a NaN candidate to roll back the full
+root and patch set.
+
+The hydro gate advances the root once and subcycles both children with distinct
+interface fluxes. It requires valid active thermodynamics, exact post-step
+average-down synchronization, and composite mass, total-energy, and species
+conservation within `5e-11` scaled tolerance. The chemistry gate adds elementary
+H2/O2 reaction half-steps on the root and both children, requires a measurable
+species change and mass/energy conservation within `5e-10`, and proves final
+synchronization. An invalid hydro solver after the first chemistry half-step
+must restore every coarse/fine state and temperature bitwise in GNU Fortran
+Debug and Release suites.
