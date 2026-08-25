@@ -1614,3 +1614,18 @@ Active root, middle, and finest cells are compared with a uniform regular-grid
 reactor reference, which must itself show nonzero chemistry evolution. The
 focused public application gate must pass before all 183 tests in GNU Fortran
 Debug and Release configurations.
+
+## 0.103.0 static three-level checkpoint/restart gates
+
+An uninterrupted public run and a split run use the same 8 by 8 root,
+12 by 12 middle, and 16 by 16 finest plane-EB hierarchy. The split run writes
+after its first accepted interval and must stop strictly before final time.
+The checkpoint must carry the dedicated three-level magic and a complete end
+marker before restart is attempted.
+
+Restart must recover the accepted time and all three private field candidates,
+advance to the same final time, and emit the expected 64, 144, and 256 rows.
+Every root, middle, and finest CSV value must agree with the uninterrupted run
+within a `3e-10` scale-aware tolerance. The focused reference,
+checkpoint-stop, restart, and comparison gates must pass before all 187 tests
+in GNU Fortran Debug and Release configurations.

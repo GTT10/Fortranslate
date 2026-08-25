@@ -638,6 +638,8 @@ Required capabilities:
   as a transactional Strang step (`0.101.0`)
 - [x] public static three-level hierarchy construction, CFL time loop, and
   per-level output (`0.102.0`)
+- [x] dedicated transactional static three-level checkpoint/restart with
+  uninterrupted field parity (`0.103.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

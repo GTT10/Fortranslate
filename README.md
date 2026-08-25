@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.102.0` milestone contains the serial verification suite, seven optional
+The `0.103.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -44,7 +44,10 @@ authoritative before all three levels are published together.
 With `three_level_enabled`, the public EB AMR application constructs that
 static hierarchy from two nested namelist rectangles, selects a root timestep
 from all three active-cell CFL limits, advances to the requested final time,
-and writes separate root, middle, and finest CSV fields.
+and writes separate root, middle, and finest CSV fields. A dedicated
+three-level checkpoint preserves all three conserved and temperature fields,
+accepted time and step accounting, and the full nested topology for a
+transactional serial restart.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -305,8 +308,10 @@ minimum root-equivalent stability limit from all three levels, and every
 accepted interval uses recursive subcycling, independent interface registers,
 the EB-cut conservation closure, active-cell Strang chemistry, and final
 deepest-first synchronization. Successful completion writes distinct root,
-middle, and finest CSV files. Dynamic regridding, multipatch siblings, and the
-existing checkpoint schemas are rejected in this mode.
+middle, and finest CSV files. Scheduled and final three-level checkpoints use
+a dedicated schema and may stop and resume the same hierarchy without changing
+the established single-patch or patch-set formats. Dynamic regridding and
+multipatch siblings remain rejected in this mode.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
@@ -792,6 +797,28 @@ python3 tools/check_reactive_eb_amr_three_level_2d.py \
   --root reactive_eb_amr_three_level_root_2d.csv \
   --middle reactive_eb_amr_three_level_middle_2d.csv \
   --finest reactive_eb_amr_three_level_finest_2d.csv
+```
+
+Static three-level checkpoint/restart parity:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_three_level_restart_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_three_level_restart_2d/checkpoint_stop.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_three_level_restart_2d/restart.nml
+python3 tools/check_reactive_eb_amr_three_level_restart_2d.py \
+  --checkpoint three_level_restart.chk \
+  --reference three_level_restart_reference_root.csv \
+    three_level_restart_reference_middle.csv \
+    three_level_restart_reference_finest.csv \
+  --stopped three_level_restart_stopped_root.csv \
+    three_level_restart_stopped_middle.csv \
+    three_level_restart_stopped_finest.csv \
+  --restarted three_level_restart_restarted_root.csv \
+    three_level_restart_restarted_middle.csv \
+    three_level_restart_restarted_finest.csv
 ```
 
 Reacting fine-to-root checkpoint/restart parity:
