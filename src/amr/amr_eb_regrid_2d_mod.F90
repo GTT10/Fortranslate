@@ -42,6 +42,7 @@ module amr_eb_regrid_2d_mod
   public :: tag_reactive_eb_temperature_gradient_2d
   public :: build_amr_eb_regrid_plan_2d
   public :: plan_reactive_eb_temperature_regrid_2d
+  public :: collapse_two_level_reactive_eb_patch_2d
   public :: regrid_two_level_reactive_eb_patch_2d
 
 contains
@@ -351,5 +352,25 @@ contains
     new_fine_temperature = candidate_fine_temperature
     ok = .true.
   end subroutine regrid_two_level_reactive_eb_patch_2d
+
+  subroutine collapse_two_level_reactive_eb_patch_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_geometry, patch, collapsed_state, &
+      collapsed_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(in) :: fine_state(:, :, :)
+    type(eb_geometry_2d), intent(in) :: fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(out) :: collapsed_state(:, :, :)
+    real(dp), intent(out) :: collapsed_temperature(:, :)
+    logical, intent(out) :: ok
+
+    call average_down_reactive_eb_state_patch_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_geometry, patch, collapsed_state, &
+      collapsed_temperature, ok)
+  end subroutine collapse_two_level_reactive_eb_patch_2d
 
 end module amr_eb_regrid_2d_mod

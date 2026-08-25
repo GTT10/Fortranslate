@@ -3,12 +3,15 @@ program test_reactive_eb_amr_2d_driver
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_cut_cell
-  use amr_eb_hierarchy_2d_mod, only: amr_eb_patch_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    amr_eb_patch_2d, composite_eb_integral_2d
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use reactive_eb_amr_2d_driver_mod, only: &
     compute_reactive_eb_amr_cfl_timestep_2d, &
+    regrid_reactive_eb_amr_hierarchy_2d, &
     simulate_reactive_eb_amr_2d
+  use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
@@ -18,9 +21,10 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
+  real(dp), allocatable :: lifecycle_integrals(:)
   real(dp), allocatable :: reference_state(:)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, scale
-  logical :: ok
+  logical :: changed, fine_active, ok
   integer :: initial_i_lower, initial_i_upper
   integer :: initial_j_lower, initial_j_upper, regrids, steps
 
@@ -64,10 +68,11 @@ program test_reactive_eb_amr_2d_driver
 
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
+    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
+    base_density, ok)
   call require(ok, "runnable static EB AMR simulation")
-  call require(steps == 1 .and. regrids == 0 .and. &
+  call require(fine_active .and. steps == 1 .and. regrids == 0 .and. &
     time == config%eb%flow%final_time .and. &
     minimum_dt == config%eb%flow%final_time, "time-loop completion")
   call require(coarse_geometry%nx == 8 .and. coarse_geometry%ny == 8 .and. &
@@ -127,9 +132,11 @@ program test_reactive_eb_amr_2d_driver
   initial_j_upper = config%coarse_j_upper
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
-  call require(ok .and. regrids >= 1, "dynamic EB AMR simulation")
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
+    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
+    base_density, ok)
+  call require(ok .and. fine_active .and. regrids >= 1, &
+    "dynamic EB AMR simulation")
   call require(patch%is_valid(coarse_geometry, fine_geometry), &
     "dynamically selected patch")
   call require(patch%coarse_i_lower /= initial_i_lower .or. &
@@ -140,11 +147,66 @@ program test_reactive_eb_amr_2d_driver
   call require(maxval(abs(final_integrals - initial_integrals)) <= &
     2.0e-10_dp * scale, "dynamic EB AMR composite conservation")
 
+  config%eb%flow%problem = "uniform_reactor"
+  config%eb%flow%initial_temperature = 1000.0_dp
+  config%eb%flow%initial_velocity_x = 0.0_dp
+  config%eb%flow%initial_velocity_y = 0.0_dp
+  config%eb%flow%final_time = 1.0e-8_dp
+  config%regrid_at_initialization = .false.
+  config%remove_fine_patch_when_untagged = .true.
+  call simulate_reactive_eb_amr_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
+    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
+    base_density, ok)
+  call require(ok .and. .not. fine_active .and. steps == 1 .and. &
+    regrids == 1, "time-loop fine-patch removal")
+  call require(.not. allocated(fine_state) .and. &
+    .not. allocated(fine_temperature) .and. &
+    .not. fine_geometry%is_valid() .and. patch%refinement_ratio == 0, &
+    "inactive fine storage released")
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(maxval(abs(final_integrals - initial_integrals)) <= &
+    3.0e-12_dp * scale, "fine-patch removal conservation")
+
+  allocate(lifecycle_integrals(size(final_integrals)))
+  coarse_temperature = 1000.0_dp
+  coarse_temperature(9, 8) = 2000.0_dp
+  call regrid_reactive_eb_amr_hierarchy_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, &
+    changed, ok)
+  call require(ok .and. changed .and. fine_active .and. &
+    allocated(fine_state) .and. allocated(fine_temperature), &
+    "fine-patch re-creation from root-only state")
+  call composite_eb_integral_2d( &
+    coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+    lifecycle_integrals, ok)
+  call require(ok .and. maxval(abs(lifecycle_integrals - &
+    final_integrals)) <= 3.0e-12_dp * scale, &
+    "fine-patch creation conservation")
+
+  coarse_temperature = 1000.0_dp
+  call regrid_reactive_eb_amr_hierarchy_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, &
+    changed, ok)
+  call require(ok .and. changed .and. .not. fine_active, &
+    "re-created fine patch collapses on empty tags")
+  call reactive_eb_integrals_2d( &
+    coarse_state, coarse_geometry, lifecycle_integrals, ok)
+  lifecycle_integrals = lifecycle_integrals * &
+    coarse_geometry%dx * coarse_geometry%dy
+  call require(ok .and. maxval(abs(lifecycle_integrals - &
+    final_integrals)) <= 3.0e-12_dp * scale, &
+    "re-created patch collapse conservation")
+
   config%eb%flow%chemistry_enabled = .true.
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
-    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
+    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
+    base_density, ok)
   call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
     time == 0.0_dp, &
     "unsupported AMR chemistry rejection")

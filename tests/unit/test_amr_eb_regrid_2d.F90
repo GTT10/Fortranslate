@@ -1,5 +1,6 @@
 program test_amr_eb_regrid_2d
-  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+  use, intrinsic :: ieee_arithmetic, only: &
+    ieee_is_finite, ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -15,6 +16,7 @@ program test_amr_eb_regrid_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
     plan_reactive_eb_temperature_regrid_2d, &
+    collapse_two_level_reactive_eb_patch_2d, &
     regrid_two_level_reactive_eb_patch_2d
   implicit none
 
@@ -35,16 +37,18 @@ program test_amr_eb_regrid_2d
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), old_fine_state(:, :, :)
   real(dp), allocatable :: new_coarse_state(:, :, :), new_fine_state(:, :, :)
+  real(dp), allocatable :: collapsed_state(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :)
   real(dp), allocatable :: old_fine_temperature(:, :)
   real(dp), allocatable :: invalid_old_fine_temperature(:, :)
   real(dp), allocatable :: new_coarse_temperature(:, :)
   real(dp), allocatable :: new_fine_temperature(:, :)
+  real(dp), allocatable :: collapsed_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale
   logical :: tags(coarse_nx, coarse_ny), ok, found_new_cell
-  integer :: i, j, k, nvar, new_fine_nx, new_fine_ny
+  integer :: component, i, j, k, nvar, new_fine_nx, new_fine_ny
   integer :: global_i, global_j, old_i, old_j, parent_i, parent_j
 
   do j = 0, coarse_ny
@@ -188,6 +192,24 @@ program test_amr_eb_regrid_2d
   call require(maxval(abs(new_coarse_state(:, 3:4, 3:7) - &
     1.01_dp * spread(spread(state_cell, 2, 2), 3, 5))) <= &
     5.0e-14_dp * state_scale, "retired fine region averaged down")
+
+  allocate(collapsed_state, mold=new_coarse_state)
+  allocate(collapsed_temperature, mold=new_coarse_temperature)
+  call collapse_two_level_reactive_eb_patch_2d( &
+    species, new_coarse_state, new_coarse_temperature, coarse_geometry, &
+    new_fine_state, new_fine_geometry, new_patch, collapsed_state, &
+    collapsed_temperature, ok)
+  call require(ok, "reactive EB fine-patch collapse")
+  do component = 1, nvar
+    integral_after(component) = sum(coarse_geometry%volume_fraction * &
+      collapsed_state(component, :, :)) * coarse_geometry%dx * &
+      coarse_geometry%dy
+  end do
+  call require(maxval(abs(integral_after - integral_before)) <= &
+    5.0e-12_dp * integral_scale, "fine-patch collapse conservation")
+  call require(all(collapsed_temperature > 0.0_dp) .and. &
+    all(ieee_is_finite(collapsed_temperature)), &
+    "fine-patch collapse temperature recovery")
 
   old_fine_state(:, 5, 5) = &
     ieee_value(0.0_dp, ieee_quiet_nan)
