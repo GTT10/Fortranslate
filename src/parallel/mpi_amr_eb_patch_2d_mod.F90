@@ -3,9 +3,13 @@ module mpi_amr_eb_patch_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
-  use eb_geometry_2d_mod, only: eb_geometry_2d
-  use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
+  use reactive_2d_mod, only: advance_reactive_chemistry_2d
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use amr_eb_regrid_2d_mod, only: &
+    reactive_eb_patch_set_2d, average_down_reactive_eb_patch_set_2d
   implicit none
   private
 
@@ -45,6 +49,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: initialize_mpi_amr_eb_patch_distribution_2d
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
+  public :: advance_owned_reactive_eb_patch_set_chemistry_2d
 
 contains
 
@@ -407,6 +412,179 @@ contains
     synchronized_patch_set = candidate_set
     ok = .true.
   end subroutine synchronize_owned_reactive_eb_patch_set_2d
+
+  subroutine advance_owned_reactive_eb_patch_set_chemistry_2d( &
+      species, reactions, interval, rtol, atol, distribution, &
+      coarse_state, coarse_temperature, coarse_geometry, patch_set, ok, &
+      local_entity_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: interval, rtol, atol
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    real(dp), intent(inout) :: coarse_state(:, :, :)
+    real(dp), intent(inout) :: coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(inout) :: patch_set
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_advances
+
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    type(reactive_eb_patch_set_2d) :: synchronized_set
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp), allocatable :: averaged_state(:, :, :)
+    real(dp), allocatable :: averaged_temperature(:, :)
+    logical, allocatable :: active_mask(:, :)
+    real(dp) :: controls(3), control_minimum(3), control_maximum(3)
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: child, count_maximum(2), count_minimum(2), counts(2)
+    integer :: ierr, j_lower, j_upper, nvar, owner, tile
+    integer :: advances
+
+    ok = .false.
+    advances = 0
+    if (present(local_entity_advances)) local_entity_advances = 0
+    nvar = reactive_nvar(size(species))
+    controls = [interval, rtol, atol]
+    counts = [size(species), size(reactions)]
+    local_ok = size(species) >= 1 .and. size(reactions) >= 1 .and. &
+      all(ieee_is_finite(controls)) .and. interval >= 0.0_dp .and. &
+      rtol > 0.0_dp .and. atol > 0.0_dp .and. &
+      all(shape(coarse_state) == &
+        [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(shape(coarse_temperature) == &
+        [coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      distribution%is_valid(coarse_geometry, patch_set)
+    call MPI_Allreduce( &
+      local_ok, global_ok, 1, MPI_LOGICAL, MPI_LAND, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. global_ok) return
+    call MPI_Allreduce( &
+      controls, control_minimum, 3, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      controls, control_maximum, 3, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      counts, count_minimum, 2, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      counts, count_maximum, 2, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(control_minimum /= control_maximum) .or. &
+        any(count_minimum /= count_maximum)) return
+
+    allocate(candidate_state, mold=coarse_state)
+    allocate(candidate_temperature, mold=coarse_temperature)
+    call synchronize_owned_reactive_eb_patch_set_2d( &
+      distribution, size(species), coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, candidate_state, candidate_temperature, &
+      synchronized_set, local_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    candidate_set = synchronized_set
+
+    do tile = 1, distribution%root_tile_count()
+      owner = distribution%root_tiles(tile)%owner
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      entity_ok = .true.
+      if (distribution%rank == owner) then
+        active_mask = &
+          coarse_geometry%cell_type(:, j_lower:j_upper) /= eb_covered_cell
+        call advance_reactive_chemistry_2d( &
+          species, reactions, candidate_state(:, :, j_lower:j_upper), &
+          candidate_temperature(:, j_lower:j_upper), coarse_geometry%nx, &
+          j_upper - j_lower + 1, interval, rtol, atol, entity_ok, active_mask)
+        if (entity_ok) advances = advances + 1
+        deallocate(active_mask)
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call MPI_Bcast( &
+        candidate_state(:, :, j_lower:j_upper), &
+        nvar * distribution%root_tiles(tile)%cell_count, &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_temperature(:, j_lower:j_upper), &
+        distribution%root_tiles(tile)%cell_count, MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+
+    do child = 1, distribution%child_count()
+      owner = distribution%child_owners(child)
+      entity_ok = .true.
+      if (distribution%rank == owner) then
+        active_mask = candidate_set%children(child)%geometry%cell_type /= &
+          eb_covered_cell
+        call advance_reactive_chemistry_2d( &
+          species, reactions, candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature, &
+          candidate_set%children(child)%geometry%nx, &
+          candidate_set%children(child)%geometry%ny, interval, rtol, atol, &
+          entity_ok, active_mask)
+        if (entity_ok) advances = advances + 1
+        deallocate(active_mask)
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call MPI_Bcast( &
+        candidate_set%children(child)%state, &
+        size(candidate_set%children(child)%state), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_set%children(child)%temperature, &
+        size(candidate_set%children(child)%temperature), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+
+    allocate(averaged_state, mold=coarse_state)
+    allocate(averaged_temperature, mold=coarse_temperature)
+    call average_down_reactive_eb_patch_set_2d( &
+      species, candidate_state, candidate_temperature, coarse_geometry, &
+      candidate_set, averaged_state, averaged_temperature, local_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    local_ok = candidate_set%is_valid(coarse_geometry, nvar) .and. &
+      all(ieee_is_finite(averaged_state)) .and. &
+      all(ieee_is_finite(averaged_temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    coarse_state = averaged_state
+    coarse_temperature = averaged_temperature
+    patch_set = candidate_set
+    ok = .true.
+    if (present(local_entity_advances)) local_entity_advances = advances
+  end subroutine advance_owned_reactive_eb_patch_set_chemistry_2d
+
+  subroutine all_ranks_accept_eb_2d( &
+      distribution, local_acceptance, accepted, mpi_ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    logical, intent(in) :: local_acceptance
+    logical, intent(out) :: accepted, mpi_ok
+
+    integer :: ierr
+
+    call MPI_Allreduce( &
+      local_acceptance, accepted, 1, MPI_LOGICAL, MPI_LAND, &
+      distribution%comm, ierr)
+    mpi_ok = ierr == MPI_SUCCESS
+    if (.not. mpi_ok) accepted = .false.
+  end subroutine all_ranks_accept_eb_2d
 
   subroutine replicated_reactive_eb_patch_set_matches_2d( &
       coarse_geometry, patch_set, comm, ok)
