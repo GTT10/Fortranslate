@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.101.0` milestone contains the serial verification suite, seven optional
+The `0.102.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -41,6 +41,10 @@ The three-level driver now composes active-cell reaction half-steps on the
 root, middle, and finest meshes around that recursive hydro transaction. A
 second deepest-first reactive average-down makes the post-chemistry hierarchy
 authoritative before all three levels are published together.
+With `three_level_enabled`, the public EB AMR application constructs that
+static hierarchy from two nested namelist rectangles, selects a root timestep
+from all three active-cell CFL limits, advances to the requested final time,
+and writes separate root, middle, and finest CSV fields.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -294,12 +298,22 @@ geometry, recovers active temperatures through the EOS, validates the complete
 set and end marker in private candidates, and only then publishes the restored
 hierarchy. The earlier single-patch schema and its inputs remain unchanged.
 
+Setting `three_level_enabled = .true.` instead constructs one static middle
+rectangle from root indices and one finest rectangle from middle indices. The
+finest rectangle retains a two-cell middle margin. The public timestep is the
+minimum root-equivalent stability limit from all three levels, and every
+accepted interval uses recursive subcycling, independent interface registers,
+the EB-cut conservation closure, active-cell Strang chemistry, and final
+deepest-first synchronization. Successful completion writes distinct root,
+middle, and finest CSV files. Dynamic regridding, multipatch siblings, and the
+existing checkpoint schemas are rejected in this mode.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-coarse-to-fine spatial interpolation, EB AMR molecular transport, deeper EB
-levels, and MPI distribution are not yet connected. The public EB AMR
-application now owns and can restart multiple fine rectangles when explicitly
-enabled.
+coarse-to-fine spatial interpolation, EB AMR molecular transport, dynamic or
+arbitrary-depth EB levels, and MPI distribution are not yet connected. The
+public EB AMR application now owns either restartable sibling rectangles or an
+explicit static three-level hierarchy.
 
 ### MPI one-dimensional verification
 
@@ -764,6 +778,20 @@ python3 tools/check_reactive_eb_amr_chemistry_2d.py \
   --reference reactive_eb_amr_chemistry_reference_2d.csv \
   --coarse reactive_eb_amr_chemistry_coarse_2d.csv \
   --fine reactive_eb_amr_chemistry_fine_2d.csv
+```
+
+Static three-level reactive EB AMR:
+
+```bash
+./build/pelef_reactive_2d \
+  cases/reactive_eb_amr_chemistry_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_three_level_2d/amr.nml
+python3 tools/check_reactive_eb_amr_three_level_2d.py \
+  --reference reactive_eb_amr_chemistry_reference_2d.csv \
+  --root reactive_eb_amr_three_level_root_2d.csv \
+  --middle reactive_eb_amr_three_level_middle_2d.csv \
+  --finest reactive_eb_amr_three_level_finest_2d.csv
 ```
 
 Reacting fine-to-root checkpoint/restart parity:

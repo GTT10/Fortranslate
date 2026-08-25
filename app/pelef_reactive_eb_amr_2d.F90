@@ -17,18 +17,22 @@ program pelef_reactive_eb_amr_2d
     reactive_eb_amr_2d_config, read_reactive_eb_amr_2d_configuration
   use reactive_eb_2d_driver_mod, only: write_reactive_eb_2d_csv
   use reactive_eb_amr_2d_driver_mod, only: &
-    simulate_reactive_eb_amr_2d, simulate_reactive_eb_amr_patch_set_2d
+    simulate_reactive_eb_amr_2d, simulate_reactive_eb_amr_patch_set_2d, &
+    simulate_three_level_reactive_eb_amr_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
   type(reactive_eb_2d_config) :: fine_output_config
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
-  type(amr_eb_patch_2d) :: patch
+  type(eb_geometry_2d) :: level_two_geometry
+  type(amr_eb_patch_2d) :: patch, level_two_patch
   type(reactive_eb_patch_set_2d) :: patch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
+  real(dp), allocatable :: level_two_state(:, :, :)
+  real(dp), allocatable :: level_two_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: time, minimum_dt, base_density, conservation_error
   character(len=1024) :: input_path, message, patch_output_file
@@ -61,7 +65,16 @@ program pelef_reactive_eb_amr_2d
   case default
     error stop "Unknown chemistry model"
   end select
-  if (config%multipatch_enabled) then
+  if (config%three_level_enabled) then
+    call simulate_three_level_reactive_eb_amr_2d( &
+      species, reactions, config, coarse_state, coarse_temperature, &
+      coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+      level_two_state, level_two_temperature, level_two_geometry, &
+      level_two_patch, time, steps, initial_integrals, final_integrals, &
+      minimum_dt, base_density, ok)
+    fine_active = .true.
+    regrids = 0
+  else if (config%multipatch_enabled) then
     call simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
@@ -83,7 +96,20 @@ program pelef_reactive_eb_amr_2d
     config%eb%flow%output_file, species, config%eb, coarse_state, &
     coarse_temperature, coarse_geometry, time, ok)
   if (.not. ok) error stop "Reactive EB AMR coarse output failed"
-  if (config%multipatch_enabled) then
+  if (config%three_level_enabled) then
+    fine_output_config = config%eb
+    fine_output_config%flow%nx = fine_geometry%nx
+    fine_output_config%flow%ny = fine_geometry%ny
+    fine_output_config%flow%x_lower = fine_geometry%x_lower
+    fine_output_config%flow%x_upper = fine_geometry%x_upper
+    fine_output_config%flow%y_lower = fine_geometry%y_lower
+    fine_output_config%flow%y_upper = fine_geometry%y_upper
+    fine_output_config%flow%output_file = trim(config%fine_output_file)
+    call write_reactive_eb_2d_csv( &
+      config%fine_output_file, species, fine_output_config, fine_state, &
+      fine_temperature, fine_geometry, time, ok)
+    if (.not. ok) error stop "Reactive EB AMR middle output failed"
+  else if (config%multipatch_enabled) then
     do child = 1, patch_set%patch_count()
       call make_patch_output_path( &
         config%fine_output_file, child, patch_output_file)
@@ -122,13 +148,39 @@ program pelef_reactive_eb_amr_2d
       fine_temperature, fine_geometry, time, ok)
     if (.not. ok) error stop "Reactive EB AMR fine output failed"
   end if
+  if (config%three_level_enabled) then
+    fine_output_config = config%eb
+    fine_output_config%flow%nx = level_two_geometry%nx
+    fine_output_config%flow%ny = level_two_geometry%ny
+    fine_output_config%flow%x_lower = level_two_geometry%x_lower
+    fine_output_config%flow%x_upper = level_two_geometry%x_upper
+    fine_output_config%flow%y_lower = level_two_geometry%y_lower
+    fine_output_config%flow%y_upper = level_two_geometry%y_upper
+    fine_output_config%flow%output_file = trim(config%level_two_output_file)
+    call write_reactive_eb_2d_csv( &
+      config%level_two_output_file, species, fine_output_config, &
+      level_two_state, level_two_temperature, level_two_geometry, time, ok)
+    if (.not. ok) error stop "Reactive EB AMR level-two output failed"
+  end if
 
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &
     max(1.0_dp, abs(initial_integrals)))
   write(*, '(a)') "PeleF " // pelef_version // " reactive EB AMR 2D"
   write(*, '(a,i0,a,i0)') &
     "Coarse grid: ", coarse_geometry%nx, " x ", coarse_geometry%ny
-  if (config%multipatch_enabled) then
+  if (config%three_level_enabled) then
+    write(*, '(a,i0,a,i0)') &
+      "Middle grid: ", fine_geometry%nx, " x ", fine_geometry%ny
+    write(*, '(a,4(i0,1x))') "Root patch bounds: ", &
+      patch%coarse_i_lower, patch%coarse_i_upper, &
+      patch%coarse_j_lower, patch%coarse_j_upper
+    write(*, '(a,i0,a,i0)') &
+      "Finest grid: ", level_two_geometry%nx, " x ", level_two_geometry%ny
+    write(*, '(a,4(i0,1x))') "Middle patch bounds: ", &
+      level_two_patch%coarse_i_lower, level_two_patch%coarse_i_upper, &
+      level_two_patch%coarse_j_lower, level_two_patch%coarse_j_upper
+    write(*, '(a,i0)') "Refinement ratio: ", config%refinement_ratio
+  else if (config%multipatch_enabled) then
     write(*, '(a,i0)') "Fine patches: ", patch_set%patch_count()
     do child = 1, patch_set%patch_count()
       write(*, '(a,i0,a,i0,a,i0)') "Fine patch ", child, ": ", &
@@ -175,6 +227,14 @@ program pelef_reactive_eb_amr_2d
     write(*, '(a,i0)') "Fine covered cells: ", &
       count(fine_geometry%cell_type == eb_covered_cell)
   end if
+  if (config%three_level_enabled) then
+    write(*, '(a,i0)') "Finest regular cells: ", &
+      count(level_two_geometry%cell_type == eb_regular_cell)
+    write(*, '(a,i0)') "Finest cut cells: ", &
+      count(level_two_geometry%cell_type == eb_cut_cell)
+    write(*, '(a,i0)') "Finest covered cells: ", &
+      count(level_two_geometry%cell_type == eb_covered_cell)
+  end if
   write(*, '(a,i0)') "Completed coarse steps: ", steps
   write(*, '(a,i0)') "Completed regrids: ", regrids
   write(*, '(a,l2)') "Stopped after checkpoint: ", &
@@ -202,6 +262,9 @@ program pelef_reactive_eb_amr_2d
   else
     write(*, '(a)') "Fine output: inactive"
   end if
+  if (config%three_level_enabled) &
+    write(*, '(a,1x,a)') "Finest output:", &
+      trim(config%level_two_output_file)
   if (len_trim(config%checkpoint_file) > 0) &
     write(*, '(a,1x,a)') "Checkpoint:", trim(config%checkpoint_file)
   if (len_trim(config%restart_file) > 0) &

@@ -1088,12 +1088,20 @@ overlapped parents cannot become the final authoritative state. Failure in
 chemistry, hydro, EB-cut conservation closure, or EOS synchronization returns
 all three original state and temperature fields.
 
+In `0.102.0`, the public serial application can select a static three-level
+mode. The root rectangle in the existing `eb_amr` namelist defines the middle
+mesh; a second rectangle in middle indices defines the finest mesh and must
+retain the qualified two-cell margin. Initialization prolongs root to middle
+and middle to finest. Every accepted root interval selects
+`min(dt0, r1*dt1, r1*r2*dt2)`, clips it to the final time, and commits one
+three-level Strang transaction. Root, middle, and finest CSV files are written
+only after successful completion.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel
-redistribution, arbitrary depth, three-level lifecycle ownership,
+redistribution, arbitrary depth, dynamic three-level lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
-subsystem. The public application,
-CSV output, and checkpoint schema retain the single-patch path by default; the
-public application, CSV output, and dedicated restart schema select the
-patch-set path explicitly.
+subsystem. The public application and CSV output select the static three-level
+path explicitly, while checkpointing remains limited to the established
+single-patch and patch-set schemas.

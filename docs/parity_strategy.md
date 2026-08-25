@@ -1599,3 +1599,18 @@ an unknown Riemann solver after the first chemistry half-step must reject the
 whole transaction and return all three state and temperature fields exactly.
 The focused multipatch/multilevel gate must pass before all 180 tests in GNU
 Fortran Debug and Release configurations.
+
+## 0.102.0 public static three-level EB AMR gates
+
+The public namelist case builds an 8 by 8 root, a ratio-two 12 by 12 middle
+rectangle, and a nested ratio-two 16 by 16 finest rectangle whose interface
+is crossed by a plane EB. The time loop must choose a positive CFL limit from
+all three levels, reach the requested final time, preserve composite mass and
+total energy, and emit one CSV per level.
+
+Every CSV must have the expected cell count, finite values, the final time,
+regular/cut/covered EB classes, positive thermodynamics, and species closure.
+Active root, middle, and finest cells are compared with a uniform regular-grid
+reactor reference, which must itself show nonzero chemistry evolution. The
+focused public application gate must pass before all 183 tests in GNU Fortran
+Debug and Release configurations.

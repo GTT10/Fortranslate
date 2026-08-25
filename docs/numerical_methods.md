@@ -1875,3 +1875,21 @@ middle field replaces the root footprint, with EOS temperatures recovered at
 both parents. All work uses private candidates; any rejected reactor cell,
 hydro stage, nested EB conservation correction, or final EOS recovery leaves
 every input state and temperature unchanged.
+
+## Static three-level EB AMR time loop
+
+Let `dt0`, `dt1`, and `dt2` be the active-cell stability limits computed on
+the root, middle, and finest meshes. With refinement ratios `r1` and `r2`, the
+root interval is
+
+`dt = min(dt0, r1*dt1, r1*r2*dt2, final_time - time)`.
+
+The ratio factors convert each child's substep limit to the equivalent root
+interval. A successful interval advances through the complete three-level
+Strang transaction before time, step count, and minimum accepted timestep are
+updated. Initialization uses PCM prolongation first from root to middle and
+then from middle to finest, so all levels begin EOS-consistent and synchronized.
+
+The public mode is deliberately static. Namelist validation rejects dynamic
+regridding, multipatch ownership, checkpoint/restart, or colliding output
+paths when `three_level_enabled` is selected.
