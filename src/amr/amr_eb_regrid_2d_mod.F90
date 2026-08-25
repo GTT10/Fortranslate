@@ -794,7 +794,7 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, &
       patch_set, solver, reconstruction, limiter, state_redist_max_order, &
       dt, new_coarse_state, new_coarse_temperature, new_patch_set, ok, &
-      state_redist_target_volume_fraction)
+      state_redist_target_volume_fraction, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
@@ -807,6 +807,7 @@ contains
     type(reactive_eb_patch_set_2d), intent(out) :: new_patch_set
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
+    character(len=*), intent(out), optional :: failure_context
 
     type(reactive_eb_patch_set_2d) :: candidate_set
     type(amr_eb_flux_register_2d) :: flux_register
@@ -829,6 +830,7 @@ contains
     new_coarse_temperature = 0.0_dp
     new_patch_set = reactive_eb_patch_set_2d()
     ok = .false.
+    if (present(failure_context)) failure_context = "input validation"
     nvar = reactive_nvar(size(species))
     if (nvar < 1 .or. &
         any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
@@ -857,6 +859,7 @@ contains
     allocate(coarse_hydro_temperature, mold=coarse_temperature)
     allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
     allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    if (present(failure_context)) failure_context = "coarse advance"
     call advance_reactive_eb_level_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, solver, &
       reconstruction, limiter, selected_target, state_redist_max_order, dt, &
@@ -870,10 +873,14 @@ contains
     allocate(coarse_work_temperature, mold=coarse_temperature)
     candidate_set = patch_set
     do child = 1, candidate_set%patch_count()
+      if (present(failure_context)) &
+        failure_context = "child flux-register initialization"
       call initialize_amr_eb_flux_register_2d( &
         coarse_geometry, candidate_set%children(child)%geometry, &
         candidate_set%children(child)%patch, nvar, flux_register, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) &
+        failure_context = "coarse flux accumulation"
       call accumulate_coarse_eb_fluxes_2d( &
         flux_register, coarse_geometry, &
         candidate_set%children(child)%geometry, &
@@ -902,12 +909,14 @@ contains
         else
           alpha = real(substep - 1, dp) / real(ratio, dp)
         end if
+        if (present(failure_context)) failure_context = "child exterior fill"
         call build_reactive_eb_patch_exterior_2d( &
           species, coarse_state, coarse_temperature, coarse_hydro, &
           coarse_hydro_temperature, coarse_geometry, &
           candidate_set%children(child)%geometry, &
           candidate_set%children(child)%patch, alpha, exterior, local_ok)
         if (.not. local_ok) return
+        if (present(failure_context)) failure_context = "fine advance"
         call advance_reactive_eb_level_2d( &
           species, candidate_set%children(child)%state, &
           candidate_set%children(child)%temperature, &
@@ -918,6 +927,8 @@ contains
         if (.not. local_ok) return
         candidate_set%children(child)%state = fine_work
         candidate_set%children(child)%temperature = fine_work_temperature
+        if (present(failure_context)) &
+          failure_context = "fine flux accumulation"
         call accumulate_fine_eb_fluxes_2d( &
           flux_register, coarse_geometry, &
           candidate_set%children(child)%geometry, &
@@ -926,6 +937,7 @@ contains
         if (.not. local_ok) return
       end do
 
+      if (present(failure_context)) failure_context = "child reflux"
       call reflux_reactive_eb_state_patch_2d( &
         species, coarse_corrected, coarse_corrected_temperature, &
         coarse_geometry, candidate_set%children(child)%state, &
@@ -940,6 +952,7 @@ contains
       candidate_set%children(child)%temperature = fine_work_temperature
     end do
 
+    if (present(failure_context)) failure_context = "patch-set average down"
     call average_down_reactive_eb_patch_set_2d( &
       species, coarse_corrected, coarse_corrected_temperature, &
       coarse_geometry, candidate_set, coarse_work, &
@@ -950,6 +963,7 @@ contains
     new_coarse_temperature = coarse_work_temperature
     new_patch_set = candidate_set
     ok = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine advance_reactive_eb_patch_set_hydro_2d
 
   subroutine regrid_reactive_eb_patch_set_2d( &

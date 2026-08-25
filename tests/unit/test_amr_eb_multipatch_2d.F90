@@ -41,6 +41,7 @@ program test_amr_eb_multipatch_2d
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: dt, factor, integral_scale, state_scale
+  character(len=64) :: hydro_failure_context
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
   integer :: child, i, j, nvar
@@ -119,7 +120,9 @@ program test_amr_eb_multipatch_2d
   call advance_reactive_eb_patch_set_hydro_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, old_set, &
     "hllc", "characteristic_plm", "mc", 2, dt, new_coarse_state, &
-    new_coarse_temperature, hydro_set, ok)
+    new_coarse_temperature, hydro_set, ok, &
+    failure_context=hydro_failure_context)
+  if (.not. ok) write(*, '(a)') trim(hydro_failure_context)
   call require(ok .and. hydro_set%is_valid(coarse_geometry, nvar), &
     "subcycled multipatch EB hydro")
   call composite_reactive_eb_patch_set_integral_2d( &
