@@ -1211,6 +1211,14 @@ transactions are blended and EOS-recovered on the same owners. Transport
 records, boundary data, switches, timestep, and StateRedist controls must agree
 bitwise across ranks before any physics starts.
 
+In `0.114.0`, one outer MPI transaction composes owner chemistry, molecular
+transport, hydrodynamics, molecular transport, and chemistry over a single
+coarse interval. Nested operators work only on private candidate fields. The
+caller observes the final hierarchy, transport limiter minimum, and all three
+operator counters only after the second chemistry half-step succeeds. A
+rejected hydro control therefore rolls back already accepted reaction and
+transport prefixes without exposing their local owner counts.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

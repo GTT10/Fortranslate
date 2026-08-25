@@ -1820,3 +1820,24 @@ communicator-wide, leave every rank's caller-owned root and child fields
 bitwise unchanged, and report zero committed advances. The gate runs at one,
 two, four, and eight ranks in GNU Fortran Release and bounds/FPE-checked Debug
 configurations.
+
+## 0.114.0 owner-only MPI reactive EB AMR full-physics gates
+
+The MPI transaction must match the existing serial multipatch `R-T-H-T-R`
+composition on the qualified plane-EB root and two ratio-two children. The
+uniform reactive start field isolates composition and ownership: chemistry
+provides a measurable state change while the dedicated 0.112 and 0.113 gates
+retain the nonuniform hydro and transport coverage.
+
+Across the successful outer interval, the communicator must report exactly
+two chemistry calls for every root tile and child, five hydro level advances,
+and twenty transport Euler-level advances. Root and child fields and the
+transport limiter minimum must match the serial transaction within `5e-11`
+field-scale and `3e-13` limiter tolerances.
+
+A second transaction uses valid chemistry, transport, and state controls but
+an invalid Riemann solver. The first chemistry and transport prefixes must
+execute before hydro rejects. The caller's root and child fields must remain
+bitwise unchanged and all three published counters must remain zero on every
+rank. The gate runs at one, two, four, and eight ranks in GNU Fortran Release
+and bounds/FPE-checked Debug configurations.
