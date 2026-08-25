@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.97.0` milestone contains the serial verification suite, seven optional
+The `0.98.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -27,6 +27,10 @@ fine boundary cell while the remaining coarse/fine sides retain coarse-time
 interpolation and conservative reflux. Temperature-gradient tagging and both
 single- and multipatch planners can now create such outflow-side rectangles
 dynamically, including one-sided gradient detection on root boundary cells.
+The EB transfer foundation also accepts one strictly nested three-level
+hierarchy, computes its composite integral without double counting, and
+average-downs its generic or reactive state from the deepest level to the root
+as one rollback-safe transaction.
 
 ### `pelef`: one-dimensional Euler solver
 

@@ -1784,3 +1784,21 @@ under the same two-cell redistribution separation rule. Both single-patch and
 patch-set topology transactions can therefore create, move, or resize an
 outflow-side fine rectangle. Patch-set hydro uses the evolving child state on
 each physical side and root-time interpolation on every remaining interface.
+
+## Static three-level EB synchronization
+
+For two strictly nested ratio-aligned rectangles, the three-level composite
+integral is
+
+`I = sum_root\middle(V U) + sum_middle\finest(V U) + sum_finest(V U)`.
+
+Synchronization is ordered deepest first. The finest field is
+volume-weighted onto a private middle candidate with the qualified two-level
+EB average-down, and that candidate is then restricted onto a private root
+candidate. Covered parent volume receives no contribution, while uncovered
+parent cells remain bitwise unchanged. The reactive form repeats the same
+ordering with conserved state and EOS temperature recovery at each parent.
+Input finiteness, geometry, dimensions, and positive temperatures are checked
+before work; failure at either stage returns the original root and middle
+fields. This milestone does not advance, subcycle, or reflux the three-level
+hierarchy.

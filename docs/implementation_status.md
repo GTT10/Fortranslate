@@ -1684,3 +1684,21 @@ The serial EB AMR application can now dynamically refine an outflow boundary
 with either one child or a separated patch set. EB molecular transport, deeper
 EB levels, non-outflow refined boundaries, distributed ownership, and explicit
 physical-side checkpoint parity remain separate work.
+
+## Static three-level EB synchronization (`0.98.0`)
+
+- [x] strictly nested root, middle, and finest EB patch validation
+- [x] three-level composite integral with exact finest-level ownership
+- [x] deepest-to-middle then middle-to-root volume-weighted average-down
+- [x] generic conserved-field transaction with no partial publication
+- [x] reactive state restriction and EOS temperature recovery at both parents
+- [x] unchanged uncovered root and middle ownership
+- [x] nonfinite-state and invalid-temperature rollback gates
+- [x] composite conservation across regular, cut, and covered EB cells
+- [x] focused gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The EB AMR transfer layer now synchronizes one static three-level hierarchy.
+It does not yet own a three-level lifecycle or perform recursive hydro
+subcycling, flux-register reflux, chemistry, regridding, checkpointing, output,
+transport, or MPI distribution.

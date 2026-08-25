@@ -1051,10 +1051,20 @@ its flux registers continue to act only on true coarse/fine interfaces.
 Topology replacement, child ordering, rollback, and collection separation are
 unchanged.
 
+In `0.98.0`, `amr_eb_multilevel_2d_mod` composes two aligned EB patch
+descriptors into a strictly nested root/middle/finest hierarchy. Composite
+integration owns root cells outside the middle patch, middle cells outside the
+finest patch, and every finest cell exactly once. Synchronization first
+average-downs finest into a private middle candidate, then that candidate into
+a private root candidate. The reactive path recovers EOS-consistent
+temperatures after both restrictions and publishes neither parent if either
+stage fails.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, deeper levels, non-outflow refined boundaries, and
-EB AMR/MPI ownership remain outside this subsystem. The public application,
+EB AMR molecular transport, three-level hydro/subcycling/reflux, arbitrary
+depth, non-outflow refined boundaries, and EB AMR/MPI ownership remain outside
+this subsystem. The public application,
 CSV output, and checkpoint schema retain the single-patch path by default; the
 public application, CSV output, and dedicated restart schema select the
 patch-set path explicitly.

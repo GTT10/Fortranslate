@@ -1532,3 +1532,20 @@ species closure, ratio-two spacing, aligned inferred bounds, all EB classes,
 retained hotspot temperatures, and the established two-cell separation. The
 focused eleven-test application gate must pass before all 179 tests in GNU
 Fortran Debug and Release configurations.
+
+## 0.98.0 static three-level EB synchronization gates
+
+A root field, a ratio-two middle rectangle, and a ratio-two finest rectangle
+nested inside that middle level must produce one composite volume-weighted
+integral. After deepest-to-root average-down, integrating the synchronized root
+alone must match that composite value while cells outside each child rectangle
+remain unchanged. A constant finest field must restrict exactly into its
+covered middle region.
+
+The reactive gate applies distinct conservative scalings on all three levels,
+requires the same composite conservation for every state component, and
+requires finite positive EOS-recovered root and middle temperatures. A
+nonfinite finest state or nonpositive finest temperature must reject the whole
+operation and return both parent fields unchanged. The focused two-test EB
+hierarchy gate must pass before all 180 tests in GNU Fortran Debug and Release
+configurations.
