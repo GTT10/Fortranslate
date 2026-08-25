@@ -129,6 +129,20 @@ program test_amr_eb_multipatch_2d
   call composite_reactive_eb_patch_set_integral_2d( &
     new_coarse_state, coarse_geometry, hydro_set, integral_after, ok)
   integral_scale = max(1.0_dp, maxval(abs(integral_before)))
+  if (.not. ok .or. &
+      abs(integral_after(irho) - integral_before(irho)) > &
+        5.0e-11_dp * integral_scale .or. &
+      abs(integral_after(iet) - integral_before(iet)) > &
+        5.0e-11_dp * integral_scale) then
+    write(*, '(a,4(es25.16e3,1x))') "rho conservation: ", &
+      integral_before(irho), integral_after(irho), &
+      integral_after(irho) - integral_before(irho), &
+      5.0e-11_dp * integral_scale
+    write(*, '(a,4(es25.16e3,1x))') "energy conservation: ", &
+      integral_before(iet), integral_after(iet), &
+      integral_after(iet) - integral_before(iet), &
+      5.0e-11_dp * integral_scale
+  end if
   call require(ok .and. abs(integral_after(irho) - integral_before(irho)) <= &
     5.0e-11_dp * integral_scale .and. &
     abs(integral_after(iet) - integral_before(iet)) <= &
