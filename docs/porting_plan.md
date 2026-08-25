@@ -623,7 +623,11 @@ Required capabilities:
   regridding, chemistry/hydro advance, and per-child output (`0.94.0`)
 - [x] transactional EB multipatch formatted checkpoint/restart with exact
   child topology and public split-run parity (`0.95.0`)
+- [x] configured static two-level EB fine patch on an outflow physical
+  boundary, including physical-side ghost closure, interface-only reflux, and
+  public output qualification (`0.96.0`)
 - deeper EB levels and multilevel redistribution
+- dynamic EB patch planning at physical boundaries
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

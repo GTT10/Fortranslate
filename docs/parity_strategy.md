@@ -1495,3 +1495,21 @@ deterministic child order, and reach the requested final time.
 The focused direct and public split-run gates must pass before all 175 tests in
 GNU Fortran Debug and Release configurations. Existing single-patch checkpoint
 round trips and public restart parity remain in the same complete regression.
+
+## 0.96.0 reactive EB AMR physical-boundary patch gates
+
+The public configured-patch case places a ratio-two fine rectangle on the
+x-lower outflow boundary of a 12 by 12 plane-EB root. Its fine mesh must begin
+exactly at the global lower coordinate, span 12 by 18 cells, and contain
+regular, cut, and covered EB classes. The root and fine CSV files must reach
+the requested final time with exact mesh-center coordinates, finite positive
+thermodynamics, species closure, stationary pressure and temperature, and
+negligible velocity drift from a uniform state.
+
+The run exercises the physical-side fine-state exterior closure while retaining
+coarse-time interpolation, flux accumulation, reflux, and average-down on the
+three coarse/fine sides. The focused nine-test EB AMR application gate must
+pass before all 177 tests in GNU Fortran Debug and Release configurations.
+Existing planner tests continue to reject physical-boundary tag collections,
+making the qualified scope a configured static single patch rather than
+dynamic boundary refinement.

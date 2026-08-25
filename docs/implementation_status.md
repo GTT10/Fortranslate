@@ -1646,3 +1646,22 @@ The public serial EB AMR executable can now stop and resume either the default
 single-patch lifecycle or an explicitly enabled patch set without losing
 accepted topology or cadence. EB molecular transport, deeper levels,
 physical-boundary fine patches, and distributed ownership remain separate work.
+
+## Reactive EB AMR configured physical-boundary patch (`0.96.0`)
+
+- [x] domain-inclusive configured single-patch input and geometry construction
+- [x] outflow-side exterior state copied from the current fine boundary cell
+- [x] coarse-time interpolation retained on every coarse/fine patch side
+- [x] physical-side flux-register accumulation and reflux omitted
+- [x] fine exterior payload dimension, finiteness, and temperature validation
+- [x] public x-lower-boundary plane-EB application case
+- [x] exact coarse/fine coordinates, final time, and EB-class output gates
+- [x] finite positive thermodynamics, stationary uniform state, and closure gate
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public serial EB AMR executable can now advance a configured static fine
+rectangle that meets an outflow physical boundary. Dynamic tag planning still
+requires strictly internal patches. EB molecular transport, deeper EB levels,
+physical-side dynamic clustering, non-outflow refined boundaries, and
+distributed ownership remain separate work.

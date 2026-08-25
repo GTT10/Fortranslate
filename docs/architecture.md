@@ -1031,9 +1031,20 @@ separation and the terminal marker, and publishes the root and complete child
 collection together. Scheduled writes occur after physics and periodic regrid
 transactions, so restart resumes the accepted-step cadence.
 
+In `0.96.0`, the configured single-patch path permits a rectangle to coincide
+with a root physical side. Geometry construction uses the exact domain edge.
+During every fine substep, a coarse/fine side still receives the established
+coarse-time-interpolated exterior state, while a coincident outflow side uses
+the current fine boundary cell as its zero-gradient exterior state. The flux
+register already omits any side without an uncovered coarse/fine interface, so
+no correction is accumulated or applied at the physical boundary. Fine state
+and temperature are passed explicitly to exterior construction and validated
+before the substep publishes any candidate hierarchy.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, deeper levels, and EB AMR/MPI ownership remain
-outside this subsystem. The public application, CSV output, and checkpoint
-schema retain the single-patch path by default; the public application, CSV
-output, and dedicated restart schema select the patch-set path explicitly.
+EB AMR molecular transport, deeper levels, dynamically planned physical-side
+patches, and EB AMR/MPI ownership remain outside this subsystem. The public
+application, CSV output, and checkpoint schema retain the single-patch path by
+default; the public application, CSV output, and dedicated restart schema
+select the patch-set path explicitly.

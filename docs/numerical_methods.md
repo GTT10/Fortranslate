@@ -1755,3 +1755,23 @@ interval and any due periodic regrid commit. A stop-after-write exits with the
 stored time. Restart resumes from the stored step and regrid counters, so the
 next periodic topology evaluation has the same cadence as an uninterrupted
 run.
+
+## Configured outflow-side EB patch
+
+A configured single fine rectangle may include the first or last root cell in
+either coordinate direction when that domain side uses outflow conditions.
+For a fine face on a coarse/fine interface, the exterior conserved state and
+temperature continue to come from the adjacent root cell, interpolated between
+the root states at the beginning and end of the coarse interval. For a fine
+face coincident with a physical side, there is no adjacent root cell. The
+exterior state is therefore copied from the current fine boundary cell, giving
+the same zero-normal-gradient closure as the qualified outflow boundary.
+
+The fine state used for this physical-side closure advances after each
+substep, rather than being frozen at the start of the coarse interval. Exterior
+construction validates its dimensions, finiteness, and positive temperature
+before advancing. Because a physical side has no uncovered coarse neighbor,
+the EB flux register skips it and refluxes only the remaining coarse/fine
+interfaces. Dynamic tag clustering continues to require strictly internal
+rectangles; physical-side planner expansion and coalescing remain separate
+work.
