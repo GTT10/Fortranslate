@@ -131,6 +131,7 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_local_transport, expected_global_chemistry
   integer :: expected_global_hydro, expected_global_transport
   integer :: inconsistent_exponent
+  character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -646,12 +647,14 @@ program pelef_mpi_eb_amr_patch_2d
     transport_start_set, "hllc", "pcm", "mc", 2, transport_dt, .true., &
     1.0e-8_dp, 1.0e-14_dp, full_reference_state, &
     full_reference_temperature, full_reference_set, ok, &
-    target_volume_fraction=0.5_dp, transport=transport, &
+    target_volume_fraction=0.5_dp, failure_context=full_failure_context, &
+    transport=transport, &
     transport_enabled=.true., viscosity_enabled=.true., &
     thermal_conduction_enabled=.true., species_diffusion_enabled=.true., &
     barodiffusion_enabled=.true., &
     minimum_transport_theta=full_reference_theta, boundaries=boundaries)
-  call assert_all(ok, "serial EB AMR full-physics reference", rank)
+  call assert_all(ok, "serial EB AMR full-physics reference: " // &
+    trim(full_failure_context), rank)
 
   allocate(full_mpi_state, source=coarse_state)
   allocate(full_mpi_temperature, source=coarse_temperature)
