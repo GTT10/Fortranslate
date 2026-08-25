@@ -142,16 +142,16 @@ program test_amr_eb_regrid_2d
   multipatch_criteria%minimum_patch_cells_y = 1
   multipatch_tags = .false.
   multipatch_tags(4, 4) = .true.
-  multipatch_tags(7, 4) = .true.
+  multipatch_tags(8, 4) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     multipatch_tags, multipatch_criteria, plan_collection, ok)
   call require(ok .and. plan_collection%patch_count() == 1 .and. &
     plan_collection%plans(1)%tagged_cell_count == 2 .and. &
     plan_collection%plans(1)%coarse_i_lower == 3 .and. &
-    plan_collection%plans(1)%coarse_i_upper == 8 .and. &
+    plan_collection%plans(1)%coarse_i_upper == 9 .and. &
     plan_collection%plans(1)%coarse_j_lower == 3 .and. &
     plan_collection%plans(1)%coarse_j_upper == 5, &
-    "touching buffered EB plans coalesce")
+    "redistribution-adjacent EB plans coalesce")
 
   multipatch_criteria%buffer_cells = 0
   multipatch_criteria%maximum_patch_gap_cells = 1

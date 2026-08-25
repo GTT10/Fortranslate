@@ -16,7 +16,8 @@ program test_amr_eb_multipatch_2d
     initialize_reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
     composite_reactive_eb_patch_set_integral_2d, &
-    regrid_reactive_eb_patch_set_2d
+    regrid_reactive_eb_patch_set_2d, &
+    advance_reactive_eb_patch_set_hydro_2d
   implicit none
 
   integer, parameter :: coarse_nx = 10, coarse_ny = 10, ratio = 2
@@ -28,6 +29,7 @@ program test_amr_eb_multipatch_2d
   type(amr_eb_regrid_plan_collection_2d) :: old_collection
   type(amr_eb_regrid_plan_collection_2d) :: new_collection
   type(reactive_eb_patch_set_2d) :: old_set, new_set, removed_set
+  type(reactive_eb_patch_set_2d) :: hydro_set, failed_set
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
@@ -38,7 +40,7 @@ program test_amr_eb_multipatch_2d
   real(dp), allocatable :: new_coarse_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
-  real(dp) :: factor, integral_scale, state_scale
+  real(dp) :: dt, factor, integral_scale, state_scale
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
   integer :: child, i, j, nvar
@@ -110,6 +112,53 @@ program test_amr_eb_multipatch_2d
   call require(ok .and. old_set%is_valid(coarse_geometry, nvar) .and. &
     old_set%patch_count() == 2, "initialize reactive EB patch set")
 
+  call composite_reactive_eb_patch_set_integral_2d( &
+    coarse_state, coarse_geometry, old_set, integral_before, ok)
+  call require(ok, "initial multipatch hydro integral")
+  dt = 0.02_dp * min(coarse_geometry%dx, coarse_geometry%dy) / sound_speed
+  call advance_reactive_eb_patch_set_hydro_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, old_set, &
+    "hllc", "characteristic_plm", "mc", 2, dt, new_coarse_state, &
+    new_coarse_temperature, hydro_set, ok)
+  call require(ok .and. hydro_set%is_valid(coarse_geometry, nvar), &
+    "subcycled multipatch EB hydro")
+  call composite_reactive_eb_patch_set_integral_2d( &
+    new_coarse_state, coarse_geometry, hydro_set, integral_after, ok)
+  integral_scale = max(1.0_dp, maxval(abs(integral_before)))
+  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
+    3.0e-12_dp * integral_scale, "multipatch hydro conservation")
+  state_scale = max(1.0_dp, maxval(abs(state_cell)))
+  call require(maxval(abs(new_coarse_state - coarse_state)) <= &
+    4.0e-12_dp * state_scale, "uniform multipatch coarse preservation")
+  do child = 1, old_set%patch_count()
+    call require(maxval(abs(hydro_set%children(child)%state - &
+      old_set%children(child)%state)) <= 4.0e-12_dp * state_scale, &
+      "uniform multipatch fine preservation")
+  end do
+  call average_down_reactive_eb_patch_set_2d( &
+    species, new_coarse_state, new_coarse_temperature, coarse_geometry, &
+    hydro_set, averaged_state, averaged_temperature, ok)
+  call require(ok .and. maxval(abs(averaged_state - &
+    new_coarse_state)) <= 4.0e-13_dp * state_scale, &
+    "multipatch hydro synchronized hierarchy")
+
+  call advance_reactive_eb_patch_set_hydro_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, old_set, &
+    "invalid", "characteristic_plm", "mc", 2, dt, new_coarse_state, &
+    new_coarse_temperature, failed_set, ok)
+  call require(.not. ok .and. &
+    maxval(abs(new_coarse_state - coarse_state)) == 0.0_dp .and. &
+    maxval(abs(new_coarse_temperature - coarse_temperature)) == 0.0_dp .and. &
+    failed_set%patch_count() == old_set%patch_count(), &
+    "multipatch hydro coarse rollback")
+  do child = 1, old_set%patch_count()
+    call require(maxval(abs(failed_set%children(child)%state - &
+      old_set%children(child)%state)) == 0.0_dp .and. &
+      maxval(abs(failed_set%children(child)%temperature - &
+        old_set%children(child)%temperature)) == 0.0_dp, &
+      "multipatch hydro fine rollback")
+  end do
+
   do child = 1, old_set%patch_count()
     do j = 1, old_set%children(child)%geometry%ny
       do i = 1, old_set%children(child)%geometry%nx
@@ -165,7 +214,6 @@ program test_amr_eb_multipatch_2d
     new_coarse_state, coarse_geometry, new_set, integral_after, ok)
   call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
     8.0e-12_dp * integral_scale, "multipatch regrid conservation")
-  state_scale = max(1.0_dp, maxval(abs(state_cell)))
   call require(maxval(abs(new_set%children(1)%state(:, 1:2, :) - &
     old_set%children(1)%state(:, 3:4, :))) == 0.0_dp, &
     "moved patch exact fine overlap")

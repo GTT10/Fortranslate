@@ -5,12 +5,22 @@ module amr_eb_regrid_2d_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use eb_reactive_reconstruction_2d_mod, only: &
+    reactive_eb_exterior_state_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d, &
     average_down_reactive_eb_state_patch_2d
+  use amr_eb_flux_register_2d_mod, only: &
+    amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
+    accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
+    reflux_reactive_eb_state_patch_2d
   use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_pcm_2d
+  use amr_eb_reactive_2d_mod, only: &
+    build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
   implicit none
   private
+
+  integer, parameter :: eb_patch_set_separation_cells = 2
 
   type, public :: amr_eb_tagging_criteria_2d
     real(dp) :: relative_gradient_threshold = 0.1_dp
@@ -76,6 +86,7 @@ module amr_eb_regrid_2d_mod
   public :: average_down_reactive_eb_patch_set_2d
   public :: composite_reactive_eb_patch_set_integral_2d
   public :: regrid_reactive_eb_patch_set_2d
+  public :: advance_reactive_eb_patch_set_hydro_2d
   public :: collapse_two_level_reactive_eb_patch_2d
   public :: regrid_two_level_reactive_eb_patch_2d
 
@@ -184,10 +195,14 @@ contains
       type(amr_eb_regrid_plan_2d), intent(in) :: first_plan, second_plan
 
       separated = &
-        first_plan%coarse_i_upper + 1 < second_plan%coarse_i_lower .or. &
-        second_plan%coarse_i_upper + 1 < first_plan%coarse_i_lower .or. &
-        first_plan%coarse_j_upper + 1 < second_plan%coarse_j_lower .or. &
-        second_plan%coarse_j_upper + 1 < first_plan%coarse_j_lower
+        first_plan%coarse_i_upper + eb_patch_set_separation_cells < &
+          second_plan%coarse_i_lower .or. &
+        second_plan%coarse_i_upper + eb_patch_set_separation_cells < &
+          first_plan%coarse_i_lower .or. &
+        first_plan%coarse_j_upper + eb_patch_set_separation_cells < &
+          second_plan%coarse_j_lower .or. &
+        second_plan%coarse_j_upper + eb_patch_set_separation_cells < &
+          first_plan%coarse_j_lower
     end function rectangles_are_separated
 
   end function amr_eb_regrid_plan_collection_is_valid
@@ -257,10 +272,14 @@ contains
       type(amr_eb_patch_2d), intent(in) :: first_patch, second_patch
 
       separated = &
-        first_patch%coarse_i_upper + 1 < second_patch%coarse_i_lower .or. &
-        second_patch%coarse_i_upper + 1 < first_patch%coarse_i_lower .or. &
-        first_patch%coarse_j_upper + 1 < second_patch%coarse_j_lower .or. &
-        second_patch%coarse_j_upper + 1 < first_patch%coarse_j_lower
+        first_patch%coarse_i_upper + eb_patch_set_separation_cells < &
+          second_patch%coarse_i_lower .or. &
+        second_patch%coarse_i_upper + eb_patch_set_separation_cells < &
+          first_patch%coarse_i_lower .or. &
+        first_patch%coarse_j_upper + eb_patch_set_separation_cells < &
+          second_patch%coarse_j_lower .or. &
+        second_patch%coarse_j_upper + eb_patch_set_separation_cells < &
+          first_patch%coarse_j_lower
     end function fine_patches_are_separated
 
   end function reactive_eb_patch_set_is_valid
@@ -540,10 +559,14 @@ contains
       type(amr_eb_regrid_plan_2d), intent(in) :: first_plan, second_plan
 
       touch = &
-        first_plan%coarse_i_lower <= second_plan%coarse_i_upper + 1 .and. &
-        second_plan%coarse_i_lower <= first_plan%coarse_i_upper + 1 .and. &
-        first_plan%coarse_j_lower <= second_plan%coarse_j_upper + 1 .and. &
-        second_plan%coarse_j_lower <= first_plan%coarse_j_upper + 1
+        first_plan%coarse_i_lower <= second_plan%coarse_i_upper + &
+          eb_patch_set_separation_cells .and. &
+        second_plan%coarse_i_lower <= first_plan%coarse_i_upper + &
+          eb_patch_set_separation_cells .and. &
+        first_plan%coarse_j_lower <= second_plan%coarse_j_upper + &
+          eb_patch_set_separation_cells .and. &
+        second_plan%coarse_j_lower <= first_plan%coarse_j_upper + &
+          eb_patch_set_separation_cells
     end function rectangles_touch
 
     pure subroutine merge_plans(target, source)
@@ -766,6 +789,168 @@ contains
     end if
     ok = .true.
   end subroutine composite_reactive_eb_patch_set_integral_2d
+
+  subroutine advance_reactive_eb_patch_set_hydro_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      patch_set, solver, reconstruction, limiter, state_redist_max_order, &
+      dt, new_coarse_state, new_coarse_temperature, new_patch_set, ok, &
+      state_redist_target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt
+    real(dp), intent(out) :: new_coarse_state(:, :, :)
+    real(dp), intent(out) :: new_coarse_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: new_patch_set
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    type(amr_eb_flux_register_2d) :: flux_register
+    type(reactive_eb_exterior_state_2d) :: exterior
+    real(dp), allocatable :: coarse_hydro(:, :, :)
+    real(dp), allocatable :: coarse_hydro_temperature(:, :)
+    real(dp), allocatable :: coarse_corrected(:, :, :)
+    real(dp), allocatable :: coarse_corrected_temperature(:, :)
+    real(dp), allocatable :: coarse_work(:, :, :)
+    real(dp), allocatable :: coarse_work_temperature(:, :)
+    real(dp), allocatable :: coarse_x_flux(:, :, :), coarse_y_flux(:, :, :)
+    real(dp), allocatable :: fine_work(:, :, :)
+    real(dp), allocatable :: fine_work_temperature(:, :)
+    real(dp), allocatable :: fine_x_flux(:, :, :), fine_y_flux(:, :, :)
+    real(dp) :: alpha, fine_dt, selected_target
+    logical :: local_ok
+    integer :: child, nvar, ratio, substep
+
+    new_coarse_state = 0.0_dp
+    new_coarse_temperature = 0.0_dp
+    new_patch_set = reactive_eb_patch_set_2d()
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. &
+        any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
+        any(shape(new_coarse_temperature) /= shape(coarse_temperature))) &
+      return
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    new_patch_set = patch_set
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        .not. ieee_is_finite(selected_target) .or. &
+        selected_target <= 0.0_dp .or. selected_target > 1.0_dp .or. &
+        .not. patch_set%is_valid(coarse_geometry, nvar)) return
+    do child = 1, patch_set%patch_count()
+      if (patch_set%children(child)%patch%coarse_i_lower <= 1 .or. &
+          patch_set%children(child)%patch%coarse_i_upper >= &
+            coarse_geometry%nx .or. &
+          patch_set%children(child)%patch%coarse_j_lower <= 1 .or. &
+          patch_set%children(child)%patch%coarse_j_upper >= &
+            coarse_geometry%ny) return
+    end do
+
+    allocate(coarse_hydro, mold=coarse_state)
+    allocate(coarse_hydro_temperature, mold=coarse_temperature)
+    allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+    allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    call advance_reactive_eb_level_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, solver, &
+      reconstruction, limiter, selected_target, state_redist_max_order, dt, &
+      coarse_hydro, coarse_hydro_temperature, coarse_x_flux, &
+      coarse_y_flux, local_ok)
+    if (.not. local_ok) return
+
+    allocate(coarse_corrected, source=coarse_hydro)
+    allocate(coarse_corrected_temperature, source=coarse_hydro_temperature)
+    allocate(coarse_work, mold=coarse_state)
+    allocate(coarse_work_temperature, mold=coarse_temperature)
+    candidate_set = patch_set
+    do child = 1, candidate_set%patch_count()
+      call initialize_amr_eb_flux_register_2d( &
+        coarse_geometry, candidate_set%children(child)%geometry, &
+        candidate_set%children(child)%patch, nvar, flux_register, local_ok)
+      if (.not. local_ok) return
+      call accumulate_coarse_eb_fluxes_2d( &
+        flux_register, coarse_geometry, &
+        candidate_set%children(child)%geometry, &
+        candidate_set%children(child)%patch, coarse_x_flux, coarse_y_flux, &
+        dt, local_ok)
+      if (.not. local_ok) return
+
+      if (allocated(fine_work)) deallocate(fine_work)
+      if (allocated(fine_work_temperature)) deallocate(fine_work_temperature)
+      if (allocated(fine_x_flux)) deallocate(fine_x_flux)
+      if (allocated(fine_y_flux)) deallocate(fine_y_flux)
+      allocate(fine_work, mold=candidate_set%children(child)%state)
+      allocate(fine_work_temperature, &
+        mold=candidate_set%children(child)%temperature)
+      allocate(fine_x_flux(nvar, &
+        0:candidate_set%children(child)%geometry%nx, &
+        candidate_set%children(child)%geometry%ny))
+      allocate(fine_y_flux(nvar, &
+        candidate_set%children(child)%geometry%nx, &
+        0:candidate_set%children(child)%geometry%ny))
+      ratio = candidate_set%children(child)%patch%refinement_ratio
+      fine_dt = dt / real(ratio, dp)
+      do substep = 1, ratio
+        if (trim(reconstruction) == "characteristic_plm") then
+          alpha = (real(substep, dp) - 0.5_dp) / real(ratio, dp)
+        else
+          alpha = real(substep - 1, dp) / real(ratio, dp)
+        end if
+        call build_reactive_eb_patch_exterior_2d( &
+          species, coarse_state, coarse_temperature, coarse_hydro, &
+          coarse_hydro_temperature, coarse_geometry, &
+          candidate_set%children(child)%geometry, &
+          candidate_set%children(child)%patch, alpha, exterior, local_ok)
+        if (.not. local_ok) return
+        call advance_reactive_eb_level_2d( &
+          species, candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature, &
+          candidate_set%children(child)%geometry, solver, reconstruction, &
+          limiter, selected_target, state_redist_max_order, fine_dt, &
+          fine_work, fine_work_temperature, fine_x_flux, fine_y_flux, &
+          local_ok, exterior)
+        if (.not. local_ok) return
+        candidate_set%children(child)%state = fine_work
+        candidate_set%children(child)%temperature = fine_work_temperature
+        call accumulate_fine_eb_fluxes_2d( &
+          flux_register, coarse_geometry, &
+          candidate_set%children(child)%geometry, &
+          candidate_set%children(child)%patch, fine_x_flux, fine_y_flux, &
+          fine_dt, local_ok)
+        if (.not. local_ok) return
+      end do
+
+      call reflux_reactive_eb_state_patch_2d( &
+        species, coarse_corrected, coarse_corrected_temperature, &
+        coarse_geometry, candidate_set%children(child)%state, &
+        candidate_set%children(child)%temperature, &
+        candidate_set%children(child)%geometry, &
+        candidate_set%children(child)%patch, flux_register, coarse_work, &
+        coarse_work_temperature, fine_work, fine_work_temperature, local_ok)
+      if (.not. local_ok) return
+      coarse_corrected = coarse_work
+      coarse_corrected_temperature = coarse_work_temperature
+      candidate_set%children(child)%state = fine_work
+      candidate_set%children(child)%temperature = fine_work_temperature
+    end do
+
+    call average_down_reactive_eb_patch_set_2d( &
+      species, coarse_corrected, coarse_corrected_temperature, &
+      coarse_geometry, candidate_set, coarse_work, &
+      coarse_work_temperature, local_ok)
+    if (.not. local_ok) return
+    if (.not. candidate_set%is_valid(coarse_geometry, nvar)) return
+    new_coarse_state = coarse_work
+    new_coarse_temperature = coarse_work_temperature
+    new_patch_set = candidate_set
+    ok = .true.
+  end subroutine advance_reactive_eb_patch_set_hydro_2d
 
   subroutine regrid_reactive_eb_patch_set_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &

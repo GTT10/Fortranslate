@@ -23,6 +23,7 @@ module amr_eb_reactive_2d_mod
 
   public :: prolong_reactive_eb_patch_pcm_2d
   public :: build_reactive_eb_patch_exterior_2d
+  public :: advance_reactive_eb_level_2d
   public :: advance_two_level_reactive_eb_hydro_2d
 
 contains
