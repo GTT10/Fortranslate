@@ -31,6 +31,7 @@ module amr_eb_multipatch_transport_2d_mod
 
   public :: advance_reactive_eb_patch_set_transport_euler_2d
   public :: advance_reactive_eb_patch_set_transport_2d
+  public :: close_cut_patch_set_conservation_2d
 
 contains
 

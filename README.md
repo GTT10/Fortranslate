@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.112.0` milestone contains the serial verification suite, eight optional
+The `0.113.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -33,6 +33,12 @@ advances SSPRK2 transport with ratio subcycling, time-interpolated parent
 exterior states, an independent open-area diffusive flux register, reflux,
 and hierarchy-wide average-down inside the transactional `R-T-H-T-R`
 composition.
+The correctness-first replicated MPI EB AMR bridge now executes chemistry,
+hydrodynamics, and SSPRK2 molecular transport only on deterministic physics
+owners. One owner advances each complete root transport stage, each child
+owner performs its ratio subcycles and diffusive reflux, and the root owner
+applies EB-cut conservation closure and final average-down. Collective input
+consensus and deferred publication preserve exact all-rank rollback.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
