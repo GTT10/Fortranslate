@@ -22,13 +22,15 @@ program pelef_mpi_eb_amr_patch_2d
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
     reactive_eb_patch_set_2d, build_amr_eb_regrid_plan_collection_2d, &
     initialize_reactive_eb_patch_set_2d, &
-    average_down_reactive_eb_patch_set_2d
+    average_down_reactive_eb_patch_set_2d, &
+    advance_reactive_eb_patch_set_hydro_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
     synchronize_owned_reactive_eb_patch_set_2d, &
-    advance_owned_reactive_eb_patch_set_chemistry_2d
+    advance_owned_reactive_eb_patch_set_chemistry_2d, &
+    advance_owned_reactive_eb_patch_set_hydro_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -46,6 +48,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(elementary_reaction), allocatable :: reactions(:)
   type(reactive_eb_patch_set_2d) :: chemistry_set, reference_set
   type(reactive_eb_patch_set_2d) :: failed_set, failed_backup_set
+  type(reactive_eb_patch_set_2d) :: hydro_start_set, hydro_reference_set
+  type(reactive_eb_patch_set_2d) :: hydro_mpi_set, hydro_failed_set
+  type(reactive_eb_patch_set_2d) :: hydro_failed_backup_set
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -63,12 +68,22 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: failed_coarse_temperature(:, :)
   real(dp), allocatable :: failed_backup_state(:, :, :)
   real(dp), allocatable :: failed_backup_temperature(:, :)
+  real(dp), allocatable :: hydro_reference_state(:, :, :)
+  real(dp), allocatable :: hydro_reference_temperature(:, :)
+  real(dp), allocatable :: hydro_mpi_state(:, :, :)
+  real(dp), allocatable :: hydro_mpi_temperature(:, :)
+  real(dp), allocatable :: hydro_failed_state(:, :, :)
+  real(dp), allocatable :: hydro_failed_temperature(:, :)
+  real(dp), allocatable :: hydro_failed_backup_state(:, :, :)
+  real(dp), allocatable :: hydro_failed_backup_temperature(:, :)
   logical, allocatable :: active_mask(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
+  real(dp) :: hydro_dt, hydro_change, hydro_scale
   logical :: tags(coarse_nx, coarse_ny), ok
   integer :: child, component, global_advances, i, ierr, j
   integer :: local_advances, nvar, rank, nranks, tile
+  integer :: expected_global_advances, expected_local_advances
   integer :: inconsistent_exponent
 
   call MPI_Init(ierr)
@@ -344,6 +359,102 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR child chemistry rollback", rank)
   end do
 
+  hydro_start_set = patch_set
+  do child = 1, hydro_start_set%patch_count()
+    factor = 1.0_dp + 0.01_dp * real(3 - 2 * child, dp)
+    hydro_start_set%children(child)%state = factor * &
+      hydro_start_set%children(child)%state
+  end do
+  call assert_all(hydro_start_set%is_valid(coarse_geometry, nvar), &
+    "MPI EB AMR hydro start hierarchy", rank)
+  hydro_dt = chemistry_interval
+  allocate(hydro_reference_state, mold=coarse_state)
+  allocate(hydro_reference_temperature, mold=coarse_temperature)
+  call advance_reactive_eb_patch_set_hydro_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    hydro_start_set, "hllc", "pcm", "mc", 2, hydro_dt, &
+    hydro_reference_state, hydro_reference_temperature, &
+    hydro_reference_set, ok, &
+    state_redist_target_volume_fraction=0.5_dp)
+  call assert_all(ok, "serial EB AMR hydro reference", rank)
+
+  allocate(hydro_mpi_state, source=coarse_state)
+  allocate(hydro_mpi_temperature, source=coarse_temperature)
+  hydro_mpi_set = hydro_start_set
+  call advance_owned_reactive_eb_patch_set_hydro_2d( &
+    species, distribution, hydro_mpi_state, hydro_mpi_temperature, &
+    coarse_geometry, hydro_mpi_set, "hllc", "pcm", "mc", 2, hydro_dt, &
+    ok, local_advances, 0.5_dp)
+  call assert_all(ok, "MPI owner-only EB AMR hydro", rank)
+  expected_local_advances = 0
+  if (rank == distribution%root_level_owner()) &
+    expected_local_advances = expected_local_advances + 1
+  expected_global_advances = 1
+  do child = 1, distribution%child_count()
+    expected_global_advances = expected_global_advances + &
+      hydro_start_set%children(child)%patch%refinement_ratio
+    if (distribution%child_is_local(child)) &
+      expected_local_advances = expected_local_advances + &
+        hydro_start_set%children(child)%patch%refinement_ratio
+  end do
+  call MPI_Allreduce( &
+    local_advances, global_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_advances == expected_local_advances .and. &
+    global_advances == expected_global_advances, &
+    "MPI EB AMR one hydro advance per owner interval", rank)
+  hydro_scale = max(1.0_dp, maxval(abs(hydro_reference_state)))
+  call assert_all(maxval(abs(hydro_mpi_state - hydro_reference_state)) <= &
+    8.0e-12_dp * hydro_scale .and. &
+    maxval(abs(hydro_mpi_temperature - hydro_reference_temperature)) <= &
+      8.0e-12_dp * max(1.0_dp, &
+        maxval(abs(hydro_reference_temperature))), &
+    "MPI EB AMR hydro serial root parity", rank)
+  do child = 1, hydro_mpi_set%patch_count()
+    call assert_all(maxval(abs(hydro_mpi_set%children(child)%state - &
+      hydro_reference_set%children(child)%state)) <= &
+        8.0e-12_dp * hydro_scale .and. &
+      maxval(abs(hydro_mpi_set%children(child)%temperature - &
+        hydro_reference_set%children(child)%temperature)) <= &
+          8.0e-12_dp * max(1.0_dp, maxval(abs( &
+            hydro_reference_set%children(child)%temperature))), &
+      "MPI EB AMR hydro serial child parity", rank)
+  end do
+  hydro_change = maxval(abs(hydro_reference_state - coarse_state))
+  do child = 1, hydro_reference_set%patch_count()
+    hydro_change = max(hydro_change, maxval(abs( &
+      hydro_reference_set%children(child)%state - &
+      hydro_start_set%children(child)%state)))
+  end do
+  call assert_all(hydro_change > 1.0e-14_dp * hydro_scale, &
+    "MPI EB AMR hydro changes nonuniform hierarchy", rank)
+
+  allocate(hydro_failed_state, source=coarse_state)
+  allocate(hydro_failed_temperature, source=coarse_temperature)
+  hydro_failed_set = hydro_start_set
+  child = hydro_failed_set%patch_count()
+  if (distribution%child_is_local(child)) &
+    hydro_failed_set%children(child)%state(irho, :, :) = -1.0_dp
+  allocate(hydro_failed_backup_state, source=hydro_failed_state)
+  allocate(hydro_failed_backup_temperature, source=hydro_failed_temperature)
+  hydro_failed_backup_set = hydro_failed_set
+  call advance_owned_reactive_eb_patch_set_hydro_2d( &
+    species, distribution, hydro_failed_state, hydro_failed_temperature, &
+    coarse_geometry, hydro_failed_set, "hllc", "pcm", "mc", 2, hydro_dt, &
+    ok, local_advances, 0.5_dp)
+  call assert_all(.not. ok .and. local_advances == 0 .and. &
+    all(hydro_failed_state == hydro_failed_backup_state) .and. &
+    all(hydro_failed_temperature == hydro_failed_backup_temperature), &
+    "MPI EB AMR late hydro failure root rollback", rank)
+  do child = 1, hydro_failed_set%patch_count()
+    call assert_all(all(hydro_failed_set%children(child)%state == &
+      hydro_failed_backup_set%children(child)%state) .and. &
+      all(hydro_failed_set%children(child)%temperature == &
+        hydro_failed_backup_set%children(child)%temperature), &
+      "MPI EB AMR late hydro failure child rollback", rank)
+  end do
+
   invalid_distribution = distribution
   invalid_distribution%root_tiles(1)%owner = nranks
   call synchronize_owned_reactive_eb_patch_set_2d( &
@@ -369,7 +480,7 @@ program pelef_mpi_eb_amr_patch_2d
 
   if (rank == 0) then
     write(*, '(a)') "PeleF " // pelef_version // &
-      " MPI EB AMR ownership and chemistry 2D: PASS"
+      " MPI EB AMR owner physics 2D: PASS"
     write(*, '(a,i0)') "MPI ranks: ", nranks
     write(*, '(a,i0)') "Root tiles: ", distribution%root_tile_count()
     write(*, '(a,i0)') "Fine sibling patches: ", distribution%child_count()
