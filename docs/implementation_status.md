@@ -1820,3 +1820,22 @@ The public three-level lifecycle can now move and resize its finest rectangle
 inside a fixed middle level. Finest removal, dynamic middle/root topology,
 sibling finest patches, checkpoint/restart after topology changes, molecular
 transport, arbitrary depth, and MPI ownership remain separate work.
+
+## Dynamic three-level topology checkpoint/restart (`0.105.0`)
+
+- [x] distinct dynamic three-level checkpoint magic and schema
+- [x] committed finest bounds and refinement-ratio persistence
+- [x] accepted time, minimum timestep, step and regrid-count recovery
+- [x] regrid cadence, tag threshold, buffer, and size compatibility checks
+- [x] private reconstruction of the stored finest geometry
+- [x] all-level EOS temperature recovery and transactional publication
+- [x] unchanged static three-level, single-patch, and patch-set schemas
+- [x] uninterrupted versus restarted root/middle/finest field parity
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Dynamic three-level restart now resumes the committed finest topology rather
+than the configured seed and retains regrid accounting across the split.
+Finest removal or siblings, dynamic middle/root topology, molecular transport,
+arbitrary depth, parallel checkpoint I/O, and MPI ownership remain separate
+work.

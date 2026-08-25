@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.104.0` milestone contains the serial verification suite, seven optional
+The `0.105.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -50,7 +50,9 @@ accepted time and step accounting, and the full nested topology for a
 transactional serial restart. With dynamic regridding enabled, the middle
 level remains fixed while EB-aware temperature-gradient tags can move and
 resize the finest patch transactionally after initialization and accepted
-steps.
+steps. A distinct dynamic three-level checkpoint stores that committed finest
+rectangle, regrid count and compatibility controls so a split run resumes the
+actual hierarchy and cadence rather than the configured seed.
 
 ### `pelef`: one-dimensional Euler solver
 

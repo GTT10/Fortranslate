@@ -1890,10 +1890,10 @@ Strang transaction before time, step count, and minimum accepted timestep are
 updated. Initialization uses PCM prolongation first from root to middle and
 then from middle to finest, so all levels begin EOS-consistent and synchronized.
 
-The checkpointable form of this public mode is static. Namelist validation
-always rejects multipatch ownership and colliding output paths when
-`three_level_enabled` is selected. Selecting dynamic regridding instead uses
-the finest-only lifecycle below and rejects checkpoint/restart controls.
+Namelist validation always rejects multipatch ownership and colliding output
+paths when `three_level_enabled` is selected. Static and dynamic three-level
+modes use distinct checkpoint magics so their topology contracts cannot be
+misinterpreted.
 
 ## Static three-level EB AMR checkpoint transaction
 
@@ -1935,5 +1935,21 @@ published together.
 The same transaction may run after initialization and after any accepted root
 step selected by `regrid_interval`. The initial composite integral is measured
 after an initialization-time topology change. Finest removal, changing the
-root-to-middle patch, sibling finest patches, and checkpoint/restart of a
-dynamic topology remain outside this mode.
+root-to-middle patch, and sibling finest patches remain outside this mode.
+
+## Dynamic three-level checkpoint transaction
+
+The dynamic format extends the three-level compatibility contract without
+changing the static stream. It stores the actual finest rectangle after any
+committed regrid, the accepted regrid count, and every control that can change
+future tag planning: interval, initialization flag, relative and absolute
+temperature thresholds, scale floor, buffer, minimum dimensions, and maximum
+patch gap.
+
+Restart first validates the fixed root-to-middle rectangle and all physics and
+regrid controls. It then validates the stored finest bounds against the
+two-cell middle margin, builds that geometry rather than the namelist seed,
+loads all three fields into private candidates, and recovers active
+temperatures from conserved state. Time, minimum timestep, step count, regrid
+count, topology, and fields publish together only after a complete end marker.
+Checkpoint scheduling and output paths remain restart-adjustable.
