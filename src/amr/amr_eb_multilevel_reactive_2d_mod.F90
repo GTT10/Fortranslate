@@ -82,7 +82,8 @@ contains
     real(dp), allocatable :: level_one_y_flux(:, :, :)
     real(dp), allocatable :: level_two_x_flux(:, :, :)
     real(dp), allocatable :: level_two_y_flux(:, :, :)
-    real(dp), allocatable :: debug_before(:), debug_after(:)
+    real(dp), allocatable :: debug_before(:), debug_raw(:)
+    real(dp), allocatable :: debug_reflux(:), debug_after(:)
     real(dp) :: level_one_dt, level_two_dt, alpha, selected_target
     logical :: local_ok
     integer :: nvar, level_one_ratio, level_two_ratio
@@ -178,7 +179,8 @@ contains
       nvar, 0:level_two_geometry%nx, level_two_geometry%ny))
     allocate(level_two_y_flux( &
       nvar, level_two_geometry%nx, 0:level_two_geometry%ny))
-    allocate(debug_before(nvar), debug_after(nvar))
+    allocate(debug_before(nvar), debug_raw(nvar))
+    allocate(debug_reflux(nvar), debug_after(nvar))
 
     level_one_ratio = root_patch%refinement_ratio
     level_two_ratio = level_one_patch%refinement_ratio
@@ -247,6 +249,11 @@ contains
         if (.not. local_ok) return
       end do
 
+      call composite_eb_integral_2d( &
+        level_one_uncorrected, level_one_geometry, level_two_candidate, &
+        level_two_geometry, level_one_patch, debug_raw, local_ok)
+      if (.not. local_ok) return
+
       call reflux_reactive_eb_state_patch_2d( &
         species, level_one_uncorrected, &
         level_one_uncorrected_temperature, level_one_geometry, &
@@ -254,6 +261,10 @@ contains
         level_two_geometry, level_one_patch, level_one_register, &
         level_one_refluxed, level_one_refluxed_temperature, &
         level_two_refluxed, level_two_refluxed_temperature, local_ok)
+      if (.not. local_ok) return
+      call composite_eb_integral_2d( &
+        level_one_refluxed, level_one_geometry, level_two_refluxed, &
+        level_two_geometry, level_one_patch, debug_reflux, local_ok)
       if (.not. local_ok) return
       call average_down_reactive_eb_state_patch_2d( &
         species, level_one_refluxed, level_one_refluxed_temperature, &
@@ -271,6 +282,12 @@ contains
         "inner composite delta step ", level_one_substep, &
         debug_after(1) - debug_before(1), &
         debug_after(5) - debug_before(5)
+      write(*, '(a,i0,4(es24.16,1x))') &
+        "inner raw/reflux delta step ", level_one_substep, &
+        debug_reflux(1) - debug_raw(1), &
+        debug_reflux(5) - debug_raw(5), &
+        debug_reflux(1) - debug_before(1), &
+        debug_reflux(5) - debug_before(5)
     end do
 
     call composite_three_level_eb_integral_2d( &
