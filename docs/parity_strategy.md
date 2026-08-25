@@ -1737,3 +1737,21 @@ finite positive active thermodynamics, identical EB classification, and
 species closure within `8e-12`. The conducting composite hierarchy
 temperature span must be measurably smaller. These focused gates must pass
 before all 208 tests in GNU Fortran Debug and Release configurations.
+
+## 0.110.0 MPI reactive EB AMR ownership gates
+
+The MPI gate constructs the qualified 14 by 14 plane-EB root and two separated
+ratio-two 10 by 10 children independently on every rank. A collective
+topology check must accept identical descriptors. The deterministic
+parabolic-work schedule must account for 196 root cells plus two children at
+`100 * r^2` work each, give every tested rank a root tile, and assign every
+entity exactly once.
+
+Each owner writes a distinct but physically valid scaled reactive payload
+while nonowners retain stale finite replicas. Synchronization must recover the
+exact owner state and temperature for every root tile and child on every rank.
+An out-of-range owner must reject without changing outputs, a rank-dependent
+work exponent must reject collectively, and exponent three must reject on all
+ranks. The executable must pass with OpenMPI at one, two, four, and eight
+ranks in GNU Fortran Release and bounds/FPE-checked Debug builds before the
+complete 208-test serial regression in each MPI configuration.

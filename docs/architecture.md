@@ -2,7 +2,7 @@
 
 ## Executable split
 
-PeleF exposes twelve serial verification drivers and seven optional MPI drivers
+PeleF exposes twelve serial verification drivers and eight optional MPI drivers
 over shared numerical and physical-property modules.
 
 ```text
@@ -1166,11 +1166,23 @@ recovers every corrected temperature through the EOS. Two complete
 synchronized Euler transactions form SSPRK2, and the public driver includes
 all child parabolic limits in the root timestep.
 
+In `0.110.0`, `mpi_amr_eb_patch_2d_mod` introduces a distribution boundary
+without importing MPI into the serial EB AMR modules. Replicated ranks first
+prove exact agreement on root extent, child bounds, refinement ratios, and EB
+geometry summaries. The root is split into contiguous y-tiles and each fine
+sibling remains one entity. A deterministic greedy scheduler assigns their
+64-bit raw, `r`, or `r^2` work to unique owners. The correctness bridge keeps
+field replicas but broadcasts each root tile and child state/temperature only
+from its owner. Invalid maps or inconsistent work exponents are rejected
+collectively before owner-dependent communication, and outputs remain
+unchanged on failure.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
-non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
-subsystem. Dynamic three-level mode changes only the finest patch inside a
+non-outflow refined boundaries, direct MPI EB physics, sparse EB field
+storage, and distributed EB flux registers remain outside this subsystem.
+Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

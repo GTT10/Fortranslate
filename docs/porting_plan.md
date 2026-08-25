@@ -654,6 +654,9 @@ Required capabilities:
 - [x] two-level sibling-patch EB molecular transport with one coarse update,
   per-child subcycling/reflux, set-wide synchronization, and rollback
   (`0.109.0`)
+- [x] deterministic MPI ownership of root tiles and sibling EB patches with
+  subcycle-weighted work and owner-authoritative synchronization (`0.110.0`)
+- direct owner-only MPI EB AMR physics and sparse rank-local field storage
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

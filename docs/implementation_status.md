@@ -1918,3 +1918,24 @@ qualified mixture molecular-transport subset. Same-level diffusive exchange
 for touching siblings, coarse-to-fine spatial slopes, non-outflow refined
 boundaries, thermal or catalytic embedded walls, transport checkpoint/restart,
 MPI ownership, and parallel transport remain separate work.
+
+## MPI ownership foundation for reactive EB AMR 2D (`0.110.0`)
+
+- [x] replicated root and sibling-patch topology consensus
+- [x] contiguous nonoverlapping root y-tiles for every tested rank
+- [x] unique deterministic owner for every root tile and fine child
+- [x] raw, hyperbolic, or parabolic subcycle-weighted work models
+- [x] 64-bit entity and per-rank work accounting
+- [x] greedy deterministic load assignment with stable tie breaking
+- [x] owner-authoritative root state and temperature synchronization
+- [x] owner-authoritative child state and temperature synchronization
+- [x] collective inconsistent-work-model rejection
+- [x] transactional rollback for an invalid owner map
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The EB AMR MPI layer now owns distribution metadata and a correctness-first
+replicated synchronization bridge. Direct rank-local EB physics, sparse field
+storage, point-to-point coarse/fine traffic, distributed flux registers,
+topology migration, parallel checkpoint I/O, and a public distributed time
+loop remain separate work.
