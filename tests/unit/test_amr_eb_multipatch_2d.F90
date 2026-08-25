@@ -5,13 +5,22 @@ program test_amr_eb_multipatch_2d
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
-  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
+  use mixture_thermo_mod, only: &
+    mass_fractions_from_mole_fractions, mixture_mass_properties
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved
-  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, build_reactive_boundary_set_2d
+  use simulation_config_reactive_2d_mod, only: reactive_2d_config
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
+  use eb_reactive_transport_2d_mod, only: &
+    reactive_eb_transport_timestep_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_regrid_2d_mod, only: &
@@ -24,6 +33,8 @@ program test_amr_eb_multipatch_2d
     advance_reactive_eb_patch_set_hydro_2d
   use reactive_eb_amr_2d_driver_mod, only: &
     advance_reactive_eb_patch_set_strang_2d
+  use amr_eb_multipatch_transport_2d_mod, only: &
+    advance_reactive_eb_patch_set_transport_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -37,8 +48,13 @@ program test_amr_eb_multipatch_2d
   type(reactive_eb_patch_set_2d) :: old_set, new_set, removed_set
   type(reactive_eb_patch_set_2d) :: hydro_set, failed_set
   type(reactive_eb_patch_set_2d) :: chemistry_set, chemistry_failed_set
+  type(reactive_eb_patch_set_2d) :: transport_set, transport_new_set
+  type(reactive_eb_patch_set_2d) :: transport_failed_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  type(reactive_2d_config) :: transport_config
+  type(reactive_boundary_set_2d) :: boundaries
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -48,9 +64,15 @@ program test_amr_eb_multipatch_2d
   real(dp), allocatable :: new_coarse_temperature(:, :)
   real(dp), allocatable :: chemistry_coarse_state(:, :, :)
   real(dp), allocatable :: chemistry_coarse_temperature(:, :)
+  real(dp), allocatable :: transport_coarse_state(:, :, :)
+  real(dp), allocatable :: transport_coarse_temperature(:, :)
+  real(dp), allocatable :: transport_new_coarse_state(:, :, :)
+  real(dp), allocatable :: transport_new_coarse_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: dt, factor, integral_scale, reaction_change, state_scale
+  real(dp) :: coarse_transport_dt, fine_transport_dt, transport_interval
+  real(dp) :: maximum_diffusivity, initial_span, final_span, minimum_theta
   character(len=64) :: hydro_failure_context
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
@@ -70,6 +92,8 @@ program test_amr_eb_multipatch_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "multipatch thermodynamic database")
+  call load_h2o2_elementary_transport(transport, ok)
+  call require(ok, "multipatch transport database")
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "multipatch elementary kinetics")
   nvar = reactive_nvar(size(species))
@@ -130,6 +154,107 @@ program test_amr_eb_multipatch_2d
   old_set%children(2)%state = 0.99_dp * old_set%children(2)%state
   call require(old_set%is_valid(coarse_geometry, nvar), &
     "nonmatching multipatch hydro state")
+
+  allocate(transport_coarse_state, source=coarse_state)
+  allocate(transport_coarse_temperature, source=coarse_temperature)
+  allocate(transport_new_coarse_state, mold=coarse_state)
+  allocate(transport_new_coarse_temperature, mold=coarse_temperature)
+  transport_set = old_set
+  call impose_double_hotspot( &
+    species, mass_fractions, coarse_geometry, transport_coarse_state, &
+    transport_coarse_temperature, ok)
+  call require(ok, "multipatch coarse transport hotspot")
+  do child = 1, transport_set%patch_count()
+    call impose_double_hotspot( &
+      species, mass_fractions, transport_set%children(child)%geometry, &
+      transport_set%children(child)%state, &
+      transport_set%children(child)%temperature, ok)
+    call require(ok, "multipatch fine transport hotspot")
+  end do
+  transport_config%initial_temperature = temperature_cell
+  transport_config%initial_pressure = 135000.0_dp
+  transport_config%initial_velocity_x = 0.0_dp
+  transport_config%initial_velocity_y = 0.0_dp
+  transport_config%boundary_x_lower = "outflow"
+  transport_config%boundary_x_upper = "outflow"
+  transport_config%boundary_y_lower = "outflow"
+  transport_config%boundary_y_upper = "outflow"
+  transport_config%transport_enabled = .true.
+  transport_config%viscosity_enabled = .false.
+  transport_config%thermal_conduction_enabled = .true.
+  transport_config%species_diffusion_enabled = .false.
+  transport_config%barodiffusion_enabled = .false.
+  call build_reactive_boundary_set_2d( &
+    species, transport_config, boundaries, ok)
+  call require(ok, "multipatch transport boundaries")
+  call composite_reactive_eb_patch_set_integral_2d( &
+    transport_coarse_state, coarse_geometry, transport_set, &
+    integral_before, ok)
+  call require(ok, "initial multipatch transport integral")
+  initial_span = patch_set_temperature_span( &
+    transport_coarse_temperature, coarse_geometry, transport_set)
+  call reactive_eb_transport_timestep_2d( &
+    species, transport, transport_coarse_state, &
+    transport_coarse_temperature, coarse_geometry, 0.30_dp, .false., &
+    .true., .false., coarse_transport_dt, maximum_diffusivity, ok)
+  call require(ok .and. coarse_transport_dt > 0.0_dp, &
+    "multipatch coarse transport timestep")
+  transport_interval = 0.25_dp * coarse_transport_dt
+  do child = 1, transport_set%patch_count()
+    call reactive_eb_transport_timestep_2d( &
+      species, transport, transport_set%children(child)%state, &
+      transport_set%children(child)%temperature, &
+      transport_set%children(child)%geometry, 0.30_dp, .false., .true., &
+      .false., fine_transport_dt, maximum_diffusivity, ok)
+    call require(ok .and. fine_transport_dt > 0.0_dp, &
+      "multipatch fine transport timestep")
+    transport_interval = min(transport_interval, 0.25_dp * &
+      real(transport_set%children(child)%patch%refinement_ratio, dp) * &
+      fine_transport_dt)
+  end do
+  call advance_reactive_eb_patch_set_transport_2d( &
+    species, transport, transport_coarse_state, &
+    transport_coarse_temperature, coarse_geometry, transport_set, &
+    transport_interval, .false., .true., .false., .false., boundaries, &
+    0.5_dp, 2, transport_new_coarse_state, &
+    transport_new_coarse_temperature, transport_new_set, minimum_theta, &
+    ok, failure_context=hydro_failure_context)
+  if (.not. ok) write(*, '(a)') trim(hydro_failure_context)
+  call require(ok .and. minimum_theta > 0.999999999_dp .and. &
+    transport_new_set%is_valid(coarse_geometry, nvar), &
+    "subcycled multipatch EB transport")
+  call composite_reactive_eb_patch_set_integral_2d( &
+    transport_new_coarse_state, coarse_geometry, transport_new_set, &
+    integral_after, ok)
+  integral_scale = max(1.0_dp, maxval(abs(integral_before)))
+  call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
+    5.0e-10_dp * integral_scale, "multipatch transport conservation")
+  final_span = patch_set_temperature_span( &
+    transport_new_coarse_temperature, coarse_geometry, transport_new_set)
+  call require(final_span < initial_span, &
+    "multipatch conduction reduces hierarchy temperature span")
+  call assert_patch_set_covered_unchanged( &
+    transport_coarse_state, transport_set, transport_new_coarse_state, &
+    transport_new_set, coarse_geometry, "multipatch covered state unchanged")
+
+  call advance_reactive_eb_patch_set_transport_2d( &
+    species, transport, transport_coarse_state, &
+    transport_coarse_temperature, coarse_geometry, transport_set, &
+    -transport_interval, .false., .true., .false., .false., boundaries, &
+    0.5_dp, 2, transport_new_coarse_state, &
+    transport_new_coarse_temperature, transport_failed_set, minimum_theta, &
+    ok)
+  call require(.not. ok .and. &
+    all(transport_new_coarse_state == transport_coarse_state) .and. &
+    all(transport_new_coarse_temperature == transport_coarse_temperature), &
+    "invalid multipatch transport coarse rollback")
+  do child = 1, transport_set%patch_count()
+    call require(all(transport_failed_set%children(child)%state == &
+      transport_set%children(child)%state) .and. &
+      all(transport_failed_set%children(child)%temperature == &
+        transport_set%children(child)%temperature), &
+      "invalid multipatch transport fine rollback")
+  end do
 
   call composite_reactive_eb_patch_set_integral_2d( &
     coarse_state, coarse_geometry, old_set, integral_before, ok)
@@ -357,6 +482,129 @@ program test_amr_eb_multipatch_2d
   write(*, '(a)') "test_amr_eb_multipatch_2d: PASS"
 
 contains
+
+  subroutine impose_double_hotspot( &
+      thermo_species, composition, geometry, state, temperature, valid)
+    type(nasa7_species), intent(in) :: thermo_species(:)
+    real(dp), intent(in) :: composition(:)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
+    logical, intent(out) :: valid
+
+    real(dp) :: molecular_weight, gas_constant, cp, cv, gamma
+    real(dp) :: enthalpy, internal_energy, entropy, local_temperature
+    real(dp) :: local_x, local_y
+    logical :: properties_ok
+    integer :: local_i, local_j
+
+    valid = .false.
+    do local_j = 1, geometry%ny
+      local_y = geometry%y_lower + &
+        (real(local_j, dp) - 0.5_dp) * geometry%dy
+      do local_i = 1, geometry%nx
+        local_x = geometry%x_lower + &
+          (real(local_i, dp) - 0.5_dp) * geometry%dx
+        local_temperature = temperature_cell + &
+          180.0_dp * exp(-((local_x - 0.26_dp)**2 + &
+            (local_y - 0.58_dp)**2) / 0.008_dp) + &
+          140.0_dp * exp(-((local_x - 0.78_dp)**2 + &
+            (local_y - 0.77_dp)**2) / 0.006_dp)
+        call mixture_mass_properties( &
+          thermo_species, composition, local_temperature, molecular_weight, &
+          gas_constant, cp, cv, gamma, enthalpy, internal_energy, entropy, &
+          properties_ok)
+        if (.not. properties_ok) return
+        state(iet, local_i, local_j) = &
+          state(irho, local_i, local_j) * internal_energy
+        temperature(local_i, local_j) = local_temperature
+      end do
+    end do
+    valid = .true.
+  end subroutine impose_double_hotspot
+
+  real(dp) function patch_set_temperature_span( &
+      root_temperature, root_geometry, patch_set) result(span)
+    real(dp), intent(in) :: root_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+
+    real(dp) :: minimum_temperature, maximum_temperature
+    integer :: local_child, local_i, local_j
+
+    minimum_temperature = huge(1.0_dp)
+    maximum_temperature = -huge(1.0_dp)
+    do local_j = 1, root_geometry%ny
+      do local_i = 1, root_geometry%nx
+        if (root_geometry%cell_type(local_i, local_j) == eb_covered_cell .or. &
+            coarse_cell_is_refined(patch_set, local_i, local_j)) cycle
+        minimum_temperature = min( &
+          minimum_temperature, root_temperature(local_i, local_j))
+        maximum_temperature = max( &
+          maximum_temperature, root_temperature(local_i, local_j))
+      end do
+    end do
+    do local_child = 1, patch_set%patch_count()
+      do local_j = 1, patch_set%children(local_child)%geometry%ny
+        do local_i = 1, patch_set%children(local_child)%geometry%nx
+          if (patch_set%children(local_child)%geometry%cell_type( &
+              local_i, local_j) == eb_covered_cell) cycle
+          minimum_temperature = min(minimum_temperature, &
+            patch_set%children(local_child)%temperature(local_i, local_j))
+          maximum_temperature = max(maximum_temperature, &
+            patch_set%children(local_child)%temperature(local_i, local_j))
+        end do
+      end do
+    end do
+    span = maximum_temperature - minimum_temperature
+  end function patch_set_temperature_span
+
+  pure logical function coarse_cell_is_refined(patch_set, i, j) &
+      result(refined)
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    integer, intent(in) :: i, j
+    integer :: local_child
+
+    refined = .false.
+    do local_child = 1, patch_set%patch_count()
+      refined = &
+        i >= patch_set%children(local_child)%patch%coarse_i_lower .and. &
+        i <= patch_set%children(local_child)%patch%coarse_i_upper .and. &
+        j >= patch_set%children(local_child)%patch%coarse_j_lower .and. &
+        j <= patch_set%children(local_child)%patch%coarse_j_upper
+      if (refined) return
+    end do
+  end function coarse_cell_is_refined
+
+  subroutine assert_patch_set_covered_unchanged( &
+      original_root, original_set, candidate_root, candidate_set, &
+      root_geometry, message)
+    real(dp), intent(in) :: original_root(:, :, :), candidate_root(:, :, :)
+    type(reactive_eb_patch_set_2d), intent(in) :: original_set, candidate_set
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    character(len=*), intent(in) :: message
+    integer :: local_child, local_i, local_j
+
+    do local_j = 1, root_geometry%ny
+      do local_i = 1, root_geometry%nx
+        if (root_geometry%cell_type(local_i, local_j) /= &
+            eb_covered_cell) cycle
+        call require(all(candidate_root(:, local_i, local_j) == &
+          original_root(:, local_i, local_j)), message)
+      end do
+    end do
+    do local_child = 1, original_set%patch_count()
+      do local_j = 1, original_set%children(local_child)%geometry%ny
+        do local_i = 1, original_set%children(local_child)%geometry%nx
+          if (original_set%children(local_child)%geometry%cell_type( &
+              local_i, local_j) /= eb_covered_cell) cycle
+          call require(all(candidate_set%children(local_child)%state( &
+            :, local_i, local_j) == &
+            original_set%children(local_child)%state(:, local_i, local_j)), &
+            message)
+        end do
+      end do
+    end do
+  end subroutine assert_patch_set_covered_unchanged
 
   subroutine build_patch_geometry( &
       root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &

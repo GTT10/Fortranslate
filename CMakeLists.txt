@@ -58,6 +58,7 @@ add_library(
   src/eb/eb_reactive_transport_2d_mod.F90
   src/amr/amr_eb_transport_2d_mod.F90
   src/amr/amr_eb_multilevel_transport_2d_mod.F90
+  src/amr/amr_eb_multipatch_transport_2d_mod.F90
   src/driver/reactive_eb_2d_driver_mod.F90
   src/driver/reactive_eb_amr_2d_driver_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
