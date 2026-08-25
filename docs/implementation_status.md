@@ -1898,3 +1898,23 @@ mixture molecular-transport subset for static or movable finest rectangles.
 Multipatch transport, coarse-to-fine spatial slopes, non-outflow refined
 boundaries, thermal or catalytic embedded walls, transport checkpoint/restart,
 MPI ownership, and parallel transport remain separate work.
+
+## Multipatch reactive EB AMR molecular transport (`0.109.0`)
+
+- [x] one coarse EB transport update shared by all sibling patches
+- [x] independent time-integrated diffusive flux register per child
+- [x] ratio-subcycled fine transport with coarse-time exterior interpolation
+- [x] sequential disjoint-interface reflux and set-wide reactive average-down
+- [x] one global EB-cut composite conservation closure per Euler stage
+- [x] density/species-consistent correction and EOS temperature recovery
+- [x] SSPRK2 transaction with exact whole-patch-set rollback
+- [x] all-child root-equivalent parabolic stability limits
+- [x] transactional `R-T-H-T-R` multipatch driver composition
+- [x] public inert/conducting double-hotspot comparison gate
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public dynamic two-level sibling-patch EB AMR lifecycle now runs the
+qualified mixture molecular-transport subset. Same-level diffusive exchange
+for touching siblings, coarse-to-fine spatial slopes, non-outflow refined
+boundaries, thermal or catalytic embedded walls, transport checkpoint/restart,
+MPI ownership, and parallel transport remain separate work.

@@ -2007,6 +2007,49 @@ set_tests_properties(
   PROPERTIES DEPENDS regression_reactive_eb_amr_multipatch_2d_run
 )
 
+set(REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_multipatch_transport_2d")
+file(MAKE_DIRECTORY
+  "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_amr_multipatch_transport_2d_reference
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_multipatch_transport_2d/reference.nml"
+)
+add_test(
+  NAME regression_reactive_eb_amr_multipatch_transport_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_multipatch_transport_2d/transport.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_multipatch_transport_2d_reference
+  regression_reactive_eb_amr_multipatch_transport_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_eb_amr_multipatch_transport_2d_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_amr_multipatch_transport_2d.py"
+    --reference-root
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_reference_root.csv"
+    --reference-fine
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_reference_fine_patch0001.csv"
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_reference_fine_patch0002.csv"
+    --transport-root
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_root.csv"
+    --transport-fine
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_fine_patch0001.csv"
+      "${REACTIVE_EB_AMR_MULTIPATCH_TRANSPORT_2D_WORK_DIRECTORY}/multipatch_transport_fine_patch0002.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_multipatch_transport_2d_check
+  PROPERTIES DEPENDS
+    "regression_reactive_eb_amr_multipatch_transport_2d_reference;regression_reactive_eb_amr_multipatch_transport_2d_run"
+)
+
 set(REACTIVE_EB_AMR_MULTIPATCH_RESTART_2D_WORK_DIRECTORY
   "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_multipatch_restart_2d")
 file(MAKE_DIRECTORY

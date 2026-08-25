@@ -34,6 +34,8 @@ module reactive_eb_amr_2d_driver_mod
     advance_three_level_reactive_eb_hydro_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
+  use amr_eb_multipatch_transport_2d_mod, only: &
+    advance_reactive_eb_patch_set_transport_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
     amr_eb_regrid_plan_collection_2d, &
@@ -101,8 +103,7 @@ contains
       ieee_is_finite(config%eb%flow%cfl) .and. &
       config%eb%flow%cfl > 0.0_dp .and. config%eb%flow%cfl <= 0.8_dp .and. &
       (.not. config%eb%flow%transport_enabled .or. &
-       (.not. config%multipatch_enabled .and. &
-        len_trim(config%checkpoint_file) == 0 .and. &
+       (len_trim(config%checkpoint_file) == 0 .and. &
         len_trim(config%restart_file) == 0)) .and. &
       ieee_is_finite(config%eb%flow%chemistry_relative_tolerance) .and. &
       config%eb%flow%chemistry_relative_tolerance > 0.0_dp .and. &
@@ -734,7 +735,9 @@ contains
       patch_set, solver, reconstruction, limiter, state_redist_max_order, &
       dt, chemistry_enabled, rtol, atol, new_coarse_state, &
       new_coarse_temperature, new_patch_set, ok, target_volume_fraction, &
-      failure_context)
+      failure_context, transport, transport_enabled, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, minimum_transport_theta, boundaries)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -750,21 +753,33 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(out), optional :: failure_context
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    logical, intent(in), optional :: transport_enabled, viscosity_enabled
+    logical, intent(in), optional :: thermal_conduction_enabled
+    logical, intent(in), optional :: species_diffusion_enabled
+    logical, intent(in), optional :: barodiffusion_enabled
+    real(dp), intent(out), optional :: minimum_transport_theta
+    type(reactive_boundary_set_2d), intent(in), optional :: boundaries
 
-    type(reactive_eb_patch_set_2d) :: candidate_set, hydro_set
+    type(reactive_eb_patch_set_2d) :: candidate_set, hydro_set, transport_set
     real(dp), allocatable :: candidate_coarse(:, :, :)
     real(dp), allocatable :: candidate_coarse_temperature(:, :)
     real(dp), allocatable :: hydro_coarse(:, :, :)
     real(dp), allocatable :: hydro_coarse_temperature(:, :)
+    real(dp), allocatable :: transport_coarse(:, :, :)
+    real(dp), allocatable :: transport_coarse_temperature(:, :)
     real(dp), allocatable :: synchronized_coarse(:, :, :)
     real(dp), allocatable :: synchronized_coarse_temperature(:, :)
-    logical :: local_ok
+    logical :: local_ok, use_transport, use_viscosity, use_conduction
+    logical :: use_diffusion, use_barodiffusion
+    real(dp) :: selected_target, stage_transport_theta, transport_theta
     integer :: child, nvar
 
     new_coarse_state = 0.0_dp
     new_coarse_temperature = 0.0_dp
     new_patch_set = reactive_eb_patch_set_2d()
     ok = .false.
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (present(failure_context)) failure_context = "input validation"
     nvar = reactive_nvar(size(species))
     if (nvar < 1 .or. &
@@ -776,6 +791,25 @@ contains
     new_patch_set = patch_set
     if (.not. patch_set%is_valid(coarse_geometry, nvar) .or. &
         (chemistry_enabled .and. size(reactions) < 1)) return
+    selected_target = 0.5_dp
+    if (present(target_volume_fraction)) &
+      selected_target = target_volume_fraction
+    use_transport = .false.
+    use_viscosity = .true.
+    use_conduction = .true.
+    use_diffusion = .true.
+    use_barodiffusion = .true.
+    if (present(transport_enabled)) use_transport = transport_enabled
+    if (present(viscosity_enabled)) use_viscosity = viscosity_enabled
+    if (present(thermal_conduction_enabled)) &
+      use_conduction = thermal_conduction_enabled
+    if (present(species_diffusion_enabled)) &
+      use_diffusion = species_diffusion_enabled
+    if (present(barodiffusion_enabled)) &
+      use_barodiffusion = barodiffusion_enabled
+    if (use_transport .and. .not. present(transport)) return
+    if (use_transport .and. .not. present(boundaries)) return
+    transport_theta = 1.0_dp
 
     allocate(candidate_coarse, source=coarse_state)
     allocate(candidate_coarse_temperature, source=coarse_temperature)
@@ -798,6 +832,25 @@ contains
       end do
     end if
 
+    if (use_transport) then
+      allocate(transport_coarse, mold=coarse_state)
+      allocate(transport_coarse_temperature, mold=coarse_temperature)
+      if (present(failure_context)) &
+        failure_context = "first multipatch transport half-step"
+      call advance_reactive_eb_patch_set_transport_2d( &
+        species, transport, candidate_coarse, candidate_coarse_temperature, &
+        coarse_geometry, candidate_set, 0.5_dp * dt, use_viscosity, &
+        use_conduction, use_diffusion, use_barodiffusion, boundaries, &
+        selected_target, state_redist_max_order, transport_coarse, &
+        transport_coarse_temperature, transport_set, stage_transport_theta, &
+        local_ok, failure_context)
+      if (.not. local_ok) return
+      candidate_coarse = transport_coarse
+      candidate_coarse_temperature = transport_coarse_temperature
+      candidate_set = transport_set
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
+
     allocate(hydro_coarse, mold=coarse_state)
     allocate(hydro_coarse_temperature, mold=coarse_temperature)
     if (present(failure_context)) failure_context = "multipatch hydro"
@@ -810,6 +863,23 @@ contains
     candidate_coarse = hydro_coarse
     candidate_coarse_temperature = hydro_coarse_temperature
     candidate_set = hydro_set
+
+    if (use_transport) then
+      if (present(failure_context)) &
+        failure_context = "second multipatch transport half-step"
+      call advance_reactive_eb_patch_set_transport_2d( &
+        species, transport, candidate_coarse, candidate_coarse_temperature, &
+        coarse_geometry, candidate_set, 0.5_dp * dt, use_viscosity, &
+        use_conduction, use_diffusion, use_barodiffusion, boundaries, &
+        selected_target, state_redist_max_order, transport_coarse, &
+        transport_coarse_temperature, transport_set, stage_transport_theta, &
+        local_ok, failure_context)
+      if (.not. local_ok) return
+      candidate_coarse = transport_coarse
+      candidate_coarse_temperature = transport_coarse_temperature
+      candidate_set = transport_set
+      transport_theta = min(transport_theta, stage_transport_theta)
+    end if
 
     if (chemistry_enabled) then
       if (present(failure_context)) &
@@ -843,6 +913,8 @@ contains
     new_coarse_state = candidate_coarse
     new_coarse_temperature = candidate_coarse_temperature
     new_patch_set = candidate_set
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = transport_theta
     ok = .true.
     if (present(failure_context)) failure_context = "none"
   end subroutine advance_reactive_eb_patch_set_strang_2d
@@ -3228,7 +3300,8 @@ contains
   subroutine simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok, failure_context)
+      final_integrals, minimum_dt, base_density, ok, failure_context, &
+      transport, minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -3242,15 +3315,20 @@ contains
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
     character(len=*), intent(out), optional :: failure_context
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     type(amr_eb_regrid_plan_collection_2d) :: initial_collection
     type(reactive_eb_patch_set_2d) :: candidate_set
+    type(reactive_boundary_set_2d) :: boundaries
     type(eb_geometry_2d), allocatable :: fine_geometries(:)
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
     real(dp) :: coarse_dx, coarse_dy, dt, remaining, time_tolerance
+    real(dp) :: coarse_transport_dt, fine_transport_dt, maximum_diffusivity
+    real(dp) :: step_transport_theta, local_minimum_transport_theta
     logical :: changed, local_ok, stopped_after_checkpoint
-    integer :: nvar, last_checkpoint_step
+    integer :: child, nvar, last_checkpoint_step
 
     ok = .false.
     time = 0.0_dp
@@ -3260,12 +3338,18 @@ contains
     base_density = 0.0_dp
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
+    local_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     patch_set = reactive_eb_patch_set_2d()
     if (present(failure_context)) failure_context = "input validation"
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         .not. config%multipatch_enabled .or. &
         config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
+    if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
+    call build_reactive_boundary_set_2d( &
+      species, config%eb%flow, boundaries, local_ok)
+    if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
       call read_reactive_eb_amr_patch_set_2d_checkpoint( &
@@ -3331,28 +3415,78 @@ contains
         species, coarse_state, coarse_temperature, coarse_geometry, &
         patch_set, config%eb%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
+      if (config%eb%flow%transport_enabled) then
+        if (present(failure_context)) &
+          failure_context = "multipatch transport CFL"
+        call reactive_eb_transport_timestep_2d( &
+          species, transport, coarse_state, coarse_temperature, &
+          coarse_geometry, config%eb%flow%transport_cfl, &
+          config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, coarse_transport_dt, &
+          maximum_diffusivity, local_ok)
+        if (.not. local_ok) return
+        dt = min(dt, coarse_transport_dt)
+        do child = 1, patch_set%patch_count()
+          call reactive_eb_transport_timestep_2d( &
+            species, transport, patch_set%children(child)%state, &
+            patch_set%children(child)%temperature, &
+            patch_set%children(child)%geometry, &
+            config%eb%flow%transport_cfl, &
+            config%eb%flow%viscosity_enabled, &
+            config%eb%flow%thermal_conduction_enabled, &
+            config%eb%flow%species_diffusion_enabled, fine_transport_dt, &
+            maximum_diffusivity, local_ok)
+          if (.not. local_ok) return
+          dt = min(dt, real( &
+            patch_set%children(child)%patch%refinement_ratio, dp) * &
+            fine_transport_dt)
+        end do
+      end if
       dt = min(dt, remaining)
       if (allocated(candidate_state)) deallocate(candidate_state)
       if (allocated(candidate_temperature)) deallocate(candidate_temperature)
       allocate(candidate_state, mold=coarse_state)
       allocate(candidate_temperature, mold=coarse_temperature)
       if (present(failure_context)) failure_context = "patch-set advance"
-      call advance_reactive_eb_patch_set_strang_2d( &
-        species, reactions, coarse_state, coarse_temperature, &
-        coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
-        config%eb%flow%reconstruction, config%eb%flow%limiter, &
-        config%eb%state_redist_max_order, dt, &
-        config%eb%flow%chemistry_enabled, &
-        config%eb%flow%chemistry_relative_tolerance, &
-        config%eb%flow%chemistry_absolute_tolerance, candidate_state, &
-        candidate_temperature, candidate_set, local_ok, &
-        config%eb%state_redist_target_volume_fraction, failure_context)
+      if (config%eb%flow%transport_enabled) then
+        call advance_reactive_eb_patch_set_strang_2d( &
+          species, reactions, coarse_state, coarse_temperature, &
+          coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
+          config%eb%flow%reconstruction, config%eb%flow%limiter, &
+          config%eb%state_redist_max_order, dt, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, candidate_state, &
+          candidate_temperature, candidate_set, local_ok, &
+          config%eb%state_redist_target_volume_fraction, failure_context, &
+          transport, config%eb%flow%transport_enabled, &
+          config%eb%flow%viscosity_enabled, &
+          config%eb%flow%thermal_conduction_enabled, &
+          config%eb%flow%species_diffusion_enabled, &
+          config%eb%flow%barodiffusion_enabled, step_transport_theta, &
+          boundaries)
+      else
+        call advance_reactive_eb_patch_set_strang_2d( &
+          species, reactions, coarse_state, coarse_temperature, &
+          coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
+          config%eb%flow%reconstruction, config%eb%flow%limiter, &
+          config%eb%state_redist_max_order, dt, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, candidate_state, &
+          candidate_temperature, candidate_set, local_ok, &
+          config%eb%state_redist_target_volume_fraction, failure_context)
+        step_transport_theta = 1.0_dp
+      end if
       if (.not. local_ok) return
       coarse_state = candidate_state
       coarse_temperature = candidate_temperature
       patch_set = candidate_set
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
+      local_minimum_transport_theta = min( &
+        local_minimum_transport_theta, step_transport_theta)
       steps = steps + 1
       if (modulo(steps, config%regrid_interval) == 0) then
         if (present(failure_context)) failure_context = "periodic regrid"
@@ -3394,6 +3528,8 @@ contains
     if (.not. local_ok) return
     ok = steps > 0 .and. patch_set%is_valid(coarse_geometry, nvar) .and. &
       ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = local_minimum_transport_theta
     if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_reactive_eb_amr_patch_set_2d
 

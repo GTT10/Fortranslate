@@ -87,7 +87,8 @@ program pelef_reactive_eb_amr_2d
     call simulate_reactive_eb_amr_patch_set_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
-      final_integrals, minimum_dt, base_density, ok, message)
+      final_integrals, minimum_dt, base_density, ok, message, transport, &
+      minimum_transport_theta)
     fine_active = .false.
   else
     call simulate_reactive_eb_amr_2d( &

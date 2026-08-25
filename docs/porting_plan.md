@@ -651,7 +651,9 @@ Required capabilities:
   (`0.107.0`)
 - [x] three-level single-patch EB molecular transport with nested subcycling,
   per-interface diffusive reflux, and deepest-first synchronization (`0.108.0`)
-- multipatch EB molecular transport
+- [x] two-level sibling-patch EB molecular transport with one coarse update,
+  per-child subcycling/reflux, set-wide synchronization, and rollback
+  (`0.109.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
