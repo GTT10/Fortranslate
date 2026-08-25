@@ -3,7 +3,10 @@ program test_amr_eb_multipatch_2d
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -19,6 +22,8 @@ program test_amr_eb_multipatch_2d
     composite_reactive_eb_patch_set_integral_2d, &
     regrid_reactive_eb_patch_set_2d, &
     advance_reactive_eb_patch_set_hydro_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    advance_reactive_eb_patch_set_strang_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -31,7 +36,9 @@ program test_amr_eb_multipatch_2d
   type(amr_eb_regrid_plan_collection_2d) :: new_collection
   type(reactive_eb_patch_set_2d) :: old_set, new_set, removed_set
   type(reactive_eb_patch_set_2d) :: hydro_set, failed_set
+  type(reactive_eb_patch_set_2d) :: chemistry_set, chemistry_failed_set
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -39,9 +46,11 @@ program test_amr_eb_multipatch_2d
   real(dp), allocatable :: averaged_temperature(:, :)
   real(dp), allocatable :: new_coarse_state(:, :, :)
   real(dp), allocatable :: new_coarse_temperature(:, :)
+  real(dp), allocatable :: chemistry_coarse_state(:, :, :)
+  real(dp), allocatable :: chemistry_coarse_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
-  real(dp) :: dt, factor, integral_scale, state_scale
+  real(dp) :: dt, factor, integral_scale, reaction_change, state_scale
   character(len=64) :: hydro_failure_context
   logical :: old_tags(coarse_nx, coarse_ny)
   logical :: new_tags(coarse_nx, coarse_ny), ok
@@ -61,6 +70,8 @@ program test_amr_eb_multipatch_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "multipatch thermodynamic database")
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "multipatch elementary kinetics")
   nvar = reactive_nvar(size(species))
   allocate(primitive(reactive_nprim(size(species))))
   allocate(mass_fractions(size(species)), state_cell(nvar))
@@ -83,6 +94,8 @@ program test_amr_eb_multipatch_2d
   allocate(averaged_temperature(coarse_nx, coarse_ny))
   allocate(new_coarse_state(nvar, coarse_nx, coarse_ny))
   allocate(new_coarse_temperature(coarse_nx, coarse_ny))
+  allocate(chemistry_coarse_state(nvar, coarse_nx, coarse_ny))
+  allocate(chemistry_coarse_temperature(coarse_nx, coarse_ny))
   allocate(integral_before(nvar), integral_after(nvar))
   coarse_state = spread(spread(state_cell, 2, coarse_nx), 3, coarse_ny)
   coarse_temperature = temperature_cell
@@ -165,6 +178,62 @@ program test_amr_eb_multipatch_2d
   call require(ok .and. maxval(abs(averaged_state - &
     new_coarse_state)) <= 4.0e-13_dp * state_scale, &
     "multipatch hydro synchronized hierarchy")
+
+  call advance_reactive_eb_patch_set_strang_2d( &
+    species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+    old_set, "hllc", "pcm", "mc", 2, dt, .true., 1.0e-8_dp, &
+    1.0e-14_dp, chemistry_coarse_state, chemistry_coarse_temperature, &
+    chemistry_set, ok, failure_context=hydro_failure_context)
+  if (.not. ok) write(*, '(a)') trim(hydro_failure_context)
+  call require(ok .and. chemistry_set%is_valid(coarse_geometry, nvar), &
+    "multipatch chemistry-hydro transaction")
+  call composite_reactive_eb_patch_set_integral_2d( &
+    chemistry_coarse_state, coarse_geometry, chemistry_set, &
+    integral_after, ok)
+  call require(ok .and. abs(integral_after(irho) - integral_before(irho)) <= &
+    5.0e-10_dp * integral_scale .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+    5.0e-10_dp * integral_scale, &
+    "multipatch chemistry mass and energy conservation")
+  reaction_change = 0.0_dp
+  do k = 1, size(species)
+    component = reactive_species_component(k)
+    reaction_change = max(reaction_change, maxval(abs( &
+      chemistry_coarse_state(component, :, :) - &
+      new_coarse_state(component, :, :))))
+    do child = 1, chemistry_set%patch_count()
+      reaction_change = max(reaction_change, maxval(abs( &
+        chemistry_set%children(child)%state(component, :, :) - &
+        hydro_set%children(child)%state(component, :, :))))
+    end do
+  end do
+  call require(reaction_change > 1.0e-14_dp * state_scale, &
+    "multipatch chemistry changes species")
+  call average_down_reactive_eb_patch_set_2d( &
+    species, chemistry_coarse_state, chemistry_coarse_temperature, &
+    coarse_geometry, chemistry_set, averaged_state, averaged_temperature, ok)
+  call require(ok .and. maxval(abs(averaged_state - &
+    chemistry_coarse_state)) <= 4.0e-13_dp * state_scale, &
+    "multipatch chemistry synchronized hierarchy")
+
+  call advance_reactive_eb_patch_set_strang_2d( &
+    species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+    old_set, "invalid", "pcm", "mc", 2, dt, .true., 1.0e-8_dp, &
+    1.0e-14_dp, new_coarse_state, new_coarse_temperature, &
+    chemistry_failed_set, ok)
+  call require(.not. ok .and. &
+    maxval(abs(new_coarse_state - coarse_state)) == 0.0_dp .and. &
+    maxval(abs(new_coarse_temperature - coarse_temperature)) == 0.0_dp .and. &
+    chemistry_failed_set%patch_count() == old_set%patch_count(), &
+    "multipatch chemistry coarse rollback")
+  do child = 1, old_set%patch_count()
+    call require(maxval(abs( &
+      chemistry_failed_set%children(child)%state - &
+      old_set%children(child)%state)) == 0.0_dp .and. &
+      maxval(abs(chemistry_failed_set%children(child)%temperature - &
+        old_set%children(child)%temperature)) == 0.0_dp, &
+      "multipatch chemistry fine rollback")
+  end do
 
   call advance_reactive_eb_patch_set_hydro_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, old_set, &

@@ -23,7 +23,10 @@ module reactive_eb_amr_2d_driver_mod
     advance_two_level_reactive_eb_hydro_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
+    reactive_eb_patch_set_2d, &
     plan_reactive_eb_temperature_regrid_2d, &
+    average_down_reactive_eb_patch_set_2d, &
+    advance_reactive_eb_patch_set_hydro_2d, &
     collapse_two_level_reactive_eb_patch_2d, &
     regrid_two_level_reactive_eb_patch_2d
   implicit none
@@ -35,6 +38,7 @@ module reactive_eb_amr_2d_driver_mod
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: advance_two_level_reactive_eb_strang_2d
+  public :: advance_reactive_eb_patch_set_strang_2d
   public :: regrid_reactive_eb_amr_hierarchy_2d
   public :: write_reactive_eb_amr_2d_checkpoint
   public :: read_reactive_eb_amr_2d_checkpoint
@@ -253,6 +257,124 @@ contains
     new_fine_temperature = candidate_fine_temperature
     ok = .true.
   end subroutine advance_two_level_reactive_eb_strang_2d
+
+  subroutine advance_reactive_eb_patch_set_strang_2d( &
+      species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+      patch_set, solver, reconstruction, limiter, state_redist_max_order, &
+      dt, chemistry_enabled, rtol, atol, new_coarse_state, &
+      new_coarse_temperature, new_patch_set, ok, target_volume_fraction, &
+      failure_context)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    real(dp), intent(out) :: new_coarse_state(:, :, :)
+    real(dp), intent(out) :: new_coarse_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: new_patch_set
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: target_volume_fraction
+    character(len=*), intent(out), optional :: failure_context
+
+    type(reactive_eb_patch_set_2d) :: candidate_set, hydro_set
+    real(dp), allocatable :: candidate_coarse(:, :, :)
+    real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    real(dp), allocatable :: hydro_coarse(:, :, :)
+    real(dp), allocatable :: hydro_coarse_temperature(:, :)
+    real(dp), allocatable :: synchronized_coarse(:, :, :)
+    real(dp), allocatable :: synchronized_coarse_temperature(:, :)
+    logical :: local_ok
+    integer :: child, nvar
+
+    new_coarse_state = 0.0_dp
+    new_coarse_temperature = 0.0_dp
+    new_patch_set = reactive_eb_patch_set_2d()
+    ok = .false.
+    if (present(failure_context)) failure_context = "input validation"
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. &
+        any(shape(new_coarse_state) /= shape(coarse_state)) .or. &
+        any(shape(new_coarse_temperature) /= shape(coarse_temperature))) &
+      return
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    new_patch_set = patch_set
+    if (.not. patch_set%is_valid(coarse_geometry, nvar) .or. &
+        (chemistry_enabled .and. size(reactions) < 1)) return
+
+    allocate(candidate_coarse, source=coarse_state)
+    allocate(candidate_coarse_temperature, source=coarse_temperature)
+    candidate_set = patch_set
+    if (chemistry_enabled) then
+      if (present(failure_context)) &
+        failure_context = "first coarse chemistry half-step"
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_coarse, candidate_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      do child = 1, candidate_set%patch_count()
+        if (present(failure_context)) &
+          failure_context = "first fine chemistry half-step"
+        call advance_reactive_eb_chemistry_level_2d( &
+          species, reactions, candidate_set%children(child)%geometry, &
+          0.5_dp * dt, rtol, atol, candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature, local_ok)
+        if (.not. local_ok) return
+      end do
+    end if
+
+    allocate(hydro_coarse, mold=coarse_state)
+    allocate(hydro_coarse_temperature, mold=coarse_temperature)
+    if (present(failure_context)) failure_context = "multipatch hydro"
+    call advance_reactive_eb_patch_set_hydro_2d( &
+      species, candidate_coarse, candidate_coarse_temperature, &
+      coarse_geometry, candidate_set, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, hydro_coarse, hydro_coarse_temperature, &
+      hydro_set, local_ok, target_volume_fraction, failure_context)
+    if (.not. local_ok) return
+    candidate_coarse = hydro_coarse
+    candidate_coarse_temperature = hydro_coarse_temperature
+    candidate_set = hydro_set
+
+    if (chemistry_enabled) then
+      if (present(failure_context)) &
+        failure_context = "second coarse chemistry half-step"
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_coarse, candidate_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      do child = 1, candidate_set%patch_count()
+        if (present(failure_context)) &
+          failure_context = "second fine chemistry half-step"
+        call advance_reactive_eb_chemistry_level_2d( &
+          species, reactions, candidate_set%children(child)%geometry, &
+          0.5_dp * dt, rtol, atol, candidate_set%children(child)%state, &
+          candidate_set%children(child)%temperature, local_ok)
+        if (.not. local_ok) return
+      end do
+      allocate(synchronized_coarse, mold=coarse_state)
+      allocate(synchronized_coarse_temperature, mold=coarse_temperature)
+      if (present(failure_context)) &
+        failure_context = "post-chemistry patch-set synchronization"
+      call average_down_reactive_eb_patch_set_2d( &
+        species, candidate_coarse, candidate_coarse_temperature, &
+        coarse_geometry, candidate_set, synchronized_coarse, &
+        synchronized_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      candidate_coarse = synchronized_coarse
+      candidate_coarse_temperature = synchronized_coarse_temperature
+    end if
+
+    new_coarse_state = candidate_coarse
+    new_coarse_temperature = candidate_coarse_temperature
+    new_patch_set = candidate_set
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_eb_patch_set_strang_2d
 
   subroutine compute_reactive_eb_amr_integrals_2d( &
       coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
