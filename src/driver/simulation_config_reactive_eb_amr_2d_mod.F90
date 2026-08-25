@@ -206,7 +206,8 @@ contains
       return
     end if
     if (three_level_enabled .and. dynamic_regridding .and. &
-        (regrid_minimum_patch_cells_x > level_one_nx - 4 .or. &
+        (level_one_nx < 8 .or. level_one_ny < 8 .or. &
+         regrid_minimum_patch_cells_x > level_one_nx - 4 .or. &
          regrid_minimum_patch_cells_y > level_one_ny - 4)) then
       ok = .false.
       message = "Dynamic finest patch needs a two-cell middle margin"

@@ -161,6 +161,7 @@ contains
       trim(config%level_two_output_file) /= trim(config%fine_output_file) .and. &
       (.not. config%dynamic_regridding .or. &
        (.not. config%remove_fine_patch_when_untagged .and. &
+        level_one_nx >= 8 .and. level_one_ny >= 8 .and. &
         config%regrid_minimum_patch_cells_x <= level_one_nx - 4 .and. &
         config%regrid_minimum_patch_cells_y <= level_one_ny - 4 .and. &
         config%checkpoint_interval == 0 .and. &
