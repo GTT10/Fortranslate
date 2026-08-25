@@ -15,6 +15,8 @@ program test_amr_eb_regrid_2d
   use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_pcm_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
+    amr_eb_regrid_plan_collection_2d, &
+    build_amr_eb_regrid_plan_collection_2d, &
     plan_reactive_eb_temperature_regrid_2d, &
     collapse_two_level_reactive_eb_patch_2d, &
     regrid_two_level_reactive_eb_patch_2d
@@ -31,7 +33,9 @@ program test_amr_eb_regrid_2d
   type(eb_geometry_2d) :: old_fine_geometry, new_fine_geometry
   type(amr_eb_patch_2d) :: old_patch, new_patch
   type(amr_eb_tagging_criteria_2d) :: criteria
+  type(amr_eb_tagging_criteria_2d) :: multipatch_criteria
   type(amr_eb_regrid_plan_2d) :: plan
+  type(amr_eb_regrid_plan_collection_2d) :: plan_collection
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
@@ -48,6 +52,7 @@ program test_amr_eb_regrid_2d
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale
   logical :: tags(coarse_nx, coarse_ny), ok, found_new_cell
+  logical :: multipatch_tags(18, 12)
   integer :: component, i, j, k, nvar, new_fine_nx, new_fine_ny
   integer :: global_i, global_j, old_i, old_j, parent_i, parent_j
 
@@ -101,6 +106,70 @@ program test_amr_eb_regrid_2d
   call plan_reactive_eb_temperature_regrid_2d( &
     coarse_temperature, coarse_geometry, criteria, tags, plan, ok)
   call require(ok .and. plan%active, "restore active regrid plan")
+
+  multipatch_criteria%buffer_cells = 1
+  multipatch_criteria%minimum_patch_cells_x = 2
+  multipatch_criteria%minimum_patch_cells_y = 2
+  multipatch_criteria%maximum_patch_gap_cells = 0
+  multipatch_tags = .false.
+  multipatch_tags(3:4, 3:4) = .true.
+  multipatch_tags(14:15, 8:9) = .true.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    multipatch_tags, multipatch_criteria, plan_collection, ok)
+  call require(ok .and. plan_collection%is_valid() .and. &
+    plan_collection%patch_count() == 2 .and. &
+    plan_collection%tagged_cell_count == 8, &
+    "two disconnected EB tag clusters")
+  call require( &
+    plan_collection%plans(1)%coarse_i_lower == 2 .and. &
+    plan_collection%plans(1)%coarse_i_upper == 5 .and. &
+    plan_collection%plans(1)%coarse_j_lower == 2 .and. &
+    plan_collection%plans(1)%coarse_j_upper == 5 .and. &
+    plan_collection%plans(2)%coarse_i_lower == 13 .and. &
+    plan_collection%plans(2)%coarse_i_upper == 16 .and. &
+    plan_collection%plans(2)%coarse_j_lower == 7 .and. &
+    plan_collection%plans(2)%coarse_j_upper == 10, &
+    "deterministic buffered EB patch collection")
+
+  multipatch_tags = .false.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    multipatch_tags, multipatch_criteria, plan_collection, ok)
+  call require(ok .and. plan_collection%is_valid() .and. &
+    plan_collection%patch_count() == 0, "empty EB patch collection")
+
+  multipatch_criteria%buffer_cells = 1
+  multipatch_criteria%minimum_patch_cells_x = 1
+  multipatch_criteria%minimum_patch_cells_y = 1
+  multipatch_tags = .false.
+  multipatch_tags(4, 4) = .true.
+  multipatch_tags(7, 4) = .true.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    multipatch_tags, multipatch_criteria, plan_collection, ok)
+  call require(ok .and. plan_collection%patch_count() == 1 .and. &
+    plan_collection%plans(1)%tagged_cell_count == 2 .and. &
+    plan_collection%plans(1)%coarse_i_lower == 3 .and. &
+    plan_collection%plans(1)%coarse_i_upper == 8 .and. &
+    plan_collection%plans(1)%coarse_j_lower == 3 .and. &
+    plan_collection%plans(1)%coarse_j_upper == 5, &
+    "touching buffered EB plans coalesce")
+
+  multipatch_criteria%buffer_cells = 0
+  multipatch_criteria%maximum_patch_gap_cells = 1
+  multipatch_tags = .false.
+  multipatch_tags(4, 4) = .true.
+  multipatch_tags(6, 4) = .true.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    multipatch_tags, multipatch_criteria, plan_collection, ok)
+  call require(ok .and. plan_collection%patch_count() == 1 .and. &
+    plan_collection%plans(1)%tag_i_lower == 4 .and. &
+    plan_collection%plans(1)%tag_i_upper == 6, &
+    "configured EB tag gap joins one component")
+
+  multipatch_tags = .false.
+  multipatch_tags(1, 4) = .true.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    multipatch_tags, multipatch_criteria, plan_collection, ok)
+  call require(.not. ok, "boundary EB tag collection rejected")
 
   call build_patch_geometry( &
     coarse_geometry, old_i_lower, old_i_upper, old_j_lower, old_j_upper, &

@@ -18,6 +18,7 @@ module amr_eb_regrid_2d_mod
     integer :: buffer_cells = 1
     integer :: minimum_patch_cells_x = 2
     integer :: minimum_patch_cells_y = 2
+    integer :: maximum_patch_gap_cells = 0
   contains
     procedure :: is_valid => amr_eb_tagging_criteria_is_valid
   end type amr_eb_tagging_criteria_2d
@@ -39,9 +40,21 @@ module amr_eb_regrid_2d_mod
     procedure :: is_valid => amr_eb_regrid_plan_is_valid
   end type amr_eb_regrid_plan_2d
 
+  type, public :: amr_eb_regrid_plan_collection_2d
+    integer :: coarse_nx = 0
+    integer :: coarse_ny = 0
+    integer :: tagged_cell_count = 0
+    type(amr_eb_regrid_plan_2d), allocatable :: plans(:)
+  contains
+    procedure :: patch_count => amr_eb_regrid_plan_collection_patch_count
+    procedure :: is_valid => amr_eb_regrid_plan_collection_is_valid
+  end type amr_eb_regrid_plan_collection_2d
+
   public :: tag_reactive_eb_temperature_gradient_2d
   public :: build_amr_eb_regrid_plan_2d
+  public :: build_amr_eb_regrid_plan_collection_2d
   public :: plan_reactive_eb_temperature_regrid_2d
+  public :: plan_reactive_eb_temperature_regrid_collection_2d
   public :: collapse_two_level_reactive_eb_patch_2d
   public :: regrid_two_level_reactive_eb_patch_2d
 
@@ -59,7 +72,8 @@ contains
       self%absolute_gradient_threshold >= 0.0_dp .and. &
       self%scale_floor > 0.0_dp .and. self%buffer_cells >= 0 .and. &
       self%minimum_patch_cells_x >= 1 .and. &
-      self%minimum_patch_cells_y >= 1
+      self%minimum_patch_cells_y >= 1 .and. &
+      self%maximum_patch_gap_cells >= 0
     if (.not. valid) return
     if (present(coarse_nx)) then
       valid = coarse_nx >= 4 .and. &
@@ -102,6 +116,60 @@ contains
       self%coarse_j_lower <= self%tag_j_lower .and. &
       self%coarse_j_upper >= self%tag_j_upper
   end function amr_eb_regrid_plan_is_valid
+
+  pure integer function amr_eb_regrid_plan_collection_patch_count(self) &
+      result(count)
+    class(amr_eb_regrid_plan_collection_2d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%plans)) count = size(self%plans)
+  end function amr_eb_regrid_plan_collection_patch_count
+
+  pure logical function amr_eb_regrid_plan_collection_is_valid(self) &
+      result(valid)
+    class(amr_eb_regrid_plan_collection_2d), intent(in) :: self
+
+    integer :: first, second, tagged_count
+
+    valid = self%coarse_nx >= 4 .and. self%coarse_ny >= 4 .and. &
+      self%tagged_cell_count >= 0 .and. allocated(self%plans)
+    if (.not. valid) return
+    if (size(self%plans) == 0) then
+      valid = self%tagged_cell_count == 0
+      return
+    end if
+
+    tagged_count = 0
+    do first = 1, size(self%plans)
+      valid = self%plans(first)%is_valid() .and. &
+        self%plans(first)%active .and. &
+        self%plans(first)%coarse_nx == self%coarse_nx .and. &
+        self%plans(first)%coarse_ny == self%coarse_ny
+      if (.not. valid) return
+      tagged_count = tagged_count + &
+        self%plans(first)%tagged_cell_count
+      do second = first + 1, size(self%plans)
+        valid = rectangles_are_separated( &
+          self%plans(first), self%plans(second))
+        if (.not. valid) return
+      end do
+    end do
+    valid = tagged_count == self%tagged_cell_count
+
+  contains
+
+    pure logical function rectangles_are_separated(first_plan, second_plan) &
+        result(separated)
+      type(amr_eb_regrid_plan_2d), intent(in) :: first_plan, second_plan
+
+      separated = &
+        first_plan%coarse_i_upper + 1 < second_plan%coarse_i_lower .or. &
+        second_plan%coarse_i_upper + 1 < first_plan%coarse_i_lower .or. &
+        first_plan%coarse_j_upper + 1 < second_plan%coarse_j_lower .or. &
+        second_plan%coarse_j_upper + 1 < first_plan%coarse_j_lower
+    end function rectangles_are_separated
+
+  end function amr_eb_regrid_plan_collection_is_valid
 
   subroutine tag_reactive_eb_temperature_gradient_2d( &
       temperature, geometry, criteria, tags, ok)
@@ -223,6 +291,189 @@ contains
 
   end subroutine build_amr_eb_regrid_plan_2d
 
+  pure subroutine build_amr_eb_regrid_plan_collection_2d( &
+      tags, criteria, collection, ok)
+    logical, intent(in) :: tags(:, :)
+    type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
+    type(amr_eb_regrid_plan_collection_2d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    type(amr_eb_regrid_plan_2d), allocatable :: candidates(:), merged(:)
+    logical, allocatable :: visited(:, :)
+    integer, allocatable :: queue_i(:), queue_j(:)
+    logical :: did_merge
+    integer :: candidate_count, merged_count, first, second
+    integer :: i, j, neighbor_i, neighbor_j, current_i, current_j
+    integer :: queue_head, queue_tail, reach
+
+    collection = amr_eb_regrid_plan_collection_2d()
+    collection%coarse_nx = size(tags, 1)
+    collection%coarse_ny = size(tags, 2)
+    collection%tagged_cell_count = count(tags)
+    ok = criteria%is_valid(collection%coarse_nx, collection%coarse_ny) .and. &
+      .not. any(tags(1, :)) .and. &
+      .not. any(tags(collection%coarse_nx, :)) .and. &
+      .not. any(tags(:, 1)) .and. &
+      .not. any(tags(:, collection%coarse_ny))
+    if (.not. ok) return
+    if (collection%tagged_cell_count == 0) then
+      allocate(collection%plans(0))
+      ok = collection%is_valid()
+      return
+    end if
+
+    allocate(candidates(collection%tagged_cell_count))
+    allocate(visited(collection%coarse_nx, collection%coarse_ny), &
+      source=.false.)
+    allocate(queue_i(collection%tagged_cell_count))
+    allocate(queue_j(collection%tagged_cell_count))
+    reach = criteria%maximum_patch_gap_cells + 1
+    candidate_count = 0
+    do j = 2, collection%coarse_ny - 1
+      do i = 2, collection%coarse_nx - 1
+        if (.not. tags(i, j) .or. visited(i, j)) cycle
+        candidate_count = candidate_count + 1
+        candidates(candidate_count) = amr_eb_regrid_plan_2d( &
+          active=.true., coarse_nx=collection%coarse_nx, &
+          coarse_ny=collection%coarse_ny, tagged_cell_count=0, &
+          tag_i_lower=collection%coarse_nx, tag_i_upper=1, &
+          tag_j_lower=collection%coarse_ny, tag_j_upper=1, &
+          coarse_i_lower=1, coarse_i_upper=0, &
+          coarse_j_lower=1, coarse_j_upper=0)
+        queue_head = 1
+        queue_tail = 1
+        queue_i(1) = i
+        queue_j(1) = j
+        visited(i, j) = .true.
+        do while (queue_head <= queue_tail)
+          current_i = queue_i(queue_head)
+          current_j = queue_j(queue_head)
+          queue_head = queue_head + 1
+          candidates(candidate_count)%tagged_cell_count = &
+            candidates(candidate_count)%tagged_cell_count + 1
+          candidates(candidate_count)%tag_i_lower = min( &
+            candidates(candidate_count)%tag_i_lower, current_i)
+          candidates(candidate_count)%tag_i_upper = max( &
+            candidates(candidate_count)%tag_i_upper, current_i)
+          candidates(candidate_count)%tag_j_lower = min( &
+            candidates(candidate_count)%tag_j_lower, current_j)
+          candidates(candidate_count)%tag_j_upper = max( &
+            candidates(candidate_count)%tag_j_upper, current_j)
+          do neighbor_j = max(2, current_j - reach), &
+              min(collection%coarse_ny - 1, current_j + reach)
+            do neighbor_i = max(2, current_i - reach), &
+                min(collection%coarse_nx - 1, current_i + reach)
+              if (.not. tags(neighbor_i, neighbor_j) .or. &
+                  visited(neighbor_i, neighbor_j)) cycle
+              queue_tail = queue_tail + 1
+              queue_i(queue_tail) = neighbor_i
+              queue_j(queue_tail) = neighbor_j
+              visited(neighbor_i, neighbor_j) = .true.
+            end do
+          end do
+        end do
+
+        candidates(candidate_count)%coarse_i_lower = max(2, &
+          candidates(candidate_count)%tag_i_lower - criteria%buffer_cells)
+        candidates(candidate_count)%coarse_i_upper = min( &
+          collection%coarse_nx - 1, &
+          candidates(candidate_count)%tag_i_upper + criteria%buffer_cells)
+        candidates(candidate_count)%coarse_j_lower = max(2, &
+          candidates(candidate_count)%tag_j_lower - criteria%buffer_cells)
+        candidates(candidate_count)%coarse_j_upper = min( &
+          collection%coarse_ny - 1, &
+          candidates(candidate_count)%tag_j_upper + criteria%buffer_cells)
+        call grow_component_interval( &
+          candidates(candidate_count)%coarse_i_lower, &
+          candidates(candidate_count)%coarse_i_upper, &
+          collection%coarse_nx, criteria%minimum_patch_cells_x)
+        call grow_component_interval( &
+          candidates(candidate_count)%coarse_j_lower, &
+          candidates(candidate_count)%coarse_j_upper, &
+          collection%coarse_ny, criteria%minimum_patch_cells_y)
+        ok = candidates(candidate_count)%is_valid() .and. &
+          candidates(candidate_count)%coarse_i_upper - &
+            candidates(candidate_count)%coarse_i_lower + 1 >= &
+            criteria%minimum_patch_cells_x .and. &
+          candidates(candidate_count)%coarse_j_upper - &
+            candidates(candidate_count)%coarse_j_lower + 1 >= &
+            criteria%minimum_patch_cells_y
+        if (.not. ok) return
+      end do
+    end do
+
+    allocate(merged(candidate_count))
+    merged = candidates(1:candidate_count)
+    merged_count = candidate_count
+    merge_pass: do
+      did_merge = .false.
+      first_loop: do first = 1, merged_count - 1
+        do second = first + 1, merged_count
+          if (.not. rectangles_touch(merged(first), merged(second))) cycle
+          call merge_plans(merged(first), merged(second))
+          if (second < merged_count) then
+            merged(second:merged_count - 1) = &
+              merged(second + 1:merged_count)
+          end if
+          merged_count = merged_count - 1
+          did_merge = .true.
+          exit first_loop
+        end do
+      end do first_loop
+      if (.not. did_merge) exit merge_pass
+    end do merge_pass
+
+    allocate(collection%plans(merged_count))
+    collection%plans = merged(1:merged_count)
+    ok = collection%is_valid()
+
+  contains
+
+    pure subroutine grow_component_interval( &
+        lower, upper, cell_count, minimum_cells)
+      integer, intent(inout) :: lower, upper
+      integer, intent(in) :: cell_count, minimum_cells
+
+      do while (upper - lower + 1 < minimum_cells)
+        if (lower > 2) lower = lower - 1
+        if (upper - lower + 1 >= minimum_cells) exit
+        if (upper < cell_count - 1) upper = upper + 1
+      end do
+    end subroutine grow_component_interval
+
+    pure logical function rectangles_touch(first_plan, second_plan) &
+        result(touch)
+      type(amr_eb_regrid_plan_2d), intent(in) :: first_plan, second_plan
+
+      touch = &
+        first_plan%coarse_i_lower <= second_plan%coarse_i_upper + 1 .and. &
+        second_plan%coarse_i_lower <= first_plan%coarse_i_upper + 1 .and. &
+        first_plan%coarse_j_lower <= second_plan%coarse_j_upper + 1 .and. &
+        second_plan%coarse_j_lower <= first_plan%coarse_j_upper + 1
+    end function rectangles_touch
+
+    pure subroutine merge_plans(target, source)
+      type(amr_eb_regrid_plan_2d), intent(inout) :: target
+      type(amr_eb_regrid_plan_2d), intent(in) :: source
+
+      target%tagged_cell_count = &
+        target%tagged_cell_count + source%tagged_cell_count
+      target%tag_i_lower = min(target%tag_i_lower, source%tag_i_lower)
+      target%tag_i_upper = max(target%tag_i_upper, source%tag_i_upper)
+      target%tag_j_lower = min(target%tag_j_lower, source%tag_j_lower)
+      target%tag_j_upper = max(target%tag_j_upper, source%tag_j_upper)
+      target%coarse_i_lower = min( &
+        target%coarse_i_lower, source%coarse_i_lower)
+      target%coarse_i_upper = max( &
+        target%coarse_i_upper, source%coarse_i_upper)
+      target%coarse_j_lower = min( &
+        target%coarse_j_lower, source%coarse_j_lower)
+      target%coarse_j_upper = max( &
+        target%coarse_j_upper, source%coarse_j_upper)
+    end subroutine merge_plans
+
+  end subroutine build_amr_eb_regrid_plan_collection_2d
+
   subroutine plan_reactive_eb_temperature_regrid_2d( &
       temperature, geometry, criteria, tags, plan, ok)
     real(dp), intent(in) :: temperature(:, :)
@@ -237,6 +488,22 @@ contains
     if (.not. ok) return
     call build_amr_eb_regrid_plan_2d(tags, criteria, plan, ok)
   end subroutine plan_reactive_eb_temperature_regrid_2d
+
+  subroutine plan_reactive_eb_temperature_regrid_collection_2d( &
+      temperature, geometry, criteria, tags, collection, ok)
+    real(dp), intent(in) :: temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
+    logical, intent(out) :: tags(:, :)
+    type(amr_eb_regrid_plan_collection_2d), intent(out) :: collection
+    logical, intent(out) :: ok
+
+    call tag_reactive_eb_temperature_gradient_2d( &
+      temperature, geometry, criteria, tags, ok)
+    if (.not. ok) return
+    call build_amr_eb_regrid_plan_collection_2d( &
+      tags, criteria, collection, ok)
+  end subroutine plan_reactive_eb_temperature_regrid_collection_2d
 
   subroutine regrid_two_level_reactive_eb_patch_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
