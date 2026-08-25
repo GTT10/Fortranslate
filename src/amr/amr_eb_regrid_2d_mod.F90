@@ -109,12 +109,12 @@ contains
     if (.not. valid) return
     if (present(coarse_nx)) then
       valid = coarse_nx >= 4 .and. &
-        self%minimum_patch_cells_x <= coarse_nx - 2
+        self%minimum_patch_cells_x <= coarse_nx
     end if
     if (.not. valid) return
     if (present(coarse_ny)) then
       valid = coarse_ny >= 4 .and. &
-        self%minimum_patch_cells_y <= coarse_ny - 2
+        self%minimum_patch_cells_y <= coarse_ny
     end if
   end function amr_eb_tagging_criteria_is_valid
 
@@ -133,16 +133,16 @@ contains
       return
     end if
     valid = self%tagged_cell_count >= 1 .and. &
-      self%tag_i_lower >= 2 .and. &
-      self%tag_i_upper <= self%coarse_nx - 1 .and. &
-      self%tag_j_lower >= 2 .and. &
-      self%tag_j_upper <= self%coarse_ny - 1 .and. &
+      self%tag_i_lower >= 1 .and. &
+      self%tag_i_upper <= self%coarse_nx .and. &
+      self%tag_j_lower >= 1 .and. &
+      self%tag_j_upper <= self%coarse_ny .and. &
       self%tag_i_lower <= self%tag_i_upper .and. &
       self%tag_j_lower <= self%tag_j_upper .and. &
-      self%coarse_i_lower >= 2 .and. &
-      self%coarse_i_upper <= self%coarse_nx - 1 .and. &
-      self%coarse_j_lower >= 2 .and. &
-      self%coarse_j_upper <= self%coarse_ny - 1 .and. &
+      self%coarse_i_lower >= 1 .and. &
+      self%coarse_i_upper <= self%coarse_nx .and. &
+      self%coarse_j_lower >= 1 .and. &
+      self%coarse_j_upper <= self%coarse_ny .and. &
       self%coarse_i_lower <= self%tag_i_lower .and. &
       self%coarse_i_upper >= self%tag_i_upper .and. &
       self%coarse_j_lower <= self%tag_j_lower .and. &
@@ -303,8 +303,8 @@ contains
       all(ieee_is_finite(temperature)) .and. all(temperature > 0.0_dp)
     if (.not. ok) return
 
-    do j = 2, geometry%ny - 1
-      do i = 2, geometry%nx - 1
+    do j = 1, geometry%ny
+      do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
         jump = 0.0_dp
         local_scale = max(criteria%scale_floor, abs(temperature(i, j)))
@@ -323,6 +323,8 @@ contains
     subroutine accumulate_neighbor(neighbor_i, neighbor_j)
       integer, intent(in) :: neighbor_i, neighbor_j
 
+      if (neighbor_i < 1 .or. neighbor_i > geometry%nx .or. &
+          neighbor_j < 1 .or. neighbor_j > geometry%ny) return
       if (geometry%cell_type(neighbor_i, neighbor_j) == &
           eb_covered_cell) return
       jump = max(jump, abs(temperature(neighbor_i, neighbor_j) - &
@@ -345,9 +347,7 @@ contains
     plan = amr_eb_regrid_plan_2d()
     plan%coarse_nx = size(tags, 1)
     plan%coarse_ny = size(tags, 2)
-    ok = criteria%is_valid(plan%coarse_nx, plan%coarse_ny) .and. &
-      .not. any(tags(1, :)) .and. .not. any(tags(plan%coarse_nx, :)) .and. &
-      .not. any(tags(:, 1)) .and. .not. any(tags(:, plan%coarse_ny))
+    ok = criteria%is_valid(plan%coarse_nx, plan%coarse_ny)
     if (.not. ok) return
     plan%tagged_cell_count = count(tags)
     if (plan%tagged_cell_count == 0) then
@@ -360,8 +360,8 @@ contains
     plan%tag_i_upper = 1
     plan%tag_j_lower = plan%coarse_ny
     plan%tag_j_upper = 1
-    do j = 2, plan%coarse_ny - 1
-      do i = 2, plan%coarse_nx - 1
+    do j = 1, plan%coarse_ny
+      do i = 1, plan%coarse_nx
         if (.not. tags(i, j)) cycle
         plan%tag_i_lower = min(plan%tag_i_lower, i)
         plan%tag_i_upper = max(plan%tag_i_upper, i)
@@ -369,13 +369,13 @@ contains
         plan%tag_j_upper = max(plan%tag_j_upper, j)
       end do
     end do
-    plan%coarse_i_lower = max(2, &
+    plan%coarse_i_lower = max(1, &
       plan%tag_i_lower - criteria%buffer_cells)
-    plan%coarse_i_upper = min(plan%coarse_nx - 1, &
+    plan%coarse_i_upper = min(plan%coarse_nx, &
       plan%tag_i_upper + criteria%buffer_cells)
-    plan%coarse_j_lower = max(2, &
+    plan%coarse_j_lower = max(1, &
       plan%tag_j_lower - criteria%buffer_cells)
-    plan%coarse_j_upper = min(plan%coarse_ny - 1, &
+    plan%coarse_j_upper = min(plan%coarse_ny, &
       plan%tag_j_upper + criteria%buffer_cells)
     call grow_interval( &
       plan%coarse_i_lower, plan%coarse_i_upper, plan%coarse_nx, &
@@ -396,9 +396,9 @@ contains
       integer, intent(in) :: cell_count, minimum_cells
 
       do while (upper - lower + 1 < minimum_cells)
-        if (lower > 2) lower = lower - 1
+        if (lower > 1) lower = lower - 1
         if (upper - lower + 1 >= minimum_cells) exit
-        if (upper < cell_count - 1) upper = upper + 1
+        if (upper < cell_count) upper = upper + 1
       end do
     end subroutine grow_interval
 
@@ -423,11 +423,7 @@ contains
     collection%coarse_nx = size(tags, 1)
     collection%coarse_ny = size(tags, 2)
     collection%tagged_cell_count = count(tags)
-    ok = criteria%is_valid(collection%coarse_nx, collection%coarse_ny) .and. &
-      .not. any(tags(1, :)) .and. &
-      .not. any(tags(collection%coarse_nx, :)) .and. &
-      .not. any(tags(:, 1)) .and. &
-      .not. any(tags(:, collection%coarse_ny))
+    ok = criteria%is_valid(collection%coarse_nx, collection%coarse_ny)
     if (.not. ok) return
     if (collection%tagged_cell_count == 0) then
       allocate(collection%plans(0))
@@ -442,8 +438,8 @@ contains
     allocate(queue_j(collection%tagged_cell_count))
     reach = criteria%maximum_patch_gap_cells + 1
     candidate_count = 0
-    do j = 2, collection%coarse_ny - 1
-      do i = 2, collection%coarse_nx - 1
+    do j = 1, collection%coarse_ny
+      do i = 1, collection%coarse_nx
         if (.not. tags(i, j) .or. visited(i, j)) cycle
         candidate_count = candidate_count + 1
         candidates(candidate_count) = amr_eb_regrid_plan_2d( &
@@ -472,10 +468,10 @@ contains
             candidates(candidate_count)%tag_j_lower, current_j)
           candidates(candidate_count)%tag_j_upper = max( &
             candidates(candidate_count)%tag_j_upper, current_j)
-          do neighbor_j = max(2, current_j - reach), &
-              min(collection%coarse_ny - 1, current_j + reach)
-            do neighbor_i = max(2, current_i - reach), &
-                min(collection%coarse_nx - 1, current_i + reach)
+          do neighbor_j = max(1, current_j - reach), &
+              min(collection%coarse_ny, current_j + reach)
+            do neighbor_i = max(1, current_i - reach), &
+                min(collection%coarse_nx, current_i + reach)
               if (.not. tags(neighbor_i, neighbor_j) .or. &
                   visited(neighbor_i, neighbor_j)) cycle
               queue_tail = queue_tail + 1
@@ -486,15 +482,15 @@ contains
           end do
         end do
 
-        candidates(candidate_count)%coarse_i_lower = max(2, &
+        candidates(candidate_count)%coarse_i_lower = max(1, &
           candidates(candidate_count)%tag_i_lower - criteria%buffer_cells)
         candidates(candidate_count)%coarse_i_upper = min( &
-          collection%coarse_nx - 1, &
+          collection%coarse_nx, &
           candidates(candidate_count)%tag_i_upper + criteria%buffer_cells)
-        candidates(candidate_count)%coarse_j_lower = max(2, &
+        candidates(candidate_count)%coarse_j_lower = max(1, &
           candidates(candidate_count)%tag_j_lower - criteria%buffer_cells)
         candidates(candidate_count)%coarse_j_upper = min( &
-          collection%coarse_ny - 1, &
+          collection%coarse_ny, &
           candidates(candidate_count)%tag_j_upper + criteria%buffer_cells)
         call grow_component_interval( &
           candidates(candidate_count)%coarse_i_lower, &
@@ -548,9 +544,9 @@ contains
       integer, intent(in) :: cell_count, minimum_cells
 
       do while (upper - lower + 1 < minimum_cells)
-        if (lower > 2) lower = lower - 1
+        if (lower > 1) lower = lower - 1
         if (upper - lower + 1 >= minimum_cells) exit
-        if (upper < cell_count - 1) upper = upper + 1
+        if (upper < cell_count) upper = upper + 1
       end do
     end subroutine grow_component_interval
 
@@ -846,15 +842,6 @@ contains
         .not. ieee_is_finite(selected_target) .or. &
         selected_target <= 0.0_dp .or. selected_target > 1.0_dp .or. &
         .not. patch_set%is_valid(coarse_geometry, nvar)) return
-    do child = 1, patch_set%patch_count()
-      if (patch_set%children(child)%patch%coarse_i_lower <= 1 .or. &
-          patch_set%children(child)%patch%coarse_i_upper >= &
-            coarse_geometry%nx .or. &
-          patch_set%children(child)%patch%coarse_j_lower <= 1 .or. &
-          patch_set%children(child)%patch%coarse_j_upper >= &
-            coarse_geometry%ny) return
-    end do
-
     allocate(coarse_hydro, mold=coarse_state)
     allocate(coarse_hydro_temperature, mold=coarse_temperature)
     allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))

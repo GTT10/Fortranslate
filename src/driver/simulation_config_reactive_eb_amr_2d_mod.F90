@@ -136,9 +136,9 @@ contains
     if (regrid_interval < 1 .or. regrid_buffer_cells < 0 .or. &
         regrid_maximum_patch_gap_cells < 0 .or. &
         regrid_minimum_patch_cells_x < 1 .or. &
-        regrid_minimum_patch_cells_x > config%eb%flow%nx - 2 .or. &
+        regrid_minimum_patch_cells_x > config%eb%flow%nx .or. &
         regrid_minimum_patch_cells_y < 1 .or. &
-        regrid_minimum_patch_cells_y > config%eb%flow%ny - 2 .or. &
+        regrid_minimum_patch_cells_y > config%eb%flow%ny .or. &
         .not. ieee_is_finite(regrid_relative_temperature_gradient) .or. &
         regrid_relative_temperature_gradient < 0.0_dp .or. &
         .not. ieee_is_finite(regrid_absolute_temperature_gradient) .or. &

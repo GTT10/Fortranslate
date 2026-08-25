@@ -106,9 +106,9 @@ contains
       config%regrid_temperature_scale_floor > 0.0_dp .and. &
       config%regrid_buffer_cells >= 0 .and. &
       config%regrid_minimum_patch_cells_x >= 1 .and. &
-      config%regrid_minimum_patch_cells_x <= config%eb%flow%nx - 2 .and. &
+      config%regrid_minimum_patch_cells_x <= config%eb%flow%nx .and. &
       config%regrid_minimum_patch_cells_y >= 1 .and. &
-      config%regrid_minimum_patch_cells_y <= config%eb%flow%ny - 2 .and. &
+      config%regrid_minimum_patch_cells_y <= config%eb%flow%ny .and. &
       config%regrid_maximum_patch_gap_cells >= 0 .and. &
       (.not. config%multipatch_enabled .or. config%dynamic_regridding) .and. &
       config%checkpoint_interval >= 0 .and. &

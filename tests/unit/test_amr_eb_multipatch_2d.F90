@@ -105,7 +105,7 @@ program test_amr_eb_multipatch_2d
   criteria%minimum_patch_cells_y = 5
   criteria%maximum_patch_gap_cells = 0
   old_tags = .false.
-  old_tags(2:6, 2:6) = .true.
+  old_tags(1:5, 6:10) = .true.
   old_tags(9:13, 9:13) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     old_tags, criteria, old_collection, ok)
@@ -281,7 +281,7 @@ program test_amr_eb_multipatch_2d
     8.0e-12_dp * integral_scale, "multipatch average-down conservation")
 
   new_tags = .false.
-  new_tags(3:7, 2:6) = .true.
+  new_tags(2:6, 6:10) = .true.
   new_tags(9:13, 9:13) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     new_tags, criteria, new_collection, ok)
@@ -315,7 +315,7 @@ program test_amr_eb_multipatch_2d
     "unchanged patch exact state retention")
   do j = 1, new_set%children(1)%geometry%ny
     call require(maxval(abs(new_set%children(1)%state(:, 9:10, j) - &
-      spread(new_coarse_state(:, 7, 2 + (j - 1) / ratio), 2, 2))) <= &
+      spread(new_coarse_state(:, 6, 6 + (j - 1) / ratio), 2, 2))) <= &
       5.0e-14_dp * state_scale, &
       "new patch cells use synchronized coarse PCM")
   end do

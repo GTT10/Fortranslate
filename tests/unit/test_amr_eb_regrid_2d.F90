@@ -107,6 +107,27 @@ program test_amr_eb_regrid_2d
     coarse_temperature, coarse_geometry, criteria, tags, plan, ok)
   call require(ok .and. plan%active, "restore active regrid plan")
 
+  coarse_temperature = 1000.0_dp
+  where (coarse_geometry%cell_type == eb_covered_cell)
+    coarse_temperature = 3000.0_dp
+  end where
+  coarse_temperature(coarse_nx, 6) = 2000.0_dp
+  call plan_reactive_eb_temperature_regrid_2d( &
+    coarse_temperature, coarse_geometry, criteria, tags, plan, ok)
+  call require(ok .and. plan%active .and. tags(coarse_nx, 6) .and. &
+    plan%tag_i_upper == coarse_nx .and. &
+    plan%coarse_i_upper == coarse_nx, &
+    "one-sided physical-boundary temperature plan")
+  coarse_temperature = 1000.0_dp
+  where (coarse_geometry%cell_type == eb_covered_cell)
+    coarse_temperature = 3000.0_dp
+  end where
+  coarse_temperature(7, 6) = 2000.0_dp
+  call plan_reactive_eb_temperature_regrid_2d( &
+    coarse_temperature, coarse_geometry, criteria, tags, plan, ok)
+  call require(ok .and. plan%active .and. plan%coarse_i_upper == 9, &
+    "restore internal topology plan")
+
   multipatch_criteria%buffer_cells = 1
   multipatch_criteria%minimum_patch_cells_x = 2
   multipatch_criteria%minimum_patch_cells_y = 2
@@ -169,7 +190,10 @@ program test_amr_eb_regrid_2d
   multipatch_tags(1, 4) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     multipatch_tags, multipatch_criteria, plan_collection, ok)
-  call require(.not. ok, "boundary EB tag collection rejected")
+  call require(ok .and. plan_collection%patch_count() == 1 .and. &
+    plan_collection%plans(1)%tag_i_lower == 1 .and. &
+    plan_collection%plans(1)%coarse_i_lower == 1, &
+    "physical-boundary EB tag collection")
 
   call build_patch_geometry( &
     coarse_geometry, old_i_lower, old_i_upper, old_j_lower, old_j_upper, &
