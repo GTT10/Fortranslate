@@ -1801,3 +1801,22 @@ The public static three-level lifecycle can now stop after a committed
 checkpoint and resume all three levels without reinitialization. Dynamic
 three-level topology, molecular transport, arbitrary depth, distributed I/O,
 and MPI ownership remain separate work.
+
+## Tag-driven dynamic three-level finest patch (`0.104.0`)
+
+- [x] active-middle-cell temperature-gradient tagging
+- [x] two-cell-safe interior planning region
+- [x] conservative old-finest average-down before topology replacement
+- [x] PCM initialization of newly refined cells
+- [x] exact state retention on overlapping old/new finest cells
+- [x] transactional middle/finest publication and EOS validation
+- [x] initialization-time and accepted-step regrid cadence
+- [x] public committed-regrid accounting and failure-stage diagnostics
+- [x] EB-aware 22 by 28 finest topology from an initial 8 by 8 patch
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public three-level lifecycle can now move and resize its finest rectangle
+inside a fixed middle level. Finest removal, dynamic middle/root topology,
+sibling finest patches, checkpoint/restart after topology changes, molecular
+transport, arbitrary depth, and MPI ownership remain separate work.

@@ -1108,10 +1108,19 @@ restored hierarchy. Scheduled and final writes occur only after accepted
 three-level transactions; stop-after-write and restart preserve timestep
 cadence without modifying the older checkpoint schemas.
 
+In `0.104.0`, `dynamic_regridding` may instead keep the configured middle
+level fixed and rebuild the finest rectangle from middle-level temperature
+gradients. The planner operates only on the interior obtained by removing two
+middle cells from every side. A topology transaction first average-downs the
+old finest state, constructs and prolongs the tagged replacement, restores
+overlapping fine cells exactly, validates EOS state, and then publishes the
+new middle/finest pair. Initial and cadence-triggered regrids use the same
+operation, and the public lifecycle reports committed topology changes.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel
-redistribution, arbitrary depth, dynamic three-level lifecycle ownership,
+redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
-subsystem. The public application, CSV output, and dedicated checkpoint path
-select the static three-level lifecycle explicitly.
+subsystem. Dynamic three-level mode changes only the finest patch inside a
+fixed middle level and rejects finest removal, siblings, and checkpoint/restart.

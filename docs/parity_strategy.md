@@ -1629,3 +1629,18 @@ Every root, middle, and finest CSV value must agree with the uninterrupted run
 within a `3e-10` scale-aware tolerance. The focused reference,
 checkpoint-stop, restart, and comparison gates must pass before all 187 tests
 in GNU Fortran Debug and Release configurations.
+
+## 0.104.0 dynamic three-level finest-patch gates
+
+The public hotspot case begins with a 12 by 12 root, a fixed ratio-two
+20 by 20 middle rectangle, and an active 8 by 8 finest seed. Initialization
+must detect EB-aware temperature-gradient tags inside the qualified two-cell
+middle margin and commit at least one topology change. Covered-side tags are
+excluded, producing a deterministic 22 by 28 finest rectangle that crosses
+the plane embedded boundary.
+
+Root, middle, and finest outputs must reach `1e-7`, contain finite fields and
+regular, cut, and covered cells, retain positive active thermodynamics, and
+preserve species closure within `8e-12`. The focused unit, public run, and
+output-structure gates must pass before all 189 tests in GNU Fortran Debug and
+Release configurations.
