@@ -4,7 +4,10 @@ program test_amr_eb_multilevel_2d
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -18,6 +21,8 @@ program test_amr_eb_multilevel_2d
     composite_three_level_eb_integral_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     advance_three_level_reactive_eb_hydro_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    advance_three_level_reactive_eb_strang_2d
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
@@ -37,6 +42,7 @@ program test_amr_eb_multilevel_2d
   type(eb_geometry_2d) :: level_one_geometry, level_two_geometry
   type(amr_eb_patch_2d) :: root_patch, level_one_patch
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: root_level_set(0:root_nx, 0:root_ny)
   real(dp), allocatable :: root_state(:, :, :)
   real(dp), allocatable :: level_one_state(:, :, :)
@@ -58,7 +64,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: level_one_temperature_sync(:, :)
   real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
-  real(dp) :: scale, dt
+  real(dp) :: scale, dt, species_integral_sum, species_change
   logical :: ok
   integer :: i, j, k, nvar
 
@@ -132,6 +138,8 @@ program test_amr_eb_multilevel_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "three-level thermodynamic database")
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "three-level elementary mechanism")
   nvar = reactive_nvar(size(species))
   allocate(primitive(reactive_nprim(size(species))))
   allocate(mass_fractions(size(species)), state_cell(nvar))
@@ -299,6 +307,89 @@ program test_amr_eb_multilevel_2d
     all(reactive_level_two_sync == reactive_level_two) .and. &
     all(level_two_temperature_sync == level_two_temperature), &
     "three-level hydro rollback")
+
+  call composite_three_level_eb_integral_2d( &
+    reactive_root, root_geometry, reactive_level_one, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_geometry, level_one_patch, &
+    integral_before, ok)
+  call require(ok, "three-level Strang initial composite integral")
+  dt = 1.0e-8_dp
+  call advance_three_level_reactive_eb_strang_2d( &
+    species, reactions, reactive_root, root_temperature, root_geometry, &
+    reactive_level_one, level_one_temperature, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_temperature, &
+    level_two_geometry, level_one_patch, "hllc", "pcm", "mc", 2, dt, &
+    .true., 1.0e-7_dp, 1.0e-13_dp, reactive_root_sync, &
+    root_temperature_sync, reactive_level_one_sync, &
+    level_one_temperature_sync, reactive_level_two_sync, &
+    level_two_temperature_sync, ok, 0.5_dp)
+  call require(ok, "three-level reactive EB Strang transaction")
+  call composite_three_level_eb_integral_2d( &
+    reactive_root_sync, root_geometry, reactive_level_one_sync, &
+    level_one_geometry, root_patch, reactive_level_two_sync, &
+    level_two_geometry, level_one_patch, integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(integral_before)))
+  call require(ok .and. &
+    abs(integral_after(irho) - integral_before(irho)) <= &
+      2.0e-8_dp * scale .and. &
+    abs(integral_after(iet) - integral_before(iet)) <= &
+      2.0e-8_dp * scale, "three-level Strang mass and energy conservation")
+  species_integral_sum = 0.0_dp
+  species_change = 0.0_dp
+  do k = 1, size(species)
+    species_integral_sum = species_integral_sum + &
+      integral_after(reactive_species_component(k))
+    species_change = max(species_change, abs( &
+      integral_after(reactive_species_component(k)) - &
+      integral_before(reactive_species_component(k))))
+  end do
+  call require(abs(species_integral_sum - integral_after(irho)) <= &
+    2.0e-10_dp * scale .and. species_change > 1.0e-15_dp * scale, &
+    "three-level chemistry activity and species closure")
+  call require(all(ieee_is_finite(root_temperature_sync)) .and. &
+    all(ieee_is_finite(level_one_temperature_sync)) .and. &
+    all(ieee_is_finite(level_two_temperature_sync)) .and. &
+    all(root_temperature_sync > 0.0_dp) .and. &
+    all(level_one_temperature_sync > 0.0_dp) .and. &
+    all(level_two_temperature_sync > 0.0_dp), &
+    "three-level Strang thermodynamics")
+
+  call average_down_three_level_reactive_eb_state_2d( &
+    species, reactive_root_sync, root_temperature_sync, root_geometry, &
+    reactive_level_one_sync, level_one_temperature_sync, &
+    level_one_geometry, root_patch, reactive_level_two_sync, &
+    level_two_temperature_sync, level_two_geometry, level_one_patch, &
+    reactive_root, root_temperature, reactive_level_one, &
+    level_one_temperature, ok)
+  call require(ok .and. maxval(abs(reactive_root - &
+    reactive_root_sync)) <= 2.0e-12_dp * scale .and. &
+    maxval(abs(reactive_level_one - reactive_level_one_sync)) <= &
+      2.0e-12_dp * scale, "three-level Strang final synchronization")
+
+  reactive_root = spread(spread(state_cell, 2, root_nx), 3, root_ny)
+  reactive_level_one = 1.01_dp * &
+    spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
+  reactive_level_two = 0.99_dp * &
+    spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+  root_temperature = temperature_cell
+  level_one_temperature = temperature_cell
+  level_two_temperature = temperature_cell
+  call advance_three_level_reactive_eb_strang_2d( &
+    species, reactions, reactive_root, root_temperature, root_geometry, &
+    reactive_level_one, level_one_temperature, level_one_geometry, &
+    root_patch, reactive_level_two, level_two_temperature, &
+    level_two_geometry, level_one_patch, "unknown", "pcm", "mc", 2, dt, &
+    .true., 1.0e-7_dp, 1.0e-13_dp, reactive_root_sync, &
+    root_temperature_sync, reactive_level_one_sync, &
+    level_one_temperature_sync, reactive_level_two_sync, &
+    level_two_temperature_sync, ok, 0.5_dp)
+  call require(.not. ok .and. all(reactive_root_sync == reactive_root) .and. &
+    all(root_temperature_sync == root_temperature) .and. &
+    all(reactive_level_one_sync == reactive_level_one) .and. &
+    all(level_one_temperature_sync == level_one_temperature) .and. &
+    all(reactive_level_two_sync == reactive_level_two) .and. &
+    all(level_two_temperature_sync == level_two_temperature), &
+    "three-level Strang rollback after chemistry")
 
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 

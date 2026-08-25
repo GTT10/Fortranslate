@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.100.0` milestone contains the serial verification suite, seven optional
+The `0.101.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -37,6 +37,10 @@ register at each interface, and final deepest-first synchronization. When the
 finest interface crosses the embedded boundary, a multilevel conservation
 closure returns the measured mass, total-energy, and species residual to
 uncovered active middle cells before the outer reflux.
+The three-level driver now composes active-cell reaction half-steps on the
+root, middle, and finest meshes around that recursive hydro transaction. A
+second deepest-first reactive average-down makes the post-chemistry hierarchy
+authoritative before all three levels are published together.
 
 ### `pelef`: one-dimensional Euler solver
 

@@ -1746,3 +1746,21 @@ and species. The correction is conservative and transactional but globally
 distributed over eligible middle cells; it is not yet PeleC-style local
 multilevel EB redistribution. Chemistry, lifecycle ownership, regridding,
 checkpointing, output, transport, arbitrary depth, and MPI remain separate.
+
+## Static three-level reactive EB Strang chemistry (`0.101.0`)
+
+- [x] active-cell reaction half-step on root, middle, and finest levels
+- [x] recursive three-level EB hydro between reaction half-steps
+- [x] compatibility with an EB-cut finest coarse/fine interface
+- [x] post-chemistry finest-to-middle-to-root reactive average-down
+- [x] composite mass and total-energy conservation
+- [x] composite species activity with density/species closure
+- [x] finite positive temperature on all three levels
+- [x] whole-hierarchy rollback after chemistry when hydro rejects
+- [x] focused gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The static serial driver now advances chemistry and recursively subcycled
+hydrodynamics as one rollback-safe three-level EB transaction. It still does
+not own a public three-level lifecycle, CFL loop, regridding, checkpointing,
+output, molecular transport, arbitrary depth, or distributed MPI state.

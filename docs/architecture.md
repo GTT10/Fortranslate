@@ -1079,10 +1079,19 @@ is spread uniformly per fluid volume over active middle cells outside the
 finest patch. Species corrections close to the density correction, and every
 recipient temperature is recovered through the EOS before publication.
 
+In `0.101.0`, `reactive_eb_amr_2d_driver_mod` composes the qualified
+active-cell reactor with the static three-level hydro transaction. Reaction
+half-steps advance private root, middle, and finest candidates before and
+after recursive hydro. The second half-step is followed by reactive
+finest-to-middle-to-root average-down, so chemistry applied independently on
+overlapped parents cannot become the final authoritative state. Failure in
+chemistry, hydro, EB-cut conservation closure, or EOS synchronization returns
+all three original state and temperature fields.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel
-redistribution, arbitrary depth, three-level chemistry/lifecycle ownership,
+redistribution, arbitrary depth, three-level lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
 subsystem. The public application,
 CSV output, and checkpoint schema retain the single-patch path by default; the

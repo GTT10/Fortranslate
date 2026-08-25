@@ -21,6 +21,10 @@ module reactive_eb_amr_2d_driver_mod
   use amr_eb_reactive_2d_mod, only: &
     prolong_reactive_eb_patch_pcm_2d, &
     advance_two_level_reactive_eb_hydro_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    average_down_three_level_reactive_eb_state_2d
+  use amr_eb_multilevel_reactive_2d_mod, only: &
+    advance_three_level_reactive_eb_hydro_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
     amr_eb_regrid_plan_collection_2d, &
@@ -47,6 +51,7 @@ module reactive_eb_amr_2d_driver_mod
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_reactive_eb_patch_set_cfl_timestep_2d
   public :: advance_two_level_reactive_eb_strang_2d
+  public :: advance_three_level_reactive_eb_strang_2d
   public :: advance_reactive_eb_patch_set_strang_2d
   public :: regrid_reactive_eb_amr_hierarchy_2d
   public :: regrid_reactive_eb_amr_patch_set_2d
@@ -307,6 +312,150 @@ contains
     new_fine_temperature = candidate_fine_temperature
     ok = .true.
   end subroutine advance_two_level_reactive_eb_strang_2d
+
+  subroutine advance_three_level_reactive_eb_strang_2d( &
+      species, reactions, root_state, root_temperature, root_geometry, &
+      level_one_state, level_one_temperature, level_one_geometry, &
+      root_patch, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, chemistry_enabled, rtol, atol, &
+      new_root_state, new_root_temperature, new_level_one_state, &
+      new_level_one_temperature, new_level_two_state, &
+      new_level_two_temperature, ok, target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    real(dp), intent(in) :: level_one_state(:, :, :)
+    real(dp), intent(in) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: level_one_geometry
+    type(amr_eb_patch_2d), intent(in) :: root_patch
+    real(dp), intent(in) :: level_two_state(:, :, :)
+    real(dp), intent(in) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(in) :: level_one_patch
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    real(dp), intent(out) :: new_root_state(:, :, :)
+    real(dp), intent(out) :: new_root_temperature(:, :)
+    real(dp), intent(out) :: new_level_one_state(:, :, :)
+    real(dp), intent(out) :: new_level_one_temperature(:, :)
+    real(dp), intent(out) :: new_level_two_state(:, :, :)
+    real(dp), intent(out) :: new_level_two_temperature(:, :)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: target_volume_fraction
+
+    real(dp), allocatable :: root_candidate(:, :, :)
+    real(dp), allocatable :: root_candidate_temperature(:, :)
+    real(dp), allocatable :: level_one_candidate(:, :, :)
+    real(dp), allocatable :: level_one_candidate_temperature(:, :)
+    real(dp), allocatable :: level_two_candidate(:, :, :)
+    real(dp), allocatable :: level_two_candidate_temperature(:, :)
+    real(dp), allocatable :: hydro_root(:, :, :)
+    real(dp), allocatable :: hydro_root_temperature(:, :)
+    real(dp), allocatable :: hydro_level_one(:, :, :)
+    real(dp), allocatable :: hydro_level_one_temperature(:, :)
+    real(dp), allocatable :: hydro_level_two(:, :, :)
+    real(dp), allocatable :: hydro_level_two_temperature(:, :)
+    real(dp), allocatable :: synchronized_root(:, :, :)
+    real(dp), allocatable :: synchronized_root_temperature(:, :)
+    real(dp), allocatable :: synchronized_level_one(:, :, :)
+    real(dp), allocatable :: synchronized_level_one_temperature(:, :)
+    logical :: local_ok
+
+    new_root_state = root_state
+    new_root_temperature = root_temperature
+    new_level_one_state = level_one_state
+    new_level_one_temperature = level_one_temperature
+    new_level_two_state = level_two_state
+    new_level_two_temperature = level_two_temperature
+    ok = .false.
+    if (chemistry_enabled .and. size(reactions) < 1) return
+    allocate(root_candidate, source=root_state)
+    allocate(root_candidate_temperature, source=root_temperature)
+    allocate(level_one_candidate, source=level_one_state)
+    allocate(level_one_candidate_temperature, source=level_one_temperature)
+    allocate(level_two_candidate, source=level_two_state)
+    allocate(level_two_candidate_temperature, source=level_two_temperature)
+    if (chemistry_enabled) then
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
+        root_candidate, root_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
+        level_one_candidate, level_one_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
+        level_two_candidate, level_two_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    allocate(hydro_root, mold=root_state)
+    allocate(hydro_root_temperature, mold=root_temperature)
+    allocate(hydro_level_one, mold=level_one_state)
+    allocate(hydro_level_one_temperature, mold=level_one_temperature)
+    allocate(hydro_level_two, mold=level_two_state)
+    allocate(hydro_level_two_temperature, mold=level_two_temperature)
+    call advance_three_level_reactive_eb_hydro_2d( &
+      species, root_candidate, root_candidate_temperature, root_geometry, &
+      level_one_candidate, level_one_candidate_temperature, &
+      level_one_geometry, root_patch, level_two_candidate, &
+      level_two_candidate_temperature, level_two_geometry, level_one_patch, &
+      solver, reconstruction, limiter, state_redist_max_order, dt, &
+      hydro_root, hydro_root_temperature, hydro_level_one, &
+      hydro_level_one_temperature, hydro_level_two, &
+      hydro_level_two_temperature, local_ok, target_volume_fraction)
+    if (.not. local_ok) return
+    root_candidate = hydro_root
+    root_candidate_temperature = hydro_root_temperature
+    level_one_candidate = hydro_level_one
+    level_one_candidate_temperature = hydro_level_one_temperature
+    level_two_candidate = hydro_level_two
+    level_two_candidate_temperature = hydro_level_two_temperature
+
+    if (chemistry_enabled) then
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
+        root_candidate, root_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
+        level_one_candidate, level_one_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
+        level_two_candidate, level_two_candidate_temperature, local_ok)
+      if (.not. local_ok) return
+      allocate(synchronized_root, mold=root_state)
+      allocate(synchronized_root_temperature, mold=root_temperature)
+      allocate(synchronized_level_one, mold=level_one_state)
+      allocate(synchronized_level_one_temperature, mold=level_one_temperature)
+      call average_down_three_level_reactive_eb_state_2d( &
+        species, root_candidate, root_candidate_temperature, root_geometry, &
+        level_one_candidate, level_one_candidate_temperature, &
+        level_one_geometry, root_patch, level_two_candidate, &
+        level_two_candidate_temperature, level_two_geometry, level_one_patch, &
+        synchronized_root, synchronized_root_temperature, &
+        synchronized_level_one, synchronized_level_one_temperature, local_ok)
+      if (.not. local_ok) return
+      root_candidate = synchronized_root
+      root_candidate_temperature = synchronized_root_temperature
+      level_one_candidate = synchronized_level_one
+      level_one_candidate_temperature = synchronized_level_one_temperature
+    end if
+
+    new_root_state = root_candidate
+    new_root_temperature = root_candidate_temperature
+    new_level_one_state = level_one_candidate
+    new_level_one_temperature = level_one_candidate_temperature
+    new_level_two_state = level_two_candidate
+    new_level_two_temperature = level_two_candidate_temperature
+    ok = .true.
+  end subroutine advance_three_level_reactive_eb_strang_2d
 
   subroutine advance_reactive_eb_patch_set_strang_2d( &
       species, reactions, coarse_state, coarse_temperature, coarse_geometry, &

@@ -1583,3 +1583,19 @@ a zero-residual quantity. Solver failure and closure/EOS rejection must retain
 all three original state and temperature fields. The focused
 multipatch/multilevel gate must pass before all 180 tests in GNU Fortran Debug
 and Release configurations.
+
+## 0.101.0 static three-level reactive EB Strang gates
+
+The qualified cut-interface hierarchy receives one chemistry half-step on
+each of the root, middle, and finest levels, the established `1/2/4`
+recursive hydro schedule, and a second chemistry half-step on every level.
+Post-chemistry reactive average-down must make both parent levels identical
+to an explicit deepest-first synchronization.
+
+The composite hierarchy must preserve mass and total energy, retain species
+sum equal to density, show a nonzero reaction-driven change in at least one
+species integral, and keep every temperature finite and positive. Selecting
+an unknown Riemann solver after the first chemistry half-step must reject the
+whole transaction and return all three state and temperature fields exactly.
+The focused multipatch/multilevel gate must pass before all 180 tests in GNU
+Fortran Debug and Release configurations.
