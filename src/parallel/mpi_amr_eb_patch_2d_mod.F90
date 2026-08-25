@@ -69,6 +69,23 @@ module mpi_amr_eb_patch_2d_mod
     procedure :: is_valid => mpi_amr_eb_distribution_is_valid
   end type mpi_amr_eb_patch_distribution_2d
 
+  type, public :: mpi_amr_eb_sparse_field_2d
+    real(dp), allocatable :: state(:, :, :)
+    real(dp), allocatable :: temperature(:, :)
+  end type mpi_amr_eb_sparse_field_2d
+
+  type, public :: mpi_amr_eb_sparse_patch_set_2d
+    type(mpi_amr_eb_sparse_field_2d), allocatable :: root_tiles(:)
+    type(mpi_amr_eb_sparse_field_2d), allocatable :: children(:)
+    integer :: rank = -1
+    integer :: nranks = 0
+    integer :: nvar = 0
+  contains
+    procedure :: is_valid => mpi_amr_eb_sparse_patch_set_is_valid
+    procedure :: local_value_count => &
+      mpi_amr_eb_sparse_patch_set_local_value_count
+  end type mpi_amr_eb_sparse_patch_set_2d
+
   public :: initialize_mpi_amr_eb_patch_distribution_2d
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
@@ -76,6 +93,8 @@ module mpi_amr_eb_patch_2d_mod
   public :: advance_owned_reactive_eb_patch_set_hydro_2d
   public :: advance_owned_reactive_eb_patch_set_transport_2d
   public :: advance_owned_reactive_eb_patch_set_strang_2d
+  public :: scatter_owned_reactive_eb_patch_set_2d
+  public :: materialize_owned_reactive_eb_patch_set_2d
 
 contains
 
@@ -246,6 +265,231 @@ contains
       sum(self%rank_entity_counts) == &
         size(self%root_tiles) + patch_set%patch_count()
   end function mpi_amr_eb_distribution_is_valid
+
+  logical function mpi_amr_eb_sparse_patch_set_is_valid( &
+      self, distribution, coarse_geometry, patch_set) result(valid)
+    class(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: self
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+
+    logical :: local
+    integer :: child, height, tile
+
+    valid = self%rank == distribution%rank .and. &
+      self%nranks == distribution%nranks .and. self%nvar >= 1 .and. &
+      allocated(self%root_tiles) .and. allocated(self%children) .and. &
+      size(self%root_tiles) == distribution%root_tile_count() .and. &
+      size(self%children) == distribution%child_count() .and. &
+      distribution%is_valid(coarse_geometry, patch_set) .and. &
+      patch_set%is_valid(coarse_geometry, self%nvar)
+    if (.not. valid) return
+    do tile = 1, size(self%root_tiles)
+      local = distribution%root_tile_is_local(tile)
+      valid = (allocated(self%root_tiles(tile)%state) .eqv. local) .and. &
+        (allocated(self%root_tiles(tile)%temperature) .eqv. local)
+      if (.not. valid) return
+      if (local) then
+        height = distribution%root_tiles(tile)%j_upper - &
+          distribution%root_tiles(tile)%j_lower + 1
+        valid = all(shape(self%root_tiles(tile)%state) == &
+          [self%nvar, coarse_geometry%nx, height]) .and. &
+          all(shape(self%root_tiles(tile)%temperature) == &
+            [coarse_geometry%nx, height]) .and. &
+          all(ieee_is_finite(self%root_tiles(tile)%state)) .and. &
+          all(ieee_is_finite(self%root_tiles(tile)%temperature))
+        if (.not. valid) return
+      end if
+    end do
+    do child = 1, size(self%children)
+      local = distribution%child_is_local(child)
+      valid = (allocated(self%children(child)%state) .eqv. local) .and. &
+        (allocated(self%children(child)%temperature) .eqv. local)
+      if (.not. valid) return
+      if (local) then
+        valid = all(shape(self%children(child)%state) == shape( &
+          patch_set%children(child)%state)) .and. &
+          all(shape(self%children(child)%temperature) == shape( &
+            patch_set%children(child)%temperature)) .and. &
+          all(ieee_is_finite(self%children(child)%state)) .and. &
+          all(ieee_is_finite(self%children(child)%temperature))
+        if (.not. valid) return
+      end if
+    end do
+  end function mpi_amr_eb_sparse_patch_set_is_valid
+
+  pure integer(int64) function &
+      mpi_amr_eb_sparse_patch_set_local_value_count(self) result(count)
+    class(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: self
+    integer :: child, tile
+
+    count = 0_int64
+    if (allocated(self%root_tiles)) then
+      do tile = 1, size(self%root_tiles)
+        if (allocated(self%root_tiles(tile)%state)) count = count + &
+          int(size(self%root_tiles(tile)%state), int64)
+        if (allocated(self%root_tiles(tile)%temperature)) count = count + &
+          int(size(self%root_tiles(tile)%temperature), int64)
+      end do
+    end if
+    if (allocated(self%children)) then
+      do child = 1, size(self%children)
+        if (allocated(self%children(child)%state)) count = count + &
+          int(size(self%children(child)%state), int64)
+        if (allocated(self%children(child)%temperature)) count = count + &
+          int(size(self%children(child)%temperature), int64)
+      end do
+    end if
+  end function mpi_amr_eb_sparse_patch_set_local_value_count
+
+  subroutine scatter_owned_reactive_eb_patch_set_2d( &
+      distribution, nspecies, coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, sparse_patch_set, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    integer, intent(in) :: nspecies
+    real(dp), intent(in) :: coarse_state(:, :, :)
+    real(dp), intent(in) :: coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: sparse_patch_set
+    logical, intent(out) :: ok
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    logical :: accepted, global_ok, local_ok
+    integer :: child, j_lower, j_upper, nvar, tile
+
+    sparse_patch_set = mpi_amr_eb_sparse_patch_set_2d()
+    ok = .false.
+    nvar = reactive_nvar(nspecies)
+    local_ok = nspecies >= 1 .and. &
+      all(shape(coarse_state) == &
+        [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(shape(coarse_temperature) == &
+        [coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      distribution%is_valid(coarse_geometry, patch_set) .and. &
+      patch_set%is_valid(coarse_geometry, nvar)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    candidate%rank = distribution%rank
+    candidate%nranks = distribution%nranks
+    candidate%nvar = nvar
+    allocate(candidate%root_tiles(distribution%root_tile_count()))
+    allocate(candidate%children(distribution%child_count()))
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      allocate(candidate%root_tiles(tile)%state, &
+        source=coarse_state(:, :, j_lower:j_upper))
+      allocate(candidate%root_tiles(tile)%temperature, &
+        source=coarse_temperature(:, j_lower:j_upper))
+    end do
+    do child = 1, distribution%child_count()
+      if (.not. distribution%child_is_local(child)) cycle
+      allocate(candidate%children(child)%state, &
+        source=patch_set%children(child)%state)
+      allocate(candidate%children(child)%temperature, &
+        source=patch_set%children(child)%temperature)
+    end do
+    local_ok = candidate%is_valid(distribution, coarse_geometry, patch_set)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    sparse_patch_set = candidate
+    ok = .true.
+  end subroutine scatter_owned_reactive_eb_patch_set_2d
+
+  subroutine materialize_owned_reactive_eb_patch_set_2d( &
+      distribution, sparse_patch_set, fallback_coarse_state, &
+      fallback_coarse_temperature, coarse_geometry, patch_set_template, &
+      coarse_state, coarse_temperature, patch_set, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    real(dp), intent(in) :: fallback_coarse_state(:, :, :)
+    real(dp), intent(in) :: fallback_coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), intent(out) :: coarse_state(:, :, :)
+    real(dp), intent(out) :: coarse_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: patch_set
+    logical, intent(out) :: ok
+
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    logical :: accepted, global_ok, local_ok
+    integer :: child, ierr, j_lower, j_upper, owner, tile
+
+    coarse_state = fallback_coarse_state
+    coarse_temperature = fallback_coarse_temperature
+    patch_set = patch_set_template
+    ok = .false.
+    local_ok = all(shape(coarse_state) == shape(fallback_coarse_state)) .and. &
+      all(shape(coarse_temperature) == &
+        shape(fallback_coarse_temperature)) .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(candidate_state, source=fallback_coarse_state)
+    allocate(candidate_temperature, source=fallback_coarse_temperature)
+    candidate_set = patch_set_template
+    do tile = 1, distribution%root_tile_count()
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      owner = distribution%root_tiles(tile)%owner
+      if (distribution%root_tile_is_local(tile)) then
+        candidate_state(:, :, j_lower:j_upper) = &
+          sparse_patch_set%root_tiles(tile)%state
+        candidate_temperature(:, j_lower:j_upper) = &
+          sparse_patch_set%root_tiles(tile)%temperature
+      end if
+      call MPI_Bcast( &
+        candidate_state(:, :, j_lower:j_upper), &
+        size(candidate_state(:, :, j_lower:j_upper)), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_temperature(:, j_lower:j_upper), &
+        size(candidate_temperature(:, j_lower:j_upper)), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+    do child = 1, distribution%child_count()
+      owner = distribution%child_owner(child)
+      if (distribution%child_is_local(child)) then
+        candidate_set%children(child)%state = &
+          sparse_patch_set%children(child)%state
+        candidate_set%children(child)%temperature = &
+          sparse_patch_set%children(child)%temperature
+      end if
+      call MPI_Bcast( &
+        candidate_set%children(child)%state, &
+        size(candidate_set%children(child)%state), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        candidate_set%children(child)%temperature, &
+        size(candidate_set%children(child)%temperature), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+    local_ok = candidate_set%is_valid( &
+      coarse_geometry, sparse_patch_set%nvar) .and. &
+      all(ieee_is_finite(candidate_state)) .and. &
+      all(ieee_is_finite(candidate_temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    coarse_state = candidate_state
+    coarse_temperature = candidate_temperature
+    patch_set = candidate_set
+    ok = .true.
+  end subroutine materialize_owned_reactive_eb_patch_set_2d
 
   subroutine initialize_mpi_amr_eb_patch_distribution_2d( &
       coarse_geometry, patch_set, comm, distribution, ok, &

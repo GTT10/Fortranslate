@@ -34,13 +34,16 @@ program pelef_mpi_eb_amr_patch_2d
     advance_reactive_eb_patch_set_strang_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
+    mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
     synchronize_owned_reactive_eb_patch_set_2d, &
     advance_owned_reactive_eb_patch_set_chemistry_2d, &
     advance_owned_reactive_eb_patch_set_hydro_2d, &
     advance_owned_reactive_eb_patch_set_transport_2d, &
-    advance_owned_reactive_eb_patch_set_strang_2d
+    advance_owned_reactive_eb_patch_set_strang_2d, &
+    scatter_owned_reactive_eb_patch_set_2d, &
+    materialize_owned_reactive_eb_patch_set_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -51,9 +54,13 @@ program pelef_mpi_eb_amr_patch_2d
   type(amr_eb_regrid_plan_collection_2d) :: collection
   type(reactive_eb_patch_set_2d) :: patch_set, local_patch_set
   type(reactive_eb_patch_set_2d) :: synchronized_patch_set
+  type(reactive_eb_patch_set_2d) :: materialized_patch_set
+  type(reactive_eb_patch_set_2d) :: rejected_materialized_set
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_patch_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: invalid_sparse_patch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -77,6 +84,10 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: local_coarse_temperature(:, :)
   real(dp), allocatable :: synchronized_coarse_state(:, :, :)
   real(dp), allocatable :: synchronized_coarse_temperature(:, :)
+  real(dp), allocatable :: materialized_coarse_state(:, :, :)
+  real(dp), allocatable :: materialized_coarse_temperature(:, :)
+  real(dp), allocatable :: rejected_materialized_state(:, :, :)
+  real(dp), allocatable :: rejected_materialized_temperature(:, :)
   real(dp), allocatable :: chemistry_coarse_state(:, :, :)
   real(dp), allocatable :: chemistry_coarse_temperature(:, :)
   real(dp), allocatable :: reference_coarse_state(:, :, :)
@@ -131,6 +142,8 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_local_transport, expected_global_chemistry
   integer :: expected_global_hydro, expected_global_transport
   integer :: inconsistent_exponent
+  integer :: sparse_local_values, sparse_global_values
+  integer :: sparse_expected_local_values, sparse_expected_global_values
   character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
@@ -302,6 +315,95 @@ program pelef_mpi_eb_amr_patch_2d
       synchronized_patch_set%children(child)%temperature == &
       patch_set%children(child)%temperature), &
       "MPI EB AMR child temperature payload", rank)
+  end do
+
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), local_coarse_state, &
+    local_coarse_temperature, coarse_geometry, local_patch_set, &
+    sparse_patch_set, ok)
+  call assert_all(ok .and. sparse_patch_set%is_valid( &
+    distribution, coarse_geometry, patch_set), &
+    "MPI EB AMR sparse owner storage", rank)
+  sparse_expected_local_values = 0
+  do tile = 1, distribution%root_tile_count()
+    call assert_all( &
+      (allocated(sparse_patch_set%root_tiles(tile)%state) .eqv. &
+        distribution%root_tile_is_local(tile)) .and. &
+      (allocated(sparse_patch_set%root_tiles(tile)%temperature) .eqv. &
+        distribution%root_tile_is_local(tile)), &
+      "MPI EB AMR sparse root allocation", rank)
+    if (distribution%root_tile_is_local(tile)) &
+      sparse_expected_local_values = sparse_expected_local_values + &
+        (nvar + 1) * distribution%root_tiles(tile)%cell_count
+  end do
+  do child = 1, distribution%child_count()
+    call assert_all( &
+      (allocated(sparse_patch_set%children(child)%state) .eqv. &
+        distribution%child_is_local(child)) .and. &
+      (allocated(sparse_patch_set%children(child)%temperature) .eqv. &
+        distribution%child_is_local(child)), &
+      "MPI EB AMR sparse child allocation", rank)
+    if (distribution%child_is_local(child)) &
+      sparse_expected_local_values = sparse_expected_local_values + &
+        (nvar + 1) * distribution%child_cell_counts(child)
+  end do
+  sparse_local_values = int(sparse_patch_set%local_value_count())
+  call MPI_Allreduce( &
+    sparse_local_values, sparse_global_values, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  sparse_expected_global_values = (nvar + 1) * &
+    (coarse_nx * coarse_ny + sum(distribution%child_cell_counts))
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    sparse_local_values == sparse_expected_local_values .and. &
+    sparse_global_values == sparse_expected_global_values, &
+    "MPI EB AMR sparse value accounting", rank)
+
+  allocate(materialized_coarse_state, mold=coarse_state)
+  allocate(materialized_coarse_temperature, mold=coarse_temperature)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    distribution, sparse_patch_set, coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, materialized_coarse_state, &
+    materialized_coarse_temperature, materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == synchronized_coarse_state) .and. &
+    all(materialized_coarse_temperature == &
+      synchronized_coarse_temperature), &
+    "MPI EB AMR sparse root materialization", rank)
+  do child = 1, distribution%child_count()
+    call assert_all( &
+      all(materialized_patch_set%children(child)%state == &
+        synchronized_patch_set%children(child)%state) .and. &
+      all(materialized_patch_set%children(child)%temperature == &
+        synchronized_patch_set%children(child)%temperature), &
+      "MPI EB AMR sparse child materialization", rank)
+  end do
+
+  invalid_sparse_patch_set = sparse_patch_set
+  if (rank == 0) then
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      deallocate(invalid_sparse_patch_set%root_tiles(tile)%state)
+      exit
+    end do
+  end if
+  allocate(rejected_materialized_state, mold=coarse_state)
+  allocate(rejected_materialized_temperature, mold=coarse_temperature)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    distribution, invalid_sparse_patch_set, coarse_state, &
+    coarse_temperature, coarse_geometry, patch_set, &
+    rejected_materialized_state, rejected_materialized_temperature, &
+    rejected_materialized_set, ok)
+  call assert_all(.not. ok .and. &
+    all(rejected_materialized_state == coarse_state) .and. &
+    all(rejected_materialized_temperature == coarse_temperature), &
+    "MPI EB AMR invalid sparse root rollback", rank)
+  do child = 1, distribution%child_count()
+    call assert_all( &
+      all(rejected_materialized_set%children(child)%state == &
+        patch_set%children(child)%state) .and. &
+      all(rejected_materialized_set%children(child)%temperature == &
+        patch_set%children(child)%temperature), &
+      "MPI EB AMR invalid sparse child rollback", rank)
   end do
 
   allocate(chemistry_coarse_state, source=coarse_state)

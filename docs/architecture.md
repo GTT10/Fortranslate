@@ -1219,6 +1219,15 @@ operator counters only after the second chemistry half-step succeeds. A
 rejected hydro control therefore rolls back already accepted reaction and
 transport prefixes without exposing their local owner counts.
 
+In `0.115.0`, `mpi_amr_eb_sparse_patch_set_2d` separates replicated topology
+from numerical payload ownership. Every distribution entry exists as compact
+metadata, but a root-tile or child state/temperature allocation exists only on
+its owner. Scatter copies owner-authoritative payloads without retaining stale
+nonowner fields. Materialization broadcasts each owned tile or child into a
+temporary complete patch set and commits it only after collective validation.
+This establishes a sparse persistent-storage boundary while legacy physics
+still consumes complete temporary arrays.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

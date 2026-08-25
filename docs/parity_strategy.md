@@ -1841,3 +1841,18 @@ execute before hydro rejects. The caller's root and child fields must remain
 bitwise unchanged and all three published counters must remain zero on every
 rank. The gate runs at one, two, four, and eight ranks in GNU Fortran Release
 and bounds/FPE-checked Debug configurations.
+
+## 0.115.0 sparse MPI reactive EB AMR storage gates
+
+Starting from deliberately distinct owner payloads and stale nonowner
+replicas, scatter must allocate state and temperature only for locally owned
+root tiles and fine children. Each rank's stored-value count must equal its
+owner-map cell count times the reactive state-plus-temperature width, and the
+communicator sum must equal one complete root plus both children exactly once.
+
+Materialization must reproduce the established owner-authoritative root and
+child synchronization bitwise at one, two, four, and eight ranks. Removing one
+rank-zero-owned root payload must reject collectively before output commit;
+every returned fallback root and child field must remain bitwise unchanged.
+The gate runs in GNU Fortran Release and bounds/FPE-checked Debug
+configurations before the complete 208-test regression.
