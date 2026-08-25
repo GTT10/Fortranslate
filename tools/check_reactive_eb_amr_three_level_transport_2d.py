@@ -47,7 +47,8 @@ def main() -> None:
     args = parser.parse_args()
 
     expected_rows = {"root": 8 * 8, "middle": 12 * 12, "finest": 16 * 16}
-    reductions: dict[str, float] = {}
+    reference_hierarchy_temperature: list[float] = []
+    transport_hierarchy_temperature: list[float] = []
     maximum_change = 0.0
     for level, count in expected_rows.items():
         reference = load(getattr(args, f"reference_{level}"), count)
@@ -58,9 +59,8 @@ def main() -> None:
             raise AssertionError(f"{level}: EB classification changed")
         reference_temperature = active_temperatures(reference)
         transport_temperature = active_temperatures(transported)
-        reference_span = max(reference_temperature) - min(reference_temperature)
-        transport_span = max(transport_temperature) - min(transport_temperature)
-        reductions[level] = reference_span - transport_span
+        reference_hierarchy_temperature.extend(reference_temperature)
+        transport_hierarchy_temperature.extend(transport_temperature)
         maximum_change = max(
             maximum_change,
             max(
@@ -69,9 +69,15 @@ def main() -> None:
             ),
         )
 
-    if reductions["finest"] <= 1.0e-8:
+    reference_span = max(reference_hierarchy_temperature) - min(
+        reference_hierarchy_temperature
+    )
+    transport_span = max(transport_hierarchy_temperature) - min(
+        transport_hierarchy_temperature
+    )
+    if reference_span - transport_span <= 1.0e-8:
         raise AssertionError(
-            "three-level conduction did not reduce the finest temperature span"
+            "three-level conduction did not reduce the hierarchy temperature span"
         )
     if maximum_change <= 1.0e-8:
         raise AssertionError("three-level thermal transport produced no change")

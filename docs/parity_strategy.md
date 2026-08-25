@@ -1716,6 +1716,6 @@ The driver gate must reject an omitted transport database and accept the same
 request with the matching seven-species database. The public application runs
 matching inert and conducting 8 by 8 root, 12 by 12 middle, and 16 by 16
 finest hotspots to `2e-7`. All six CSVs must contain finite positive active
-thermodynamics and species closure within `8e-12`; the conducting finest-level
-temperature span must be measurably smaller. These focused gates must pass
+thermodynamics and species closure within `8e-12`; the conducting composite
+hierarchy temperature span must be measurably smaller. These focused gates must pass
 before all 205 tests in GNU Fortran Debug and Release configurations.
