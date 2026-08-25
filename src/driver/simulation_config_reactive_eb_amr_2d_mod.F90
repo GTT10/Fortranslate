@@ -195,11 +195,9 @@ contains
       return
     end if
     if (three_level_enabled .and. &
-        (multipatch_enabled .or. dynamic_regridding .or. &
-         checkpoint_interval /= 0 .or. len_trim(checkpoint_file) > 0 .or. &
-         checkpoint_stop_after_write .or. len_trim(restart_file) > 0)) then
+        (multipatch_enabled .or. dynamic_regridding)) then
       ok = .false.
-      message = "Static three-level EB AMR excludes regrid and checkpoint"
+      message = "Static three-level EB AMR excludes regridding and siblings"
       return
     end if
     if (checkpoint_interval < 0 .or. &
