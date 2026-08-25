@@ -18,6 +18,8 @@ program test_reactive_eb_amr_2d_driver
     regrid_reactive_eb_amr_hierarchy_2d, &
     write_reactive_eb_amr_2d_checkpoint, &
     read_reactive_eb_amr_2d_checkpoint, &
+    write_reactive_eb_amr_patch_set_2d_checkpoint, &
+    read_reactive_eb_amr_patch_set_2d_checkpoint, &
     simulate_reactive_eb_amr_2d, &
     compute_reactive_eb_patch_set_cfl_timestep_2d, &
     simulate_reactive_eb_amr_patch_set_2d
@@ -31,6 +33,7 @@ program test_reactive_eb_amr_2d_driver
   type(amr_eb_patch_2d) :: patch
   type(amr_eb_patch_2d) :: checkpoint_patch
   type(reactive_eb_patch_set_2d) :: multipatch_set
+  type(reactive_eb_patch_set_2d) :: checkpoint_multipatch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -52,9 +55,11 @@ program test_reactive_eb_amr_2d_driver
   logical :: changed, fine_active, checkpoint_fine_active, ok
   integer :: initial_i_lower, initial_i_upper
   integer :: initial_j_lower, initial_j_upper, regrids, steps
-  integer :: checkpoint_regrids, checkpoint_steps
+  integer :: checkpoint_regrids, checkpoint_steps, child
   character(len=*), parameter :: checkpoint_path = &
     "reactive_eb_amr_2d_driver.chk"
+  character(len=*), parameter :: patch_set_checkpoint_path = &
+    "reactive_eb_amr_patch_set_2d_driver.chk"
   character(len=64) :: multipatch_failure_context
 
   call load_h2o2_elementary_thermo(species, ok)
@@ -427,6 +432,66 @@ program test_reactive_eb_amr_2d_driver
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public multipatch CFL selection")
 
+  call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, multipatch_set, time, steps, &
+    regrids, minimum_dt, base_density, ok)
+  call require(ok, "multipatch checkpoint write")
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(ok .and. checkpoint_multipatch_set%patch_count() == &
+    multipatch_set%patch_count() .and. &
+    checkpoint_multipatch_set%is_valid( &
+      checkpoint_coarse_geometry, size(checkpoint_coarse_state, 1)) .and. &
+    checkpoint_time == time .and. checkpoint_steps == steps .and. &
+    checkpoint_regrids == regrids .and. &
+    checkpoint_minimum_dt == minimum_dt .and. &
+    checkpoint_base_density == base_density .and. &
+    all(checkpoint_coarse_state == coarse_state), &
+    "multipatch checkpoint root round trip")
+  scale = max(1.0_dp, maxval(abs(coarse_temperature)))
+  call require(maxval(abs(checkpoint_coarse_temperature - &
+    coarse_temperature)) <= 3.0e-12_dp * scale, &
+    "multipatch checkpoint root temperature recovery")
+  do child = 1, multipatch_set%patch_count()
+    call require( &
+      checkpoint_multipatch_set%children(child)%patch%coarse_i_lower == &
+        multipatch_set%children(child)%patch%coarse_i_lower .and. &
+      checkpoint_multipatch_set%children(child)%patch%coarse_i_upper == &
+        multipatch_set%children(child)%patch%coarse_i_upper .and. &
+      checkpoint_multipatch_set%children(child)%patch%coarse_j_lower == &
+        multipatch_set%children(child)%patch%coarse_j_lower .and. &
+      checkpoint_multipatch_set%children(child)%patch%coarse_j_upper == &
+        multipatch_set%children(child)%patch%coarse_j_upper .and. &
+      checkpoint_multipatch_set%children(child)%patch%refinement_ratio == &
+        multipatch_set%children(child)%patch%refinement_ratio .and. &
+      all(checkpoint_multipatch_set%children(child)%state == &
+        multipatch_set%children(child)%state), &
+      "multipatch checkpoint child round trip")
+    scale = max(1.0_dp, &
+      maxval(abs(multipatch_set%children(child)%temperature)))
+    call require(maxval(abs( &
+      checkpoint_multipatch_set%children(child)%temperature - &
+      multipatch_set%children(child)%temperature)) <= 3.0e-12_dp * scale, &
+      "multipatch checkpoint child temperature recovery")
+  end do
+  call write_truncated_patch_set_checkpoint(patch_set_checkpoint_path)
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(.not. ok .and. &
+    .not. allocated(checkpoint_coarse_state) .and. &
+    .not. allocated(checkpoint_coarse_temperature) .and. &
+    .not. checkpoint_coarse_geometry%is_valid() .and. &
+    .not. allocated(checkpoint_multipatch_set%children), &
+    "truncated multipatch checkpoint transactional rejection")
+  call delete_checkpoint(patch_set_checkpoint_path)
+
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
 contains
@@ -445,6 +510,24 @@ contains
     close(unit, iostat=status)
     if (status /= 0) error stop "Could not close truncated checkpoint"
   end subroutine write_truncated_checkpoint
+
+  subroutine write_truncated_patch_set_checkpoint(path)
+    character(len=*), intent(in) :: path
+
+    integer :: unit, status
+
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      iostat=status)
+    if (status /= 0) error stop &
+      "Could not create truncated multipatch checkpoint"
+    write(unit, '(a)', iostat=status) &
+      "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT"
+    if (status /= 0) error stop &
+      "Could not write truncated multipatch checkpoint"
+    close(unit, iostat=status)
+    if (status /= 0) error stop &
+      "Could not close truncated multipatch checkpoint"
+  end subroutine write_truncated_patch_set_checkpoint
 
   subroutine delete_checkpoint(path)
     character(len=*), intent(in) :: path
