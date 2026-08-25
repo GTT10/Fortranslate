@@ -7,11 +7,9 @@ module amr_eb_multilevel_reactive_2d_mod
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
   use amr_eb_hierarchy_2d_mod, only: &
-    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d, &
-    composite_eb_integral_2d
+    amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
   use amr_eb_multilevel_2d_mod, only: &
-    average_down_three_level_reactive_eb_state_2d, &
-    composite_three_level_eb_integral_2d
+    average_down_three_level_reactive_eb_state_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -82,8 +80,6 @@ contains
     real(dp), allocatable :: level_one_y_flux(:, :, :)
     real(dp), allocatable :: level_two_x_flux(:, :, :)
     real(dp), allocatable :: level_two_y_flux(:, :, :)
-    real(dp), allocatable :: debug_before(:), debug_raw(:)
-    real(dp), allocatable :: debug_reflux(:), debug_after(:)
     real(dp) :: level_one_dt, level_two_dt, alpha, selected_target
     logical :: local_ok
     integer :: nvar, level_one_ratio, level_two_ratio
@@ -108,6 +104,7 @@ contains
           level_one_geometry, level_two_geometry) .or. &
         .not. level_two_patch_is_separated( &
           level_one_patch, level_one_geometry) .or. &
+        .not. level_two_interface_is_regular(level_two_geometry) .or. &
         any(shape(root_state) /= &
           [nvar, root_geometry%nx, root_geometry%ny]) .or. &
         any(shape(root_temperature) /= &
@@ -179,18 +176,12 @@ contains
       nvar, 0:level_two_geometry%nx, level_two_geometry%ny))
     allocate(level_two_y_flux( &
       nvar, level_two_geometry%nx, 0:level_two_geometry%ny))
-    allocate(debug_before(nvar), debug_raw(nvar))
-    allocate(debug_reflux(nvar), debug_after(nvar))
 
     level_one_ratio = root_patch%refinement_ratio
     level_two_ratio = level_one_patch%refinement_ratio
     level_one_dt = dt / real(level_one_ratio, dp)
     level_two_dt = level_one_dt / real(level_two_ratio, dp)
     do level_one_substep = 1, level_one_ratio
-      call composite_eb_integral_2d( &
-        level_one_candidate, level_one_geometry, level_two_candidate, &
-        level_two_geometry, level_one_patch, debug_before, local_ok)
-      if (.not. local_ok) return
       level_one_start = level_one_candidate
       level_one_start_temperature = level_one_candidate_temperature
       alpha = substep_time_alpha( &
@@ -249,11 +240,6 @@ contains
         if (.not. local_ok) return
       end do
 
-      call composite_eb_integral_2d( &
-        level_one_uncorrected, level_one_geometry, level_two_candidate, &
-        level_two_geometry, level_one_patch, debug_raw, local_ok)
-      if (.not. local_ok) return
-
       call reflux_reactive_eb_state_patch_2d( &
         species, level_one_uncorrected, &
         level_one_uncorrected_temperature, level_one_geometry, &
@@ -261,10 +247,6 @@ contains
         level_two_geometry, level_one_patch, level_one_register, &
         level_one_refluxed, level_one_refluxed_temperature, &
         level_two_refluxed, level_two_refluxed_temperature, local_ok)
-      if (.not. local_ok) return
-      call composite_eb_integral_2d( &
-        level_one_refluxed, level_one_geometry, level_two_refluxed, &
-        level_two_geometry, level_one_patch, debug_reflux, local_ok)
       if (.not. local_ok) return
       call average_down_reactive_eb_state_patch_2d( &
         species, level_one_refluxed, level_one_refluxed_temperature, &
@@ -274,27 +256,8 @@ contains
       if (.not. local_ok) return
       level_two_candidate = level_two_refluxed
       level_two_candidate_temperature = level_two_refluxed_temperature
-      call composite_eb_integral_2d( &
-        level_one_candidate, level_one_geometry, level_two_candidate, &
-        level_two_geometry, level_one_patch, debug_after, local_ok)
-      if (.not. local_ok) return
-      write(*, '(a,i0,2(es24.16,1x))') &
-        "inner composite delta step ", level_one_substep, &
-        debug_after(1) - debug_before(1), &
-        debug_after(5) - debug_before(5)
-      write(*, '(a,i0,4(es24.16,1x))') &
-        "inner raw/reflux delta step ", level_one_substep, &
-        debug_reflux(1) - debug_raw(1), &
-        debug_reflux(5) - debug_raw(5), &
-        debug_reflux(1) - debug_before(1), &
-        debug_reflux(5) - debug_before(5)
     end do
 
-    call composite_three_level_eb_integral_2d( &
-      root_candidate, root_geometry, level_one_candidate, &
-      level_one_geometry, root_patch, level_two_candidate, &
-      level_two_geometry, level_one_patch, debug_before, local_ok)
-    if (.not. local_ok) return
     allocate(root_refluxed, mold=root_state)
     allocate(root_refluxed_temperature, mold=root_temperature)
     call reflux_reactive_eb_state_patch_2d( &
@@ -304,13 +267,6 @@ contains
       root_refluxed_temperature, level_one_refluxed, &
       level_one_refluxed_temperature, local_ok)
     if (.not. local_ok) return
-    call composite_three_level_eb_integral_2d( &
-      root_refluxed, root_geometry, level_one_refluxed, &
-      level_one_geometry, root_patch, level_two_candidate, &
-      level_two_geometry, level_one_patch, debug_after, local_ok)
-    if (.not. local_ok) return
-    write(*, '(a,2(es24.16,1x))') "outer reflux composite delta ", &
-      debug_after(1) - debug_before(1), debug_after(5) - debug_before(5)
     call average_down_three_level_reactive_eb_state_2d( &
       species, root_refluxed, root_refluxed_temperature, root_geometry, &
       level_one_refluxed, level_one_refluxed_temperature, &
@@ -351,5 +307,23 @@ contains
       patch%coarse_j_lower >= 3 .and. &
       patch%coarse_j_upper <= level_one_geometry%ny - 2
   end function level_two_patch_is_separated
+
+  pure logical function level_two_interface_is_regular( &
+      geometry) result(regular)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), parameter :: tolerance = 64.0_dp * epsilon(1.0_dp)
+
+    regular = .false.
+    if (geometry%nx < 1 .or. geometry%ny < 1 .or. &
+        .not. allocated(geometry%x_face_fraction) .or. &
+        .not. allocated(geometry%y_face_fraction)) return
+    regular = &
+      all(abs(geometry%x_face_fraction(0, :) - 1.0_dp) <= tolerance) .and. &
+      all(abs(geometry%x_face_fraction(geometry%nx, :) - 1.0_dp) <= &
+        tolerance) .and. &
+      all(abs(geometry%y_face_fraction(:, 0) - 1.0_dp) <= tolerance) .and. &
+      all(abs(geometry%y_face_fraction(:, geometry%ny) - 1.0_dp) <= &
+        tolerance)
+  end function level_two_interface_is_regular
 
 end module amr_eb_multilevel_reactive_2d_mod
