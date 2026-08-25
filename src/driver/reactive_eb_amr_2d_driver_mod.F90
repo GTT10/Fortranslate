@@ -53,6 +53,10 @@ module reactive_eb_amr_2d_driver_mod
   character(len=*), parameter :: reactive_eb_three_level_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_three_level_checkpoint_schema = 1
+  character(len=*), parameter :: &
+    reactive_eb_dynamic_three_level_checkpoint_magic = &
+      "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
+  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 1
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_three_level_reactive_eb_cfl_timestep_2d
@@ -163,10 +167,7 @@ contains
        (.not. config%remove_fine_patch_when_untagged .and. &
         level_one_nx >= 8 .and. level_one_ny >= 8 .and. &
         config%regrid_minimum_patch_cells_x <= level_one_nx - 4 .and. &
-        config%regrid_minimum_patch_cells_y <= level_one_ny - 4 .and. &
-        config%checkpoint_interval == 0 .and. &
-        len_trim(config%checkpoint_file) == 0 .and. &
-        len_trim(config%restart_file) == 0))
+        config%regrid_minimum_patch_cells_y <= level_one_ny - 4))
   end function supported_three_level_reactive_eb_amr_config
 
   subroutine compute_reactive_eb_amr_cfl_timestep_2d( &
@@ -2008,7 +2009,7 @@ contains
       level_one_state, level_one_temperature, level_one_geometry, &
       root_patch, level_two_state, level_two_temperature, &
       level_two_geometry, level_one_patch, time, steps, minimum_dt, &
-      base_density, ok)
+      base_density, ok, regrids)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2025,17 +2026,19 @@ contains
     real(dp), intent(in) :: time, minimum_dt, base_density
     integer, intent(in) :: steps
     logical, intent(out) :: ok
+    integer, intent(in), optional :: regrids
 
     real(dp) :: time_tolerance
-    integer :: unit, status, nvar, species_index
+    integer :: unit, status, nvar, species_index, checkpoint_regrids
 
     ok = .false.
+    checkpoint_regrids = 0
+    if (present(regrids)) checkpoint_regrids = regrids
     nvar = reactive_nvar(size(species))
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_three_level_reactive_eb_amr_config(config) .or. &
-        config%dynamic_regridding .or. &
         .not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
         .not. level_one_patch%is_valid( &
           level_one_geometry, level_two_geometry) .or. &
@@ -2043,10 +2046,6 @@ contains
         root_patch%coarse_i_upper /= config%coarse_i_upper .or. &
         root_patch%coarse_j_lower /= config%coarse_j_lower .or. &
         root_patch%coarse_j_upper /= config%coarse_j_upper .or. &
-        level_one_patch%coarse_i_lower /= config%level_two_i_lower .or. &
-        level_one_patch%coarse_i_upper /= config%level_two_i_upper .or. &
-        level_one_patch%coarse_j_lower /= config%level_two_j_lower .or. &
-        level_one_patch%coarse_j_upper /= config%level_two_j_upper .or. &
         size(root_state, 1) /= nvar .or. &
         size(root_state, 2) /= root_geometry%nx .or. &
         size(root_state, 3) /= root_geometry%ny .or. &
@@ -2074,14 +2073,38 @@ contains
         .not. ieee_is_finite(minimum_dt) .or. minimum_dt <= 0.0_dp .or. &
         minimum_dt > time + time_tolerance .or. &
         .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
+    if (config%dynamic_regridding) then
+      if (.not. present(regrids) .or. checkpoint_regrids < 0 .or. &
+          checkpoint_regrids > steps + 1 .or. &
+          level_one_patch%coarse_i_lower < 3 .or. &
+          level_one_patch%coarse_i_upper > level_one_geometry%nx - 2 .or. &
+          level_one_patch%coarse_j_lower < 3 .or. &
+          level_one_patch%coarse_j_upper > level_one_geometry%ny - 2) return
+    else
+      if (level_one_patch%coarse_i_lower /= config%level_two_i_lower .or. &
+          level_one_patch%coarse_i_upper /= config%level_two_i_upper .or. &
+          level_one_patch%coarse_j_lower /= config%level_two_j_lower .or. &
+          level_one_patch%coarse_j_upper /= config%level_two_j_upper) return
+    end if
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) return
-    write(unit, '(a)', iostat=status) reactive_eb_three_level_checkpoint_magic
+    if (config%dynamic_regridding) then
+      write(unit, '(a)', iostat=status) &
+        reactive_eb_dynamic_three_level_checkpoint_magic
+    else
+      write(unit, '(a)', iostat=status) reactive_eb_three_level_checkpoint_magic
+    end if
     if (status /= 0) go to 900
-    write(unit, '(*(i0,1x))', iostat=status) &
-      reactive_eb_three_level_checkpoint_schema, size(species), nvar
+    if (config%dynamic_regridding) then
+      write(unit, '(*(i0,1x))', iostat=status) &
+        reactive_eb_dynamic_three_level_checkpoint_schema, &
+        size(species), nvar
+    else
+      write(unit, '(*(i0,1x))', iostat=status) &
+        reactive_eb_three_level_checkpoint_schema, size(species), nvar
+    end if
     if (status /= 0) go to 900
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
@@ -2122,6 +2145,20 @@ contains
       config%eb%flow%chemistry_absolute_tolerance, &
       config%eb%state_redist_target_volume_fraction
     if (status /= 0) go to 900
+    if (config%dynamic_regridding) then
+      write(unit, '(*(i0,1x))', iostat=status) &
+        merge(1, 0, config%regrid_at_initialization), &
+        config%regrid_interval, config%regrid_buffer_cells, &
+        config%regrid_minimum_patch_cells_x, &
+        config%regrid_minimum_patch_cells_y, &
+        config%regrid_maximum_patch_gap_cells
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) &
+        config%regrid_relative_temperature_gradient, &
+        config%regrid_absolute_temperature_gradient, &
+        config%regrid_temperature_scale_floor
+      if (status /= 0) go to 900
+    end if
     write(unit, '(*(i0,1x))', iostat=status) &
       root_patch%coarse_i_lower, root_patch%coarse_i_upper, &
       root_patch%coarse_j_lower, root_patch%coarse_j_upper, &
@@ -2132,8 +2169,14 @@ contains
       level_one_patch%coarse_j_lower, level_one_patch%coarse_j_upper, &
       level_one_patch%refinement_ratio
     if (status /= 0) go to 900
-    write(unit, '(2(es27.18e3,1x),i0,1x,es27.18e3)', iostat=status) &
-      time, minimum_dt, steps, base_density
+    if (config%dynamic_regridding) then
+      write(unit, '(2(es27.18e3,1x),2(i0,1x),es27.18e3)', &
+        iostat=status) time, minimum_dt, steps, checkpoint_regrids, &
+        base_density
+    else
+      write(unit, '(2(es27.18e3,1x),i0,1x,es27.18e3)', iostat=status) &
+        time, minimum_dt, steps, base_density
+    end if
     if (status /= 0) go to 900
     call write_three_level_checkpoint_field_2d( &
       unit, root_state, root_temperature, status)
@@ -2159,7 +2202,7 @@ contains
       level_one_state, level_one_temperature, level_one_geometry, &
       root_patch, level_two_state, level_two_temperature, &
       level_two_geometry, level_one_patch, time, steps, minimum_dt, &
-      base_density, ok)
+      base_density, ok, regrids)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2177,6 +2220,7 @@ contains
     real(dp), intent(out) :: time, minimum_dt, base_density
     integer, intent(out) :: steps
     logical, intent(out) :: ok
+    integer, intent(out), optional :: regrids
 
     type(eb_geometry_2d) :: candidate_root_geometry
     type(eb_geometry_2d) :: candidate_level_one_geometry
@@ -2195,11 +2239,13 @@ contains
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(4), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
+    real(dp) :: stored_regrid_numerics(3)
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_nx, stored_ny, stored_ratio, stored_circle_inside
     integer :: stored_flags(2), stored_root_patch(5), stored_level_one_patch(5)
-    integer :: stored_steps, species_index
-    logical :: local_ok
+    integer :: stored_regrid_controls(6)
+    integer :: stored_steps, stored_regrids, species_index
+    logical :: local_ok, dynamic_checkpoint
 
     root_geometry = eb_geometry_2d()
     level_one_geometry = eb_geometry_2d()
@@ -2210,20 +2256,29 @@ contains
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
     steps = 0
+    stored_regrids = 0
+    if (present(regrids)) regrids = 0
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
-        .not. supported_three_level_reactive_eb_amr_config(config) .or. &
-        config%dynamic_regridding) return
+        .not. supported_three_level_reactive_eb_amr_config(config)) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return
     read(unit, '(a)', iostat=status) magic
-    if (status /= 0 .or. &
+    if (status /= 0) go to 900
+    dynamic_checkpoint = &
+      trim(magic) == reactive_eb_dynamic_three_level_checkpoint_magic
+    if (.not. dynamic_checkpoint .and. &
         trim(magic) /= reactive_eb_three_level_checkpoint_magic) go to 900
+    if (dynamic_checkpoint .neqv. config%dynamic_regridding) go to 900
+    if (dynamic_checkpoint .and. .not. present(regrids)) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar
     if (status /= 0 .or. &
-        schema /= reactive_eb_three_level_checkpoint_schema .or. &
+        (dynamic_checkpoint .and. &
+         schema /= reactive_eb_dynamic_three_level_checkpoint_schema) .or. &
+        (.not. dynamic_checkpoint .and. &
+         schema /= reactive_eb_three_level_checkpoint_schema) .or. &
         stored_species /= size(species) .or. &
         stored_nvar /= reactive_nvar(size(species))) go to 900
     do species_index = 1, stored_species
@@ -2273,18 +2328,50 @@ contains
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, &
         config%eb%state_redist_target_volume_fraction]))) go to 900
+    if (dynamic_checkpoint) then
+      read(unit, *, iostat=status) stored_regrid_controls
+      if (status /= 0 .or. any(stored_regrid_controls /= [ &
+          merge(1, 0, config%regrid_at_initialization), &
+          config%regrid_interval, config%regrid_buffer_cells, &
+          config%regrid_minimum_patch_cells_x, &
+          config%regrid_minimum_patch_cells_y, &
+          config%regrid_maximum_patch_gap_cells])) go to 900
+      read(unit, *, iostat=status) stored_regrid_numerics
+      if (status /= 0 .or. .not. all(checkpoint_real_matches( &
+          stored_regrid_numerics, [ &
+          config%regrid_relative_temperature_gradient, &
+          config%regrid_absolute_temperature_gradient, &
+          config%regrid_temperature_scale_floor]))) go to 900
+    end if
     read(unit, *, iostat=status) stored_root_patch
     if (status /= 0 .or. any(stored_root_patch /= [ &
         config%coarse_i_lower, config%coarse_i_upper, &
         config%coarse_j_lower, config%coarse_j_upper, &
         config%refinement_ratio])) go to 900
     read(unit, *, iostat=status) stored_level_one_patch
-    if (status /= 0 .or. any(stored_level_one_patch /= [ &
-        config%level_two_i_lower, config%level_two_i_upper, &
-        config%level_two_j_lower, config%level_two_j_upper, &
-        config%refinement_ratio])) go to 900
-    read(unit, *, iostat=status) stored_time, stored_minimum_dt, &
-      stored_steps, stored_base_density
+    if (status /= 0) go to 900
+    if (dynamic_checkpoint) then
+      if (stored_level_one_patch(1) < 3 .or. &
+          stored_level_one_patch(2) > &
+            (config%coarse_i_upper - config%coarse_i_lower + 1) * &
+              config%refinement_ratio - 2 .or. &
+          stored_level_one_patch(3) < 3 .or. &
+          stored_level_one_patch(4) > &
+            (config%coarse_j_upper - config%coarse_j_lower + 1) * &
+              config%refinement_ratio - 2 .or. &
+          stored_level_one_patch(2) < stored_level_one_patch(1) .or. &
+          stored_level_one_patch(4) < stored_level_one_patch(3) .or. &
+          stored_level_one_patch(5) /= config%refinement_ratio) go to 900
+      read(unit, *, iostat=status) stored_time, stored_minimum_dt, &
+        stored_steps, stored_regrids, stored_base_density
+    else
+      if (any(stored_level_one_patch /= [ &
+          config%level_two_i_lower, config%level_two_i_upper, &
+          config%level_two_j_lower, config%level_two_j_upper, &
+          config%refinement_ratio])) go to 900
+      read(unit, *, iostat=status) stored_time, stored_minimum_dt, &
+        stored_steps, stored_base_density
+    end if
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (status /= 0 .or. .not. ieee_is_finite(stored_time) .or. &
@@ -2296,6 +2383,7 @@ contains
         stored_minimum_dt > stored_time + time_tolerance .or. &
         stored_steps < 1 .or. &
         stored_steps > config%eb%flow%maximum_steps .or. &
+        stored_regrids < 0 .or. stored_regrids > stored_steps + 1 .or. &
         stored_base_density <= 0.0_dp) go to 900
 
     call build_configured_eb_geometry_2d( &
@@ -2308,9 +2396,9 @@ contains
       candidate_root_patch, local_ok)
     if (.not. local_ok) go to 900
     call build_reactive_eb_amr_patch_geometry_2d( &
-      config, candidate_level_one_geometry, config%level_two_i_lower, &
-      config%level_two_i_upper, config%level_two_j_lower, &
-      config%level_two_j_upper, candidate_level_two_geometry, &
+      config, candidate_level_one_geometry, stored_level_one_patch(1), &
+      stored_level_one_patch(2), stored_level_one_patch(3), &
+      stored_level_one_patch(4), candidate_level_two_geometry, &
       candidate_level_one_patch, local_ok)
     if (.not. local_ok) go to 900
     call read_three_level_checkpoint_field_2d( &
@@ -2357,6 +2445,7 @@ contains
     minimum_dt = stored_minimum_dt
     base_density = stored_base_density
     steps = stored_steps
+    if (present(regrids)) regrids = stored_regrids
     ok = .true.
     return
 
@@ -2628,7 +2717,7 @@ contains
         root_geometry, level_one_state, level_one_temperature, &
         level_one_geometry, root_patch, level_two_state, &
         level_two_temperature, level_two_geometry, level_one_patch, time, &
-        steps, minimum_dt, base_density, local_ok)
+        steps, minimum_dt, base_density, local_ok, regrids)
       if (.not. local_ok) return
       nvar = size(root_state, 1)
     else
@@ -2771,7 +2860,8 @@ contains
             root_temperature, root_geometry, level_one_state, &
             level_one_temperature, level_one_geometry, root_patch, &
             level_two_state, level_two_temperature, level_two_geometry, &
-            level_one_patch, time, steps, minimum_dt, base_density, local_ok)
+            level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
+            regrids)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -2791,7 +2881,8 @@ contains
         root_temperature, root_geometry, level_one_state, &
         level_one_temperature, level_one_geometry, root_patch, &
         level_two_state, level_two_temperature, level_two_geometry, &
-        level_one_patch, time, steps, minimum_dt, base_density, local_ok)
+        level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
+        regrids)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final composite integral"

@@ -642,6 +642,8 @@ Required capabilities:
   uninterrupted field parity (`0.103.0`)
 - [x] tag-driven transactional finest-patch movement and resizing inside a
   fixed middle level (`0.104.0`)
+- [x] transactional checkpoint/restart of dynamic three-level finest topology
+  and regrid cadence (`0.105.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

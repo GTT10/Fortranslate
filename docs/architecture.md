@@ -1117,10 +1117,19 @@ overlapping fine cells exactly, validates EOS state, and then publishes the
 new middle/finest pair. Initial and cadence-triggered regrids use the same
 operation, and the public lifecycle reports committed topology changes.
 
+In `0.105.0`, dynamic three-level mode selects a separate formatted checkpoint
+magic and schema. The stream records the committed middle-to-finest bounds,
+regrid count, interval, tagging thresholds, buffer and minimum-size controls
+in addition to the established mechanism, physics, EB, state and time data.
+Restart rebuilds the fixed root/middle hierarchy from configuration and the
+finest geometry from the stored bounds, recovers all temperatures through the
+EOS, and publishes only after the end marker and every compatibility check
+succeed. Restored step and regrid counts preserve accepted-step cadence.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel
 redistribution, arbitrary depth, dynamic root/middle lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
 subsystem. Dynamic three-level mode changes only the finest patch inside a
-fixed middle level and rejects finest removal, siblings, and checkpoint/restart.
+fixed middle level and rejects finest removal and siblings.

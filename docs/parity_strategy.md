@@ -1644,3 +1644,20 @@ regular, cut, and covered cells, retain positive active thermodynamics, and
 preserve species closure within `8e-12`. The focused unit, public run, and
 output-structure gates must pass before all 189 tests in GNU Fortran Debug and
 Release configurations.
+
+## 0.105.0 dynamic three-level checkpoint/restart gates
+
+The public split-run case begins from the same 12 by 12 root, fixed 20 by 20
+middle rectangle, and configured 8 by 8 finest seed. Initialization must first
+commit the EB-aware 22 by 28 finest topology. The checkpoint-stop run writes
+after its first accepted interval, records that actual rectangle and at least
+one committed regrid, and stops strictly before `2e-7`.
+
+Restart must reconstruct the stored 22 by 28 finest field rather than the
+configured seed, restore accepted step and regrid accounting, and continue
+the same cadence to final time. The checkpoint checker requires the distinct
+dynamic magic, exact regrid controls, stored non-seed topology, regrid count,
+and terminal marker. Every root, middle, and finest CSV field must agree with
+the uninterrupted run within a `3e-10` scale-aware tolerance. These four
+focused gates must pass before all 193 tests in GNU Fortran Debug and Release
+configurations.

@@ -213,13 +213,6 @@ contains
       message = "Dynamic finest patch needs a two-cell middle margin"
       return
     end if
-    if (three_level_enabled .and. dynamic_regridding .and. &
-        (checkpoint_interval > 0 .or. len_trim(checkpoint_file) > 0 .or. &
-         len_trim(restart_file) > 0)) then
-      ok = .false.
-      message = "Dynamic three-level checkpoint/restart is not yet supported"
-      return
-    end if
     if (checkpoint_interval < 0 .or. &
         (checkpoint_interval > 0 .and. len_trim(checkpoint_file) == 0) .or. &
         (checkpoint_stop_after_write .and. &
