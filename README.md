@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.111.0` milestone contains the serial verification suite, eight optional
+The `0.112.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -390,7 +390,12 @@ ownership accounting, authoritative payload recovery, and transactional
 rejection of invalid or inconsistent work models. The same gate now advances
 active-cell chemistry exactly once on each root-tile or child owner, reaches
 serial patch-set parity after owner broadcasts and fine-to-root average-down,
-and rolls every rank back after a late owner-side reactor rejection.
+and rolls every rank back after a late owner-side reactor rejection. Reactive
+EB hydrodynamics now advances the complete root level once on its exclusive
+physics owner and advances every child on its patch owner with ratio
+subcycling, owner-local flux registers, sequential reflux, and final
+fine-to-root average-down. Its result matches the serial multipatch path and a
+late child-owner failure leaves every rank unchanged.
 
 ### One-dimensional AMR
 
