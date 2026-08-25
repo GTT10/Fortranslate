@@ -38,6 +38,7 @@ add_library(
   src/driver/simulation_config_reactive_1d_mod.F90
   src/driver/simulation_config_reactive_2d_mod.F90
   src/driver/simulation_config_reactive_eb_2d_mod.F90
+  src/driver/simulation_config_reactive_eb_amr_2d_mod.F90
   src/hydro/reconstruction_weno_mod.F90
   src/reactive/reactive_1d_mod.F90
   src/eb/eb_reactive_wall_flux_2d_mod.F90
@@ -52,6 +53,7 @@ add_library(
   src/eb/eb_reactive_reconstruction_2d_mod.F90
   src/eb/eb_reactive_hydro_2d_mod.F90
   src/driver/reactive_eb_2d_driver_mod.F90
+  src/driver/reactive_eb_amr_2d_driver_mod.F90
   src/chemistry/elementary_kinetics_mod.F90
   src/generated/h2o2_elementary_mechanism_mod.F90
   src/generated/h2o2_full_mechanism_mod.F90
@@ -163,6 +165,9 @@ target_link_libraries(pelef_reactive_2d PRIVATE pelef_core)
 
 add_executable(pelef_reactive_eb_2d app/pelef_reactive_eb_2d.F90)
 target_link_libraries(pelef_reactive_eb_2d PRIVATE pelef_core)
+
+add_executable(pelef_reactive_eb_amr_2d app/pelef_reactive_eb_amr_2d.F90)
+target_link_libraries(pelef_reactive_eb_amr_2d PRIVATE pelef_core)
 
 add_executable(pelef_transport_probe app/pelef_transport_probe.F90)
 target_link_libraries(pelef_transport_probe PRIVATE pelef_core)

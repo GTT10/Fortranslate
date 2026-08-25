@@ -17,6 +17,7 @@ module reactive_eb_2d_driver_mod
   private
 
   public :: build_configured_eb_geometry_2d
+  public :: build_configured_eb_geometry_region_2d
   public :: compute_reactive_eb_cfl_timestep_2d
   public :: reactive_eb_integrals_2d
   public :: reactive_eb_extrema_2d
@@ -56,20 +57,35 @@ contains
     type(eb_geometry_2d), intent(out) :: geometry
     logical, intent(out) :: ok
 
+    call build_configured_eb_geometry_region_2d( &
+      config, config%flow%nx, config%flow%ny, config%flow%x_lower, &
+      config%flow%x_upper, config%flow%y_lower, config%flow%y_upper, &
+      geometry, ok)
+    if (.not. ok) return
+    ok = count(geometry%cell_type == eb_cut_cell) > 0
+  end subroutine build_configured_eb_geometry_2d
+
+  subroutine build_configured_eb_geometry_region_2d( &
+      config, nx, ny, x_lower, x_upper, y_lower, y_upper, geometry, ok)
+    type(reactive_eb_2d_config), intent(in) :: config
+    integer, intent(in) :: nx, ny
+    real(dp), intent(in) :: x_lower, x_upper, y_lower, y_upper
+    type(eb_geometry_2d), intent(out) :: geometry
+    logical, intent(out) :: ok
+
     real(dp), allocatable :: level_set(:, :)
     real(dp) :: x, y, distance
     integer :: i, j
 
     ok = .false.
-    allocate(level_set(0:config%flow%nx, 0:config%flow%ny))
-    do j = 0, config%flow%ny
-      y = config%flow%y_lower + real(j, dp) * &
-        (config%flow%y_upper - config%flow%y_lower) / &
-        real(config%flow%ny, dp)
-      do i = 0, config%flow%nx
-        x = config%flow%x_lower + real(i, dp) * &
-          (config%flow%x_upper - config%flow%x_lower) / &
-          real(config%flow%nx, dp)
+    if (nx < 1 .or. ny < 1 .or. &
+        .not. all(ieee_is_finite([x_lower, x_upper, y_lower, y_upper])) .or. &
+        x_upper <= x_lower .or. y_upper <= y_lower) return
+    allocate(level_set(0:nx, 0:ny))
+    do j = 0, ny
+      y = y_lower + real(j, dp) * (y_upper - y_lower) / real(ny, dp)
+      do i = 0, nx
+        x = x_lower + real(i, dp) * (x_upper - x_lower) / real(nx, dp)
         select case (trim(config%geometry))
         case ("plane")
           level_set(i, j) = config%plane_normal_x * x + &
@@ -88,12 +104,10 @@ contains
       end do
     end do
     call build_eb_geometry_2d( &
-      level_set, config%flow%x_lower, config%flow%x_upper, &
-      config%flow%y_lower, config%flow%y_upper, geometry, ok)
+      level_set, x_lower, x_upper, y_lower, y_upper, geometry, ok)
     if (.not. ok) return
-    ok = count(geometry%cell_type /= eb_covered_cell) > 0 .and. &
-      count(geometry%cell_type == eb_cut_cell) > 0
-  end subroutine build_configured_eb_geometry_2d
+    ok = count(geometry%cell_type /= eb_covered_cell) > 0
+  end subroutine build_configured_eb_geometry_region_2d
 
   subroutine compute_reactive_eb_cfl_timestep_2d( &
       species, state, temperature, geometry, cfl, dt, ok)

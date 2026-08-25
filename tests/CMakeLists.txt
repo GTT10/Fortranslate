@@ -42,6 +42,16 @@ target_link_libraries(test_amr_eb_reactive_2d PRIVATE pelef_core)
 add_test(NAME unit_amr_eb_reactive_2d COMMAND test_amr_eb_reactive_2d)
 
 add_executable(
+  test_reactive_eb_amr_2d_driver
+  unit/test_reactive_eb_amr_2d_driver.F90
+)
+target_link_libraries(test_reactive_eb_amr_2d_driver PRIVATE pelef_core)
+add_test(
+  NAME unit_reactive_eb_amr_2d_driver
+  COMMAND test_reactive_eb_amr_2d_driver
+)
+
+add_executable(
   test_eb_reactive_wall_flux_2d
   unit/test_eb_reactive_wall_flux_2d.F90
 )
@@ -1673,6 +1683,34 @@ add_test(
 set_tests_properties(
   regression_reactive_eb_circle_2d_structure
   PROPERTIES DEPENDS regression_reactive_eb_circle_2d_run
+)
+
+set(REACTIVE_EB_AMR_2D_WORK_DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_amr_2d")
+file(MAKE_DIRECTORY "${REACTIVE_EB_AMR_2D_WORK_DIRECTORY}")
+add_test(
+  NAME regression_reactive_eb_amr_2d_run
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_amr_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_amr_2d/uniform.nml"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_2d_run
+  PROPERTIES
+    WORKING_DIRECTORY "${REACTIVE_EB_AMR_2D_WORK_DIRECTORY}"
+    TIMEOUT 300
+)
+add_test(
+  NAME regression_reactive_eb_amr_2d_check
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_amr_2d.py"
+    --coarse
+      "${REACTIVE_EB_AMR_2D_WORK_DIRECTORY}/reactive_eb_amr_coarse_2d.csv"
+    --fine
+      "${REACTIVE_EB_AMR_2D_WORK_DIRECTORY}/reactive_eb_amr_fine_2d.csv"
+)
+set_tests_properties(
+  regression_reactive_eb_amr_2d_check
+  PROPERTIES DEPENDS regression_reactive_eb_amr_2d_run
 )
 
 set(REACTIVE_EB_CHEMISTRY_2D_WORK_DIRECTORY
