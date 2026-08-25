@@ -1060,11 +1060,21 @@ a private root candidate. The reactive path recovers EOS-consistent
 temperatures after both restrictions and publishes neither parent if either
 stage fails.
 
+In `0.99.0`, `amr_eb_multilevel_reactive_2d_mod` recursively advances that
+hierarchy. The root advances once over `dt`; the middle advances `r1` times;
+inside each middle interval the finest advances `r2` times. Each parent/child
+pair owns an independent EB flux register. Finest reflux and average-down
+finish every middle interval, then the accumulated middle flux refluxes the
+root and a final deepest-first synchronization commits all three levels. The
+finest patch must remain two middle cells from the middle boundary and its
+coarse/fine interface must be fully regular. These checks reject the known
+unsupported EB-cut nested-interface case before any state is published.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
-EB AMR molecular transport, three-level hydro/subcycling/reflux, arbitrary
-depth, non-outflow refined boundaries, and EB AMR/MPI ownership remain outside
-this subsystem. The public application,
+EB AMR molecular transport, EB-cut nested-interface reflux, arbitrary depth,
+three-level chemistry/lifecycle ownership, non-outflow refined boundaries, and
+EB AMR/MPI ownership remain outside this subsystem. The public application,
 CSV output, and checkpoint schema retain the single-patch path by default; the
 public application, CSV output, and dedicated restart schema select the
 patch-set path explicitly.

@@ -1802,3 +1802,30 @@ Input finiteness, geometry, dimensions, and positive temperatures are checked
 before work; failure at either stage returns the original root and middle
 fields. This milestone does not advance, subcycle, or reflux the three-level
 hierarchy.
+
+## Three-level reactive EB hydrodynamics
+
+Let the root-to-middle and middle-to-finest refinement ratios be `r1` and
+`r2`. One accepted root interval applies
+
+`root(dt) -> r1 * [middle(dt/r1) -> r2 * finest(dt/(r1*r2))]`.
+
+The root prediction supplies time-interpolated exterior state to every middle
+substep. Each middle prediction similarly supplies the finest exterior during
+its nested substeps. PCM samples the parent at the start of a substep;
+characteristic PLM samples its midpoint, matching the qualified two-level
+temporal closure.
+
+An independent flux register accumulates root/middle flux mismatch over the
+whole root interval. A fresh middle/finest register closes each middle
+interval: it refluxes first, then volume-weighted average-down synchronizes the
+middle before the next substep. After all middle work, the outer register
+refluxes root and middle, and the three-level EOS transaction synchronizes
+finest to middle to root. Every field is private until all stages succeed.
+
+The finest rectangle must be separated from the middle boundary by two cells,
+and every face on its coarse/fine interface must have unit open-area fraction.
+This regular-interface condition avoids silently applying the two-level EB
+register to an EB-cut nested interface, which needs a dedicated geometric
+correction. Root and middle geometry may still contain regular, cut, and
+covered cells.

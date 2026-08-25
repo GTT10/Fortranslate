@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.98.0` milestone contains the serial verification suite, seven optional
+The `0.99.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -31,6 +31,10 @@ The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
 as one rollback-safe transaction.
+For a finest rectangle whose boundary remains in regular fluid, the same
+hierarchy can advance reactive EB hydrodynamics recursively with one root
+update, ratio-subcycled middle and finest updates, an independent flux register
+at each interface, and final deepest-first synchronization.
 
 ### `pelef`: one-dimensional Euler solver
 
