@@ -27,6 +27,7 @@ def check_level(
     x_upper: float,
     y_lower: float,
     y_upper: float,
+    expected_time: float = 1.0e-7,
 ) -> None:
     species_columns = [name for name in rows[0] if name.startswith("Y_")]
     cell_types: set[int] = set()
@@ -36,7 +37,7 @@ def check_level(
         values = [float(value) for value in row.values()]
         if not all(math.isfinite(value) for value in values):
             raise AssertionError("nonfinite EB AMR output")
-        if abs(float(row["time"]) - 1.0e-7) > 2.0e-20:
+        if abs(float(row["time"]) - expected_time) > 2.0e-13 * expected_time:
             raise AssertionError("incorrect EB AMR final time")
         expected_x = x_lower + (index % nx + 0.5) * dx
         expected_y = y_lower + (index // nx + 0.5) * dy

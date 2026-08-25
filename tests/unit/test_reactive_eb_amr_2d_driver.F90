@@ -151,7 +151,7 @@ program test_reactive_eb_amr_2d_driver
   config%eb%flow%initial_temperature = 1000.0_dp
   config%eb%flow%initial_velocity_x = 0.0_dp
   config%eb%flow%initial_velocity_y = 0.0_dp
-  config%eb%flow%final_time = 1.0e-8_dp
+  config%eb%flow%final_time = 2.0e-5_dp
   config%regrid_at_initialization = .false.
   config%remove_fine_patch_when_untagged = .true.
   call simulate_reactive_eb_amr_2d( &
@@ -159,7 +159,7 @@ program test_reactive_eb_amr_2d_driver
     fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
     steps, regrids, initial_integrals, final_integrals, minimum_dt, &
     base_density, ok)
-  call require(ok .and. .not. fine_active .and. steps == 1 .and. &
+  call require(ok .and. .not. fine_active .and. steps == 2 .and. &
     regrids == 1, "time-loop fine-patch removal")
   call require(.not. allocated(fine_state) .and. &
     .not. allocated(fine_temperature) .and. &

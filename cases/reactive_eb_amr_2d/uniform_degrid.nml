@@ -6,7 +6,7 @@
   x_upper = 0.01
   y_lower = 0.0
   y_upper = 0.01
-  final_time = 1.0e-7
+  final_time = 2.0e-7
   cfl = 0.20
   problem = "uniform_reactor"
   reconstruction = "characteristic_plm"

@@ -16,7 +16,9 @@ def main() -> None:
     args = parser.parse_args()
 
     coarse_rows = read_rows(args.coarse, 12 * 12)
-    check_level(coarse_rows, 12, 12, 0.0, 0.01, 0.0, 0.01)
+    check_level(
+        coarse_rows, 12, 12, 0.0, 0.01, 0.0, 0.01, expected_time=2.0e-7
+    )
     if args.fine.exists():
         raise AssertionError("inactive EB AMR fine patch wrote stale output")
     print("check_reactive_eb_amr_degrid_2d: PASS")
