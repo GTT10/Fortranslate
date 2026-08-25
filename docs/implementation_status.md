@@ -2022,3 +2022,21 @@ The replicated MPI EB AMR bridge now provides individual owner operators and
 their complete reactive split composition. Sparse EB fields, point-to-point
 halo and coarse/fine traffic, a distributed public timestep loop, dynamic
 topology migration, and parallel checkpoint/output remain separate work.
+
+## Sparse MPI reactive EB AMR owner storage (`0.115.0`)
+
+- [x] rank-local sparse root-tile payloads
+- [x] rank-local sparse child-patch payloads
+- [x] zero numerical allocation for every nonowned entity
+- [x] exact local and communicator-wide stored-value accounting
+- [x] owner-authoritative scatter from stale replicated inputs
+- [x] explicit replicated materialization boundary
+- [x] bitwise materialization parity with the established owner synchronizer
+- [x] collective invalid-local-payload rejection and output rollback
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Persistent EB state can now be represented without nonowner numerical
+replicas. Owner-only physics still accepts complete temporary fields, so direct
+sparse chemistry/hydro/transport, point-to-point materialization, public time
+advancement, regridding, checkpointing, and output remain separate work.

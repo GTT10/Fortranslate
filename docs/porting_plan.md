@@ -664,7 +664,8 @@ Required capabilities:
   child-owner diffusive reflux, EB-cut closure, and rollback (`0.113.0`)
 - [x] owner-only MPI EB AMR `R-T-H-T-R` composition with outer rollback and
   exact per-operator committed accounting (`0.114.0`)
-- sparse rank-local EB field storage
+- [x] sparse rank-local EB root-tile and child payload storage with explicit
+  replicated materialization boundary (`0.115.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
