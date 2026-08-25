@@ -20,7 +20,7 @@ program test_amr_eb_multipatch_2d
     advance_reactive_eb_patch_set_hydro_2d
   implicit none
 
-  integer, parameter :: coarse_nx = 10, coarse_ny = 10, ratio = 2
+  integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
   type(eb_geometry_2d) :: coarse_geometry
   type(eb_geometry_2d), allocatable :: old_geometries(:)
   type(eb_geometry_2d), allocatable :: new_geometries(:)
@@ -87,12 +87,12 @@ program test_amr_eb_multipatch_2d
   coarse_temperature = temperature_cell
 
   criteria%buffer_cells = 0
-  criteria%minimum_patch_cells_x = 2
-  criteria%minimum_patch_cells_y = 2
+  criteria%minimum_patch_cells_x = 5
+  criteria%minimum_patch_cells_y = 5
   criteria%maximum_patch_gap_cells = 0
   old_tags = .false.
-  old_tags(2:3, 4:5) = .true.
-  old_tags(7:8, 7:8) = .true.
+  old_tags(2:6, 2:6) = .true.
+  old_tags(9:13, 9:13) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     old_tags, criteria, old_collection, ok)
   call require(ok .and. old_collection%patch_count() == 2, &
@@ -191,8 +191,8 @@ program test_amr_eb_multipatch_2d
     8.0e-12_dp * integral_scale, "multipatch average-down conservation")
 
   new_tags = .false.
-  new_tags(3:4, 4:5) = .true.
-  new_tags(7:8, 7:8) = .true.
+  new_tags(3:7, 2:6) = .true.
+  new_tags(9:13, 9:13) = .true.
   call build_amr_eb_regrid_plan_collection_2d( &
     new_tags, criteria, new_collection, ok)
   call require(ok .and. new_collection%patch_count() == 2, &
@@ -217,15 +217,15 @@ program test_amr_eb_multipatch_2d
     new_coarse_state, coarse_geometry, new_set, integral_after, ok)
   call require(ok .and. maxval(abs(integral_after - integral_before)) <= &
     8.0e-12_dp * integral_scale, "multipatch regrid conservation")
-  call require(maxval(abs(new_set%children(1)%state(:, 1:2, :) - &
-    old_set%children(1)%state(:, 3:4, :))) == 0.0_dp, &
+  call require(maxval(abs(new_set%children(1)%state(:, 1:8, :) - &
+    old_set%children(1)%state(:, 3:10, :))) == 0.0_dp, &
     "moved patch exact fine overlap")
   call require(maxval(abs(new_set%children(2)%state - &
     old_set%children(2)%state)) == 0.0_dp, &
     "unchanged patch exact state retention")
   do j = 1, new_set%children(1)%geometry%ny
-    call require(maxval(abs(new_set%children(1)%state(:, 3:4, j) - &
-      spread(new_coarse_state(:, 4, 4 + (j - 1) / ratio), 2, 2))) <= &
+    call require(maxval(abs(new_set%children(1)%state(:, 9:10, j) - &
+      spread(new_coarse_state(:, 7, 2 + (j - 1) / ratio), 2, 2))) <= &
       5.0e-14_dp * state_scale, &
       "new patch cells use synchronized coarse PCM")
   end do
