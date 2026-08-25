@@ -168,13 +168,6 @@ contains
       message = "Invalid EB AMR checkpoint controls"
       return
     end if
-    if (multipatch_enabled .and. &
-        (checkpoint_interval > 0 .or. checkpoint_stop_after_write .or. &
-         len_trim(checkpoint_file) > 0 .or. len_trim(restart_file) > 0)) then
-      ok = .false.
-      message = "EB AMR multipatch checkpoint/restart is not yet supported"
-      return
-    end if
     if (len_trim(fine_output_file) == 0 .or. &
         trim(fine_output_file) == trim(config%eb%flow%output_file)) then
       ok = .false.

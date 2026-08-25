@@ -40,6 +40,9 @@ module reactive_eb_amr_2d_driver_mod
   character(len=*), parameter :: reactive_eb_amr_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_amr_checkpoint_schema = 1
+  character(len=*), parameter :: reactive_eb_patch_set_checkpoint_magic = &
+    "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT"
+  integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 1
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_reactive_eb_patch_set_cfl_timestep_2d
@@ -49,6 +52,8 @@ module reactive_eb_amr_2d_driver_mod
   public :: regrid_reactive_eb_amr_patch_set_2d
   public :: write_reactive_eb_amr_2d_checkpoint
   public :: read_reactive_eb_amr_2d_checkpoint
+  public :: write_reactive_eb_amr_patch_set_2d_checkpoint
+  public :: read_reactive_eb_amr_patch_set_2d_checkpoint
   public :: simulate_reactive_eb_amr_2d
   public :: simulate_reactive_eb_amr_patch_set_2d
 
@@ -111,12 +116,7 @@ contains
        len_trim(config%checkpoint_file) > 0) .and. &
       (.not. config%checkpoint_stop_after_write .or. &
        (config%checkpoint_interval > 0 .and. &
-        len_trim(config%checkpoint_file) > 0)) .and. &
-      (.not. config%multipatch_enabled .or. &
-       (config%checkpoint_interval == 0 .and. &
-        .not. config%checkpoint_stop_after_write .and. &
-        len_trim(config%checkpoint_file) == 0 .and. &
-        len_trim(config%restart_file) == 0))
+        len_trim(config%checkpoint_file) > 0))
   end function supported_reactive_eb_amr_config
 
   subroutine compute_reactive_eb_amr_cfl_timestep_2d( &
@@ -1216,6 +1216,387 @@ contains
     close(unit)
   end subroutine read_reactive_eb_amr_2d_checkpoint
 
+  subroutine write_reactive_eb_amr_patch_set_2d_checkpoint( &
+      path, species, config, coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, time, steps, regrids, minimum_dt, &
+      base_density, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    real(dp), intent(in) :: time, minimum_dt, base_density
+    integer, intent(in) :: steps, regrids
+    logical, intent(out) :: ok
+
+    real(dp) :: time_tolerance
+    integer :: unit, status, nvar, child, i, j, species_index
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(config%eb%flow%final_time))
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. supported_reactive_eb_amr_config(config) .or. &
+        .not. config%multipatch_enabled .or. &
+        .not. coarse_geometry%is_valid() .or. &
+        size(coarse_state, 1) /= nvar .or. &
+        size(coarse_state, 2) /= coarse_geometry%nx .or. &
+        size(coarse_state, 3) /= coarse_geometry%ny .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        .not. all(ieee_is_finite(coarse_state)) .or. &
+        .not. all(ieee_is_finite(coarse_temperature)) .or. &
+        .not. patch_set%is_valid(coarse_geometry, nvar) .or. &
+        .not. ieee_is_finite(time) .or. time <= 0.0_dp .or. &
+        time > config%eb%flow%final_time + time_tolerance .or. &
+        steps < 1 .or. regrids < 0 .or. &
+        real(regrids, dp) > real(steps, dp) + 1.0_dp .or. &
+        .not. ieee_is_finite(minimum_dt) .or. minimum_dt <= 0.0_dp .or. &
+        minimum_dt > time + time_tolerance .or. &
+        .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
+
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) reactive_eb_patch_set_checkpoint_magic
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      reactive_eb_patch_set_checkpoint_schema, size(species), nvar, &
+      patch_set%patch_count()
+    if (status /= 0) go to 900
+    do species_index = 1, size(species)
+      write(unit, '(a)', iostat=status) trim(species(species_index)%name)
+      if (status /= 0) go to 900
+    end do
+    write(unit, '(a)', iostat=status) trim(config%eb%geometry)
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      config%eb%flow%nx, config%eb%flow%ny, config%refinement_ratio
+    if (status /= 0) go to 900
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      config%eb%flow%x_lower, config%eb%flow%x_upper, &
+      config%eb%flow%y_lower, config%eb%flow%y_upper
+    if (status /= 0) go to 900
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      config%eb%plane_normal_x, config%eb%plane_normal_y, &
+      config%eb%plane_offset, config%eb%circle_center_x, &
+      config%eb%circle_center_y, config%eb%circle_radius
+    if (status /= 0) go to 900
+    write(unit, '(i0)', iostat=status) &
+      merge(1, 0, config%eb%circle_fluid_inside)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%eb%flow%chemistry_model)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%eb%flow%riemann_solver)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%eb%flow%reconstruction)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%eb%flow%limiter)
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%dynamic_regridding), &
+      merge(1, 0, config%regrid_at_initialization), &
+      merge(1, 0, config%remove_fine_patch_when_untagged), &
+      config%eb%state_redist_max_order, config%regrid_interval, &
+      config%regrid_buffer_cells, config%regrid_minimum_patch_cells_x, &
+      config%regrid_minimum_patch_cells_y, &
+      config%regrid_maximum_patch_gap_cells, &
+      merge(1, 0, config%multipatch_enabled)
+    if (status /= 0) go to 900
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      config%eb%flow%cfl, config%eb%flow%chemistry_relative_tolerance, &
+      config%eb%flow%chemistry_absolute_tolerance, &
+      config%eb%state_redist_target_volume_fraction, &
+      config%regrid_relative_temperature_gradient, &
+      config%regrid_absolute_temperature_gradient, &
+      config%regrid_temperature_scale_floor
+    if (status /= 0) go to 900
+    write(unit, '(2(es27.18e3,1x),2(i0,1x),es27.18e3)', iostat=status) &
+      time, minimum_dt, steps, regrids, base_density
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      coarse_geometry%nx, coarse_geometry%ny
+    if (status /= 0) go to 900
+    do j = 1, coarse_geometry%ny
+      do i = 1, coarse_geometry%nx
+        write(unit, '(*(es27.18e3,1x))', iostat=status) &
+          coarse_state(:, i, j), coarse_temperature(i, j)
+        if (status /= 0) go to 900
+      end do
+    end do
+    do child = 1, patch_set%patch_count()
+      write(unit, '(*(i0,1x))', iostat=status) &
+        patch_set%children(child)%patch%coarse_i_lower, &
+        patch_set%children(child)%patch%coarse_i_upper, &
+        patch_set%children(child)%patch%coarse_j_lower, &
+        patch_set%children(child)%patch%coarse_j_upper, &
+        patch_set%children(child)%patch%refinement_ratio
+      if (status /= 0) go to 900
+      write(unit, '(*(i0,1x))', iostat=status) &
+        patch_set%children(child)%geometry%nx, &
+        patch_set%children(child)%geometry%ny
+      if (status /= 0) go to 900
+      do j = 1, patch_set%children(child)%geometry%ny
+        do i = 1, patch_set%children(child)%geometry%nx
+          write(unit, '(*(es27.18e3,1x))', iostat=status) &
+            patch_set%children(child)%state(:, i, j), &
+            patch_set%children(child)%temperature(i, j)
+          if (status /= 0) go to 900
+        end do
+      end do
+    end do
+    write(unit, '(a)', iostat=status) "END_CHECKPOINT"
+    if (status /= 0) go to 900
+    close(unit, iostat=status)
+    ok = status == 0
+    return
+
+900 continue
+    close(unit)
+  end subroutine write_reactive_eb_amr_patch_set_2d_checkpoint
+
+  subroutine read_reactive_eb_amr_patch_set_2d_checkpoint( &
+      path, species, config, coarse_state, coarse_temperature, &
+      coarse_geometry, patch_set, time, steps, regrids, minimum_dt, &
+      base_density, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(out) :: coarse_state(:, :, :)
+    real(dp), allocatable, intent(out) :: coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(out) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(out) :: patch_set
+    real(dp), intent(out) :: time, minimum_dt, base_density
+    integer, intent(out) :: steps, regrids
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: candidate_coarse_geometry
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    real(dp), allocatable :: candidate_coarse_state(:, :, :)
+    real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    character(len=1024) :: magic, stored_name, stored_geometry
+    character(len=1024) :: stored_chemistry_model, stored_solver
+    character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    real(dp) :: stored_domain(4), stored_geometry_values(6)
+    real(dp) :: stored_numerics(7), stored_time, stored_minimum_dt
+    real(dp) :: stored_base_density, time_tolerance
+    integer :: unit, status, schema, stored_species, stored_nvar
+    integer :: stored_patch_count, stored_nx, stored_ny, stored_ratio
+    integer :: stored_circle_inside, stored_flags(11), stored_patch(5)
+    integer :: stored_coarse_nx, stored_coarse_ny
+    integer :: stored_fine_nx, stored_fine_ny
+    integer :: stored_steps, stored_regrids, child, i, j, species_index
+    logical :: local_ok
+
+    magic = ""
+    stored_name = ""
+    stored_geometry = ""
+    stored_chemistry_model = ""
+    stored_solver = ""
+    stored_reconstruction = ""
+    stored_limiter = ""
+    end_marker = ""
+    stored_domain = 0.0_dp
+    stored_geometry_values = 0.0_dp
+    stored_numerics = 0.0_dp
+    stored_time = 0.0_dp
+    stored_minimum_dt = 0.0_dp
+    stored_base_density = 0.0_dp
+    schema = 0
+    stored_species = 0
+    stored_nvar = 0
+    stored_patch_count = 0
+    stored_nx = 0
+    stored_ny = 0
+    stored_ratio = 0
+    stored_circle_inside = 0
+    stored_flags = 0
+    stored_patch = 0
+    stored_coarse_nx = 0
+    stored_coarse_ny = 0
+    stored_fine_nx = 0
+    stored_fine_ny = 0
+    stored_steps = 0
+    stored_regrids = 0
+    coarse_geometry = eb_geometry_2d()
+    patch_set = reactive_eb_patch_set_2d()
+    time = 0.0_dp
+    minimum_dt = 0.0_dp
+    base_density = 0.0_dp
+    steps = 0
+    regrids = 0
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. supported_reactive_eb_amr_config(config) .or. &
+        .not. config%multipatch_enabled) return
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) magic
+    if (status /= 0 .or. &
+        trim(magic) /= reactive_eb_patch_set_checkpoint_magic) go to 900
+    read(unit, *, iostat=status) &
+      schema, stored_species, stored_nvar, stored_patch_count
+    if (status /= 0 .or. &
+        schema /= reactive_eb_patch_set_checkpoint_schema .or. &
+        stored_species /= size(species) .or. &
+        stored_nvar /= reactive_nvar(size(species)) .or. &
+        stored_patch_count < 0) go to 900
+    do species_index = 1, stored_species
+      read(unit, '(a)', iostat=status) stored_name
+      if (status /= 0 .or. &
+          trim(stored_name) /= trim(species(species_index)%name)) go to 900
+    end do
+    read(unit, '(a)', iostat=status) stored_geometry
+    if (status /= 0 .or. &
+        trim(stored_geometry) /= trim(config%eb%geometry)) go to 900
+    read(unit, *, iostat=status) stored_nx, stored_ny, stored_ratio
+    if (status /= 0 .or. stored_nx /= config%eb%flow%nx .or. &
+        stored_ny /= config%eb%flow%ny .or. &
+        stored_ratio /= config%refinement_ratio) go to 900
+    read(unit, *, iostat=status) stored_domain
+    if (status /= 0 .or. .not. all(checkpoint_real_matches( &
+        stored_domain, [config%eb%flow%x_lower, config%eb%flow%x_upper, &
+        config%eb%flow%y_lower, config%eb%flow%y_upper]))) go to 900
+    read(unit, *, iostat=status) stored_geometry_values
+    if (status /= 0 .or. .not. all(checkpoint_real_matches( &
+        stored_geometry_values, [config%eb%plane_normal_x, &
+        config%eb%plane_normal_y, config%eb%plane_offset, &
+        config%eb%circle_center_x, config%eb%circle_center_y, &
+        config%eb%circle_radius]))) go to 900
+    read(unit, *, iostat=status) stored_circle_inside
+    if (status /= 0 .or. stored_circle_inside /= &
+        merge(1, 0, config%eb%circle_fluid_inside)) go to 900
+    read(unit, '(a)', iostat=status) stored_chemistry_model
+    if (status /= 0 .or. trim(stored_chemistry_model) /= &
+        trim(config%eb%flow%chemistry_model)) go to 900
+    read(unit, '(a)', iostat=status) stored_solver
+    if (status /= 0 .or. &
+        trim(stored_solver) /= trim(config%eb%flow%riemann_solver)) go to 900
+    read(unit, '(a)', iostat=status) stored_reconstruction
+    if (status /= 0 .or. trim(stored_reconstruction) /= &
+        trim(config%eb%flow%reconstruction)) go to 900
+    read(unit, '(a)', iostat=status) stored_limiter
+    if (status /= 0 .or. &
+        trim(stored_limiter) /= trim(config%eb%flow%limiter)) go to 900
+    read(unit, *, iostat=status) stored_flags
+    if (status /= 0 .or. any(stored_flags /= [ &
+        merge(1, 0, config%eb%flow%chemistry_enabled), &
+        merge(1, 0, config%dynamic_regridding), &
+        merge(1, 0, config%regrid_at_initialization), &
+        merge(1, 0, config%remove_fine_patch_when_untagged), &
+        config%eb%state_redist_max_order, config%regrid_interval, &
+        config%regrid_buffer_cells, config%regrid_minimum_patch_cells_x, &
+        config%regrid_minimum_patch_cells_y, &
+        config%regrid_maximum_patch_gap_cells, &
+        merge(1, 0, config%multipatch_enabled)])) go to 900
+    read(unit, *, iostat=status) stored_numerics
+    if (status /= 0 .or. .not. all(checkpoint_real_matches( &
+        stored_numerics, [config%eb%flow%cfl, &
+        config%eb%flow%chemistry_relative_tolerance, &
+        config%eb%flow%chemistry_absolute_tolerance, &
+        config%eb%state_redist_target_volume_fraction, &
+        config%regrid_relative_temperature_gradient, &
+        config%regrid_absolute_temperature_gradient, &
+        config%regrid_temperature_scale_floor]))) go to 900
+    read(unit, *, iostat=status) stored_time, stored_minimum_dt, &
+      stored_steps, stored_regrids, stored_base_density
+    time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(config%eb%flow%final_time))
+    if (status /= 0 .or. .not. ieee_is_finite(stored_time) .or. &
+        .not. ieee_is_finite(stored_minimum_dt) .or. &
+        .not. ieee_is_finite(stored_base_density)) go to 900
+    if (stored_time <= 0.0_dp .or. &
+        stored_time > config%eb%flow%final_time + time_tolerance .or. &
+        stored_minimum_dt <= 0.0_dp .or. stored_steps < 1 .or. &
+        stored_steps > config%eb%flow%maximum_steps .or. &
+        stored_regrids < 0 .or. &
+        real(stored_regrids, dp) > real(stored_steps, dp) + 1.0_dp .or. &
+        stored_minimum_dt > stored_time + time_tolerance .or. &
+        stored_base_density <= 0.0_dp) go to 900
+
+    call build_configured_eb_geometry_2d( &
+      config%eb, candidate_coarse_geometry, local_ok)
+    if (.not. local_ok .or. stored_patch_count > &
+        candidate_coarse_geometry%nx * candidate_coarse_geometry%ny) go to 900
+    read(unit, *, iostat=status) stored_coarse_nx, stored_coarse_ny
+    if (status /= 0 .or. stored_coarse_nx /= candidate_coarse_geometry%nx &
+        .or. stored_coarse_ny /= candidate_coarse_geometry%ny) go to 900
+    allocate(candidate_coarse_state( &
+      stored_nvar, stored_coarse_nx, stored_coarse_ny))
+    allocate(candidate_coarse_temperature(stored_coarse_nx, stored_coarse_ny))
+    do j = 1, stored_coarse_ny
+      do i = 1, stored_coarse_nx
+        read(unit, *, iostat=status) candidate_coarse_state(:, i, j), &
+          candidate_coarse_temperature(i, j)
+        if (status /= 0) go to 900
+      end do
+    end do
+    call recover_checkpoint_level_temperatures_2d( &
+      species, candidate_coarse_state, candidate_coarse_temperature, &
+      candidate_coarse_geometry, local_ok)
+    if (.not. local_ok) go to 900
+
+    allocate(candidate_set%children(stored_patch_count))
+    do child = 1, stored_patch_count
+      read(unit, *, iostat=status) stored_patch
+      if (status /= 0 .or. stored_patch(5) /= config%refinement_ratio) &
+        go to 900
+      call build_reactive_eb_amr_patch_geometry_2d( &
+        config, candidate_coarse_geometry, stored_patch(1), stored_patch(2), &
+        stored_patch(3), stored_patch(4), &
+        candidate_set%children(child)%geometry, &
+        candidate_set%children(child)%patch, local_ok)
+      if (.not. local_ok) go to 900
+      read(unit, *, iostat=status) stored_fine_nx, stored_fine_ny
+      if (status /= 0 .or. &
+          stored_fine_nx /= candidate_set%children(child)%geometry%nx .or. &
+          stored_fine_ny /= candidate_set%children(child)%geometry%ny) &
+        go to 900
+      allocate(candidate_set%children(child)%state( &
+        stored_nvar, stored_fine_nx, stored_fine_ny))
+      allocate(candidate_set%children(child)%temperature( &
+        stored_fine_nx, stored_fine_ny))
+      do j = 1, stored_fine_ny
+        do i = 1, stored_fine_nx
+          read(unit, *, iostat=status) &
+            candidate_set%children(child)%state(:, i, j), &
+            candidate_set%children(child)%temperature(i, j)
+          if (status /= 0) go to 900
+        end do
+      end do
+      call recover_checkpoint_level_temperatures_2d( &
+        species, candidate_set%children(child)%state, &
+        candidate_set%children(child)%temperature, &
+        candidate_set%children(child)%geometry, local_ok)
+      if (.not. local_ok) go to 900
+    end do
+    if (.not. candidate_set%is_valid( &
+        candidate_coarse_geometry, stored_nvar)) go to 900
+    read(unit, '(a)', iostat=status) end_marker
+    if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    close(unit, iostat=status)
+    if (status /= 0) return
+
+    call move_alloc(candidate_coarse_state, coarse_state)
+    call move_alloc(candidate_coarse_temperature, coarse_temperature)
+    coarse_geometry = candidate_coarse_geometry
+    patch_set = candidate_set
+    time = stored_time
+    minimum_dt = stored_minimum_dt
+    base_density = stored_base_density
+    steps = stored_steps
+    regrids = stored_regrids
+    ok = .true.
+    return
+
+900 continue
+    close(unit)
+  end subroutine read_reactive_eb_amr_patch_set_2d_checkpoint
+
   subroutine simulate_reactive_eb_amr_2d( &
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, &
@@ -1442,8 +1823,8 @@ contains
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
     real(dp) :: coarse_dx, coarse_dy, dt, remaining, time_tolerance
-    logical :: changed, local_ok
-    integer :: nvar
+    logical :: changed, local_ok, stopped_after_checkpoint
+    integer :: nvar, last_checkpoint_step
 
     ok = .false.
     time = 0.0_dp
@@ -1451,53 +1832,66 @@ contains
     regrids = 0
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
+    stopped_after_checkpoint = .false.
+    last_checkpoint_step = -1
     patch_set = reactive_eb_patch_set_2d()
     if (present(failure_context)) failure_context = "input validation"
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         .not. config%multipatch_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
-    if (present(failure_context)) failure_context = "coarse geometry"
-    call build_configured_eb_geometry_2d( &
-      config%eb, coarse_geometry, local_ok)
-    if (.not. local_ok) return
-    if (present(failure_context)) failure_context = "coarse initialization"
-    call initialize_reactive_2d( &
-      species, config%eb%flow, coarse_state, coarse_temperature, &
-      coarse_dx, coarse_dy, base_density, local_ok)
-    if (.not. local_ok) return
-    if (abs(coarse_dx - coarse_geometry%dx) > &
-        8.0_dp * epsilon(1.0_dp) * coarse_geometry%dx .or. &
-        abs(coarse_dy - coarse_geometry%dy) > &
-        8.0_dp * epsilon(1.0_dp) * coarse_geometry%dy) return
-    nvar = size(coarse_state, 1)
-    if (present(failure_context)) failure_context = "initial patch plan"
-    call build_initial_reactive_eb_patch_collection_2d( &
-      config, initial_collection)
-    if (.not. initial_collection%is_valid()) return
-    if (present(failure_context)) failure_context = "initial fine geometries"
-    call build_reactive_eb_patch_set_geometries_2d( &
-      config, coarse_geometry, initial_collection, fine_geometries, local_ok)
-    if (.not. local_ok) return
-    if (present(failure_context)) failure_context = "initial patch set"
-    call initialize_reactive_eb_patch_set_2d( &
-      species, coarse_state, coarse_temperature, coarse_geometry, &
-      fine_geometries, initial_collection, config%refinement_ratio, &
-      patch_set, local_ok)
-    if (.not. local_ok) return
-    if (config%regrid_at_initialization) then
-      if (present(failure_context)) failure_context = "initial regrid"
-      call regrid_reactive_eb_amr_patch_set_2d( &
-        species, config, coarse_state, coarse_temperature, coarse_geometry, &
-        patch_set, changed, local_ok)
+    if (len_trim(config%restart_file) > 0) then
+      if (present(failure_context)) failure_context = "checkpoint restart"
+      call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+        config%restart_file, species, config, coarse_state, &
+        coarse_temperature, coarse_geometry, patch_set, time, steps, &
+        regrids, minimum_dt, base_density, local_ok)
       if (.not. local_ok) return
-      if (changed) regrids = regrids + 1
+      nvar = size(coarse_state, 1)
+    else
+      if (present(failure_context)) failure_context = "coarse geometry"
+      call build_configured_eb_geometry_2d( &
+        config%eb, coarse_geometry, local_ok)
+      if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "coarse initialization"
+      call initialize_reactive_2d( &
+        species, config%eb%flow, coarse_state, coarse_temperature, &
+        coarse_dx, coarse_dy, base_density, local_ok)
+      if (.not. local_ok) return
+      if (abs(coarse_dx - coarse_geometry%dx) > &
+          8.0_dp * epsilon(1.0_dp) * coarse_geometry%dx .or. &
+          abs(coarse_dy - coarse_geometry%dy) > &
+          8.0_dp * epsilon(1.0_dp) * coarse_geometry%dy) return
+      nvar = size(coarse_state, 1)
+      if (present(failure_context)) failure_context = "initial patch plan"
+      call build_initial_reactive_eb_patch_collection_2d( &
+        config, initial_collection)
+      if (.not. initial_collection%is_valid()) return
+      if (present(failure_context)) failure_context = &
+        "initial fine geometries"
+      call build_reactive_eb_patch_set_geometries_2d( &
+        config, coarse_geometry, initial_collection, fine_geometries, local_ok)
+      if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "initial patch set"
+      call initialize_reactive_eb_patch_set_2d( &
+        species, coarse_state, coarse_temperature, coarse_geometry, &
+        fine_geometries, initial_collection, config%refinement_ratio, &
+        patch_set, local_ok)
+      if (.not. local_ok) return
+      if (config%regrid_at_initialization) then
+        if (present(failure_context)) failure_context = "initial regrid"
+        call regrid_reactive_eb_amr_patch_set_2d( &
+          species, config, coarse_state, coarse_temperature, coarse_geometry, &
+          patch_set, changed, local_ok)
+        if (.not. local_ok) return
+        if (changed) regrids = regrids + 1
+      end if
+      minimum_dt = huge(1.0_dp)
     end if
     allocate(initial_integrals(nvar), final_integrals(nvar))
     if (present(failure_context)) failure_context = "initial integral"
     call composite_reactive_eb_patch_set_integral_2d( &
       coarse_state, coarse_geometry, patch_set, initial_integrals, local_ok)
     if (.not. local_ok) return
-    minimum_dt = huge(1.0_dp)
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
 
@@ -1541,8 +1935,32 @@ contains
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
+      if (config%checkpoint_interval > 0) then
+        if (modulo(steps, config%checkpoint_interval) == 0) then
+          if (present(failure_context)) failure_context = "checkpoint write"
+          call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+            config%checkpoint_file, species, config, coarse_state, &
+            coarse_temperature, coarse_geometry, patch_set, time, steps, &
+            regrids, minimum_dt, base_density, local_ok)
+          if (.not. local_ok) return
+          last_checkpoint_step = steps
+          if (config%checkpoint_stop_after_write) then
+            stopped_after_checkpoint = .true.
+            exit
+          end if
+        end if
+      end if
     end do
-    time = config%eb%flow%final_time
+    if (.not. stopped_after_checkpoint) time = config%eb%flow%final_time
+    if (len_trim(config%checkpoint_file) > 0 .and. &
+        last_checkpoint_step /= steps) then
+      if (present(failure_context)) failure_context = "final checkpoint write"
+      call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+        config%checkpoint_file, species, config, coarse_state, &
+        coarse_temperature, coarse_geometry, patch_set, time, steps, regrids, &
+        minimum_dt, base_density, local_ok)
+      if (.not. local_ok) return
+    end if
     if (present(failure_context)) failure_context = "final integral"
     call composite_reactive_eb_patch_set_integral_2d( &
       coarse_state, coarse_geometry, patch_set, final_integrals, local_ok)
