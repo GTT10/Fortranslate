@@ -640,6 +640,8 @@ Required capabilities:
   per-level output (`0.102.0`)
 - [x] dedicated transactional static three-level checkpoint/restart with
   uninterrupted field parity (`0.103.0`)
+- [x] tag-driven transactional finest-patch movement and resizing inside a
+  fixed middle level (`0.104.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

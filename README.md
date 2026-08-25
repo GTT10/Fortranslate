@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.103.0` milestone contains the serial verification suite, seven optional
+The `0.104.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -47,7 +47,10 @@ from all three active-cell CFL limits, advances to the requested final time,
 and writes separate root, middle, and finest CSV fields. A dedicated
 three-level checkpoint preserves all three conserved and temperature fields,
 accepted time and step accounting, and the full nested topology for a
-transactional serial restart.
+transactional serial restart. With dynamic regridding enabled, the middle
+level remains fixed while EB-aware temperature-gradient tags can move and
+resize the finest patch transactionally after initialization and accepted
+steps.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -310,15 +313,18 @@ the EB-cut conservation closure, active-cell Strang chemistry, and final
 deepest-first synchronization. Successful completion writes distinct root,
 middle, and finest CSV files. Scheduled and final three-level checkpoints use
 a dedicated schema and may stop and resume the same hierarchy without changing
-the established single-patch or patch-set formats. Dynamic regridding and
-multipatch siblings remain rejected in this mode.
+the established single-patch or patch-set formats. Three-level mode remains
+mutually exclusive with multipatch siblings. Its dynamic path keeps
+the middle patch fixed, retains the finest patch, ignores tags outside its
+two-cell-safe planning region, and does not yet support checkpoint/restart.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
-coarse-to-fine spatial interpolation, EB AMR molecular transport, dynamic or
-arbitrary-depth EB levels, and MPI distribution are not yet connected. The
-public EB AMR application now owns either restartable sibling rectangles or an
-explicit static three-level hierarchy.
+coarse-to-fine spatial interpolation, EB AMR molecular transport, dynamic
+middle/root topology, arbitrary-depth EB levels, and MPI distribution are not
+yet connected. The public EB AMR application now owns either restartable
+sibling rectangles or an
+explicit three-level hierarchy with an optionally dynamic finest patch.
 
 ### MPI one-dimensional verification
 
@@ -819,6 +825,17 @@ python3 tools/check_reactive_eb_amr_three_level_restart_2d.py \
   --restarted three_level_restart_restarted_root.csv \
     three_level_restart_restarted_middle.csv \
     three_level_restart_restarted_finest.csv
+```
+
+Tag-driven dynamic finest patch inside a fixed middle level:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_three_level_dynamic_2d/hotspot.nml
+python3 tools/check_reactive_eb_amr_three_level_dynamic_2d.py \
+  --root three_level_dynamic_root.csv \
+  --middle three_level_dynamic_middle.csv \
+  --finest three_level_dynamic_finest.csv
 ```
 
 Reacting fine-to-root checkpoint/restart parity:

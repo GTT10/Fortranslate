@@ -1890,9 +1890,10 @@ Strang transaction before time, step count, and minimum accepted timestep are
 updated. Initialization uses PCM prolongation first from root to middle and
 then from middle to finest, so all levels begin EOS-consistent and synchronized.
 
-The public mode is deliberately static. Namelist validation rejects dynamic
-regridding, multipatch ownership, or colliding output paths when
-`three_level_enabled` is selected.
+The checkpointable form of this public mode is static. Namelist validation
+always rejects multipatch ownership and colliding output paths when
+`three_level_enabled` is selected. Selecting dynamic regridding instead uses
+the finest-only lifecycle below and rejects checkpoint/restart controls.
 
 ## Static three-level EB AMR checkpoint transaction
 
@@ -1912,3 +1913,27 @@ authority: active-cell temperature is recovered from conserved state through
 the EOS on every level. Only a completely valid hierarchy is published.
 Periodic and final checkpoints are written after an accepted Strang interval;
 stop-after-write exits only after the committed stream is complete.
+
+## Tag-driven three-level finest regridding
+
+Dynamic three-level mode retains the configured root-to-middle patch and plans
+only the middle-to-finest rectangle. Temperature-gradient tags are evaluated
+on active middle cells. The outer two-cell band is excluded before buffering
+and minimum-size growth, so any accepted plan satisfies the multilevel
+redistribution stencil margin. If no interior tags remain, the existing
+finest patch stays active.
+
+For a changed rectangle, the old finest state is first volume-weighted onto a
+private middle candidate. The replacement EB geometry is built from the new
+middle-index bounds and PCM-prolonged from that synchronized candidate. Cells
+overlapping the old and new finest rectangles retain their prior fine state
+and temperature after geometry consistency checks; newly refined cells keep
+the prolonged values. EOS recovery validates all active replacement cells
+before the middle state, finest fields, geometry, and patch metadata are
+published together.
+
+The same transaction may run after initialization and after any accepted root
+step selected by `regrid_interval`. The initial composite integral is measured
+after an initialization-time topology change. Finest removal, changing the
+root-to-middle patch, sibling finest patches, and checkpoint/restart of a
+dynamic topology remain outside this mode.
