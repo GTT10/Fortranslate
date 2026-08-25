@@ -28,6 +28,13 @@ target_link_libraries(test_amr_eb_hierarchy_2d PRIVATE pelef_core)
 add_test(NAME unit_amr_eb_hierarchy_2d COMMAND test_amr_eb_hierarchy_2d)
 
 add_executable(
+  test_amr_eb_multilevel_2d
+  unit/test_amr_eb_multilevel_2d.F90
+)
+target_link_libraries(test_amr_eb_multilevel_2d PRIVATE pelef_core)
+add_test(NAME unit_amr_eb_multilevel_2d COMMAND test_amr_eb_multilevel_2d)
+
+add_executable(
   test_amr_eb_flux_register_2d
   unit/test_amr_eb_flux_register_2d.F90
 )
