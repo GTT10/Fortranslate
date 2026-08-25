@@ -674,6 +674,9 @@ Required capabilities:
   replicated `T-H-T` compatibility window (`0.118.0`)
 - [x] direct sparse MPI EB AMR hydro with root-level temporary synchronization
   and owner-local child subcycling/reflux (`0.119.0`)
+- [x] direct sparse MPI EB AMR SSPRK2 transport with root-level temporary
+  synchronization, owner-local child diffusive reflux, and distributed
+  cut-interface conservation closure (`0.120.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

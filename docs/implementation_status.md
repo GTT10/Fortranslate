@@ -2114,6 +2114,30 @@ regridding, checkpointing, and output remain separate work.
 
 Fine-level hydro now remains owner-local throughout the transaction. Root state
 and flux arrays are still level-wide broadcasts because root EB StateRedist is
-not decomposed; direct sparse transport, root halo/redistribution decomposition,
-targeted traffic, time-loop control, regridding, checkpointing, and output
-remain separate work.
+not decomposed; root halo/redistribution decomposition, targeted traffic,
+time-loop control, regridding, checkpointing, and output remain separate work.
+
+## Direct transport on sparse MPI reactive EB AMR storage (`0.120.0`)
+
+- [x] SSPRK2 transport transaction over sparse persistent state
+- [x] root-tile assembly without fine-child materialization
+- [x] root-owner transport, StateRedist, and flux synchronization per stage
+- [x] owner-local child exterior construction and ratio subcycling
+- [x] owner-local diffusive flux-register accumulation and reflux
+- [x] distributed composite integral for EB-cut conservation closure
+- [x] no allocation or synchronization of nonowner child payloads
+- [x] direct sparse average-down after every Euler stage and final blend
+- [x] unchanged committed sparse allocation count
+- [x] exact local and global Euler-advance accounting
+- [x] serial state, temperature, and limiter parity
+- [x] exact rollback after a late final-child failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Fine-level transport now remains owner-local through both SSPRK2 stages. Root
+state, temperature, and flux arrays are still level-wide broadcasts because
+root transport and EB StateRedist are not decomposed. The outer sparse
+`R-T-H-T-R` driver still uses its established central compatibility window;
+wiring these direct component operators into that transaction, targeted
+root/coarse-fine traffic, time-loop control, regridding, checkpointing, and
+output remain separate work.

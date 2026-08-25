@@ -1924,3 +1924,20 @@ root and child field must remain bitwise unchanged and the published advance
 count must remain zero. The gate runs in GNU Fortran Release and
 bounds/FPE-checked Debug configurations before the complete 208-test
 regression.
+
+## 0.120.0 direct sparse MPI reactive EB AMR transport gates
+
+Starting from sparse root tiles and owner-only fine children, direct SSPRK2
+transport must retain each rank's exact stored-value count. Materialization
+only after commit must match serial multipatch transport root and child state
+and temperature within `2e-11` field scale and match the limiter minimum within
+`2e-13` at one, two, four, and eight ranks. Local and communicator counts must
+equal two root-owner Euler updates plus two times each child refinement ratio
+on its exclusive owner.
+
+The rejection gate places finite negative density on the final child owner.
+The first root stage and any earlier child candidates may execute, but every
+local sparse root and child field must remain bitwise unchanged, the published
+Euler count must remain zero, and the limiter fallback must remain exactly one.
+The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
+before the complete 208-test regression.
