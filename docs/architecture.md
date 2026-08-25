@@ -1252,6 +1252,13 @@ the final direct sparse chemistry half-step. Caller state, operator counts,
 and the limiter minimum are published only after the entire `R-T-H-T-R`
 sequence succeeds.
 
+In `0.119.0`, hydro consumes sparse persistent state without materializing fine
+children. Root tiles assemble a level-wide start field because EB StateRedist
+still owns overlapping root neighborhoods. The root update and flux arrays are
+synchronized, while every child subcycles, accumulates its flux register, and
+refluxes only on its owner. Corrected root rows return to sparse tiles and the
+existing direct sparse average-down completes the transaction.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
