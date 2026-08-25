@@ -1259,6 +1259,16 @@ synchronized, while every child subcycles, accumulates its flux register, and
 refluxes only on its owner. Corrected root rows return to sparse tiles and the
 existing direct sparse average-down completes the transaction.
 
+In `0.120.0`, SSPRK2 molecular transport also consumes sparse persistent state
+without materializing fine children. Each Euler stage assembles only the root
+level, advances root transport and StateRedist on its physics owner, and keeps
+each child's exterior construction, ratio subcycles, diffusive flux register,
+reflux, and state update on that child's owner. A communicator reduction forms
+the composite integral needed by cut-interface conservation closure; the
+closure corrects only uncovered, unrefined root cells. The two Euler candidates
+remain private until the SSPRK2 blend, direct sparse average-down, and collective
+validation all succeed.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

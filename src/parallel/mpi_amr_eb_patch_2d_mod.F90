@@ -3,10 +3,12 @@ module mpi_amr_eb_patch_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
   use precision_mod, only: dp
+  use state_indices_mod, only: irho
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_conserved_to_primitive
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: &
     reactive_boundary_set_2d, validate_reactive_boundary_set_2d
@@ -99,6 +101,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_hydro_2d
+  public :: advance_sparse_owned_reactive_eb_patch_set_transport_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_strang_2d
 
 contains
@@ -495,6 +498,287 @@ contains
     patch_set = candidate_set
     ok = .true.
   end subroutine materialize_owned_reactive_eb_patch_set_2d
+
+  subroutine materialize_sparse_root_2d( &
+      distribution, sparse_patch_set, coarse_geometry, root_state, &
+      root_temperature, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(out) :: root_state(:, :, :)
+    real(dp), intent(out) :: root_temperature(:, :)
+    logical, intent(out) :: ok
+
+    logical :: accepted, global_ok, local_ok
+    integer :: ierr, j_lower, j_upper, owner, tile
+
+    root_state = 0.0_dp
+    root_temperature = 1.0_dp
+    ok = .false.
+    local_ok = sparse_patch_set%nvar >= 1 .and. &
+      allocated(sparse_patch_set%root_tiles) .and. &
+      size(sparse_patch_set%root_tiles) == distribution%root_tile_count() .and. &
+      all(shape(root_state) == &
+        [sparse_patch_set%nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(shape(root_temperature) == &
+        [coarse_geometry%nx, coarse_geometry%ny])
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    do tile = 1, distribution%root_tile_count()
+      owner = distribution%root_tiles(tile)%owner
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      local_ok = .true.
+      if (distribution%root_tile_is_local(tile)) then
+        local_ok = allocated(sparse_patch_set%root_tiles(tile)%state) .and. &
+          allocated(sparse_patch_set%root_tiles(tile)%temperature)
+        if (local_ok) then
+          root_state(:, :, j_lower:j_upper) = &
+            sparse_patch_set%root_tiles(tile)%state
+          root_temperature(:, j_lower:j_upper) = &
+            sparse_patch_set%root_tiles(tile)%temperature
+        end if
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, local_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call MPI_Bcast( &
+        root_state(:, :, j_lower:j_upper), &
+        sparse_patch_set%nvar * distribution%root_tiles(tile)%cell_count, &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        root_temperature(:, j_lower:j_upper), &
+        distribution%root_tiles(tile)%cell_count, MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+    local_ok = all(ieee_is_finite(root_state)) .and. &
+      all(ieee_is_finite(root_temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine materialize_sparse_root_2d
+
+  pure logical function coarse_cell_is_refined_2d( &
+      patch_set_template, i, j) result(refined)
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    integer, intent(in) :: i, j
+
+    integer :: child
+
+    refined = .false.
+    do child = 1, patch_set_template%patch_count()
+      refined = &
+        i >= patch_set_template%children(child)%patch%coarse_i_lower .and. &
+        i <= patch_set_template%children(child)%patch%coarse_i_upper .and. &
+        j >= patch_set_template%children(child)%patch%coarse_j_lower .and. &
+        j <= patch_set_template%children(child)%patch%coarse_j_upper
+      if (refined) return
+    end do
+  end function coarse_cell_is_refined_2d
+
+  subroutine composite_sparse_owned_reactive_eb_patch_set_integral_2d( &
+      distribution, sparse_patch_set, coarse_geometry, patch_set_template, &
+      integral, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), intent(out) :: integral(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: local_integral(:)
+    logical :: accepted, global_ok, local_ok
+    integer :: child, global_j, i, ierr, j, local_j, tile
+
+    integral = 0.0_dp
+    ok = .false.
+    local_ok = size(integral) == sparse_patch_set%nvar .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    allocate(local_integral(size(integral)), source=0.0_dp)
+
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      do local_j = 1, size(sparse_patch_set%root_tiles(tile)%state, 3)
+        global_j = distribution%root_tiles(tile)%j_lower + local_j - 1
+        do i = 1, coarse_geometry%nx
+          if (coarse_cell_is_refined_2d( &
+              patch_set_template, i, global_j)) cycle
+          local_integral = local_integral + &
+            coarse_geometry%volume_fraction(i, global_j) * &
+            sparse_patch_set%root_tiles(tile)%state(:, i, local_j) * &
+            coarse_geometry%dx * coarse_geometry%dy
+        end do
+      end do
+    end do
+    do child = 1, distribution%child_count()
+      if (.not. distribution%child_is_local(child)) cycle
+      do j = 1, patch_set_template%children(child)%geometry%ny
+        do i = 1, patch_set_template%children(child)%geometry%nx
+          local_integral = local_integral + &
+            patch_set_template%children(child)%geometry% &
+              volume_fraction(i, j) * &
+            sparse_patch_set%children(child)%state(:, i, j) * &
+            patch_set_template%children(child)%geometry%dx * &
+            patch_set_template%children(child)%geometry%dy
+        end do
+      end do
+    end do
+    call MPI_Allreduce( &
+      local_integral, integral, size(integral), MPI_DOUBLE_PRECISION, &
+      MPI_SUM, distribution%comm, ierr)
+    local_ok = ierr == MPI_SUCCESS .and. all(ieee_is_finite(integral))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+    if (.not. ok) integral = 0.0_dp
+  end subroutine composite_sparse_owned_reactive_eb_patch_set_integral_2d
+
+  subroutine close_sparse_cut_patch_set_conservation_2d( &
+      species, integral_before, distribution, sparse_patch_set, &
+      coarse_geometry, patch_set_template, x_flux, y_flux, dt, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: integral_before(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), intent(in) :: x_flux(:, 0:, :), y_flux(:, :, 0:), dt
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: boundary_change(:), closed_state(:, :, :)
+    real(dp), allocatable :: closed_temperature(:, :), correction(:)
+    real(dp), allocatable :: current_integral(:), primitive(:), residual(:)
+    real(dp) :: closure_tolerance, recipient_volume, recovered_temperature
+    real(dp) :: scale, sound_speed, species_residual
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: component, i, ierr, j, j_lower, j_upper, k, nvar
+    integer :: root_owner, tile
+
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    local_ok = nvar >= 1 .and. size(integral_before) == nvar .and. &
+      all(shape(x_flux) == [nvar, coarse_geometry%nx + 1, &
+        coarse_geometry%ny]) .and. &
+      all(shape(y_flux) == [nvar, coarse_geometry%nx, &
+        coarse_geometry%ny + 1]) .and. &
+      ieee_is_finite(dt) .and. dt > 0.0_dp .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(current_integral(nvar), boundary_change(nvar))
+    allocate(residual(nvar), correction(nvar))
+    call composite_sparse_owned_reactive_eb_patch_set_integral_2d( &
+      distribution, sparse_patch_set, coarse_geometry, patch_set_template, &
+      current_integral, local_ok)
+    if (.not. local_ok) return
+    boundary_change = 0.0_dp
+    do j = 1, coarse_geometry%ny
+      boundary_change = boundary_change + dt * coarse_geometry%dy * &
+        (coarse_geometry%x_face_fraction(0, j) * x_flux(:, 0, j) - &
+         coarse_geometry%x_face_fraction(coarse_geometry%nx, j) * &
+           x_flux(:, coarse_geometry%nx, j))
+    end do
+    do i = 1, coarse_geometry%nx
+      boundary_change = boundary_change + dt * coarse_geometry%dx * &
+        (coarse_geometry%y_face_fraction(i, 0) * y_flux(:, i, 0) - &
+         coarse_geometry%y_face_fraction(i, coarse_geometry%ny) * &
+           y_flux(:, i, coarse_geometry%ny))
+    end do
+    residual = integral_before + boundary_change - current_integral
+    correction = residual
+    species_residual = 0.0_dp
+    do k = 1, size(species)
+      component = reactive_species_component(k)
+      species_residual = species_residual + residual(component)
+    end do
+    scale = max(1.0_dp, maxval(abs(residual)), abs(species_residual))
+    closure_tolerance = 4096.0_dp * epsilon(1.0_dp) * scale
+    local_ok = abs(residual(irho) - species_residual) <= closure_tolerance
+    if (.not. local_ok) return
+    component = reactive_species_component(size(species))
+    correction(component) = correction(component) + &
+      residual(irho) - species_residual
+
+    recipient_volume = 0.0_dp
+    do j = 1, coarse_geometry%ny
+      do i = 1, coarse_geometry%nx
+        if (coarse_cell_is_refined_2d(patch_set_template, i, j) .or. &
+            coarse_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        recipient_volume = recipient_volume + &
+          coarse_geometry%volume_fraction(i, j) * &
+          coarse_geometry%dx * coarse_geometry%dy
+      end do
+    end do
+    local_ok = ieee_is_finite(recipient_volume) .and. &
+      recipient_volume > tiny(1.0_dp)
+    if (.not. local_ok) return
+    correction = correction / recipient_volume
+    if (any(.not. ieee_is_finite(correction))) return
+
+    allocate(closed_state(nvar, coarse_geometry%nx, coarse_geometry%ny))
+    allocate(closed_temperature(coarse_geometry%nx, coarse_geometry%ny))
+    call materialize_sparse_root_2d( &
+      distribution, sparse_patch_set, coarse_geometry, closed_state, &
+      closed_temperature, local_ok)
+    if (.not. local_ok) return
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) then
+      allocate(primitive(reactive_nprim(size(species))))
+      do j = 1, coarse_geometry%ny
+        do i = 1, coarse_geometry%nx
+          if (coarse_cell_is_refined_2d(patch_set_template, i, j) .or. &
+              coarse_geometry%cell_type(i, j) == eb_covered_cell) cycle
+          closed_state(:, i, j) = closed_state(:, i, j) + correction
+          call reactive_conserved_to_primitive( &
+            species, closed_state(:, i, j), closed_temperature(i, j), &
+            primitive, recovered_temperature, sound_speed, local_ok)
+          if (.not. local_ok) then
+            entity_ok = .false.
+            exit
+          end if
+          closed_temperature(i, j) = recovered_temperature
+        end do
+        if (.not. entity_ok) exit
+      end do
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Bcast( &
+      closed_state, size(closed_state), MPI_DOUBLE_PRECISION, root_owner, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      closed_temperature, size(closed_temperature), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      sparse_patch_set%root_tiles(tile)%state = &
+        closed_state(:, :, j_lower:j_upper)
+      sparse_patch_set%root_tiles(tile)%temperature = &
+        closed_temperature(:, j_lower:j_upper)
+    end do
+    local_ok = sparse_patch_set%is_valid( &
+      distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine close_sparse_cut_patch_set_conservation_2d
 
   subroutine average_down_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
@@ -1057,6 +1341,425 @@ contains
     ok = .true.
     if (present(local_level_advances)) local_level_advances = advances
   end subroutine advance_sparse_owned_reactive_eb_patch_set_hydro_2d
+
+  subroutine advance_sparse_owned_reactive_eb_patch_set_transport_2d( &
+      species, transport, distribution, sparse_patch_set, coarse_geometry, &
+      patch_set_template, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, ok, &
+      local_euler_advances, minimum_theta, &
+      state_redist_target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), intent(in) :: interval
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: state_redist_max_order
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_euler_advances
+    real(dp), intent(out), optional :: minimum_theta
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate, euler, stage, start
+    real(dp), allocatable :: candidate_root(:, :, :)
+    real(dp), allocatable :: candidate_root_temperature(:, :)
+    real(dp), allocatable :: euler_root(:, :, :)
+    real(dp), allocatable :: euler_root_temperature(:, :)
+    real(dp), allocatable :: preflight_root(:, :, :)
+    real(dp), allocatable :: preflight_root_temperature(:, :)
+    real(dp), allocatable :: start_root(:, :, :)
+    real(dp), allocatable :: start_root_temperature(:, :)
+    real(dp) :: selected_target, theta_one, theta_two
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: advances_one, advances_two, child, ierr, j_lower, j_upper
+    integer :: nvar, owner, root_owner, tile
+
+    ok = .false.
+    if (present(local_euler_advances)) local_euler_advances = 0
+    if (present(minimum_theta)) minimum_theta = 1.0_dp
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    nvar = reactive_nvar(size(species))
+    local_ok = nvar >= 1 .and. sparse_patch_set%nvar == nvar .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(preflight_root(nvar, coarse_geometry%nx, coarse_geometry%ny))
+    allocate(preflight_root_temperature( &
+      coarse_geometry%nx, coarse_geometry%ny))
+    call materialize_sparse_root_2d( &
+      distribution, sparse_patch_set, coarse_geometry, preflight_root, &
+      preflight_root_temperature, local_ok)
+    if (.not. local_ok) return
+    call collective_transport_preflight_2d( &
+      species, transport, distribution, preflight_root, &
+      preflight_root_temperature, coarse_geometry, patch_set_template, &
+      interval, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_max_order, selected_target, local_ok)
+    if (.not. local_ok) return
+    if (interval <= tiny(1.0_dp) .or. .not. (viscosity_enabled .or. &
+        thermal_conduction_enabled .or. species_diffusion_enabled)) then
+      ok = .true.
+      return
+    end if
+
+    start = sparse_patch_set
+    call advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
+      species, transport, distribution, start, coarse_geometry, &
+      patch_set_template, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, &
+      selected_target, stage, theta_one, local_ok, advances_one)
+    if (.not. local_ok) return
+    call advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
+      species, transport, distribution, stage, coarse_geometry, &
+      patch_set_template, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, &
+      selected_target, euler, theta_two, local_ok, advances_two)
+    if (.not. local_ok) return
+
+    allocate(start_root(nvar, coarse_geometry%nx, coarse_geometry%ny))
+    allocate(start_root_temperature(coarse_geometry%nx, coarse_geometry%ny))
+    allocate(euler_root, mold=start_root)
+    allocate(euler_root_temperature, mold=start_root_temperature)
+    allocate(candidate_root, mold=start_root)
+    allocate(candidate_root_temperature, mold=start_root_temperature)
+    call materialize_sparse_root_2d( &
+      distribution, start, coarse_geometry, start_root, &
+      start_root_temperature, local_ok)
+    if (.not. local_ok) return
+    call materialize_sparse_root_2d( &
+      distribution, euler, coarse_geometry, euler_root, &
+      euler_root_temperature, local_ok)
+    if (.not. local_ok) return
+    candidate = start
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) then
+      candidate_root = 0.5_dp * (start_root + euler_root)
+      call recover_transport_temperature_2d( &
+        species, candidate_root, &
+        0.5_dp * (start_root_temperature + euler_root_temperature), &
+        coarse_geometry, candidate_root_temperature, entity_ok)
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Bcast( &
+      candidate_root, size(candidate_root), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      candidate_root_temperature, size(candidate_root_temperature), &
+      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      candidate%root_tiles(tile)%state = &
+        candidate_root(:, :, j_lower:j_upper)
+      candidate%root_tiles(tile)%temperature = &
+        candidate_root_temperature(:, j_lower:j_upper)
+    end do
+
+    do child = 1, distribution%child_count()
+      owner = distribution%child_owner(child)
+      entity_ok = owner >= 0 .and. owner < distribution%nranks
+      if (distribution%rank == owner .and. entity_ok) then
+        candidate%children(child)%state = 0.5_dp * &
+          (start%children(child)%state + euler%children(child)%state)
+        call recover_transport_temperature_2d( &
+          species, candidate%children(child)%state, &
+          0.5_dp * (start%children(child)%temperature + &
+            euler%children(child)%temperature), &
+          patch_set_template%children(child)%geometry, &
+          candidate%children(child)%temperature, entity_ok)
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+    end do
+    call average_down_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, candidate, coarse_geometry, &
+      patch_set_template, local_ok)
+    if (.not. local_ok) return
+    local_ok = candidate%is_valid( &
+      distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    sparse_patch_set = candidate
+    ok = .true.
+    if (present(local_euler_advances)) &
+      local_euler_advances = advances_one + advances_two
+    if (present(minimum_theta)) minimum_theta = min(theta_one, theta_two)
+  end subroutine advance_sparse_owned_reactive_eb_patch_set_transport_2d
+
+  subroutine advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
+      species, transport, distribution, sparse_patch_set, coarse_geometry, &
+      patch_set_template, dt, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, &
+      target_volume_fraction, new_sparse_patch_set, minimum_theta, ok, &
+      local_euler_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: target_volume_fraction
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: new_sparse_patch_set
+    real(dp), intent(out) :: minimum_theta
+    logical, intent(out) :: ok
+    integer, intent(out) :: local_euler_advances
+
+    type(amr_eb_flux_register_2d) :: flux_register
+    type(reactive_eb_exterior_state_2d) :: exterior
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    real(dp), allocatable :: coarse_candidate(:, :, :)
+    real(dp), allocatable :: coarse_candidate_temperature(:, :)
+    real(dp), allocatable :: coarse_corrected(:, :, :)
+    real(dp), allocatable :: coarse_corrected_temperature(:, :)
+    real(dp), allocatable :: coarse_rhs(:, :, :)
+    real(dp), allocatable :: coarse_work(:, :, :)
+    real(dp), allocatable :: coarse_work_temperature(:, :)
+    real(dp), allocatable :: coarse_x_flux(:, :, :)
+    real(dp), allocatable :: coarse_y_flux(:, :, :)
+    real(dp), allocatable :: fine_rhs(:, :, :), fine_work(:, :, :)
+    real(dp), allocatable :: fine_work_temperature(:, :)
+    real(dp), allocatable :: fine_x_flux(:, :, :), fine_y_flux(:, :, :)
+    real(dp), allocatable :: integral_before(:)
+    real(dp), allocatable :: root_start(:, :, :)
+    real(dp), allocatable :: root_start_temperature(:, :)
+    real(dp) :: alpha, coarse_theta, fine_dt, fine_theta, local_theta
+    logical :: accepted, cut_interface, entity_ok, global_ok, local_ok
+    integer :: advances, child, ierr, j_lower, j_upper, nvar, owner, ratio
+    integer :: root_owner, substep, tile
+
+    new_sparse_patch_set = sparse_patch_set
+    minimum_theta = 1.0_dp
+    local_euler_advances = 0
+    ok = .false.
+    advances = 0
+    local_theta = 1.0_dp
+    nvar = reactive_nvar(size(species))
+    candidate = sparse_patch_set
+
+    allocate(root_start(nvar, coarse_geometry%nx, coarse_geometry%ny))
+    allocate(root_start_temperature( &
+      coarse_geometry%nx, coarse_geometry%ny))
+    call materialize_sparse_root_2d( &
+      distribution, candidate, coarse_geometry, root_start, &
+      root_start_temperature, local_ok)
+    if (.not. local_ok) return
+    allocate(integral_before(nvar))
+    call composite_sparse_owned_reactive_eb_patch_set_integral_2d( &
+      distribution, candidate, coarse_geometry, patch_set_template, &
+      integral_before, local_ok)
+    if (.not. local_ok) return
+
+    allocate(coarse_candidate, mold=root_start)
+    allocate(coarse_candidate_temperature, mold=root_start_temperature)
+    allocate(coarse_rhs, mold=root_start)
+    allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+    allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) then
+      call reactive_eb_transport_fluxes_rhs_2d( &
+        species, transport, root_start, root_start_temperature, &
+        coarse_geometry, dt, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+        coarse_rhs, coarse_x_flux, coarse_y_flux, coarse_theta, entity_ok)
+      if (entity_ok) call advance_reactive_eb_state_redistributed_2d( &
+        species, root_start, root_start_temperature, coarse_geometry, &
+        coarse_rhs, dt, coarse_candidate, coarse_candidate_temperature, &
+        entity_ok, target_volume_fraction, state_redist_max_order)
+      if (entity_ok) then
+        advances = advances + 1
+        local_theta = min(local_theta, coarse_theta)
+      end if
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Bcast( &
+      coarse_candidate, size(coarse_candidate), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      coarse_candidate_temperature, size(coarse_candidate_temperature), &
+      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      coarse_x_flux, size(coarse_x_flux), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      coarse_y_flux, size(coarse_y_flux), MPI_DOUBLE_PRECISION, &
+      root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+
+    allocate(coarse_corrected, source=coarse_candidate)
+    allocate(coarse_corrected_temperature, &
+      source=coarse_candidate_temperature)
+    cut_interface = .false.
+    do child = 1, distribution%child_count()
+      cut_interface = cut_interface .or. .not. level_two_interface_is_regular( &
+        patch_set_template%children(child)%geometry)
+      owner = distribution%child_owner(child)
+      entity_ok = owner >= 0 .and. owner < distribution%nranks
+      if (distribution%rank == owner .and. entity_ok) then
+        call initialize_amr_eb_flux_register_2d( &
+          coarse_geometry, patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, nvar, flux_register, &
+          entity_ok)
+        if (entity_ok) call accumulate_coarse_eb_fluxes_2d( &
+          flux_register, coarse_geometry, &
+          patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, coarse_x_flux, &
+          coarse_y_flux, dt, entity_ok)
+        if (allocated(coarse_work)) deallocate(coarse_work)
+        if (allocated(coarse_work_temperature)) &
+          deallocate(coarse_work_temperature)
+        if (allocated(fine_rhs)) deallocate(fine_rhs)
+        if (allocated(fine_work)) deallocate(fine_work)
+        if (allocated(fine_work_temperature)) &
+          deallocate(fine_work_temperature)
+        if (allocated(fine_x_flux)) deallocate(fine_x_flux)
+        if (allocated(fine_y_flux)) deallocate(fine_y_flux)
+        allocate(coarse_work, mold=root_start)
+        allocate(coarse_work_temperature, mold=root_start_temperature)
+        allocate(fine_rhs, mold=candidate%children(child)%state)
+        allocate(fine_work, mold=candidate%children(child)%state)
+        allocate(fine_work_temperature, &
+          mold=candidate%children(child)%temperature)
+        allocate(fine_x_flux(nvar, &
+          0:patch_set_template%children(child)%geometry%nx, &
+          patch_set_template%children(child)%geometry%ny))
+        allocate(fine_y_flux(nvar, &
+          patch_set_template%children(child)%geometry%nx, &
+          0:patch_set_template%children(child)%geometry%ny))
+        ratio = patch_set_template%children(child)%patch%refinement_ratio
+        fine_dt = dt / real(ratio, dp)
+        do substep = 1, ratio
+          if (.not. entity_ok) exit
+          alpha = real(substep - 1, dp) / real(ratio, dp)
+          call build_reactive_eb_patch_exterior_2d( &
+            species, root_start, root_start_temperature, coarse_candidate, &
+            coarse_candidate_temperature, coarse_geometry, &
+            patch_set_template%children(child)%geometry, &
+            patch_set_template%children(child)%patch, alpha, exterior, &
+            entity_ok, candidate%children(child)%state, &
+            candidate%children(child)%temperature)
+          if (.not. entity_ok) exit
+          call reactive_eb_transport_fluxes_rhs_2d( &
+            species, transport, candidate%children(child)%state, &
+            candidate%children(child)%temperature, &
+            patch_set_template%children(child)%geometry, fine_dt, &
+            viscosity_enabled, thermal_conduction_enabled, &
+            species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+            fine_rhs, fine_x_flux, fine_y_flux, fine_theta, entity_ok, &
+            exterior)
+          if (.not. entity_ok) exit
+          call advance_reactive_eb_state_redistributed_2d( &
+            species, candidate%children(child)%state, &
+            candidate%children(child)%temperature, &
+            patch_set_template%children(child)%geometry, fine_rhs, fine_dt, &
+            fine_work, fine_work_temperature, entity_ok, &
+            target_volume_fraction, state_redist_max_order)
+          if (.not. entity_ok) exit
+          advances = advances + 1
+          local_theta = min(local_theta, fine_theta)
+          candidate%children(child)%state = fine_work
+          candidate%children(child)%temperature = fine_work_temperature
+          call accumulate_fine_eb_fluxes_2d( &
+            flux_register, coarse_geometry, &
+            patch_set_template%children(child)%geometry, &
+            patch_set_template%children(child)%patch, fine_x_flux, &
+            fine_y_flux, fine_dt, entity_ok)
+        end do
+        if (entity_ok) call reflux_reactive_eb_state_patch_2d( &
+          species, coarse_corrected, coarse_corrected_temperature, &
+          coarse_geometry, candidate%children(child)%state, &
+          candidate%children(child)%temperature, &
+          patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, flux_register, &
+          coarse_work, coarse_work_temperature, fine_work, &
+          fine_work_temperature, entity_ok)
+        if (entity_ok) then
+          coarse_corrected = coarse_work
+          coarse_corrected_temperature = coarse_work_temperature
+          candidate%children(child)%state = fine_work
+          candidate%children(child)%temperature = fine_work_temperature
+        end if
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call MPI_Bcast( &
+        coarse_corrected, size(coarse_corrected), MPI_DOUBLE_PRECISION, &
+        owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      call MPI_Bcast( &
+        coarse_corrected_temperature, size(coarse_corrected_temperature), &
+        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end do
+
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      candidate%root_tiles(tile)%state = &
+        coarse_corrected(:, :, j_lower:j_upper)
+      candidate%root_tiles(tile)%temperature = &
+        coarse_corrected_temperature(:, j_lower:j_upper)
+    end do
+    call average_down_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, candidate, coarse_geometry, &
+      patch_set_template, local_ok)
+    if (.not. local_ok) return
+    if (cut_interface) then
+      call close_sparse_cut_patch_set_conservation_2d( &
+        species, integral_before, distribution, candidate, coarse_geometry, &
+        patch_set_template, coarse_x_flux, coarse_y_flux, dt, local_ok)
+      if (.not. local_ok) return
+    end if
+    call MPI_Allreduce( &
+      local_theta, minimum_theta, 1, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    local_ok = candidate%is_valid( &
+      distribution, coarse_geometry, patch_set_template) .and. &
+      ieee_is_finite(minimum_theta)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    new_sparse_patch_set = candidate
+    local_euler_advances = advances
+    ok = .true.
+  end subroutine advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
       species, reactions, transport, distribution, sparse_patch_set, &

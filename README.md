@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.119.0` milestone contains the serial verification suite, eight optional
+The `0.120.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -61,6 +61,12 @@ Hydro also has a direct sparse entrypoint. Root tiles are assembled into one
 level-wide temporary for the root StateRedist update, while each fine child is
 subcycled and refluxed only on its owner. No nonowner child payload is created,
 and the result returns through direct sparse average-down.
+SSPRK2 molecular transport now follows the same sparse ownership boundary.
+Each fine child performs both Euler stages, ratio subcycling, diffusive flux
+accumulation, reflux, and temperature recovery only on its owner. Root state,
+temperature, and flux arrays remain level-wide temporaries, while cut-interface
+closure uses a distributed composite integral and changes only unrefined root
+cells. A late child failure leaves every sparse allocation bitwise unchanged.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -552,6 +558,9 @@ The AMR layer provides:
 - direct recursive molecular transport on sparse AMR payloads with cumulative
   `r²` subcycling, diffusive flux registers, cross-owner shared-face
   reconciliation, and exact rollback;
+- direct SSPRK2 molecular transport on sparse MPI EB AMR payloads with
+  owner-local child subcycling and reflux, distributed cut-interface
+  conservation closure, serial parity, limiter parity, and exact rollback;
 - a direct sparse `R-T-H-T-R` transaction with owner-only stage execution,
   exact call accounting, serial parity, missing-database rejection, and outer
   rollback after a later-stage failure;
