@@ -840,6 +840,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
+        config%multipatch_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
         size(coarse_state, 2) /= coarse_geometry%nx .or. &
@@ -1049,7 +1050,8 @@ contains
     regrids = 0
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
-        .not. supported_reactive_eb_amr_config(config)) return
+        .not. supported_reactive_eb_amr_config(config) .or. &
+        config%multipatch_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return

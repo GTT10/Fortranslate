@@ -1736,6 +1736,22 @@ integrals use every uncovered root cell and every active child exactly once.
 The executable writes the synchronized root through the existing EB CSV path.
 For child index `p`, it inserts `_patchNNNN` before the configured fine-output
 extension and writes that child's actual geometry and state. Child order is
-the deterministic collection order. Multipatch checkpoint/restart requests
-are rejected because checkpoint schema one cannot represent a child
-collection.
+the deterministic collection order. Multipatch checkpoint/restart uses a
+distinct schema because single-patch checkpoint schema one cannot represent a
+child collection.
+
+The patch-set schema records a strict signature for the mesh, EB geometry,
+refinement, chemistry, hydro, redistribution, collection planner, and regrid
+cadence. It then records time, counters, minimum accepted timestep, base
+density, the root payload, and each ordered child's actual bounds and payload.
+Final time, maximum steps, output paths, and checkpoint scheduling remain
+restart-adjustable. A reader rebuilds every geometry, treats conserved state as
+authoritative, recovers active temperatures through the EOS, validates the
+complete separated set and terminal marker, and commits no output until all
+children succeed.
+
+Scheduled patch-set checkpoints are written only after an accepted Strang
+interval and any due periodic regrid commit. A stop-after-write exits with the
+stored time. Restart resumes from the stored step and regrid counters, so the
+next periodic topology evaluation has the same cadence as an uninterrupted
+run.

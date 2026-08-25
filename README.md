@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.94.0` milestone contains the serial verification suite, seven optional
+The `0.95.0` milestone contains the serial verification suite, seven optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -19,7 +19,9 @@ that lifecycle state for a later serial restart. With multipatch mode enabled,
 the same application clusters disconnected tags into multiple fine rectangles,
 selects a set-wide CFL limit, advances their reactive hydrodynamics and
 chemistry transactionally with one flux register per child, periodically
-rebuilds the set, and writes one CSV per active child.
+rebuilds the set, and writes one CSV per active child. A dedicated formatted
+checkpoint preserves the complete ordered patch set for transactional serial
+restart.
 
 ### `pelef`: one-dimensional Euler solver
 
@@ -261,16 +263,22 @@ Setting `multipatch_enabled = .true.` connects that patch set to the public
 the initial and periodic planners can replace the configured seed rectangle
 with zero or more children, the timestep is the minimum root/child CFL limit,
 and accepted steps retain the existing regrid cadence and counters. Fine CSV
-paths receive deterministic `_patch0001`, `_patch0002`, ... suffixes. The
-formatted checkpoint schema remains single-patch, so multipatch inputs that
-request checkpoint or restart are rejected before initialization.
+paths receive deterministic `_patch0001`, `_patch0002`, ... suffixes.
+
+Multipatch mode has a separate versioned formatted checkpoint schema. It stores
+the root, ordered child count, every child's actual bounds and state, accepted
+time and timestep, step/regrid counters, base density, species order, and a
+strict physics/topology compatibility signature. Restart rebuilds every EB
+geometry, recovers active temperatures through the EOS, validates the complete
+set and end marker in private candidates, and only then publishes the restored
+hierarchy. The earlier single-patch schema and its inputs remain unchanged.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics, EB
 coarse-to-fine spatial interpolation, EB AMR molecular transport, deeper EB
 levels, and MPI distribution are not yet connected. The public EB AMR
-application now owns multiple fine rectangles when explicitly enabled; its
-checkpoint schema still owns at most one fine rectangle.
+application now owns and can restart multiple fine rectangles when explicitly
+enabled.
 
 ### MPI one-dimensional verification
 
@@ -752,6 +760,19 @@ python3 tools/check_reactive_eb_amr_restart_2d.py \
   --fine reactive_eb_amr_restart_reference_fine_2d.csv \
     reactive_eb_amr_restart_stopped_fine_2d.csv \
     reactive_eb_amr_restarted_fine_2d.csv
+```
+
+Reacting two-child checkpoint/restart parity:
+
+```bash
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_multipatch_restart_2d/reference.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_multipatch_restart_2d/checkpoint_stop.nml
+./build/pelef_reactive_eb_amr_2d \
+  cases/reactive_eb_amr_multipatch_restart_2d/restart.nml
+ctest --test-dir build --output-on-failure \
+  -R '^regression_reactive_eb_amr_multipatch_restart_2d_'
 ```
 
 ## Project records

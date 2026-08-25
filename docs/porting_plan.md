@@ -621,8 +621,9 @@ Required capabilities:
   changes, subcycled hydro/reflux, and Strang chemistry kernel (`0.93.0`)
 - [x] input-driven two-level EB multipatch lifecycle, CFL selection, periodic
   regridding, chemistry/hydro advance, and per-child output (`0.94.0`)
-- EB multipatch checkpoint/restart, deeper levels, and multilevel
-  redistribution
+- [x] transactional EB multipatch formatted checkpoint/restart with exact
+  child topology and public split-run parity (`0.95.0`)
+- deeper EB levels and multilevel redistribution
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

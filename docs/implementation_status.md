@@ -1626,3 +1626,23 @@ The serial EB AMR executable can now select either the existing single-patch
 checkpoint-capable lifecycle or a dynamic two-level patch set. Multipatch
 checkpoint/restart, EB molecular transport, deeper levels, physical-boundary
 fine patches, and distributed ownership remain separate work.
+
+## Reactive EB AMR multipatch checkpoint/restart (`0.95.0`)
+
+- [x] dedicated versioned patch-set checkpoint magic and schema
+- [x] species, mesh, EB, physics, regrid, and collection compatibility signature
+- [x] exact ordered child count, bounds, dimensions, state, and temperature
+- [x] root state, time, step/regrid counters, minimum timestep, and base density
+- [x] private geometry rebuild and EOS temperature recovery for every level
+- [x] complete-set separation and terminal-marker validation before publication
+- [x] scheduled post-regrid writes, stop-after-write, and cadence-preserving restart
+- [x] direct two-child round trip and truncated-file rollback gates
+- [x] public reacting reference, checkpoint-stop, restart, and CSV parity gate
+- [x] unchanged single-patch checkpoint format and restart behavior
+- [x] focused checkpoint gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public serial EB AMR executable can now stop and resume either the default
+single-patch lifecycle or an explicitly enabled patch set without losing
+accepted topology or cadence. EB molecular transport, deeper levels,
+physical-boundary fine patches, and distributed ownership remain separate work.

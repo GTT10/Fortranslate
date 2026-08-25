@@ -1474,3 +1474,24 @@ Configuration must reject multipatch checkpoint or restart requests before
 initialization because formatted checkpoint schema one owns at most one fine
 rectangle. The focused public-driver and input/output gates must pass before
 the complete GNU Fortran Debug and Release regression suites.
+
+## 0.95.0 reactive EB AMR multipatch checkpoint/restart gates
+
+A direct round trip must preserve the root state, ordered child count, every
+child's actual coarse bounds and complete state, time, accepted-step and regrid
+counters, minimum timestep, and base density. EOS-recovered active
+temperatures must match the written hierarchy within `3e-12` scaled tolerance.
+A file truncated after the valid patch-set magic must leave root arrays,
+geometry, and the child collection unpublished.
+
+The public split-run gate advances a reacting double-hotspot plane-EB hierarchy
+with two separated children. A scheduled checkpoint after the first committed
+step and periodic regrid must stop before final time. Restart must reconstruct
+both children and continue from the stored counters. Root and both child CSVs
+must match an uninterrupted reference in every field within `3e-10` scaled
+tolerance, retain finite positive thermodynamics and species closure, preserve
+deterministic child order, and reach the requested final time.
+
+The focused direct and public split-run gates must pass before all 175 tests in
+GNU Fortran Debug and Release configurations. Existing single-patch checkpoint
+round trips and public restart parity remain in the same complete regression.

@@ -1017,14 +1017,23 @@ the set-wide Strang transaction, and a committed periodic regrid replaces the
 root and complete child collection together. Output iterates children in
 planner order and adds a stable patch number before the CSV extension.
 
-The version-one formatted checkpoint has one optional child payload. Rather
-than encode an incomplete patch set, configuration and runtime validation
-reject checkpoint or restart controls whenever multipatch mode is enabled.
+In `0.94.0`, the version-one formatted checkpoint had one optional child
+payload, so configuration and runtime validation rejected checkpoint or
+restart controls whenever multipatch mode was enabled.
+
+`0.95.0` adds a distinct patch-set checkpoint magic and schema without changing
+that established single-patch format. The patch-set manifest stores the child
+count and then each deterministic child's actual coarse bounds, dimensions,
+conserved state, and temperature after the root and compatibility signature.
+The reader rebuilds all geometries and states privately, recovers active
+temperatures from conserved variables through the EOS, validates set-wide
+separation and the terminal marker, and publishes the root and complete child
+collection together. Scheduled writes occur after physics and periodic regrid
+transactions, so restart resumes the accepted-step cadence.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, deeper levels, and EB AMR/MPI ownership remain
 outside this subsystem. The public application, CSV output, and checkpoint
-schema retain the single-patch path by default; the public application and CSV
-output select the patch-set path explicitly, while the checkpoint schema does
-not yet support it.
+schema retain the single-patch path by default; the public application, CSV
+output, and dedicated restart schema select the patch-set path explicitly.

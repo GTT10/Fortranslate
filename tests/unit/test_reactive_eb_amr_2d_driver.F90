@@ -34,6 +34,7 @@ program test_reactive_eb_amr_2d_driver
   type(amr_eb_patch_2d) :: checkpoint_patch
   type(reactive_eb_patch_set_2d) :: multipatch_set
   type(reactive_eb_patch_set_2d) :: checkpoint_multipatch_set
+  type(reactive_eb_patch_set_2d) :: empty_multipatch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -478,6 +479,22 @@ program test_reactive_eb_amr_2d_driver
       multipatch_set%children(child)%temperature)) <= 3.0e-12_dp * scale, &
       "multipatch checkpoint child temperature recovery")
   end do
+  allocate(empty_multipatch_set%children(0))
+  call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, empty_multipatch_set, time, steps, &
+    regrids, minimum_dt, base_density, ok)
+  call require(ok, "empty multipatch checkpoint write")
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(ok .and. checkpoint_multipatch_set%patch_count() == 0 .and. &
+    checkpoint_multipatch_set%is_valid( &
+      checkpoint_coarse_geometry, size(checkpoint_coarse_state, 1)) .and. &
+    all(checkpoint_coarse_state == coarse_state), &
+    "empty multipatch checkpoint round trip")
   call write_truncated_patch_set_checkpoint(patch_set_checkpoint_path)
   call read_reactive_eb_amr_patch_set_2d_checkpoint( &
     patch_set_checkpoint_path, species, config, checkpoint_coarse_state, &
