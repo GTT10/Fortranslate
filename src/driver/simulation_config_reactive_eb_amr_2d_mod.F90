@@ -194,10 +194,29 @@ contains
       message = "EB AMR multipatch mode requires dynamic regridding"
       return
     end if
-    if (three_level_enabled .and. &
-        (multipatch_enabled .or. dynamic_regridding)) then
+    if (three_level_enabled .and. multipatch_enabled) then
       ok = .false.
-      message = "Static three-level EB AMR excludes regridding and siblings"
+      message = "Three-level EB AMR excludes sibling patches"
+      return
+    end if
+    if (three_level_enabled .and. dynamic_regridding .and. &
+        remove_fine_patch_when_untagged) then
+      ok = .false.
+      message = "Dynamic three-level EB AMR keeps the finest patch active"
+      return
+    end if
+    if (three_level_enabled .and. dynamic_regridding .and. &
+        (regrid_minimum_patch_cells_x > level_one_nx - 4 .or. &
+         regrid_minimum_patch_cells_y > level_one_ny - 4)) then
+      ok = .false.
+      message = "Dynamic finest patch needs a two-cell middle margin"
+      return
+    end if
+    if (three_level_enabled .and. dynamic_regridding .and. &
+        (checkpoint_interval > 0 .or. len_trim(checkpoint_file) > 0 .or. &
+         len_trim(restart_file) > 0)) then
+      ok = .false.
+      message = "Dynamic three-level checkpoint/restart is not yet supported"
       return
     end if
     if (checkpoint_interval < 0 .or. &

@@ -559,10 +559,10 @@ program test_reactive_eb_amr_2d_driver
   call simulate_three_level_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
-    level_two_state, level_two_temperature, level_two_geometry, &
-    level_two_patch, time, steps, initial_integrals, final_integrals, &
-    minimum_dt, base_density, ok)
-  call require(ok .and. steps == 1 .and. &
+      level_two_state, level_two_temperature, level_two_geometry, &
+      level_two_patch, time, steps, regrids, initial_integrals, &
+      final_integrals, minimum_dt, base_density, ok)
+  call require(ok .and. steps == 1 .and. regrids == 0 .and. &
     time == config%eb%flow%final_time .and. &
     minimum_dt == config%eb%flow%final_time, &
     "public three-level time loop")
@@ -588,17 +588,39 @@ program test_reactive_eb_amr_2d_driver
     level_two_patch, config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public three-level CFL selection")
+  config%eb%flow%problem = "reactive_hotspot"
+  config%eb%flow%hotspot_center_x = 0.5_dp
+  config%eb%flow%hotspot_center_y = 0.5_dp
+  config%eb%flow%hotspot_width = 0.08_dp
+  config%eb%flow%hotspot_temperature_rise = 250.0_dp
+  config%eb%flow%final_time = 1.0e-8_dp
+  config%level_two_i_upper = 6
+  config%level_two_j_upper = 6
   config%dynamic_regridding = .true.
+  config%regrid_at_initialization = .true.
+  config%remove_fine_patch_when_untagged = .false.
+  config%regrid_interval = 1
+  config%regrid_relative_temperature_gradient = 1.0e-4_dp
+  config%regrid_absolute_temperature_gradient = 0.1_dp
+  config%regrid_temperature_scale_floor = 1.0_dp
+  config%regrid_buffer_cells = 0
+  config%regrid_minimum_patch_cells_x = 4
+  config%regrid_minimum_patch_cells_y = 4
   call simulate_three_level_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
-    level_two_state, level_two_temperature, level_two_geometry, &
-    level_two_patch, time, steps, initial_integrals, final_integrals, &
-    minimum_dt, base_density, ok)
-  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp .and. &
-    .not. allocated(coarse_state) .and. .not. allocated(fine_state) .and. &
-    .not. allocated(level_two_state), &
-    "public three-level dynamic-mode rejection")
+      level_two_state, level_two_temperature, level_two_geometry, &
+      level_two_patch, time, steps, regrids, initial_integrals, &
+      final_integrals, minimum_dt, base_density, ok)
+  call require(ok .and. steps > 0 .and. regrids > 0 .and. &
+    level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
+    level_two_patch%coarse_i_lower >= 3 .and. &
+    level_two_patch%coarse_i_upper <= fine_geometry%nx - 2 .and. &
+    level_two_patch%coarse_j_lower >= 3 .and. &
+    level_two_patch%coarse_j_upper <= fine_geometry%ny - 2 .and. &
+    (level_two_patch%coarse_i_upper /= 6 .or. &
+     level_two_patch%coarse_j_upper /= 6), &
+    "public dynamic three-level finest regrid")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
