@@ -3,6 +3,8 @@ program test_reactive_eb_amr_2d_driver
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
@@ -41,6 +43,7 @@ program test_reactive_eb_amr_2d_driver
   type(reactive_eb_patch_set_2d) :: empty_multipatch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: level_two_state(:, :, :)
@@ -57,6 +60,7 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: checkpoint_fine_state(:, :, :)
   real(dp), allocatable :: checkpoint_fine_temperature(:, :)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, conservation_error, scale
+  real(dp) :: minimum_transport_theta
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
   real(dp) :: checkpoint_base_density
   logical :: changed, fine_active, checkpoint_fine_active, ok
@@ -73,6 +77,8 @@ program test_reactive_eb_amr_2d_driver
   call require(ok, "thermodynamic database load")
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "elementary mechanism load")
+  call load_h2o2_elementary_transport(transport, ok)
+  call require(ok, "elementary transport load")
   config%eb%flow%nx = 8
   config%eb%flow%ny = 8
   config%eb%flow%x_lower = 0.0_dp
@@ -362,7 +368,19 @@ program test_reactive_eb_amr_2d_driver
     fine_active, time, steps, regrids, initial_integrals, final_integrals, &
     minimum_dt, base_density, ok)
   call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
-    time == 0.0_dp, "unsupported AMR transport rejection")
+    time == 0.0_dp, "missing AMR transport database rejection")
+
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  conservation_error = maxval(abs(final_integrals - initial_integrals) / &
+    max(1.0_dp, abs(initial_integrals)))
+  call require(ok .and. steps == 1 .and. fine_active .and. &
+    minimum_transport_theta > 0.999999999_dp .and. &
+    conservation_error <= 8.0e-11_dp, &
+    "runnable two-level AMR transport")
 
   config%eb%flow%transport_enabled = .false.
   config%eb%flow%nx = 14

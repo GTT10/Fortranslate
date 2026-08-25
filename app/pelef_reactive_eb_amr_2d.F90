@@ -3,6 +3,9 @@ program pelef_reactive_eb_amr_2d
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport, &
+    load_h2o2_full_transport
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_elementary_mechanism_mod, only: &
@@ -29,12 +32,14 @@ program pelef_reactive_eb_amr_2d
   type(reactive_eb_patch_set_2d) :: patch_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: level_two_state(:, :, :)
   real(dp), allocatable :: level_two_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
   real(dp) :: time, minimum_dt, base_density, conservation_error
+  real(dp) :: minimum_transport_theta
   character(len=1024) :: input_path, message, patch_output_file
   logical :: fine_active, ok
   integer :: child, regrids, steps
@@ -57,11 +62,15 @@ program pelef_reactive_eb_amr_2d
     if (.not. ok) error stop "Failed to load elementary thermodynamics"
     call load_h2o2_elementary_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load elementary mechanism"
+    call load_h2o2_elementary_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load elementary transport"
   case ("full_h2o2")
     call load_h2o2_full_thermo(species, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
     call load_h2o2_full_mechanism(reactions, ok)
     if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
+    call load_h2o2_full_transport(transport, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 transport"
   case default
     error stop "Unknown chemistry model"
   end select
@@ -84,7 +93,7 @@ program pelef_reactive_eb_amr_2d
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
       fine_active, time, steps, regrids, initial_integrals, final_integrals, &
-      minimum_dt, base_density, ok)
+      minimum_dt, base_density, ok, transport, minimum_transport_theta)
   end if
   if (.not. ok) then
     if (config%three_level_enabled) &
@@ -243,6 +252,19 @@ program pelef_reactive_eb_amr_2d
   write(*, '(a,l2)') "Chemistry: ", config%eb%flow%chemistry_enabled
   write(*, '(a,1x,a)') "Chemistry model:", &
     trim(config%eb%flow%chemistry_model)
+  write(*, '(a,l2)') "Molecular transport: ", &
+    config%eb%flow%transport_enabled
+  if (config%eb%flow%transport_enabled) then
+    write(*, '(a,l2)') "Viscosity: ", config%eb%flow%viscosity_enabled
+    write(*, '(a,l2)') "Thermal conduction: ", &
+      config%eb%flow%thermal_conduction_enabled
+    write(*, '(a,l2)') "Species diffusion: ", &
+      config%eb%flow%species_diffusion_enabled
+    write(*, '(a,l2)') "Barodiffusion: ", &
+      config%eb%flow%barodiffusion_enabled
+    write(*, '(a,es24.16)') "Minimum transport limiter theta: ", &
+      minimum_transport_theta
+  end if
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Minimum accepted coarse dt: ", minimum_dt
   write(*, '(a,es24.16)') "Maximum composite conservation error: ", &
