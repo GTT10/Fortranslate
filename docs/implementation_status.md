@@ -1783,3 +1783,21 @@ The public serial EB AMR executable can now run the qualified static
 three-level hierarchy from a namelist. Dynamic three-level topology,
 checkpoint/restart, molecular transport, arbitrary depth, and MPI ownership
 remain separate work.
+
+## Static three-level EB AMR checkpoint/restart (`0.103.0`)
+
+- [x] dedicated versioned three-level checkpoint magic and schema
+- [x] complete root, middle, and finest state and temperature payloads
+- [x] nested topology, mechanism order, physics, and EB compatibility checks
+- [x] private transactional read and all-level EOS temperature recovery
+- [x] periodic/final writes and optional stop-after-write control
+- [x] accepted time, minimum timestep, step count, and base-density recovery
+- [x] uninterrupted versus restarted root/middle/finest CSV parity
+- [x] unchanged single-patch and patch-set checkpoint schemas
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public static three-level lifecycle can now stop after a committed
+checkpoint and resume all three levels without reinitialization. Dynamic
+three-level topology, molecular transport, arbitrary depth, distributed I/O,
+and MPI ownership remain separate work.

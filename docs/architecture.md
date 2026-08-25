@@ -1097,11 +1097,21 @@ and middle to finest. Every accepted root interval selects
 three-level Strang transaction. Root, middle, and finest CSV files are written
 only after successful completion.
 
+In `0.103.0`, that lifecycle owns a separate three-level checkpoint schema.
+The writer records the complete root, middle, and finest state and temperature
+fields, the two nested rectangles and refinement ratios, accepted time and
+step metadata, ordered mechanism layout, and the numerical compatibility
+signature. The reader rebuilds all three EB geometries and validates the
+entire stream, including its terminal marker, in private candidates. It then
+recovers every active temperature through the EOS before publishing the
+restored hierarchy. Scheduled and final writes occur only after accepted
+three-level transactions; stop-after-write and restart preserve timestep
+cadence without modifying the older checkpoint schemas.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 EB AMR molecular transport, locally resolved PeleC-style multilevel
 redistribution, arbitrary depth, dynamic three-level lifecycle ownership,
 non-outflow refined boundaries, and EB AMR/MPI ownership remain outside this
-subsystem. The public application and CSV output select the static three-level
-path explicitly, while checkpointing remains limited to the established
-single-patch and patch-set schemas.
+subsystem. The public application, CSV output, and dedicated checkpoint path
+select the static three-level lifecycle explicitly.

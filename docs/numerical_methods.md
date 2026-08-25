@@ -1891,5 +1891,24 @@ updated. Initialization uses PCM prolongation first from root to middle and
 then from middle to finest, so all levels begin EOS-consistent and synchronized.
 
 The public mode is deliberately static. Namelist validation rejects dynamic
-regridding, multipatch ownership, checkpoint/restart, or colliding output
-paths when `three_level_enabled` is selected.
+regridding, multipatch ownership, or colliding output paths when
+`three_level_enabled` is selected.
+
+## Static three-level EB AMR checkpoint transaction
+
+The static hierarchy uses a dedicated formatted stream whose magic and schema
+are distinct from the single-patch and patch-set formats. It stores ordered
+species names, root geometry and EB parameters, hydro and chemistry controls,
+both nested rectangles and refinement ratios, accepted time, minimum timestep,
+step count, base density, and all root, middle, and finest conserved and
+temperature fields. Final time, maximum steps, output paths, and checkpoint
+scheduling remain restart-adjustable.
+
+Restart reconstructs all three meshes from the validated input topology,
+reads every payload into private candidates, and rejects any schema, mechanism,
+physics, topology, dimension, finiteness, or terminal-marker mismatch. Stored
+temperature is checked for finiteness but is not trusted as thermodynamic
+authority: active-cell temperature is recovered from conserved state through
+the EOS on every level. Only a completely valid hierarchy is published.
+Periodic and final checkpoints are written after an accepted Strang interval;
+stop-after-write exits only after the committed stream is complete.
