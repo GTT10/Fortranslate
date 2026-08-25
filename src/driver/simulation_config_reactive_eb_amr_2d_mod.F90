@@ -1,4 +1,6 @@
 module simulation_config_reactive_eb_amr_2d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use precision_mod, only: dp
   use simulation_config_reactive_eb_2d_mod, only: &
     reactive_eb_2d_config, read_reactive_eb_2d_configuration
   implicit none
@@ -11,6 +13,14 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: coarse_j_lower = 2
     integer :: coarse_j_upper = 3
     integer :: refinement_ratio = 2
+    logical :: dynamic_regridding = .false.
+    integer :: regrid_interval = 1
+    real(dp) :: regrid_relative_temperature_gradient = 0.10_dp
+    real(dp) :: regrid_absolute_temperature_gradient = 0.0_dp
+    real(dp) :: regrid_temperature_scale_floor = 1.0_dp
+    integer :: regrid_buffer_cells = 1
+    integer :: regrid_minimum_patch_cells_x = 2
+    integer :: regrid_minimum_patch_cells_y = 2
     character(len=1024) :: fine_output_file = "reactive_eb_amr_fine_2d.csv"
   end type reactive_eb_amr_2d_config
 
@@ -27,10 +37,23 @@ contains
 
     integer :: coarse_i_lower, coarse_i_upper
     integer :: coarse_j_lower, coarse_j_upper, refinement_ratio
+    integer :: regrid_interval, regrid_buffer_cells
+    integer :: regrid_minimum_patch_cells_x
+    integer :: regrid_minimum_patch_cells_y
     integer :: unit, status
+    real(dp) :: regrid_relative_temperature_gradient
+    real(dp) :: regrid_absolute_temperature_gradient
+    real(dp) :: regrid_temperature_scale_floor
+    logical :: dynamic_regridding
     character(len=1024) :: fine_output_file
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
-      coarse_j_lower, coarse_j_upper, refinement_ratio, fine_output_file
+      coarse_j_lower, coarse_j_upper, refinement_ratio, &
+      dynamic_regridding, regrid_interval, &
+      regrid_relative_temperature_gradient, &
+      regrid_absolute_temperature_gradient, &
+      regrid_temperature_scale_floor, regrid_buffer_cells, &
+      regrid_minimum_patch_cells_x, regrid_minimum_patch_cells_y, &
+      fine_output_file
 
     config = reactive_eb_amr_2d_config()
     call read_reactive_eb_2d_configuration( &
@@ -42,6 +65,17 @@ contains
     coarse_j_lower = config%coarse_j_lower
     coarse_j_upper = config%coarse_j_upper
     refinement_ratio = config%refinement_ratio
+    dynamic_regridding = config%dynamic_regridding
+    regrid_interval = config%regrid_interval
+    regrid_relative_temperature_gradient = &
+      config%regrid_relative_temperature_gradient
+    regrid_absolute_temperature_gradient = &
+      config%regrid_absolute_temperature_gradient
+    regrid_temperature_scale_floor = &
+      config%regrid_temperature_scale_floor
+    regrid_buffer_cells = config%regrid_buffer_cells
+    regrid_minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
+    regrid_minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
     fine_output_file = config%fine_output_file
     open(newunit=unit, file=trim(path), status="old", action="read", &
       iostat=status)
@@ -73,6 +107,21 @@ contains
       message = "EB AMR refinement ratio must be at least two"
       return
     end if
+    if (regrid_interval < 1 .or. regrid_buffer_cells < 0 .or. &
+        regrid_minimum_patch_cells_x < 1 .or. &
+        regrid_minimum_patch_cells_x > config%eb%flow%nx - 2 .or. &
+        regrid_minimum_patch_cells_y < 1 .or. &
+        regrid_minimum_patch_cells_y > config%eb%flow%ny - 2 .or. &
+        .not. ieee_is_finite(regrid_relative_temperature_gradient) .or. &
+        regrid_relative_temperature_gradient < 0.0_dp .or. &
+        .not. ieee_is_finite(regrid_absolute_temperature_gradient) .or. &
+        regrid_absolute_temperature_gradient < 0.0_dp .or. &
+        .not. ieee_is_finite(regrid_temperature_scale_floor) .or. &
+        regrid_temperature_scale_floor <= 0.0_dp) then
+      ok = .false.
+      message = "Invalid EB AMR dynamic-regridding controls"
+      return
+    end if
     if (len_trim(fine_output_file) == 0 .or. &
         trim(fine_output_file) == trim(config%eb%flow%output_file)) then
       ok = .false.
@@ -91,6 +140,16 @@ contains
     config%coarse_j_lower = coarse_j_lower
     config%coarse_j_upper = coarse_j_upper
     config%refinement_ratio = refinement_ratio
+    config%dynamic_regridding = dynamic_regridding
+    config%regrid_interval = regrid_interval
+    config%regrid_relative_temperature_gradient = &
+      regrid_relative_temperature_gradient
+    config%regrid_absolute_temperature_gradient = &
+      regrid_absolute_temperature_gradient
+    config%regrid_temperature_scale_floor = regrid_temperature_scale_floor
+    config%regrid_buffer_cells = regrid_buffer_cells
+    config%regrid_minimum_patch_cells_x = regrid_minimum_patch_cells_x
+    config%regrid_minimum_patch_cells_y = regrid_minimum_patch_cells_y
     config%fine_output_file = trim(fine_output_file)
     message = ""
     ok = .true.

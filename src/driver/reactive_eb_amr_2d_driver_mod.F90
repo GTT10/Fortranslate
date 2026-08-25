@@ -15,6 +15,10 @@ module reactive_eb_amr_2d_driver_mod
   use amr_eb_reactive_2d_mod, only: &
     prolong_reactive_eb_patch_pcm_2d, &
     advance_two_level_reactive_eb_hydro_2d
+  use amr_eb_regrid_2d_mod, only: &
+    amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_2d, &
+    plan_reactive_eb_temperature_regrid_2d, &
+    regrid_two_level_reactive_eb_patch_2d
   implicit none
   private
 
@@ -56,7 +60,18 @@ contains
       config%coarse_j_upper < config%eb%flow%ny .and. &
       config%coarse_i_upper >= config%coarse_i_lower .and. &
       config%coarse_j_upper >= config%coarse_j_lower .and. &
-      config%refinement_ratio >= 2
+      config%refinement_ratio >= 2 .and. config%regrid_interval >= 1 .and. &
+      ieee_is_finite(config%regrid_relative_temperature_gradient) .and. &
+      config%regrid_relative_temperature_gradient >= 0.0_dp .and. &
+      ieee_is_finite(config%regrid_absolute_temperature_gradient) .and. &
+      config%regrid_absolute_temperature_gradient >= 0.0_dp .and. &
+      ieee_is_finite(config%regrid_temperature_scale_floor) .and. &
+      config%regrid_temperature_scale_floor > 0.0_dp .and. &
+      config%regrid_buffer_cells >= 0 .and. &
+      config%regrid_minimum_patch_cells_x >= 1 .and. &
+      config%regrid_minimum_patch_cells_x <= config%eb%flow%nx - 2 .and. &
+      config%regrid_minimum_patch_cells_y >= 1 .and. &
+      config%regrid_minimum_patch_cells_y <= config%eb%flow%ny - 2
   end function supported_reactive_eb_amr_config
 
   subroutine compute_reactive_eb_amr_cfl_timestep_2d( &
@@ -91,9 +106,132 @@ contains
     ok = ieee_is_finite(dt) .and. dt > 0.0_dp
   end subroutine compute_reactive_eb_amr_cfl_timestep_2d
 
+  subroutine build_reactive_eb_amr_patch_geometry_2d( &
+      config, coarse_geometry, coarse_i_lower, coarse_i_upper, &
+      coarse_j_lower, coarse_j_upper, fine_geometry, patch, ok)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: coarse_i_lower, coarse_i_upper
+    integer, intent(in) :: coarse_j_lower, coarse_j_upper
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    type(amr_eb_patch_2d), intent(out) :: patch
+    logical, intent(out) :: ok
+
+    real(dp) :: fine_x_lower, fine_x_upper, fine_y_lower, fine_y_upper
+    integer :: fine_nx, fine_ny
+
+    ok = .false.
+    if (coarse_i_lower <= 1 .or. &
+        coarse_i_upper >= coarse_geometry%nx .or. &
+        coarse_j_lower <= 1 .or. &
+        coarse_j_upper >= coarse_geometry%ny .or. &
+        coarse_i_upper < coarse_i_lower .or. &
+        coarse_j_upper < coarse_j_lower) return
+    fine_x_lower = coarse_geometry%x_lower + &
+      real(coarse_i_lower - 1, dp) * coarse_geometry%dx
+    fine_x_upper = coarse_geometry%x_lower + &
+      real(coarse_i_upper, dp) * coarse_geometry%dx
+    fine_y_lower = coarse_geometry%y_lower + &
+      real(coarse_j_lower - 1, dp) * coarse_geometry%dy
+    fine_y_upper = coarse_geometry%y_lower + &
+      real(coarse_j_upper, dp) * coarse_geometry%dy
+    fine_nx = (coarse_i_upper - coarse_i_lower + 1) * &
+      config%refinement_ratio
+    fine_ny = (coarse_j_upper - coarse_j_lower + 1) * &
+      config%refinement_ratio
+    call build_configured_eb_geometry_region_2d( &
+      config%eb, fine_nx, fine_ny, fine_x_lower, fine_x_upper, &
+      fine_y_lower, fine_y_upper, fine_geometry, ok)
+    if (.not. ok) return
+    call build_amr_eb_patch_2d( &
+      coarse_geometry, fine_geometry, coarse_i_lower, coarse_i_upper, &
+      coarse_j_lower, coarse_j_upper, config%refinement_ratio, patch, ok)
+  end subroutine build_reactive_eb_amr_patch_geometry_2d
+
+  subroutine regrid_reactive_eb_amr_hierarchy_2d( &
+      species, config, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, changed, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(inout) :: coarse_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), allocatable, intent(inout) :: fine_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: fine_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: fine_geometry
+    type(amr_eb_patch_2d), intent(inout) :: patch
+    logical, intent(out) :: changed, ok
+
+    type(amr_eb_tagging_criteria_2d) :: criteria
+    type(amr_eb_regrid_plan_2d) :: plan
+    type(eb_geometry_2d) :: candidate_fine_geometry
+    type(amr_eb_patch_2d) :: candidate_patch
+    real(dp), allocatable :: candidate_coarse_state(:, :, :)
+    real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    real(dp), allocatable :: candidate_fine_state(:, :, :)
+    real(dp), allocatable :: candidate_fine_temperature(:, :)
+    logical, allocatable :: tags(:, :)
+    logical :: local_ok
+    integer :: nvar
+
+    changed = .false.
+    ok = .false.
+    criteria%relative_gradient_threshold = &
+      config%regrid_relative_temperature_gradient
+    criteria%absolute_gradient_threshold = &
+      config%regrid_absolute_temperature_gradient
+    criteria%scale_floor = config%regrid_temperature_scale_floor
+    criteria%buffer_cells = config%regrid_buffer_cells
+    criteria%minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
+    criteria%minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
+    allocate(tags(coarse_geometry%nx, coarse_geometry%ny))
+    call plan_reactive_eb_temperature_regrid_2d( &
+      coarse_temperature, coarse_geometry, criteria, tags, plan, local_ok)
+    if (.not. local_ok) return
+    if (.not. plan%active) then
+      ok = .true.
+      return
+    end if
+    if (plan%coarse_i_lower == patch%coarse_i_lower .and. &
+        plan%coarse_i_upper == patch%coarse_i_upper .and. &
+        plan%coarse_j_lower == patch%coarse_j_lower .and. &
+        plan%coarse_j_upper == patch%coarse_j_upper) then
+      ok = .true.
+      return
+    end if
+
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, coarse_geometry, plan%coarse_i_lower, &
+      plan%coarse_i_upper, plan%coarse_j_lower, plan%coarse_j_upper, &
+      candidate_fine_geometry, candidate_patch, local_ok)
+    if (.not. local_ok) return
+    nvar = size(coarse_state, 1)
+    allocate(candidate_coarse_state, mold=coarse_state)
+    allocate(candidate_coarse_temperature, mold=coarse_temperature)
+    allocate(candidate_fine_state( &
+      nvar, candidate_fine_geometry%nx, candidate_fine_geometry%ny))
+    allocate(candidate_fine_temperature( &
+      candidate_fine_geometry%nx, candidate_fine_geometry%ny))
+    call regrid_two_level_reactive_eb_patch_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, &
+      candidate_fine_geometry, candidate_patch, candidate_coarse_state, &
+      candidate_coarse_temperature, candidate_fine_state, &
+      candidate_fine_temperature, local_ok)
+    if (.not. local_ok) return
+    call move_alloc(candidate_coarse_state, coarse_state)
+    call move_alloc(candidate_coarse_temperature, coarse_temperature)
+    call move_alloc(candidate_fine_state, fine_state)
+    call move_alloc(candidate_fine_temperature, fine_temperature)
+    fine_geometry = candidate_fine_geometry
+    patch = candidate_patch
+    changed = .true.
+    ok = .true.
+  end subroutine regrid_reactive_eb_amr_hierarchy_2d
+
   subroutine simulate_reactive_eb_amr_2d( &
       species, config, coarse_state, coarse_temperature, coarse_geometry, &
-      fine_state, fine_temperature, fine_geometry, patch, time, steps, &
+      fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -105,7 +243,7 @@ contains
     type(eb_geometry_2d), intent(out) :: fine_geometry
     type(amr_eb_patch_2d), intent(out) :: patch
     real(dp), intent(out) :: time, minimum_dt, base_density
-    integer, intent(out) :: steps
+    integer, intent(out) :: steps, regrids
     real(dp), allocatable, intent(out) :: initial_integrals(:)
     real(dp), allocatable, intent(out) :: final_integrals(:)
     logical, intent(out) :: ok
@@ -114,41 +252,27 @@ contains
     real(dp), allocatable :: coarse_candidate_temperature(:, :)
     real(dp), allocatable :: fine_candidate(:, :, :)
     real(dp), allocatable :: fine_candidate_temperature(:, :)
-    real(dp) :: coarse_dx, coarse_dy, fine_x_lower, fine_x_upper
-    real(dp) :: fine_y_lower, fine_y_upper, dt, remaining, time_tolerance
-    logical :: local_ok
+    real(dp) :: coarse_dx, coarse_dy, dt, remaining, time_tolerance
+    logical :: changed, local_ok
     integer :: fine_nx, fine_ny, nvar
 
     ok = .false.
     time = 0.0_dp
     steps = 0
+    regrids = 0
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
     if (.not. supported_reactive_eb_amr_config(config)) return
     call build_configured_eb_geometry_2d( &
       config%eb, coarse_geometry, local_ok)
     if (.not. local_ok) return
-    fine_x_lower = coarse_geometry%x_lower + &
-      real(config%coarse_i_lower - 1, dp) * coarse_geometry%dx
-    fine_x_upper = coarse_geometry%x_lower + &
-      real(config%coarse_i_upper, dp) * coarse_geometry%dx
-    fine_y_lower = coarse_geometry%y_lower + &
-      real(config%coarse_j_lower - 1, dp) * coarse_geometry%dy
-    fine_y_upper = coarse_geometry%y_lower + &
-      real(config%coarse_j_upper, dp) * coarse_geometry%dy
-    fine_nx = (config%coarse_i_upper - config%coarse_i_lower + 1) * &
-      config%refinement_ratio
-    fine_ny = (config%coarse_j_upper - config%coarse_j_lower + 1) * &
-      config%refinement_ratio
-    call build_configured_eb_geometry_region_2d( &
-      config%eb, fine_nx, fine_ny, fine_x_lower, fine_x_upper, &
-      fine_y_lower, fine_y_upper, fine_geometry, local_ok)
-    if (.not. local_ok) return
-    call build_amr_eb_patch_2d( &
-      coarse_geometry, fine_geometry, config%coarse_i_lower, &
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, coarse_geometry, config%coarse_i_lower, &
       config%coarse_i_upper, config%coarse_j_lower, &
-      config%coarse_j_upper, config%refinement_ratio, patch, local_ok)
+      config%coarse_j_upper, fine_geometry, patch, local_ok)
     if (.not. local_ok) return
+    fine_nx = fine_geometry%nx
+    fine_ny = fine_geometry%ny
 
     call initialize_reactive_2d( &
       species, config%eb%flow, coarse_state, coarse_temperature, &
@@ -165,16 +289,19 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, &
       fine_geometry, patch, fine_state, fine_temperature, local_ok)
     if (.not. local_ok) return
+    if (config%dynamic_regridding) then
+      call regrid_reactive_eb_amr_hierarchy_2d( &
+        species, config, coarse_state, coarse_temperature, coarse_geometry, &
+        fine_state, fine_temperature, fine_geometry, patch, changed, local_ok)
+      if (.not. local_ok) return
+      if (changed) regrids = regrids + 1
+    end if
 
     allocate(initial_integrals(nvar), final_integrals(nvar))
     call composite_eb_integral_2d( &
       coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
       initial_integrals, local_ok)
     if (.not. local_ok) return
-    allocate(coarse_candidate, mold=coarse_state)
-    allocate(coarse_candidate_temperature, mold=coarse_temperature)
-    allocate(fine_candidate, mold=fine_state)
-    allocate(fine_candidate_temperature, mold=fine_temperature)
     minimum_dt = huge(1.0_dp)
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
@@ -183,6 +310,16 @@ contains
       remaining = config%eb%flow%final_time - time
       if (remaining <= time_tolerance) exit
       if (steps >= config%eb%flow%maximum_steps) return
+      if (allocated(coarse_candidate)) deallocate(coarse_candidate)
+      if (allocated(coarse_candidate_temperature)) &
+        deallocate(coarse_candidate_temperature)
+      if (allocated(fine_candidate)) deallocate(fine_candidate)
+      if (allocated(fine_candidate_temperature)) &
+        deallocate(fine_candidate_temperature)
+      allocate(coarse_candidate, mold=coarse_state)
+      allocate(coarse_candidate_temperature, mold=coarse_temperature)
+      allocate(fine_candidate, mold=fine_state)
+      allocate(fine_candidate_temperature, mold=fine_temperature)
       call compute_reactive_eb_amr_cfl_timestep_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
         fine_state, fine_temperature, fine_geometry, &
@@ -205,6 +342,15 @@ contains
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
       steps = steps + 1
+      if (config%dynamic_regridding .and. &
+          modulo(steps, config%regrid_interval) == 0) then
+        call regrid_reactive_eb_amr_hierarchy_2d( &
+          species, config, coarse_state, coarse_temperature, &
+          coarse_geometry, fine_state, fine_temperature, fine_geometry, &
+          patch, changed, local_ok)
+        if (.not. local_ok) return
+        if (changed) regrids = regrids + 1
+      end if
     end do
     time = config%eb%flow%final_time
     call composite_eb_integral_2d( &

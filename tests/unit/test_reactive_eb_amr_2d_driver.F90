@@ -21,7 +21,8 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: reference_state(:)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, scale
   logical :: ok
-  integer :: steps
+  integer :: initial_i_lower, initial_i_upper
+  integer :: initial_j_lower, initial_j_upper, regrids, steps
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -63,10 +64,11 @@ program test_reactive_eb_amr_2d_driver
 
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, &
+    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok)
   call require(ok, "runnable static EB AMR simulation")
-  call require(steps == 1 .and. time == config%eb%flow%final_time .and. &
+  call require(steps == 1 .and. regrids == 0 .and. &
+    time == config%eb%flow%final_time .and. &
     minimum_dt == config%eb%flow%final_time, "time-loop completion")
   call require(coarse_geometry%nx == 8 .and. coarse_geometry%ny == 8 .and. &
     fine_geometry%nx == 10 .and. fine_geometry%ny == 10, &
@@ -97,12 +99,54 @@ program test_reactive_eb_amr_2d_driver
   call require(ok .and. cfl_dt > config%eb%flow%final_time, &
     "two-level CFL selection")
 
+  config%eb%flow%nx = 12
+  config%eb%flow%ny = 12
+  config%eb%flow%final_time = 1.0e-8_dp
+  config%eb%flow%maximum_steps = 10
+  config%eb%flow%problem = "reactive_hotspot"
+  config%eb%flow%hotspot_temperature_rise = 350.0_dp
+  config%eb%flow%hotspot_center_x = 0.72_dp
+  config%eb%flow%hotspot_center_y = 0.62_dp
+  config%eb%flow%hotspot_width = 0.08_dp
+  config%eb%plane_offset = 0.30_dp
+  config%coarse_i_lower = 2
+  config%coarse_i_upper = 5
+  config%coarse_j_lower = 2
+  config%coarse_j_upper = 5
+  config%dynamic_regridding = .true.
+  config%regrid_interval = 1
+  config%regrid_relative_temperature_gradient = 0.02_dp
+  config%regrid_absolute_temperature_gradient = 5.0_dp
+  config%regrid_temperature_scale_floor = 1.0_dp
+  config%regrid_buffer_cells = 1
+  config%regrid_minimum_patch_cells_x = 4
+  config%regrid_minimum_patch_cells_y = 4
+  initial_i_lower = config%coarse_i_lower
+  initial_i_upper = config%coarse_i_upper
+  initial_j_lower = config%coarse_j_lower
+  initial_j_upper = config%coarse_j_upper
+  call simulate_reactive_eb_amr_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
+    initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  call require(ok .and. regrids >= 1, "dynamic EB AMR simulation")
+  call require(patch%is_valid(coarse_geometry, fine_geometry), &
+    "dynamically selected patch")
+  call require(patch%coarse_i_lower /= initial_i_lower .or. &
+    patch%coarse_i_upper /= initial_i_upper .or. &
+    patch%coarse_j_lower /= initial_j_lower .or. &
+    patch%coarse_j_upper /= initial_j_upper, "hotspot moves static patch")
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(maxval(abs(final_integrals - initial_integrals)) <= &
+    2.0e-10_dp * scale, "dynamic EB AMR composite conservation")
+
   config%eb%flow%chemistry_enabled = .true.
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, &
+    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok)
-  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+  call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
+    time == 0.0_dp, &
     "unsupported AMR chemistry rejection")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"

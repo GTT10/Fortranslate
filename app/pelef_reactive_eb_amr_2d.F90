@@ -25,7 +25,7 @@ program pelef_reactive_eb_amr_2d
   real(dp) :: time, minimum_dt, base_density, conservation_error
   character(len=1024) :: input_path, message
   logical :: ok
-  integer :: steps
+  integer :: regrids, steps
 
   if (command_argument_count() /= 1) then
     write(*, '(a)') "Usage: pelef_reactive_eb_amr_2d <input.nml>"
@@ -51,7 +51,7 @@ program pelef_reactive_eb_amr_2d
 
   call simulate_reactive_eb_amr_2d( &
     species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, time, steps, &
+    fine_state, fine_temperature, fine_geometry, patch, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok)
   if (.not. ok) error stop "Reactive EB AMR 2D simulation failed"
   call write_reactive_eb_2d_csv( &
@@ -95,6 +95,7 @@ program pelef_reactive_eb_amr_2d
   write(*, '(a,i0)') "Fine covered cells: ", &
     count(fine_geometry%cell_type == eb_covered_cell)
   write(*, '(a,i0)') "Completed coarse steps: ", steps
+  write(*, '(a,i0)') "Completed regrids: ", regrids
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Minimum accepted coarse dt: ", minimum_dt
   write(*, '(a,es24.16)') "Maximum composite conservation error: ", &
