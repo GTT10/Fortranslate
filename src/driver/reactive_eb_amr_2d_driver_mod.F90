@@ -150,6 +150,8 @@ contains
       config%level_two_j_upper <= level_one_ny - 2 .and. &
       config%level_two_i_upper >= config%level_two_i_lower .and. &
       config%level_two_j_upper >= config%level_two_j_lower .and. &
+      len_trim(config%fine_output_file) > 0 .and. &
+      trim(config%fine_output_file) /= trim(config%eb%flow%output_file) .and. &
       len_trim(config%level_two_output_file) > 0 .and. &
       trim(config%level_two_output_file) /= &
         trim(config%eb%flow%output_file) .and. &
@@ -1068,7 +1070,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        config%multipatch_enabled .or. &
+        config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
         size(coarse_state, 2) /= coarse_geometry%nx .or. &
@@ -1279,7 +1281,7 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        config%multipatch_enabled) return
+        config%multipatch_enabled .or. config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return
@@ -1469,7 +1471,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        .not. config%multipatch_enabled .or. &
+        .not. config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
         size(coarse_state, 2) /= coarse_geometry%nx .or. &
@@ -1661,7 +1663,8 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        .not. config%multipatch_enabled) return
+        .not. config%multipatch_enabled .or. &
+        config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return

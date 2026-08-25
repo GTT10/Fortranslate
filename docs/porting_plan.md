@@ -636,6 +636,8 @@ Required capabilities:
   over active middle recipients (`0.100.0`)
 - [x] static three-level active-cell chemistry and recursive EB hydro composed
   as a transactional Strang step (`0.101.0`)
+- [x] public static three-level hierarchy construction, CFL time loop, and
+  per-level output (`0.102.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

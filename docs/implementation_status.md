@@ -1764,3 +1764,22 @@ The static serial driver now advances chemistry and recursively subcycled
 hydrodynamics as one rollback-safe three-level EB transaction. It still does
 not own a public three-level lifecycle, CFL loop, regridding, checkpointing,
 output, molecular transport, arbitrary depth, or distributed MPI state.
+
+## Public static three-level reactive EB AMR (`0.102.0`)
+
+- [x] namelist-selected root/middle/finest static hierarchy
+- [x] validated finest bounds with a two-middle-cell margin
+- [x] root-to-middle and middle-to-finest PCM initialization
+- [x] three-level active-cell CFL reduction with subcycle scaling
+- [x] final-time clipping and accepted-step accounting
+- [x] public recursive chemistry/hydro time loop
+- [x] separate root, middle, and finest geometry-aware CSV output
+- [x] cut-cell coverage and uniform-reactor reference parity on all levels
+- [x] composite mass and total-energy conservation
+- [x] focused application gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The public serial EB AMR executable can now run the qualified static
+three-level hierarchy from a namelist. Dynamic three-level topology,
+checkpoint/restart, molecular transport, arbitrary depth, and MPI ownership
+remain separate work.

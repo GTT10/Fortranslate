@@ -588,6 +588,17 @@ program test_reactive_eb_amr_2d_driver
     level_two_patch, config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public three-level CFL selection")
+  config%dynamic_regridding = .true.
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp .and. &
+    .not. allocated(coarse_state) .and. .not. allocated(fine_state) .and. &
+    .not. allocated(level_two_state), &
+    "public three-level dynamic-mode rejection")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
