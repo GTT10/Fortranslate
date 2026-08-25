@@ -15,13 +15,18 @@ program test_reactive_eb_amr_2d_driver
     advance_two_level_reactive_eb_strang_2d, &
     compute_reactive_eb_amr_cfl_timestep_2d, &
     regrid_reactive_eb_amr_hierarchy_2d, &
+    write_reactive_eb_amr_2d_checkpoint, &
+    read_reactive_eb_amr_2d_checkpoint, &
     simulate_reactive_eb_amr_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
+  type(eb_geometry_2d) :: checkpoint_coarse_geometry
+  type(eb_geometry_2d) :: checkpoint_fine_geometry
   type(amr_eb_patch_2d) :: patch
+  type(amr_eb_patch_2d) :: checkpoint_patch
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -33,10 +38,19 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: rollback_fine_state(:, :, :)
   real(dp), allocatable :: rollback_fine_temperature(:, :)
   real(dp), allocatable :: reference_state(:)
+  real(dp), allocatable :: checkpoint_coarse_state(:, :, :)
+  real(dp), allocatable :: checkpoint_coarse_temperature(:, :)
+  real(dp), allocatable :: checkpoint_fine_state(:, :, :)
+  real(dp), allocatable :: checkpoint_fine_temperature(:, :)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, conservation_error, scale
-  logical :: changed, fine_active, ok
+  real(dp) :: checkpoint_time, checkpoint_minimum_dt
+  real(dp) :: checkpoint_base_density
+  logical :: changed, fine_active, checkpoint_fine_active, ok
   integer :: initial_i_lower, initial_i_upper
   integer :: initial_j_lower, initial_j_upper, regrids, steps
+  integer :: checkpoint_regrids, checkpoint_steps
+  character(len=*), parameter :: checkpoint_path = &
+    "reactive_eb_amr_2d_driver.chk"
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -116,6 +130,35 @@ program test_reactive_eb_amr_2d_driver
     config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > config%eb%flow%final_time, &
     "two-level CFL selection")
+
+  call write_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, minimum_dt, base_density, ok)
+  call require(ok, "active fine checkpoint write")
+  call read_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(ok .and. checkpoint_fine_active .and. &
+    checkpoint_patch%is_valid( &
+      checkpoint_coarse_geometry, checkpoint_fine_geometry) .and. &
+    checkpoint_time == time .and. checkpoint_steps == steps .and. &
+    checkpoint_regrids == regrids .and. &
+    checkpoint_minimum_dt == minimum_dt .and. &
+    checkpoint_base_density == base_density .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state), &
+    "active fine checkpoint round trip")
+  scale = max(1.0_dp, maxval(abs(coarse_temperature)), &
+    maxval(abs(fine_temperature)))
+  call require(maxval(abs(checkpoint_coarse_temperature - &
+    coarse_temperature)) <= 3.0e-12_dp * scale .and. &
+    maxval(abs(checkpoint_fine_temperature - fine_temperature)) <= &
+    3.0e-12_dp * scale, "checkpoint EOS temperature recovery")
 
   allocate(rollback_coarse_state, mold=coarse_state)
   allocate(rollback_coarse_temperature, mold=coarse_temperature)
@@ -258,6 +301,43 @@ program test_reactive_eb_amr_2d_driver
   call require(abs(final_integrals(iet) - initial_integrals(iet)) <= &
     3.0e-11_dp * scale, "EB AMR chemistry energy conservation")
 
+  call write_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, minimum_dt, base_density, ok)
+  call require(ok, "root-only checkpoint write")
+  call read_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(ok .and. .not. checkpoint_fine_active .and. &
+    .not. allocated(checkpoint_fine_state) .and. &
+    .not. allocated(checkpoint_fine_temperature) .and. &
+    .not. checkpoint_fine_geometry%is_valid() .and. &
+    checkpoint_patch%refinement_ratio == 0 .and. &
+    all(checkpoint_coarse_state == coarse_state), &
+    "root-only checkpoint round trip")
+  call write_invalid_checkpoint(checkpoint_path)
+  call read_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok)
+  call require(.not. ok .and. &
+    .not. allocated(checkpoint_coarse_state) .and. &
+    .not. allocated(checkpoint_coarse_temperature) .and. &
+    .not. allocated(checkpoint_fine_state) .and. &
+    .not. allocated(checkpoint_fine_temperature) .and. &
+    .not. checkpoint_coarse_geometry%is_valid() .and. &
+    .not. checkpoint_fine_geometry%is_valid(), &
+    "invalid checkpoint transactional rejection")
+  call delete_checkpoint(checkpoint_path)
+
   config%eb%flow%transport_enabled = .true.
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
@@ -270,6 +350,35 @@ program test_reactive_eb_amr_2d_driver
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
 contains
+
+  subroutine write_invalid_checkpoint(path)
+    character(len=*), intent(in) :: path
+
+    integer :: unit, status
+
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      iostat=status)
+    if (status /= 0) error stop "Could not create invalid checkpoint"
+    write(unit, '(a)', iostat=status) "INVALID_CHECKPOINT"
+    if (status /= 0) error stop "Could not write invalid checkpoint"
+    close(unit, iostat=status)
+    if (status /= 0) error stop "Could not close invalid checkpoint"
+  end subroutine write_invalid_checkpoint
+
+  subroutine delete_checkpoint(path)
+    character(len=*), intent(in) :: path
+
+    logical :: exists
+    integer :: unit, status
+
+    inquire(file=trim(path), exist=exists)
+    if (.not. exists) return
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint for deletion"
+    close(unit, status="delete", iostat=status)
+    if (status /= 0) error stop "Could not delete checkpoint"
+  end subroutine delete_checkpoint
 
   subroutine require(condition, message)
     logical, intent(in) :: condition

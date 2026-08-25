@@ -115,6 +115,8 @@ program pelef_reactive_eb_amr_2d
   end if
   write(*, '(a,i0)') "Completed coarse steps: ", steps
   write(*, '(a,i0)') "Completed regrids: ", regrids
+  write(*, '(a,l2)') "Stopped after checkpoint: ", &
+    time < config%eb%flow%final_time
   write(*, '(a,l2)') "Chemistry: ", config%eb%flow%chemistry_enabled
   write(*, '(a,1x,a)') "Chemistry model:", &
     trim(config%eb%flow%chemistry_model)
@@ -129,4 +131,8 @@ program pelef_reactive_eb_amr_2d
   else
     write(*, '(a)') "Fine output: inactive"
   end if
+  if (len_trim(config%checkpoint_file) > 0) &
+    write(*, '(a,1x,a)') "Checkpoint:", trim(config%checkpoint_file)
+  if (len_trim(config%restart_file) > 0) &
+    write(*, '(a,1x,a)') "Restart source:", trim(config%restart_file)
 end program pelef_reactive_eb_amr_2d

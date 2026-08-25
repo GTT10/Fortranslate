@@ -23,6 +23,10 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: regrid_buffer_cells = 1
     integer :: regrid_minimum_patch_cells_x = 2
     integer :: regrid_minimum_patch_cells_y = 2
+    integer :: checkpoint_interval = 0
+    logical :: checkpoint_stop_after_write = .false.
+    character(len=1024) :: checkpoint_file = ""
+    character(len=1024) :: restart_file = ""
     character(len=1024) :: fine_output_file = "reactive_eb_amr_fine_2d.csv"
   end type reactive_eb_amr_2d_config
 
@@ -42,13 +46,15 @@ contains
     integer :: regrid_interval, regrid_buffer_cells
     integer :: regrid_minimum_patch_cells_x
     integer :: regrid_minimum_patch_cells_y
+    integer :: checkpoint_interval
     integer :: unit, status
     real(dp) :: regrid_relative_temperature_gradient
     real(dp) :: regrid_absolute_temperature_gradient
     real(dp) :: regrid_temperature_scale_floor
     logical :: dynamic_regridding, regrid_at_initialization
     logical :: remove_fine_patch_when_untagged
-    character(len=1024) :: fine_output_file
+    logical :: checkpoint_stop_after_write
+    character(len=1024) :: checkpoint_file, restart_file, fine_output_file
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, refinement_ratio, &
       dynamic_regridding, regrid_at_initialization, &
@@ -57,7 +63,8 @@ contains
       regrid_absolute_temperature_gradient, &
       regrid_temperature_scale_floor, regrid_buffer_cells, &
       regrid_minimum_patch_cells_x, regrid_minimum_patch_cells_y, &
-      fine_output_file
+      checkpoint_interval, checkpoint_stop_after_write, checkpoint_file, &
+      restart_file, fine_output_file
 
     config = reactive_eb_amr_2d_config()
     call read_reactive_eb_2d_configuration( &
@@ -83,6 +90,10 @@ contains
     regrid_buffer_cells = config%regrid_buffer_cells
     regrid_minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
     regrid_minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
+    checkpoint_interval = config%checkpoint_interval
+    checkpoint_stop_after_write = config%checkpoint_stop_after_write
+    checkpoint_file = config%checkpoint_file
+    restart_file = config%restart_file
     fine_output_file = config%fine_output_file
     open(newunit=unit, file=trim(path), status="old", action="read", &
       iostat=status)
@@ -135,6 +146,14 @@ contains
       message = "Fine-patch removal requires dynamic EB AMR regridding"
       return
     end if
+    if (checkpoint_interval < 0 .or. &
+        (checkpoint_interval > 0 .and. len_trim(checkpoint_file) == 0) .or. &
+        (checkpoint_stop_after_write .and. &
+         (checkpoint_interval < 1 .or. len_trim(checkpoint_file) == 0))) then
+      ok = .false.
+      message = "Invalid EB AMR checkpoint controls"
+      return
+    end if
     if (len_trim(fine_output_file) == 0 .or. &
         trim(fine_output_file) == trim(config%eb%flow%output_file)) then
       ok = .false.
@@ -165,6 +184,10 @@ contains
     config%regrid_buffer_cells = regrid_buffer_cells
     config%regrid_minimum_patch_cells_x = regrid_minimum_patch_cells_x
     config%regrid_minimum_patch_cells_y = regrid_minimum_patch_cells_y
+    config%checkpoint_interval = checkpoint_interval
+    config%checkpoint_stop_after_write = checkpoint_stop_after_write
+    config%checkpoint_file = trim(checkpoint_file)
+    config%restart_file = trim(restart_file)
     config%fine_output_file = trim(fine_output_file)
     message = ""
     ok = .true.
