@@ -2,17 +2,20 @@ module reactive_eb_amr_2d_driver_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
-  use reactive_2d_mod, only: initialize_reactive_2d
-  use eb_geometry_2d_mod, only: eb_geometry_2d
+  use elementary_kinetics_mod, only: elementary_reaction
+  use reactive_2d_mod, only: &
+    initialize_reactive_2d, advance_reactive_chemistry_2d
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use reactive_eb_2d_driver_mod, only: &
     build_configured_eb_geometry_2d, &
     build_configured_eb_geometry_region_2d, &
-    compute_reactive_eb_cfl_timestep_2d, reactive_eb_integrals_2d
-  use eb_reactive_hydro_2d_mod, only: advance_reactive_eb_hydro_2d
+    compute_reactive_eb_cfl_timestep_2d, reactive_eb_integrals_2d, &
+    advance_reactive_eb_strang_2d
   use amr_eb_hierarchy_2d_mod, only: &
-    amr_eb_patch_2d, build_amr_eb_patch_2d, composite_eb_integral_2d
+    amr_eb_patch_2d, build_amr_eb_patch_2d, composite_eb_integral_2d, &
+    average_down_reactive_eb_state_patch_2d
   use amr_eb_reactive_2d_mod, only: &
     prolong_reactive_eb_patch_pcm_2d, &
     advance_two_level_reactive_eb_hydro_2d
@@ -25,6 +28,7 @@ module reactive_eb_amr_2d_driver_mod
   private
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
+  public :: advance_two_level_reactive_eb_strang_2d
   public :: regrid_reactive_eb_amr_hierarchy_2d
   public :: simulate_reactive_eb_amr_2d
 
@@ -43,8 +47,11 @@ contains
       config%eb%flow%final_time > 0.0_dp .and. &
       ieee_is_finite(config%eb%flow%cfl) .and. &
       config%eb%flow%cfl > 0.0_dp .and. config%eb%flow%cfl <= 0.8_dp .and. &
-      .not. config%eb%flow%chemistry_enabled .and. &
       .not. config%eb%flow%transport_enabled .and. &
+      ieee_is_finite(config%eb%flow%chemistry_relative_tolerance) .and. &
+      config%eb%flow%chemistry_relative_tolerance > 0.0_dp .and. &
+      ieee_is_finite(config%eb%flow%chemistry_absolute_tolerance) .and. &
+      config%eb%flow%chemistry_absolute_tolerance > 0.0_dp .and. &
       .not. config%eb%flow%use_transverse_correction .and. &
       (trim(config%eb%flow%reconstruction) == "pcm" .or. &
        trim(config%eb%flow%reconstruction) == "characteristic_plm") .and. &
@@ -110,6 +117,128 @@ contains
     dt = min(coarse_dt, real(refinement_ratio, dp) * fine_dt)
     ok = ieee_is_finite(dt) .and. dt > 0.0_dp
   end subroutine compute_reactive_eb_amr_cfl_timestep_2d
+
+  subroutine advance_reactive_eb_chemistry_level_2d( &
+      species, reactions, geometry, interval, rtol, atol, state, &
+      temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: interval, rtol, atol
+    real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
+    logical, intent(out) :: ok
+
+    logical, allocatable :: active_mask(:, :)
+
+    ok = .false.
+    if (.not. geometry%is_valid()) return
+    allocate(active_mask(geometry%nx, geometry%ny))
+    active_mask = geometry%cell_type /= eb_covered_cell
+    call advance_reactive_chemistry_2d( &
+      species, reactions, state, temperature, geometry%nx, geometry%ny, &
+      interval, rtol, atol, ok, active_mask)
+  end subroutine advance_reactive_eb_chemistry_level_2d
+
+  subroutine advance_two_level_reactive_eb_strang_2d( &
+      species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, solver, &
+      reconstruction, limiter, state_redist_max_order, dt, &
+      chemistry_enabled, rtol, atol, new_coarse_state, &
+      new_coarse_temperature, new_fine_state, new_fine_temperature, ok, &
+      target_volume_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(in) :: fine_state(:, :, :), fine_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    real(dp), intent(out) :: new_coarse_state(:, :, :)
+    real(dp), intent(out) :: new_coarse_temperature(:, :)
+    real(dp), intent(out) :: new_fine_state(:, :, :)
+    real(dp), intent(out) :: new_fine_temperature(:, :)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: target_volume_fraction
+
+    real(dp), allocatable :: candidate_coarse_state(:, :, :)
+    real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    real(dp), allocatable :: candidate_fine_state(:, :, :)
+    real(dp), allocatable :: candidate_fine_temperature(:, :)
+    real(dp), allocatable :: hydro_coarse_state(:, :, :)
+    real(dp), allocatable :: hydro_coarse_temperature(:, :)
+    real(dp), allocatable :: hydro_fine_state(:, :, :)
+    real(dp), allocatable :: hydro_fine_temperature(:, :)
+    real(dp), allocatable :: synchronized_coarse_state(:, :, :)
+    real(dp), allocatable :: synchronized_coarse_temperature(:, :)
+    logical :: local_ok
+
+    new_coarse_state = coarse_state
+    new_coarse_temperature = coarse_temperature
+    new_fine_state = fine_state
+    new_fine_temperature = fine_temperature
+    ok = .false.
+    if (chemistry_enabled .and. size(reactions) < 1) return
+    allocate(candidate_coarse_state, source=coarse_state)
+    allocate(candidate_coarse_temperature, source=coarse_temperature)
+    allocate(candidate_fine_state, source=fine_state)
+    allocate(candidate_fine_temperature, source=fine_temperature)
+    if (chemistry_enabled) then
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_coarse_state, candidate_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, fine_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_fine_state, candidate_fine_temperature, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    allocate(hydro_coarse_state, mold=coarse_state)
+    allocate(hydro_coarse_temperature, mold=coarse_temperature)
+    allocate(hydro_fine_state, mold=fine_state)
+    allocate(hydro_fine_temperature, mold=fine_temperature)
+    call advance_two_level_reactive_eb_hydro_2d( &
+      species, candidate_coarse_state, candidate_coarse_temperature, &
+      coarse_geometry, candidate_fine_state, candidate_fine_temperature, &
+      fine_geometry, patch, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, hydro_coarse_state, &
+      hydro_coarse_temperature, hydro_fine_state, hydro_fine_temperature, &
+      local_ok, target_volume_fraction)
+    if (.not. local_ok) return
+    candidate_coarse_state = hydro_coarse_state
+    candidate_coarse_temperature = hydro_coarse_temperature
+    candidate_fine_state = hydro_fine_state
+    candidate_fine_temperature = hydro_fine_temperature
+
+    if (chemistry_enabled) then
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_coarse_state, candidate_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      call advance_reactive_eb_chemistry_level_2d( &
+        species, reactions, fine_geometry, 0.5_dp * dt, rtol, atol, &
+        candidate_fine_state, candidate_fine_temperature, local_ok)
+      if (.not. local_ok) return
+      allocate(synchronized_coarse_state, mold=coarse_state)
+      allocate(synchronized_coarse_temperature, mold=coarse_temperature)
+      call average_down_reactive_eb_state_patch_2d( &
+        species, candidate_coarse_state, candidate_coarse_temperature, &
+        coarse_geometry, candidate_fine_state, fine_geometry, patch, &
+        synchronized_coarse_state, synchronized_coarse_temperature, local_ok)
+      if (.not. local_ok) return
+      candidate_coarse_state = synchronized_coarse_state
+      candidate_coarse_temperature = synchronized_coarse_temperature
+    end if
+    new_coarse_state = candidate_coarse_state
+    new_coarse_temperature = candidate_coarse_temperature
+    new_fine_state = candidate_fine_state
+    new_fine_temperature = candidate_fine_temperature
+    ok = .true.
+  end subroutine advance_two_level_reactive_eb_strang_2d
 
   subroutine compute_reactive_eb_amr_integrals_2d( &
       coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
@@ -301,11 +430,13 @@ contains
   end subroutine regrid_reactive_eb_amr_hierarchy_2d
 
   subroutine simulate_reactive_eb_amr_2d( &
-      species, config, coarse_state, coarse_temperature, coarse_geometry, &
+      species, reactions, config, coarse_state, coarse_temperature, &
+      coarse_geometry, &
       fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
       steps, regrids, initial_integrals, final_integrals, minimum_dt, &
       base_density, ok)
     type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: coarse_state(:, :, :)
     real(dp), allocatable, intent(out) :: coarse_temperature(:, :)
@@ -337,6 +468,7 @@ contains
     minimum_dt = 0.0_dp
     base_density = 0.0_dp
     if (.not. supported_reactive_eb_amr_config(config)) return
+    if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     call build_configured_eb_geometry_2d( &
       config%eb, coarse_geometry, local_ok)
     if (.not. local_ok) return
@@ -409,18 +541,25 @@ contains
       if (.not. local_ok) return
       dt = min(dt, remaining)
       if (fine_active) then
-        call advance_two_level_reactive_eb_hydro_2d( &
-          species, coarse_state, coarse_temperature, coarse_geometry, &
+        call advance_two_level_reactive_eb_strang_2d( &
+          species, reactions, coarse_state, coarse_temperature, &
+          coarse_geometry, &
           fine_state, fine_temperature, fine_geometry, patch, &
           config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
           config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
-          coarse_candidate, coarse_candidate_temperature, fine_candidate, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, coarse_candidate, &
+          coarse_candidate_temperature, fine_candidate, &
           fine_candidate_temperature, local_ok, &
           config%eb%state_redist_target_volume_fraction)
       else
-        call advance_reactive_eb_hydro_2d( &
-          species, coarse_state, coarse_temperature, coarse_geometry, &
-          config%eb%flow%riemann_solver, dt, coarse_candidate, &
+        call advance_reactive_eb_strang_2d( &
+          species, reactions, coarse_state, coarse_temperature, &
+          coarse_geometry, config%eb%flow%riemann_solver, dt, &
+          config%eb%flow%chemistry_enabled, &
+          config%eb%flow%chemistry_relative_tolerance, &
+          config%eb%flow%chemistry_absolute_tolerance, coarse_candidate, &
           coarse_candidate_temperature, local_ok, &
           config%eb%state_redist_target_volume_fraction, &
           config%eb%flow%reconstruction, config%eb%flow%limiter, &

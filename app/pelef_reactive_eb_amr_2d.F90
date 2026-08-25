@@ -2,8 +2,12 @@ program pelef_reactive_eb_amr_2d
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell
   use amr_eb_hierarchy_2d_mod, only: amr_eb_patch_2d
@@ -19,6 +23,7 @@ program pelef_reactive_eb_amr_2d
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
@@ -42,15 +47,20 @@ program pelef_reactive_eb_amr_2d
   select case (trim(config%eb%flow%chemistry_model))
   case ("elementary")
     call load_h2o2_elementary_thermo(species, ok)
+    if (.not. ok) error stop "Failed to load elementary thermodynamics"
+    call load_h2o2_elementary_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load elementary mechanism"
   case ("full_h2o2")
     call load_h2o2_full_thermo(species, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 thermodynamics"
+    call load_h2o2_full_mechanism(reactions, ok)
+    if (.not. ok) error stop "Failed to load full H2/O2 mechanism"
   case default
     error stop "Unknown chemistry model"
   end select
-  if (.not. ok) error stop "Failed to load thermodynamics"
-
   call simulate_reactive_eb_amr_2d( &
-    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, &
     fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
     steps, regrids, initial_integrals, final_integrals, minimum_dt, &
     base_density, ok)
@@ -105,6 +115,9 @@ program pelef_reactive_eb_amr_2d
   end if
   write(*, '(a,i0)') "Completed coarse steps: ", steps
   write(*, '(a,i0)') "Completed regrids: ", regrids
+  write(*, '(a,l2)') "Chemistry: ", config%eb%flow%chemistry_enabled
+  write(*, '(a,1x,a)') "Chemistry model:", &
+    trim(config%eb%flow%chemistry_model)
   write(*, '(a,es24.16)') "Final time: ", time
   write(*, '(a,es24.16)') "Minimum accepted coarse dt: ", minimum_dt
   write(*, '(a,es24.16)') "Maximum composite conservation error: ", &

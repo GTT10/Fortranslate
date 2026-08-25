@@ -141,10 +141,9 @@ contains
       message = "EB AMR fine output must be nonempty and distinct"
       return
     end if
-    if (config%eb%flow%chemistry_enabled .or. &
-        config%eb%flow%transport_enabled) then
+    if (config%eb%flow%transport_enabled) then
       ok = .false.
-      message = "Reactive EB AMR 2D currently supports hydrodynamics only"
+      message = "Reactive EB AMR 2D does not yet support molecular transport"
       return
     end if
 

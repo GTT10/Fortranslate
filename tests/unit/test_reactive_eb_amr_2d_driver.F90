@@ -1,7 +1,11 @@
 program test_reactive_eb_amr_2d_driver
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_cut_cell
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, composite_eb_integral_2d
@@ -18,6 +22,7 @@ program test_reactive_eb_amr_2d_driver
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: fine_state(:, :, :), fine_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
@@ -30,6 +35,8 @@ program test_reactive_eb_amr_2d_driver
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "elementary mechanism load")
   config%eb%flow%nx = 8
   config%eb%flow%ny = 8
   config%eb%flow%x_lower = 0.0_dp
@@ -67,7 +74,8 @@ program test_reactive_eb_amr_2d_driver
   config%refinement_ratio = 2
 
   call simulate_reactive_eb_amr_2d( &
-    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, &
     fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
     steps, regrids, initial_integrals, final_integrals, minimum_dt, &
     base_density, ok)
@@ -131,7 +139,8 @@ program test_reactive_eb_amr_2d_driver
   initial_j_lower = config%coarse_j_lower
   initial_j_upper = config%coarse_j_upper
   call simulate_reactive_eb_amr_2d( &
-    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, &
     fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
     steps, regrids, initial_integrals, final_integrals, minimum_dt, &
     base_density, ok)
@@ -155,7 +164,8 @@ program test_reactive_eb_amr_2d_driver
   config%regrid_at_initialization = .false.
   config%remove_fine_patch_when_untagged = .true.
   call simulate_reactive_eb_amr_2d( &
-    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, &
     fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
     steps, regrids, initial_integrals, final_integrals, minimum_dt, &
     base_density, ok)
@@ -203,14 +213,33 @@ program test_reactive_eb_amr_2d_driver
     "re-created patch collapse conservation")
 
   config%eb%flow%chemistry_enabled = .true.
+  config%eb%flow%initial_temperature = 1200.0_dp
+  config%eb%flow%final_time = 2.0e-7_dp
+  config%eb%flow%cfl = 1.0e-3_dp
   call simulate_reactive_eb_amr_2d( &
-    species, config, coarse_state, coarse_temperature, coarse_geometry, &
-    fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
-    steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-    base_density, ok)
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok)
+  call require(ok .and. .not. fine_active .and. steps >= 2 .and. &
+    regrids == 1, "reacting fine-to-root lifecycle")
+  call require(maxval(abs(coarse_temperature - 1200.0_dp)) > 1.0e-10_dp, &
+    "EB AMR chemistry changes active state")
+  scale = max(1.0_dp, abs(initial_integrals(irho)))
+  call require(abs(final_integrals(irho) - initial_integrals(irho)) <= &
+    3.0e-11_dp * scale, "EB AMR chemistry mass conservation")
+  scale = max(1.0_dp, abs(initial_integrals(iet)))
+  call require(abs(final_integrals(iet) - initial_integrals(iet)) <= &
+    3.0e-11_dp * scale, "EB AMR chemistry energy conservation")
+
+  config%eb%flow%transport_enabled = .true.
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok)
   call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
-    time == 0.0_dp, &
-    "unsupported AMR chemistry rejection")
+    time == 0.0_dp, "unsupported AMR transport rejection")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
