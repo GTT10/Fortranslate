@@ -1566,3 +1566,20 @@ unchanged. Mutating one finest boundary face to a fractional EB area must
 reject the hierarchy before advancement and retain every input field. The
 focused multipatch/multilevel gate must pass before all 180 tests in GNU
 Fortran Debug and Release configurations.
+
+## 0.100.0 EB-cut nested-interface conservation gates
+
+The finest rectangle must return to the plane-EB geometry whose boundary has
+at least one fractional open-area face. Distinct root, middle, and finest
+states must complete the same `1/2/4` recursive hydro schedule while preserving
+composite mass, total energy, and every species. All levels must retain finite
+positive temperatures and the root and middle must finish deepest-first
+synchronized.
+
+The closure must derive its target from the pre-update middle/finest composite
+integral and signed middle exterior flux. It may correct only density, total
+energy, and species over uncovered active middle cells; EB wall momentum is not
+a zero-residual quantity. Solver failure and closure/EOS rejection must retain
+all three original state and temperature fields. The focused
+multipatch/multilevel gate must pass before all 180 tests in GNU Fortran Debug
+and Release configurations.

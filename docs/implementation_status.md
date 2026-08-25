@@ -1724,3 +1724,25 @@ interfaces require a dedicated multilevel geometric reflux correction and are
 rejected. Chemistry composition, a public lifecycle, regridding,
 checkpoint/restart, output, transport, arbitrary depth, and MPI ownership
 remain separate work.
+
+## EB-cut nested-interface conservation closure (`0.100.0`)
+
+- [x] pre-update middle/finest composite reference
+- [x] signed time-integrated middle exterior flux target
+- [x] post-reflux and post-average-down residual measurement
+- [x] density, total-energy, and every-species correction
+- [x] explicit exclusion of wall-force momentum components
+- [x] density/species residual-closure validation
+- [x] volume-weighted uncovered active-middle recipients
+- [x] EOS temperature recovery for every corrected recipient
+- [x] cut-interface three-level conservation and positivity gate
+- [x] whole-hierarchy rollback on any closure or EOS failure
+- [x] focused gate before the complete CI regression
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The static three-level hydro kernel now accepts a finest coarse/fine interface
+crossed by the embedded boundary while retaining composite mass, total energy,
+and species. The correction is conservative and transactional but globally
+distributed over eligible middle cells; it is not yet PeleC-style local
+multilevel EB redistribution. Chemistry, lifecycle ownership, regridding,
+checkpointing, output, transport, arbitrary depth, and MPI remain separate.
