@@ -27,8 +27,8 @@ program test_amr_eb_multilevel_2d
     (root_i_upper - root_i_lower + 1) * ratio
   integer, parameter :: level_one_ny = &
     (root_j_upper - root_j_lower + 1) * ratio
-  integer, parameter :: level_one_i_lower = 3, level_one_i_upper = 10
-  integer, parameter :: level_one_j_lower = 3, level_one_j_upper = 10
+  integer, parameter :: level_one_i_lower = 6, level_one_i_upper = 10
+  integer, parameter :: level_one_j_lower = 6, level_one_j_upper = 10
   integer, parameter :: level_two_nx = &
     (level_one_i_upper - level_one_i_lower + 1) * ratio
   integer, parameter :: level_two_ny = &
