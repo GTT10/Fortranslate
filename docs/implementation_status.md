@@ -2813,3 +2813,21 @@ This milestone removes standalone molecular transport from the remaining
 serial patch-tree gaps. Combined `R-T-H-T-R` full physics, public clock
 ownership, dynamic tagging, checkpoint I/O, and MPI ownership remain separate
 work.
+
+## Arbitrary-depth reactive EB patch-tree full physics (`0.157.0`)
+
+- [x] one private candidate across `R-T-H-T-R` split physics
+- [x] qualified all-node chemistry on both reaction half-steps
+- [x] qualified recursive SSPRK2 transport on both transport half-steps
+- [x] qualified recursive hydrodynamics on the complete interval
+- [x] committed-only chemistry, transport, and hydro per-level counts
+- [x] committed-only minimum transport limiter theta
+- [x] three-level fixed-path field and temperature parity
+- [x] three-level schedules `[2, 2, 2]`, `[4, 8, 16]`, and `[1, 2, 4]`
+- [x] four-level branching schedules `[2, 2, 4, 2]`, `[4, 8, 32, 32]`, and
+  `[1, 2, 8, 8]`
+- [x] composite conservation, thermodynamic validity, and late rollback gates
+
+This milestone removes split full-physics composition from the remaining
+serial patch-tree gaps. Public clock ownership, dynamic tagging, checkpoint
+I/O, and MPI ownership remain separate work.

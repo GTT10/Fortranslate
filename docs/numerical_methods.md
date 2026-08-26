@@ -2120,3 +2120,23 @@ temperature recovery and deepest-first synchronization. Both Euler trees and
 the blend remain private until the final candidate validates; the minimum
 positivity-limiter theta and actual recursive node-call counts follow the same
 commit boundary.
+
+## Arbitrary-depth reactive EB patch-tree full physics
+
+The complete split interval is
+
+```text
+R(dt/2) -> T_SSPRK2(dt/2) -> H(dt) -> T_SSPRK2(dt/2) -> R(dt/2).
+```
+
+Here `R` advances every active runtime patch over the same reaction interval,
+`T_SSPRK2` performs two recursively subcycled diffusive Euler trees, and `H`
+performs one recursively subcycled hyperbolic tree. Each operator retains its
+own deepest-first synchronization and conservation closure, while all
+intermediate hierarchies remain inside one outer candidate.
+
+The final chemistry stage is followed by deepest-first synchronization and
+tree validation. Only then are conserved state, temperature, the minimum theta
+from both transport half-steps, and the chemistry/transport/hydro node-count
+vectors committed. This outer transaction makes a rejection after any valid
+prefix observationally equivalent to no attempted step.

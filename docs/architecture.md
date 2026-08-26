@@ -1740,3 +1740,18 @@ temperature, the minimum positivity-limiter theta, and optional per-level node
 counts publish only after the final candidate validates. A combined
 `R-T-H-T-R` transaction, public clock, dynamic tags, checkpoint I/O, and MPI
 ownership remain separate.
+
+## Arbitrary-depth reactive EB patch-tree full physics (`0.157.0`)
+
+The full-physics entrypoint owns one private numerical-tree candidate across
+active-cell chemistry, recursive SSPRK2 transport, and recursive
+hydrodynamics. It applies `R(dt/2)`, `T(dt/2)`, `H(dt)`, `T(dt/2)`, and
+`R(dt/2)` in that order, reusing the qualified standalone tree operations.
+
+Chemistry patch calls, transport Euler-node calls, hydro node calls, and the
+minimum transport limiter theta accumulate privately. Final deepest-first
+synchronization and complete tree validation precede one atomic publication.
+Any rejection after an earlier valid physics prefix therefore preserves the
+accepted hierarchy and returns zero public counts plus theta one. Public
+time/step ownership, dynamic tags, checkpoint I/O, and MPI ownership remain
+separate.
