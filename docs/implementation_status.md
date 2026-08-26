@@ -2847,3 +2847,18 @@ remain separate work.
 This milestone removes public clock ownership from the remaining serial
 patch-tree gaps. Dynamic tagging, checkpoint I/O, and MPI ownership remain
 separate work.
+
+## MPI arbitrary-depth reactive EB patch-tree ownership (`0.159.0`)
+
+- [x] one deterministic owner for every runtime level/patch pair
+- [x] configurable cumulative-subcycle work weighting
+- [x] exact per-rank allocated-cell, entity, and weighted-work accounting
+- [x] collective topology geometry, relation, and control consensus
+- [x] owner-authoritative state and temperature publication
+- [x] one private replicated candidate and all-rank commit boundary
+- [x] four-level branching coverage at one, two, four, and eight ranks
+- [x] collective rejection of rank-local invalid state and control mismatch
+
+This milestone establishes ownership while retaining replicated field
+allocation. Sparse owner storage, direct owner migration, distributed
+timestep reduction, and owner-local recursive physics remain separate work.

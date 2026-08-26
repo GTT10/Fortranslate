@@ -1768,3 +1768,19 @@ interval, limiter minimum, and accumulated per-level physics counts publish
 together. A rejected first step changes nothing; reaching the caller's step
 limit after prior success retains exactly that committed prefix. Dynamic tags,
 checkpoint I/O, and MPI ownership remain separate.
+
+## MPI arbitrary-depth EB patch-tree ownership (`0.159.0`)
+
+The first distributed layer retains the replicated numerical tree but assigns
+each runtime node to one deterministic owner. Greedy placement follows
+topology order and minimizes accumulated rank work; a configurable exponent
+weights deeper nodes by their cumulative subcycle product. Per-rank cell,
+entity, and weighted-work totals are derived from the owner map and validated
+against it.
+
+Before publication, every rank must agree on the topology geometry, relation
+ratios, and weighting control. Each owner broadcasts its candidate state and
+temperature into a private replicated tree, and all ranks commit only after
+the complete candidate validates. Rank-local invalid input or inconsistent
+controls reject collectively with zero publication accounting. Sparse field
+storage, direct owner migration, and owner-local physics remain separate.
