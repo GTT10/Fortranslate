@@ -57,10 +57,12 @@ program test_amr_eb_multilevel_2d
   type(eb_geometry_2d) :: tree_level_two_geometry_a
   type(eb_geometry_2d) :: tree_level_two_geometry_b
   type(eb_geometry_2d) :: tree_level_three_geometry
+  type(eb_geometry_2d) :: tree_level_three_shifted_geometry
   type(amr_eb_patch_2d) :: root_patch, level_one_patch
   type(amr_eb_patch_2d) :: tree_scratch_patch
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: tree_plans(:)
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: extended_tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: shifted_tree_plans(:)
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: invalid_tree_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: tree_topology
   type(reactive_amr_eb_patch_tree_2d) :: reactive_tree
@@ -77,6 +79,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: tree_integral_before(:), tree_integral_after(:)
   real(dp), allocatable :: tree_level_two_saved(:, :, :)
+  real(dp), allocatable :: tree_deepest_saved(:, :, :)
   real(dp), allocatable :: reactive_root(:, :, :)
   real(dp), allocatable :: reactive_level_one(:, :, :)
   real(dp), allocatable :: reactive_level_two(:, :, :)
@@ -135,6 +138,10 @@ program test_amr_eb_multilevel_2d
     tree_level_two_geometry_b, 2, 7, 2, 7, ratio, &
     tree_level_three_geometry, tree_scratch_patch, ok)
   call require(ok, "patch-tree fourth-level geometry")
+  call build_patch_geometry( &
+    tree_level_two_geometry_b, 3, 8, 2, 7, ratio, &
+    tree_level_three_shifted_geometry, tree_scratch_patch, ok)
+  call require(ok, "shifted patch-tree fourth-level geometry")
 
   allocate(tree_plans(2))
   tree_plans%refinement_ratio = ratio
@@ -169,6 +176,10 @@ program test_amr_eb_multilevel_2d
   call set_tree_child_plan( &
     extended_tree_plans(3)%children(1), 2, 2, 7, 2, 7, &
     tree_level_three_geometry)
+  shifted_tree_plans = extended_tree_plans
+  call set_tree_child_plan( &
+    shifted_tree_plans(3)%children(1), 2, 3, 8, 2, 7, &
+    tree_level_three_shifted_geometry)
   call rebuild_amr_eb_patch_tree_topology_2d( &
     tree_topology, extended_tree_plans, ok, topology_changed)
   call require(ok .and. topology_changed .and. &
@@ -182,7 +193,7 @@ program test_amr_eb_multilevel_2d
   call require(ok .and. .not. topology_changed, &
     "unchanged EB patch-tree rebuild")
 
-  invalid_tree_plans = extended_tree_plans
+  invalid_tree_plans = shifted_tree_plans
   invalid_tree_plans(3)%children(1)%parent_patch = 3
   call rebuild_amr_eb_patch_tree_topology_2d( &
     tree_topology, invalid_tree_plans, ok, topology_changed)
@@ -334,9 +345,38 @@ program test_amr_eb_multilevel_2d
     reactive_tree%levels(3)%patches(2)%state(:, 2, 2))) <= &
     8.0e-12_dp * scale, "new deepest patch PCM initialization")
 
+  do j = 1, size(reactive_tree%levels(4)%patches(1)%state, 3)
+    do i = 1, size(reactive_tree%levels(4)%patches(1)%state, 2)
+      reactive_tree%levels(4)%patches(1)%state(:, i, j) = &
+        (1.0_dp + 1.0e-4_dp * real(i, dp) + &
+          2.0e-4_dp * real(j, dp)) * &
+        reactive_tree%levels(4)%patches(1)%state(:, i, j)
+    end do
+  end do
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_before, ok)
+  call require(ok, "moving reactive patch-tree source integral")
+  allocate(tree_deepest_saved, source= &
+    reactive_tree%levels(4)%patches(1)%state)
+  call rebuild_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_tree, shifted_tree_plans, ok, topology_changed, &
+    tree_failure_context)
+  call require(ok .and. topology_changed .and. reactive_tree%is_valid(), &
+    "moving reactive patch-tree rebuild: " // trim(tree_failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tree_integral_before)))
+  call require(ok .and. maxval(abs(tree_integral_after - &
+    tree_integral_before)) <= 8.0e-12_dp * scale, &
+    "moving reactive patch-tree conservation")
+  call require(maxval(abs( &
+    reactive_tree%levels(4)%patches(1)%state(:, 1, 1) - &
+    tree_deepest_saved(:, 3, 1))) <= 8.0e-12_dp * scale, &
+    "moving reactive patch-tree physical overlap retention")
+
   reactive_tree_snapshot = reactive_tree
   call rebuild_reactive_amr_eb_patch_tree_2d( &
-    species, reactive_tree, extended_tree_plans, ok, topology_changed)
+    species, reactive_tree, shifted_tree_plans, ok, topology_changed)
   call require(ok .and. .not. topology_changed .and. &
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "unchanged reactive patch-tree rebuild")
