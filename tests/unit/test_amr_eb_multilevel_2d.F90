@@ -449,6 +449,10 @@ program test_amr_eb_multilevel_2d
     .and. reactive_tree%topology%relations(3)%children(1)%parent_patch == 2, &
     "invalid reactive patch-tree rebuild rollback")
 
+  primitive(2:4) = 0.0_dp
+  call reactive_primitive_to_conserved( &
+    species, primitive, state_cell, temperature_cell, sound_speed, ok)
+  call require(ok, "stationary patch-tree hydro state")
   do level = 1, reactive_tree%level_count()
     do patch = 1, reactive_tree%levels(level)%patch_count()
       reactive_tree%levels(level)%patches(patch)%state = spread(spread( &
