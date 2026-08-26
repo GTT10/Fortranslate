@@ -2512,3 +2512,21 @@ tolerance. An invalid solver must reject with zero published counts and exact
 tree rollback. Retain all 208 serial tests in GNU Fortran Release and bounds/
 FPE-checked Debug, plus the established OpenMPI one-, two-, four-, and eight-
 rank suite even though the new tree remains serial.
+
+## 0.155.0 arbitrary-depth reactive EB patch-tree chemistry gates
+
+Advance chemistry on the four-level, two-branch numerical tree and require one
+active-mask chemistry call per runtime patch, giving per-level counts
+`[1, 2, 2, 1]`. Compose `R-H-R` Strang splitting and require committed
+chemistry counts `[2, 4, 4, 2]` plus hydro counts `[1, 4, 8, 8]`. Preserve
+composite density and total energy, density/species closure, positive finite
+thermodynamics, and measurable species activity.
+
+Represent the existing fixed three-level chemistry/hydro hierarchy as a
+runtime chain. Require chemistry counts `[2, 2, 2]`, hydro counts `[1, 2, 4]`,
+and field/temperature agreement with the qualified fixed-depth Strang path. An
+invalid solver after the first chemistry half-step must preserve every accepted
+node exactly and publish zero chemistry and hydro counts. Retain all 208 serial
+tests in GNU Fortran Release and bounds/FPE-checked Debug, plus the established
+OpenMPI one-, two-, four-, and eight-rank suite even though the new tree remains
+serial.

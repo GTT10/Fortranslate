@@ -1705,3 +1705,20 @@ advance, exterior fill, register operation, reflux, conservation closure, EOS
 recovery, or final validation leaves the accepted tree unchanged and returns
 zero per-level advance counts. Chemistry, molecular transport, a public clock,
 dynamic tags, checkpoint I/O, and MPI ownership remain separate.
+
+## Arbitrary-depth reactive EB patch-tree chemistry (`0.155.0`)
+
+The numerical tree now owns a shared active-cell chemistry traversal. Every
+runtime patch obtains its own geometry from the topology, masks covered EB
+cells, and calls the established 2D constant-volume chemistry integrator once
+per requested reaction interval. The standalone operation synchronizes a
+private candidate deepest first and commits per-level patch-call counts only
+with the complete tree.
+
+The tree Strang entrypoint applies chemistry for `dt/2` on every node, invokes
+the recursive hydro transaction for `dt`, applies chemistry for `dt/2` again,
+and performs final deepest-first synchronization. Both chemistry and hydro
+operate on the same private candidate. A rejection in the first reaction
+stage, recursive hydro, second reaction stage, EOS recovery, synchronization,
+or validation publishes neither fields nor counters. Molecular transport, a
+public clock, dynamic tags, checkpoint I/O, and MPI ownership remain separate.

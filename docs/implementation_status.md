@@ -2777,3 +2777,21 @@ This milestone removes hyperbolic advancement from the remaining serial
 patch-tree gaps. Arbitrary-depth chemistry, molecular transport, full-physics
 composition, public clock ownership, dynamic tagging, checkpoint I/O, and MPI
 ownership for this new 2D EB tree remain separate work.
+
+## Arbitrary-depth reactive EB patch-tree chemistry (`0.155.0`)
+
+- [x] EB active-mask chemistry on every runtime tree patch
+- [x] standalone transactional chemistry with deepest-first synchronization
+- [x] `R-H-R` Strang composition around recursive tree hydrodynamics
+- [x] one private candidate across both chemistry halves and hydro
+- [x] committed-only chemistry and hydro per-level call counts
+- [x] four-level two-branch chemistry schedule `[1, 2, 2, 1]`
+- [x] four-level two-branch Strang schedules `[2, 4, 4, 2]` and `[1, 4, 8, 8]`
+- [x] composite mass, total-energy, species-closure, and activity gates
+- [x] fixed three-level Strang field and temperature parity
+- [x] exact rollback after chemistry followed by invalid hydrodynamics
+
+This milestone removes active-cell reaction and hydro/chemistry Strang
+composition from the remaining serial patch-tree gaps. Arbitrary-depth
+molecular transport, `R-T-H-T-R` full physics, public clock ownership, dynamic
+tagging, checkpoint I/O, and MPI ownership remain separate work.
