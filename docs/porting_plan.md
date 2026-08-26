@@ -700,6 +700,8 @@ Required capabilities:
   (`0.129.0`)
 - [x] targeted root-only sparse EB materialization for checkpoint/output
   adapters with unallocated non-root fields (`0.130.0`)
+- [x] root-selected formatted sparse checkpoint and root/child CSV writers with
+  collective I/O status and serial checkpoint compatibility (`0.131.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

@@ -2351,3 +2351,20 @@ writer rank without replicating numerical fields on every rank. The existing
 formatted checkpoint and CSV writers are not yet connected to this boundary;
 rank-independent restart distribution and parallel file formats remain
 separate work.
+
+## Sparse MPI reactive EB AMR checkpoint and CSV writers (`0.131.0`)
+
+- [x] public root-selected sparse formatted checkpoint writer
+- [x] public root-selected sparse root/child CSV writer
+- [x] complete numerical arrays allocated only inside the selected writer
+- [x] existing serial multipatch checkpoint schema retained without conversion
+- [x] checkpoint read-back parity for root and every child field
+- [x] one nonempty root CSV and one nonempty deterministic CSV per child
+- [x] collective writer status after root-local filesystem operations
+- [x] exact successful gather traffic and zero published traffic on I/O failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The adapter does not yet read and redistribute a checkpoint directly into a
+new sparse owner map. Parallel file formats and atomic multi-file CSV rename
+remain separate work.

@@ -2119,3 +2119,20 @@ Removing one local sparse root field must reject collectively, deallocate all
 outputs, return an empty patch set, and publish zero traffic. The gate runs in
 GNU Fortran Release and bounds/FPE-checked Debug configurations before the
 complete 208-test regression.
+
+## 0.131.0 sparse MPI reactive EB AMR I/O gates
+
+Write the exclusively owned two-child sparse hierarchy through the root-only
+checkpoint adapter. Read the resulting file with the established serial
+multipatch reader and require exact conserved-field parity, EOS-consistent
+temperature parity, matching topology, clock, step, regrid, minimum-timestep,
+and base-density metadata. The successful sender-local and communicator-summed
+counts must equal the independent remote-entity formula at one, two, four, and
+eight ranks.
+
+Write the same hierarchy through the root/child CSV adapter and require one
+nonempty root file plus one nonempty deterministically named file per child.
+Checkpoint and CSV paths under a nonexistent directory must fail collectively
+and publish zero traffic. Both adapters run in GNU Fortran Release and
+bounds/FPE-checked Debug configurations before the complete 208-test serial
+regression.

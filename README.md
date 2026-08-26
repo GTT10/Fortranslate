@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.130.0` milestone contains the serial verification suite, eight optional
+The `0.131.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -50,7 +50,10 @@ hierarchy when a legacy operator or output path still requires it. A second
 materialization boundary gathers each root tile and child only to a
 caller-selected root rank. Non-root ranks keep the complete output unallocated,
 and one packed point-to-point message is sent per remote entity. This is the
-field-sparse foundation for checkpoint and output adapters.
+field-sparse foundation for checkpoint and output adapters. Sparse MPI wrappers
+now connect that boundary to the existing formatted multipatch checkpoint and
+root/child CSV writers. Only the selected writer allocates the complete fields
+or touches the files, and its I/O result is returned collectively.
 Chemistry now runs directly on those sparse owner allocations. Root tiles and
 children are reacted locally with covered cells masked; only post-reaction
 average-down communicates numerical state. Each child owner sends one
@@ -614,6 +617,9 @@ The AMR layer provides:
 - targeted root-only sparse MPI EB materialization with exact field parity,
   one packed send per remote root tile or child, unallocated non-root outputs,
   and collective invalid-payload rollback;
+- writer-root-only sparse MPI EB formatted checkpoint and root/child CSV
+  publication, serial checkpoint round-trip compatibility, collective I/O
+  status, and exact successful-transfer accounting;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

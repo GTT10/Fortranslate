@@ -1361,6 +1361,15 @@ after the reconstructed hierarchy passes collective validation. The older
 all-rank materialization routine remains available for legacy replicated
 operators, but checkpoint/output adapters can now avoid rank-multiplied fields.
 
+In `0.131.0`, a dedicated sparse MPI I/O layer owns the writer lifecycle. It
+invokes root-only materialization, calls the established formatted multipatch
+checkpoint or EB CSV writers only on the selected root, and broadcasts the
+writer result before returning. Successful calls publish the sender-local
+materialization count; gather rejection, invalid output controls, or root I/O
+failure publish zero. Checkpoints retain the serial schema and can be read by
+the established reader, while CSV publication writes one root file and one
+deterministically named file per child without complete non-root fields.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
