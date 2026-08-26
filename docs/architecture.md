@@ -1422,17 +1422,27 @@ rows. Y-faces use a unique lower-face ownership rule, with the final tile also
 owning the upper physical boundary. Zero-filled rank contributions are summed
 to reconstruct the replicated root result. Collective acceptance precedes
 assembly, and the caller publishes work counters only after later child
-subcycling, reflux, and average-down also commit. The sparse path still gathers
-the root to one physics owner and remains a separate conversion.
+subcycling, reflux, and average-down also commit.
+
+In `0.137.0`, the sparse hydro path uses the same bounded-band numerical
+partition without replicating its input. For each target tile, only source
+tiles intersecting its six-row band send packed state and temperature row
+fragments to that target owner. The owner advances the band and routes its
+owned input, updated state, x-flux rows, and uniquely owned y-faces to the root
+owner. That rank assembles the complete temporary root bundle required by the
+existing child exterior, reflux, and final row scatter stages. Unrelated ranks
+never allocate a complete root field. Halo, result, child, correction, and
+scatter payloads remain point-to-point, and public advance, work, and traffic
+counters remain zero unless the complete sparse transaction commits.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary-depth physics recursion,
 dynamic root/middle
-lifecycle ownership, non-outflow refined boundaries, decomposed root-level MPI
-StateRedist, replica-free regrid overlap transfer, distributed sparse
-checkpoint/output, and distributed EB flux registers
+lifecycle ownership, non-outflow refined boundaries, decomposed sparse root
+transport and timestep selection, replica-free regrid overlap transfer,
+distributed sparse checkpoint/output, and distributed EB flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

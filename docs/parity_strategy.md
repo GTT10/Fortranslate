@@ -2222,3 +2222,23 @@ owner accounting and serial parity through the complete chemistry-transport-
 hydro split. Run the gates with OpenMPI at one, two, four, and eight ranks in
 Release and bounds/FPE-checked Debug configurations before the 208-test serial
 regression.
+
+## 0.137.0 sparse MPI owner-tiled reactive EB root-hydro gates
+
+Starting from exclusively owned sparse root tiles, construct each target
+tile's six-row EB band from local rows plus point-to-point fragments sent only
+by intersecting source owners. Require exactly one bounded-band advance per
+root tile owner and the exact distribution-derived computed-cell count. Above
+one rank, total sparse root work must be smaller than independently advancing
+the full root on every rank.
+
+Route each tile's owned input, updated state, temperature, x-flux rows, and
+uniquely owned y-faces to the root owner, then retain the established targeted
+child bundle, correction round trips, and final row scatter. Count every
+remote halo and result payload exactly. At one, two, four, and eight ranks,
+materialized root and child fields must match the serial multipatch hydro
+transaction within `8e-12` field scale. Repeat tile-owner call accounting
+through sparse `R-T-H-T-R` and the public time loop. A late child rejection
+must leave all sparse fields bitwise unchanged and publish zero advances,
+computed cells, and transfers. Run the gates in OpenMPI Release and
+bounds/FPE-checked Debug before the complete serial regression.

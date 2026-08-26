@@ -230,7 +230,7 @@ program pelef_mpi_eb_amr_patch_2d
   logical :: geometry_perturbed, ok, topology_changed
   logical :: io_files_ok
   integer :: child, component, global_advances, global_i, global_j, i, ierr
-  integer :: j, new_child, old_child, old_i, old_j, owner
+  integer :: j, new_child, old_child, old_i, old_j, owner, source
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_root_hydro_cells, global_root_hydro_cells
@@ -1509,9 +1509,29 @@ program pelef_mpi_eb_amr_patch_2d
   root_owner = distribution%root_level_owner()
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
+  expected_local_root_hydro_cells = 0
   restriction_recipients = .false.
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
+    if (rank == owner) expected_local_root_hydro_cells = &
+      expected_local_root_hydro_cells + coarse_nx * ( &
+        min(coarse_ny, distribution%root_tiles(tile)%j_upper + &
+          mpi_amr_eb_root_tile_hydro_halo_cells) - &
+        max(1, distribution%root_tiles(tile)%j_lower - &
+          mpi_amr_eb_root_tile_hydro_halo_cells) + 1)
+    do source = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(source)%owner == owner) cycle
+      if (min( &
+          coarse_ny, distribution%root_tiles(tile)%j_upper + &
+            mpi_amr_eb_root_tile_hydro_halo_cells) < &
+          distribution%root_tiles(source)%j_lower .or. &
+          max(1, distribution%root_tiles(tile)%j_lower - &
+            mpi_amr_eb_root_tile_hydro_halo_cells) > &
+          distribution%root_tiles(source)%j_upper) cycle
+      expected_global_root_transfers = expected_global_root_transfers + 1
+      if (rank == distribution%root_tiles(source)%owner) &
+        expected_local_root_transfers = expected_local_root_transfers + 1
+    end do
     if (owner == root_owner) cycle
     expected_global_root_transfers = expected_global_root_transfers + 2
     if (rank == owner) expected_local_root_transfers = &
@@ -1535,8 +1555,11 @@ program pelef_mpi_eb_amr_patch_2d
   if (rank == root_owner) expected_local_root_transfers = &
     expected_local_root_transfers + count(restriction_recipients)
   expected_local_advances = 0
-  if (rank == root_owner) expected_local_advances = 1
-  expected_global_advances = 1
+  do tile = 1, distribution%root_tile_count()
+    if (distribution%root_tile_is_local(tile)) &
+      expected_local_advances = expected_local_advances + 1
+  end do
+  expected_global_advances = distribution%root_tile_count()
   do child = 1, distribution%child_count()
     expected_global_advances = expected_global_advances + &
       hydro_start_set%children(child)%patch%refinement_ratio
@@ -1547,7 +1570,7 @@ program pelef_mpi_eb_amr_patch_2d
   call advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &
     species, distribution, sparse_hydro_set, coarse_geometry, &
     hydro_start_set, "hllc", "pcm", "mc", 2, hydro_dt, ok, &
-    local_advances, 0.5_dp, local_root_transfers)
+    local_advances, 0.5_dp, local_root_transfers, local_root_hydro_cells)
   call assert_all(ok .and. sparse_hydro_set%is_valid( &
     distribution, coarse_geometry, hydro_start_set) .and. &
     int(sparse_hydro_set%local_value_count()) == sparse_expected_local_values, &
@@ -1566,6 +1589,18 @@ program pelef_mpi_eb_amr_patch_2d
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
     "MPI EB AMR targeted sparse hydro root traffic", rank)
+  call MPI_Allreduce( &
+    local_root_hydro_cells, global_root_hydro_cells, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call MPI_Allreduce( &
+    expected_local_root_hydro_cells, expected_global_root_hydro_cells, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_hydro_cells == expected_local_root_hydro_cells .and. &
+    global_root_hydro_cells == expected_global_root_hydro_cells .and. &
+    (distribution%nranks == 1 .or. global_root_hydro_cells < &
+      distribution%nranks * coarse_nx * coarse_ny), &
+    "MPI EB AMR bounded sparse root-tile hydro work", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     distribution, sparse_hydro_set, coarse_state, coarse_temperature, &
     coarse_geometry, hydro_start_set, materialized_coarse_state, &
@@ -1627,9 +1662,9 @@ program pelef_mpi_eb_amr_patch_2d
   call advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &
     species, distribution, sparse_hydro_failed_set, coarse_geometry, &
     hydro_start_set, "hllc", "pcm", "mc", 2, hydro_dt, ok, &
-    local_advances, 0.5_dp, local_root_transfers)
+    local_advances, 0.5_dp, local_root_transfers, local_root_hydro_cells)
   call assert_all(.not. ok .and. local_advances == 0 .and. &
-    local_root_transfers == 0 .and. &
+    local_root_transfers == 0 .and. local_root_hydro_cells == 0 .and. &
     sparse_hydro_failed_set%local_value_count() == &
       sparse_hydro_failed_backup_set%local_value_count(), &
     "MPI EB AMR late sparse hydro rollback", rank)
@@ -2091,8 +2126,11 @@ program pelef_mpi_eb_amr_patch_2d
     "MPI EB AMR full physics changes hierarchy", rank)
 
   expected_local_hydro = 0
-  if (rank == distribution%root_level_owner()) expected_local_hydro = 1
-  expected_global_hydro = 1
+  do tile = 1, distribution%root_tile_count()
+    if (distribution%root_tile_is_local(tile)) &
+      expected_local_hydro = expected_local_hydro + 1
+  end do
+  expected_global_hydro = distribution%root_tile_count()
   do child = 1, distribution%child_count()
     expected_global_hydro = expected_global_hydro + &
       patch_set%children(child)%patch%refinement_ratio
