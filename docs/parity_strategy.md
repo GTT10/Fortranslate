@@ -2547,3 +2547,19 @@ every node exactly, return theta one, and publish zero counts. Retain all 208
 serial tests in GNU Fortran Release and bounds/FPE-checked Debug, plus the
 established OpenMPI one-, two-, four-, and eight-rank suite even though the new
 tree remains serial.
+
+## 0.157.0 arbitrary-depth reactive EB patch-tree full-physics gates
+
+Compose chemistry, SSPRK2 transport, recursive hydro, SSPRK2 transport, and
+chemistry on one private runtime tree. For the fixed three-level chain, require
+chemistry counts `[2, 2, 2]`, transport Euler counts `[4, 8, 16]`, hydro counts
+`[1, 2, 4]`, positive limiter theta, and field/temperature agreement with the
+qualified fixed-depth `R-T-H-T-R` implementation.
+
+On the four-level branching tree, require chemistry counts `[2, 2, 4, 2]`,
+transport counts `[4, 8, 32, 32]`, hydro counts `[1, 2, 8, 8]`, composite
+conservation, and valid thermodynamics. An invalid solver after the first
+reaction and transport prefixes must restore every node exactly, publish zero
+counts, and return theta one. Retain all 208 serial tests in GNU Fortran Release
+and bounds/FPE-checked Debug, plus the established OpenMPI one-, two-, four-,
+and eight-rank suite even though the new tree remains serial.

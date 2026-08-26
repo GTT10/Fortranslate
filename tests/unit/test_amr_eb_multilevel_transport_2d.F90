@@ -1,6 +1,9 @@
 program test_amr_eb_multilevel_transport_2d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
@@ -25,9 +28,12 @@ program test_amr_eb_multilevel_transport_2d
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
     advance_reactive_amr_eb_patch_tree_transport_2d, &
+    advance_reactive_amr_eb_patch_tree_full_physics_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    advance_three_level_reactive_eb_strang_2d
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8
@@ -42,6 +48,7 @@ program test_amr_eb_multilevel_transport_2d
   integer, parameter :: branch_deep_nx = 8, branch_deep_ny = 8
   integer, parameter :: ratio = 2
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_eb_2d_config) :: config
   type(reactive_boundary_set_2d) :: boundaries
@@ -56,6 +63,8 @@ program test_amr_eb_multilevel_transport_2d
   type(amr_eb_patch_tree_topology_2d) :: branch_topology
   type(reactive_amr_eb_patch_tree_2d) :: tree, tree_snapshot
   type(reactive_amr_eb_patch_tree_2d) :: branch_tree, branch_snapshot
+  type(reactive_amr_eb_patch_tree_2d) :: full_tree, full_snapshot
+  type(reactive_amr_eb_patch_tree_2d) :: branch_full_tree
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: level_one_state(:, :, :)
   real(dp), allocatable :: level_one_temperature(:, :)
@@ -76,15 +85,20 @@ program test_amr_eb_multilevel_transport_2d
   real(dp) :: branch_x_lower, branch_x_upper
   real(dp) :: branch_y_lower, branch_y_upper
   real(dp) :: branch_dx, branch_dy, branch_interval
+  real(dp) :: full_interval
   real(dp) :: base_density, root_dt, one_dt, two_dt, diffusivity
   real(dp) :: interval, initial_span, final_span, minimum_theta, scale
   real(dp) :: tree_minimum_theta
   logical :: ok
   character(len=128) :: failure_context
   integer, allocatable :: level_advances(:)
+  integer, allocatable :: chemistry_advances(:), transport_advances(:)
+  integer, allocatable :: hydro_advances(:)
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call require(ok, "chemistry mechanism load")
   call load_h2o2_elementary_transport(transport, ok)
   call require(ok, "transport database load")
 
@@ -422,6 +436,107 @@ program test_amr_eb_multilevel_transport_2d
     tree_minimum_theta == 1.0_dp .and. &
     tree_solutions_match(branch_tree, branch_snapshot), &
     "four-level branching patch-tree transport rollback")
+
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, tree_topology, full_tree, ok)
+  call require(ok, "three-level full-physics tree state")
+  full_tree%levels(2)%patches(1)%state = level_one_state
+  full_tree%levels(2)%patches(1)%temperature = level_one_temperature
+  full_tree%levels(3)%patches(1)%state = level_two_state
+  full_tree%levels(3)%patches(1)%temperature = level_two_temperature
+  if (allocated(chemistry_advances)) deallocate(chemistry_advances)
+  if (allocated(transport_advances)) deallocate(transport_advances)
+  if (allocated(hydro_advances)) deallocate(hydro_advances)
+  allocate(chemistry_advances(full_tree%level_count()))
+  allocate(transport_advances(full_tree%level_count()))
+  allocate(hydro_advances(full_tree%level_count()))
+  full_interval = min(interval, 1.0e-8_dp)
+  call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, full_tree, "hllc", "pcm", "mc", &
+    config%state_redist_max_order, full_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .false., .true., .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, tree_minimum_theta, ok, &
+    failure_context, chemistry_advances, transport_advances, hydro_advances)
+  call require(ok .and. all(chemistry_advances == [2, 2, 2]) .and. &
+    all(transport_advances == [4, 8, 16]) .and. &
+    all(hydro_advances == [1, 2, 4]) .and. tree_minimum_theta > 0.0_dp, &
+    "three-level patch-tree full-physics schedule: " // &
+      trim(failure_context))
+  call advance_three_level_reactive_eb_strang_2d( &
+    species, reactions, root_state, root_temperature, root_geometry, &
+    level_one_state, level_one_temperature, level_one_geometry, root_patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_one_patch, "hllc", "pcm", "mc", &
+    config%state_redist_max_order, full_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, new_root_state, new_root_temperature, new_level_one_state, &
+    new_level_one_temperature, new_level_two_state, &
+    new_level_two_temperature, ok, &
+    config%state_redist_target_volume_fraction, transport, .true., .false., &
+    .true., .false., .false., minimum_theta, boundaries)
+  call require(ok .and. minimum_theta > 0.0_dp, &
+    "fixed three-level full-physics transaction")
+  scale = max(1.0_dp, maxval(abs(new_root_state)), &
+    maxval(abs(new_level_one_state)), maxval(abs(new_level_two_state)))
+  call require(maxval(abs(full_tree%levels(1)%patches(1)%state - &
+      new_root_state)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(full_tree%levels(2)%patches(1)%state - &
+      new_level_one_state)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(full_tree%levels(3)%patches(1)%state - &
+      new_level_two_state)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree full-physics field parity")
+  scale = max(1.0_dp, maxval(new_root_temperature), &
+    maxval(new_level_one_temperature), maxval(new_level_two_temperature))
+  call require(maxval(abs(full_tree%levels(1)%patches(1)%temperature - &
+      new_root_temperature)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(full_tree%levels(2)%patches(1)%temperature - &
+      new_level_one_temperature)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(full_tree%levels(3)%patches(1)%temperature - &
+      new_level_two_temperature)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree full-physics temperature parity")
+
+  full_snapshot = full_tree
+  call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, full_tree, "unknown", "pcm", "mc", &
+    config%state_redist_max_order, full_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .false., .true., .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, tree_minimum_theta, ok, &
+    failure_context, chemistry_advances, transport_advances, hydro_advances)
+  call require(.not. ok .and. all(chemistry_advances == 0) .and. &
+    all(transport_advances == 0) .and. all(hydro_advances == 0) .and. &
+    tree_minimum_theta == 1.0_dp .and. &
+    tree_solutions_match(full_tree, full_snapshot), &
+    "three-level patch-tree full-physics rollback")
+
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, branch_topology, &
+    branch_full_tree, ok)
+  call require(ok, "four-level branching full-physics tree state")
+  deallocate(chemistry_advances, transport_advances, hydro_advances)
+  allocate(chemistry_advances(branch_full_tree%level_count()))
+  allocate(transport_advances(branch_full_tree%level_count()))
+  allocate(hydro_advances(branch_full_tree%level_count()))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    branch_full_tree, branch_integral_before, ok)
+  call require(ok, "branching full-physics initial integral")
+  call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, branch_full_tree, "hllc", "pcm", "mc", &
+    config%state_redist_max_order, full_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .false., .true., .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, tree_minimum_theta, ok, &
+    failure_context, chemistry_advances, transport_advances, hydro_advances)
+  call require(ok .and. all(chemistry_advances == [2, 2, 4, 2]) .and. &
+    all(transport_advances == [4, 8, 32, 32]) .and. &
+    all(hydro_advances == [1, 2, 8, 8]) .and. &
+    tree_minimum_theta > 0.0_dp .and. branch_full_tree%is_valid(), &
+    "four-level branching patch-tree full-physics schedule: " // &
+      trim(failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    branch_full_tree, branch_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(branch_integral_before)))
+  call require(ok .and. maxval(abs( &
+      branch_integral_after - branch_integral_before)) <= &
+      3.0e-8_dp * scale, &
+    "four-level branching patch-tree full-physics conservation")
 
   write(*, '(a)') "test_amr_eb_multilevel_transport_2d: PASS"
 

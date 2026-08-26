@@ -1113,6 +1113,20 @@ positive limiter theta, changed state, thermodynamic validity, and exact
 rollback. Run the complete serial Debug and Release suite and the existing
 OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
 
+## 0.157.0 arbitrary-depth reactive EB patch-tree full-physics gates
+
+Compose the qualified all-node reaction traversal, recursive SSPRK2 transport,
+and recursive hydrodynamics as one private `R-T-H-T-R` candidate. Defer state,
+temperature, minimum transport theta, and all three per-level count vectors
+until final deepest-first synchronization and tree validation succeed.
+
+Require fixed three-level full-physics field/temperature parity and exact
+chemistry, transport, and hydro schedules. Exercise the four-level branching
+tree for actual recursive counts, composite conservation, positive finite
+thermodynamics, and rollback after valid reaction and transport prefixes. Run
+the complete serial Debug and Release suite and the existing OpenMPI one-,
+two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation
