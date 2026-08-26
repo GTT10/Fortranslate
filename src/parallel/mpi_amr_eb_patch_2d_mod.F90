@@ -113,6 +113,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: advance_sparse_owned_reactive_eb_patch_set_hydro_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_transport_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_strang_2d
+  public :: advance_sparse_owned_reactive_eb_patch_set_to_time_2d
 
 contains
 
@@ -2294,6 +2295,158 @@ contains
       local_transport_euler_advances = transport_one + transport_two
     if (present(minimum_transport_theta)) minimum_transport_theta = theta
   end subroutine advance_sparse_owned_reactive_eb_patch_set_strang_2d
+
+  subroutine advance_sparse_owned_reactive_eb_patch_set_to_time_2d( &
+      species, reactions, transport, distribution, sparse_patch_set, &
+      coarse_geometry, patch_set_template, solver, reconstruction, limiter, &
+      state_redist_max_order, time, final_time, steps, maximum_steps, &
+      hydro_cfl, transport_cfl, rtol, atol, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, ok, minimum_dt, advanced_steps, &
+      local_chemistry_advances, local_hydro_advances, &
+      local_transport_euler_advances, minimum_transport_theta, &
+      state_redist_target_volume_fraction, local_timestep_root_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(inout) :: time
+    real(dp), intent(in) :: final_time
+    integer, intent(inout) :: steps
+    integer, intent(in) :: maximum_steps
+    real(dp), intent(in) :: hydro_cfl, transport_cfl, rtol, atol
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    logical, intent(out) :: ok
+    real(dp), intent(out) :: minimum_dt
+    integer, intent(out), optional :: advanced_steps
+    integer, intent(out), optional :: local_chemistry_advances
+    integer, intent(out), optional :: local_hydro_advances
+    integer, intent(out), optional :: local_transport_euler_advances
+    real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+    integer, intent(out), optional :: local_timestep_root_transfers
+
+    real(dp) :: dt, numeric_controls(7), numeric_maximum(7)
+    real(dp) :: numeric_minimum(7), remaining, selected_target
+    real(dp) :: step_theta, time_tolerance
+    logical :: accepted, global_ok, local_ok
+    integer :: chemistry_advances, hydro_advances, ierr
+    integer :: integer_controls(2), integer_maximum(2), integer_minimum(2)
+    integer :: step_chemistry, step_hydro, step_timestep_transfers
+    integer :: step_transport, timestep_transfers, transport_advances
+
+    ok = .false.
+    minimum_dt = 0.0_dp
+    chemistry_advances = 0
+    hydro_advances = 0
+    transport_advances = 0
+    timestep_transfers = 0
+    if (present(advanced_steps)) advanced_steps = 0
+    if (present(local_chemistry_advances)) local_chemistry_advances = 0
+    if (present(local_hydro_advances)) local_hydro_advances = 0
+    if (present(local_transport_euler_advances)) &
+      local_transport_euler_advances = 0
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (present(local_timestep_root_transfers)) &
+      local_timestep_root_transfers = 0
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    numeric_controls = [ &
+      time, final_time, hydro_cfl, transport_cfl, rtol, atol, selected_target]
+    integer_controls = [steps, maximum_steps]
+    time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(final_time))
+    local_ok = size(species) >= 1 .and. &
+      all(ieee_is_finite(numeric_controls)) .and. &
+      final_time >= time - time_tolerance .and. &
+      hydro_cfl > 0.0_dp .and. hydro_cfl <= 1.0_dp .and. &
+      transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
+      rtol > 0.0_dp .and. atol > 0.0_dp .and. &
+      selected_target > 0.0_dp .and. selected_target <= 1.0_dp .and. &
+      steps >= 0 .and. maximum_steps >= steps .and. &
+      sparse_patch_set%nvar == reactive_nvar(size(species)) .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_minimum, 7, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_maximum, 7, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_minimum, 2, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_maximum, 2, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    do
+      remaining = final_time - time
+      if (remaining <= time_tolerance) exit
+      if (steps >= maximum_steps) return
+      call compute_sparse_owned_reactive_eb_patch_set_timestep_2d( &
+        species, transport, distribution, sparse_patch_set, &
+        coarse_geometry, patch_set_template, hydro_cfl, transport_cfl, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, dt, &
+        local_ok, step_timestep_transfers)
+      if (.not. local_ok) return
+      dt = min(dt, remaining)
+      if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) return
+      call advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
+        species, reactions, transport, distribution, sparse_patch_set, &
+        coarse_geometry, patch_set_template, solver, reconstruction, &
+        limiter, state_redist_max_order, dt, rtol, atol, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+        local_ok, step_chemistry, step_hydro, step_transport, step_theta, &
+        selected_target)
+      if (.not. local_ok) return
+
+      time = time + dt
+      steps = steps + 1
+      chemistry_advances = chemistry_advances + step_chemistry
+      hydro_advances = hydro_advances + step_hydro
+      transport_advances = transport_advances + step_transport
+      timestep_transfers = timestep_transfers + step_timestep_transfers
+      if (minimum_dt == 0.0_dp) then
+        minimum_dt = dt
+      else
+        minimum_dt = min(minimum_dt, dt)
+      end if
+      if (present(advanced_steps)) advanced_steps = advanced_steps + 1
+      if (present(local_chemistry_advances)) &
+        local_chemistry_advances = chemistry_advances
+      if (present(local_hydro_advances)) &
+        local_hydro_advances = hydro_advances
+      if (present(local_transport_euler_advances)) &
+        local_transport_euler_advances = transport_advances
+      if (present(minimum_transport_theta)) &
+        minimum_transport_theta = min(minimum_transport_theta, step_theta)
+      if (present(local_timestep_root_transfers)) &
+        local_timestep_root_transfers = timestep_transfers
+    end do
+
+    time = final_time
+    ok = .true.
+  end subroutine advance_sparse_owned_reactive_eb_patch_set_to_time_2d
 
   subroutine initialize_mpi_amr_eb_patch_distribution_2d( &
       coarse_geometry, patch_set, comm, distribution, ok, &

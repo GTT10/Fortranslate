@@ -1,5 +1,6 @@
 program pelef_mpi_eb_amr_patch_2d
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
@@ -52,7 +53,8 @@ program pelef_mpi_eb_amr_patch_2d
     compute_sparse_owned_reactive_eb_patch_set_timestep_2d, &
     advance_sparse_owned_reactive_eb_patch_set_hydro_2d, &
     advance_sparse_owned_reactive_eb_patch_set_transport_2d, &
-    advance_sparse_owned_reactive_eb_patch_set_strang_2d
+    advance_sparse_owned_reactive_eb_patch_set_strang_2d, &
+    advance_sparse_owned_reactive_eb_patch_set_to_time_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -85,6 +87,8 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_full_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_full_failed_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_full_failed_backup_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_time_loop_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_limited_time_loop_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -101,6 +105,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: transport_failed_backup_set
   type(reactive_eb_patch_set_2d) :: full_reference_set, full_mpi_set
   type(reactive_eb_patch_set_2d) :: full_failed_set, full_failed_backup_set
+  type(reactive_eb_patch_set_2d) :: time_loop_reference_set
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -146,6 +151,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: full_failed_temperature(:, :)
   real(dp), allocatable :: full_failed_backup_state(:, :, :)
   real(dp), allocatable :: full_failed_backup_temperature(:, :)
+  real(dp), allocatable :: time_loop_reference_state(:, :, :)
+  real(dp), allocatable :: time_loop_reference_temperature(:, :)
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: restriction_recipients(:)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
@@ -157,6 +164,9 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: timestep_maximum_diffusivity
   real(dp) :: child_sound_speed, child_temperature
   real(dp) :: full_reference_theta, full_theta, full_scale, full_change
+  real(dp) :: time_loop_initial_dt, time_loop_final_time, time_loop_time
+  real(dp) :: time_loop_minimum_dt, time_loop_reference_minimum_dt
+  real(dp) :: time_loop_reference_theta
   logical :: tags(coarse_nx, coarse_ny), ok
   integer :: child, component, global_advances, i, ierr, j, owner
   integer :: local_advances, nvar, rank, nranks, tile
@@ -168,6 +178,8 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_local_chemistry, expected_local_hydro
   integer :: expected_local_transport, expected_global_chemistry
   integer :: expected_global_hydro, expected_global_transport
+  integer :: time_loop_steps, time_loop_reference_steps
+  integer :: time_loop_advanced_steps
   integer :: inconsistent_exponent
   integer :: sparse_local_values, sparse_global_values
   integer :: sparse_expected_local_values, sparse_expected_global_values
@@ -1382,6 +1394,141 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR sparse full-physics serial child parity", rank)
   end do
 
+  call compute_serial_full_physics_timestep( &
+    coarse_state, coarse_temperature, patch_set, time_loop_initial_dt, ok)
+  call assert_all(ok, "serial EB AMR time-loop initial timestep", rank)
+  time_loop_final_time = 1.25_dp * time_loop_initial_dt
+  allocate(time_loop_reference_state, mold=coarse_state)
+  allocate(time_loop_reference_temperature, mold=coarse_temperature)
+  call advance_serial_full_physics_to_time( &
+    coarse_state, coarse_temperature, patch_set, time_loop_final_time, &
+    time_loop_reference_state, time_loop_reference_temperature, &
+    time_loop_reference_set, time_loop_reference_steps, &
+    time_loop_reference_minimum_dt, time_loop_reference_theta, ok)
+  call assert_all(ok .and. time_loop_reference_steps >= 2, &
+    "serial EB AMR clipped multi-step reference", rank)
+
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, sparse_time_loop_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse time-loop scatter", rank)
+  time_loop_time = 0.0_dp
+  time_loop_steps = 0
+  call advance_sparse_owned_reactive_eb_patch_set_to_time_2d( &
+    species, reactions, transport, distribution, sparse_time_loop_set, &
+    coarse_geometry, patch_set, "hllc", "pcm", "mc", 2, time_loop_time, &
+    time_loop_final_time, time_loop_steps, 16, 0.35_dp, 0.20_dp, &
+    1.0e-8_dp, 1.0e-14_dp, .true., .true., .true., .true., boundaries, ok, &
+    time_loop_minimum_dt, time_loop_advanced_steps, &
+    local_chemistry_advances, local_hydro_advances, &
+    local_transport_advances, full_theta, 0.5_dp, local_root_transfers)
+  call assert_all(ok .and. time_loop_time == time_loop_final_time .and. &
+    time_loop_steps == time_loop_reference_steps .and. &
+    time_loop_advanced_steps == time_loop_reference_steps .and. &
+    abs(time_loop_minimum_dt - time_loop_reference_minimum_dt) <= &
+      128.0_dp * epsilon(1.0_dp) * time_loop_reference_minimum_dt .and. &
+    abs(full_theta - time_loop_reference_theta) <= &
+      5.0e-13_dp * max(1.0_dp, abs(time_loop_reference_theta)), &
+    "MPI EB AMR sparse public time-loop control", rank)
+  call assert_all( &
+    local_chemistry_advances == &
+      time_loop_steps * expected_local_chemistry .and. &
+    local_hydro_advances == time_loop_steps * expected_local_hydro .and. &
+    local_transport_advances == &
+      time_loop_steps * expected_local_transport, &
+    "MPI EB AMR sparse time-loop local accounting", rank)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, &
+    "MPI EB AMR sparse time-loop chemistry reduction", rank)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS, &
+    "MPI EB AMR sparse time-loop hydro reduction", rank)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    global_chemistry_advances == &
+      time_loop_steps * expected_global_chemistry .and. &
+    global_hydro_advances == time_loop_steps * expected_global_hydro .and. &
+    global_transport_advances == &
+      time_loop_steps * expected_global_transport, &
+    "MPI EB AMR sparse time-loop global accounting", rank)
+  expected_local_root_transfers = 0
+  expected_global_root_transfers = 0
+  root_owner = distribution%root_level_owner()
+  do tile = 1, distribution%root_tile_count()
+    owner = distribution%root_tiles(tile)%owner
+    if (owner == root_owner) cycle
+    expected_global_root_transfers = expected_global_root_transfers + 1
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+  end do
+  call MPI_Allreduce( &
+    local_root_transfers, global_root_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transfers == &
+      time_loop_steps * expected_local_root_transfers .and. &
+    global_root_transfers == &
+      time_loop_steps * expected_global_root_transfers, &
+    "MPI EB AMR sparse time-loop timestep traffic", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    distribution, sparse_time_loop_set, coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, materialized_coarse_state, &
+    materialized_coarse_temperature, materialized_patch_set, ok)
+  full_scale = max(1.0_dp, maxval(abs(time_loop_reference_state)))
+  call assert_all(ok .and. &
+    maxval(abs(materialized_coarse_state - time_loop_reference_state)) <= &
+      2.0e-10_dp * full_scale .and. &
+    maxval(abs(materialized_coarse_temperature - &
+      time_loop_reference_temperature)) <= 2.0e-10_dp * &
+        max(1.0_dp, maxval(abs(time_loop_reference_temperature))), &
+    "MPI EB AMR sparse time-loop serial root parity", rank)
+  do child = 1, materialized_patch_set%patch_count()
+    call assert_all( &
+      maxval(abs(materialized_patch_set%children(child)%state - &
+        time_loop_reference_set%children(child)%state)) <= &
+          2.0e-10_dp * full_scale .and. &
+      maxval(abs(materialized_patch_set%children(child)%temperature - &
+        time_loop_reference_set%children(child)%temperature)) <= &
+          2.0e-10_dp * max(1.0_dp, maxval(abs( &
+            time_loop_reference_set%children(child)%temperature))), &
+      "MPI EB AMR sparse time-loop serial child parity", rank)
+  end do
+
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), coarse_state, coarse_temperature, &
+    coarse_geometry, patch_set, sparse_limited_time_loop_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse limited time-loop scatter", rank)
+  time_loop_time = 0.0_dp
+  time_loop_steps = 0
+  call advance_sparse_owned_reactive_eb_patch_set_to_time_2d( &
+    species, reactions, transport, distribution, &
+    sparse_limited_time_loop_set, coarse_geometry, patch_set, "hllc", &
+    "pcm", "mc", 2, time_loop_time, time_loop_final_time, time_loop_steps, &
+    1, 0.35_dp, 0.20_dp, 1.0e-8_dp, 1.0e-14_dp, .true., .true., .true., &
+    .true., boundaries, ok, time_loop_minimum_dt, &
+    time_loop_advanced_steps, local_chemistry_advances, &
+    local_hydro_advances, local_transport_advances, full_theta, 0.5_dp, &
+    local_root_transfers)
+  call assert_all(.not. ok .and. time_loop_steps == 1 .and. &
+    time_loop_advanced_steps == 1 .and. time_loop_time > 0.0_dp .and. &
+    time_loop_time < time_loop_final_time .and. &
+    abs(time_loop_time - time_loop_initial_dt) <= &
+      128.0_dp * epsilon(1.0_dp) * time_loop_initial_dt .and. &
+    time_loop_minimum_dt == time_loop_time .and. &
+    local_chemistry_advances == expected_local_chemistry .and. &
+    local_hydro_advances == expected_local_hydro .and. &
+    local_transport_advances == expected_local_transport .and. &
+    local_root_transfers == expected_local_root_transfers .and. &
+    sparse_limited_time_loop_set%is_valid( &
+      distribution, coarse_geometry, patch_set), &
+    "MPI EB AMR sparse time-loop committed step limit", rank)
+
   allocate(full_failed_state, source=coarse_state)
   allocate(full_failed_temperature, source=coarse_temperature)
   full_failed_set = patch_set
@@ -1490,6 +1637,108 @@ contains
 
     value = 1.0_dp + 1.0e-2_dp * real(local_child, dp)
   end function child_factor
+
+  subroutine compute_serial_full_physics_timestep( &
+      state, state_temperature, state_set, dt, valid)
+    real(dp), intent(in) :: state(:, :, :), state_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(in) :: state_set
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: valid
+
+    real(dp) :: child_dt, maximum_diffusivity
+    integer :: local_child, local_ratio
+
+    dt = 0.0_dp
+    valid = .false.
+    call compute_reactive_eb_patch_set_cfl_timestep_2d( &
+      species, state, state_temperature, coarse_geometry, state_set, &
+      0.35_dp, dt, valid)
+    if (.not. valid) return
+    call reactive_eb_transport_timestep_2d( &
+      species, transport, state, state_temperature, coarse_geometry, &
+      0.20_dp, .true., .true., .true., child_dt, maximum_diffusivity, valid)
+    if (.not. valid) return
+    dt = min(dt, child_dt)
+    do local_child = 1, state_set%patch_count()
+      call reactive_eb_transport_timestep_2d( &
+        species, transport, state_set%children(local_child)%state, &
+        state_set%children(local_child)%temperature, &
+        state_set%children(local_child)%geometry, 0.20_dp, .true., .true., &
+        .true., child_dt, maximum_diffusivity, valid)
+      if (.not. valid) return
+      local_ratio = &
+        state_set%children(local_child)%patch%refinement_ratio
+      dt = min(dt, real(local_ratio, dp) * child_dt)
+    end do
+    valid = ieee_is_finite(dt) .and. dt > 0.0_dp
+  end subroutine compute_serial_full_physics_timestep
+
+  subroutine advance_serial_full_physics_to_time( &
+      start_state, start_temperature, start_set, target_time, final_state, &
+      final_temperature, final_set, completed_steps, minimum_dt, &
+      minimum_theta, valid)
+    real(dp), intent(in) :: start_state(:, :, :), start_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(in) :: start_set
+    real(dp), intent(in) :: target_time
+    real(dp), intent(out) :: final_state(:, :, :), final_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: final_set
+    integer, intent(out) :: completed_steps
+    real(dp), intent(out) :: minimum_dt, minimum_theta
+    logical, intent(out) :: valid
+
+    type(reactive_eb_patch_set_2d) :: candidate_set
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp) :: dt, local_theta, remaining, time, tolerance
+    character(len=160) :: failure_context
+
+    final_state = start_state
+    final_temperature = start_temperature
+    final_set = start_set
+    completed_steps = 0
+    minimum_dt = 0.0_dp
+    minimum_theta = 1.0_dp
+    valid = .false.
+    time = 0.0_dp
+    tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(target_time))
+    allocate(candidate_state, mold=start_state)
+    allocate(candidate_temperature, mold=start_temperature)
+    do
+      remaining = target_time - time
+      if (remaining <= tolerance) exit
+      if (completed_steps >= 16) return
+      call compute_serial_full_physics_timestep( &
+        final_state, final_temperature, final_set, dt, valid)
+      if (.not. valid) return
+      dt = min(dt, remaining)
+      call advance_reactive_eb_patch_set_strang_2d( &
+        species, reactions, final_state, final_temperature, coarse_geometry, &
+        final_set, "hllc", "pcm", "mc", 2, dt, .true., 1.0e-8_dp, &
+        1.0e-14_dp, candidate_state, candidate_temperature, candidate_set, &
+        valid, target_volume_fraction=0.5_dp, &
+        failure_context=failure_context, transport=transport, &
+        transport_enabled=.true., viscosity_enabled=.true., &
+        thermal_conduction_enabled=.true., species_diffusion_enabled=.true., &
+        barodiffusion_enabled=.true., minimum_transport_theta=local_theta, &
+        boundaries=boundaries)
+      if (.not. valid) return
+      final_state = candidate_state
+      final_temperature = candidate_temperature
+      final_set = candidate_set
+      time = time + dt
+      completed_steps = completed_steps + 1
+      if (minimum_dt == 0.0_dp) then
+        minimum_dt = dt
+      else
+        minimum_dt = min(minimum_dt, dt)
+      end if
+      minimum_theta = min(minimum_theta, local_theta)
+    end do
+    valid = completed_steps >= 1 .and. &
+      abs(time - target_time) <= tolerance .and. &
+      ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+  end subroutine advance_serial_full_physics_to_time
 
   subroutine build_patch_geometry( &
       root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
