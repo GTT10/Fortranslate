@@ -28,9 +28,11 @@ module mpi_amr_eb_patch_2d_mod
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_reactive_eb_state_patch_2d
   use amr_eb_regrid_2d_mod, only: &
-    amr_eb_regrid_plan_collection_2d, reactive_eb_patch_set_2d, &
+    amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
+    reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
     composite_reactive_eb_patch_set_integral_2d, &
+    plan_reactive_eb_temperature_regrid_collection_2d, &
     regrid_reactive_eb_patch_set_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
@@ -100,6 +102,20 @@ module mpi_amr_eb_patch_2d_mod
       mpi_amr_eb_sparse_patch_set_local_value_count
   end type mpi_amr_eb_sparse_patch_set_2d
 
+  abstract interface
+    subroutine sparse_eb_geometry_builder_2d( &
+        coarse_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+        coarse_j_upper, refinement_ratio, fine_geometry, ok)
+      import :: eb_geometry_2d
+      type(eb_geometry_2d), intent(in) :: coarse_geometry
+      integer, intent(in) :: coarse_i_lower, coarse_i_upper
+      integer, intent(in) :: coarse_j_lower, coarse_j_upper
+      integer, intent(in) :: refinement_ratio
+      type(eb_geometry_2d), intent(out) :: fine_geometry
+      logical, intent(out) :: ok
+    end subroutine sparse_eb_geometry_builder_2d
+  end interface
+
   public :: initialize_mpi_amr_eb_patch_distribution_2d
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
@@ -110,6 +126,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: scatter_owned_reactive_eb_patch_set_2d
   public :: materialize_owned_reactive_eb_patch_set_2d
   public :: regrid_sparse_owned_reactive_eb_patch_set_2d
+  public :: regrid_tagged_sparse_owned_reactive_eb_patch_set_2d
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
   public :: compute_sparse_owned_reactive_eb_patch_set_timestep_2d
@@ -636,6 +653,175 @@ contains
     changed = local_changed
     ok = .true.
   end subroutine regrid_sparse_owned_reactive_eb_patch_set_2d
+
+  subroutine regrid_tagged_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, sparse_patch_set, coarse_geometry, &
+      patch_set_template, criteria, refinement_ratio, geometry_builder, &
+      ok, changed, local_root_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(inout) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(inout) :: patch_set_template
+    type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
+    integer, intent(in) :: refinement_ratio
+    procedure(sparse_eb_geometry_builder_2d) :: geometry_builder
+    logical, intent(out) :: ok, changed
+    integer, intent(out), optional :: local_root_transfers
+
+    type(amr_eb_regrid_plan_collection_2d) :: collection
+    type(eb_geometry_2d), allocatable :: fine_geometries(:)
+    real(dp), allocatable :: root_state(:, :, :)
+    real(dp), allocatable :: root_temperature(:, :)
+    real(dp) :: numeric_controls(3), numeric_maximum(3), numeric_minimum(3)
+    logical, allocatable :: tags(:, :)
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer, allocatable :: metadata(:)
+    integer :: child, header(4), ierr, index, integer_controls(5)
+    integer :: integer_maximum(5), integer_minimum(5), patch_count
+    integer :: root_owner, transfers
+
+    ok = .false.
+    changed = .false.
+    transfers = 0
+    if (present(local_root_transfers)) local_root_transfers = 0
+    numeric_controls = [ &
+      criteria%relative_gradient_threshold, &
+      criteria%absolute_gradient_threshold, criteria%scale_floor]
+    integer_controls = [ &
+      refinement_ratio, criteria%buffer_cells, &
+      criteria%minimum_patch_cells_x, criteria%minimum_patch_cells_y, &
+      criteria%maximum_patch_gap_cells]
+    local_ok = size(species) >= 1 .and. refinement_ratio >= 2 .and. &
+      criteria%is_valid(coarse_geometry%nx, coarse_geometry%ny) .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_minimum, 3, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_controls, numeric_maximum, 3, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_minimum, 5, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_controls, integer_maximum, 5, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    call gather_sparse_root_to_owner_2d( &
+      distribution, sparse_patch_set, coarse_geometry, root_state, &
+      root_temperature, transfers, local_ok)
+    if (.not. local_ok) return
+    root_owner = distribution%root_level_owner()
+    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. entity_ok) then
+      allocate(tags(coarse_geometry%nx, coarse_geometry%ny))
+      call plan_reactive_eb_temperature_regrid_collection_2d( &
+        root_temperature, coarse_geometry, criteria, tags, collection, &
+        entity_ok)
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    if (distribution%rank == root_owner) header = [ &
+      collection%coarse_nx, collection%coarse_ny, &
+      collection%tagged_cell_count, collection%patch_count()]
+    call MPI_Bcast( &
+      header, 4, MPI_INTEGER, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    patch_count = header(4)
+    if (distribution%rank /= root_owner) then
+      collection%coarse_nx = header(1)
+      collection%coarse_ny = header(2)
+      collection%tagged_cell_count = header(3)
+      allocate(collection%plans(patch_count))
+    end if
+    allocate(metadata(12 * patch_count))
+    if (distribution%rank == root_owner) then
+      index = 1
+      do child = 1, patch_count
+        metadata(index:index + 11) = [ &
+          merge(1, 0, collection%plans(child)%active), &
+          collection%plans(child)%coarse_nx, &
+          collection%plans(child)%coarse_ny, &
+          collection%plans(child)%tagged_cell_count, &
+          collection%plans(child)%tag_i_lower, &
+          collection%plans(child)%tag_i_upper, &
+          collection%plans(child)%tag_j_lower, &
+          collection%plans(child)%tag_j_upper, &
+          collection%plans(child)%coarse_i_lower, &
+          collection%plans(child)%coarse_i_upper, &
+          collection%plans(child)%coarse_j_lower, &
+          collection%plans(child)%coarse_j_upper]
+        index = index + 12
+      end do
+    end if
+    if (patch_count > 0) then
+      call MPI_Bcast( &
+        metadata, size(metadata), MPI_INTEGER, root_owner, &
+        distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end if
+    if (distribution%rank /= root_owner) then
+      index = 1
+      do child = 1, patch_count
+        collection%plans(child)%active = metadata(index) == 1
+        collection%plans(child)%coarse_nx = metadata(index + 1)
+        collection%plans(child)%coarse_ny = metadata(index + 2)
+        collection%plans(child)%tagged_cell_count = metadata(index + 3)
+        collection%plans(child)%tag_i_lower = metadata(index + 4)
+        collection%plans(child)%tag_i_upper = metadata(index + 5)
+        collection%plans(child)%tag_j_lower = metadata(index + 6)
+        collection%plans(child)%tag_j_upper = metadata(index + 7)
+        collection%plans(child)%coarse_i_lower = metadata(index + 8)
+        collection%plans(child)%coarse_i_upper = metadata(index + 9)
+        collection%plans(child)%coarse_j_lower = metadata(index + 10)
+        collection%plans(child)%coarse_j_upper = metadata(index + 11)
+        index = index + 12
+      end do
+    end if
+    local_ok = collection%is_valid()
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(fine_geometries(patch_count))
+    local_ok = .true.
+    do child = 1, patch_count
+      call geometry_builder( &
+        coarse_geometry, collection%plans(child)%coarse_i_lower, &
+        collection%plans(child)%coarse_i_upper, &
+        collection%plans(child)%coarse_j_lower, &
+        collection%plans(child)%coarse_j_upper, refinement_ratio, &
+        fine_geometries(child), entity_ok)
+      local_ok = local_ok .and. entity_ok
+    end do
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call regrid_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, sparse_patch_set, coarse_geometry, &
+      patch_set_template, fine_geometries, collection, refinement_ratio, &
+      local_ok, changed)
+    if (.not. local_ok) then
+      changed = .false.
+      return
+    end if
+
+    ok = .true.
+    if (present(local_root_transfers)) local_root_transfers = transfers
+  end subroutine regrid_tagged_sparse_owned_reactive_eb_patch_set_2d
 
   subroutine gather_sparse_root_to_owner_2d( &
       distribution, sparse_patch_set, coarse_geometry, root_state, &
@@ -2432,14 +2618,16 @@ contains
       barodiffusion_enabled, boundaries, ok, minimum_dt, advanced_steps, &
       local_chemistry_advances, local_hydro_advances, &
       local_transport_euler_advances, minimum_transport_theta, &
-      state_redist_target_volume_fraction, local_timestep_root_transfers)
+      state_redist_target_volume_fraction, local_timestep_root_transfers, &
+      regrid_evaluations, regrids, regrid_interval, regrid_criteria, &
+      refinement_ratio, geometry_builder, local_regrid_root_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
-    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_patch_distribution_2d), intent(inout) :: distribution
     type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
     type(eb_geometry_2d), intent(in) :: coarse_geometry
-    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    type(reactive_eb_patch_set_2d), intent(inout) :: patch_set_template
     character(len=*), intent(in) :: solver, reconstruction, limiter
     integer, intent(in) :: state_redist_max_order
     real(dp), intent(inout) :: time
@@ -2459,13 +2647,27 @@ contains
     real(dp), intent(out), optional :: minimum_transport_theta
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
     integer, intent(out), optional :: local_timestep_root_transfers
+    integer, intent(inout), optional :: regrid_evaluations, regrids
+    integer, intent(in), optional :: regrid_interval, refinement_ratio
+    type(amr_eb_tagging_criteria_2d), intent(in), optional :: regrid_criteria
+    procedure(sparse_eb_geometry_builder_2d), optional :: geometry_builder
+    integer, intent(out), optional :: local_regrid_root_transfers
 
-    real(dp) :: dt, numeric_controls(7), numeric_maximum(7)
-    real(dp) :: numeric_minimum(7), remaining, selected_target
+    type(amr_eb_tagging_criteria_2d) :: selected_regrid_criteria
+    type(mpi_amr_eb_patch_distribution_2d) :: candidate_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate_sparse_patch_set
+    type(reactive_eb_patch_set_2d) :: candidate_patch_set_template
+    real(dp) :: dt, numeric_controls(10), numeric_maximum(10)
+    real(dp) :: numeric_minimum(10), remaining, selected_target
     real(dp) :: step_theta, time_tolerance
-    logical :: accepted, global_ok, local_ok
+    logical :: accepted, global_ok, local_ok, regrid_enabled
+    logical :: regrid_requested, scheduled_regrid, step_changed
     integer :: chemistry_advances, hydro_advances, ierr
-    integer :: integer_controls(2), integer_maximum(2), integer_minimum(2)
+    integer :: integer_controls(11), integer_maximum(11)
+    integer :: integer_minimum(11)
+    integer :: regrid_transfers, selected_regrid_evaluations
+    integer :: selected_regrid_interval, selected_regrids
+    integer :: selected_refinement_ratio, step_regrid_transfers
     integer :: step_chemistry, step_hydro, step_timestep_transfers
     integer :: step_transport, timestep_transfers, transport_advances
 
@@ -2475,6 +2677,7 @@ contains
     hydro_advances = 0
     transport_advances = 0
     timestep_transfers = 0
+    regrid_transfers = 0
     if (present(advanced_steps)) advanced_steps = 0
     if (present(local_chemistry_advances)) local_chemistry_advances = 0
     if (present(local_hydro_advances)) local_hydro_advances = 0
@@ -2483,12 +2686,45 @@ contains
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (present(local_timestep_root_transfers)) &
       local_timestep_root_transfers = 0
+    if (present(local_regrid_root_transfers)) &
+      local_regrid_root_transfers = 0
     selected_target = 0.5_dp
     if (present(state_redist_target_volume_fraction)) &
       selected_target = state_redist_target_volume_fraction
+    selected_regrid_evaluations = 0
+    selected_regrids = 0
+    selected_regrid_interval = 1
+    selected_refinement_ratio = 2
+    selected_regrid_criteria = amr_eb_tagging_criteria_2d()
+    if (present(regrid_evaluations)) &
+      selected_regrid_evaluations = regrid_evaluations
+    if (present(regrids)) selected_regrids = regrids
+    if (present(regrid_interval)) selected_regrid_interval = regrid_interval
+    if (present(refinement_ratio)) &
+      selected_refinement_ratio = refinement_ratio
+    if (present(regrid_criteria)) &
+      selected_regrid_criteria = regrid_criteria
+    regrid_requested = present(regrid_evaluations) .or. present(regrids) .or. &
+      present(regrid_interval) .or. present(regrid_criteria) .or. &
+      present(refinement_ratio) .or. present(geometry_builder) .or. &
+      present(local_regrid_root_transfers)
+    regrid_enabled = &
+      present(regrid_evaluations) .and. present(regrids) .and. &
+      present(regrid_interval) .and. present(regrid_criteria) .and. &
+      present(refinement_ratio) .and. present(geometry_builder)
     numeric_controls = [ &
-      time, final_time, hydro_cfl, transport_cfl, rtol, atol, selected_target]
-    integer_controls = [steps, maximum_steps]
+      time, final_time, hydro_cfl, transport_cfl, rtol, atol, selected_target, &
+      selected_regrid_criteria%relative_gradient_threshold, &
+      selected_regrid_criteria%absolute_gradient_threshold, &
+      selected_regrid_criteria%scale_floor]
+    integer_controls = [ &
+      steps, maximum_steps, merge(1, 0, regrid_enabled), &
+      selected_regrid_interval, selected_refinement_ratio, &
+      selected_regrid_evaluations, selected_regrids, &
+      selected_regrid_criteria%buffer_cells, &
+      selected_regrid_criteria%minimum_patch_cells_x, &
+      selected_regrid_criteria%minimum_patch_cells_y, &
+      selected_regrid_criteria%maximum_patch_gap_cells]
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(final_time))
     local_ok = size(species) >= 1 .and. &
@@ -2499,6 +2735,14 @@ contains
       rtol > 0.0_dp .and. atol > 0.0_dp .and. &
       selected_target > 0.0_dp .and. selected_target <= 1.0_dp .and. &
       steps >= 0 .and. maximum_steps >= steps .and. &
+      (.not. regrid_requested .or. regrid_enabled) .and. &
+      (.not. regrid_enabled .or. &
+        (selected_regrid_interval >= 1 .and. &
+        selected_refinement_ratio >= 2 .and. &
+        selected_regrid_evaluations >= 0 .and. selected_regrids >= 0 .and. &
+        selected_regrids <= selected_regrid_evaluations .and. &
+        selected_regrid_criteria%is_valid( &
+          coarse_geometry%nx, coarse_geometry%ny))) .and. &
       sparse_patch_set%nvar == reactive_nvar(size(species)) .and. &
       sparse_patch_set%is_valid( &
         distribution, coarse_geometry, patch_set_template)
@@ -2506,19 +2750,19 @@ contains
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
     call MPI_Allreduce( &
-      numeric_controls, numeric_minimum, 7, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      numeric_controls, numeric_minimum, 10, MPI_DOUBLE_PRECISION, MPI_MIN, &
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS) return
     call MPI_Allreduce( &
-      numeric_controls, numeric_maximum, 7, MPI_DOUBLE_PRECISION, MPI_MAX, &
+      numeric_controls, numeric_maximum, 10, MPI_DOUBLE_PRECISION, MPI_MAX, &
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS) return
     call MPI_Allreduce( &
-      integer_controls, integer_minimum, 2, MPI_INTEGER, MPI_MIN, &
+      integer_controls, integer_minimum, 11, MPI_INTEGER, MPI_MIN, &
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS) return
     call MPI_Allreduce( &
-      integer_controls, integer_maximum, 2, MPI_INTEGER, MPI_MAX, &
+      integer_controls, integer_maximum, 11, MPI_INTEGER, MPI_MAX, &
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS .or. &
         any(numeric_minimum /= numeric_maximum) .or. &
@@ -2537,15 +2781,43 @@ contains
       if (.not. local_ok) return
       dt = min(dt, remaining)
       if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) return
-      call advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
-        species, reactions, transport, distribution, sparse_patch_set, &
-        coarse_geometry, patch_set_template, solver, reconstruction, &
-        limiter, state_redist_max_order, dt, rtol, atol, &
-        viscosity_enabled, thermal_conduction_enabled, &
-        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
-        local_ok, step_chemistry, step_hydro, step_transport, step_theta, &
-        selected_target)
-      if (.not. local_ok) return
+      scheduled_regrid = regrid_enabled .and. &
+        modulo(steps + 1, selected_regrid_interval) == 0
+      step_regrid_transfers = 0
+      step_changed = .false.
+      if (scheduled_regrid) then
+        candidate_distribution = distribution
+        candidate_sparse_patch_set = sparse_patch_set
+        candidate_patch_set_template = patch_set_template
+        call advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
+          species, reactions, transport, candidate_distribution, &
+          candidate_sparse_patch_set, coarse_geometry, &
+          candidate_patch_set_template, solver, reconstruction, limiter, &
+          state_redist_max_order, dt, rtol, atol, viscosity_enabled, &
+          thermal_conduction_enabled, species_diffusion_enabled, &
+          barodiffusion_enabled, boundaries, local_ok, step_chemistry, &
+          step_hydro, step_transport, step_theta, selected_target)
+        if (.not. local_ok) return
+        call regrid_tagged_sparse_owned_reactive_eb_patch_set_2d( &
+          species, candidate_distribution, candidate_sparse_patch_set, &
+          coarse_geometry, candidate_patch_set_template, &
+          selected_regrid_criteria, selected_refinement_ratio, &
+          geometry_builder, local_ok, step_changed, step_regrid_transfers)
+        if (.not. local_ok) return
+        distribution = candidate_distribution
+        sparse_patch_set = candidate_sparse_patch_set
+        patch_set_template = candidate_patch_set_template
+      else
+        call advance_sparse_owned_reactive_eb_patch_set_strang_2d( &
+          species, reactions, transport, distribution, sparse_patch_set, &
+          coarse_geometry, patch_set_template, solver, reconstruction, &
+          limiter, state_redist_max_order, dt, rtol, atol, &
+          viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+          local_ok, step_chemistry, step_hydro, step_transport, step_theta, &
+          selected_target)
+        if (.not. local_ok) return
+      end if
 
       time = time + dt
       steps = steps + 1
@@ -2553,6 +2825,11 @@ contains
       hydro_advances = hydro_advances + step_hydro
       transport_advances = transport_advances + step_transport
       timestep_transfers = timestep_transfers + step_timestep_transfers
+      regrid_transfers = regrid_transfers + step_regrid_transfers
+      if (scheduled_regrid) then
+        selected_regrid_evaluations = selected_regrid_evaluations + 1
+        if (step_changed) selected_regrids = selected_regrids + 1
+      end if
       if (minimum_dt == 0.0_dp) then
         minimum_dt = dt
       else
@@ -2569,6 +2846,11 @@ contains
         minimum_transport_theta = min(minimum_transport_theta, step_theta)
       if (present(local_timestep_root_transfers)) &
         local_timestep_root_transfers = timestep_transfers
+      if (present(local_regrid_root_transfers)) &
+        local_regrid_root_transfers = regrid_transfers
+      if (present(regrid_evaluations)) &
+        regrid_evaluations = selected_regrid_evaluations
+      if (present(regrids)) regrids = selected_regrids
     end do
 
     time = final_time
