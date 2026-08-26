@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.127.0` milestone contains the serial verification suite, eight optional
+The `0.128.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -91,6 +91,12 @@ subcycle-weighted ownership, and return to one-copy sparse storage. The whole
 distribution/template/state replacement is transactional. This first public
 bridge deliberately materializes the hierarchy only inside the infrequent
 regrid compatibility window; normal timesteps remain owner-local.
+The sparse public clock can also evaluate temperature-gradient tags at a
+caller-selected accepted-step cadence. Only the root physics owner constructs
+the patch plan; compact topology metadata is broadcast, while the caller's
+geometry callback rebuilds each planned EB child. Physics and any due regrid
+commit as one transaction, so a geometry or topology failure leaves the step,
+clock, hierarchy, counters, and published traffic unchanged.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -595,6 +601,9 @@ The AMR layer provides:
 - transactional explicit sparse MPI EB topology rebuilding with serial
   overlap/prolongation parity, deterministic owner recomputation, one-copy
   post-regrid storage, and complete invalid-control rollback;
+- scheduled temperature-tagged sparse MPI EB topology rebuilding with
+  root-owner planning, compact metadata broadcast, caller-defined geometry,
+  serial dynamic-loop parity, and whole-step rollback;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

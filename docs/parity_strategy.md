@@ -2062,3 +2062,22 @@ must reject before materialization and preserve the old distribution, child
 owners, sparse fields, template, and `changed=false` result. The gate runs in
 GNU Fortran Release and bounds/FPE-checked Debug configurations before the
 complete 208-test regression.
+
+## 0.128.0 scheduled tag-driven sparse MPI reactive EB AMR regrid gates
+
+Start from two separated ratio-two children and a thermodynamically consistent
+root temperature hotspot. Advance an independent serial full-physics loop to
+`1.01` times the initial stable interval, evaluating temperature tags after
+accepted step two and applying the serial multipatch regrid. The public sparse
+loop must match its exact step, evaluation, and topology-change counts; minimum
+dt and limiter; ordered topology; and root/child state and temperature within
+`2e-10` field scale at one, two, four, and eight ranks.
+
+The single scheduled plan must send one root payload per non-root-owner tile,
+while timestep selection sends the same independently counted payloads once per
+accepted step. A second run uses a geometry builder that rejects the first
+tagged plan. The otherwise valid physics candidate, time, step, distribution,
+sparse fields, template, regrid counters, and published timestep/regrid traffic
+must all remain at their pre-step values. The gate runs in GNU Fortran Release
+and bounds/FPE-checked Debug configurations before the complete 208-test
+regression.

@@ -693,6 +693,8 @@ Required capabilities:
 - [x] transactional explicit sparse EB topology rebuild with serial overlap
   retention, deterministic owner recomputation, and one-copy post-regrid
   storage (`0.127.0`)
+- [x] root-owner temperature tagging and scheduled sparse EB topology rebuild
+  inside the public full-physics clock with whole-step rollback (`0.128.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

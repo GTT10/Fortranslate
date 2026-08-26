@@ -1330,14 +1330,24 @@ storage. Distribution, sparse payloads, and geometry template commit together;
 invalid controls or any intermediate failure leave all three unchanged. This
 correctness-first compatibility window is confined to regrid events.
 
+In `0.128.0`, temperature-gradient regrid planning is connected to that
+transaction and to the public sparse clock. Root tiles gather only to the root
+physics owner, which builds the ordered collection and broadcasts compact plan
+metadata rather than numerical fields. A caller-supplied geometry builder
+reconstructs each planned EB child on all ranks before the existing
+serial-compatible regrid commit. When a cadence-triggered regrid is due, the
+physics step, distribution, sparse payloads, geometry template, regrid counts,
+and root-traffic diagnostics publish atomically. A failed geometry build or
+regrid discards the otherwise valid physics candidate and leaves the caller at
+the previous accepted time.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
-lifecycle ownership,
-non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-owner-local tag planning and replica-free regrid overlap transfer, distributed
-sparse checkpoint/output, and distributed EB flux registers
+lifecycle ownership, non-outflow refined boundaries, decomposed root-level MPI
+StateRedist, replica-free regrid overlap transfer, distributed sparse
+checkpoint/output, and distributed EB flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

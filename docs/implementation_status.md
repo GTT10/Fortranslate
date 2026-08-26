@@ -2286,7 +2286,27 @@ remain separate work.
 - [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
 
 The explicit regrid removes the fixed-topology API restriction but currently
-uses a replicated compatibility window during topology changes. Owner-local
-tag planning, direct old/new overlap transfer, scheduled regrid integration in
-the public clock, checkpoint/restart, parallel output, and root physics
-decomposition remain separate work.
+uses a replicated compatibility window during topology changes. Tag planning,
+scheduled clock integration, direct old/new overlap transfer,
+checkpoint/restart, parallel output, and root physics decomposition remain
+separate work at this milestone.
+
+## Scheduled tag-driven sparse MPI reactive EB AMR regrid (`0.128.0`)
+
+- [x] root-owner-only temperature-gradient tag evaluation and collection plan
+- [x] compact ordered-plan metadata broadcast without root numerical fields
+- [x] public caller geometry-builder callback for planned EB child rectangles
+- [x] accepted-step cadence integrated into the sparse target-time loop
+- [x] atomic physics-step plus distribution/state/template regrid commit
+- [x] committed-only regrid-evaluation, topology-change, and traffic accounting
+- [x] independent serial dynamic-timestep and scheduled-regrid reference
+- [x] exact root, child, temperature, topology, and limiter parity
+- [x] geometry-builder failure rollback of state, clock, hierarchy, and counts
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The sparse EB clock now owns a complete two-level dynamic-topology lifecycle.
+Regrid events still use the `0.127.0` replicated compatibility window after the
+owner-local plan is broadcast. Direct overlap migration, sparse
+checkpoint/restart and parallel output, arbitrary-depth dynamic EB topology,
+and decomposition of the level-wide root physics kernel remain separate work.
