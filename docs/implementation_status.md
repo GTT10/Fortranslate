@@ -2737,3 +2737,22 @@ Sparse hydro and transport now share the same owner-local state, flux, and
 correction routing boundary. Complete hierarchy materialization remains only
 for explicit output, checkpoint, restart, and legacy compatibility APIs. This
 milestone makes no measured speedup claim.
+
+## Arbitrary-depth reactive EB patch-tree timestep (`0.153.0`)
+
+- [x] one shared active-cell EB CFL kernel below driver and AMR layers
+- [x] every root and child patch evaluated on its own EB geometry
+- [x] fully covered nodes skipped while an entirely inactive tree rejects
+- [x] cumulative refinement-product conversion to one root interval
+- [x] arbitrary-depth and branching traversal with no fixed level count
+- [x] species-layout, finite-CFL, node-conversion, and scale validation
+- [x] deterministic zero timestep on every rejected path
+- [x] read-only hierarchy contract on accepted and rejected paths
+- [x] four-level two-branch reference reduction gate
+- [x] forced deepest-node limiting gate with exact subcycle scaling
+- [x] nonfinite-CFL rollback gate
+
+This milestone removes timestep selection from the remaining serial patch-tree
+gaps. Arbitrary-depth hydrodynamics, chemistry, molecular transport, public
+clock ownership, dynamic tagging, checkpoint I/O, and MPI ownership for this
+new 2D EB tree remain separate work.

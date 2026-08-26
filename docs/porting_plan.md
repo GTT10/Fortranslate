@@ -1056,6 +1056,19 @@ serial field parity, owner work, conservation, clock, scheduled-regrid, and
 rollback gates at one, two, four, and eight ranks before the complete serial
 regression.
 
+## 0.153.0 arbitrary-depth reactive EB patch-tree timestep gates
+
+Move the qualified active-cell EB CFL calculation into a shared numerical
+module while retaining the existing driver API. Traverse every runtime tree
+node and reduce its local limit into root time with the cumulative product of
+all ancestor refinement ratios. Do not add a fixed level bound or materialize a
+second hierarchy.
+
+Require independent four-level branching parity, a deepest-node limiting case,
+finite positive output, deterministic zero on invalid input, and a read-only
+state/temperature contract. Run the complete serial Debug and Release suite and
+the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -1664,3 +1664,20 @@ temperature, or flux result, no remote tile-result message, and no final root
 scatter. Finite-band halos, deterministic child order, direct flux fragments,
 and hierarchy-wide average-down remain unchanged. Superseded private root-
 bundle, root-context, correction, and scatter communication helpers are absent.
+
+## Arbitrary-depth reactive EB patch-tree timestep (`0.153.0`)
+
+The single-node active-cell CFL calculation now lives below both the runnable
+driver and AMR hierarchy layers. The existing driver entrypoint remains a thin
+compatibility wrapper, while the reactive EB patch tree calls the same kernel
+for every root and child node without materializing another hierarchy.
+
+Tree traversal carries the cumulative product of relation refinement ratios.
+Each node-local interval is multiplied by that product before entering the
+root-time minimum, matching the number of temporal subcycles from that node to
+the root. Fully covered nodes impose no stability constraint and are skipped;
+an entirely inactive tree rejects. Invalid trees, species layouts, CFL
+controls, active-node states, or an overflowing cumulative scale reject with
+zero timestep. The accepted hierarchy is read-only throughout selection.
+Hydro, chemistry, transport, public clock ownership, and MPI distribution
+remain separate arbitrary-depth operations.
