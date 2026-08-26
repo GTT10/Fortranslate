@@ -2612,7 +2612,7 @@ is subsequent work; transport child owners no longer receive that result.
 - [x] deterministic overlapping-support merge remains in child order
 - [x] two messages per remote child per transport Euler stage
 - [x] combined context/support payload smaller than the former root bundle
-- [x] support/full reactive reflux unit parity
+- [x] strictly smaller globally indexed support/full reactive reflux unit parity
 
 The root physics owner still assembles the temporary complete root Euler
 result and merges returned supports before row scatter. Direct context and

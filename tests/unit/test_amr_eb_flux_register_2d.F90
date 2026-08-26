@@ -20,13 +20,17 @@ program test_amr_eb_flux_register_2d
   implicit none
 
   integer, parameter :: coarse_nx = 8, coarse_ny = 8
-  integer, parameter :: coarse_i_lower = 2, coarse_i_upper = 6
+  integer, parameter :: coarse_i_lower = 2, coarse_i_upper = 5
   integer, parameter :: coarse_j_lower = 2, coarse_j_upper = 6
   integer, parameter :: ratio = 2
   integer, parameter :: fine_nx = &
     (coarse_i_upper - coarse_i_lower + 1) * ratio
   integer, parameter :: fine_ny = &
     (coarse_j_upper - coarse_j_lower + 1) * ratio
+  integer, parameter :: support_i_lower = max(1, coarse_i_lower - 2)
+  integer, parameter :: support_i_upper = min(coarse_nx, coarse_i_upper + 2)
+  integer, parameter :: support_j_lower = max(1, coarse_j_lower - 2)
+  integer, parameter :: support_j_upper = min(coarse_ny, coarse_j_upper + 2)
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(amr_eb_flux_register_2d) :: register, support_register
@@ -45,9 +49,11 @@ program test_amr_eb_flux_register_2d
   real(dp), allocatable :: reactive_refluxed_fine(:, :, :)
   real(dp), allocatable :: support_refluxed_coarse(:, :, :)
   real(dp), allocatable :: support_refluxed_fine(:, :, :)
+  real(dp), allocatable :: support_coarse_input(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :), fine_temperature(:, :)
   real(dp), allocatable :: refluxed_coarse_temperature(:, :)
   real(dp), allocatable :: refluxed_fine_temperature(:, :)
+  real(dp), allocatable :: support_temperature_input(:, :)
   real(dp), allocatable :: support_coarse_temperature(:, :)
   real(dp), allocatable :: support_fine_temperature(:, :)
   real(dp), allocatable :: primitive(:), state_cell(:), mass_fractions(:)
@@ -255,14 +261,29 @@ program test_amr_eb_flux_register_2d
     reactive_fine_x, reactive_fine_y, 1.0e-3_dp, ok)
   call require(ok, "reactive fine-flux accumulation")
   support_register = register
-  allocate(support_refluxed_coarse, mold=reactive_coarse)
+  allocate(support_coarse_input( &
+    nvar, support_i_lower:support_i_upper, &
+    support_j_lower:support_j_upper))
+  allocate(support_temperature_input( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper))
+  allocate(support_refluxed_coarse( &
+    nvar, support_i_lower:support_i_upper, &
+    support_j_lower:support_j_upper))
   allocate(support_refluxed_fine, mold=reactive_fine)
-  allocate(support_coarse_temperature, mold=coarse_temperature)
+  allocate(support_coarse_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper))
   allocate(support_fine_temperature, mold=fine_temperature)
+  support_coarse_input = reactive_coarse( &
+    :, support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  support_temperature_input = coarse_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  call require(size(support_coarse_input) < size(reactive_coarse), &
+    "reactive reflux uses compact coarse support")
   call reflux_reactive_eb_state_patch_support_2d( &
-    species, 1, 1, reactive_coarse, coarse_temperature, coarse_geometry, &
-    reactive_fine, fine_temperature, fine_geometry, patch, &
-    support_register, support_refluxed_coarse, support_coarse_temperature, &
+    species, support_i_lower, support_j_lower, support_coarse_input, &
+    support_temperature_input, coarse_geometry, reactive_fine, &
+    fine_temperature, fine_geometry, patch, support_register, &
+    support_refluxed_coarse, support_coarse_temperature, &
     support_refluxed_fine, support_fine_temperature, ok)
   call require(ok .and. maxval(abs(support_register%correction)) == 0.0_dp, &
     "reactive support re-reflux transaction")
@@ -274,11 +295,15 @@ program test_amr_eb_flux_register_2d
   call require(ok, "reactive EB re-reflux transaction")
   call require( &
     maxval(abs(support_refluxed_coarse - &
-      reactive_refluxed_coarse)) == 0.0_dp .and. &
+      reactive_refluxed_coarse( &
+        :, support_i_lower:support_i_upper, &
+        support_j_lower:support_j_upper))) == 0.0_dp .and. &
     maxval(abs(support_refluxed_fine - &
       reactive_refluxed_fine)) == 0.0_dp .and. &
     maxval(abs(support_coarse_temperature - &
-      refluxed_coarse_temperature)) == 0.0_dp .and. &
+      refluxed_coarse_temperature( &
+        support_i_lower:support_i_upper, &
+        support_j_lower:support_j_upper))) == 0.0_dp .and. &
     maxval(abs(support_fine_temperature - &
       refluxed_fine_temperature)) == 0.0_dp, &
     "reactive support/full re-reflux parity")

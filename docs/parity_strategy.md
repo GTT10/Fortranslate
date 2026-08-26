@@ -2350,9 +2350,10 @@ ranks in Release and bounds/FPE-checked Debug.
 ## 0.144.0 compact child-local reactive reflux gates
 
 Run reactive reflux once through complete-root compatibility arrays and once
-through the global-index support entrypoint, and require bitwise-identical
-coarse state, fine state, coarse temperature, and fine temperature outputs.
-Both successful registers must reset; established nonphysical rollback remains
+through a strictly smaller array passed to the global-index support entrypoint,
+and require bitwise-identical coarse state and temperature on the supplied
+support plus bitwise-identical complete fine state and temperature. Both
+successful registers must reset; established nonphysical rollback remains
 unchanged.
 
 For sparse MPI transport, require the combined exterior/register/patch-plus-
