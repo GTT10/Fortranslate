@@ -209,10 +209,11 @@ contains
 
     type(reactive_amr_eb_patch_tree_2d) :: collapsed, candidate
     type(amr_eb_patch_tree_topology_2d) :: new_topology
+    type(eb_geometry_2d) :: parent_geometry
     real(dp), allocatable :: old_integral(:), new_integral(:)
     real(dp) :: integral_scale
     logical :: local_ok, topology_changed
-    integer :: child, level, old_patch
+    integer :: child, level, old_patch, parent, relation
     logical, allocatable :: copied(:, :)
 
     ok = .false.
@@ -248,8 +249,26 @@ contains
       candidate, local_ok)
     if (.not. local_ok) return
 
-    do level = 2, min(candidate%level_count(), solution%level_count())
+    do level = 2, candidate%level_count()
+      relation = level - 1
       do child = 1, candidate%levels(level)%patch_count()
+        parent = candidate%topology%relations(relation)% &
+          children(child)%parent_patch
+        call patch_geometry_at( &
+          candidate%topology, level - 1, parent, parent_geometry, local_ok)
+        if (.not. local_ok) return
+        if (present(failure_context)) &
+          write(failure_context, '(a,i0,a,i0)') &
+            "PCM initialization level ", level - 1, " patch ", child
+        call prolong_reactive_eb_patch_pcm_2d( &
+          species, candidate%levels(level - 1)%patches(parent)%state, &
+          candidate%levels(level - 1)%patches(parent)%temperature, &
+          parent_geometry, &
+          candidate%topology%relations(relation)%children(child)%geometry, &
+          candidate%topology%relations(relation)%children(child)%patch, &
+          candidate%levels(level)%patches(child)%state, &
+          candidate%levels(level)%patches(child)%temperature, local_ok)
+        if (.not. local_ok) return
         if (present(failure_context)) &
           write(failure_context, '(a,i0,a,i0)') &
             "overlap retention level ", level - 1, " patch ", child
@@ -257,22 +276,24 @@ contains
           size(candidate%levels(level)%patches(child)%temperature, 1), &
           size(candidate%levels(level)%patches(child)%temperature, 2)))
         copied = .false.
-        do old_patch = 1, solution%levels(level)%patch_count()
-          call retain_same_resolution_overlap( &
-            candidate%levels(level)%patches(child), &
-            candidate%topology%relations(level - 1)%children(child)%geometry, &
-            solution%levels(level)%patches(old_patch), &
-            solution%topology%relations(level - 1)%children(old_patch)%geometry, &
-            copied, local_ok)
-          if (.not. local_ok) return
-        end do
+        if (level <= solution%level_count()) then
+          do old_patch = 1, solution%levels(level)%patch_count()
+            call retain_same_resolution_overlap( &
+              candidate%levels(level)%patches(child), &
+              candidate%topology%relations(relation)%children(child)%geometry, &
+              solution%levels(level)%patches(old_patch), &
+              solution%topology%relations(relation)%children(old_patch)% &
+                geometry, copied, local_ok)
+            if (.not. local_ok) return
+          end do
+        end if
         deallocate(copied)
         if (present(failure_context)) &
           write(failure_context, '(a,i0,a,i0)') &
             "temperature recovery level ", level - 1, " patch ", child
         call recover_patch_temperature( &
           species, candidate%levels(level)%patches(child), &
-          candidate%topology%relations(level - 1)%children(child)%geometry, &
+          candidate%topology%relations(relation)%children(child)%geometry, &
           local_ok)
         if (.not. local_ok) return
       end do
