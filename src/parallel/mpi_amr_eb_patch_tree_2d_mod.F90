@@ -226,7 +226,7 @@ contains
       mpi_amr_eb_patch_tree_distribution_matches_2d(distribution, topology)
   end subroutine initialize_mpi_amr_eb_patch_tree_distribution_2d
 
-  pure logical function mpi_amr_eb_patch_tree_distribution_matches_2d( &
+  logical function mpi_amr_eb_patch_tree_distribution_matches_2d( &
       distribution, topology) result(matches)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
