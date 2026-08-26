@@ -1341,6 +1341,18 @@ SSPRK2 blend. A target touching a periodic y boundary uses the complete root
 band to preserve the serial kernel's cyclic wrap; cyclic finite-halo geometry
 is a later optimization.
 
+In `0.141.0`, a periodic y-edge target can replace that complete-root
+compatibility band with a boundary-anchored cyclic band. The lower and upper
+global boundary remain the temporary geometry's two outer ends, while two
+increasing source-row fragments supply the target, its six-row dependency
+guard, and one additional seam-isolation row on each side. This prevents the
+deliberate internal gap from contaminating a cell on the required stencil.
+Absolute EB boundary-centroid y coordinates are shifted into compact-band
+coordinates; all other copied EB metrics retain their established local
+meaning. If the protected footprint spans the root, the complete-root fallback
+remains. The post-compute root bundle for child exterior data and reflux is
+unchanged.
+
 In `0.126.0`, a public sparse time loop composes that selector with the direct
 owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after
 every accepted state, the final interval is clipped to the target time, and

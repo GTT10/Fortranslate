@@ -2544,3 +2544,24 @@ a complete band so cyclic wrap remains exact. Fine-child context and cumulative
 reflux also retain a complete temporary root bundle on the established physics
 owner. Cyclic band geometry and distributed coarse/fine interface data are
 subsequent decomposition work.
+
+## Sparse MPI periodic-edge cyclic transport bands (`0.141.0`)
+
+- [x] boundary-anchored lower- and upper-edge cyclic source-row maps
+- [x] physical periodic y boundary retained at the temporary band ends
+- [x] six-row transport/StateRedist dependency guard
+- [x] one additional row isolating each target guard from the internal gap
+- [x] point-to-point assembly split by source owner and contiguous fragment
+- [x] absolute EB boundary-centroid y remapping into compact coordinates
+- [x] complete-root fallback when the protected footprint spans the root
+- [x] exact fragment-transfer and computed-band-cell accounting
+- [x] dedicated 14-by-21 root-only cyclic test at one, two, four, and eight ranks
+- [x] finite periodic-edge bands exercised at four and eight ranks
+- [x] serial state, temperature, and redistribution-limiter parity
+- [x] existing dynamic-regrid and public time-loop regression coverage
+
+The cyclic band keeps the serial kernel's periodic boundary at its physical
+outer ends instead of placing the wrap at an artificial internal seam. The
+post-compute complete root bundle is still assembled for fine-child exterior
+data, flux registers, and reflux; distributing that interface remains later
+work.

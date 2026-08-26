@@ -75,7 +75,9 @@ program pelef_mpi_eb_amr_patch_2d
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
+  integer, parameter :: cyclic_nx = 14, cyclic_ny = 21
   type(eb_geometry_2d) :: coarse_geometry
+  type(eb_geometry_2d) :: cyclic_geometry
   type(eb_geometry_2d), allocatable :: fine_geometries(:)
   type(amr_eb_patch_2d) :: geometry_patch
   type(amr_eb_tagging_criteria_2d) :: criteria
@@ -92,6 +94,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_topology_2d) :: restart_topology
   type(reactive_eb_patch_topology_2d) :: invalid_restart_topology
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
+  type(mpi_amr_eb_patch_distribution_2d) :: cyclic_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
@@ -106,6 +109,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_hydro_failed_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_hydro_failed_backup_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_transport_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: cyclic_sparse_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_failed_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_failed_backup_set
@@ -133,6 +137,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: transport_start_set
   type(reactive_eb_patch_set_2d) :: transport_reference_set
   type(reactive_eb_patch_set_2d) :: transport_mpi_set
+  type(reactive_eb_patch_set_2d) :: cyclic_patch_set
+  type(reactive_eb_patch_set_2d) :: cyclic_reference_set
+  type(reactive_eb_patch_set_2d) :: cyclic_materialized_set
   type(reactive_eb_patch_set_2d) :: transport_failed_set
   type(reactive_eb_patch_set_2d) :: transport_failed_backup_set
   type(reactive_eb_patch_set_2d) :: full_reference_set, full_mpi_set
@@ -146,6 +153,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: scheduled_template
   type(reactive_eb_patch_set_2d) :: scheduled_failed_template
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
+  real(dp) :: cyclic_level_set(0:cyclic_nx, 0:cyclic_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
   real(dp), allocatable :: local_coarse_state(:, :, :)
@@ -186,6 +194,11 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: transport_failed_temperature(:, :)
   real(dp), allocatable :: transport_failed_backup_state(:, :, :)
   real(dp), allocatable :: transport_failed_backup_temperature(:, :)
+  real(dp), allocatable :: cyclic_state(:, :, :), cyclic_temperature(:, :)
+  real(dp), allocatable :: cyclic_reference_state(:, :, :)
+  real(dp), allocatable :: cyclic_reference_temperature(:, :)
+  real(dp), allocatable :: cyclic_materialized_state(:, :, :)
+  real(dp), allocatable :: cyclic_materialized_temperature(:, :)
   real(dp), allocatable :: full_reference_state(:, :, :)
   real(dp), allocatable :: full_reference_temperature(:, :)
   real(dp), allocatable :: full_mpi_state(:, :, :)
@@ -210,11 +223,13 @@ program pelef_mpi_eb_amr_patch_2d
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: regrid_recipients(:)
   logical, allocatable :: restriction_recipients(:)
+  integer, allocatable :: transport_band_source_rows(:)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
   real(dp) :: hydro_dt, hydro_change, hydro_scale
   real(dp) :: transport_dt, transport_change, transport_scale
   real(dp) :: transport_theta, transport_reference_theta
+  real(dp) :: cyclic_dt, cyclic_theta, cyclic_reference_theta, cyclic_scale
   real(dp) :: timestep_dt, timestep_reference_dt, timestep_entity_dt
   real(dp) :: timestep_maximum_diffusivity
   real(dp) :: child_sound_speed, child_temperature
@@ -230,10 +245,12 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: checkpoint_base_density
   logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
   logical :: geometry_perturbed, ok, topology_changed
+  logical :: wrapped_transport_band
   logical :: io_files_ok
   integer :: child, component, global_advances, global_i, global_j, i, ierr
-  integer :: band_j_lower, band_j_upper, j
+  integer :: band_j_lower, band_j_upper, band_rows, j
   integer :: new_child, old_child, old_i, old_j, owner, source
+  integer :: segment_j_lower, segment_j_upper, source_tile, target_rows
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_root_hydro_cells, global_root_hydro_cells
@@ -396,7 +413,8 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(sum(distribution%rank_cell_counts) == &
     coarse_nx * coarse_ny + 2 * 10 * 10, &
     "MPI EB AMR owned cell accounting", rank)
-  call assert_all(sum(distribution%rank_work_counts) == 996_int64, &
+  call assert_all(sum(distribution%rank_work_counts) == int( &
+    coarse_nx * coarse_ny + 2 * 10 * 10 * ratio**2, int64), &
     "MPI EB AMR parabolic work accounting", rank)
   call assert_all(minval(distribution%rank_entity_counts) >= 1, &
     "MPI EB AMR every rank owns a root tile", rank)
@@ -1884,31 +1902,88 @@ program pelef_mpi_eb_amr_patch_2d
   restriction_recipients = .false.
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
+    target_rows = distribution%root_tiles(tile)%j_upper - &
+      distribution%root_tiles(tile)%j_lower + 1
     band_j_lower = max(1, distribution%root_tiles(tile)%j_lower - &
       mpi_amr_eb_root_tile_transport_halo_cells)
     band_j_upper = min(coarse_ny, &
       distribution%root_tiles(tile)%j_upper + &
         mpi_amr_eb_root_tile_transport_halo_cells)
+    wrapped_transport_band = reactive_boundary_is_periodic( &
+        boundaries%face(boundary_y_lower)) .and. &
+      (distribution%root_tiles(tile)%j_lower == 1 .or. &
+       distribution%root_tiles(tile)%j_upper == coarse_ny) .and. &
+      target_rows + &
+        2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1) < coarse_ny
     if (reactive_boundary_is_periodic( &
         boundaries%face(boundary_y_lower)) .and. &
         (distribution%root_tiles(tile)%j_lower == 1 .or. &
-         distribution%root_tiles(tile)%j_upper == coarse_ny)) then
+         distribution%root_tiles(tile)%j_upper == coarse_ny) .and. &
+        .not. wrapped_transport_band) then
       band_j_lower = 1
       band_j_upper = coarse_ny
     end if
+    if (wrapped_transport_band) then
+      band_rows = target_rows + &
+        2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1)
+    else
+      band_rows = band_j_upper - band_j_lower + 1
+    end if
+    allocate(transport_band_source_rows(band_rows))
+    if (wrapped_transport_band .and. &
+        distribution%root_tiles(tile)%j_lower == 1) then
+      band_j_upper = distribution%root_tiles(tile)%j_upper + &
+        mpi_amr_eb_root_tile_transport_halo_cells + 1
+      transport_band_source_rows(1:band_j_upper) = &
+        [(source, source = 1, band_j_upper)]
+      transport_band_source_rows(band_j_upper + 1:band_rows) = [( &
+        source, source = coarse_ny - &
+          mpi_amr_eb_root_tile_transport_halo_cells, coarse_ny)]
+    else if (wrapped_transport_band) then
+      band_j_lower = distribution%root_tiles(tile)%j_lower - &
+        mpi_amr_eb_root_tile_transport_halo_cells - 1
+      transport_band_source_rows( &
+        1:mpi_amr_eb_root_tile_transport_halo_cells + 1) = [( &
+          source, source = 1, &
+            mpi_amr_eb_root_tile_transport_halo_cells + 1)]
+      transport_band_source_rows( &
+        mpi_amr_eb_root_tile_transport_halo_cells + 2:band_rows) = [( &
+          source, source = band_j_lower, coarse_ny)]
+    else
+      transport_band_source_rows = [( &
+        source, source = band_j_lower, band_j_upper)]
+    end if
     if (rank == owner) expected_local_root_transport_cells = &
-      expected_local_root_transport_cells + 2 * coarse_nx * ( &
-        band_j_upper - band_j_lower + 1)
-    do source = 1, distribution%root_tile_count()
-      if (distribution%root_tiles(source)%owner == owner) cycle
-      if (band_j_upper < &
-          distribution%root_tiles(source)%j_lower .or. &
-          band_j_lower > &
-          distribution%root_tiles(source)%j_upper) cycle
-      expected_global_root_transfers = expected_global_root_transfers + 2
-      if (rank == distribution%root_tiles(source)%owner) &
-        expected_local_root_transfers = expected_local_root_transfers + 2
+      expected_local_root_transport_cells + 2 * coarse_nx * band_rows
+    segment_j_lower = 1
+    do while (segment_j_lower <= band_rows)
+      source_tile = 0
+      do source = 1, distribution%root_tile_count()
+        if (transport_band_source_rows(segment_j_lower) < &
+            distribution%root_tiles(source)%j_lower .or. &
+            transport_band_source_rows(segment_j_lower) > &
+            distribution%root_tiles(source)%j_upper) cycle
+        source_tile = source
+        exit
+      end do
+      call assert_all(source_tile > 0, &
+        "MPI EB AMR transport band source ownership", rank)
+      segment_j_upper = segment_j_lower
+      do while (segment_j_upper < band_rows)
+        if (transport_band_source_rows(segment_j_upper + 1) /= &
+            transport_band_source_rows(segment_j_upper) + 1 .or. &
+            transport_band_source_rows(segment_j_upper + 1) > &
+              distribution%root_tiles(source_tile)%j_upper) exit
+        segment_j_upper = segment_j_upper + 1
+      end do
+      if (distribution%root_tiles(source_tile)%owner /= owner) then
+        expected_global_root_transfers = expected_global_root_transfers + 2
+        if (rank == distribution%root_tiles(source_tile)%owner) &
+          expected_local_root_transfers = expected_local_root_transfers + 2
+      end if
+      segment_j_lower = segment_j_upper + 1
     end do
+    deallocate(transport_band_source_rows)
     if (owner == root_owner) cycle
     expected_global_root_transfers = expected_global_root_transfers + 4
     if (rank == owner) expected_local_root_transfers = &
@@ -2007,6 +2082,225 @@ program pelef_mpi_eb_amr_patch_2d
             transport_reference_set%children(child)%temperature))), &
       "MPI EB AMR sparse transport serial child parity", rank)
   end do
+
+  block
+    integer, allocatable :: transport_band_source_rows(:)
+    real(dp) :: factor, x
+    logical :: ok, wrapped_transport_band
+    integer :: band_j_lower, band_j_upper, band_rows
+    integer :: expected_global_advances, expected_local_advances
+    integer :: expected_global_root_transfers, expected_local_root_transfers
+    integer :: expected_global_root_transport_cells
+    integer :: expected_local_root_transport_cells
+    integer :: global_advances, global_root_transfers
+    integer :: global_root_transport_cells, i, ierr, j
+    integer :: local_advances, local_root_transfers
+    integer :: local_root_transport_cells, owner, root_owner
+    integer :: segment_j_lower, segment_j_upper, source, source_tile
+    integer :: target_rows, tile
+
+  do j = 0, cyclic_ny
+    do i = 0, cyclic_nx
+      x = real(i, dp) / real(cyclic_nx, dp)
+      cyclic_level_set(i, j) = x - 0.33_dp
+    end do
+  end do
+  call build_eb_geometry_2d( &
+    cyclic_level_set, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
+    cyclic_geometry, ok)
+  call assert_all(ok, "MPI EB AMR cyclic transport geometry", rank)
+  allocate(cyclic_state(nvar, cyclic_nx, cyclic_ny))
+  allocate(cyclic_temperature(cyclic_nx, cyclic_ny))
+  do j = 1, cyclic_ny
+    factor = 1.0_dp + 0.02_dp * sin( &
+      2.0_dp * acos(-1.0_dp) * (real(j, dp) - 0.5_dp) / &
+        real(cyclic_ny, dp))
+    cyclic_state(:, :, j) = spread( &
+      factor * coarse_state(:, 1, 1), 2, cyclic_nx)
+    cyclic_temperature(:, j) = coarse_temperature(1, 1)
+  end do
+  allocate(cyclic_patch_set%children(0))
+  call assert_all(cyclic_patch_set%is_valid(cyclic_geometry, nvar), &
+    "MPI EB AMR cyclic transport root-only hierarchy", rank)
+  cyclic_dt = 0.1_dp * transport_dt
+  allocate(cyclic_reference_state, mold=cyclic_state)
+  allocate(cyclic_reference_temperature, mold=cyclic_temperature)
+  call advance_reactive_eb_patch_set_transport_2d( &
+    species, transport, cyclic_state, cyclic_temperature, cyclic_geometry, &
+    cyclic_patch_set, cyclic_dt, .true., .true., .true., .true., &
+    boundaries, 0.5_dp, 2, cyclic_reference_state, &
+    cyclic_reference_temperature, cyclic_reference_set, &
+    cyclic_reference_theta, ok)
+  call assert_all(ok, "MPI EB AMR cyclic transport serial reference", rank)
+  call initialize_mpi_amr_eb_patch_distribution_2d( &
+    cyclic_geometry, cyclic_patch_set, MPI_COMM_WORLD, &
+    cyclic_distribution, ok, 2)
+  call assert_all(ok .and. cyclic_distribution%is_valid( &
+    cyclic_geometry, cyclic_patch_set), &
+    "MPI EB AMR cyclic transport distribution", rank)
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    cyclic_distribution, size(species), cyclic_state, cyclic_temperature, &
+    cyclic_geometry, cyclic_patch_set, cyclic_sparse_set, ok)
+  call assert_all(ok, "MPI EB AMR cyclic transport sparse scatter", rank)
+
+  root_owner = cyclic_distribution%root_level_owner()
+  expected_local_root_transfers = 0
+  expected_global_root_transfers = 0
+  expected_local_root_transport_cells = 0
+  do tile = 1, cyclic_distribution%root_tile_count()
+    owner = cyclic_distribution%root_tiles(tile)%owner
+    target_rows = cyclic_distribution%root_tiles(tile)%j_upper - &
+      cyclic_distribution%root_tiles(tile)%j_lower + 1
+    band_j_lower = max(1, &
+      cyclic_distribution%root_tiles(tile)%j_lower - &
+        mpi_amr_eb_root_tile_transport_halo_cells)
+    band_j_upper = min(cyclic_ny, &
+      cyclic_distribution%root_tiles(tile)%j_upper + &
+        mpi_amr_eb_root_tile_transport_halo_cells)
+    wrapped_transport_band = reactive_boundary_is_periodic( &
+        boundaries%face(boundary_y_lower)) .and. &
+      (cyclic_distribution%root_tiles(tile)%j_lower == 1 .or. &
+       cyclic_distribution%root_tiles(tile)%j_upper == cyclic_ny) .and. &
+      target_rows + &
+        2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1) < cyclic_ny
+    if (reactive_boundary_is_periodic( &
+        boundaries%face(boundary_y_lower)) .and. &
+        (cyclic_distribution%root_tiles(tile)%j_lower == 1 .or. &
+         cyclic_distribution%root_tiles(tile)%j_upper == cyclic_ny) .and. &
+        .not. wrapped_transport_band) then
+      band_j_lower = 1
+      band_j_upper = cyclic_ny
+    end if
+    if (wrapped_transport_band) then
+      band_rows = target_rows + &
+        2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1)
+    else
+      band_rows = band_j_upper - band_j_lower + 1
+    end if
+    allocate(transport_band_source_rows(band_rows))
+    if (wrapped_transport_band .and. &
+        cyclic_distribution%root_tiles(tile)%j_lower == 1) then
+      band_j_upper = cyclic_distribution%root_tiles(tile)%j_upper + &
+        mpi_amr_eb_root_tile_transport_halo_cells + 1
+      transport_band_source_rows(1:band_j_upper) = &
+        [(source, source = 1, band_j_upper)]
+      transport_band_source_rows(band_j_upper + 1:band_rows) = [( &
+        source, source = cyclic_ny - &
+          mpi_amr_eb_root_tile_transport_halo_cells, cyclic_ny)]
+    else if (wrapped_transport_band) then
+      band_j_lower = cyclic_distribution%root_tiles(tile)%j_lower - &
+        mpi_amr_eb_root_tile_transport_halo_cells - 1
+      transport_band_source_rows( &
+        1:mpi_amr_eb_root_tile_transport_halo_cells + 1) = [( &
+          source, source = 1, &
+            mpi_amr_eb_root_tile_transport_halo_cells + 1)]
+      transport_band_source_rows( &
+        mpi_amr_eb_root_tile_transport_halo_cells + 2:band_rows) = [( &
+          source, source = band_j_lower, cyclic_ny)]
+    else
+      transport_band_source_rows = [( &
+        source, source = band_j_lower, band_j_upper)]
+    end if
+    if (rank == owner) expected_local_root_transport_cells = &
+      expected_local_root_transport_cells + 2 * cyclic_nx * band_rows
+    segment_j_lower = 1
+    do while (segment_j_lower <= band_rows)
+      source_tile = 0
+      do source = 1, cyclic_distribution%root_tile_count()
+        if (transport_band_source_rows(segment_j_lower) < &
+            cyclic_distribution%root_tiles(source)%j_lower .or. &
+            transport_band_source_rows(segment_j_lower) > &
+            cyclic_distribution%root_tiles(source)%j_upper) cycle
+        source_tile = source
+        exit
+      end do
+      call assert_all(source_tile > 0, &
+        "MPI EB AMR cyclic transport band source ownership", rank)
+      segment_j_upper = segment_j_lower
+      do while (segment_j_upper < band_rows)
+        if (transport_band_source_rows(segment_j_upper + 1) /= &
+            transport_band_source_rows(segment_j_upper) + 1 .or. &
+            transport_band_source_rows(segment_j_upper + 1) > &
+              cyclic_distribution%root_tiles(source_tile)%j_upper) exit
+        segment_j_upper = segment_j_upper + 1
+      end do
+      if (cyclic_distribution%root_tiles(source_tile)%owner /= owner) then
+        expected_global_root_transfers = expected_global_root_transfers + 2
+        if (rank == cyclic_distribution%root_tiles(source_tile)%owner) &
+          expected_local_root_transfers = expected_local_root_transfers + 2
+      end if
+      segment_j_lower = segment_j_upper + 1
+    end do
+    deallocate(transport_band_source_rows)
+    if (owner == root_owner) cycle
+    expected_global_root_transfers = expected_global_root_transfers + 4
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 2
+    if (rank == root_owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 2
+  end do
+  expected_local_advances = 0
+  do tile = 1, cyclic_distribution%root_tile_count()
+    if (cyclic_distribution%root_tile_is_local(tile)) &
+      expected_local_advances = expected_local_advances + 2
+  end do
+  expected_global_advances = 2 * cyclic_distribution%root_tile_count()
+  call advance_sparse_owned_reactive_eb_patch_set_transport_2d( &
+    species, transport, cyclic_distribution, cyclic_sparse_set, &
+    cyclic_geometry, cyclic_patch_set, cyclic_dt, .true., .true., .true., &
+    .true., boundaries, 2, ok, local_advances, cyclic_theta, 0.5_dp, &
+    local_root_transfers, local_root_transport_cells)
+  call assert_all(ok .and. cyclic_sparse_set%is_valid( &
+    cyclic_distribution, cyclic_geometry, cyclic_patch_set), &
+    "MPI EB AMR cyclic direct sparse transport", rank)
+  call MPI_Allreduce( &
+    local_advances, global_advances, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_advances == expected_local_advances .and. &
+    global_advances == expected_global_advances, &
+    "MPI EB AMR cyclic transport owner accounting", rank)
+  call MPI_Allreduce( &
+    local_root_transfers, global_root_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transfers == expected_local_root_transfers .and. &
+    global_root_transfers == expected_global_root_transfers, &
+    "MPI EB AMR cyclic transport exact root traffic", rank)
+  call MPI_Allreduce( &
+    local_root_transport_cells, global_root_transport_cells, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  expected_global_root_transport_cells = 0
+  call MPI_Allreduce( &
+    expected_local_root_transport_cells, &
+    expected_global_root_transport_cells, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transport_cells == expected_local_root_transport_cells .and. &
+    global_root_transport_cells == expected_global_root_transport_cells &
+      .and. (cyclic_distribution%nranks <= 2 .or. &
+        global_root_transport_cells < &
+          2 * cyclic_distribution%nranks * cyclic_nx * cyclic_ny), &
+    "MPI EB AMR cyclic transport bounded work", rank)
+  allocate(cyclic_materialized_state, mold=cyclic_state)
+  allocate(cyclic_materialized_temperature, mold=cyclic_temperature)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    cyclic_distribution, cyclic_sparse_set, cyclic_state, &
+    cyclic_temperature, cyclic_geometry, cyclic_patch_set, &
+    cyclic_materialized_state, cyclic_materialized_temperature, &
+    cyclic_materialized_set, ok)
+  cyclic_scale = max(1.0_dp, maxval(abs(cyclic_reference_state)))
+  call assert_all(ok .and. &
+    cyclic_materialized_set%patch_count() == 0 .and. &
+    maxval(abs(cyclic_materialized_state - cyclic_reference_state)) <= &
+      2.0e-11_dp * cyclic_scale .and. &
+    maxval(abs(cyclic_materialized_temperature - &
+      cyclic_reference_temperature)) <= 2.0e-11_dp * max( &
+        1.0_dp, maxval(abs(cyclic_reference_temperature))) .and. &
+    abs(cyclic_theta - cyclic_reference_theta) <= &
+      2.0e-13_dp * max(1.0_dp, abs(cyclic_reference_theta)), &
+    "MPI EB AMR cyclic sparse transport serial parity", rank)
+  end block
 
   allocate(transport_failed_state, source=coarse_state)
   allocate(transport_failed_temperature, source=coarse_temperature)
@@ -2429,17 +2723,30 @@ program pelef_mpi_eb_amr_patch_2d
     local_regrid_prolongation_transfers= &
       local_regrid_prolongation_transfers, &
     local_regrid_overlap_transfers=local_regrid_overlap_transfers)
-  call assert_all(ok .and. scheduled_time == scheduled_final_time .and. &
-    scheduled_steps == scheduled_reference_steps .and. &
-    scheduled_advanced_steps == scheduled_reference_steps .and. &
-    scheduled_regrid_evaluations == scheduled_reference_evaluations .and. &
-    scheduled_regrids == scheduled_reference_regrids .and. &
+  call assert_all(ok, &
+    "MPI EB AMR scheduled-regrid public status", rank)
+  call assert_all(scheduled_time == scheduled_final_time, &
+    "MPI EB AMR scheduled-regrid public final time", rank)
+  call assert_all(scheduled_steps == scheduled_reference_steps, &
+    "MPI EB AMR scheduled-regrid public step count", rank)
+  call assert_all(scheduled_advanced_steps == scheduled_reference_steps, &
+    "MPI EB AMR scheduled-regrid public advanced step count", rank)
+  call assert_all( &
+    scheduled_regrid_evaluations == scheduled_reference_evaluations, &
+    "MPI EB AMR scheduled-regrid public evaluation count", rank)
+  call assert_all(scheduled_regrids == scheduled_reference_regrids, &
+    "MPI EB AMR scheduled-regrid public regrid count", rank)
+  call assert_all( &
     abs(scheduled_minimum_dt - scheduled_reference_minimum_dt) <= &
-      128.0_dp * epsilon(1.0_dp) * scheduled_reference_minimum_dt .and. &
+      128.0_dp * epsilon(1.0_dp) * scheduled_reference_minimum_dt, &
+    "MPI EB AMR scheduled-regrid public minimum timestep", rank)
+  call assert_all( &
     abs(scheduled_theta - scheduled_reference_theta) <= &
-      5.0e-13_dp * max(1.0_dp, abs(scheduled_reference_theta)) .and. &
+      5.0e-13_dp * max(1.0_dp, abs(scheduled_reference_theta)), &
+    "MPI EB AMR scheduled-regrid public redistribution theta", rank)
+  call assert_all( &
     same_patch_topology(scheduled_template, scheduled_reference_set), &
-    "MPI EB AMR scheduled-regrid public control", rank)
+    "MPI EB AMR scheduled-regrid public topology", rank)
   expected_local_regrid_restriction_transfers = 0
   expected_global_regrid_restriction_transfers = 0
   do child = 1, distribution%child_count()

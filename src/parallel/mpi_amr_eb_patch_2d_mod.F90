@@ -2401,14 +2401,17 @@ contains
     real(dp), allocatable :: band_updated_temperature(:, :)
     real(dp), allocatable :: band_x_flux(:, :, :), band_y_flux(:, :, :)
     real(dp), allocatable :: payload(:)
+    integer, allocatable :: band_source_rows(:)
     real(dp) :: band_theta, theta
-    logical :: accepted, entity_ok, global_ok, local_ok
+    logical :: accepted, entity_ok, global_ok, local_ok, wrapped_band
     integer :: band_j_lower, band_j_upper, band_rows, cell_count
     integer :: computed_cells, face_count, face_j_lower, face_j_upper
     integer :: halo_cell_count, halo_state_count, halo_value_count
     integer :: ierr, local_face_j_lower, local_face_j_upper
     integer :: local_j_lower, local_j_upper, nvar, offset, overlap_j_lower
     integer :: overlap_j_upper, root_owner, rows, source, source_owner
+    integer :: segment_j_lower, segment_j_upper, source_global_j_lower
+    integer :: source_global_j_upper
     integer :: state_count, target, target_owner, tile_advances
     integer :: value_count, x_flux_count, y_flux_count
 
@@ -2441,23 +2444,76 @@ contains
 
     do target = 1, distribution%root_tile_count()
       target_owner = distribution%root_tiles(target)%owner
+      rows = distribution%root_tiles(target)%j_upper - &
+        distribution%root_tiles(target)%j_lower + 1
       band_j_lower = max(1, distribution%root_tiles(target)%j_lower - &
         mpi_amr_eb_root_tile_transport_halo_cells)
       band_j_upper = min(geometry%ny, &
         distribution%root_tiles(target)%j_upper + &
           mpi_amr_eb_root_tile_transport_halo_cells)
+      wrapped_band = reactive_boundary_is_periodic( &
+          boundaries%face(boundary_y_lower)) .and. &
+        (distribution%root_tiles(target)%j_lower == 1 .or. &
+         distribution%root_tiles(target)%j_upper == geometry%ny) .and. &
+        rows + 2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1) < &
+          geometry%ny
       if (reactive_boundary_is_periodic( &
           boundaries%face(boundary_y_lower)) .and. &
           (distribution%root_tiles(target)%j_lower == 1 .or. &
-           distribution%root_tiles(target)%j_upper == geometry%ny)) then
+           distribution%root_tiles(target)%j_upper == geometry%ny) .and. &
+          .not. wrapped_band) then
         band_j_lower = 1
         band_j_upper = geometry%ny
       end if
-      band_rows = band_j_upper - band_j_lower + 1
+      if (wrapped_band) then
+        ! Keep one row beyond the qualified halo so the artificial gap cannot
+        ! contaminate a cell in the target's dependency footprint.
+        band_rows = rows + &
+          2 * (mpi_amr_eb_root_tile_transport_halo_cells + 1)
+      else
+        band_rows = band_j_upper - band_j_lower + 1
+      end if
+      allocate(band_source_rows(band_rows))
+      if (wrapped_band .and. &
+          distribution%root_tiles(target)%j_lower == 1) then
+        band_j_upper = distribution%root_tiles(target)%j_upper + &
+          mpi_amr_eb_root_tile_transport_halo_cells + 1
+        band_source_rows(1:band_j_upper) = &
+          [(source, source = 1, band_j_upper)]
+        band_source_rows(band_j_upper + 1:band_rows) = [( &
+          source, source = geometry%ny - &
+            mpi_amr_eb_root_tile_transport_halo_cells, geometry%ny)]
+        local_j_lower = 1
+        local_j_upper = rows
+      else if (wrapped_band) then
+        band_j_lower = distribution%root_tiles(target)%j_lower - &
+          mpi_amr_eb_root_tile_transport_halo_cells - 1
+        band_source_rows( &
+          1:mpi_amr_eb_root_tile_transport_halo_cells + 1) = [( &
+            source, source = 1, &
+              mpi_amr_eb_root_tile_transport_halo_cells + 1)]
+        band_source_rows( &
+          mpi_amr_eb_root_tile_transport_halo_cells + 2:band_rows) = [( &
+            source, source = band_j_lower, geometry%ny)]
+        local_j_lower = band_rows - rows + 1
+        local_j_upper = band_rows
+      else
+        band_source_rows = [( &
+          source, source = band_j_lower, band_j_upper)]
+        local_j_lower = distribution%root_tiles(target)%j_lower - &
+          band_j_lower + 1
+        local_j_upper = distribution%root_tiles(target)%j_upper - &
+          band_j_lower + 1
+      end if
       entity_ok = .true.
       if (distribution%rank == target_owner) then
-        call extract_eb_geometry_y_band_2d( &
-          geometry, band_j_lower, band_j_upper, band_geometry, entity_ok)
+        if (wrapped_band) then
+          call extract_eb_geometry_y_rows_2d( &
+            geometry, band_source_rows, band_geometry, entity_ok)
+        else
+          call extract_eb_geometry_y_band_2d( &
+            geometry, band_j_lower, band_j_upper, band_geometry, entity_ok)
+        end if
         if (entity_ok) then
           allocate(band_state(nvar, geometry%nx, band_rows), source=0.0_dp)
           allocate(band_temperature(geometry%nx, band_rows), source=0.0_dp)
@@ -2472,69 +2528,80 @@ contains
         distribution, entity_ok, accepted, global_ok)
       if (.not. global_ok .or. .not. accepted) return
 
-      do source = 1, distribution%root_tile_count()
-        overlap_j_lower = max( &
-          band_j_lower, distribution%root_tiles(source)%j_lower)
-        overlap_j_upper = min( &
-          band_j_upper, distribution%root_tiles(source)%j_upper)
-        if (overlap_j_upper < overlap_j_lower) cycle
+      ! A cyclic edge band contains two globally contiguous row segments.
+      segment_j_lower = 1
+      do while (segment_j_lower <= band_rows)
+        source = 0
+        do offset = 1, distribution%root_tile_count()
+          if (band_source_rows(segment_j_lower) < &
+              distribution%root_tiles(offset)%j_lower .or. &
+              band_source_rows(segment_j_lower) > &
+              distribution%root_tiles(offset)%j_upper) cycle
+          source = offset
+          exit
+        end do
+        if (source == 0) return
+        segment_j_upper = segment_j_lower
+        do while (segment_j_upper < band_rows)
+          if (band_source_rows(segment_j_upper + 1) /= &
+              band_source_rows(segment_j_upper) + 1 .or. &
+              band_source_rows(segment_j_upper + 1) > &
+                distribution%root_tiles(source)%j_upper) exit
+          segment_j_upper = segment_j_upper + 1
+        end do
+        source_global_j_lower = band_source_rows(segment_j_lower)
+        source_global_j_upper = band_source_rows(segment_j_upper)
         source_owner = distribution%root_tiles(source)%owner
-        local_j_lower = overlap_j_lower - &
+        overlap_j_lower = source_global_j_lower - &
           distribution%root_tiles(source)%j_lower + 1
-        local_j_upper = overlap_j_upper - &
+        overlap_j_upper = source_global_j_upper - &
           distribution%root_tiles(source)%j_lower + 1
         if (source_owner == target_owner) then
           if (distribution%rank == target_owner) then
-            band_state(:, :, &
-              overlap_j_lower - band_j_lower + 1: &
-                overlap_j_upper - band_j_lower + 1) = &
+            band_state(:, :, segment_j_lower:segment_j_upper) = &
               sparse_patch_set%root_tiles(source)%state( &
-                :, :, local_j_lower:local_j_upper)
-            band_temperature(:, &
-              overlap_j_lower - band_j_lower + 1: &
-                overlap_j_upper - band_j_lower + 1) = &
+                :, :, overlap_j_lower:overlap_j_upper)
+            band_temperature(:, segment_j_lower:segment_j_upper) = &
               sparse_patch_set%root_tiles(source)%temperature( &
-                :, local_j_lower:local_j_upper)
+                :, overlap_j_lower:overlap_j_upper)
           end if
-          cycle
+        else
+          halo_cell_count = geometry%nx * &
+            (segment_j_upper - segment_j_lower + 1)
+          halo_state_count = nvar * halo_cell_count
+          halo_value_count = halo_state_count + halo_cell_count
+          if (distribution%rank == source_owner) then
+            allocate(payload(halo_value_count))
+            payload(1:halo_state_count) = reshape( &
+              sparse_patch_set%root_tiles(source)%state( &
+                :, :, overlap_j_lower:overlap_j_upper), [halo_state_count])
+            payload(halo_state_count + 1:halo_value_count) = reshape( &
+              sparse_patch_set%root_tiles(source)%temperature( &
+                :, overlap_j_lower:overlap_j_upper), [halo_cell_count])
+            call MPI_Send( &
+              payload, halo_value_count, MPI_DOUBLE_PRECISION, &
+              target_owner, sparse_root_halo_tag, distribution%comm, ierr)
+            if (ierr /= MPI_SUCCESS) return
+            local_transfers = local_transfers + 1
+            deallocate(payload)
+          else if (distribution%rank == target_owner) then
+            allocate(payload(halo_value_count))
+            call MPI_Recv( &
+              payload, halo_value_count, MPI_DOUBLE_PRECISION, &
+              source_owner, sparse_root_halo_tag, distribution%comm, &
+              status, ierr)
+            if (ierr /= MPI_SUCCESS) return
+            band_state(:, :, segment_j_lower:segment_j_upper) = reshape( &
+              payload(1:halo_state_count), &
+              [nvar, geometry%nx, &
+                segment_j_upper - segment_j_lower + 1])
+            band_temperature(:, segment_j_lower:segment_j_upper) = reshape( &
+              payload(halo_state_count + 1:halo_value_count), &
+              [geometry%nx, segment_j_upper - segment_j_lower + 1])
+            deallocate(payload)
+          end if
         end if
-
-        halo_cell_count = geometry%nx * &
-          (overlap_j_upper - overlap_j_lower + 1)
-        halo_state_count = nvar * halo_cell_count
-        halo_value_count = halo_state_count + halo_cell_count
-        if (distribution%rank == source_owner) then
-          allocate(payload(halo_value_count))
-          payload(1:halo_state_count) = reshape( &
-            sparse_patch_set%root_tiles(source)%state( &
-              :, :, local_j_lower:local_j_upper), [halo_state_count])
-          payload(halo_state_count + 1:halo_value_count) = reshape( &
-            sparse_patch_set%root_tiles(source)%temperature( &
-              :, local_j_lower:local_j_upper), [halo_cell_count])
-          call MPI_Send( &
-            payload, halo_value_count, MPI_DOUBLE_PRECISION, target_owner, &
-            sparse_root_halo_tag, distribution%comm, ierr)
-          if (ierr /= MPI_SUCCESS) return
-          local_transfers = local_transfers + 1
-          deallocate(payload)
-        else if (distribution%rank == target_owner) then
-          allocate(payload(halo_value_count))
-          call MPI_Recv( &
-            payload, halo_value_count, MPI_DOUBLE_PRECISION, source_owner, &
-            sparse_root_halo_tag, distribution%comm, status, ierr)
-          if (ierr /= MPI_SUCCESS) return
-          band_state(:, :, &
-            overlap_j_lower - band_j_lower + 1: &
-              overlap_j_upper - band_j_lower + 1) = reshape( &
-            payload(1:halo_state_count), &
-            [nvar, geometry%nx, overlap_j_upper - overlap_j_lower + 1])
-          band_temperature(:, &
-            overlap_j_lower - band_j_lower + 1: &
-              overlap_j_upper - band_j_lower + 1) = reshape( &
-            payload(halo_state_count + 1:halo_value_count), &
-            [geometry%nx, overlap_j_upper - overlap_j_lower + 1])
-          deallocate(payload)
-        end if
+        segment_j_lower = segment_j_upper + 1
       end do
 
       entity_ok = .true.
@@ -2572,12 +2639,10 @@ contains
       y_flux_count = nvar * geometry%nx * face_count
       value_count = 2 * state_count + 2 * cell_count + &
         x_flux_count + y_flux_count
-      local_j_lower = distribution%root_tiles(target)%j_lower - &
-        band_j_lower + 1
-      local_j_upper = distribution%root_tiles(target)%j_upper - &
-        band_j_lower + 1
-      local_face_j_lower = face_j_lower - band_j_lower + 1
-      local_face_j_upper = face_j_upper - band_j_lower + 1
+      local_face_j_lower = local_j_lower - 1
+      local_face_j_upper = local_j_upper - 1
+      if (distribution%root_tiles(target)%j_upper == geometry%ny) &
+        local_face_j_upper = local_j_upper
       if (target_owner == root_owner) then
         if (distribution%rank == root_owner) then
           root_state(:, :, distribution%root_tiles(target)%j_lower: &
@@ -2673,6 +2738,7 @@ contains
           band_state, band_temperature, band_rhs, band_updated_state, &
           band_updated_temperature, band_x_flux, band_y_flux)
       end if
+      deallocate(band_source_rows)
     end do
 
     local_ok = ieee_is_finite(theta) .and. theta >= 0.0_dp .and. &
@@ -5165,6 +5231,90 @@ contains
       local_computed_cells = 0
     end if
   end subroutine advance_owned_reactive_eb_root_tiles_hydro_2d
+
+  subroutine extract_eb_geometry_y_rows_2d( &
+      geometry, source_rows, band, ok)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: source_rows(:)
+    type(eb_geometry_2d), intent(out) :: band
+    logical, intent(out) :: ok
+
+    integer :: j, source_j
+    real(dp) :: y_shift
+
+    band = eb_geometry_2d()
+    ok = .false.
+    if (.not. geometry%is_valid() .or. size(source_rows) < 1 .or. &
+        size(source_rows) > geometry%ny .or. source_rows(1) /= 1 .or. &
+        source_rows(size(source_rows)) /= geometry%ny .or. &
+        any(source_rows < 1) .or. any(source_rows > geometry%ny)) return
+    if (size(source_rows) > 1) then
+      if (any(source_rows(2:) <= source_rows(:size(source_rows) - 1))) return
+    end if
+
+    band%nx = geometry%nx
+    band%ny = size(source_rows)
+    band%x_lower = geometry%x_lower
+    band%x_upper = geometry%x_upper
+    band%y_lower = geometry%y_lower
+    band%y_upper = geometry%y_lower + real(band%ny, dp) * geometry%dy
+    band%dx = geometry%dx
+    band%dy = geometry%dy
+    allocate(band%volume_fraction(band%nx, band%ny))
+    allocate(band%cell_centroid_x(band%nx, band%ny))
+    allocate(band%cell_centroid_y(band%nx, band%ny))
+    allocate(band%cell_type(band%nx, band%ny))
+    allocate(band%x_face_fraction(0:band%nx, band%ny))
+    allocate(band%y_face_fraction(band%nx, 0:band%ny))
+    allocate(band%x_face_centroid_y(0:band%nx, band%ny))
+    allocate(band%y_face_centroid_x(band%nx, 0:band%ny))
+    allocate(band%boundary_length(band%nx, band%ny))
+    allocate(band%boundary_centroid_x(band%nx, band%ny))
+    allocate(band%boundary_centroid_y(band%nx, band%ny))
+    allocate(band%boundary_normal_x(band%nx, band%ny))
+    allocate(band%boundary_normal_y(band%nx, band%ny))
+    allocate(band%boundary_normal_integral_x(band%nx, band%ny))
+    allocate(band%boundary_normal_integral_y(band%nx, band%ny))
+
+    do j = 1, band%ny
+      source_j = source_rows(j)
+      band%volume_fraction(:, j) = geometry%volume_fraction(:, source_j)
+      band%cell_centroid_x(:, j) = geometry%cell_centroid_x(:, source_j)
+      band%cell_centroid_y(:, j) = geometry%cell_centroid_y(:, source_j)
+      band%cell_type(:, j) = geometry%cell_type(:, source_j)
+      band%x_face_fraction(:, j) = geometry%x_face_fraction(:, source_j)
+      band%x_face_centroid_y(:, j) = &
+        geometry%x_face_centroid_y(:, source_j)
+      band%boundary_length(:, j) = geometry%boundary_length(:, source_j)
+      band%boundary_centroid_x(:, j) = &
+        geometry%boundary_centroid_x(:, source_j)
+      band%boundary_centroid_y(:, j) = &
+        geometry%boundary_centroid_y(:, source_j)
+      y_shift = real(j - source_j, dp) * geometry%dy
+      where (band%boundary_length(:, j) > 0.0_dp)
+        band%boundary_centroid_y(:, j) = &
+          band%boundary_centroid_y(:, j) + y_shift
+      end where
+      band%boundary_normal_x(:, j) = &
+        geometry%boundary_normal_x(:, source_j)
+      band%boundary_normal_y(:, j) = &
+        geometry%boundary_normal_y(:, source_j)
+      band%boundary_normal_integral_x(:, j) = &
+        geometry%boundary_normal_integral_x(:, source_j)
+      band%boundary_normal_integral_y(:, j) = &
+        geometry%boundary_normal_integral_y(:, source_j)
+    end do
+    band%y_face_fraction(:, 0) = geometry%y_face_fraction(:, 0)
+    band%y_face_centroid_x(:, 0) = geometry%y_face_centroid_x(:, 0)
+    do j = 1, band%ny
+      source_j = source_rows(j)
+      band%y_face_fraction(:, j) = &
+        geometry%y_face_fraction(:, source_j)
+      band%y_face_centroid_x(:, j) = &
+        geometry%y_face_centroid_x(:, source_j)
+    end do
+    ok = band%is_valid()
+  end subroutine extract_eb_geometry_y_rows_2d
 
   subroutine extract_eb_geometry_y_band_2d( &
       geometry, j_lower, j_upper, band, ok)
