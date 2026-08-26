@@ -182,6 +182,7 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: scheduled_reference_temperature(:, :)
   type(eb_geometry_2d), allocatable :: regrid_fine_geometries(:)
   logical, allocatable :: active_mask(:, :)
+  logical, allocatable :: regrid_recipients(:)
   logical, allocatable :: restriction_recipients(:)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
@@ -201,7 +202,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: scheduled_theta
   logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
   logical :: ok, topology_changed
-  integer :: child, component, global_advances, i, ierr, j, owner
+  integer :: child, component, global_advances, i, ierr, j, new_child
+  integer :: old_child, owner
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_chemistry_advances, local_hydro_advances
@@ -225,6 +227,18 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_restriction_transfers, global_restriction_transfers
   integer :: expected_local_restriction_transfers
   integer :: expected_global_restriction_transfers
+  integer :: local_regrid_restriction_transfers
+  integer :: global_regrid_restriction_transfers
+  integer :: expected_local_regrid_restriction_transfers
+  integer :: expected_global_regrid_restriction_transfers
+  integer :: local_regrid_prolongation_transfers
+  integer :: global_regrid_prolongation_transfers
+  integer :: expected_local_regrid_prolongation_transfers
+  integer :: expected_global_regrid_prolongation_transfers
+  integer :: local_regrid_overlap_transfers
+  integer :: global_regrid_overlap_transfers
+  integer :: expected_local_regrid_overlap_transfers
+  integer :: expected_global_regrid_overlap_transfers
   integer :: local_root_transfers, global_root_transfers
   integer :: expected_local_root_transfers
   integer :: expected_global_root_transfers, root_owner
@@ -534,8 +548,12 @@ program pelef_mpi_eb_amr_patch_2d
   call regrid_sparse_owned_reactive_eb_patch_set_2d( &
     species, topology_distribution, sparse_regrid_set, coarse_geometry, &
     sparse_regrid_template, regrid_fine_geometries, regrid_collection, 1, &
-    ok, topology_changed)
+    ok, topology_changed, local_regrid_restriction_transfers, &
+    local_regrid_prolongation_transfers, local_regrid_overlap_transfers)
   call assert_all(.not. ok .and. .not. topology_changed .and. &
+    local_regrid_restriction_transfers == 0 .and. &
+    local_regrid_prolongation_transfers == 0 .and. &
+    local_regrid_overlap_transfers == 0 .and. &
     topology_distribution%child_count() == distribution%child_count() .and. &
     all(topology_distribution%child_owners == &
       distribution%child_owners) .and. &
@@ -564,7 +582,8 @@ program pelef_mpi_eb_amr_patch_2d
   call regrid_sparse_owned_reactive_eb_patch_set_2d( &
     species, topology_distribution, sparse_regrid_set, coarse_geometry, &
     sparse_regrid_template, regrid_fine_geometries, regrid_collection, &
-    ratio, ok, topology_changed)
+    ratio, ok, topology_changed, local_regrid_restriction_transfers, &
+    local_regrid_prolongation_transfers, local_regrid_overlap_transfers)
   call assert_all(ok .and. topology_changed .and. &
     topology_distribution%child_count() == 1 .and. &
     sparse_regrid_template%patch_count() == 1 .and. &
@@ -588,6 +607,105 @@ program pelef_mpi_eb_amr_patch_2d
     sparse_global_values == (nvar + 1) * &
       sum(topology_distribution%rank_cell_counts), &
     "MPI EB AMR sparse regrid one-copy storage", rank)
+
+  allocate(regrid_recipients(nranks))
+  expected_local_regrid_restriction_transfers = 0
+  expected_global_regrid_restriction_transfers = 0
+  do child = 1, distribution%child_count()
+    regrid_recipients = .false.
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%j_upper < &
+          regrid_start_set%children(child)%patch%coarse_j_lower .or. &
+          distribution%root_tiles(tile)%j_lower > &
+          regrid_start_set%children(child)%patch%coarse_j_upper) cycle
+      owner = distribution%root_tiles(tile)%owner
+      regrid_recipients(owner + 1) = .true.
+    end do
+    owner = distribution%child_owner(child)
+    regrid_recipients(owner + 1) = .false.
+    expected_global_regrid_restriction_transfers = &
+      expected_global_regrid_restriction_transfers + &
+      count(regrid_recipients)
+    if (rank == owner) expected_local_regrid_restriction_transfers = &
+      expected_local_regrid_restriction_transfers + &
+      count(regrid_recipients)
+  end do
+  regrid_recipients = .false.
+  do child = 1, topology_distribution%child_count()
+    owner = topology_distribution%child_owner(child)
+    regrid_recipients(owner + 1) = .true.
+  end do
+  expected_local_regrid_prolongation_transfers = 0
+  expected_global_regrid_prolongation_transfers = 0
+  do owner = 0, nranks - 1
+    if (.not. regrid_recipients(owner + 1)) cycle
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%owner == owner) cycle
+      expected_global_regrid_prolongation_transfers = &
+        expected_global_regrid_prolongation_transfers + 1
+      if (rank == distribution%root_tiles(tile)%owner) &
+        expected_local_regrid_prolongation_transfers = &
+          expected_local_regrid_prolongation_transfers + 1
+    end do
+  end do
+  expected_local_regrid_overlap_transfers = 0
+  expected_global_regrid_overlap_transfers = 0
+  do new_child = 1, sparse_regrid_template%patch_count()
+    do old_child = 1, regrid_start_set%patch_count()
+      if (regrid_start_set%children(old_child)%patch%refinement_ratio /= &
+          sparse_regrid_template%children(new_child)%patch% &
+            refinement_ratio) cycle
+      if (max( &
+          regrid_start_set%children(old_child)%patch%coarse_i_lower, &
+          sparse_regrid_template%children(new_child)%patch%coarse_i_lower) > &
+          min( &
+            regrid_start_set%children(old_child)%patch%coarse_i_upper, &
+            sparse_regrid_template%children(new_child)%patch%coarse_i_upper) &
+          .or. max( &
+            regrid_start_set%children(old_child)%patch%coarse_j_lower, &
+            sparse_regrid_template%children(new_child)%patch%coarse_j_lower) > &
+          min( &
+            regrid_start_set%children(old_child)%patch%coarse_j_upper, &
+            sparse_regrid_template%children(new_child)%patch%coarse_j_upper)) &
+        cycle
+      if (distribution%child_owner(old_child) == &
+          topology_distribution%child_owner(new_child)) cycle
+      expected_global_regrid_overlap_transfers = &
+        expected_global_regrid_overlap_transfers + 1
+      if (rank == distribution%child_owner(old_child)) &
+        expected_local_regrid_overlap_transfers = &
+          expected_local_regrid_overlap_transfers + 1
+    end do
+  end do
+  call MPI_Allreduce( &
+    local_regrid_restriction_transfers, &
+    global_regrid_restriction_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_restriction_transfers == &
+      expected_local_regrid_restriction_transfers .and. &
+    global_regrid_restriction_transfers == &
+      expected_global_regrid_restriction_transfers, &
+    "MPI EB AMR sparse regrid restriction traffic", rank)
+  call MPI_Allreduce( &
+    local_regrid_prolongation_transfers, &
+    global_regrid_prolongation_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_prolongation_transfers == &
+      expected_local_regrid_prolongation_transfers .and. &
+    global_regrid_prolongation_transfers == &
+      expected_global_regrid_prolongation_transfers, &
+    "MPI EB AMR sparse regrid prolongation traffic", rank)
+  call MPI_Allreduce( &
+    local_regrid_overlap_transfers, global_regrid_overlap_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_overlap_transfers == &
+      expected_local_regrid_overlap_transfers .and. &
+    global_regrid_overlap_transfers == &
+      expected_global_regrid_overlap_transfers, &
+    "MPI EB AMR sparse regrid overlap traffic", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     topology_distribution, sparse_regrid_set, coarse_state, &
     coarse_temperature, coarse_geometry, sparse_regrid_template, &

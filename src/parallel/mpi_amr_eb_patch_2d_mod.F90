@@ -18,7 +18,10 @@ module mpi_amr_eb_patch_2d_mod
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
   use amr_eb_reactive_2d_mod, only: &
-    build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
+    prolong_reactive_eb_patch_pcm_2d, build_reactive_eb_patch_exterior_2d, &
+    advance_reactive_eb_level_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    build_amr_eb_patch_2d
   use eb_reactive_redistribution_2d_mod, only: &
     advance_reactive_eb_state_redistributed_2d
   use eb_reactive_transport_2d_mod, only: &
@@ -32,8 +35,7 @@ module mpi_amr_eb_patch_2d_mod
     reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
     composite_reactive_eb_patch_set_integral_2d, &
-    plan_reactive_eb_temperature_regrid_collection_2d, &
-    regrid_reactive_eb_patch_set_2d
+    plan_reactive_eb_temperature_regrid_collection_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     level_two_interface_is_regular
@@ -50,6 +52,8 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_root_correction_out_tag = 2704
   integer, parameter :: sparse_root_correction_back_tag = 2705
   integer, parameter :: sparse_root_scatter_tag = 2706
+  integer, parameter :: sparse_regrid_prolongation_tag = 2707
+  integer, parameter :: sparse_regrid_overlap_tag = 2708
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
@@ -533,7 +537,8 @@ contains
   subroutine regrid_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
       patch_set_template, new_fine_geometries, new_collection, &
-      refinement_ratio, ok, changed)
+      refinement_ratio, ok, changed, local_restriction_transfers, &
+      local_prolongation_transfers, local_overlap_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(inout) :: distribution
     type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
@@ -543,23 +548,29 @@ contains
     type(amr_eb_regrid_plan_collection_2d), intent(in) :: new_collection
     integer, intent(in) :: refinement_ratio
     logical, intent(out) :: ok, changed
+    integer, intent(out), optional :: local_restriction_transfers
+    integer, intent(out), optional :: local_prolongation_transfers
+    integer, intent(out), optional :: local_overlap_transfers
 
     type(mpi_amr_eb_patch_distribution_2d) :: candidate_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d) :: averaged_sparse_patch_set
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate_sparse_patch_set
     type(reactive_eb_patch_set_2d) :: candidate_patch_set
-    type(reactive_eb_patch_set_2d) :: materialized_patch_set
-    real(dp), allocatable :: candidate_state(:, :, :)
-    real(dp), allocatable :: candidate_temperature(:, :)
-    real(dp), allocatable :: fallback_state(:, :, :)
-    real(dp), allocatable :: fallback_temperature(:, :)
-    real(dp), allocatable :: materialized_state(:, :, :)
-    real(dp), allocatable :: materialized_temperature(:, :)
     logical :: accepted, global_ok, local_changed, local_ok
-    integer :: child, controls(5), controls_maximum(5), controls_minimum(5)
-    integer :: ierr, nvar
+    integer :: controls(5), controls_maximum(5), controls_minimum(5)
+    integer :: ierr, nvar, overlap_transfers, prolongation_transfers
+    integer :: restriction_transfers
 
     ok = .false.
     changed = .false.
+    restriction_transfers = 0
+    prolongation_transfers = 0
+    overlap_transfers = 0
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     nvar = reactive_nvar(size(species))
     local_ok = size(species) >= 1 .and. refinement_ratio >= 2 .and. &
       new_collection%is_valid() .and. &
@@ -569,11 +580,8 @@ contains
       sparse_patch_set%nvar == nvar .and. &
       sparse_patch_set%is_valid( &
         distribution, coarse_geometry, patch_set_template)
-    if (local_ok) then
-      do child = 1, size(new_fine_geometries)
-        local_ok = local_ok .and. new_fine_geometries(child)%is_valid()
-      end do
-    end if
+    if (local_ok) local_ok = all_sparse_regrid_geometries_valid_2d( &
+      new_fine_geometries)
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
@@ -591,56 +599,36 @@ contains
     if (ierr /= MPI_SUCCESS .or. &
         any(controls_minimum /= controls_maximum)) return
 
-    allocate(fallback_state(nvar, coarse_geometry%nx, coarse_geometry%ny), &
-      source=0.0_dp)
-    allocate(fallback_temperature( &
-      coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
-    allocate(materialized_state, mold=fallback_state)
-    allocate(materialized_temperature, mold=fallback_temperature)
-    call materialize_owned_reactive_eb_patch_set_2d( &
-      distribution, sparse_patch_set, fallback_state, fallback_temperature, &
-      coarse_geometry, patch_set_template, materialized_state, &
-      materialized_temperature, materialized_patch_set, local_ok)
-    if (.not. local_ok) return
-
-    allocate(candidate_state, mold=materialized_state)
-    allocate(candidate_temperature, mold=materialized_temperature)
-    call regrid_reactive_eb_patch_set_2d( &
-      species, materialized_state, materialized_temperature, &
-      coarse_geometry, materialized_patch_set, new_fine_geometries, &
-      new_collection, refinement_ratio, candidate_state, &
-      candidate_temperature, candidate_patch_set, local_ok)
+    call build_sparse_regrid_template_2d( &
+      nvar, coarse_geometry, new_fine_geometries, new_collection, &
+      refinement_ratio, candidate_patch_set, local_ok)
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
-
-    local_changed = &
-      materialized_patch_set%patch_count() /= candidate_patch_set%patch_count()
-    if (.not. local_changed) then
-      do child = 1, candidate_patch_set%patch_count()
-        local_changed = any([ &
-          materialized_patch_set%children(child)%patch%coarse_i_lower, &
-          materialized_patch_set%children(child)%patch%coarse_i_upper, &
-          materialized_patch_set%children(child)%patch%coarse_j_lower, &
-          materialized_patch_set%children(child)%patch%coarse_j_upper, &
-          materialized_patch_set%children(child)%patch%refinement_ratio] /= &
-          [candidate_patch_set%children(child)%patch%coarse_i_lower, &
-          candidate_patch_set%children(child)%patch%coarse_i_upper, &
-          candidate_patch_set%children(child)%patch%coarse_j_lower, &
-          candidate_patch_set%children(child)%patch%coarse_j_upper, &
-          candidate_patch_set%children(child)%patch%refinement_ratio])
-        if (local_changed) exit
-      end do
-    end if
     call initialize_mpi_amr_eb_patch_distribution_2d( &
       coarse_geometry, candidate_patch_set, distribution%comm, &
       candidate_distribution, local_ok, distribution%subcycle_exponent)
     if (.not. local_ok) return
-    call scatter_owned_reactive_eb_patch_set_2d( &
-      candidate_distribution, size(species), candidate_state, &
-      candidate_temperature, coarse_geometry, candidate_patch_set, &
-      candidate_sparse_patch_set, local_ok)
+
+    averaged_sparse_patch_set = sparse_patch_set
+    call average_down_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, averaged_sparse_patch_set, coarse_geometry, &
+      patch_set_template, local_ok, restriction_transfers)
     if (.not. local_ok) return
+
+    call initialize_direct_sparse_regrid_2d( &
+      species, distribution, averaged_sparse_patch_set, coarse_geometry, &
+      candidate_distribution, candidate_patch_set, &
+      candidate_sparse_patch_set, prolongation_transfers, local_ok)
+    if (.not. local_ok) return
+    call transfer_direct_sparse_regrid_overlaps_2d( &
+      species, distribution, averaged_sparse_patch_set, patch_set_template, &
+      candidate_distribution, candidate_sparse_patch_set, &
+      candidate_patch_set, coarse_geometry, overlap_transfers, local_ok)
+    if (.not. local_ok) return
+    local_changed = sparse_regrid_topology_changed_2d( &
+      patch_set_template, candidate_patch_set)
+
     local_ok = candidate_sparse_patch_set%is_valid( &
       candidate_distribution, coarse_geometry, candidate_patch_set)
     call all_ranks_accept_eb_2d( &
@@ -652,7 +640,526 @@ contains
     patch_set_template = candidate_patch_set
     changed = local_changed
     ok = .true.
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = restriction_transfers
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = prolongation_transfers
+    if (present(local_overlap_transfers)) &
+      local_overlap_transfers = overlap_transfers
   end subroutine regrid_sparse_owned_reactive_eb_patch_set_2d
+
+  pure logical function all_sparse_regrid_geometries_valid_2d(geometries) &
+      result(valid)
+    type(eb_geometry_2d), intent(in) :: geometries(:)
+
+    integer :: child
+
+    valid = .true.
+    do child = 1, size(geometries)
+      valid = geometries(child)%is_valid()
+      if (.not. valid) return
+    end do
+  end function all_sparse_regrid_geometries_valid_2d
+
+  subroutine build_sparse_regrid_template_2d( &
+      nvar, coarse_geometry, fine_geometries, collection, refinement_ratio, &
+      patch_set, ok)
+    integer, intent(in) :: nvar, refinement_ratio
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(eb_geometry_2d), intent(in) :: fine_geometries(:)
+    type(amr_eb_regrid_plan_collection_2d), intent(in) :: collection
+    type(reactive_eb_patch_set_2d), intent(out) :: patch_set
+    logical, intent(out) :: ok
+
+    type(reactive_eb_patch_set_2d) :: candidate
+    logical :: local_ok
+    integer :: child
+
+    patch_set = reactive_eb_patch_set_2d()
+    ok = .false.
+    if (nvar < 1 .or. refinement_ratio < 2 .or. &
+        .not. coarse_geometry%is_valid() .or. &
+        .not. collection%is_valid() .or. &
+        collection%coarse_nx /= coarse_geometry%nx .or. &
+        collection%coarse_ny /= coarse_geometry%ny .or. &
+        size(fine_geometries) /= collection%patch_count() .or. &
+        .not. all_sparse_regrid_geometries_valid_2d(fine_geometries)) return
+
+    allocate(candidate%children(collection%patch_count()))
+    do child = 1, collection%patch_count()
+      candidate%children(child)%geometry = fine_geometries(child)
+      call build_amr_eb_patch_2d( &
+        coarse_geometry, fine_geometries(child), &
+        collection%plans(child)%coarse_i_lower, &
+        collection%plans(child)%coarse_i_upper, &
+        collection%plans(child)%coarse_j_lower, &
+        collection%plans(child)%coarse_j_upper, refinement_ratio, &
+        candidate%children(child)%patch, local_ok)
+      if (.not. local_ok) return
+      allocate(candidate%children(child)%state( &
+        nvar, fine_geometries(child)%nx, fine_geometries(child)%ny), &
+        source=0.0_dp)
+      allocate(candidate%children(child)%temperature( &
+        fine_geometries(child)%nx, fine_geometries(child)%ny), source=1.0_dp)
+    end do
+    if (.not. candidate%is_valid(coarse_geometry, nvar)) return
+    patch_set = candidate
+    ok = .true.
+  end subroutine build_sparse_regrid_template_2d
+
+  pure logical function sparse_regrid_topology_changed_2d( &
+      old_patch_set, new_patch_set) result(changed)
+    type(reactive_eb_patch_set_2d), intent(in) :: old_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: new_patch_set
+
+    integer :: child
+
+    changed = old_patch_set%patch_count() /= new_patch_set%patch_count()
+    if (changed) return
+    do child = 1, new_patch_set%patch_count()
+      changed = any([ &
+        old_patch_set%children(child)%patch%coarse_i_lower, &
+        old_patch_set%children(child)%patch%coarse_i_upper, &
+        old_patch_set%children(child)%patch%coarse_j_lower, &
+        old_patch_set%children(child)%patch%coarse_j_upper, &
+        old_patch_set%children(child)%patch%refinement_ratio] /= [ &
+        new_patch_set%children(child)%patch%coarse_i_lower, &
+        new_patch_set%children(child)%patch%coarse_i_upper, &
+        new_patch_set%children(child)%patch%coarse_j_lower, &
+        new_patch_set%children(child)%patch%coarse_j_upper, &
+        new_patch_set%children(child)%patch%refinement_ratio])
+      if (changed) return
+    end do
+  end function sparse_regrid_topology_changed_2d
+
+  pure logical function sparse_regrid_root_layouts_match_2d( &
+      old_distribution, new_distribution) result(matches)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: old_distribution
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: new_distribution
+
+    integer :: tile
+
+    matches = old_distribution%rank == new_distribution%rank .and. &
+      old_distribution%nranks == new_distribution%nranks .and. &
+      old_distribution%root_tile_count() == &
+        new_distribution%root_tile_count()
+    if (.not. matches) return
+    do tile = 1, old_distribution%root_tile_count()
+      matches = all([ &
+        old_distribution%root_tiles(tile)%owner, &
+        old_distribution%root_tiles(tile)%i_lower, &
+        old_distribution%root_tiles(tile)%i_upper, &
+        old_distribution%root_tiles(tile)%j_lower, &
+        old_distribution%root_tiles(tile)%j_upper] == [ &
+        new_distribution%root_tiles(tile)%owner, &
+        new_distribution%root_tiles(tile)%i_lower, &
+        new_distribution%root_tiles(tile)%i_upper, &
+        new_distribution%root_tiles(tile)%j_lower, &
+        new_distribution%root_tiles(tile)%j_upper])
+      if (.not. matches) return
+    end do
+  end function sparse_regrid_root_layouts_match_2d
+
+  subroutine initialize_direct_sparse_regrid_2d( &
+      species, old_distribution, averaged_patch_set, coarse_geometry, &
+      new_distribution, new_patch_set, new_sparse_patch_set, &
+      local_transfers, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: old_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: averaged_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: new_distribution
+    type(reactive_eb_patch_set_2d), intent(in) :: new_patch_set
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: new_sparse_patch_set
+    integer, intent(out) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:), root_state(:, :, :)
+    real(dp), allocatable :: root_temperature(:, :)
+    logical, allocatable :: recipients(:)
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: cell_count, child, ierr, j_lower, j_upper, nvar, owner
+    integer :: recipient, state_count, tile, value_count
+
+    new_sparse_patch_set = mpi_amr_eb_sparse_patch_set_2d()
+    local_transfers = 0
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    local_ok = size(species) >= 1 .and. averaged_patch_set%nvar == nvar .and. &
+      sparse_regrid_root_layouts_match_2d( &
+        old_distribution, new_distribution)
+    call all_ranks_accept_eb_2d( &
+      old_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    candidate%rank = new_distribution%rank
+    candidate%nranks = new_distribution%nranks
+    candidate%nvar = nvar
+    allocate(candidate%root_tiles(new_distribution%root_tile_count()))
+    allocate(candidate%children(new_distribution%child_count()))
+    do tile = 1, new_distribution%root_tile_count()
+      if (.not. new_distribution%root_tile_is_local(tile)) cycle
+      allocate(candidate%root_tiles(tile)%state, &
+        source=averaged_patch_set%root_tiles(tile)%state)
+      allocate(candidate%root_tiles(tile)%temperature, &
+        source=averaged_patch_set%root_tiles(tile)%temperature)
+    end do
+
+    allocate(recipients(new_distribution%nranks), source=.false.)
+    do child = 1, new_distribution%child_count()
+      recipient = new_distribution%child_owner(child)
+      recipients(recipient + 1) = .true.
+    end do
+    if (recipients(new_distribution%rank + 1)) then
+      allocate(root_state(nvar, coarse_geometry%nx, coarse_geometry%ny))
+      allocate(root_temperature(coarse_geometry%nx, coarse_geometry%ny))
+    end if
+
+    do recipient = 0, new_distribution%nranks - 1
+      if (.not. recipients(recipient + 1)) cycle
+      do tile = 1, old_distribution%root_tile_count()
+        owner = old_distribution%root_tiles(tile)%owner
+        j_lower = old_distribution%root_tiles(tile)%j_lower
+        j_upper = old_distribution%root_tiles(tile)%j_upper
+        cell_count = old_distribution%root_tiles(tile)%cell_count
+        state_count = nvar * cell_count
+        value_count = state_count + cell_count
+        if (owner == recipient) then
+          if (old_distribution%rank == recipient) then
+            root_state(:, :, j_lower:j_upper) = &
+              averaged_patch_set%root_tiles(tile)%state
+            root_temperature(:, j_lower:j_upper) = &
+              averaged_patch_set%root_tiles(tile)%temperature
+          end if
+        else if (old_distribution%rank == owner) then
+          allocate(payload(value_count))
+          payload(1:state_count) = reshape( &
+            averaged_patch_set%root_tiles(tile)%state, [state_count])
+          payload(state_count + 1:value_count) = reshape( &
+            averaged_patch_set%root_tiles(tile)%temperature, [cell_count])
+          call MPI_Send( &
+            payload, value_count, MPI_DOUBLE_PRECISION, recipient, &
+            sparse_regrid_prolongation_tag, old_distribution%comm, ierr)
+          deallocate(payload)
+          if (ierr /= MPI_SUCCESS) return
+          local_transfers = local_transfers + 1
+        else if (old_distribution%rank == recipient) then
+          allocate(payload(value_count))
+          call MPI_Recv( &
+            payload, value_count, MPI_DOUBLE_PRECISION, owner, &
+            sparse_regrid_prolongation_tag, old_distribution%comm, status, &
+            ierr)
+          if (ierr /= MPI_SUCCESS) return
+          root_state(:, :, j_lower:j_upper) = reshape( &
+            payload(1:state_count), [nvar, coarse_geometry%nx, &
+              j_upper - j_lower + 1])
+          root_temperature(:, j_lower:j_upper) = reshape( &
+            payload(state_count + 1:value_count), &
+            [coarse_geometry%nx, j_upper - j_lower + 1])
+          deallocate(payload)
+        end if
+      end do
+    end do
+
+    entity_ok = .true.
+    if (recipients(new_distribution%rank + 1)) entity_ok = &
+      all(ieee_is_finite(root_state)) .and. &
+      all(ieee_is_finite(root_temperature))
+    if (entity_ok) then
+      do child = 1, new_distribution%child_count()
+        if (.not. new_distribution%child_is_local(child)) cycle
+        allocate(candidate%children(child)%state( &
+          nvar, new_patch_set%children(child)%geometry%nx, &
+          new_patch_set%children(child)%geometry%ny))
+        allocate(candidate%children(child)%temperature( &
+          new_patch_set%children(child)%geometry%nx, &
+          new_patch_set%children(child)%geometry%ny))
+        call prolong_reactive_eb_patch_pcm_2d( &
+          species, root_state, root_temperature, coarse_geometry, &
+          new_patch_set%children(child)%geometry, &
+          new_patch_set%children(child)%patch, &
+          candidate%children(child)%state, &
+          candidate%children(child)%temperature, local_ok)
+        entity_ok = entity_ok .and. local_ok
+      end do
+    end if
+    call all_ranks_accept_eb_2d( &
+      new_distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    local_ok = candidate%is_valid( &
+      new_distribution, coarse_geometry, new_patch_set)
+    call all_ranks_accept_eb_2d( &
+      new_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    new_sparse_patch_set = candidate
+    ok = .true.
+  end subroutine initialize_direct_sparse_regrid_2d
+
+  pure logical function sparse_regrid_overlap_geometry_matches_2d( &
+      old_patch_set, new_patch_set, old_child, new_child, &
+      coarse_i_lower, coarse_i_upper, coarse_j_lower, coarse_j_upper, &
+      ratio) result(matches)
+    type(reactive_eb_patch_set_2d), intent(in) :: old_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: new_patch_set
+    integer, intent(in) :: old_child, new_child, coarse_i_lower
+    integer, intent(in) :: coarse_i_upper, coarse_j_lower, coarse_j_upper
+    integer, intent(in) :: ratio
+
+    real(dp), parameter :: geometry_tolerance = &
+      5.0e3_dp * epsilon(1.0_dp)
+    integer :: old_i_lower, old_i_upper, old_j_lower, old_j_upper
+    integer :: new_i_lower, new_i_upper, new_j_lower, new_j_upper
+
+    old_i_lower = (coarse_i_lower - &
+      old_patch_set%children(old_child)%patch%coarse_i_lower) * ratio + 1
+    old_i_upper = old_i_lower + &
+      (coarse_i_upper - coarse_i_lower + 1) * ratio - 1
+    old_j_lower = (coarse_j_lower - &
+      old_patch_set%children(old_child)%patch%coarse_j_lower) * ratio + 1
+    old_j_upper = old_j_lower + &
+      (coarse_j_upper - coarse_j_lower + 1) * ratio - 1
+    new_i_lower = (coarse_i_lower - &
+      new_patch_set%children(new_child)%patch%coarse_i_lower) * ratio + 1
+    new_i_upper = new_i_lower + &
+      (coarse_i_upper - coarse_i_lower + 1) * ratio - 1
+    new_j_lower = (coarse_j_lower - &
+      new_patch_set%children(new_child)%patch%coarse_j_lower) * ratio + 1
+    new_j_upper = new_j_lower + &
+      (coarse_j_upper - coarse_j_lower + 1) * ratio - 1
+    matches = all( &
+      old_patch_set%children(old_child)%geometry%cell_type( &
+        old_i_lower:old_i_upper, old_j_lower:old_j_upper) == &
+      new_patch_set%children(new_child)%geometry%cell_type( &
+        new_i_lower:new_i_upper, new_j_lower:new_j_upper)) .and. &
+      all(abs( &
+        old_patch_set%children(old_child)%geometry%volume_fraction( &
+          old_i_lower:old_i_upper, old_j_lower:old_j_upper) - &
+        new_patch_set%children(new_child)%geometry%volume_fraction( &
+          new_i_lower:new_i_upper, new_j_lower:new_j_upper)) <= &
+        geometry_tolerance)
+  end function sparse_regrid_overlap_geometry_matches_2d
+
+  subroutine transfer_sparse_regrid_overlap_rectangle_2d( &
+      old_distribution, new_distribution, old_sparse_patch_set, &
+      new_sparse_patch_set, old_patch_set, new_patch_set, old_child, &
+      new_child, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+      coarse_j_upper, ratio, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: old_distribution
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: new_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: old_sparse_patch_set
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: &
+      new_sparse_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: old_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: new_patch_set
+    integer, intent(in) :: old_child, new_child, coarse_i_lower
+    integer, intent(in) :: coarse_i_upper, coarse_j_lower, coarse_j_upper
+    integer, intent(in) :: ratio
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    integer :: cell_count, fine_height, fine_width, ierr, new_i_lower
+    integer :: new_i_upper, new_j_lower, new_j_upper, new_owner, old_i_lower
+    integer :: old_i_upper, old_j_lower, old_j_upper, old_owner, state_count
+    integer :: value_count
+
+    ok = .false.
+    fine_width = (coarse_i_upper - coarse_i_lower + 1) * ratio
+    fine_height = (coarse_j_upper - coarse_j_lower + 1) * ratio
+    if (fine_width < 1 .or. fine_height < 1) return
+    old_i_lower = (coarse_i_lower - &
+      old_patch_set%children(old_child)%patch%coarse_i_lower) * ratio + 1
+    old_i_upper = old_i_lower + fine_width - 1
+    old_j_lower = (coarse_j_lower - &
+      old_patch_set%children(old_child)%patch%coarse_j_lower) * ratio + 1
+    old_j_upper = old_j_lower + fine_height - 1
+    new_i_lower = (coarse_i_lower - &
+      new_patch_set%children(new_child)%patch%coarse_i_lower) * ratio + 1
+    new_i_upper = new_i_lower + fine_width - 1
+    new_j_lower = (coarse_j_lower - &
+      new_patch_set%children(new_child)%patch%coarse_j_lower) * ratio + 1
+    new_j_upper = new_j_lower + fine_height - 1
+    old_owner = old_distribution%child_owner(old_child)
+    new_owner = new_distribution%child_owner(new_child)
+
+    if (old_owner == new_owner) then
+      if (old_distribution%rank == old_owner) then
+        new_sparse_patch_set%children(new_child)%state( &
+          :, new_i_lower:new_i_upper, new_j_lower:new_j_upper) = &
+          old_sparse_patch_set%children(old_child)%state( &
+            :, old_i_lower:old_i_upper, old_j_lower:old_j_upper)
+        new_sparse_patch_set%children(new_child)%temperature( &
+          new_i_lower:new_i_upper, new_j_lower:new_j_upper) = &
+          old_sparse_patch_set%children(old_child)%temperature( &
+            old_i_lower:old_i_upper, old_j_lower:old_j_upper)
+      end if
+      ok = .true.
+      return
+    end if
+
+    cell_count = fine_width * fine_height
+    state_count = old_sparse_patch_set%nvar * cell_count
+    value_count = state_count + cell_count
+    if (old_distribution%rank == old_owner) then
+      allocate(payload(value_count))
+      payload(1:state_count) = reshape( &
+        old_sparse_patch_set%children(old_child)%state( &
+          :, old_i_lower:old_i_upper, old_j_lower:old_j_upper), &
+        [state_count])
+      payload(state_count + 1:value_count) = reshape( &
+        old_sparse_patch_set%children(old_child)%temperature( &
+          old_i_lower:old_i_upper, old_j_lower:old_j_upper), [cell_count])
+      call MPI_Send( &
+        payload, value_count, MPI_DOUBLE_PRECISION, new_owner, &
+        sparse_regrid_overlap_tag, old_distribution%comm, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      local_transfers = local_transfers + 1
+    else if (old_distribution%rank == new_owner) then
+      allocate(payload(value_count))
+      call MPI_Recv( &
+        payload, value_count, MPI_DOUBLE_PRECISION, old_owner, &
+        sparse_regrid_overlap_tag, old_distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      new_sparse_patch_set%children(new_child)%state( &
+        :, new_i_lower:new_i_upper, new_j_lower:new_j_upper) = reshape( &
+          payload(1:state_count), &
+          [old_sparse_patch_set%nvar, fine_width, fine_height])
+      new_sparse_patch_set%children(new_child)%temperature( &
+        new_i_lower:new_i_upper, new_j_lower:new_j_upper) = reshape( &
+          payload(state_count + 1:value_count), [fine_width, fine_height])
+    end if
+    ok = .true.
+  end subroutine transfer_sparse_regrid_overlap_rectangle_2d
+
+  subroutine transfer_direct_sparse_regrid_overlaps_2d( &
+      species, old_distribution, old_sparse_patch_set, old_patch_set, &
+      new_distribution, new_sparse_patch_set, new_patch_set, &
+      coarse_geometry, local_transfers, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: old_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: old_sparse_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: old_patch_set
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: new_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: &
+      new_sparse_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: new_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(out) :: local_transfers
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: primitive(:)
+    real(dp) :: recovered_temperature, sound_speed
+    logical :: accepted, global_ok, local_ok
+    integer :: coarse_i_lower, coarse_i_upper, coarse_j_lower
+    integer :: coarse_j_upper, i, j, new_child, old_child, ratio
+
+    local_transfers = 0
+    ok = .false.
+    local_ok = old_sparse_patch_set%is_valid( &
+      old_distribution, coarse_geometry, old_patch_set) .and. &
+      new_sparse_patch_set%is_valid( &
+        new_distribution, coarse_geometry, new_patch_set)
+    call all_ranks_accept_eb_2d( &
+      old_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    local_ok = .true.
+    do new_child = 1, new_patch_set%patch_count()
+      ratio = new_patch_set%children(new_child)%patch%refinement_ratio
+      do old_child = 1, old_patch_set%patch_count()
+        if (old_patch_set%children(old_child)%patch%refinement_ratio /= &
+            ratio) cycle
+        coarse_i_lower = max( &
+          old_patch_set%children(old_child)%patch%coarse_i_lower, &
+          new_patch_set%children(new_child)%patch%coarse_i_lower)
+        coarse_i_upper = min( &
+          old_patch_set%children(old_child)%patch%coarse_i_upper, &
+          new_patch_set%children(new_child)%patch%coarse_i_upper)
+        coarse_j_lower = max( &
+          old_patch_set%children(old_child)%patch%coarse_j_lower, &
+          new_patch_set%children(new_child)%patch%coarse_j_lower)
+        coarse_j_upper = min( &
+          old_patch_set%children(old_child)%patch%coarse_j_upper, &
+          new_patch_set%children(new_child)%patch%coarse_j_upper)
+        if (coarse_i_lower > coarse_i_upper .or. &
+            coarse_j_lower > coarse_j_upper) cycle
+        local_ok = local_ok .and. &
+          sparse_regrid_overlap_geometry_matches_2d( &
+            old_patch_set, new_patch_set, old_child, new_child, &
+            coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+            coarse_j_upper, ratio)
+      end do
+    end do
+    call all_ranks_accept_eb_2d( &
+      old_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    do new_child = 1, new_patch_set%patch_count()
+      ratio = new_patch_set%children(new_child)%patch%refinement_ratio
+      do old_child = 1, old_patch_set%patch_count()
+        if (old_patch_set%children(old_child)%patch%refinement_ratio /= &
+            ratio) cycle
+        coarse_i_lower = max( &
+          old_patch_set%children(old_child)%patch%coarse_i_lower, &
+          new_patch_set%children(new_child)%patch%coarse_i_lower)
+        coarse_i_upper = min( &
+          old_patch_set%children(old_child)%patch%coarse_i_upper, &
+          new_patch_set%children(new_child)%patch%coarse_i_upper)
+        coarse_j_lower = max( &
+          old_patch_set%children(old_child)%patch%coarse_j_lower, &
+          new_patch_set%children(new_child)%patch%coarse_j_lower)
+        coarse_j_upper = min( &
+          old_patch_set%children(old_child)%patch%coarse_j_upper, &
+          new_patch_set%children(new_child)%patch%coarse_j_upper)
+        if (coarse_i_lower > coarse_i_upper .or. &
+            coarse_j_lower > coarse_j_upper) cycle
+        call transfer_sparse_regrid_overlap_rectangle_2d( &
+          old_distribution, new_distribution, old_sparse_patch_set, &
+          new_sparse_patch_set, old_patch_set, new_patch_set, old_child, &
+          new_child, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+          coarse_j_upper, ratio, local_transfers, local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+
+    allocate(primitive(reactive_nprim(size(species))))
+    local_ok = .true.
+    do new_child = 1, new_distribution%child_count()
+      if (.not. new_distribution%child_is_local(new_child)) cycle
+      do j = 1, new_patch_set%children(new_child)%geometry%ny
+        do i = 1, new_patch_set%children(new_child)%geometry%nx
+          if (new_patch_set%children(new_child)%geometry%cell_type(i, j) == &
+              eb_covered_cell) cycle
+          if (new_sparse_patch_set%children(new_child)%temperature(i, j) &
+              <= 0.0_dp) then
+            local_ok = .false.
+            cycle
+          end if
+          call reactive_conserved_to_primitive( &
+            species, new_sparse_patch_set%children(new_child)%state(:, i, j), &
+            new_sparse_patch_set%children(new_child)%temperature(i, j), &
+            primitive, recovered_temperature, sound_speed, accepted)
+          if (.not. accepted) then
+            local_ok = .false.
+            cycle
+          end if
+          new_sparse_patch_set%children(new_child)%temperature(i, j) = &
+            recovered_temperature
+        end do
+      end do
+    end do
+    call all_ranks_accept_eb_2d( &
+      new_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    local_ok = new_sparse_patch_set%is_valid( &
+      new_distribution, coarse_geometry, new_patch_set)
+    call all_ranks_accept_eb_2d( &
+      new_distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine transfer_direct_sparse_regrid_overlaps_2d
 
   subroutine regrid_tagged_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
