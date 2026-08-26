@@ -54,6 +54,12 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_eb_amr_patch_2d
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_eb_amr_patch_2d
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_eb_amr_patch_2d
+      - name: Arbitrary-depth EB patch-tree ownership gates
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_eb_patch_tree_2d
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_eb_patch_tree_2d
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_eb_patch_tree_2d
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_eb_patch_tree_2d
       - name: Euler rank-count field parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv

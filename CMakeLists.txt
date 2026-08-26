@@ -205,6 +205,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_domain_1d_mod.F90
     src/parallel/mpi_amr_patch_1d_mod.F90
     src/parallel/mpi_amr_sparse_patch_1d_mod.F90
+    src/parallel/mpi_amr_eb_patch_tree_2d_mod.F90
     src/parallel/mpi_amr_eb_patch_2d_mod.F90
     src/parallel/mpi_amr_eb_io_2d_mod.F90
     src/parallel/mpi_reactive_transport_1d_mod.F90
@@ -247,6 +248,13 @@ if(PELEF_ENABLE_MPI)
     pelef_mpi_eb_amr_patch_2d PRIVATE pelef_mpi_support
   )
   add_executable(
+    pelef_mpi_amr_eb_patch_tree_2d
+    app/pelef_mpi_amr_eb_patch_tree_2d.F90
+  )
+  target_link_libraries(
+    pelef_mpi_amr_eb_patch_tree_2d PRIVATE pelef_mpi_support
+  )
+  add_executable(
     pelef_mpi_amr_reactive_1d
     app/pelef_mpi_amr_reactive_1d.F90
   )
@@ -260,6 +268,7 @@ if(PELEF_ENABLE_MPI)
       pelef_mpi_reactive_1d
       pelef_mpi_amr_patch_1d
       pelef_mpi_eb_amr_patch_2d
+      pelef_mpi_amr_eb_patch_tree_2d
       pelef_mpi_amr_reactive_1d
     RUNTIME DESTINATION bin
   )
