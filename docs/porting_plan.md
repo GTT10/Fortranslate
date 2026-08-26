@@ -1141,6 +1141,20 @@ parity, exact accounting, committed-prefix behavior at the step bound, and
 exact first-step rollback. Run the complete serial Debug and Release suite and
 the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
 
+## 0.159.0 MPI arbitrary-depth EB patch-tree ownership gates
+
+Introduce a topology-matched distribution with one owner per runtime node,
+deterministic greedy placement, cumulative-subcycle work weighting, and exact
+per-rank accounting. Retain a replicated numerical tree initially and publish
+owner-authoritative state and temperature through one private all-rank
+candidate.
+
+Require collective topology/control consensus, exact four-level branching
+owner accounting, all-rank field parity, rank-local invalid-state rollback,
+and inconsistent-control rejection at one, two, four, and eight ranks. Run the
+complete existing MPI and serial Debug/Release suite before acceptance. Defer
+sparse nonowner storage, direct migration, and owner-local physics routing.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -2580,3 +2580,18 @@ solver on the first step with exact tree/time/count rollback and neutral
 timestep/theta outputs. Retain all 208 serial tests in GNU Fortran Release and
 bounds/FPE-checked Debug, plus the established OpenMPI one-, two-, four-, and
 eight-rank suite even though the new tree remains serial.
+
+## 0.159.0 MPI arbitrary-depth EB patch-tree ownership gates
+
+Build a four-level topology with patch counts `[1, 1, 2, 1]`. At one, two,
+four, and eight ranks, require deterministic ownership, exact global totals of
+five nodes and 352 allocated cells, and subcycle-squared weighted work 6016.
+Require every owner to publish a distinct node value and every rank to receive
+the exact complete tree, with global publication accounting equal to five.
+
+Make one rank's candidate invalid and require collective rejection, zero
+publication accounting, and exact rank-local rollback. Also provide unequal
+subcycle exponents across ranks and require collective initialization
+rejection; use an out-of-range exponent for the one-rank case. Retain the full
+existing MPI gates and all 208 serial tests in GNU Fortran Release and bounds/
+FPE-checked Debug.

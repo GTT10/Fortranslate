@@ -2166,3 +2166,25 @@ their input values or deterministic neutral outputs. If a later step rejects
 or the maximum step count is reached, earlier accepted steps remain visible
 and the failed candidate does not. Reaching the target within the floating-
 point time tolerance assigns the requested final time exactly.
+
+## MPI arbitrary-depth EB patch-tree ownership
+
+For runtime node `(l,p)` with allocated cell count `N(l,p)`, the initial
+distribution assigns work
+
+```text
+W(l,p) = N(l,p) R(l)^e,
+```
+
+where `R(l)` is the cumulative refinement product and the caller selects
+`e = 0`, `1`, or `2`. Nodes are visited in deterministic level/patch order and
+assigned to the rank with the smallest accumulated work, breaking ties toward
+the lower rank. The distribution stores exact per-rank cell, node, and work
+totals and validates them against every owner entry.
+
+The first publication operation keeps a complete candidate tree on every rank.
+Only the assigned owner supplies each node's conserved state and temperature;
+two ordered broadcasts populate that node in the candidate. Collective input
+and final-candidate validation surround the complete traversal, so no partial
+publication is committed. This operation establishes numerical ownership but
+does not yet remove nonowner field allocation or route recursive physics.
