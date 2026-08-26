@@ -2418,3 +2418,19 @@ across both SSPRK2 Euler stages. Retain serial root/child fields, limiter minima
 owner work, public clock, scheduled regridding, cut-boundary conservation, and
 late-failure rollback at one, two, four, and eight ranks in Release and
 bounds/FPE-checked Debug.
+
+## 0.149.0 owner-local root transport result gates
+
+Remove the transport Euler stage-start, stage-end, temperature, and x/y-flux
+result message from every remote root tile to the root physics owner. Require
+the exact point-to-point count to contain only finite-band halo exchanges and
+direct state, flux, and correction fragments for intersecting children across
+both SSPRK2 Euler stages. The root-only cyclic case must contain halo traffic
+only.
+
+For a cut interface, compute left/right physical-boundary contributions on
+every local tile and lower/upper contributions only on the edge tiles, then
+combine one finite `nvar` vector collectively. Retain serial root/child fields,
+cut-boundary conservation, limiter minima, owner work, public clock, scheduled
+regridding, and late-failure rollback at one, two, four, and eight ranks in
+Release and bounds/FPE-checked Debug before the complete serial regression.

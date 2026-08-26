@@ -1597,3 +1597,19 @@ the next child begins. Final corrected root tiles commit locally and the former
 root-owner row scatter is absent. Complete temporary root state and flux arrays
 remain on the root physics owner for compatibility checks and cut-boundary flux
 closure; eliminating that post-compute assembly is a later boundary.
+
+## Owner-local root transport result (`0.149.0`)
+
+Sparse transport Euler stages retain their result only in root-tile state and
+flux records. Remote tile owners no longer pack stage-start state, stage-end
+state, temperature, or complete owned flux rows for the root physics owner.
+The root physics owner therefore allocates no complete transport result or flux
+array. Halo input, direct child state/flux support, ordered child correction,
+and tile-local final publication keep their established ownership.
+
+Cut-interface conservation needs only the physical root-boundary flux change.
+Every tile owner accumulates its left and right x-face contribution. The first
+and final y tiles additionally accumulate the lower and upper physical faces.
+A communicator sum combines that `nvar` vector on all ranks before the existing
+tile-local conservation closure. Hydro and explicit materialization/output
+boundaries retain their existing complete-root behavior.
