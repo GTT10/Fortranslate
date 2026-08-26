@@ -708,8 +708,10 @@ Required capabilities:
   restart without replicated child state or temperature (`0.133.0`)
 - [x] arbitrary-depth, branching geometry-only EB patch-tree topology with
   transactional whole-tree rebuild (`0.134.0`)
-- locally resolved multilevel EB redistribution and arbitrary-depth numerical
-  hierarchy operations
+- [x] arbitrary-depth reactive EB numerical hierarchy with conservative
+  synchronization and transactional topology/state migration (`0.135.0`)
+- locally resolved multilevel EB redistribution and arbitrary-depth physics
+  recursion
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

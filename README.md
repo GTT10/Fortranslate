@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.134.0` milestone contains the serial verification suite, eight optional
+The `0.135.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -417,10 +417,20 @@ Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
 coarse-to-fine spatial slopes, multipatch EB AMR molecular
 transport, dynamic middle/root topology, arbitrary-depth EB levels,
-transport-enabled checkpoint/restart, and MPI distribution are not yet
+transport-enabled checkpoint/restart, arbitrary-depth EB physics recursion,
+and MPI distribution are not yet
 connected. The public EB AMR application now owns
 either restartable sibling rectangles or an
 explicit three-level hierarchy with an optionally dynamic finest patch.
+
+The separate EB patch-tree core now owns reactive conserved state and
+temperature on arbitrary-depth, branching topology. It initializes children
+from their actual parents, synchronizes deepest-first, evaluates the complete
+composite conserved vector, and transactionally migrates fields through a
+whole-tree topology replacement. Same-resolution physical overlap is retained
+only after local EB geometry checks; EOS or conservation failure leaves the
+accepted tree unchanged. This core is not yet connected to the public physics
+time loop or MPI ownership.
 
 ### MPI one-dimensional verification
 

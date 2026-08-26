@@ -1394,11 +1394,27 @@ patch against its actual parent geometry and validates separated siblings. A
 dynamic whole-tree replacement is staged as a candidate and commits only after
 the complete topology validates; identical plans are explicit no-ops.
 
+In `0.135.0`, a numerical hierarchy mirrors every topology level and patch.
+Each node stores its reactive conserved state and recovered temperature while
+geometry remains in the topology. Initialization walks parent-to-child and
+uses the qualified EB PCM prolongation. Synchronization walks the relations in
+reverse and applies the qualified reactive EB average-down to every child.
+
+A dynamic rebuild is one transaction. It first evaluates the old composite
+integral and restricts a private old-tree copy to the root. The candidate is
+then constructed from that collapsed root. At each new level, children are
+prolonged from the already updated parent, same-resolution physical overlap is
+retained only when cell and surrounding-face EB metrics agree, and active-cell
+temperature is recovered through the NASA7 EOS. A final deepest-to-root
+synchronization and complete conserved-vector integral comparison precede the
+commit. Invalid plans, incompatible overlap geometry, failed EOS recovery, or
+failed conservation leave the accepted topology and every field unchanged.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
-PeleC-style multilevel redistribution, arbitrary-depth numerical hierarchy
-operations, dynamic root/middle
+PeleC-style multilevel redistribution, arbitrary-depth physics recursion,
+dynamic root/middle
 lifecycle ownership, non-outflow refined boundaries, decomposed root-level MPI
 StateRedist, replica-free regrid overlap transfer, distributed sparse
 checkpoint/output, and distributed EB flux registers

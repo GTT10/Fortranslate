@@ -2184,3 +2184,23 @@ Changing the deepest child to a nonexistent parent must reject without changing
 the accepted four-level topology. The gate runs inside the established EB
 multilevel unit in GNU Fortran Release and bounds/FPE-checked Debug before the
 complete 208-test serial regression.
+
+## 0.135.0 arbitrary-depth reactive EB state-migration gates
+
+Initialize reactive fields on the established three-level, two-branch tree,
+give both deeper branches distinct valid conserved states, and require the
+composite conserved vector to remain unchanged after deepest-first
+synchronization. Rebuild to the four-level plan and require parent-first PCM
+initialization, same-resolution overlap retention, recovered positive finite
+temperatures, and conservation of every state component.
+
+Move the deepest rectangle by one parent cell after giving its fine cells a
+nonuniform but EOS-valid state. The physical intersection must retain the old
+fine values under the expected index shift, newly exposed cells must come from
+the updated parent, and the complete composite integral must remain unchanged.
+
+Repeating the four-level plan must be an exact numerical no-op. A deepest child
+that names a nonexistent parent must reject with the accepted topology, state,
+and temperature bitwise unchanged. The gate runs inside the established EB
+multilevel unit in GNU Fortran Release and bounds/FPE-checked Debug before the
+complete 208-test serial regression.

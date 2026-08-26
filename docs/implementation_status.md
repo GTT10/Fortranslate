@@ -2424,3 +2424,23 @@ This milestone removes the fixed two-/three-level limit from geometry topology
 metadata only. Arbitrary-depth numerical fields, conservative state migration,
 owner distribution, physics recursion, timestep selection, checkpoint I/O, and
 dynamic tagging remain separate work.
+
+## Arbitrary-depth reactive EB patch-tree state migration (`0.135.0`)
+
+- [x] numerical state and temperature node for every runtime topology patch
+- [x] parent-first PCM initialization across arbitrary depth and branching
+- [x] deepest-first reactive average-down across every tree relation
+- [x] complete composite conserved-vector integral at arbitrary depth
+- [x] transactional whole-tree numerical rebuild from a collapsed old root
+- [x] same-resolution physical overlap retention with local EB metric checks
+- [x] parent-first regeneration after retained overlap for deeper descendants
+- [x] active-cell NASA7 temperature recovery before candidate publication
+- [x] exact no-op behavior for an identical topology plan
+- [x] invalid-plan rollback preserving topology, state, and temperature
+- [x] four-level, two-branch and shifted-patch conservation/migration gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This milestone removes the fixed depth limit from serial numerical hierarchy
+storage, synchronization, and conservative topology migration. Runtime physics
+recursion, owner distribution, distributed migration, timestep selection,
+checkpoint I/O, and dynamic tagging remain separate work.
