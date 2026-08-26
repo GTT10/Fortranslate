@@ -22,7 +22,7 @@ module mpi_amr_eb_patch_2d_mod
     prolong_reactive_eb_patch_pcm_2d, build_reactive_eb_patch_exterior_2d, &
     advance_reactive_eb_level_2d
   use amr_eb_hierarchy_2d_mod, only: &
-    build_amr_eb_patch_2d
+    amr_eb_patch_2d, build_amr_eb_patch_2d
   use eb_reactive_redistribution_2d_mod, only: &
     advance_reactive_eb_state_redistributed_2d
   use eb_reactive_transport_2d_mod, only: &
@@ -2954,6 +2954,93 @@ contains
     ok = global_ok .and. accepted
   end subroutine transfer_sparse_root_correction_2d
 
+  subroutine transfer_sparse_root_patch_correction_2d( &
+      distribution, coarse_geometry, nvar, patch, source, destination, tag, &
+      state, temperature, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: nvar
+    type(amr_eb_patch_2d), intent(in) :: patch
+    integer, intent(in) :: source, destination, tag
+    real(dp), allocatable, intent(inout) :: state(:, :, :)
+    real(dp), allocatable, intent(inout) :: temperature(:, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical :: accepted, global_ok, local_ok, participant
+    integer :: cell_count, i_lower, i_upper, ierr, j_lower, j_upper
+    integer :: state_count, value_count
+
+    ok = .false.
+    ! Flux mismatch lives one coarse cell outside the patch. Cut-cell
+    ! redistribution can move it through one further cardinal/diagonal edge.
+    i_lower = max(1, patch%coarse_i_lower - 2)
+    i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 2)
+    j_lower = max(1, patch%coarse_j_lower - 2)
+    j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 2)
+    local_ok = nvar >= 1 .and. source >= 0 .and. &
+      source < distribution%nranks .and. destination >= 0 .and. &
+      destination < distribution%nranks .and. &
+      patch%coarse_i_lower >= 1 .and. &
+      patch%coarse_i_upper <= coarse_geometry%nx .and. &
+      patch%coarse_j_lower >= 1 .and. &
+      patch%coarse_j_upper <= coarse_geometry%ny .and. &
+      patch%coarse_i_lower <= patch%coarse_i_upper .and. &
+      patch%coarse_j_lower <= patch%coarse_j_upper
+    participant = distribution%rank == source .or. &
+      distribution%rank == destination
+    if (participant .and. local_ok) local_ok = allocated(state) .and. &
+      allocated(temperature)
+    if (participant .and. local_ok) local_ok = &
+      all(shape(state) == &
+        [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(shape(temperature) == &
+        [coarse_geometry%nx, coarse_geometry%ny]) .and. &
+      all(ieee_is_finite(state)) .and. &
+      all(ieee_is_finite(temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    cell_count = (i_upper - i_lower + 1) * (j_upper - j_lower + 1)
+    state_count = nvar * cell_count
+    value_count = state_count + cell_count
+    if (source /= destination) then
+      if (distribution%rank == source) then
+        allocate(payload(value_count))
+        payload(1:state_count) = reshape( &
+          state(:, i_lower:i_upper, j_lower:j_upper), [state_count])
+        payload(state_count + 1:value_count) = reshape( &
+          temperature(i_lower:i_upper, j_lower:j_upper), [cell_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, destination, tag, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+      else if (distribution%rank == destination) then
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, source, tag, &
+          distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        state(:, i_lower:i_upper, j_lower:j_upper) = reshape( &
+          payload(1:state_count), &
+          [nvar, i_upper - i_lower + 1, j_upper - j_lower + 1])
+        temperature(i_lower:i_upper, j_lower:j_upper) = reshape( &
+          payload(state_count + 1:value_count), &
+          [i_upper - i_lower + 1, j_upper - j_lower + 1])
+      end if
+    end if
+    local_ok = .true.
+    if (participant) local_ok = all(ieee_is_finite(state)) .and. &
+      all(ieee_is_finite(temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine transfer_sparse_root_patch_correction_2d
+
   subroutine scatter_sparse_root_from_owner_2d( &
       distribution, coarse_geometry, patch_set_template, root_state, &
       root_temperature, sparse_patch_set, local_transfers, ok)
@@ -4188,8 +4275,14 @@ contains
       cut_interface = cut_interface .or. .not. level_two_interface_is_regular( &
         patch_set_template%children(child)%geometry)
       owner = distribution%child_owner(child)
-      call transfer_sparse_root_correction_2d( &
-        distribution, coarse_geometry, nvar, root_owner, owner, &
+      if (owner /= root_owner .and. distribution%rank == owner) then
+        allocate(coarse_corrected, source=coarse_candidate)
+        allocate(coarse_corrected_temperature, &
+          source=coarse_candidate_temperature)
+      end if
+      call transfer_sparse_root_patch_correction_2d( &
+        distribution, coarse_geometry, nvar, &
+        patch_set_template%children(child)%patch, root_owner, owner, &
         sparse_root_correction_out_tag, coarse_corrected, &
         coarse_corrected_temperature, transfers, local_ok)
       if (.not. local_ok) return
@@ -4282,8 +4375,9 @@ contains
       call all_ranks_accept_eb_2d( &
         distribution, entity_ok, accepted, global_ok)
       if (.not. global_ok .or. .not. accepted) return
-      call transfer_sparse_root_correction_2d( &
-        distribution, coarse_geometry, nvar, owner, root_owner, &
+      call transfer_sparse_root_patch_correction_2d( &
+        distribution, coarse_geometry, nvar, &
+        patch_set_template%children(child)%patch, owner, root_owner, &
         sparse_root_correction_back_tag, coarse_corrected, &
         coarse_corrected_temperature, transfers, local_ok)
       if (.not. local_ok) return

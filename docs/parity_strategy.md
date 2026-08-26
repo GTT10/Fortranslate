@@ -2312,3 +2312,21 @@ redistribution limiter minimum at `2e-13`. Repeat the existing one-, two-,
 four-, and eight-rank full-physics, public time-loop, and scheduled-regrid
 gates in OpenMPI Release and bounds/FPE-checked Debug, followed by the complete
 serial regression.
+
+## 0.142.0 compact EB flux-register and MPI correction gates
+
+Initialize an interior EB flux register and require its correction array to
+retain absolute coarse indices while storing only the fine-patch rectangle
+expanded by one cell. Re-run aperture-matched coarse/fine cancellation,
+cut-cell extensive conservation, fine-covered redistribution, reactive
+temperature recovery, reset, nonfinite accumulation rollback, and nonphysical
+reflux rollback without relaxing their established tolerances.
+
+For sparse MPI transport, replace each remote child's full-root correction
+round trip with the patch rectangle expanded by two coarse cells. The second
+cell covers every cardinal or diagonal recipient of a cut-cell correction.
+Require unchanged exact message counts, owner work counts, limiter minima, and
+serial root/child field tolerances at one, two, four, and eight ranks. Repeat
+full physics, public time-loop, scheduled-regrid, and late-failure rollback in
+OpenMPI Release and bounds/FPE-checked Debug before the complete serial
+regression.

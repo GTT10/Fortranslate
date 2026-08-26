@@ -722,6 +722,8 @@ Required capabilities:
   target-band accounting and deterministic result routing (`0.140.0`)
 - [x] seam-isolated cyclic finite bands for periodic-y sparse root transport
   targets with exact fragment/work accounting (`0.141.0`)
+- [x] compact EB flux-register storage and patch-bounded sparse transport
+  correction round trips (`0.142.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
 - thermal, viscous, and catalytic wall boundary conditions

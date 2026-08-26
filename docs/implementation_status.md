@@ -2565,3 +2565,21 @@ outer ends instead of placing the wrap at an artificial internal seam. The
 post-compute complete root bundle is still assembled for fine-child exterior
 data, flux registers, and reflux; distributing that interface remains later
 work.
+
+## Compact EB flux-register and sparse correction support (`0.142.0`)
+
+- [x] globally indexed patch-plus-one-cell flux-register storage
+- [x] boundary-clipped correction bounds validated with the register
+- [x] reflux iteration limited to the stored correction support
+- [x] unchanged cut-cell cardinal/diagonal redistribution
+- [x] patch-plus-two-cell sparse correction transfer footprint
+- [x] cumulative corrections merged in deterministic child order
+- [x] unchanged message-count accounting and transactional rollback
+- [x] serial flux cancellation, conservation, temperature, and failure gates
+- [x] sparse root/child parity at one, two, four, and eight ranks
+- [x] public time-loop and scheduled-regrid regression coverage
+
+Each distinct child owner still receives one complete root start/end/flux
+input bundle per Euler stage. Compact exterior and interface-flux routing are
+the next boundary; this milestone removes only the repeated full-root reflux
+correction round trips.
