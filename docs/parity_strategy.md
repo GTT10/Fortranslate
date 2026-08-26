@@ -2595,3 +2595,19 @@ subcycle exponents across ranks and require collective initialization
 rejection; use an out-of-range exponent for the one-rank case. Retain the full
 existing MPI gates and all 208 serial tests in GNU Fortran Release and bounds/
 FPE-checked Debug.
+
+## 0.160.0 MPI sparse arbitrary-depth EB patch-tree storage gates
+
+Convert the accepted four-level branching tree into owner-only storage at one,
+two, four, and eight ranks. Require each rank to allocate exactly its mapped
+node and cell totals, with no fields on nonowners. Explicitly materialize the
+sparse tree and require exact state and temperature parity with the accepted
+replicated tree plus five global owner publications.
+
+Rotate every owner by one rank when multiple ranks are present, migrate each
+changed node directly, and require the global sender transfer count to equal
+the number of ownership changes. Materialize again and require exact field
+parity. Corrupt the new owner map on only rank zero and require collective
+rejection, zero transfers, and value-for-value sparse rollback. Retain the
+full established MPI gates and all 208 serial tests in GNU Fortran Release and
+bounds/FPE-checked Debug.

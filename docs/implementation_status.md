@@ -2862,3 +2862,19 @@ separate work.
 This milestone establishes ownership while retaining replicated field
 allocation. Sparse owner storage, direct owner migration, distributed
 timestep reduction, and owner-local recursive physics remain separate work.
+
+## MPI sparse arbitrary-depth reactive EB patch-tree storage (`0.160.0`)
+
+- [x] replicated topology and owner metadata with owner-only field allocation
+- [x] exact local allocated-cell and node accounting
+- [x] explicit owner-to-replicated materialization boundary
+- [x] direct old-owner to new-owner state and temperature migration
+- [x] local copy for unchanged ownership and no nonowner field allocation
+- [x] one private sparse migration candidate and all-rank commit boundary
+- [x] exact field parity before and after rotated ownership
+- [x] collective invalid-map rejection with zero transfer accounting
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes replicated persistent fields from the arbitrary-depth
+MPI tree. Distributed sparse timestep reduction and owner-local recursive
+physics remain separate work.

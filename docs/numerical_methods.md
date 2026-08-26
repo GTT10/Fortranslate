@@ -2188,3 +2188,19 @@ two ordered broadcasts populate that node in the candidate. Collective input
 and final-candidate validation surround the complete traversal, so no partial
 publication is committed. This operation establishes numerical ownership but
 does not yet remove nonowner field allocation or route recursive physics.
+
+## MPI sparse arbitrary-depth EB patch-tree storage and migration
+
+The sparse tree separates replicated metadata from numerical fields. Every
+rank stores the same topology and owner map, but node `(l,p)` allocates state
+and temperature exactly when the local rank equals its owner. Validation
+checks both directions of this invariant, along with exact geometry-derived
+array shapes, finite fields, and positive temperature.
+
+Materialization is an explicit compatibility boundary: allocate a private
+complete tree, copy each owner's node into it, broadcast that node's state and
+temperature, validate, then publish. Repartitioning instead allocates a private
+sparse tree from the new owner map. Unchanged owners copy locally; a changed
+owner pair performs direct point-to-point state and temperature transfer. The
+accepted sparse tree remains untouched until every candidate node validates
+against the new distribution.

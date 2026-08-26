@@ -1784,3 +1784,20 @@ temperature into a private replicated tree, and all ranks commit only after
 the complete candidate validates. Rank-local invalid input or inconsistent
 controls reject collectively with zero publication accounting. Sparse field
 storage, direct owner migration, and owner-local physics remain separate.
+
+## MPI sparse arbitrary-depth EB patch-tree storage (`0.160.0`)
+
+The sparse numerical tree retains the complete topology on every rank but
+allocates conserved state and temperature only for locally owned nodes.
+Initialization copies each node from the accepted replicated tree to its
+owner; nonowners retain no field allocation. A deliberate materialization
+boundary broadcasts owner-authoritative fields into one private complete tree
+and publishes it only after collective validation.
+
+Ownership changes allocate a second sparse layout from the new map. Nodes
+whose owner is unchanged copy locally, while changed nodes send state and
+temperature directly from the old owner to the new owner. The old sparse tree
+is replaced only after every rank validates the complete candidate. Invalid or
+inconsistent owner metadata rejects before transfer and preserves the accepted
+sparse tree exactly. Distributed timestep reduction and owner-local recursive
+physics remain separate.

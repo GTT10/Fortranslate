@@ -1155,6 +1155,19 @@ and inconsistent-control rejection at one, two, four, and eight ranks. Run the
 complete existing MPI and serial Debug/Release suite before acceptance. Defer
 sparse nonowner storage, direct migration, and owner-local physics routing.
 
+## 0.160.0 MPI sparse arbitrary-depth EB patch-tree storage gates
+
+Keep topology and ownership replicated while allocating each node's numerical
+fields only on its owner. Add an explicit replicated materialization boundary
+for compatibility and direct point-to-point migration from each old owner to
+the corresponding new owner through one private sparse candidate.
+
+Require exact owner-local allocation accounting, pre/post-migration field
+parity, exact changed-owner transfer accounting, and collective invalid-map
+rollback at one, two, four, and eight ranks. Run the complete existing MPI and
+serial Debug/Release suite before acceptance. Defer distributed sparse
+timestep reduction and owner-local recursive physics routing.
+
 Each implementation PR should normally contain:
 
 1. implementation

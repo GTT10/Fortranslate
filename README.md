@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.159.0` milestone contains the serial verification suite, nine optional
+The `0.160.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -486,13 +486,14 @@ every step, clips exactly to the requested stop time, and commits the tree,
 clock, step count, limiter minimum, and per-level physics counts together.
 Dynamic tagging and checkpoint I/O remain separate.
 
-An MPI ownership descriptor now maps every arbitrary-depth tree node to a
+An MPI ownership descriptor maps every arbitrary-depth tree node to a
 deterministic rank using allocated cells and optional subcycle-weighted work.
-Owner-authoritative state and temperature publication is transactional across
-all ranks, with collective topology/control consensus and exact rejection of a
-rank-local invalid candidate. This milestone keeps complete tree fields
-replicated; sparse owner storage, direct migration, and owner-local physics are
-the next distributed boundaries.
+The sparse numerical representation allocates state and temperature only on
+that node's owner while retaining replicated topology and ownership metadata.
+Explicit materialization reconstructs a complete tree when required, and a
+new owner map migrates changed nodes directly from old owner to new owner into
+a private candidate. Distributed timestep reduction and owner-local physics
+are the next boundaries.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,
