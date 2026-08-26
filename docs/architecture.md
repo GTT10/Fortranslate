@@ -1327,6 +1327,20 @@ scatter per transport call. The two Euler stages retain their root
 gather/scatter boundary because diffusive flux construction and StateRedist
 still require neighboring rows.
 
+In `0.140.0`, each sparse transport Euler stage replaces its unconditional
+selected-root gather and advance with owner-tiled target-band work. A
+target tile owner assembles a six-row guard from its local tiles and direct
+row fragments sent by intersecting source owners, then executes the established
+EB transport-flux and second-order StateRedist kernels on that band. It routes
+only its owned start state, updated state, temperature, x-flux rows, and uniquely
+owned y-faces to the root physics owner. That owner still assembles one complete
+temporary bundle after tile computation because fine-child exterior
+interpolation, flux-register accumulation, and deterministic reflux consume
+level-wide arrays. Corrected rows scatter to tile owners before the tile-local
+SSPRK2 blend. A target touching a periodic y boundary uses the complete root
+band to preserve the serial kernel's cyclic wrap; cyclic finite-halo geometry
+is a later optimization.
+
 In `0.126.0`, a public sparse time loop composes that selector with the direct
 owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after
 every accepted state, the final interval is clipped to the target time, and

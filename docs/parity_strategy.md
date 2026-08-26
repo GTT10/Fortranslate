@@ -2274,3 +2274,23 @@ start gather, second-Euler gather, or blended-state scatter. Keep child bundles,
 reflux correction traffic, distributed cut-interface closure, stored-value
 counts, and late-failure rollback unchanged. Run in OpenMPI Release and
 bounds/FPE-checked Debug before the complete serial regression.
+
+## 0.140.0 sparse MPI owner-tiled SSPRK2 root-Euler gates
+
+For each Euler stage and root tile, assemble the exact six-row transport guard
+from local rows plus direct fragments from every intersecting remote source
+owner. Execute one EB transport-flux/StateRedist band advance on the target tile
+owner, then route its owned start, result, temperature, x-flux, and unique
+y-face rows to the root physics owner. Require exact distribution-derived halo,
+result, child-bundle, correction, and scatter transfer counts.
+
+Across a complete SSPRK2 call, require two tile advances per root tile and the
+exact sum of both stages' band-cell counts. On the small qualification mesh,
+the periodic-edge safeguard may cover the full root through two ranks; above
+two ranks total work must remain below independently advancing the full root on
+every rank. Materialized root and child fields must retain the established
+`2e-11` transport tolerance and the limiter minimum its `2e-13` tolerance at
+one, two, four, and eight ranks. Repeat owner accounting through sparse
+`R-T-H-T-R` and the public time loop. A late failure must preserve every sparse
+field bitwise and publish zero work and traffic. Run Release and bounds/FPE-
+checked Debug before the complete serial regression.

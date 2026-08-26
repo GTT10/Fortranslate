@@ -13,7 +13,8 @@ program pelef_mpi_eb_amr_patch_2d
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
   use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d
+    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
+    boundary_y_lower, reactive_boundary_is_periodic
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -45,6 +46,7 @@ program pelef_mpi_eb_amr_patch_2d
     read_reactive_eb_amr_patch_set_2d_checkpoint
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_root_tile_hydro_halo_cells, &
+    mpi_amr_eb_root_tile_transport_halo_cells, &
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
@@ -230,12 +232,16 @@ program pelef_mpi_eb_amr_patch_2d
   logical :: geometry_perturbed, ok, topology_changed
   logical :: io_files_ok
   integer :: child, component, global_advances, global_i, global_j, i, ierr
-  integer :: j, new_child, old_child, old_i, old_j, owner, source
+  integer :: band_j_lower, band_j_upper, j
+  integer :: new_child, old_child, old_i, old_j, owner, source
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_root_hydro_cells, global_root_hydro_cells
   integer :: expected_local_root_hydro_cells
   integer :: expected_global_root_hydro_cells
+  integer :: local_root_transport_cells, global_root_transport_cells
+  integer :: expected_local_root_transport_cells
+  integer :: expected_global_root_transport_cells
   integer :: local_chemistry_advances, local_hydro_advances
   integer :: local_transport_advances
   integer :: global_chemistry_advances, global_hydro_advances
@@ -1874,9 +1880,35 @@ program pelef_mpi_eb_amr_patch_2d
   root_owner = distribution%root_level_owner()
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
+  expected_local_root_transport_cells = 0
   restriction_recipients = .false.
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
+    band_j_lower = max(1, distribution%root_tiles(tile)%j_lower - &
+      mpi_amr_eb_root_tile_transport_halo_cells)
+    band_j_upper = min(coarse_ny, &
+      distribution%root_tiles(tile)%j_upper + &
+        mpi_amr_eb_root_tile_transport_halo_cells)
+    if (reactive_boundary_is_periodic( &
+        boundaries%face(boundary_y_lower)) .and. &
+        (distribution%root_tiles(tile)%j_lower == 1 .or. &
+         distribution%root_tiles(tile)%j_upper == coarse_ny)) then
+      band_j_lower = 1
+      band_j_upper = coarse_ny
+    end if
+    if (rank == owner) expected_local_root_transport_cells = &
+      expected_local_root_transport_cells + 2 * coarse_nx * ( &
+        band_j_upper - band_j_lower + 1)
+    do source = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(source)%owner == owner) cycle
+      if (band_j_upper < &
+          distribution%root_tiles(source)%j_lower .or. &
+          band_j_lower > &
+          distribution%root_tiles(source)%j_upper) cycle
+      expected_global_root_transfers = expected_global_root_transfers + 2
+      if (rank == distribution%root_tiles(source)%owner) &
+        expected_local_root_transfers = expected_local_root_transfers + 2
+    end do
     if (owner == root_owner) cycle
     expected_global_root_transfers = expected_global_root_transfers + 4
     if (rank == owner) expected_local_root_transfers = &
@@ -1899,11 +1931,24 @@ program pelef_mpi_eb_amr_patch_2d
     2 * count(restriction_recipients)
   if (rank == root_owner) expected_local_root_transfers = &
     expected_local_root_transfers + 2 * count(restriction_recipients)
+  expected_local_advances = 0
+  do tile = 1, distribution%root_tile_count()
+    if (distribution%root_tile_is_local(tile)) &
+      expected_local_advances = expected_local_advances + 2
+  end do
+  expected_global_advances = 2 * distribution%root_tile_count()
+  do child = 1, distribution%child_count()
+    expected_global_advances = expected_global_advances + 2 * &
+      transport_start_set%children(child)%patch%refinement_ratio
+    if (distribution%child_is_local(child)) &
+      expected_local_advances = expected_local_advances + 2 * &
+        transport_start_set%children(child)%patch%refinement_ratio
+  end do
   call advance_sparse_owned_reactive_eb_patch_set_transport_2d( &
     species, transport, distribution, sparse_transport_set, &
     coarse_geometry, transport_start_set, transport_dt, .true., .true., &
     .true., .true., boundaries, 2, ok, local_advances, transport_theta, &
-    0.5_dp, local_root_transfers)
+    0.5_dp, local_root_transfers, local_root_transport_cells)
   call assert_all(ok .and. sparse_transport_set%is_valid( &
     distribution, coarse_geometry, transport_start_set) .and. &
     int(sparse_transport_set%local_value_count()) == &
@@ -1923,6 +1968,20 @@ program pelef_mpi_eb_amr_patch_2d
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
     "MPI EB AMR targeted sparse transport root traffic", rank)
+  call MPI_Allreduce( &
+    local_root_transport_cells, global_root_transport_cells, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  expected_global_root_transport_cells = 0
+  call MPI_Allreduce( &
+    expected_local_root_transport_cells, &
+    expected_global_root_transport_cells, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transport_cells == expected_local_root_transport_cells .and. &
+    global_root_transport_cells == expected_global_root_transport_cells .and. &
+    (distribution%nranks <= 2 .or. global_root_transport_cells < &
+      2 * distribution%nranks * coarse_nx * coarse_ny), &
+    "MPI EB AMR sparse root transport bounded work", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     distribution, sparse_transport_set, coarse_state, coarse_temperature, &
     coarse_geometry, transport_start_set, materialized_coarse_state, &
@@ -1989,10 +2048,10 @@ program pelef_mpi_eb_amr_patch_2d
     species, transport, distribution, sparse_transport_failed_set, &
     coarse_geometry, transport_start_set, transport_dt, .true., .true., &
     .true., .true., boundaries, 2, ok, local_advances, transport_theta, &
-    0.5_dp, local_root_transfers)
+    0.5_dp, local_root_transfers, local_root_transport_cells)
   call assert_all(.not. ok .and. local_advances == 0 .and. &
     transport_theta == 1.0_dp .and. &
-    local_root_transfers == 0 .and. &
+    local_root_transfers == 0 .and. local_root_transport_cells == 0 .and. &
     sparse_transport_failed_set%local_value_count() == &
       sparse_transport_failed_backup_set%local_value_count(), &
     "MPI EB AMR late sparse transport rollback", rank)
@@ -2118,16 +2177,25 @@ program pelef_mpi_eb_amr_patch_2d
     "MPI EB AMR full physics changes hierarchy", rank)
 
   expected_local_hydro = 0
+  expected_local_transport = 0
   do tile = 1, distribution%root_tile_count()
-    if (distribution%root_tile_is_local(tile)) &
+    if (distribution%root_tile_is_local(tile)) then
       expected_local_hydro = expected_local_hydro + 1
+      expected_local_transport = expected_local_transport + 4
+    end if
   end do
   expected_global_hydro = distribution%root_tile_count()
+  expected_global_transport = 4 * distribution%root_tile_count()
   do child = 1, distribution%child_count()
     expected_global_hydro = expected_global_hydro + &
       patch_set%children(child)%patch%refinement_ratio
     if (distribution%child_is_local(child)) &
       expected_local_hydro = expected_local_hydro + &
+        patch_set%children(child)%patch%refinement_ratio
+    expected_global_transport = expected_global_transport + 4 * &
+      patch_set%children(child)%patch%refinement_ratio
+    if (distribution%child_is_local(child)) &
+      expected_local_transport = expected_local_transport + 4 * &
         patch_set%children(child)%patch%refinement_ratio
   end do
   call scatter_owned_reactive_eb_patch_set_2d( &

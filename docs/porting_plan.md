@@ -718,6 +718,8 @@ Required capabilities:
   root tile and child owners (`0.138.0`)
 - [x] zero-traffic final sparse SSPRK2 root blend and EOS recovery directly on
   root tile owners (`0.139.0`)
+- [x] point-to-point finite-halo sparse SSPRK2 root Euler stages with exact
+  target-band accounting and deterministic result routing (`0.140.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
 - thermal, viscous, and catalytic wall boundary conditions
