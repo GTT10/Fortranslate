@@ -50,6 +50,7 @@ program pelef_mpi_eb_amr_patch_2d
     advance_owned_reactive_eb_patch_set_strang_2d, &
     scatter_owned_reactive_eb_patch_set_2d, &
     materialize_owned_reactive_eb_patch_set_2d, &
+    gather_sparse_owned_reactive_eb_patch_set_to_root_2d, &
     regrid_sparse_owned_reactive_eb_patch_set_2d, &
     average_down_sparse_owned_reactive_eb_patch_set_2d, &
     advance_sparse_owned_reactive_eb_patch_set_chemistry_2d, &
@@ -72,6 +73,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: patch_set, local_patch_set
   type(reactive_eb_patch_set_2d) :: synchronized_patch_set
   type(reactive_eb_patch_set_2d) :: materialized_patch_set
+  type(reactive_eb_patch_set_2d) :: root_materialized_patch_set
   type(reactive_eb_patch_set_2d) :: rejected_materialized_set
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
@@ -134,6 +136,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: synchronized_coarse_temperature(:, :)
   real(dp), allocatable :: materialized_coarse_state(:, :, :)
   real(dp), allocatable :: materialized_coarse_temperature(:, :)
+  real(dp), allocatable :: root_materialized_state(:, :, :)
+  real(dp), allocatable :: root_materialized_temperature(:, :)
   real(dp), allocatable :: rejected_materialized_state(:, :, :)
   real(dp), allocatable :: rejected_materialized_temperature(:, :)
   real(dp), allocatable :: chemistry_coarse_state(:, :, :)
@@ -243,6 +247,10 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_root_transfers, global_root_transfers
   integer :: expected_local_root_transfers
   integer :: expected_global_root_transfers, root_owner
+  integer :: local_root_materialization_transfers
+  integer :: global_root_materialization_transfers
+  integer :: expected_local_root_materialization_transfers
+  integer :: expected_global_root_materialization_transfers
   character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
@@ -477,6 +485,71 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR sparse child materialization", rank)
   end do
 
+  root_owner = distribution%root_level_owner()
+  expected_local_root_materialization_transfers = 0
+  expected_global_root_materialization_transfers = 0
+  do tile = 1, distribution%root_tile_count()
+    owner = distribution%root_tiles(tile)%owner
+    if (owner == root_owner) cycle
+    expected_global_root_materialization_transfers = &
+      expected_global_root_materialization_transfers + 1
+    if (rank == owner) expected_local_root_materialization_transfers = &
+      expected_local_root_materialization_transfers + 1
+  end do
+  do child = 1, distribution%child_count()
+    owner = distribution%child_owner(child)
+    if (owner == root_owner) cycle
+    expected_global_root_materialization_transfers = &
+      expected_global_root_materialization_transfers + 1
+    if (rank == owner) expected_local_root_materialization_transfers = &
+      expected_local_root_materialization_transfers + 1
+  end do
+  call gather_sparse_owned_reactive_eb_patch_set_to_root_2d( &
+    distribution, sparse_patch_set, coarse_geometry, patch_set, root_owner, &
+    root_materialized_state, root_materialized_temperature, &
+    root_materialized_patch_set, ok, local_root_materialization_transfers)
+  call assert_all(ok .and. &
+    merge(allocated(root_materialized_state), &
+      .not. allocated(root_materialized_state), rank == root_owner) .and. &
+    merge(allocated(root_materialized_temperature), &
+      .not. allocated(root_materialized_temperature), rank == root_owner) &
+      .and. merge(root_materialized_patch_set%patch_count() == &
+        patch_set%patch_count(), &
+        root_materialized_patch_set%patch_count() == 0, &
+        rank == root_owner), &
+    "MPI EB AMR root-only materialization allocation", rank)
+  if (rank == root_owner) then
+    call assert_all( &
+      all(root_materialized_state == synchronized_coarse_state) .and. &
+      all(root_materialized_temperature == &
+        synchronized_coarse_temperature), &
+      "MPI EB AMR root-only root materialization", rank)
+    do child = 1, distribution%child_count()
+      call assert_all( &
+        all(root_materialized_patch_set%children(child)%state == &
+          synchronized_patch_set%children(child)%state) .and. &
+        all(root_materialized_patch_set%children(child)%temperature == &
+          synchronized_patch_set%children(child)%temperature), &
+        "MPI EB AMR root-only child materialization", rank)
+    end do
+  else
+    call assert_all(.true., "MPI EB AMR root-only root materialization", rank)
+    do child = 1, distribution%child_count()
+      call assert_all( &
+        .true., "MPI EB AMR root-only child materialization", rank)
+    end do
+  end if
+  call MPI_Allreduce( &
+    local_root_materialization_transfers, &
+    global_root_materialization_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_materialization_transfers == &
+      expected_local_root_materialization_transfers .and. &
+    global_root_materialization_transfers == &
+      expected_global_root_materialization_transfers, &
+    "MPI EB AMR root-only materialization traffic", rank)
+
   invalid_sparse_patch_set = sparse_patch_set
   if (rank == 0) then
     do tile = 1, distribution%root_tile_count()
@@ -485,6 +558,16 @@ program pelef_mpi_eb_amr_patch_2d
       exit
     end do
   end if
+  call gather_sparse_owned_reactive_eb_patch_set_to_root_2d( &
+    distribution, invalid_sparse_patch_set, coarse_geometry, patch_set, &
+    root_owner, root_materialized_state, root_materialized_temperature, &
+    root_materialized_patch_set, ok, local_root_materialization_transfers)
+  call assert_all(.not. ok .and. &
+    .not. allocated(root_materialized_state) .and. &
+    .not. allocated(root_materialized_temperature) .and. &
+    root_materialized_patch_set%patch_count() == 0 .and. &
+    local_root_materialization_transfers == 0, &
+    "MPI EB AMR invalid root-only materialization rollback", rank)
   allocate(rejected_materialized_state, mold=coarse_state)
   allocate(rejected_materialized_temperature, mold=coarse_temperature)
   call materialize_owned_reactive_eb_patch_set_2d( &
