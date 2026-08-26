@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.129.0` milestone contains the serial verification suite, eight optional
+The `0.130.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -46,7 +46,11 @@ the middle hydro stage discards valid reaction and transport prefixes.
 The 2D EB bridge also has a rank-local sparse payload container. Each rank
 allocates conserved state and temperature only for its owned root tiles and
 children; an explicit materialization boundary reconstructs the replicated
-hierarchy when a legacy operator or output path still requires it.
+hierarchy when a legacy operator or output path still requires it. A second
+materialization boundary gathers each root tile and child only to a
+caller-selected root rank. Non-root ranks keep the complete output unallocated,
+and one packed point-to-point message is sent per remote entity. This is the
+field-sparse foundation for checkpoint and output adapters.
 Chemistry now runs directly on those sparse owner allocations. Root tiles and
 children are reacted locally with covered cells masked; only post-reaction
 average-down communicates numerical state. Each child owner sends one
@@ -607,6 +611,9 @@ The AMR layer provides:
   root-owner planning, compact metadata broadcast, caller-defined geometry,
   direct owner migration, exact transfer accounting, serial dynamic-loop
   parity, and whole-step rollback;
+- targeted root-only sparse MPI EB materialization with exact field parity,
+  one packed send per remote root tile or child, unallocated non-root outputs,
+  and collective invalid-payload rollback;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

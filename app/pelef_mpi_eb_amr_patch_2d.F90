@@ -251,6 +251,7 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: global_root_materialization_transfers
   integer :: expected_local_root_materialization_transfers
   integer :: expected_global_root_materialization_transfers
+  integer :: invalid_materialization_root
   character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
@@ -549,6 +550,24 @@ program pelef_mpi_eb_amr_patch_2d
     global_root_materialization_transfers == &
       expected_global_root_materialization_transfers, &
     "MPI EB AMR root-only materialization traffic", rank)
+
+  invalid_materialization_root = root_owner
+  if (nranks == 1) then
+    invalid_materialization_root = nranks
+  else if (rank == nranks - 1) then
+    invalid_materialization_root = modulo(root_owner + 1, nranks)
+  end if
+  call gather_sparse_owned_reactive_eb_patch_set_to_root_2d( &
+    distribution, sparse_patch_set, coarse_geometry, patch_set, &
+    invalid_materialization_root, root_materialized_state, &
+    root_materialized_temperature, root_materialized_patch_set, ok, &
+    local_root_materialization_transfers)
+  call assert_all(.not. ok .and. &
+    .not. allocated(root_materialized_state) .and. &
+    .not. allocated(root_materialized_temperature) .and. &
+    root_materialized_patch_set%patch_count() == 0 .and. &
+    local_root_materialization_transfers == 0, &
+    "MPI EB AMR inconsistent root-only materialization rollback", rank)
 
   invalid_sparse_patch_set = sparse_patch_set
   if (rank == 0) then

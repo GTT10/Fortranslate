@@ -698,6 +698,8 @@ Required capabilities:
 - [x] direct sparse EB regrid restriction, new-owner PCM root assembly, and
   old-owner to new-owner overlap migration with exact traffic accounting
   (`0.129.0`)
+- [x] targeted root-only sparse EB materialization for checkpoint/output
+  adapters with unallocated non-root fields (`0.130.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

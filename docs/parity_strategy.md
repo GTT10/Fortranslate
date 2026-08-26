@@ -2102,3 +2102,20 @@ callback obeys the same publication rule. Static inspection must show that the
 explicit transaction no longer calls the all-rank materialization helper. The
 gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
 before the complete 208-test regression.
+
+## 0.130.0 root-only sparse MPI reactive EB AMR materialization gates
+
+Scatter a valid two-child reactive EB patch set into exclusive sparse root
+tiles and child payloads. Gather it to the deterministic root writer and require
+bitwise equality with the established owner-authoritative materialization for
+the complete root state, root temperature, and every child field. Only the
+writer rank may allocate those complete outputs; all non-writer arrays remain
+unallocated and their returned patch sets remain empty.
+
+The expected traffic is one send for every root tile and child whose owner is
+not the selected writer. Each sender-local count and the communicator sum must
+match that independent owner-map formula at one, two, four, and eight ranks.
+Removing one local sparse root field must reject collectively, deallocate all
+outputs, return an empty patch set, and publish zero traffic. The gate runs in
+GNU Fortran Release and bounds/FPE-checked Debug configurations before the
+complete 208-test regression.

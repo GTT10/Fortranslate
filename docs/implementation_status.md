@@ -2333,3 +2333,21 @@ physics and dynamic topology changes. Geometry and compact topology metadata
 remain replicated intentionally. Sparse checkpoint/restart and parallel output,
 arbitrary-depth dynamic EB topology, and decomposition of the level-wide root
 physics kernel remain separate work.
+
+## Root-only sparse MPI reactive EB AMR materialization (`0.130.0`)
+
+- [x] public caller-selected root gather for sparse root tiles and fine children
+- [x] one packed state/temperature send per remotely owned entity
+- [x] no complete root or patch-set field allocation on non-root ranks
+- [x] exact root and every-child parity with established all-rank materialization
+- [x] independent local-sender and communicator-summed transfer accounting
+- [x] rank-consistent root selection and collective sparse-input validation
+- [x] unallocated outputs and zero published traffic on invalid input
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Checkpoint and output adapters can now consume a complete hierarchy on one
+writer rank without replicating numerical fields on every rank. The existing
+formatted checkpoint and CSV writers are not yet connected to this boundary;
+rank-independent restart distribution and parallel file formats remain
+separate work.

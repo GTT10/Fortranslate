@@ -1351,6 +1351,16 @@ topology descriptors still define the deterministic transfer schedule. The
 candidate distribution, root tiles, children, template, and three transfer
 counts publish only after collective validation succeeds.
 
+In `0.130.0`, checkpoint and output consumers gain a root-only sparse
+materialization boundary. Each remote root tile and fine child sends one packed
+state/temperature payload directly to a caller-selected root. Only that rank
+allocates the complete root fields and full patch-set fields; every non-root
+output remains unallocated. Root selection and sparse input validity are
+collective preconditions, and outputs plus exact sender counts publish only
+after the reconstructed hierarchy passes collective validation. The older
+all-rank materialization routine remains available for legacy replicated
+operators, but checkpoint/output adapters can now avoid rank-multiplied fields.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
