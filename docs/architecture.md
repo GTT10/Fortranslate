@@ -1722,3 +1722,21 @@ operate on the same private candidate. A rejection in the first reaction
 stage, recursive hydro, second reaction stage, EOS recovery, synchronization,
 or validation publishes neither fields nor counters. Molecular transport, a
 public clock, dynamic tags, checkpoint I/O, and MPI ownership remain separate.
+
+## Arbitrary-depth reactive EB patch-tree transport (`0.156.0`)
+
+One recursive transport Euler call advances one runtime node, retaining the
+node start and Euler-end fields for child-time interpolation. Every child takes
+the relation refinement-ratio subcycles, owns an independent diffusive EB flux
+register, refluxes in deterministic topology order, and averages down into its
+actual parent. Each refined subtree closes density, total energy, and species
+against the parent's outer diffusive flux before the final deepest-first
+synchronization.
+
+The public SSPRK2 operation runs that complete recursive Euler transaction
+twice on a private tree, blends every node with its accepted stage-zero state,
+recovers active temperatures through the EOS, and synchronizes again. State,
+temperature, the minimum positivity-limiter theta, and optional per-level node
+counts publish only after the final candidate validates. A combined
+`R-T-H-T-R` transaction, public clock, dynamic tags, checkpoint I/O, and MPI
+ownership remain separate.
