@@ -2658,3 +2658,19 @@ ownership boundary.
 Sparse MPI still extracts state context on the root physics owner in this
 milestone. The support API removes the complete-root shape dependency required
 before root tile owners can route start/end state fragments directly.
+
+## Direct root-tile state/support routing (`0.148.0`)
+
+- [x] tile owners retain start, uncorrected-end, and current corrected state
+- [x] patch-plus-two state/temperature fragments route directly to child owner
+- [x] child owner extracts the established four-edge exterior context locally
+- [x] cumulative corrected support remains visible in deterministic child order
+- [x] corrected fragments return directly to intersecting root tile owners
+- [x] final corrected root rows commit without a root-owner scatter
+- [x] state plus interface-flux payload remains below the legacy root bundle
+- [x] exact three-route tile/child message accounting covers both Euler stages
+
+The root physics owner still receives the complete temporary tile result and
+flux bundle for compatibility validation and cut-boundary flux closure. This
+milestone removes it from child state/reflux routing but does not yet remove
+that complete post-compute assembly or claim a measured speedup.

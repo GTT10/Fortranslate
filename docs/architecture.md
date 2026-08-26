@@ -1581,3 +1581,19 @@ to the support kernel. The unit gate reconstructs exterior arrays from complete
 and strictly smaller support contexts and requires bitwise parity. Sparse MPI
 continues to call the complete-root wrapper until root-tile state fragments and
 cumulative corrected support are routed directly.
+
+## Direct root-tile state/support routing (`0.148.0`)
+
+Each root transport tile retains stage-start state, uncorrected stage-end
+state, and current corrected state with their temperatures. A child owner
+assembles globally indexed patch-plus-two rectangles directly from every
+intersecting tile owner. The start and uncorrected-end views produce the same
+four-edge interpolation context as the complete-root path, while the corrected
+view carries cumulative reflux changes from earlier children.
+
+Child-local reflux returns one corrected fragment directly to each intersecting
+tile owner. Children remain ordered, so overlapping support is visible before
+the next child begins. Final corrected root tiles commit locally and the former
+root-owner row scatter is absent. Complete temporary root state and flux arrays
+remain on the root physics owner for compatibility checks and cut-boundary flux
+closure; eliminating that post-compute assembly is a later boundary.

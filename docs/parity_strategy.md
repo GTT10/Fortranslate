@@ -2402,3 +2402,19 @@ Require incomplete, out-of-root, and nonfinite support to reject without a
 valid published context. Retain all established serial reactive EB AMR and
 sparse MPI transport gates before qualifying the support API as the next
 direct state-routing boundary.
+
+## 0.148.0 direct root-tile state/support routing gates
+
+Retain stage-start, uncorrected stage-end, and current corrected root-tile
+state/temperature. Assemble each child's patch-plus-two support directly from
+intersecting owners and extract its exterior context on the child. Require the
+resulting state plus interface-flux value count to remain below the former
+complete root bundle.
+
+Route the child-local reflux result back to every intersecting tile owner before
+the next child begins, then commit final root tiles without root-owner scatter.
+Derive exact point-to-point counts for state, flux, and correction fragments
+across both SSPRK2 Euler stages. Retain serial root/child fields, limiter minima,
+owner work, public clock, scheduled regridding, cut-boundary conservation, and
+late-failure rollback at one, two, four, and eight ranks in Release and
+bounds/FPE-checked Debug.
