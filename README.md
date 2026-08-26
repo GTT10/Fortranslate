@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.141.0` milestone contains the serial verification suite, eight optional
+The `0.142.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -101,6 +101,11 @@ gather or scatter. Cut-interface closure broadcasts one conserved `nvar` vector
 and changes unrefined cells directly on each local root tile. A late child
 failure leaves every sparse allocation bitwise unchanged and publishes zero
 work or transfers.
+EB flux registers now store only the patch-plus-one-cell correction support.
+For sparse transport, each remote child receives and returns only the
+patch-plus-two-cell coarse region that can be changed by interface mismatch and
+cut-cell redistribution. The complete root start/end/flux input bundle still
+reaches each distinct child owner and remains the next distribution boundary.
 The sparse hierarchy also selects its own stable coarse interval. Every root
 tile evaluates its EB hydro and molecular-transport limits directly on its
 owner, while fine children do the same and scale their stable fine steps by the
@@ -639,6 +644,8 @@ The AMR layer provides:
   six-row halos, seam-isolated finite periodic-edge bands, targeted
   result/scatter and child traffic, zero-traffic tile-local final blending,
   exact accounting, and serial parity;
+- patch-local EB flux-register storage and compact sparse MPI transport reflux
+  correction round trips with unchanged transactional ordering;
 - owner-local sparse MPI EB hydro/transport timestep selection with no root
   field traffic, fine-to-coarse subcycle scaling, communicator-minimum
   reduction, serial timestep parity, and collective rejection;

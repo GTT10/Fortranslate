@@ -14,6 +14,10 @@ module amr_eb_flux_register_2d_mod
     integer :: component_count = 0
     integer :: coarse_nx = 0
     integer :: coarse_ny = 0
+    integer :: correction_i_lower = 0
+    integer :: correction_i_upper = -1
+    integer :: correction_j_lower = 0
+    integer :: correction_j_upper = -1
     type(amr_eb_patch_2d) :: patch
     real(dp), allocatable :: correction(:, :, :)
   contains
@@ -48,12 +52,24 @@ contains
     valid = self%component_count >= 1 .and. &
       self%coarse_nx == coarse_geometry%nx .and. &
       self%coarse_ny == coarse_geometry%ny .and. &
+      self%correction_i_lower == max(1, patch%coarse_i_lower - 1) .and. &
+      self%correction_i_upper == &
+        min(coarse_geometry%nx, patch%coarse_i_upper + 1) .and. &
+      self%correction_j_lower == max(1, patch%coarse_j_lower - 1) .and. &
+      self%correction_j_upper == &
+        min(coarse_geometry%ny, patch%coarse_j_upper + 1) .and. &
       patches_match(self%patch, patch) .and. &
       patch%is_valid(coarse_geometry, fine_geometry) .and. &
       allocated(self%correction)
     if (.not. valid) return
     valid = all(shape(self%correction) == &
-      [self%component_count, self%coarse_nx, self%coarse_ny]) .and. &
+      [self%component_count, &
+       self%correction_i_upper - self%correction_i_lower + 1, &
+       self%correction_j_upper - self%correction_j_lower + 1]) .and. &
+      lbound(self%correction, 2) == self%correction_i_lower .and. &
+      ubound(self%correction, 2) == self%correction_i_upper .and. &
+      lbound(self%correction, 3) == self%correction_j_lower .and. &
+      ubound(self%correction, 3) == self%correction_j_upper .and. &
       all(ieee_is_finite(self%correction))
   end function amr_eb_flux_register_is_valid
 
@@ -71,9 +87,17 @@ contains
     register%component_count = component_count
     register%coarse_nx = coarse_geometry%nx
     register%coarse_ny = coarse_geometry%ny
+    register%correction_i_lower = max(1, patch%coarse_i_lower - 1)
+    register%correction_i_upper = &
+      min(coarse_geometry%nx, patch%coarse_i_upper + 1)
+    register%correction_j_lower = max(1, patch%coarse_j_lower - 1)
+    register%correction_j_upper = &
+      min(coarse_geometry%ny, patch%coarse_j_upper + 1)
     register%patch = patch
     allocate(register%correction( &
-      component_count, coarse_geometry%nx, coarse_geometry%ny))
+      component_count, &
+      register%correction_i_lower:register%correction_i_upper, &
+      register%correction_j_lower:register%correction_j_upper))
     register%correction = 0.0_dp
     ok = register%is_valid(coarse_geometry, fine_geometry, patch)
   end subroutine initialize_amr_eb_flux_register_2d
@@ -107,7 +131,11 @@ contains
         size(y_flux, 3) /= coarse_geometry%ny + 1 .or. &
         any(.not. ieee_is_finite(x_flux)) .or. &
         any(.not. ieee_is_finite(y_flux))) return
-    allocate(candidate, source=register%correction)
+    allocate(candidate( &
+      register%component_count, &
+      register%correction_i_lower:register%correction_i_upper, &
+      register%correction_j_lower:register%correction_j_upper))
+    candidate = register%correction
 
     if (patch%coarse_i_lower > 1) then
       i = patch%coarse_i_lower - 1
@@ -179,7 +207,11 @@ contains
         size(y_flux, 3) /= fine_geometry%ny + 1 .or. &
         any(.not. ieee_is_finite(x_flux)) .or. &
         any(.not. ieee_is_finite(y_flux))) return
-    allocate(candidate, source=register%correction)
+    allocate(candidate( &
+      register%component_count, &
+      register%correction_i_lower:register%correction_i_upper, &
+      register%correction_j_lower:register%correction_j_upper))
+    candidate = register%correction
     allocate(integrated_flux(register%component_count))
     ratio = patch%refinement_ratio
 
@@ -370,8 +402,8 @@ contains
     fine_increment = 0.0_dp
     ratio = patch%refinement_ratio
 
-    do j = 1, coarse_geometry%ny
-      do i = 1, coarse_geometry%nx
+    do j = register%correction_j_lower, register%correction_j_upper
+      do i = register%correction_i_lower, register%correction_i_upper
         correction = register%correction(:, i, j)
         if (all(correction == 0.0_dp)) cycle
         select case (coarse_geometry%cell_type(i, j))

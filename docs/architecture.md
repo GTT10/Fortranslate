@@ -1353,6 +1353,18 @@ meaning. If the protected footprint spans the root, the complete-root fallback
 remains. The post-compute root bundle for child exterior data and reflux is
 unchanged.
 
+In `0.142.0`, an EB flux register allocates correction storage only over the
+fine patch expanded by one coarse cell, which contains every coarse/fine flux
+mismatch location. Reflux scans only that compact, globally indexed support.
+Sparse transport correction traffic expands the patch by one further cell to
+cover every cardinal or diagonal recipient of a cut-cell mismatch. A remote
+child initializes its full compatibility workspace from the uncorrected root
+candidate, receives the latest cumulative values only in that protected
+rectangle, performs the established reflux transaction, and returns only the
+same rectangle. The root owner merges rectangles in deterministic child order.
+The complete start/end/flux input bundle sent once to each distinct child owner
+is unchanged and remains the next decomposition boundary.
+
 In `0.126.0`, a public sparse time loop composes that selector with the direct
 owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after
 every accepted state, the final interval is clipped to the target time, and

@@ -95,6 +95,18 @@ program test_amr_eb_flux_register_2d
     coarse_geometry, fine_geometry, patch, 2, register, ok)
   call require(ok .and. register%is_valid( &
     coarse_geometry, fine_geometry, patch), "flux-register initialization")
+  call require( &
+    register%correction_i_lower == coarse_i_lower - 1 .and. &
+    register%correction_i_upper == coarse_i_upper + 1 .and. &
+    register%correction_j_lower == coarse_j_lower - 1 .and. &
+    register%correction_j_upper == coarse_j_upper + 1 .and. &
+    lbound(register%correction, 2) == coarse_i_lower - 1 .and. &
+    ubound(register%correction, 2) == coarse_i_upper + 1 .and. &
+    lbound(register%correction, 3) == coarse_j_lower - 1 .and. &
+    ubound(register%correction, 3) == coarse_j_upper + 1 .and. &
+    size(register%correction, 2) * size(register%correction, 3) < &
+      coarse_nx * coarse_ny, &
+    "compact flux-register correction support")
 
   coarse_x_flux(1, :, :) = 1.2_dp
   coarse_x_flux(2, :, :) = -0.7_dp
@@ -132,7 +144,9 @@ program test_amr_eb_flux_register_2d
   call require(ok .and. abs(register%correction(1, 1, 6)) > 0.0_dp, &
     "cut-interface flux mismatch accumulation")
   allocate(raw_correction, source=register%correction)
-  raw_integral = sum(coarse_geometry%volume_fraction * &
+  raw_integral = sum(coarse_geometry%volume_fraction( &
+    register%correction_i_lower:register%correction_i_upper, &
+    register%correction_j_lower:register%correction_j_upper) * &
     raw_correction(1, :, :)) * coarse_geometry%dx * coarse_geometry%dy
 
   allocate(coarse_state(2, coarse_nx, coarse_ny))
