@@ -200,11 +200,12 @@ contains
   end subroutine synchronize_reactive_amr_eb_patch_tree_2d
 
   subroutine rebuild_reactive_amr_eb_patch_tree_2d( &
-      species, solution, plans, ok, changed)
+      species, solution, plans, ok, changed, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
     type(amr_eb_patch_tree_level_plan_2d), intent(in) :: plans(:)
     logical, intent(out) :: ok, changed
+    character(len=*), intent(out), optional :: failure_context
 
     type(reactive_amr_eb_patch_tree_2d) :: collapsed, candidate
     type(amr_eb_patch_tree_topology_2d) :: new_topology
@@ -216,25 +217,31 @@ contains
 
     ok = .false.
     changed = .false.
+    if (present(failure_context)) failure_context = "source validation"
     if (.not. solution%is_valid()) return
     if (solution%nvar /= reactive_nvar(size(species))) return
 
+    if (present(failure_context)) failure_context = "topology rebuild"
     new_topology = solution%topology
     call rebuild_amr_eb_patch_tree_topology_2d( &
       new_topology, plans, local_ok, topology_changed)
     if (.not. local_ok) return
     if (.not. topology_changed) then
       ok = .true.
+      if (present(failure_context)) failure_context = "none"
       return
     end if
 
+    if (present(failure_context)) failure_context = "source integral"
     allocate(old_integral(solution%nvar), new_integral(solution%nvar))
     call composite_integral_reactive_amr_eb_patch_tree_2d( &
       solution, old_integral, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "source synchronization"
     collapsed = solution
     call synchronize_candidate(species, collapsed, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "candidate initialization"
     call initialize_reactive_amr_eb_patch_tree_2d( &
       species, collapsed%levels(1)%patches(1)%state, &
       collapsed%levels(1)%patches(1)%temperature, new_topology, &
@@ -243,6 +250,9 @@ contains
 
     do level = 2, min(candidate%level_count(), solution%level_count())
       do child = 1, candidate%levels(level)%patch_count()
+        if (present(failure_context)) &
+          write(failure_context, '(a,i0,a,i0)') &
+            "overlap retention level ", level - 1, " patch ", child
         allocate(copied( &
           size(candidate%levels(level)%patches(child)%temperature, 1), &
           size(candidate%levels(level)%patches(child)%temperature, 2)))
@@ -257,6 +267,9 @@ contains
           if (.not. local_ok) return
         end do
         deallocate(copied)
+        if (present(failure_context)) &
+          write(failure_context, '(a,i0,a,i0)') &
+            "temperature recovery level ", level - 1, " patch ", child
         call recover_patch_temperature( &
           species, candidate%levels(level)%patches(child), &
           candidate%topology%relations(level - 1)%children(child)%geometry, &
@@ -265,18 +278,23 @@ contains
       end do
     end do
 
+    if (present(failure_context)) failure_context = "candidate synchronization"
     call synchronize_candidate(species, candidate, local_ok)
-    if (.not. local_ok .or. .not. candidate%is_valid()) return
+    if (.not. local_ok) return
+    if (.not. candidate%is_valid()) return
+    if (present(failure_context)) failure_context = "candidate integral"
     call composite_integral_reactive_amr_eb_patch_tree_2d( &
       candidate, new_integral, local_ok)
     if (.not. local_ok) return
     integral_scale = max(1.0_dp, maxval(abs(old_integral)))
+    if (present(failure_context)) failure_context = "conservation check"
     if (maxval(abs(new_integral - old_integral)) > &
         conservation_tolerance * integral_scale) return
 
     solution = candidate
     ok = .true.
     changed = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine rebuild_reactive_amr_eb_patch_tree_2d
 
   subroutine composite_integral_reactive_amr_eb_patch_tree_2d( &

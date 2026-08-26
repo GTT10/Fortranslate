@@ -92,6 +92,7 @@ program test_amr_eb_multilevel_2d
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: scale, dt, species_integral_sum, species_change
   logical :: ok, topology_changed
+  character(len=128) :: tree_failure_context
   integer :: i, j, k, nvar
 
   do j = 0, root_ny
@@ -312,11 +313,13 @@ program test_amr_eb_multilevel_2d
   allocate(tree_level_two_saved, source= &
     reactive_tree%levels(3)%patches(2)%state)
   call rebuild_reactive_amr_eb_patch_tree_2d( &
-    species, reactive_tree, extended_tree_plans, ok, topology_changed)
+    species, reactive_tree, extended_tree_plans, ok, topology_changed, &
+    tree_failure_context)
   call require(ok .and. topology_changed .and. &
     reactive_tree%is_valid() .and. reactive_tree%level_count() == 4 .and. &
     reactive_tree%level_patch_count(3) == 1, &
-    "reactive arbitrary-depth patch-tree rebuild")
+    "reactive arbitrary-depth patch-tree rebuild: " // &
+      trim(tree_failure_context))
   call composite_integral_reactive_amr_eb_patch_tree_2d( &
     reactive_tree, tree_integral_after, ok)
   scale = max(1.0_dp, maxval(abs(tree_integral_before)))
