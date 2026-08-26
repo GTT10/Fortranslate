@@ -2202,7 +2202,32 @@ time-loop control, regridding, checkpointing, and output remain separate work.
 
 Hydro still advances the complete root level on one physics owner because root
 EB reconstruction and StateRedist are not decomposed, but its full numerical
-arrays no longer reach unrelated ranks. Direct sparse transport still uses
-all-rank root field broadcasts. Root decomposition, targeted transport traffic,
-public time-loop control, regridding, checkpointing, and output remain separate
-work.
+arrays no longer reach unrelated ranks. Root decomposition, targeted
+transport traffic, public time-loop control, regridding, checkpointing, and
+output remain separate work.
+
+## Targeted direct sparse transport root traffic (`0.124.0`)
+
+- [x] one packed root-tile gather per Euler stage and non-root owner tile
+- [x] root transport state, temperature, RHS, and flux allocation only on the
+  root physics owner and actual child owners
+- [x] one packed root bundle per Euler stage and distinct remote child owner
+- [x] one correction payload in each direction per stage and remote child
+- [x] one packed corrected row-band scatter per Euler stage and remote tile
+- [x] targeted two-candidate gather and final SSPRK2 row-band scatter
+- [x] tile-local EB-cut conservation closure with only an `nvar` vector
+  broadcast
+- [x] no all-rank transport root-field broadcast or unrelated full-root
+  allocation
+- [x] exact local and communicator payload-transfer accounting
+- [x] unchanged sparse allocation count after commit
+- [x] serial root, child, temperature, and limiter parity
+- [x] exact state, Euler-count, limiter, and transfer-count rollback
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Transport still advances the complete root level on one physics owner because
+the root diffusive stencil and StateRedist remain level-wide. Full root fields
+now exist only on that owner and ranks that actually own fine children. Root
+physics decomposition, public time-loop control, regridding, checkpointing,
+and output remain separate work.
