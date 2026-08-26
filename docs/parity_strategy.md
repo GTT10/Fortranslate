@@ -2563,3 +2563,20 @@ reaction and transport prefixes must restore every node exactly, publish zero
 counts, and return theta one. Retain all 208 serial tests in GNU Fortran Release
 and bounds/FPE-checked Debug, plus the established OpenMPI one-, two-, four-,
 and eight-rank suite even though the new tree remains serial.
+
+## 0.158.0 public arbitrary-depth reactive EB patch-tree time-loop gates
+
+On the fixed three-level runtime chain, require the combined selector to equal
+the independently computed minimum of the all-node hyperbolic limits and the
+root-time-scaled transport limits. Advance to a target requiring two clipped
+steps and require exact tree parity with an independently repeated sequence of
+stable-step selection plus full-physics transactions.
+
+Require exact final time, total and newly advanced step counts, minimum
+accepted interval, minimum limiter theta, and accumulated per-level chemistry,
+transport, and hydro schedules. Limit the same run to one step and require a
+failed return that retains exactly that committed prefix. Reject an invalid
+solver on the first step with exact tree/time/count rollback and neutral
+timestep/theta outputs. Retain all 208 serial tests in GNU Fortran Release and
+bounds/FPE-checked Debug, plus the established OpenMPI one-, two-, four-, and
+eight-rank suite even though the new tree remains serial.

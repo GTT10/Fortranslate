@@ -2829,5 +2829,21 @@ work.
 - [x] composite conservation, thermodynamic validity, and late rollback gates
 
 This milestone removes split full-physics composition from the remaining
-serial patch-tree gaps. Public clock ownership, dynamic tagging, checkpoint
-I/O, and MPI ownership remain separate work.
+serial patch-tree gaps. Dynamic tagging, checkpoint I/O, and MPI ownership
+remain separate work.
+
+## Public arbitrary-depth reactive EB patch-tree time loop (`0.158.0`)
+
+- [x] combined all-node hydro and explicit transport stable-step selection
+- [x] cumulative refinement scaling on every runtime level and branch
+- [x] exact stop-time clipping with caller-owned time and total step count
+- [x] one private tree candidate per complete `R-T-H-T-R` step
+- [x] committed-only minimum timestep and minimum transport limiter theta
+- [x] committed-only accumulated chemistry, transport, and hydro level counts
+- [x] exact parity with an independently repeated two-step reference sequence
+- [x] maximum-step termination retaining the last committed prefix
+- [x] exact first-step failure rollback with zero public accounting
+
+This milestone removes public clock ownership from the remaining serial
+patch-tree gaps. Dynamic tagging, checkpoint I/O, and MPI ownership remain
+separate work.

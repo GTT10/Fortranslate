@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.157.0` milestone contains the serial verification suite, eight optional
+The `0.158.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -456,7 +456,7 @@ Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
 coarse-to-fine spatial slopes, multipatch EB AMR molecular
 transport, dynamic middle/root topology, arbitrary-depth EB application
-lifecycle and clock ownership, transport-enabled checkpoint/restart, and MPI
+lifecycle, transport-enabled checkpoint/restart, and MPI
 distribution are not yet
 connected. The public EB AMR application now owns
 either restartable sibling rectangles or an
@@ -480,8 +480,11 @@ tree commit. SSPRK2 molecular transport also recurses over the runtime tree,
 subcycles each relation, refluxes diffusive fluxes, closes every refined
 subtree, and blends both Euler stages before commit. One combined `R-T-H-T-R`
 entrypoint now applies both reaction halves, both SSPRK2 transport halves, and
-the recursive hydro interval on the same private tree candidate. This core is
-not yet connected to a public physics time loop or MPI ownership.
+the recursive hydro interval on the same private tree candidate. A public
+target-time loop recomputes the all-node hydro/transport stability limit before
+every step, clips exactly to the requested stop time, and commits the tree,
+clock, step count, limiter minimum, and per-level physics counts together.
+Dynamic tagging, checkpoint I/O, and MPI ownership remain separate.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,
