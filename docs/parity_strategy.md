@@ -2376,3 +2376,17 @@ Run sparse MPI transport through the compact entrypoint while retaining exact
 root/child fields, register reset, limiter minima, owner work, traffic, public
 clock, scheduled-regrid, and rollback gates at one, two, four, and eight ranks
 in Release and bounds/FPE-checked Debug.
+
+## 0.146.0 direct root-tile coarse-flux routing gates
+
+Retain each root tile's x-flux rows and uniquely owned y-faces, then assemble
+each child's compact interface rectangles from only intersecting tile owners.
+Require complete receiver coverage, finite values, and a combined direct-flux
+plus state-context value count below the former complete root bundle.
+
+Remove the coarse register from the root-to-child state context. Derive the
+exact point-to-point count from every remote tile/child intersection plus the
+existing context and corrected-support messages. Require unchanged serial
+root/child fields, register reset, limiter minima, owner work, public clock,
+scheduled regridding, and late-failure rollback at one, two, four, and eight
+ranks in Release and bounds/FPE-checked Debug.

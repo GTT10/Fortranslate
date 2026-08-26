@@ -68,6 +68,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_root_tile_result_tag = 2712
   integer, parameter :: sparse_child_transport_context_tag = 2713
   integer, parameter :: sparse_child_transport_correction_tag = 2714
+  integer, parameter :: sparse_child_coarse_flux_support_tag = 2715
   integer, parameter, public :: mpi_amr_eb_root_tile_hydro_halo_cells = 6
   integer, parameter, public :: mpi_amr_eb_root_tile_transport_halo_cells = 6
 
@@ -82,6 +83,11 @@ module mpi_amr_eb_patch_2d_mod
   contains
     procedure :: is_valid => mpi_amr_eb_root_tile_is_valid
   end type mpi_amr_eb_root_tile_2d
+
+  type :: mpi_amr_eb_root_tile_transport_flux_2d
+    real(dp), allocatable :: x_flux(:, :, :)
+    real(dp), allocatable :: y_flux(:, :, :)
+  end type mpi_amr_eb_root_tile_transport_flux_2d
 
   type, public :: mpi_amr_eb_patch_distribution_2d
     type(MPI_Comm) :: comm = MPI_COMM_NULL
@@ -139,6 +145,8 @@ module mpi_amr_eb_patch_2d_mod
   public :: initialize_mpi_amr_eb_patch_distribution_2d
   public :: mpi_amr_eb_child_transport_context_value_count_2d
   public :: mpi_amr_eb_child_transport_reflux_context_value_count_2d
+  public :: mpi_amr_eb_child_transport_state_context_value_count_2d
+  public :: mpi_amr_eb_child_coarse_flux_support_value_count_2d
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
   public :: advance_owned_reactive_eb_patch_set_chemistry_2d
@@ -211,6 +219,52 @@ contains
     value_count = boundary_context_values + &
       int(component_count + 1, int64) * support_cells
   end function mpi_amr_eb_child_transport_reflux_context_value_count_2d
+
+  pure integer(int64) function &
+      mpi_amr_eb_child_transport_state_context_value_count_2d( &
+        component_count, coarse_geometry, fine_geometry, patch) &
+      result(value_count)
+    integer, intent(in) :: component_count
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+
+    integer(int64) :: edge_values, support_cells
+
+    value_count = -1_int64
+    if (component_count < 1 .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry)) return
+    edge_values = 4_int64 * int(component_count + 1, int64) * &
+      int(fine_geometry%nx + fine_geometry%ny, int64)
+    support_cells = &
+      int(min(coarse_geometry%nx, patch%coarse_i_upper + 2) - &
+        max(1, patch%coarse_i_lower - 2) + 1, int64) * &
+      int(min(coarse_geometry%ny, patch%coarse_j_upper + 2) - &
+        max(1, patch%coarse_j_lower - 2) + 1, int64)
+    value_count = edge_values + &
+      int(component_count + 1, int64) * support_cells
+  end function mpi_amr_eb_child_transport_state_context_value_count_2d
+
+  pure integer(int64) function &
+      mpi_amr_eb_child_coarse_flux_support_value_count_2d( &
+        component_count, coarse_geometry, fine_geometry, patch) &
+      result(value_count)
+    integer, intent(in) :: component_count
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+
+    integer(int64) :: patch_height, patch_width
+
+    value_count = -1_int64
+    if (component_count < 1 .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry)) return
+    patch_width = int( &
+      patch%coarse_i_upper - patch%coarse_i_lower + 1, int64)
+    patch_height = int( &
+      patch%coarse_j_upper - patch%coarse_j_lower + 1, int64)
+    value_count = int(component_count, int64) * ( &
+      (patch_width + 1_int64) * patch_height + &
+      patch_width * (patch_height + 1_int64))
+  end function mpi_amr_eb_child_coarse_flux_support_value_count_2d
 
   pure logical function mpi_amr_eb_root_tile_is_valid( &
       self, nx, ny, nranks) result(valid)
@@ -2428,7 +2482,7 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, boundaries, &
       state_redist_target_volume_fraction, state_redist_max_order, &
       root_state, root_temperature, updated_state, updated_temperature, &
-      x_flux, y_flux, minimum_theta, local_transfers, ok, &
+      x_flux, y_flux, local_tile_fluxes, minimum_theta, local_transfers, ok, &
       local_tile_advances, local_computed_cells)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -2446,6 +2500,8 @@ contains
     real(dp), allocatable, intent(out) :: updated_temperature(:, :)
     real(dp), allocatable, intent(out) :: x_flux(:, :, :)
     real(dp), allocatable, intent(out) :: y_flux(:, :, :)
+    type(mpi_amr_eb_root_tile_transport_flux_2d), allocatable, intent(out) :: &
+      local_tile_fluxes(:)
     real(dp), intent(out) :: minimum_theta
     integer, intent(inout) :: local_transfers
     logical, intent(out) :: ok
@@ -2499,6 +2555,7 @@ contains
       allocate(x_flux(nvar, 0:geometry%nx, geometry%ny), source=0.0_dp)
       allocate(y_flux(nvar, geometry%nx, 0:geometry%ny), source=0.0_dp)
     end if
+    allocate(local_tile_fluxes(distribution%root_tile_count()))
 
     do target = 1, distribution%root_tile_count()
       target_owner = distribution%root_tiles(target)%owner
@@ -2701,6 +2758,18 @@ contains
       local_face_j_upper = local_j_upper - 1
       if (distribution%root_tiles(target)%j_upper == geometry%ny) &
         local_face_j_upper = local_j_upper
+      if (distribution%rank == target_owner) then
+        allocate(local_tile_fluxes(target)%x_flux( &
+          nvar, 0:geometry%nx, &
+          distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper))
+        allocate(local_tile_fluxes(target)%y_flux( &
+          nvar, 1:geometry%nx, face_j_lower:face_j_upper))
+        local_tile_fluxes(target)%x_flux = &
+          band_x_flux(:, :, local_j_lower:local_j_upper)
+        local_tile_fluxes(target)%y_flux = &
+          band_y_flux(:, :, local_face_j_lower:local_face_j_upper)
+      end if
       if (target_owner == root_owner) then
         if (distribution%rank == root_owner) then
           root_state(:, :, distribution%root_tiles(target)%j_lower: &
@@ -2816,6 +2885,170 @@ contains
     local_tile_advances = tile_advances
     local_computed_cells = computed_cells
   end subroutine advance_sparse_owned_reactive_eb_root_tiles_transport_euler_2d
+
+  subroutine transfer_sparse_child_coarse_flux_support_2d( &
+      distribution, coarse_geometry, fine_geometry, patch, component_count, &
+      destination, local_tile_fluxes, x_flux, y_flux, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    integer, intent(in) :: component_count, destination
+    type(mpi_amr_eb_root_tile_transport_flux_2d), intent(in) :: &
+      local_tile_fluxes(:)
+    real(dp), allocatable, intent(out) :: x_flux(:, :, :)
+    real(dp), allocatable, intent(out) :: y_flux(:, :, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical, allocatable :: x_covered(:, :), y_covered(:, :)
+    logical :: accepted, global_ok, local_ok
+    integer :: face_j_lower, face_j_upper, ierr, offset
+    integer :: source_owner, target
+    integer :: value_count, x_count, x_i_lower, x_i_upper
+    integer :: x_j_lower, x_j_upper, x_rows
+    integer :: y_count, y_i_lower, y_i_upper
+    integer :: y_j_lower, y_j_upper, y_rows
+
+    ok = .false.
+    local_ok = component_count >= 1 .and. destination >= 0 .and. &
+      destination < distribution%nranks .and. &
+      patch%is_valid(coarse_geometry, fine_geometry) .and. &
+      size(local_tile_fluxes) == distribution%root_tile_count()
+    do target = 1, distribution%root_tile_count()
+      if (.not. local_ok) exit
+      source_owner = distribution%root_tiles(target)%owner
+      if (distribution%rank /= source_owner) cycle
+      face_j_lower = distribution%root_tiles(target)%j_lower - 1
+      face_j_upper = distribution%root_tiles(target)%j_upper - 1
+      if (distribution%root_tiles(target)%j_upper == coarse_geometry%ny) &
+        face_j_upper = coarse_geometry%ny
+      local_ok = allocated(local_tile_fluxes(target)%x_flux) .and. &
+        allocated(local_tile_fluxes(target)%y_flux)
+      if (.not. local_ok) exit
+      local_ok = all(shape(local_tile_fluxes(target)%x_flux) == [ &
+          component_count, coarse_geometry%nx + 1, &
+          distribution%root_tiles(target)%j_upper - &
+            distribution%root_tiles(target)%j_lower + 1]) .and. &
+        all(shape(local_tile_fluxes(target)%y_flux) == [ &
+          component_count, coarse_geometry%nx, &
+          face_j_upper - face_j_lower + 1]) .and. &
+        lbound(local_tile_fluxes(target)%x_flux, 2) == 0 .and. &
+        lbound(local_tile_fluxes(target)%x_flux, 3) == &
+          distribution%root_tiles(target)%j_lower .and. &
+        lbound(local_tile_fluxes(target)%y_flux, 2) == 1 .and. &
+        lbound(local_tile_fluxes(target)%y_flux, 3) == face_j_lower .and. &
+        all(ieee_is_finite(local_tile_fluxes(target)%x_flux)) .and. &
+        all(ieee_is_finite(local_tile_fluxes(target)%y_flux))
+    end do
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    x_i_lower = patch%coarse_i_lower - 1
+    x_i_upper = patch%coarse_i_upper
+    y_i_lower = patch%coarse_i_lower
+    y_i_upper = patch%coarse_i_upper
+    if (distribution%rank == destination) then
+      allocate(x_flux( &
+        component_count, x_i_lower:x_i_upper, &
+        patch%coarse_j_lower:patch%coarse_j_upper), source=0.0_dp)
+      allocate(y_flux( &
+        component_count, y_i_lower:y_i_upper, &
+        patch%coarse_j_lower - 1:patch%coarse_j_upper), source=0.0_dp)
+      allocate(x_covered( &
+        x_i_lower:x_i_upper, &
+        patch%coarse_j_lower:patch%coarse_j_upper), source=.false.)
+      allocate(y_covered( &
+        y_i_lower:y_i_upper, &
+        patch%coarse_j_lower - 1:patch%coarse_j_upper), source=.false.)
+    end if
+
+    do target = 1, distribution%root_tile_count()
+      source_owner = distribution%root_tiles(target)%owner
+      x_j_lower = max( &
+        patch%coarse_j_lower, distribution%root_tiles(target)%j_lower)
+      x_j_upper = min( &
+        patch%coarse_j_upper, distribution%root_tiles(target)%j_upper)
+      face_j_lower = distribution%root_tiles(target)%j_lower - 1
+      face_j_upper = distribution%root_tiles(target)%j_upper - 1
+      if (distribution%root_tiles(target)%j_upper == coarse_geometry%ny) &
+        face_j_upper = coarse_geometry%ny
+      y_j_lower = max(patch%coarse_j_lower - 1, face_j_lower)
+      y_j_upper = min(patch%coarse_j_upper, face_j_upper)
+      x_rows = max(0, x_j_upper - x_j_lower + 1)
+      y_rows = max(0, y_j_upper - y_j_lower + 1)
+      if (x_rows == 0 .and. y_rows == 0) cycle
+      x_count = component_count * (x_i_upper - x_i_lower + 1) * x_rows
+      y_count = component_count * (y_i_upper - y_i_lower + 1) * y_rows
+      value_count = x_count + y_count
+      if (source_owner == destination) then
+        if (distribution%rank == destination) then
+          if (x_rows > 0) then
+            x_flux(:, :, x_j_lower:x_j_upper) = &
+              local_tile_fluxes(target)%x_flux( &
+                :, x_i_lower:x_i_upper, x_j_lower:x_j_upper)
+            x_covered(:, x_j_lower:x_j_upper) = .true.
+          end if
+          if (y_rows > 0) then
+            y_flux(:, :, y_j_lower:y_j_upper) = &
+              local_tile_fluxes(target)%y_flux( &
+                :, y_i_lower:y_i_upper, y_j_lower:y_j_upper)
+            y_covered(:, y_j_lower:y_j_upper) = .true.
+          end if
+        end if
+      else if (distribution%rank == source_owner) then
+        allocate(payload(value_count))
+        offset = 0
+        if (x_rows > 0) then
+          payload(1:x_count) = reshape( &
+            local_tile_fluxes(target)%x_flux( &
+              :, x_i_lower:x_i_upper, x_j_lower:x_j_upper), [x_count])
+          offset = x_count
+        end if
+        if (y_rows > 0) payload(offset + 1:value_count) = reshape( &
+          local_tile_fluxes(target)%y_flux( &
+            :, y_i_lower:y_i_upper, y_j_lower:y_j_upper), [y_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, destination, &
+          sparse_child_coarse_flux_support_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+        deallocate(payload)
+      else if (distribution%rank == destination) then
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, source_owner, &
+          sparse_child_coarse_flux_support_tag, distribution%comm, status, &
+          ierr)
+        if (ierr /= MPI_SUCCESS) return
+        offset = 0
+        if (x_rows > 0) then
+          x_flux(:, :, x_j_lower:x_j_upper) = reshape( &
+            payload(1:x_count), &
+            [component_count, x_i_upper - x_i_lower + 1, x_rows])
+          x_covered(:, x_j_lower:x_j_upper) = .true.
+          offset = x_count
+        end if
+        if (y_rows > 0) then
+          y_flux(:, :, y_j_lower:y_j_upper) = reshape( &
+            payload(offset + 1:value_count), &
+            [component_count, y_i_upper - y_i_lower + 1, y_rows])
+          y_covered(:, y_j_lower:y_j_upper) = .true.
+        end if
+        deallocate(payload)
+      end if
+    end do
+
+    local_ok = .true.
+    if (distribution%rank == destination) local_ok = &
+      all(x_covered) .and. all(y_covered) .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine transfer_sparse_child_coarse_flux_support_2d
 
 
   subroutine distribute_sparse_root_bundle_to_child_owners_2d( &
@@ -3050,14 +3283,13 @@ contains
 
   subroutine transfer_sparse_child_transport_context_2d( &
       distribution, coarse_geometry, fine_geometry, patch, component_count, &
-      source, destination, context, register, support_state, &
+      source, destination, context, support_state, &
       support_temperature, local_transfers, ok)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
     type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
     integer, intent(in) :: component_count, source, destination
     type(reactive_eb_patch_exterior_context_2d), intent(inout) :: context
-    type(amr_eb_flux_register_2d), intent(inout) :: register
     real(dp), allocatable, intent(inout) :: support_state(:, :, :)
     real(dp), allocatable, intent(inout) :: support_temperature(:, :)
     integer, intent(inout) :: local_transfers
@@ -3067,8 +3299,7 @@ contains
     real(dp), allocatable :: payload(:)
     logical :: accepted, global_ok, local_ok, participant
     integer(int64) :: context_value_count
-    integer :: correction_count, correction_i_lower, correction_i_upper
-    integer :: correction_j_lower, correction_j_upper, ierr, offset
+    integer :: ierr, offset
     integer :: state_count, support_cell_count
     integer :: support_i_lower, support_i_upper
     integer :: support_j_lower, support_j_upper, value_count
@@ -3086,7 +3317,6 @@ contains
     support_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 2)
     if (distribution%rank == source .and. local_ok) local_ok = &
       context%is_valid(fine_geometry, component_count) .and. &
-      register%is_valid(coarse_geometry, fine_geometry, patch) .and. &
       allocated(support_state) .and. allocated(support_temperature)
     if (distribution%rank == source .and. local_ok) local_ok = &
       all(shape(support_state) == &
@@ -3105,18 +3335,11 @@ contains
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
 
-    correction_i_lower = max(1, patch%coarse_i_lower - 1)
-    correction_i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 1)
-    correction_j_lower = max(1, patch%coarse_j_lower - 1)
-    correction_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 1)
-    correction_count = component_count * &
-      (correction_i_upper - correction_i_lower + 1) * &
-      (correction_j_upper - correction_j_lower + 1)
     support_cell_count = (support_i_upper - support_i_lower + 1) * &
       (support_j_upper - support_j_lower + 1)
     state_count = component_count * support_cell_count
     context_value_count = &
-      mpi_amr_eb_child_transport_reflux_context_value_count_2d( &
+      mpi_amr_eb_child_transport_state_context_value_count_2d( &
         component_count, coarse_geometry, fine_geometry, patch)
     if (context_value_count < 1_int64 .or. &
         context_value_count > int(huge(value_count), int64)) return
@@ -3129,9 +3352,6 @@ contains
           context%start, payload, offset)
         call pack_sparse_transport_exterior_2d( &
           context%end, payload, offset)
-        payload(offset + 1:offset + correction_count) = reshape( &
-          register%correction, [correction_count])
-        offset = offset + correction_count
         payload(offset + 1:offset + state_count) = reshape( &
           support_state, [state_count])
         offset = offset + state_count
@@ -3145,10 +3365,6 @@ contains
       else if (distribution%rank == destination) then
         call initialize_sparse_transport_context_storage_2d( &
           component_count, fine_geometry, context)
-        call initialize_amr_eb_flux_register_2d( &
-          coarse_geometry, fine_geometry, patch, component_count, register, &
-          local_ok)
-        if (.not. local_ok) return
         allocate(support_state( &
           component_count, support_i_lower:support_i_upper, &
           support_j_lower:support_j_upper))
@@ -3165,10 +3381,6 @@ contains
           payload, offset, context%start)
         call unpack_sparse_transport_exterior_2d( &
           payload, offset, context%end)
-        register%correction = reshape( &
-          payload(offset + 1:offset + correction_count), &
-          shape(register%correction))
-        offset = offset + correction_count
         support_state = reshape( &
           payload(offset + 1:offset + state_count), shape(support_state))
         offset = offset + state_count
@@ -3179,7 +3391,6 @@ contains
     local_ok = .true.
     if (participant) local_ok = &
       context%is_valid(fine_geometry, component_count) .and. &
-      register%is_valid(coarse_geometry, fine_geometry, patch) .and. &
       allocated(support_state) .and. allocated(support_temperature)
     if (participant .and. local_ok) local_ok = &
       all(shape(support_state) == &
@@ -4111,12 +4322,16 @@ contains
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    type(mpi_amr_eb_root_tile_transport_flux_2d), allocatable :: &
+      local_tile_fluxes(:)
     real(dp), allocatable :: coarse_corrected(:, :, :)
     real(dp), allocatable :: coarse_corrected_temperature(:, :)
     real(dp), allocatable :: coarse_work(:, :, :)
     real(dp), allocatable :: coarse_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :)
     real(dp), allocatable :: coarse_y_flux(:, :, :)
+    real(dp), allocatable :: coarse_x_flux_support(:, :, :)
+    real(dp), allocatable :: coarse_y_flux_support(:, :, :)
     real(dp), allocatable :: fine_work(:, :, :)
     real(dp), allocatable :: fine_work_temperature(:, :)
     real(dp), allocatable :: fine_x_flux(:, :, :)
@@ -4537,10 +4752,8 @@ contains
     real(dp) :: alpha, coarse_theta, fine_dt, fine_theta, local_theta
     logical :: accepted, cut_interface, entity_ok, global_ok, local_ok
     integer :: advances, child, i, ierr, j, nvar, owner, ratio
-    integer :: flux_x_i_lower, flux_x_i_upper
-    integer :: flux_x_j_lower, flux_x_j_upper
-    integer :: flux_y_i_lower, flux_y_i_upper
-    integer :: flux_y_j_lower, flux_y_j_upper
+    integer :: flux_x_i_lower, flux_x_j_lower
+    integer :: flux_y_i_lower, flux_y_j_lower
     integer :: root_owner, root_tile_advances, root_transport_cells
     integer :: substep, support_i_lower, support_i_upper
     integer :: support_j_lower, support_j_upper, transfers
@@ -4571,7 +4784,7 @@ contains
       target_volume_fraction, state_redist_max_order, root_start, &
       root_start_temperature, coarse_candidate, &
       coarse_candidate_temperature, coarse_x_flux, coarse_y_flux, &
-      coarse_theta, transfers, local_ok, root_tile_advances, &
+      local_tile_fluxes, coarse_theta, transfers, local_ok, root_tile_advances, &
       root_transport_cells)
     if (.not. local_ok) return
     advances = advances + root_tile_advances
@@ -4589,6 +4802,8 @@ contains
       if (allocated(coarse_support)) deallocate(coarse_support)
       if (allocated(coarse_support_temperature)) &
         deallocate(coarse_support_temperature)
+      if (allocated(coarse_x_flux_support)) deallocate(coarse_x_flux_support)
+      if (allocated(coarse_y_flux_support)) deallocate(coarse_y_flux_support)
       if (allocated(fine_rhs)) deallocate(fine_rhs)
       if (allocated(fine_work)) deallocate(fine_work)
       if (allocated(fine_work_temperature)) &
@@ -4613,20 +4828,12 @@ contains
         patch_set_template%children(child)%patch%coarse_j_upper + 2)
       flux_x_i_lower = &
         patch_set_template%children(child)%patch%coarse_i_lower - 1
-      flux_x_i_upper = &
-        patch_set_template%children(child)%patch%coarse_i_upper
       flux_x_j_lower = &
         patch_set_template%children(child)%patch%coarse_j_lower
-      flux_x_j_upper = &
-        patch_set_template%children(child)%patch%coarse_j_upper
       flux_y_i_lower = &
         patch_set_template%children(child)%patch%coarse_i_lower
-      flux_y_i_upper = &
-        patch_set_template%children(child)%patch%coarse_i_upper
       flux_y_j_lower = &
         patch_set_template%children(child)%patch%coarse_j_lower - 1
-      flux_y_j_upper = &
-        patch_set_template%children(child)%patch%coarse_j_upper
       entity_ok = owner >= 0 .and. owner < distribution%nranks
       if (distribution%rank == root_owner .and. entity_ok) then
         call extract_reactive_eb_patch_exterior_context_2d( &
@@ -4635,20 +4842,6 @@ contains
           patch_set_template%children(child)%geometry, &
           patch_set_template%children(child)%patch, nvar, exterior_context, &
           entity_ok)
-        if (entity_ok) call initialize_amr_eb_flux_register_2d( &
-          coarse_geometry, patch_set_template%children(child)%geometry, &
-          patch_set_template%children(child)%patch, nvar, flux_register, &
-          entity_ok)
-        if (entity_ok) call accumulate_coarse_eb_fluxes_patch_support_2d( &
-          flux_register, coarse_geometry, &
-          patch_set_template%children(child)%geometry, &
-          patch_set_template%children(child)%patch, &
-          flux_x_i_lower, flux_x_j_lower, coarse_x_flux( &
-            :, flux_x_i_lower:flux_x_i_upper, &
-            flux_x_j_lower:flux_x_j_upper), &
-          flux_y_i_lower, flux_y_j_lower, coarse_y_flux( &
-            :, flux_y_i_lower:flux_y_i_upper, &
-            flux_y_j_lower:flux_y_j_upper), dt, entity_ok)
         if (entity_ok) then
           allocate(coarse_support( &
             nvar, support_i_lower:support_i_upper, &
@@ -4671,11 +4864,35 @@ contains
         distribution, coarse_geometry, &
         patch_set_template%children(child)%geometry, &
         patch_set_template%children(child)%patch, nvar, root_owner, owner, &
-        exterior_context, flux_register, coarse_support, &
+        exterior_context, coarse_support, &
         coarse_support_temperature, transfers, local_ok)
       if (.not. local_ok) return
 
+      call transfer_sparse_child_coarse_flux_support_2d( &
+        distribution, coarse_geometry, &
+        patch_set_template%children(child)%geometry, &
+        patch_set_template%children(child)%patch, nvar, owner, &
+        local_tile_fluxes, coarse_x_flux_support, coarse_y_flux_support, &
+        transfers, local_ok)
+      if (.not. local_ok) return
+
       entity_ok = owner >= 0 .and. owner < distribution%nranks
+      if (distribution%rank == owner .and. entity_ok) then
+        call initialize_amr_eb_flux_register_2d( &
+          coarse_geometry, patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, nvar, flux_register, &
+          entity_ok)
+        if (entity_ok) call accumulate_coarse_eb_fluxes_patch_support_2d( &
+          flux_register, coarse_geometry, &
+          patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, &
+          flux_x_i_lower, flux_x_j_lower, coarse_x_flux_support, &
+          flux_y_i_lower, flux_y_j_lower, coarse_y_flux_support, dt, &
+          entity_ok)
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
       if (distribution%rank == owner .and. entity_ok) then
         allocate(fine_rhs, mold=candidate%children(child)%state)
         allocate(fine_work, mold=candidate%children(child)%state)
