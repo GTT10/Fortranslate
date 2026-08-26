@@ -280,13 +280,13 @@ contains
           size(candidate%levels(level)%patches(child)%temperature, 1), &
           size(candidate%levels(level)%patches(child)%temperature, 2)))
         copied = .false.
-        if (level <= solution%level_count()) then
-          do old_patch = 1, solution%levels(level)%patch_count()
+        if (level <= collapsed%level_count()) then
+          do old_patch = 1, collapsed%levels(level)%patch_count()
             call retain_same_resolution_overlap( &
               candidate%levels(level)%patches(child), &
               candidate%topology%relations(relation)%children(child)%geometry, &
-              solution%levels(level)%patches(old_patch), &
-              solution%topology%relations(relation)%children(old_patch)% &
+              collapsed%levels(level)%patches(old_patch), &
+              collapsed%topology%relations(relation)%children(old_patch)% &
                 geometry, copied, local_ok)
             if (.not. local_ok) return
           end do
