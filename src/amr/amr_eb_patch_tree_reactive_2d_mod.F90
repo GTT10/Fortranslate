@@ -68,6 +68,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_reactive_amr_eb_patch_tree_hydro_2d
   public :: advance_reactive_amr_eb_patch_tree_strang_2d
+  public :: advance_reactive_amr_eb_patch_tree_full_physics_2d
   public :: advance_reactive_amr_eb_patch_tree_transport_euler_2d
   public :: advance_reactive_amr_eb_patch_tree_transport_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
@@ -562,6 +563,153 @@ contains
     ok = .true.
     if (present(failure_context)) failure_context = "none"
   end subroutine advance_reactive_amr_eb_patch_tree_strang_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+      species, reactions, transport, solution, solver, reconstruction, &
+      limiter, state_redist_max_order, dt, chemistry_enabled, rtol, atol, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_target_volume_fraction, minimum_transport_theta, ok, &
+      failure_context, chemistry_level_advances, transport_level_advances, &
+      hydro_level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(in) :: state_redist_target_volume_fraction
+    real(dp), intent(out) :: minimum_transport_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: chemistry_level_advances(:)
+    integer, intent(out), optional :: transport_level_advances(:)
+    integer, intent(out), optional :: hydro_level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    integer, allocatable :: candidate_chemistry_advances(:)
+    integer, allocatable :: candidate_transport_advances(:)
+    integer, allocatable :: candidate_hydro_advances(:)
+    integer, allocatable :: stage_transport_advances(:)
+    character(len=160) :: context
+    real(dp) :: first_transport_theta, second_transport_theta
+    logical :: local_ok, transport_active
+
+    ok = .false.
+    minimum_transport_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(chemistry_level_advances)) chemistry_level_advances = 0
+    if (present(transport_level_advances)) transport_level_advances = 0
+    if (present(hydro_level_advances)) hydro_level_advances = 0
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        .not. ieee_is_finite(state_redist_target_volume_fraction) .or. &
+        state_redist_target_volume_fraction <= 0.0_dp .or. &
+        state_redist_target_volume_fraction > 1.0_dp) return
+    if (chemistry_enabled) then
+      if (.not. valid_patch_tree_chemistry_inputs( &
+            species, reactions, solution, 0.5_dp * dt, rtol, atol)) return
+    end if
+    transport_active = viscosity_enabled .or. thermal_conduction_enabled .or. &
+      species_diffusion_enabled
+    if (transport_active .and. size(transport) /= size(species)) return
+    if (present(chemistry_level_advances)) then
+      if (size(chemistry_level_advances) /= solution%level_count()) return
+    end if
+    if (present(transport_level_advances)) then
+      if (size(transport_level_advances) /= solution%level_count()) return
+    end if
+    if (present(hydro_level_advances)) then
+      if (size(hydro_level_advances) /= solution%level_count()) return
+    end if
+
+    candidate = solution
+    allocate(candidate_chemistry_advances(candidate%level_count()), source=0)
+    allocate(candidate_transport_advances(candidate%level_count()), source=0)
+    allocate(candidate_hydro_advances(candidate%level_count()), source=0)
+    allocate(stage_transport_advances(candidate%level_count()), source=0)
+    if (chemistry_enabled) then
+      call advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+        species, reactions, candidate, 0.5_dp * dt, rtol, atol, &
+        candidate_chemistry_advances, context, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+
+    call advance_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, candidate, 0.5_dp * dt, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, &
+      state_redist_target_volume_fraction, state_redist_max_order, &
+      first_transport_theta, local_ok, context, stage_transport_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    candidate_transport_advances = &
+      candidate_transport_advances + stage_transport_advances
+
+    call advance_reactive_amr_eb_patch_tree_hydro_2d( &
+      species, candidate, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, local_ok, &
+      state_redist_target_volume_fraction, context, &
+      candidate_hydro_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    stage_transport_advances = 0
+    call advance_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, candidate, 0.5_dp * dt, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, &
+      state_redist_target_volume_fraction, state_redist_max_order, &
+      second_transport_theta, local_ok, context, stage_transport_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    candidate_transport_advances = &
+      candidate_transport_advances + stage_transport_advances
+
+    if (chemistry_enabled) then
+      call advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+        species, reactions, candidate, 0.5_dp * dt, rtol, atol, &
+        candidate_chemistry_advances, context, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+    context = "final hierarchy synchronization"
+    call synchronize_candidate(species, candidate, local_ok)
+    if (.not. local_ok .or. .not. candidate%is_valid()) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    solution = candidate
+    minimum_transport_theta = min( &
+      first_transport_theta, second_transport_theta)
+    if (present(chemistry_level_advances)) &
+      chemistry_level_advances = candidate_chemistry_advances
+    if (present(transport_level_advances)) &
+      transport_level_advances = candidate_transport_advances
+    if (present(hydro_level_advances)) &
+      hydro_level_advances = candidate_hydro_advances
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_full_physics_2d
 
   subroutine advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
       species, reactions, solution, interval, rtol, atol, level_advances, &
