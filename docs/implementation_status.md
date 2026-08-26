@@ -2306,7 +2306,30 @@ separate work at this milestone.
 - [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
 
 The sparse EB clock now owns a complete two-level dynamic-topology lifecycle.
-Regrid events still use the `0.127.0` replicated compatibility window after the
-owner-local plan is broadcast. Direct overlap migration, sparse
-checkpoint/restart and parallel output, arbitrary-depth dynamic EB topology,
-and decomposition of the level-wide root physics kernel remain separate work.
+At this milestone regrid events still use the `0.127.0` replicated
+compatibility window after the owner-local plan is broadcast. Direct overlap
+migration, sparse checkpoint/restart and parallel output, arbitrary-depth
+dynamic EB topology, and decomposition of the level-wide root physics kernel
+remain separate work.
+
+## Direct sparse MPI reactive EB AMR topology transfer (`0.129.0`)
+
+- [x] old fine-to-root average-down through targeted restriction buffers
+- [x] averaged root-tile assembly only on distinct new child owners
+- [x] owner-local PCM initialization of every new child
+- [x] local or point-to-point same-ratio old/new overlap rectangle retention
+- [x] owner-local active-cell temperature recovery after overlap migration
+- [x] no all-rank root or child numerical-field materialization during regrid
+- [x] exact restriction, prolongation, and overlap send accounting
+- [x] transfer counters exposed through explicit, tagged, and scheduled APIs
+- [x] candidate-only mutation and atomic distribution/state/template commit
+- [x] late overlap-geometry mismatch rollback after restriction and PCM staging
+- [x] exact serial root, child, temperature, and topology parity
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The two-level sparse EB lifecycle now stays globally single-copy through both
+physics and dynamic topology changes. Geometry and compact topology metadata
+remain replicated intentionally. Sparse checkpoint/restart and parallel output,
+arbitrary-depth dynamic EB topology, and decomposition of the level-wide root
+physics kernel remain separate work.

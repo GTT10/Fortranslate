@@ -695,6 +695,9 @@ Required capabilities:
   storage (`0.127.0`)
 - [x] root-owner temperature tagging and scheduled sparse EB topology rebuild
   inside the public full-physics clock with whole-step rollback (`0.128.0`)
+- [x] direct sparse EB regrid restriction, new-owner PCM root assembly, and
+  old-owner to new-owner overlap migration with exact traffic accounting
+  (`0.129.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

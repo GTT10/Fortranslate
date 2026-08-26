@@ -1341,6 +1341,16 @@ and root-traffic diagnostics publish atomically. A failed geometry build or
 regrid discards the otherwise valid physics candidate and leaves the caller at
 the previous accepted time.
 
+In `0.129.0`, the topology transaction removes its replicated numerical-field
+window. Old fine owners average down directly to intersecting root-tile owners.
+Each distinct new child owner assembles the averaged root from targeted tile
+payloads and performs PCM prolongation locally. Same-ratio old/new overlap
+rectangles then copy locally or move once from the old child owner to the new
+owner before active-cell temperature recovery. Replicated geometry and compact
+topology descriptors still define the deterministic transfer schedule. The
+candidate distribution, root tiles, children, template, and three transfer
+counts publish only after collective validation succeeds.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

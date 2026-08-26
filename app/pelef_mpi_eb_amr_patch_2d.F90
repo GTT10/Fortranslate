@@ -20,7 +20,7 @@ program pelef_mpi_eb_amr_patch_2d
     reactive_mass_fraction_component, reactive_primitive_to_conserved
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use eb_geometry_2d_mod, only: &
-    eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_regrid_2d_mod, only: &
@@ -181,6 +181,7 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: scheduled_reference_state(:, :, :)
   real(dp), allocatable :: scheduled_reference_temperature(:, :)
   type(eb_geometry_2d), allocatable :: regrid_fine_geometries(:)
+  type(eb_geometry_2d), allocatable :: rejected_regrid_fine_geometries(:)
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: regrid_recipients(:)
   logical, allocatable :: restriction_recipients(:)
@@ -201,9 +202,9 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: scheduled_reference_minimum_dt, scheduled_reference_theta
   real(dp) :: scheduled_theta
   logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
-  logical :: ok, topology_changed
-  integer :: child, component, global_advances, i, ierr, j, new_child
-  integer :: old_child, owner
+  logical :: geometry_perturbed, ok, topology_changed
+  integer :: child, component, global_advances, global_i, global_j, i, ierr
+  integer :: j, new_child, old_child, old_i, old_j, owner
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_chemistry_advances, local_hydro_advances
@@ -577,6 +578,84 @@ program pelef_mpi_eb_amr_patch_2d
       all(materialized_patch_set%children(child)%temperature == &
         regrid_start_set%children(child)%temperature), &
       "MPI EB AMR sparse regrid child rollback", rank)
+  end do
+
+  allocate(rejected_regrid_fine_geometries, source=regrid_fine_geometries)
+  geometry_perturbed = .false.
+  do new_child = 1, size(rejected_regrid_fine_geometries)
+    do j = 1, rejected_regrid_fine_geometries(new_child)%ny
+      global_j = (regrid_collection%plans(new_child)%coarse_j_lower - 1) * &
+        ratio + j
+      do i = 1, rejected_regrid_fine_geometries(new_child)%nx
+        if (rejected_regrid_fine_geometries(new_child)%cell_type(i, j) /= &
+            eb_cut_cell) cycle
+        global_i = (regrid_collection%plans(new_child)%coarse_i_lower - 1) * &
+          ratio + i
+        do old_child = 1, regrid_start_set%patch_count()
+          old_i = global_i - &
+            (regrid_start_set%children(old_child)%patch%coarse_i_lower - 1) * &
+              ratio
+          old_j = global_j - &
+            (regrid_start_set%children(old_child)%patch%coarse_j_lower - 1) * &
+              ratio
+          if (old_i < 1 .or. &
+              old_i > regrid_start_set%children(old_child)%geometry%nx .or. &
+              old_j < 1 .or. &
+              old_j > regrid_start_set%children(old_child)%geometry%ny) cycle
+          if (rejected_regrid_fine_geometries(new_child)% &
+              volume_fraction(i, j) <= 0.5_dp) then
+            rejected_regrid_fine_geometries(new_child)% &
+              volume_fraction(i, j) = &
+                rejected_regrid_fine_geometries(new_child)% &
+                  volume_fraction(i, j) + 1.0e-8_dp
+          else
+            rejected_regrid_fine_geometries(new_child)% &
+              volume_fraction(i, j) = &
+                rejected_regrid_fine_geometries(new_child)% &
+                  volume_fraction(i, j) - 1.0e-8_dp
+          end if
+          geometry_perturbed = .true.
+          exit
+        end do
+        if (geometry_perturbed) exit
+      end do
+      if (geometry_perturbed) exit
+    end do
+    if (geometry_perturbed) exit
+  end do
+  call assert_all(geometry_perturbed .and. &
+    rejected_regrid_fine_geometries(1)%is_valid(), &
+    "MPI EB AMR sparse regrid mismatched geometry setup", rank)
+  call regrid_sparse_owned_reactive_eb_patch_set_2d( &
+    species, topology_distribution, sparse_regrid_set, coarse_geometry, &
+    sparse_regrid_template, rejected_regrid_fine_geometries, &
+    regrid_collection, ratio, ok, topology_changed, &
+    local_regrid_restriction_transfers, &
+    local_regrid_prolongation_transfers, local_regrid_overlap_transfers)
+  call assert_all(.not. ok .and. .not. topology_changed .and. &
+    local_regrid_restriction_transfers == 0 .and. &
+    local_regrid_prolongation_transfers == 0 .and. &
+    local_regrid_overlap_transfers == 0 .and. &
+    topology_distribution%child_count() == distribution%child_count() .and. &
+    all(topology_distribution%child_owners == distribution%child_owners) .and. &
+    same_patch_topology(sparse_regrid_template, regrid_start_set), &
+    "MPI EB AMR sparse regrid geometry rollback", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    topology_distribution, sparse_regrid_set, coarse_state, &
+    coarse_temperature, coarse_geometry, sparse_regrid_template, &
+    materialized_coarse_state, materialized_coarse_temperature, &
+    materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == regrid_start_state) .and. &
+    all(materialized_coarse_temperature == regrid_start_temperature), &
+    "MPI EB AMR sparse regrid geometry root rollback", rank)
+  do child = 1, regrid_start_set%patch_count()
+    call assert_all( &
+      all(materialized_patch_set%children(child)%state == &
+        regrid_start_set%children(child)%state) .and. &
+      all(materialized_patch_set%children(child)%temperature == &
+        regrid_start_set%children(child)%temperature), &
+      "MPI EB AMR sparse regrid geometry child rollback", rank)
   end do
 
   call regrid_sparse_owned_reactive_eb_patch_set_2d( &

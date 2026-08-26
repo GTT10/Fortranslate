@@ -2081,3 +2081,24 @@ sparse fields, template, regrid counters, and published timestep/regrid traffic
 must all remain at their pre-step values. The gate runs in GNU Fortran Release
 and bounds/FPE-checked Debug configurations before the complete 208-test
 regression.
+
+## 0.129.0 direct sparse MPI reactive EB AMR regrid gates
+
+Reuse both the explicit shifted/resized-child case and the scheduled hotspot
+case. Their materialized root, retained fine overlap, newly PCM-prolonged cells,
+recovered temperatures, ordered topology, and one-copy storage must continue to
+match the independent serial references at one, two, four, and eight ranks.
+
+For each old child, restriction sends must equal its distinct intersecting root
+owners excluding its own owner. For each distinct new child owner, PCM root
+assembly sends must equal root tiles owned elsewhere. Each nonempty same-ratio
+old/new overlap rectangle whose owner changes must produce exactly one send.
+Local sender counts and communicator sums are checked independently for the
+explicit API and through the scheduled tagged public clock. Invalid controls
+and a valid but overlap-inconsistent fine geometry must publish zero
+direct-regrid traffic and preserve all caller state, including when rejection
+occurs after restriction and PCM staging. A rejected scheduled geometry
+callback obeys the same publication rule. Static inspection must show that the
+explicit transaction no longer calls the all-rank materialization helper. The
+gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
+before the complete 208-test regression.
