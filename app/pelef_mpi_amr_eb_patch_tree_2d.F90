@@ -15,9 +15,13 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initialize_reactive_amr_eb_patch_tree_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
+    mpi_sparse_reactive_amr_eb_patch_tree_2d, &
     initialize_mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_amr_eb_patch_tree_distribution_matches_2d, &
-    synchronize_owned_reactive_amr_eb_patch_tree_2d
+    synchronize_owned_reactive_amr_eb_patch_tree_2d, &
+    initialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    materialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
   implicit none
 
   type(MPI_Comm) :: comm
@@ -29,15 +33,21 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
   type(amr_eb_patch_tree_topology_2d) :: topology
   type(reactive_amr_eb_patch_tree_2d) :: solution, accepted, failed
+  type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: rejected_distribution
+  type(mpi_amr_eb_patch_tree_distribution_2d) :: migrated_distribution
+  type(mpi_amr_eb_patch_tree_distribution_2d) :: invalid_distribution
+  type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse, sparse_snapshot
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp) :: base_density, expected_state, expected_temperature
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
   integer :: local_publications, global_publications
+  integer :: expected_transfers, global_transfers, local_allocated_cells
+  integer :: local_nodes, local_transfers, new_owner, old_owner
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -193,6 +203,80 @@ program pelef_mpi_amr_eb_patch_tree_2d
     "MPI EB patch-tree publication accounting", comm)
 
   accepted = solution
+  call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    distribution, accepted, sparse, ok, local_allocated_cells)
+  local_nodes = 0
+  do level = 1, sparse%level_count()
+    do patch = 1, sparse%levels(level)%patch_count()
+      if (sparse%levels(level)%patches(patch)%has_data()) &
+        local_nodes = local_nodes + 1
+    end do
+  end do
+  call assert_all(ok .and. sparse%is_valid(distribution) .and. &
+    local_allocated_cells == &
+      distribution%rank_cell_counts(rank + 1) .and. &
+    local_nodes == distribution%rank_patch_counts(rank + 1), &
+    "MPI EB patch-tree sparse owner allocation", comm)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    distribution, sparse, materialized, ok, local_publications)
+  call MPI_Allreduce( &
+    local_publications, global_publications, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    global_publications == 5 .and. &
+    tree_solutions_match(materialized, accepted), &
+    "MPI EB patch-tree sparse materialization", comm)
+
+  migrated_distribution = distribution
+  migrated_distribution%rank_cell_counts = 0
+  migrated_distribution%rank_patch_counts = 0
+  migrated_distribution%rank_work_counts = 0_int64
+  expected_transfers = 0
+  do level = 1, migrated_distribution%level_count()
+    do patch = 1, migrated_distribution%levels(level)%patch_count()
+      old_owner = distribution%owner_of(level - 1, patch)
+      new_owner = old_owner
+      if (nranks > 1) new_owner = modulo(old_owner + 1, nranks)
+      migrated_distribution%levels(level)%owners(patch) = new_owner
+      migrated_distribution%rank_cell_counts(new_owner + 1) = &
+        migrated_distribution%rank_cell_counts(new_owner + 1) + &
+          migrated_distribution%levels(level)%cell_counts(patch)
+      migrated_distribution%rank_patch_counts(new_owner + 1) = &
+        migrated_distribution%rank_patch_counts(new_owner + 1) + 1
+      migrated_distribution%rank_work_counts(new_owner + 1) = &
+        migrated_distribution%rank_work_counts(new_owner + 1) + &
+          migrated_distribution%levels(level)%work_counts(patch)
+      if (new_owner /= old_owner) &
+        expected_transfers = expected_transfers + 1
+    end do
+  end do
+  call assert_all(migrated_distribution%is_valid() .and. &
+    mpi_amr_eb_patch_tree_distribution_matches_2d( &
+      migrated_distribution, topology), &
+    "MPI EB patch-tree rotated ownership", comm)
+  call migrate_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    distribution, migrated_distribution, sparse, ok, local_transfers)
+  call MPI_Allreduce( &
+    local_transfers, global_transfers, 1, MPI_INTEGER, MPI_SUM, comm, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    global_transfers == expected_transfers .and. &
+    sparse%is_valid(migrated_distribution), &
+    "MPI EB patch-tree direct sparse migration", comm)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, sparse, materialized, ok, local_publications)
+  call assert_all(ok .and. tree_solutions_match(materialized, accepted), &
+    "MPI EB patch-tree migrated field parity", comm)
+
+  sparse_snapshot = sparse
+  invalid_distribution = migrated_distribution
+  if (rank == 0) invalid_distribution%levels(1)%owners(1) = nranks
+  call migrate_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, invalid_distribution, sparse, ok, &
+    local_transfers)
+  call assert_all(.not. ok .and. local_transfers == 0 .and. &
+    sparse_trees_match(sparse, sparse_snapshot), &
+    "MPI EB patch-tree sparse migration rollback", comm)
+
   if (rank == 0) solution%levels(1)%patches(1)%temperature(1, 1) = -1.0_dp
   failed = solution
   call synchronize_owned_reactive_amr_eb_patch_tree_2d( &
@@ -256,6 +340,43 @@ contains
       end do
     end do
   end function tree_solutions_match
+
+  logical function sparse_trees_match(first, second) result(matches)
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: &
+      first, second
+    integer :: candidate_level, candidate_patch
+
+    matches = first%nvar == second%nvar .and. &
+      first%level_count() == second%level_count()
+    if (.not. matches) return
+    do candidate_level = 1, first%level_count()
+      matches = first%levels(candidate_level)%patch_count() == &
+        second%levels(candidate_level)%patch_count()
+      if (.not. matches) return
+      do candidate_patch = 1, &
+          first%levels(candidate_level)%patch_count()
+        matches = allocated(first%levels(candidate_level)% &
+            patches(candidate_patch)%state) .eqv. &
+          allocated(second%levels(candidate_level)% &
+            patches(candidate_patch)%state)
+        matches = matches .and. &
+          (allocated(first%levels(candidate_level)% &
+            patches(candidate_patch)%temperature) .eqv. &
+          allocated(second%levels(candidate_level)% &
+            patches(candidate_patch)%temperature))
+        if (.not. matches) return
+        if (.not. first%levels(candidate_level)% &
+            patches(candidate_patch)%has_data()) cycle
+        matches = all(first%levels(candidate_level)% &
+            patches(candidate_patch)%state == second%levels(candidate_level)% &
+              patches(candidate_patch)%state) .and. &
+          all(first%levels(candidate_level)%patches(candidate_patch)% &
+            temperature == second%levels(candidate_level)% &
+              patches(candidate_patch)%temperature)
+        if (.not. matches) return
+      end do
+    end do
+  end function sparse_trees_match
 
   subroutine assert_all(condition, message, communicator)
     logical, intent(in) :: condition

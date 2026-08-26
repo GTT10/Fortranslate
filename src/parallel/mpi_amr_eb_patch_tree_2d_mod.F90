@@ -1,5 +1,6 @@
 module mpi_amr_eb_patch_tree_2d_mod
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
   use precision_mod, only: dp
   use eb_geometry_2d_mod, only: eb_geometry_2d
@@ -8,6 +9,9 @@ module mpi_amr_eb_patch_tree_2d_mod
     reactive_amr_eb_patch_tree_2d
   implicit none
   private
+
+  integer, parameter :: sparse_tree_state_tag = 27101
+  integer, parameter :: sparse_tree_temperature_tag = 27102
 
   type, public :: mpi_amr_eb_patch_tree_level_ownership_2d
     integer, allocatable :: owners(:)
@@ -34,9 +38,36 @@ module mpi_amr_eb_patch_tree_2d_mod
     procedure :: is_valid => mpi_amr_eb_tree_distribution_is_valid
   end type mpi_amr_eb_patch_tree_distribution_2d
 
+  type, public :: mpi_sparse_reactive_amr_eb_patch_tree_node_2d
+    real(dp), allocatable :: state(:, :, :)
+    real(dp), allocatable :: temperature(:, :)
+  contains
+    procedure :: has_data => mpi_sparse_reactive_amr_eb_node_has_data
+  end type mpi_sparse_reactive_amr_eb_patch_tree_node_2d
+
+  type, public :: mpi_sparse_reactive_amr_eb_patch_tree_level_2d
+    type(mpi_sparse_reactive_amr_eb_patch_tree_node_2d), &
+      allocatable :: patches(:)
+  contains
+    procedure :: patch_count => mpi_sparse_reactive_amr_eb_level_patch_count
+  end type mpi_sparse_reactive_amr_eb_patch_tree_level_2d
+
+  type, public :: mpi_sparse_reactive_amr_eb_patch_tree_2d
+    integer :: nvar = 0
+    type(amr_eb_patch_tree_topology_2d) :: topology
+    type(mpi_sparse_reactive_amr_eb_patch_tree_level_2d), &
+      allocatable :: levels(:)
+  contains
+    procedure :: level_count => mpi_sparse_reactive_amr_eb_level_count
+    procedure :: is_valid => mpi_sparse_reactive_amr_eb_tree_is_valid
+  end type mpi_sparse_reactive_amr_eb_patch_tree_2d
+
   public :: initialize_mpi_amr_eb_patch_tree_distribution_2d
   public :: mpi_amr_eb_patch_tree_distribution_matches_2d
   public :: synchronize_owned_reactive_amr_eb_patch_tree_2d
+  public :: initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+  public :: materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+  public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
 
 contains
 
@@ -142,6 +173,78 @@ contains
       all(work == self%rank_work_counts) .and. &
       sum(self%rank_patch_counts) >= 1
   end function mpi_amr_eb_tree_distribution_is_valid
+
+  pure logical function mpi_sparse_reactive_amr_eb_node_has_data(self) &
+      result(has_data)
+    class(mpi_sparse_reactive_amr_eb_patch_tree_node_2d), intent(in) :: self
+
+    has_data = allocated(self%state) .and. allocated(self%temperature)
+  end function mpi_sparse_reactive_amr_eb_node_has_data
+
+  pure integer function mpi_sparse_reactive_amr_eb_level_patch_count(self) &
+      result(count)
+    class(mpi_sparse_reactive_amr_eb_patch_tree_level_2d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%patches)) count = size(self%patches)
+  end function mpi_sparse_reactive_amr_eb_level_patch_count
+
+  pure integer function mpi_sparse_reactive_amr_eb_level_count(self) &
+      result(count)
+    class(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%levels)) count = size(self%levels)
+  end function mpi_sparse_reactive_amr_eb_level_count
+
+  logical function mpi_sparse_reactive_amr_eb_tree_is_valid( &
+      self, distribution) result(valid)
+    class(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: self
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+
+    type(eb_geometry_2d) :: geometry
+    integer :: level, patch
+    logical :: geometry_ok, local
+
+    valid = self%nvar >= 1 .and. allocated(self%levels) .and. &
+      self%topology%is_valid() .and. &
+      mpi_amr_eb_patch_tree_distribution_matches_2d( &
+        distribution, self%topology)
+    if (.not. valid) return
+    valid = size(self%levels) == self%topology%level_count()
+    if (.not. valid) return
+    do level = 1, size(self%levels)
+      valid = allocated(self%levels(level)%patches) .and. &
+        self%levels(level)%patch_count() == &
+          self%topology%level_patch_count(level - 1)
+      if (.not. valid) return
+      do patch = 1, self%levels(level)%patch_count()
+        local = distribution%is_local(level - 1, patch)
+        valid = allocated(self%levels(level)%patches(patch)%state) .eqv. &
+          allocated(self%levels(level)%patches(patch)%temperature)
+        if (.not. valid) return
+        valid = self%levels(level)%patches(patch)%has_data() .eqv. local
+        if (.not. valid) return
+        if (.not. local) cycle
+        call topology_patch_geometry_2d( &
+          self%topology, level - 1, patch, geometry, geometry_ok)
+        if (.not. geometry_ok) then
+          valid = .false.
+          return
+        end if
+        valid = all(shape(self%levels(level)%patches(patch)%state) == &
+            [self%nvar, geometry%nx, geometry%ny]) .and. &
+          all(shape(self%levels(level)%patches(patch)%temperature) == &
+            [geometry%nx, geometry%ny]) .and. &
+          all(ieee_is_finite( &
+            self%levels(level)%patches(patch)%state)) .and. &
+          all(ieee_is_finite( &
+            self%levels(level)%patches(patch)%temperature)) .and. &
+          all(self%levels(level)%patches(patch)%temperature > 0.0_dp)
+        if (.not. valid) return
+      end do
+    end do
+  end function mpi_sparse_reactive_amr_eb_tree_is_valid
 
   subroutine initialize_mpi_amr_eb_patch_tree_distribution_2d( &
       topology, comm, distribution, ok, subcycle_exponent)
@@ -329,6 +432,252 @@ contains
       local_entity_publications = publications
   end subroutine synchronize_owned_reactive_amr_eb_patch_tree_2d
 
+  subroutine initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+      distribution, replicated, sparse, ok, local_allocated_cells)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: replicated
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(out) :: sparse
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_allocated_cells
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    integer :: level, patch
+    logical :: accepted, global_ok, local_ok
+
+    sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
+    ok = .false.
+    if (present(local_allocated_cells)) local_allocated_cells = 0
+    call replicated_distribution_matches_2d( &
+      distribution, replicated%topology, local_ok)
+    local_ok = local_ok .and. replicated%is_valid() .and. &
+      mpi_amr_eb_patch_tree_distribution_matches_2d( &
+        distribution, replicated%topology)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call allocate_sparse_tree_layout_2d( &
+      distribution, replicated%nvar, replicated%topology, candidate, local_ok)
+    if (.not. local_ok) return
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        if (.not. distribution%is_local(level - 1, patch)) cycle
+        candidate%levels(level)%patches(patch)%state = &
+          replicated%levels(level)%patches(patch)%state
+        candidate%levels(level)%patches(patch)%temperature = &
+          replicated%levels(level)%patches(patch)%temperature
+      end do
+    end do
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    sparse = candidate
+    ok = .true.
+    if (present(local_allocated_cells)) &
+      local_allocated_cells = &
+        distribution%rank_cell_counts(distribution%rank + 1)
+  end subroutine initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+      distribution, sparse, replicated, ok, local_entity_publications)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    type(reactive_amr_eb_patch_tree_2d), intent(out) :: replicated
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_publications
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    type(eb_geometry_2d) :: geometry
+    integer :: ierr, level, owner, patch, publications
+    logical :: accepted, geometry_ok, global_ok, local_ok
+
+    replicated = reactive_amr_eb_patch_tree_2d()
+    ok = .false.
+    publications = 0
+    if (present(local_entity_publications)) local_entity_publications = 0
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, local_ok)
+    local_ok = local_ok .and. sparse%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    candidate%nvar = sparse%nvar
+    candidate%topology = sparse%topology
+    allocate(candidate%levels(sparse%level_count()))
+    do level = 1, candidate%level_count()
+      allocate(candidate%levels(level)%patches( &
+        sparse%levels(level)%patch_count()))
+      do patch = 1, candidate%levels(level)%patch_count()
+        call topology_patch_geometry_2d( &
+          sparse%topology, level - 1, patch, geometry, geometry_ok)
+        if (.not. geometry_ok) return
+        allocate(candidate%levels(level)%patches(patch)%state( &
+          sparse%nvar, geometry%nx, geometry%ny))
+        allocate(candidate%levels(level)%patches(patch)%temperature( &
+          geometry%nx, geometry%ny))
+        owner = distribution%owner_of(level - 1, patch)
+        if (distribution%rank == owner) then
+          candidate%levels(level)%patches(patch)%state = &
+            sparse%levels(level)%patches(patch)%state
+          candidate%levels(level)%patches(patch)%temperature = &
+            sparse%levels(level)%patches(patch)%temperature
+          publications = publications + 1
+        end if
+        call MPI_Bcast( &
+          candidate%levels(level)%patches(patch)%state, &
+          size(candidate%levels(level)%patches(patch)%state), &
+          MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        call MPI_Bcast( &
+          candidate%levels(level)%patches(patch)%temperature, &
+          size(candidate%levels(level)%patches(patch)%temperature), &
+          MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+      end do
+    end do
+    local_ok = candidate%is_valid()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    replicated = candidate
+    ok = .true.
+    if (present(local_entity_publications)) &
+      local_entity_publications = publications
+  end subroutine materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine migrate_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+      old_distribution, new_distribution, sparse, ok, &
+      local_entity_transfers)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
+      old_distribution, new_distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    type(MPI_Status) :: status
+    integer :: comm_comparison, ierr, level, new_owner, old_owner, patch
+    integer :: transfers
+    logical :: accepted, global_ok, local_ok, new_matches, old_matches
+
+    ok = .false.
+    transfers = 0
+    if (present(local_entity_transfers)) local_entity_transfers = 0
+    call MPI_Comm_compare( &
+      old_distribution%comm, new_distribution%comm, comm_comparison, ierr)
+    local_ok = ierr == MPI_SUCCESS .and. &
+      (comm_comparison == MPI_IDENT .or. comm_comparison == MPI_CONGRUENT) &
+      .and. old_distribution%rank == new_distribution%rank .and. &
+      old_distribution%nranks == new_distribution%nranks
+    call replicated_distribution_matches_2d( &
+      old_distribution, sparse%topology, old_matches)
+    call replicated_distribution_matches_2d( &
+      new_distribution, sparse%topology, new_matches)
+    local_ok = local_ok .and. old_matches .and. new_matches .and. &
+      sparse%is_valid(old_distribution)
+    call all_ranks_accept_2d( &
+      old_distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call allocate_sparse_tree_layout_2d( &
+      new_distribution, sparse%nvar, sparse%topology, candidate, local_ok)
+    if (.not. local_ok) return
+    do level = 1, sparse%level_count()
+      do patch = 1, sparse%levels(level)%patch_count()
+        old_owner = old_distribution%owner_of(level - 1, patch)
+        new_owner = new_distribution%owner_of(level - 1, patch)
+        if (old_owner == new_owner) then
+          if (old_distribution%rank == old_owner) then
+            candidate%levels(level)%patches(patch)%state = &
+              sparse%levels(level)%patches(patch)%state
+            candidate%levels(level)%patches(patch)%temperature = &
+              sparse%levels(level)%patches(patch)%temperature
+          end if
+          cycle
+        end if
+        if (old_distribution%rank == old_owner) then
+          call MPI_Send( &
+            sparse%levels(level)%patches(patch)%state, &
+            size(sparse%levels(level)%patches(patch)%state), &
+            MPI_DOUBLE_PRECISION, new_owner, sparse_tree_state_tag, &
+            old_distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          call MPI_Send( &
+            sparse%levels(level)%patches(patch)%temperature, &
+            size(sparse%levels(level)%patches(patch)%temperature), &
+            MPI_DOUBLE_PRECISION, new_owner, sparse_tree_temperature_tag, &
+            old_distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          transfers = transfers + 1
+        else if (old_distribution%rank == new_owner) then
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%state, &
+            size(candidate%levels(level)%patches(patch)%state), &
+            MPI_DOUBLE_PRECISION, old_owner, sparse_tree_state_tag, &
+            old_distribution%comm, status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%temperature, &
+            size(candidate%levels(level)%patches(patch)%temperature), &
+            MPI_DOUBLE_PRECISION, old_owner, sparse_tree_temperature_tag, &
+            old_distribution%comm, status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+        end if
+      end do
+    end do
+    local_ok = candidate%is_valid(new_distribution)
+    call all_ranks_accept_2d( &
+      old_distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    sparse = candidate
+    ok = .true.
+    if (present(local_entity_transfers)) local_entity_transfers = transfers
+  end subroutine migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine allocate_sparse_tree_layout_2d( &
+      distribution, nvar, topology, sparse, ok)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    integer, intent(in) :: nvar
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(out) :: sparse
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    integer :: level, patch
+    logical :: geometry_ok
+
+    sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
+    ok = nvar >= 1 .and. &
+      mpi_amr_eb_patch_tree_distribution_matches_2d(distribution, topology)
+    if (.not. ok) return
+    sparse%nvar = nvar
+    sparse%topology = topology
+    allocate(sparse%levels(topology%level_count()))
+    do level = 1, sparse%level_count()
+      allocate(sparse%levels(level)%patches( &
+        topology%level_patch_count(level - 1)))
+      do patch = 1, sparse%levels(level)%patch_count()
+        if (.not. distribution%is_local(level - 1, patch)) cycle
+        call topology_patch_geometry_2d( &
+          topology, level - 1, patch, geometry, geometry_ok)
+        if (.not. geometry_ok) then
+          ok = .false.
+          return
+        end if
+        allocate(sparse%levels(level)%patches(patch)%state( &
+          nvar, geometry%nx, geometry%ny))
+        allocate(sparse%levels(level)%patches(patch)%temperature( &
+          geometry%nx, geometry%ny))
+      end do
+    end do
+    ok = .true.
+  end subroutine allocate_sparse_tree_layout_2d
+
   subroutine topology_patch_geometry_2d( &
       topology, level, patch, geometry, ok)
     type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
@@ -348,6 +697,119 @@ contains
     end if
     ok = geometry%is_valid()
   end subroutine topology_patch_geometry_2d
+
+  subroutine replicated_distribution_matches_2d( &
+      distribution, topology, matches)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
+    logical, intent(out) :: matches
+
+    integer, allocatable :: integer_maximum(:), integer_minimum(:)
+    integer, allocatable :: integer_values(:)
+    integer(int64), allocatable :: work_maximum(:), work_minimum(:)
+    integer(int64), allocatable :: work_values(:)
+    integer :: comm_rank, comm_size, ierr, level, patch
+    logical :: accepted, global_ok, local_ok
+
+    call MPI_Comm_rank(distribution%comm, comm_rank, ierr)
+    local_ok = ierr == MPI_SUCCESS
+    if (local_ok) call MPI_Comm_size(distribution%comm, comm_size, ierr)
+    local_ok = local_ok .and. ierr == MPI_SUCCESS .and. &
+      distribution%rank == comm_rank .and. distribution%nranks == comm_size &
+      .and. mpi_amr_eb_patch_tree_distribution_matches_2d( &
+        distribution, topology)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    matches = global_ok .and. accepted
+    if (.not. matches) return
+
+    allocate(integer_values(3 + 2 * distribution%nranks))
+    allocate(integer_minimum(size(integer_values)))
+    allocate(integer_maximum(size(integer_values)))
+    integer_values(1:3) = [ &
+      distribution%nranks, distribution%subcycle_exponent, &
+      distribution%level_count()]
+    integer_values(4:3 + distribution%nranks) = &
+      distribution%rank_cell_counts
+    integer_values(4 + distribution%nranks:) = &
+      distribution%rank_patch_counts
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      matches = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. any(integer_minimum /= integer_maximum)) then
+      matches = .false.
+      return
+    end if
+    allocate(work_values(distribution%nranks))
+    allocate(work_minimum(distribution%nranks))
+    allocate(work_maximum(distribution%nranks))
+    work_values = distribution%rank_work_counts
+    call MPI_Allreduce( &
+      work_values, work_minimum, size(work_values), MPI_INTEGER8, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      matches = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      work_values, work_maximum, size(work_values), MPI_INTEGER8, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. any(work_minimum /= work_maximum)) then
+      matches = .false.
+      return
+    end if
+
+    deallocate(integer_values, integer_minimum, integer_maximum)
+    deallocate(work_values, work_minimum, work_maximum)
+    allocate(integer_values(2), integer_minimum(2), integer_maximum(2))
+    allocate(work_values(1), work_minimum(1), work_maximum(1))
+    do level = 1, distribution%level_count()
+      do patch = 1, distribution%levels(level)%patch_count()
+        integer_values = [ &
+          distribution%levels(level)%owners(patch), &
+          distribution%levels(level)%cell_counts(patch)]
+        work_values(1) = distribution%levels(level)%work_counts(patch)
+        call MPI_Allreduce( &
+          integer_values, integer_minimum, 2, MPI_INTEGER, MPI_MIN, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) then
+          matches = .false.
+          return
+        end if
+        call MPI_Allreduce( &
+          integer_values, integer_maximum, 2, MPI_INTEGER, MPI_MAX, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS .or. &
+            any(integer_minimum /= integer_maximum)) then
+          matches = .false.
+          return
+        end if
+        call MPI_Allreduce( &
+          work_values, work_minimum, 1, MPI_INTEGER8, MPI_MIN, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) then
+          matches = .false.
+          return
+        end if
+        call MPI_Allreduce( &
+          work_values, work_maximum, 1, MPI_INTEGER8, MPI_MAX, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS .or. &
+            work_minimum(1) /= work_maximum(1)) then
+          matches = .false.
+          return
+        end if
+      end do
+    end do
+    matches = .true.
+  end subroutine replicated_distribution_matches_2d
 
   subroutine replicated_topology_matches_2d(topology, comm, matches)
     type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
