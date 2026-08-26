@@ -2363,3 +2363,16 @@ from root to child and corrected support from child to root. Retain exact
 root/child field tolerances, limiter minima, owner work, public-clock traffic,
 scheduled regridding, and late-failure rollback at one, two, four, and eight
 ranks in Release and bounds/FPE-checked Debug.
+
+## 0.145.0 compact coarse interface-flux gates
+
+Accumulate one coarse flux register from complete root x/y flux arrays and a
+second from globally indexed rectangles containing only the four coarse/fine
+interface face ranges. Require bitwise-identical corrections and require the
+compact value count to be strictly smaller. Omit one active interface face and
+require rejection with a bitwise-unchanged register.
+
+Run sparse MPI transport through the compact entrypoint while retaining exact
+root/child fields, register reset, limiter minima, owner work, traffic, public
+clock, scheduled-regrid, and rollback gates at one, two, four, and eight ranks
+in Release and bounds/FPE-checked Debug.

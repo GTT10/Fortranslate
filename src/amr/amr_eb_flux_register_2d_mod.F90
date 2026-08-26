@@ -26,6 +26,7 @@ module amr_eb_flux_register_2d_mod
   end type amr_eb_flux_register_2d
 
   public :: initialize_amr_eb_flux_register_2d
+  public :: accumulate_coarse_eb_fluxes_patch_support_2d
   public :: accumulate_coarse_eb_fluxes_2d
   public :: accumulate_fine_eb_fluxes_2d
   public :: reflux_eb_state_patch_support_2d
@@ -110,29 +111,64 @@ contains
     if (allocated(self%correction)) self%correction = 0.0_dp
   end subroutine reset_amr_eb_flux_register_2d
 
-  subroutine accumulate_coarse_eb_fluxes_2d( &
-      register, coarse_geometry, fine_geometry, patch, x_flux, y_flux, dt, ok)
+  subroutine accumulate_coarse_eb_fluxes_patch_support_2d( &
+      register, coarse_geometry, fine_geometry, patch, x_i_lower, &
+      x_j_lower, x_flux, y_i_lower, y_j_lower, y_flux, dt, ok)
     type(amr_eb_flux_register_2d), intent(inout) :: register
     type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
-    real(dp), intent(in) :: x_flux(:, 0:, :), y_flux(:, :, 0:), dt
+    integer, intent(in) :: x_i_lower, x_j_lower
+    integer, intent(in) :: y_i_lower, y_j_lower
+    real(dp), intent(in) :: x_flux(:, x_i_lower:, x_j_lower:)
+    real(dp), intent(in) :: y_flux(:, y_i_lower:, y_j_lower:)
+    real(dp), intent(in) :: dt
     logical, intent(out) :: ok
 
     real(dp), allocatable :: candidate(:, :, :)
     real(dp) :: kappa, scale
-    integer :: i, j
+    integer :: i, j, x_i_upper, x_j_upper, y_i_upper, y_j_upper
 
     ok = .false.
+    x_i_upper = x_i_lower + size(x_flux, 2) - 1
+    x_j_upper = x_j_lower + size(x_flux, 3) - 1
+    y_i_upper = y_i_lower + size(y_flux, 2) - 1
+    y_j_upper = y_j_lower + size(y_flux, 3) - 1
     if (.not. register%is_valid(coarse_geometry, fine_geometry, patch) .or. &
         .not. ieee_is_finite(dt) .or. dt < 0.0_dp .or. &
         size(x_flux, 1) /= register%component_count .or. &
-        size(x_flux, 2) /= coarse_geometry%nx + 1 .or. &
-        size(x_flux, 3) /= coarse_geometry%ny .or. &
         size(y_flux, 1) /= register%component_count .or. &
-        size(y_flux, 2) /= coarse_geometry%nx .or. &
-        size(y_flux, 3) /= coarse_geometry%ny + 1 .or. &
+        size(x_flux, 2) < 1 .or. size(x_flux, 3) < 1 .or. &
+        size(y_flux, 2) < 1 .or. size(y_flux, 3) < 1 .or. &
+        x_i_lower < 0 .or. x_i_upper > coarse_geometry%nx .or. &
+        x_j_lower < 1 .or. x_j_upper > coarse_geometry%ny .or. &
+        y_i_lower < 1 .or. y_i_upper > coarse_geometry%nx .or. &
+        y_j_lower < 0 .or. y_j_upper > coarse_geometry%ny .or. &
         any(.not. ieee_is_finite(x_flux)) .or. &
         any(.not. ieee_is_finite(y_flux))) return
+    if (patch%coarse_i_lower > 1) then
+      if (x_i_lower > patch%coarse_i_lower - 1 .or. &
+          x_i_upper < patch%coarse_i_lower - 1 .or. &
+          x_j_lower > patch%coarse_j_lower .or. &
+          x_j_upper < patch%coarse_j_upper) return
+    end if
+    if (patch%coarse_i_upper < coarse_geometry%nx) then
+      if (x_i_lower > patch%coarse_i_upper .or. &
+          x_i_upper < patch%coarse_i_upper .or. &
+          x_j_lower > patch%coarse_j_lower .or. &
+          x_j_upper < patch%coarse_j_upper) return
+    end if
+    if (patch%coarse_j_lower > 1) then
+      if (y_i_lower > patch%coarse_i_lower .or. &
+          y_i_upper < patch%coarse_i_upper .or. &
+          y_j_lower > patch%coarse_j_lower - 1 .or. &
+          y_j_upper < patch%coarse_j_lower - 1) return
+    end if
+    if (patch%coarse_j_upper < coarse_geometry%ny) then
+      if (y_i_lower > patch%coarse_i_lower .or. &
+          y_i_upper < patch%coarse_i_upper .or. &
+          y_j_lower > patch%coarse_j_upper .or. &
+          y_j_upper < patch%coarse_j_upper) return
+    end if
     allocate(candidate( &
       register%component_count, &
       register%correction_i_lower:register%correction_i_upper, &
@@ -184,6 +220,19 @@ contains
     if (any(.not. ieee_is_finite(candidate))) return
     register%correction = candidate
     ok = .true.
+  end subroutine accumulate_coarse_eb_fluxes_patch_support_2d
+
+  subroutine accumulate_coarse_eb_fluxes_2d( &
+      register, coarse_geometry, fine_geometry, patch, x_flux, y_flux, dt, ok)
+    type(amr_eb_flux_register_2d), intent(inout) :: register
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(in) :: x_flux(:, 0:, :), y_flux(:, :, 0:), dt
+    logical, intent(out) :: ok
+
+    call accumulate_coarse_eb_fluxes_patch_support_2d( &
+      register, coarse_geometry, fine_geometry, patch, 0, 1, x_flux, &
+      1, 0, y_flux, dt, ok)
   end subroutine accumulate_coarse_eb_fluxes_2d
 
   subroutine accumulate_fine_eb_fluxes_2d( &

@@ -1533,3 +1533,17 @@ fine interface flux, refluxes locally, retains the corrected fine field, and
 returns only corrected coarse support. The root owner merges that support in
 ordered child sequence. A remote child transaction therefore contains two
 messages per Euler stage and no fine-state round trip.
+
+## Compact coarse interface-flux accumulation (`0.145.0`)
+
+Coarse EB flux-register accumulation accepts x-face and y-face arrays with
+explicit global lower bounds. Each rectangle need contain only the active
+coarse/fine interface faces: the two vertical face ranges and the two
+horizontal face ranges. Validation rejects a missing interface, an out-of-root
+face bound, or nonfinite data before modifying the register.
+
+The complete-root entrypoint delegates to this support kernel. Sparse
+transport passes patch-local sections of the temporary root flux bundle, so
+the consumer no longer requires level-wide array shapes. The temporary bundle
+is still assembled on the root physics owner; distributing those interface
+fragments directly from root-tile owners is the next ownership boundary.
