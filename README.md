@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.152.0` milestone contains the serial verification suite, eight optional
+The `0.153.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -468,8 +468,10 @@ from their actual parents, synchronizes deepest-first, evaluates the complete
 composite conserved vector, and transactionally migrates fields through a
 whole-tree topology replacement. Same-resolution physical overlap is retained
 only after local EB geometry checks; EOS or conservation failure leaves the
-accepted tree unchanged. This core is not yet connected to the public physics
-time loop or MPI ownership.
+accepted tree unchanged. It also evaluates the active-cell CFL limit on every
+runtime node and scales each local limit by the cumulative refinement product
+before publishing one stable root interval. This core is not yet connected to
+the public physics time loop or MPI ownership.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

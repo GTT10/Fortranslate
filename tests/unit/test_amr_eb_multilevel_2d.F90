@@ -26,6 +26,7 @@ program test_amr_eb_multilevel_2d
     initialize_reactive_amr_eb_patch_tree_2d, &
     synchronize_reactive_amr_eb_patch_tree_2d, &
     rebuild_reactive_amr_eb_patch_tree_2d, &
+    compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_eb_state_2d, &
@@ -35,6 +36,8 @@ program test_amr_eb_multilevel_2d
     advance_three_level_reactive_eb_hydro_2d
   use reactive_eb_amr_2d_driver_mod, only: &
     advance_three_level_reactive_eb_strang_2d
+  use reactive_eb_2d_driver_mod, only: &
+    compute_reactive_eb_cfl_timestep_2d
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
@@ -94,7 +97,8 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: scale, dt, species_integral_sum, species_change
-  logical :: ok, topology_changed
+  real(dp) :: tree_dt, reference_tree_dt, initial_tree_dt, node_dt
+  logical :: ok, topology_changed, reference_ok, node_ok
   character(len=128) :: tree_failure_context
   integer :: i, j, k, nvar
 
@@ -375,6 +379,55 @@ program test_amr_eb_multilevel_2d
     "moving reactive patch-tree physical overlap retention")
 
   reactive_tree_snapshot = reactive_tree
+  call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
+    species, reactive_tree, 0.4_dp, tree_dt, ok)
+  call reference_reactive_tree_cfl_timestep( &
+    species, reactive_tree, 0.4_dp, reference_tree_dt, reference_ok)
+  call require(ok .and. reference_ok .and. &
+    abs(tree_dt - reference_tree_dt) <= &
+      2.0e-12_dp * max(1.0_dp, abs(reference_tree_dt)) .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "arbitrary-depth reactive patch-tree CFL traversal")
+  initial_tree_dt = tree_dt
+
+  primitive(1:5) = [0.31_dp, 3000.0_dp, -1.0_dp, 0.0_dp, 135000.0_dp]
+  call reactive_primitive_to_conserved( &
+    species, primitive, state_cell, temperature_cell, sound_speed, ok)
+  call require(ok, "deepest patch-tree CFL limiting state")
+  reactive_tree%levels(4)%patches(1)%state = spread(spread( &
+    state_cell, 2, size(reactive_tree%levels(4)%patches(1)%state, 2)), &
+    3, size(reactive_tree%levels(4)%patches(1)%state, 3))
+  reactive_tree%levels(4)%patches(1)%temperature = temperature_cell
+  call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
+    species, reactive_tree, 0.4_dp, tree_dt, ok)
+  call reference_reactive_tree_cfl_timestep( &
+    species, reactive_tree, 0.4_dp, reference_tree_dt, reference_ok)
+  call compute_reactive_eb_cfl_timestep_2d( &
+    species, reactive_tree%levels(4)%patches(1)%state, &
+    reactive_tree%levels(4)%patches(1)%temperature, &
+    reactive_tree%topology%relations(3)%children(1)%geometry, &
+    0.4_dp, node_dt, node_ok)
+  call require(ok .and. reference_ok .and. node_ok .and. &
+    tree_dt < initial_tree_dt .and. &
+    abs(tree_dt - reference_tree_dt) <= &
+      2.0e-12_dp * max(1.0_dp, abs(reference_tree_dt)) .and. &
+    abs(tree_dt - real(ratio**3, dp) * node_dt) <= &
+      2.0e-12_dp * max(1.0_dp, abs(tree_dt)), &
+    "cumulative patch-tree subcycle scaling")
+
+  reactive_tree_snapshot = reactive_tree
+  call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
+    species, reactive_tree, ieee_value(0.0_dp, ieee_quiet_nan), tree_dt, ok)
+  call require(.not. ok .and. tree_dt == 0.0_dp .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "invalid patch-tree CFL rollback")
+
+  primitive(1:5) = [0.31_dp, 2.0_dp, -1.0_dp, 0.0_dp, 135000.0_dp]
+  call reactive_primitive_to_conserved( &
+    species, primitive, state_cell, temperature_cell, sound_speed, ok)
+  call require(ok, "restore three-level reference reactive state")
+
+  reactive_tree_snapshot = reactive_tree
   call rebuild_reactive_amr_eb_patch_tree_2d( &
     species, reactive_tree, shifted_tree_plans, ok, topology_changed)
   call require(ok .and. .not. topology_changed .and. &
@@ -607,6 +660,43 @@ program test_amr_eb_multilevel_2d
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 
 contains
+
+  subroutine reference_reactive_tree_cfl_timestep( &
+      local_species, solution, cfl, reference_dt, valid)
+    type(nasa7_species), intent(in) :: local_species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: cfl
+    real(dp), intent(out) :: reference_dt
+    logical, intent(out) :: valid
+
+    type(eb_geometry_2d) :: geometry
+    real(dp) :: level_scale, local_dt
+    logical :: local_ok
+    integer :: level, patch
+
+    reference_dt = huge(1.0_dp)
+    valid = .false.
+    level_scale = 1.0_dp
+    do level = 1, solution%level_count()
+      if (level > 1) level_scale = level_scale * real( &
+        solution%topology%relations(level - 1)%refinement_ratio, dp)
+      do patch = 1, solution%level_patch_count(level - 1)
+        if (level == 1) then
+          geometry = solution%topology%root_geometry
+        else
+          geometry = solution%topology%relations(level - 1)% &
+            children(patch)%geometry
+        end if
+        call compute_reactive_eb_cfl_timestep_2d( &
+          local_species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, geometry, &
+          cfl, local_dt, local_ok)
+        if (.not. local_ok) return
+        reference_dt = min(reference_dt, level_scale * local_dt)
+      end do
+    end do
+    valid = ieee_is_finite(reference_dt) .and. reference_dt > 0.0_dp
+  end subroutine reference_reactive_tree_cfl_timestep
 
   subroutine set_tree_child_plan( &
       plan, parent_patch, i_lower, i_upper, j_lower, j_upper, geometry)

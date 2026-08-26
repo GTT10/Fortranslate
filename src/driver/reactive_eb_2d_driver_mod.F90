@@ -8,6 +8,9 @@ module reactive_eb_2d_driver_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive
+  use reactive_eb_cfl_2d_mod, only: &
+    compute_reactive_eb_cfl_timestep_kernel_2d => &
+      compute_reactive_eb_cfl_timestep_2d
   use reactive_2d_mod, only: &
     initialize_reactive_2d, advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: &
@@ -128,37 +131,8 @@ contains
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
 
-    real(dp), allocatable :: primitive(:)
-    real(dp) :: local_temperature, sound_speed, rate, maximum_rate
-    logical :: local_ok
-    integer :: i, j, active_cells
-
-    dt = 0.0_dp
-    ok = .false.
-    if (.not. geometry%is_valid() .or. cfl <= 0.0_dp .or. cfl > 1.0_dp) return
-    if (size(state, 1) /= reactive_nvar(size(species)) .or. &
-        size(state, 2) /= geometry%nx .or. &
-        size(state, 3) /= geometry%ny .or. &
-        any(shape(temperature) /= [geometry%nx, geometry%ny])) return
-    allocate(primitive(reactive_nprim(size(species))))
-    maximum_rate = 0.0_dp
-    active_cells = 0
-    do j = 1, geometry%ny
-      do i = 1, geometry%nx
-        if (geometry%cell_type(i, j) == eb_covered_cell) cycle
-        active_cells = active_cells + 1
-        call reactive_conserved_to_primitive( &
-          species, state(:, i, j), temperature(i, j), primitive, &
-          local_temperature, sound_speed, local_ok)
-        if (.not. local_ok) return
-        rate = (abs(primitive(2)) + sound_speed) / geometry%dx + &
-          (abs(primitive(3)) + sound_speed) / geometry%dy
-        maximum_rate = max(maximum_rate, rate)
-      end do
-    end do
-    if (active_cells == 0 .or. maximum_rate <= 0.0_dp) return
-    dt = cfl / maximum_rate
-    ok = ieee_is_finite(dt) .and. dt > 0.0_dp
+    call compute_reactive_eb_cfl_timestep_kernel_2d( &
+      species, state, temperature, geometry, cfl, dt, ok)
   end subroutine compute_reactive_eb_cfl_timestep_2d
 
   subroutine reactive_eb_integrals_2d(state, geometry, integrals, ok)

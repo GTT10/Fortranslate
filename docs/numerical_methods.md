@@ -2007,3 +2007,31 @@ around hydrodynamics and inside the chemistry half steps. Missing or mismatched
 transport data, invalid exterior state, reflux failure, or EOS failure rejects
 the whole hierarchy transaction. Three-level and sibling-patch transport are
 not part of this milestone.
+
+## Arbitrary-depth reactive EB patch-tree CFL reduction
+
+For patch `p` on runtime level `l`, the established active-cell EB kernel
+computes
+
+```text
+dt(l,p) = CFL / max_active[(|u| + c)/dx + (|v| + c)/dy].
+```
+
+If relation `q` has refinement ratio `r(q)`, define the number of subcycles from
+level `l` to the root as
+
+```text
+R(1) = 1,  R(l) = product(q=1..l-1, r(q)).
+```
+
+The stable root interval is therefore
+
+```text
+dt_root = min_over_all_nodes[R(l) dt(l,p)].
+```
+
+The traversal includes every branch, ignores covered cells through the shared
+single-node kernel, and rejects a nonfinite control or failed node conversion
+with deterministic zero output. It does not mutate topology, state, or
+temperature. This hyperbolic selector does not yet compose transport limits or
+advance the arbitrary-depth 2D EB tree.

@@ -4,6 +4,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
+  use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
@@ -44,6 +45,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: initialize_reactive_amr_eb_patch_tree_2d
   public :: synchronize_reactive_amr_eb_patch_tree_2d
   public :: rebuild_reactive_amr_eb_patch_tree_2d
+  public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
 
 contains
@@ -321,6 +323,66 @@ contains
     changed = .true.
     if (present(failure_context)) failure_context = "none"
   end subroutine rebuild_reactive_amr_eb_patch_tree_2d
+
+  subroutine compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
+      species, solution, cfl, dt, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: cfl
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    real(dp) :: level_scale, node_dt, scaled_dt
+    integer :: level, patch, refinement_ratio
+    logical :: local_ok
+
+    dt = 0.0_dp
+    ok = .false.
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(cfl) .or. cfl <= 0.0_dp .or. &
+        cfl > 1.0_dp) return
+
+    dt = huge(1.0_dp)
+    level_scale = 1.0_dp
+    do level = 1, solution%level_count()
+      if (level > 1) then
+        refinement_ratio = &
+          solution%topology%relations(level - 1)%refinement_ratio
+        if (level_scale > huge(1.0_dp) / &
+            real(refinement_ratio, dp)) then
+          dt = 0.0_dp
+          return
+        end if
+        level_scale = level_scale * real(refinement_ratio, dp)
+      end if
+      do patch = 1, solution%levels(level)%patch_count()
+        call patch_geometry_at( &
+          solution%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) then
+          dt = 0.0_dp
+          return
+        end if
+        call compute_reactive_eb_cfl_timestep_2d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, geometry, &
+          cfl, node_dt, local_ok)
+        if (.not. local_ok) then
+          dt = 0.0_dp
+          return
+        end if
+        if (node_dt > huge(1.0_dp) / level_scale) then
+          scaled_dt = huge(1.0_dp)
+        else
+          scaled_dt = level_scale * node_dt
+        end if
+        dt = min(dt, scaled_dt)
+      end do
+    end do
+    ok = ieee_is_finite(dt) .and. dt > 0.0_dp
+    if (.not. ok) dt = 0.0_dp
+  end subroutine compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
 
   subroutine composite_integral_reactive_amr_eb_patch_tree_2d( &
       solution, integral, ok)

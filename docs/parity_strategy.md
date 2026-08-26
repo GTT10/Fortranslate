@@ -2482,3 +2482,18 @@ only. Retain serial root/child fields, deterministic overlapping-child
 correction, owner work, public clock, scheduled regridding, conservation, and
 late-failure rollback at one, two, four, and eight ranks in Release and bounds/
 FPE-checked Debug before the complete serial regression.
+
+## 0.153.0 arbitrary-depth reactive EB patch-tree timestep gates
+
+Evaluate a four-level, two-branch numerical EB tree with the established
+single-node active-cell CFL kernel. Independently reduce every node-local limit
+after multiplication by the cumulative refinement product and require the new
+tree selector to match. Make the deepest node uniquely limiting and require the
+published root interval to equal its local interval times all three refinement
+ratios.
+
+Require the selector to leave every state and temperature value unchanged. A
+nonfinite CFL must reject with zero output and the same read-only contract.
+Retain all serial tests in GNU Fortran Release and bounds/FPE-checked Debug, then
+retain the established OpenMPI one-, two-, four-, and eight-rank suite even
+though this milestone adds no MPI communication.
