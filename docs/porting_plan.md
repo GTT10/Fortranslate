@@ -940,6 +940,19 @@ context payload reduction, three messages per remote child per Euler stage,
 and unchanged numerical, work, rollback, and public-clock gates at one, two,
 four, and eight ranks before the complete serial regression.
 
+## 0.144.0 sparse MPI compact child-local reflux gates
+
+Generalize EB reactive reflux to operate on a globally indexed coarse support
+rectangle containing the patch-plus-two footprint. Send that support with the
+fine exterior/register context, execute fine subcycling and reactive reflux on
+the child owner, keep the corrected fine field there, and return only corrected
+coarse support for deterministic root-owner merge.
+
+Require support/full reflux parity, a combined context payload smaller than
+the former root bundle, exactly two messages per remote child per Euler stage,
+and unchanged numerical, owner-work, rollback, and public-clock gates at one,
+two, four, and eight ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

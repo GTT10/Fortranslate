@@ -1916,7 +1916,7 @@ program pelef_mpi_eb_amr_patch_2d
     call assert_all(compact_transport_context_values > 0_int64 .and. &
       compact_transport_context_values < &
         legacy_transport_root_bundle_values, &
-      "MPI EB AMR compact child transport context", rank)
+      "MPI EB AMR compact child reflux context", rank)
   end do
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
