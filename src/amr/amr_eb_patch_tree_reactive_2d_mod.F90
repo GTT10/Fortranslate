@@ -509,16 +509,7 @@ contains
           child_offsets(patch_index + 1) - &
         solution%topology%relations(level)%child_offsets(patch_index)
     end if
-    requires_closure = .false.
-    if (level > 1 .and. child_count > 0) then
-      do child = 1, child_count
-        global_child = first_child + child - 1
-        child_geometry = solution%topology%relations(level)% &
-          children(global_child)%geometry
-        requires_closure = requires_closure .or. &
-          patch_tree_child_interface_requires_closure(child_geometry)
-      end do
-    end if
+    requires_closure = child_count > 0
     if (requires_closure) then
       allocate(integral_before(solution%nvar))
       call composite_reactive_amr_eb_patch_subtree_integral_2d( &
@@ -1086,22 +1077,6 @@ contains
     end do
     ok = .true.
   end subroutine close_reactive_amr_eb_patch_subtree_conservation_2d
-
-  pure logical function patch_tree_child_interface_requires_closure( &
-      geometry) result(requires_closure)
-    type(eb_geometry_2d), intent(in) :: geometry
-    real(dp), parameter :: tolerance = 64.0_dp * epsilon(1.0_dp)
-
-    requires_closure = .false.
-    if (count(geometry%cell_type /= eb_covered_cell) == 0) return
-    requires_closure = &
-      any(abs(geometry%x_face_fraction(0, :) - 1.0_dp) > tolerance) .or. &
-      any(abs(geometry%x_face_fraction(geometry%nx, :) - 1.0_dp) > &
-        tolerance) .or. &
-      any(abs(geometry%y_face_fraction(:, 0) - 1.0_dp) > tolerance) .or. &
-      any(abs(geometry%y_face_fraction(:, geometry%ny) - 1.0_dp) > &
-        tolerance)
-  end function patch_tree_child_interface_requires_closure
 
   pure logical function patch_tree_parent_cell_is_refined( &
       solution, level, patch_index, i, j) result(refined)
