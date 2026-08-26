@@ -2368,3 +2368,21 @@ separate work.
 The adapter does not yet read and redistribute a checkpoint directly into a
 new sparse owner map. Parallel file formats and atomic multi-file CSV rename
 remain separate work.
+
+## Root-only sparse MPI reactive EB AMR checkpoint restart (`0.132.0`)
+
+- [x] public root-to-owner direct sparse hierarchy scatter
+- [x] public root-only formatted checkpoint read adapter
+- [x] no complete numerical read allocation or broadcast on non-root ranks
+- [x] one packed send per remote root tile or fine child
+- [x] exact root-local and communicator-summed restart transfer accounting
+- [x] root and child owner-local field parity after checkpoint round trip
+- [x] collective clock, step, regrid, minimum-timestep, and density metadata
+- [x] empty sparse state, zero metadata, and zero traffic on read failure
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The caller still supplies a replicated geometry and full patch-set template
+whose topology must match the checkpoint. A geometry-only topology descriptor,
+checkpoint-driven dynamic topology reconstruction, and a cross-run rank-count
+redistribution application remain separate work.

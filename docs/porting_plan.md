@@ -702,6 +702,8 @@ Required capabilities:
   adapters with unallocated non-root fields (`0.130.0`)
 - [x] root-selected formatted sparse checkpoint and root/child CSV writers with
   collective I/O status and serial checkpoint compatibility (`0.131.0`)
+- [x] root-only formatted checkpoint read and direct root-to-owner sparse
+  restart scatter with collective metadata rollback (`0.132.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

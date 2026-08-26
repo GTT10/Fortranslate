@@ -2136,3 +2136,19 @@ Checkpoint and CSV paths under a nonexistent directory must fail collectively
 and publish zero traffic. Both adapters run in GNU Fortran Release and
 bounds/FPE-checked Debug configurations before the complete 208-test serial
 regression.
+
+## 0.132.0 root-only sparse MPI reactive EB AMR restart gates
+
+First gather the exclusively owned hierarchy to one root, then scatter those
+root-only arrays directly back to the configured owners. Every owner-local root
+tile and child field must be bitwise identical to the original sparse payload,
+and the stored-value count must remain exact. The selected root reports one send
+per entity owned elsewhere; all other ranks report zero, and the communicator
+sum must match that independent owner-map formula.
+
+Next write and read the formatted checkpoint through the public sparse I/O
+adapters. Require the same owner-local field parity, transfer formula, and exact
+clock metadata at one, two, four, and eight ranks. A missing checkpoint must
+return an empty sparse set, zero clock metadata, and zero traffic collectively.
+The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
+before the complete 208-test serial regression.

@@ -1370,6 +1370,14 @@ failure publish zero. Checkpoints retain the serial schema and can be read by
 the established reader, while CSV publication writes one root file and one
 deterministically named file per child without complete non-root fields.
 
+In `0.132.0`, the inverse boundary reads that checkpoint only on a selected
+root. After geometry and topology compatibility checks, the root copies its
+owned entities and sends one packed state/temperature payload directly to each
+remote root-tile or child owner. Non-root read arrays and patch sets must be
+empty on entry. Clock metadata and the sparse candidate publish only after
+root agreement, successful read, direct scatter, and collective validation;
+failure returns an empty sparse set, zero metadata, and zero traffic.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

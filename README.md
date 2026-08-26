@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.131.0` milestone contains the serial verification suite, eight optional
+The `0.132.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -53,7 +53,10 @@ and one packed point-to-point message is sent per remote entity. This is the
 field-sparse foundation for checkpoint and output adapters. Sparse MPI wrappers
 now connect that boundary to the existing formatted multipatch checkpoint and
 root/child CSV writers. Only the selected writer allocates the complete fields
-or touches the files, and its I/O result is returned collectively.
+or touches the files, and its I/O result is returned collectively. The inverse
+restart boundary reads the formatted checkpoint only on a selected root and
+sends each root tile or child directly to its current owner. Non-root complete
+read buffers stay unallocated and no numerical-field broadcast is used.
 Chemistry now runs directly on those sparse owner allocations. Root tiles and
 children are reacted locally with covered cells masked; only post-reaction
 average-down communicates numerical state. Each child owner sends one
@@ -620,6 +623,9 @@ The AMR layer provides:
 - writer-root-only sparse MPI EB formatted checkpoint and root/child CSV
   publication, serial checkpoint round-trip compatibility, collective I/O
   status, and exact successful-transfer accounting;
+- root-only formatted checkpoint read with direct root-to-owner sparse restart
+  scatter, exact per-remote-entity traffic, rank-local field parity, and
+  collective metadata/I/O failure rollback;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;
