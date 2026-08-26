@@ -60,6 +60,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_root_halo_tag = 2711
   integer, parameter :: sparse_root_tile_result_tag = 2712
   integer, parameter, public :: mpi_amr_eb_root_tile_hydro_halo_cells = 6
+  integer, parameter, public :: mpi_amr_eb_root_tile_transport_halo_cells = 6
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
@@ -2362,6 +2363,328 @@ contains
     local_computed_cells = computed_cells
   end subroutine advance_sparse_owned_reactive_eb_root_tiles_hydro_2d
 
+  subroutine advance_sparse_owned_reactive_eb_root_tiles_transport_euler_2d( &
+      species, transport, distribution, sparse_patch_set, geometry, dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_target_volume_fraction, state_redist_max_order, &
+      root_state, root_temperature, updated_state, updated_temperature, &
+      x_flux, y_flux, minimum_theta, local_transfers, ok, &
+      local_tile_advances, local_computed_cells)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: dt, state_redist_target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: state_redist_max_order
+    real(dp), allocatable, intent(out) :: root_state(:, :, :)
+    real(dp), allocatable, intent(out) :: root_temperature(:, :)
+    real(dp), allocatable, intent(out) :: updated_state(:, :, :)
+    real(dp), allocatable, intent(out) :: updated_temperature(:, :)
+    real(dp), allocatable, intent(out) :: x_flux(:, :, :)
+    real(dp), allocatable, intent(out) :: y_flux(:, :, :)
+    real(dp), intent(out) :: minimum_theta
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+    integer, intent(out) :: local_tile_advances, local_computed_cells
+
+    type(eb_geometry_2d) :: band_geometry
+    type(MPI_Status) :: status
+    real(dp), allocatable :: band_rhs(:, :, :), band_state(:, :, :)
+    real(dp), allocatable :: band_temperature(:, :)
+    real(dp), allocatable :: band_updated_state(:, :, :)
+    real(dp), allocatable :: band_updated_temperature(:, :)
+    real(dp), allocatable :: band_x_flux(:, :, :), band_y_flux(:, :, :)
+    real(dp), allocatable :: payload(:)
+    real(dp) :: band_theta, theta
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: band_j_lower, band_j_upper, band_rows, cell_count
+    integer :: computed_cells, face_count, face_j_lower, face_j_upper
+    integer :: halo_cell_count, halo_state_count, halo_value_count
+    integer :: ierr, local_face_j_lower, local_face_j_upper
+    integer :: local_j_lower, local_j_upper, nvar, offset, overlap_j_lower
+    integer :: overlap_j_upper, root_owner, rows, source, source_owner
+    integer :: state_count, target, target_owner, tile_advances
+    integer :: value_count, x_flux_count, y_flux_count
+
+    ok = .false.
+    minimum_theta = 1.0_dp
+    local_tile_advances = 0
+    local_computed_cells = 0
+    tile_advances = 0
+    computed_cells = 0
+    theta = 1.0_dp
+    nvar = reactive_nvar(size(species))
+    root_owner = distribution%root_level_owner()
+    local_ok = nvar >= 1 .and. sparse_patch_set%nvar == nvar .and. &
+      root_owner >= 0 .and. root_owner < distribution%nranks .and. &
+      allocated(sparse_patch_set%root_tiles) .and. &
+      size(sparse_patch_set%root_tiles) == distribution%root_tile_count()
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    if (distribution%rank == root_owner) then
+      allocate(root_state(nvar, geometry%nx, geometry%ny), source=0.0_dp)
+      allocate(root_temperature(geometry%nx, geometry%ny), source=0.0_dp)
+      allocate(updated_state(nvar, geometry%nx, geometry%ny), source=0.0_dp)
+      allocate(updated_temperature(geometry%nx, geometry%ny), &
+        source=0.0_dp)
+      allocate(x_flux(nvar, 0:geometry%nx, geometry%ny), source=0.0_dp)
+      allocate(y_flux(nvar, geometry%nx, 0:geometry%ny), source=0.0_dp)
+    end if
+
+    do target = 1, distribution%root_tile_count()
+      target_owner = distribution%root_tiles(target)%owner
+      band_j_lower = max(1, distribution%root_tiles(target)%j_lower - &
+        mpi_amr_eb_root_tile_transport_halo_cells)
+      band_j_upper = min(geometry%ny, &
+        distribution%root_tiles(target)%j_upper + &
+          mpi_amr_eb_root_tile_transport_halo_cells)
+      band_rows = band_j_upper - band_j_lower + 1
+      entity_ok = .true.
+      if (distribution%rank == target_owner) then
+        call extract_eb_geometry_y_band_2d( &
+          geometry, band_j_lower, band_j_upper, band_geometry, entity_ok)
+        if (entity_ok) then
+          allocate(band_state(nvar, geometry%nx, band_rows), source=0.0_dp)
+          allocate(band_temperature(geometry%nx, band_rows), source=0.0_dp)
+          allocate(band_rhs, mold=band_state)
+          allocate(band_updated_state, mold=band_state)
+          allocate(band_updated_temperature, mold=band_temperature)
+          allocate(band_x_flux(nvar, 0:geometry%nx, band_rows))
+          allocate(band_y_flux(nvar, geometry%nx, 0:band_rows))
+        end if
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+
+      do source = 1, distribution%root_tile_count()
+        overlap_j_lower = max( &
+          band_j_lower, distribution%root_tiles(source)%j_lower)
+        overlap_j_upper = min( &
+          band_j_upper, distribution%root_tiles(source)%j_upper)
+        if (overlap_j_upper < overlap_j_lower) cycle
+        source_owner = distribution%root_tiles(source)%owner
+        local_j_lower = overlap_j_lower - &
+          distribution%root_tiles(source)%j_lower + 1
+        local_j_upper = overlap_j_upper - &
+          distribution%root_tiles(source)%j_lower + 1
+        if (source_owner == target_owner) then
+          if (distribution%rank == target_owner) then
+            band_state(:, :, &
+              overlap_j_lower - band_j_lower + 1: &
+                overlap_j_upper - band_j_lower + 1) = &
+              sparse_patch_set%root_tiles(source)%state( &
+                :, :, local_j_lower:local_j_upper)
+            band_temperature(:, &
+              overlap_j_lower - band_j_lower + 1: &
+                overlap_j_upper - band_j_lower + 1) = &
+              sparse_patch_set%root_tiles(source)%temperature( &
+                :, local_j_lower:local_j_upper)
+          end if
+          cycle
+        end if
+
+        halo_cell_count = geometry%nx * &
+          (overlap_j_upper - overlap_j_lower + 1)
+        halo_state_count = nvar * halo_cell_count
+        halo_value_count = halo_state_count + halo_cell_count
+        if (distribution%rank == source_owner) then
+          allocate(payload(halo_value_count))
+          payload(1:halo_state_count) = reshape( &
+            sparse_patch_set%root_tiles(source)%state( &
+              :, :, local_j_lower:local_j_upper), [halo_state_count])
+          payload(halo_state_count + 1:halo_value_count) = reshape( &
+            sparse_patch_set%root_tiles(source)%temperature( &
+              :, local_j_lower:local_j_upper), [halo_cell_count])
+          call MPI_Send( &
+            payload, halo_value_count, MPI_DOUBLE_PRECISION, target_owner, &
+            sparse_root_halo_tag, distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          local_transfers = local_transfers + 1
+          deallocate(payload)
+        else if (distribution%rank == target_owner) then
+          allocate(payload(halo_value_count))
+          call MPI_Recv( &
+            payload, halo_value_count, MPI_DOUBLE_PRECISION, source_owner, &
+            sparse_root_halo_tag, distribution%comm, status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          band_state(:, :, &
+            overlap_j_lower - band_j_lower + 1: &
+              overlap_j_upper - band_j_lower + 1) = reshape( &
+            payload(1:halo_state_count), &
+            [nvar, geometry%nx, overlap_j_upper - overlap_j_lower + 1])
+          band_temperature(:, &
+            overlap_j_lower - band_j_lower + 1: &
+              overlap_j_upper - band_j_lower + 1) = reshape( &
+            payload(halo_state_count + 1:halo_value_count), &
+            [geometry%nx, overlap_j_upper - overlap_j_lower + 1])
+          deallocate(payload)
+        end if
+      end do
+
+      entity_ok = .true.
+      if (distribution%rank == target_owner) entity_ok = &
+        all(ieee_is_finite(band_state)) .and. &
+        all(ieee_is_finite(band_temperature))
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      if (distribution%rank == target_owner) then
+        call reactive_eb_transport_fluxes_rhs_2d( &
+          species, transport, band_state, band_temperature, band_geometry, &
+          dt, viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+          band_rhs, band_x_flux, band_y_flux, band_theta, entity_ok)
+        if (entity_ok) call advance_reactive_eb_state_redistributed_2d( &
+          species, band_state, band_temperature, band_geometry, band_rhs, dt, &
+          band_updated_state, band_updated_temperature, entity_ok, &
+          state_redist_target_volume_fraction, state_redist_max_order)
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+
+      rows = distribution%root_tiles(target)%j_upper - &
+        distribution%root_tiles(target)%j_lower + 1
+      cell_count = geometry%nx * rows
+      state_count = nvar * cell_count
+      x_flux_count = nvar * (geometry%nx + 1) * rows
+      face_j_lower = distribution%root_tiles(target)%j_lower - 1
+      face_j_upper = distribution%root_tiles(target)%j_upper - 1
+      if (distribution%root_tiles(target)%j_upper == geometry%ny) &
+        face_j_upper = geometry%ny
+      face_count = face_j_upper - face_j_lower + 1
+      y_flux_count = nvar * geometry%nx * face_count
+      value_count = 2 * state_count + 2 * cell_count + &
+        x_flux_count + y_flux_count
+      local_j_lower = distribution%root_tiles(target)%j_lower - &
+        band_j_lower + 1
+      local_j_upper = distribution%root_tiles(target)%j_upper - &
+        band_j_lower + 1
+      local_face_j_lower = face_j_lower - band_j_lower + 1
+      local_face_j_upper = face_j_upper - band_j_lower + 1
+      if (target_owner == root_owner) then
+        if (distribution%rank == root_owner) then
+          root_state(:, :, distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper) = &
+            band_state(:, :, local_j_lower:local_j_upper)
+          root_temperature(:, distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper) = &
+            band_temperature(:, local_j_lower:local_j_upper)
+          updated_state(:, :, distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper) = &
+            band_updated_state(:, :, local_j_lower:local_j_upper)
+          updated_temperature(:, &
+            distribution%root_tiles(target)%j_lower: &
+              distribution%root_tiles(target)%j_upper) = &
+            band_updated_temperature(:, local_j_lower:local_j_upper)
+          x_flux(:, :, distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper) = &
+            band_x_flux(:, :, local_j_lower:local_j_upper)
+          y_flux(:, :, face_j_lower:face_j_upper) = &
+            band_y_flux(:, :, local_face_j_lower:local_face_j_upper)
+        end if
+      else if (distribution%rank == target_owner) then
+        allocate(payload(value_count))
+        offset = 0
+        payload(offset + 1:offset + state_count) = reshape( &
+          band_state(:, :, local_j_lower:local_j_upper), [state_count])
+        offset = offset + state_count
+        payload(offset + 1:offset + cell_count) = reshape( &
+          band_temperature(:, local_j_lower:local_j_upper), [cell_count])
+        offset = offset + cell_count
+        payload(offset + 1:offset + state_count) = reshape( &
+          band_updated_state(:, :, local_j_lower:local_j_upper), &
+          [state_count])
+        offset = offset + state_count
+        payload(offset + 1:offset + cell_count) = reshape( &
+          band_updated_temperature(:, local_j_lower:local_j_upper), &
+          [cell_count])
+        offset = offset + cell_count
+        payload(offset + 1:offset + x_flux_count) = reshape( &
+          band_x_flux(:, :, local_j_lower:local_j_upper), [x_flux_count])
+        offset = offset + x_flux_count
+        payload(offset + 1:offset + y_flux_count) = reshape( &
+          band_y_flux(:, :, local_face_j_lower:local_face_j_upper), &
+          [y_flux_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, root_owner, &
+          sparse_root_tile_result_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+        deallocate(payload)
+      else if (distribution%rank == root_owner) then
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, target_owner, &
+          sparse_root_tile_result_tag, distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        offset = 0
+        root_state(:, :, distribution%root_tiles(target)%j_lower: &
+          distribution%root_tiles(target)%j_upper) = reshape( &
+          payload(offset + 1:offset + state_count), &
+          [nvar, geometry%nx, rows])
+        offset = offset + state_count
+        root_temperature(:, distribution%root_tiles(target)%j_lower: &
+          distribution%root_tiles(target)%j_upper) = reshape( &
+          payload(offset + 1:offset + cell_count), [geometry%nx, rows])
+        offset = offset + cell_count
+        updated_state(:, :, distribution%root_tiles(target)%j_lower: &
+          distribution%root_tiles(target)%j_upper) = reshape( &
+          payload(offset + 1:offset + state_count), &
+          [nvar, geometry%nx, rows])
+        offset = offset + state_count
+        updated_temperature(:, &
+          distribution%root_tiles(target)%j_lower: &
+            distribution%root_tiles(target)%j_upper) = reshape( &
+          payload(offset + 1:offset + cell_count), [geometry%nx, rows])
+        offset = offset + cell_count
+        x_flux(:, :, distribution%root_tiles(target)%j_lower: &
+          distribution%root_tiles(target)%j_upper) = reshape( &
+          payload(offset + 1:offset + x_flux_count), &
+          [nvar, geometry%nx + 1, rows])
+        offset = offset + x_flux_count
+        y_flux(:, :, face_j_lower:face_j_upper) = reshape( &
+          payload(offset + 1:offset + y_flux_count), &
+          [nvar, geometry%nx, face_count])
+        deallocate(payload)
+      end if
+
+      if (distribution%rank == target_owner) then
+        tile_advances = tile_advances + 1
+        computed_cells = computed_cells + geometry%nx * band_rows
+        theta = min(theta, band_theta)
+        deallocate( &
+          band_state, band_temperature, band_rhs, band_updated_state, &
+          band_updated_temperature, band_x_flux, band_y_flux)
+      end if
+    end do
+
+    local_ok = ieee_is_finite(theta) .and. theta >= 0.0_dp .and. &
+      theta <= 1.0_dp
+    if (distribution%rank == root_owner) local_ok = local_ok .and. &
+      all(ieee_is_finite(root_state)) .and. &
+      all(ieee_is_finite(root_temperature)) .and. &
+      all(ieee_is_finite(updated_state)) .and. &
+      all(ieee_is_finite(updated_temperature)) .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    ok = .true.
+    minimum_theta = theta
+    local_tile_advances = tile_advances
+    local_computed_cells = computed_cells
+  end subroutine advance_sparse_owned_reactive_eb_root_tiles_transport_euler_2d
+
   subroutine distribute_sparse_root_bundle_to_child_owners_2d( &
       distribution, coarse_geometry, root_state, root_temperature, &
       updated_state, updated_temperature, x_flux, y_flux, local_transfers, &
@@ -3560,7 +3883,8 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, state_redist_max_order, ok, &
       local_euler_advances, minimum_theta, &
-      state_redist_target_volume_fraction, local_root_transfers)
+      state_redist_target_volume_fraction, local_root_transfers, &
+      local_root_transport_cells)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
@@ -3577,18 +3901,21 @@ contains
     real(dp), intent(out), optional :: minimum_theta
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
     integer, intent(out), optional :: local_root_transfers
+    integer, intent(out), optional :: local_root_transport_cells
 
     type(eb_geometry_2d) :: root_tile_geometry
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate, euler, stage, start
     real(dp) :: selected_target, theta_one, theta_two
     logical :: accepted, entity_ok, global_ok, local_ok
     integer :: advances_one, advances_two, child, nvar, owner, tile
+    integer :: root_transport_cells_one, root_transport_cells_two
     integer :: transfers_one, transfers_two
 
     ok = .false.
     if (present(local_euler_advances)) local_euler_advances = 0
     if (present(minimum_theta)) minimum_theta = 1.0_dp
     if (present(local_root_transfers)) local_root_transfers = 0
+    if (present(local_root_transport_cells)) local_root_transport_cells = 0
     selected_target = 0.5_dp
     if (present(state_redist_target_volume_fraction)) &
       selected_target = state_redist_target_volume_fraction
@@ -3619,7 +3946,7 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, state_redist_max_order, &
       selected_target, stage, theta_one, local_ok, advances_one, &
-      transfers_one)
+      transfers_one, root_transport_cells_one)
     if (.not. local_ok) return
     call advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
       species, transport, distribution, stage, coarse_geometry, &
@@ -3627,7 +3954,7 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, state_redist_max_order, &
       selected_target, euler, theta_two, local_ok, advances_two, &
-      transfers_two)
+      transfers_two, root_transport_cells_two)
     if (.not. local_ok) return
 
     candidate = start
@@ -3685,6 +4012,9 @@ contains
     if (present(minimum_theta)) minimum_theta = min(theta_one, theta_two)
     if (present(local_root_transfers)) &
       local_root_transfers = transfers_one + transfers_two
+    if (present(local_root_transport_cells)) &
+      local_root_transport_cells = &
+        root_transport_cells_one + root_transport_cells_two
   end subroutine advance_sparse_owned_reactive_eb_patch_set_transport_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
@@ -3693,7 +4023,8 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, state_redist_max_order, &
       target_volume_fraction, new_sparse_patch_set, minimum_theta, ok, &
-      local_euler_advances, local_root_transfers)
+      local_euler_advances, local_root_transfers, &
+      local_root_transport_cells)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
@@ -3711,6 +4042,7 @@ contains
     logical, intent(out) :: ok
     integer, intent(out) :: local_euler_advances
     integer, intent(out) :: local_root_transfers
+    integer, intent(out) :: local_root_transport_cells
 
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
@@ -3719,7 +4051,6 @@ contains
     real(dp), allocatable :: coarse_candidate_temperature(:, :)
     real(dp), allocatable :: coarse_corrected(:, :, :)
     real(dp), allocatable :: coarse_corrected_temperature(:, :)
-    real(dp), allocatable :: coarse_rhs(:, :, :)
     real(dp), allocatable :: coarse_work(:, :, :)
     real(dp), allocatable :: coarse_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :)
@@ -3733,12 +4064,14 @@ contains
     real(dp) :: alpha, coarse_theta, fine_dt, fine_theta, local_theta
     logical :: accepted, cut_interface, entity_ok, global_ok, local_ok
     integer :: advances, child, i, ierr, j, nvar, owner, ratio
-    integer :: root_owner, substep, transfers
+    integer :: root_owner, root_tile_advances, root_transport_cells
+    integer :: substep, transfers
 
     new_sparse_patch_set = sparse_patch_set
     minimum_theta = 1.0_dp
     local_euler_advances = 0
     local_root_transfers = 0
+    local_root_transport_cells = 0
     ok = .false.
     advances = 0
     transfers = 0
@@ -3746,45 +4079,25 @@ contains
     nvar = reactive_nvar(size(species))
     candidate = sparse_patch_set
 
-    root_owner = distribution%root_level_owner()
-    call gather_sparse_root_to_owner_2d( &
-      distribution, candidate, coarse_geometry, root_start, &
-      root_start_temperature, transfers, local_ok)
-    if (.not. local_ok) return
     allocate(integral_before(nvar))
     call composite_sparse_owned_reactive_eb_patch_set_integral_2d( &
       distribution, candidate, coarse_geometry, patch_set_template, &
       integral_before, local_ok)
     if (.not. local_ok) return
 
-    if (distribution%rank == root_owner) then
-      allocate(coarse_candidate, mold=root_start)
-      allocate(coarse_candidate_temperature, mold=root_start_temperature)
-      allocate(coarse_rhs, mold=root_start)
-      allocate(coarse_x_flux( &
-        nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
-      allocate(coarse_y_flux( &
-        nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
-    end if
-    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
-    if (distribution%rank == root_owner .and. entity_ok) then
-      call reactive_eb_transport_fluxes_rhs_2d( &
-        species, transport, root_start, root_start_temperature, &
-        coarse_geometry, dt, viscosity_enabled, thermal_conduction_enabled, &
-        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
-        coarse_rhs, coarse_x_flux, coarse_y_flux, coarse_theta, entity_ok)
-      if (entity_ok) call advance_reactive_eb_state_redistributed_2d( &
-        species, root_start, root_start_temperature, coarse_geometry, &
-        coarse_rhs, dt, coarse_candidate, coarse_candidate_temperature, &
-        entity_ok, target_volume_fraction, state_redist_max_order)
-      if (entity_ok) then
-        advances = advances + 1
-        local_theta = min(local_theta, coarse_theta)
-      end if
-    end if
-    call all_ranks_accept_eb_2d( &
-      distribution, entity_ok, accepted, global_ok)
-    if (.not. global_ok .or. .not. accepted) return
+    root_owner = distribution%root_level_owner()
+    call advance_sparse_owned_reactive_eb_root_tiles_transport_euler_2d( &
+      species, transport, distribution, candidate, coarse_geometry, dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, state_redist_max_order, root_start, &
+      root_start_temperature, coarse_candidate, &
+      coarse_candidate_temperature, coarse_x_flux, coarse_y_flux, &
+      coarse_theta, transfers, local_ok, root_tile_advances, &
+      root_transport_cells)
+    if (.not. local_ok) return
+    advances = advances + root_tile_advances
+    local_theta = min(local_theta, coarse_theta)
     call distribute_sparse_root_bundle_to_child_owners_2d( &
       distribution, coarse_geometry, root_start, root_start_temperature, &
       coarse_candidate, coarse_candidate_temperature, coarse_x_flux, &
@@ -3955,6 +4268,7 @@ contains
     new_sparse_patch_set = candidate
     local_euler_advances = advances
     local_root_transfers = transfers
+    local_root_transport_cells = root_transport_cells
     ok = .true.
   end subroutine advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d
 
