@@ -72,6 +72,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_child_coarse_flux_support_tag = 2715
   integer, parameter :: sparse_child_state_support_tag = 2716
   integer, parameter :: sparse_child_state_correction_tag = 2717
+  integer, parameter :: sparse_child_hydro_context_tag = 2718
   integer, parameter, public :: mpi_amr_eb_root_tile_hydro_halo_cells = 6
   integer, parameter, public :: mpi_amr_eb_root_tile_transport_halo_cells = 6
 
@@ -3735,10 +3736,10 @@ contains
     offset = offset + count
   end subroutine unpack_sparse_transport_exterior_2d
 
-  subroutine transfer_sparse_child_transport_context_2d( &
+  subroutine transfer_sparse_child_hydro_context_2d( &
       distribution, coarse_geometry, fine_geometry, patch, component_count, &
       source, destination, context, support_state, &
-      support_temperature, local_transfers, ok)
+      support_temperature, x_flux, y_flux, local_transfers, ok)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
     type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
@@ -3746,17 +3747,21 @@ contains
     type(reactive_eb_patch_exterior_context_2d), intent(inout) :: context
     real(dp), allocatable, intent(inout) :: support_state(:, :, :)
     real(dp), allocatable, intent(inout) :: support_temperature(:, :)
+    real(dp), allocatable, intent(inout) :: x_flux(:, :, :)
+    real(dp), allocatable, intent(inout) :: y_flux(:, :, :)
     integer, intent(inout) :: local_transfers
     logical, intent(out) :: ok
 
     type(MPI_Status) :: status
     real(dp), allocatable :: payload(:)
     logical :: accepted, global_ok, local_ok, participant
-    integer(int64) :: context_value_count
+    integer(int64) :: context_value_count, flux_value_count
     integer :: ierr, offset
     integer :: state_count, support_cell_count
     integer :: support_i_lower, support_i_upper
     integer :: support_j_lower, support_j_upper, value_count
+    integer :: x_count, x_i_lower, x_i_upper, x_j_lower, x_j_upper
+    integer :: y_count, y_i_lower, y_i_upper, y_j_lower, y_j_upper
 
     ok = .false.
     local_ok = component_count >= 1 .and. source >= 0 .and. &
@@ -3769,9 +3774,18 @@ contains
     support_i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 2)
     support_j_lower = max(1, patch%coarse_j_lower - 2)
     support_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 2)
+    x_i_lower = patch%coarse_i_lower - 1
+    x_i_upper = patch%coarse_i_upper
+    x_j_lower = patch%coarse_j_lower
+    x_j_upper = patch%coarse_j_upper
+    y_i_lower = patch%coarse_i_lower
+    y_i_upper = patch%coarse_i_upper
+    y_j_lower = patch%coarse_j_lower - 1
+    y_j_upper = patch%coarse_j_upper
     if (distribution%rank == source .and. local_ok) local_ok = &
       context%is_valid(fine_geometry, component_count) .and. &
-      allocated(support_state) .and. allocated(support_temperature)
+      allocated(support_state) .and. allocated(support_temperature) .and. &
+      allocated(x_flux) .and. allocated(y_flux)
     if (distribution%rank == source .and. local_ok) local_ok = &
       all(shape(support_state) == &
         [component_count, support_i_upper - support_i_lower + 1, &
@@ -3784,7 +3798,18 @@ contains
       lbound(support_temperature, 1) == support_i_lower .and. &
       lbound(support_temperature, 2) == support_j_lower .and. &
       all(ieee_is_finite(support_state)) .and. &
-      all(ieee_is_finite(support_temperature))
+      all(ieee_is_finite(support_temperature)) .and. &
+      all(shape(x_flux) == &
+        [component_count, x_i_upper - x_i_lower + 1, &
+         x_j_upper - x_j_lower + 1]) .and. &
+      all(shape(y_flux) == &
+        [component_count, y_i_upper - y_i_lower + 1, &
+         y_j_upper - y_j_lower + 1]) .and. &
+      lbound(x_flux, 2) == x_i_lower .and. &
+      lbound(x_flux, 3) == x_j_lower .and. &
+      lbound(y_flux, 2) == y_i_lower .and. &
+      lbound(y_flux, 3) == y_j_lower .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
@@ -3795,9 +3820,17 @@ contains
     context_value_count = &
       mpi_amr_eb_child_transport_state_context_value_count_2d( &
         component_count, coarse_geometry, fine_geometry, patch)
-    if (context_value_count < 1_int64 .or. &
-        context_value_count > int(huge(value_count), int64)) return
-    value_count = int(context_value_count)
+    flux_value_count = &
+      mpi_amr_eb_child_coarse_flux_support_value_count_2d( &
+        component_count, coarse_geometry, fine_geometry, patch)
+    if (context_value_count < 1_int64 .or. flux_value_count < 1_int64 .or. &
+        context_value_count + flux_value_count > &
+          int(huge(value_count), int64)) return
+    value_count = int(context_value_count + flux_value_count)
+    x_count = component_count * (x_i_upper - x_i_lower + 1) * &
+      (x_j_upper - x_j_lower + 1)
+    y_count = component_count * (y_i_upper - y_i_lower + 1) * &
+      (y_j_upper - y_j_lower + 1)
     if (source /= destination) then
       if (distribution%rank == source) then
         allocate(payload(value_count))
@@ -3809,11 +3842,15 @@ contains
         payload(offset + 1:offset + state_count) = reshape( &
           support_state, [state_count])
         offset = offset + state_count
-        payload(offset + 1:value_count) = reshape( &
+        payload(offset + 1:offset + support_cell_count) = reshape( &
           support_temperature, [support_cell_count])
+        offset = offset + support_cell_count
+        payload(offset + 1:offset + x_count) = reshape(x_flux, [x_count])
+        offset = offset + x_count
+        payload(offset + 1:value_count) = reshape(y_flux, [y_count])
         call MPI_Send( &
           payload, value_count, MPI_DOUBLE_PRECISION, destination, &
-          sparse_child_transport_context_tag, distribution%comm, ierr)
+          sparse_child_hydro_context_tag, distribution%comm, ierr)
         if (ierr /= MPI_SUCCESS) return
         local_transfers = local_transfers + 1
       else if (distribution%rank == destination) then
@@ -3824,10 +3861,14 @@ contains
           support_j_lower:support_j_upper))
         allocate(support_temperature( &
           support_i_lower:support_i_upper, support_j_lower:support_j_upper))
+        allocate(x_flux( &
+          component_count, x_i_lower:x_i_upper, x_j_lower:x_j_upper))
+        allocate(y_flux( &
+          component_count, y_i_lower:y_i_upper, y_j_lower:y_j_upper))
         allocate(payload(value_count))
         call MPI_Recv( &
           payload, value_count, MPI_DOUBLE_PRECISION, source, &
-          sparse_child_transport_context_tag, distribution%comm, status, &
+          sparse_child_hydro_context_tag, distribution%comm, status, &
           ierr)
         if (ierr /= MPI_SUCCESS) return
         offset = 0
@@ -3839,13 +3880,20 @@ contains
           payload(offset + 1:offset + state_count), shape(support_state))
         offset = offset + state_count
         support_temperature = reshape( &
-          payload(offset + 1:value_count), shape(support_temperature))
+          payload(offset + 1:offset + support_cell_count), &
+          shape(support_temperature))
+        offset = offset + support_cell_count
+        x_flux = reshape( &
+          payload(offset + 1:offset + x_count), shape(x_flux))
+        offset = offset + x_count
+        y_flux = reshape(payload(offset + 1:value_count), shape(y_flux))
       end if
     end if
     local_ok = .true.
     if (participant) local_ok = &
       context%is_valid(fine_geometry, component_count) .and. &
-      allocated(support_state) .and. allocated(support_temperature)
+      allocated(support_state) .and. allocated(support_temperature) .and. &
+      allocated(x_flux) .and. allocated(y_flux)
     if (participant .and. local_ok) local_ok = &
       all(shape(support_state) == &
         [component_count, support_i_upper - support_i_lower + 1, &
@@ -3858,11 +3906,22 @@ contains
       lbound(support_temperature, 1) == support_i_lower .and. &
       lbound(support_temperature, 2) == support_j_lower .and. &
       all(ieee_is_finite(support_state)) .and. &
-      all(ieee_is_finite(support_temperature))
+      all(ieee_is_finite(support_temperature)) .and. &
+      all(shape(x_flux) == &
+        [component_count, x_i_upper - x_i_lower + 1, &
+         x_j_upper - x_j_lower + 1]) .and. &
+      all(shape(y_flux) == &
+        [component_count, y_i_upper - y_i_lower + 1, &
+         y_j_upper - y_j_lower + 1]) .and. &
+      lbound(x_flux, 2) == x_i_lower .and. &
+      lbound(x_flux, 3) == x_j_lower .and. &
+      lbound(y_flux, 2) == y_i_lower .and. &
+      lbound(y_flux, 3) == y_j_lower .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     ok = global_ok .and. accepted
-  end subroutine transfer_sparse_child_transport_context_2d
+  end subroutine transfer_sparse_child_hydro_context_2d
 
   subroutine transfer_sparse_child_reflux_support_2d( &
       distribution, coarse_geometry, fine_geometry, patch, component_count, &
@@ -4775,13 +4834,18 @@ contains
 
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
+    type(reactive_eb_patch_exterior_context_2d) :: exterior_context
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
     real(dp), allocatable :: coarse_corrected(:, :, :)
     real(dp), allocatable :: coarse_corrected_temperature(:, :)
+    real(dp), allocatable :: coarse_support(:, :, :)
+    real(dp), allocatable :: coarse_support_temperature(:, :)
     real(dp), allocatable :: coarse_work(:, :, :)
     real(dp), allocatable :: coarse_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :)
     real(dp), allocatable :: coarse_y_flux(:, :, :)
+    real(dp), allocatable :: coarse_x_flux_support(:, :, :)
+    real(dp), allocatable :: coarse_y_flux_support(:, :, :)
     real(dp), allocatable :: fine_work(:, :, :)
     real(dp), allocatable :: fine_work_temperature(:, :)
     real(dp), allocatable :: fine_x_flux(:, :, :)
@@ -4797,6 +4861,10 @@ contains
     integer :: integer_maximum(2), integer_minimum(2)
     integer :: nvar, owner, ratio, root_hydro_cells, root_tile_advances
     integer :: root_owner, substep, transfers
+    integer :: flux_x_i_lower, flux_x_j_lower
+    integer :: flux_y_i_lower, flux_y_j_lower
+    integer :: support_i_lower, support_i_upper
+    integer :: support_j_lower, support_j_upper
     integer :: string_codes(32, 3), string_maximum(32, 3)
     integer :: string_minimum(32, 3)
 
@@ -4880,43 +4948,112 @@ contains
       transfers, local_ok, root_tile_advances, root_hydro_cells)
     if (.not. local_ok) return
     advances = advances + root_tile_advances
-    call distribute_sparse_root_bundle_to_child_owners_2d( &
-      distribution, coarse_geometry, root_start, root_start_temperature, &
-      root_hydro, root_hydro_temperature, coarse_x_flux, coarse_y_flux, &
-      transfers, local_ok)
-    if (.not. local_ok) return
     if (distribution%rank == root_owner) then
       allocate(coarse_corrected, source=root_hydro)
       allocate(coarse_corrected_temperature, source=root_hydro_temperature)
     end if
     do child = 1, distribution%child_count()
+      if (allocated(coarse_support)) deallocate(coarse_support)
+      if (allocated(coarse_support_temperature)) &
+        deallocate(coarse_support_temperature)
+      if (allocated(coarse_x_flux_support)) deallocate(coarse_x_flux_support)
+      if (allocated(coarse_y_flux_support)) deallocate(coarse_y_flux_support)
+      if (allocated(coarse_work)) deallocate(coarse_work)
+      if (allocated(coarse_work_temperature)) &
+        deallocate(coarse_work_temperature)
+      if (allocated(fine_work)) deallocate(fine_work)
+      if (allocated(fine_work_temperature)) &
+        deallocate(fine_work_temperature)
+      if (allocated(fine_x_flux)) deallocate(fine_x_flux)
+      if (allocated(fine_y_flux)) deallocate(fine_y_flux)
+      exterior_context = reactive_eb_patch_exterior_context_2d()
+      flux_register = amr_eb_flux_register_2d()
       owner = distribution%child_owner(child)
-      call transfer_sparse_root_correction_2d( &
-        distribution, coarse_geometry, nvar, root_owner, owner, &
-        sparse_root_correction_out_tag, coarse_corrected, &
-        coarse_corrected_temperature, transfers, local_ok)
-      if (.not. local_ok) return
+      support_i_lower = max( &
+        1, patch_set_template%children(child)%patch%coarse_i_lower - 2)
+      support_i_upper = min( &
+        coarse_geometry%nx, &
+        patch_set_template%children(child)%patch%coarse_i_upper + 2)
+      support_j_lower = max( &
+        1, patch_set_template%children(child)%patch%coarse_j_lower - 2)
+      support_j_upper = min( &
+        coarse_geometry%ny, &
+        patch_set_template%children(child)%patch%coarse_j_upper + 2)
+      flux_x_i_lower = &
+        patch_set_template%children(child)%patch%coarse_i_lower - 1
+      flux_x_j_lower = &
+        patch_set_template%children(child)%patch%coarse_j_lower
+      flux_y_i_lower = &
+        patch_set_template%children(child)%patch%coarse_i_lower
+      flux_y_j_lower = &
+        patch_set_template%children(child)%patch%coarse_j_lower - 1
       entity_ok = owner >= 0 .and. owner < distribution%nranks
+      if (distribution%rank == root_owner .and. entity_ok) then
+        call extract_reactive_eb_patch_exterior_context_2d( &
+          root_start, root_start_temperature, root_hydro, &
+          root_hydro_temperature, coarse_geometry, &
+          patch_set_template%children(child)%geometry, &
+          patch_set_template%children(child)%patch, nvar, exterior_context, &
+          entity_ok)
+        if (entity_ok) then
+          allocate(coarse_support( &
+            nvar, support_i_lower:support_i_upper, &
+            support_j_lower:support_j_upper))
+          allocate(coarse_support_temperature( &
+            support_i_lower:support_i_upper, &
+            support_j_lower:support_j_upper))
+          allocate(coarse_x_flux_support( &
+            nvar, flux_x_i_lower: &
+              patch_set_template%children(child)%patch%coarse_i_upper, &
+            flux_x_j_lower: &
+              patch_set_template%children(child)%patch%coarse_j_upper))
+          allocate(coarse_y_flux_support( &
+            nvar, flux_y_i_lower: &
+              patch_set_template%children(child)%patch%coarse_i_upper, &
+            flux_y_j_lower: &
+              patch_set_template%children(child)%patch%coarse_j_upper))
+          coarse_support = coarse_corrected( &
+            :, support_i_lower:support_i_upper, &
+            support_j_lower:support_j_upper)
+          coarse_support_temperature = coarse_corrected_temperature( &
+            support_i_lower:support_i_upper, &
+            support_j_lower:support_j_upper)
+          coarse_x_flux_support = coarse_x_flux( &
+            :, flux_x_i_lower: &
+              patch_set_template%children(child)%patch%coarse_i_upper, &
+            flux_x_j_lower: &
+              patch_set_template%children(child)%patch%coarse_j_upper)
+          coarse_y_flux_support = coarse_y_flux( &
+            :, flux_y_i_lower: &
+              patch_set_template%children(child)%patch%coarse_i_upper, &
+            flux_y_j_lower: &
+              patch_set_template%children(child)%patch%coarse_j_upper)
+        end if
+      end if
+      call all_ranks_accept_eb_2d( &
+        distribution, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      call transfer_sparse_child_hydro_context_2d( &
+        distribution, coarse_geometry, &
+        patch_set_template%children(child)%geometry, &
+        patch_set_template%children(child)%patch, nvar, root_owner, owner, &
+        exterior_context, coarse_support, coarse_support_temperature, &
+        coarse_x_flux_support, coarse_y_flux_support, transfers, local_ok)
+      if (.not. local_ok) return
       if (distribution%rank == owner .and. entity_ok) then
         call initialize_amr_eb_flux_register_2d( &
           coarse_geometry, patch_set_template%children(child)%geometry, &
           patch_set_template%children(child)%patch, nvar, flux_register, &
           entity_ok)
-        if (entity_ok) call accumulate_coarse_eb_fluxes_2d( &
+        if (entity_ok) call accumulate_coarse_eb_fluxes_patch_support_2d( &
           flux_register, coarse_geometry, &
           patch_set_template%children(child)%geometry, &
-          patch_set_template%children(child)%patch, coarse_x_flux, &
-          coarse_y_flux, dt, entity_ok)
-        if (allocated(coarse_work)) deallocate(coarse_work)
-        if (allocated(coarse_work_temperature)) &
-          deallocate(coarse_work_temperature)
-        if (allocated(fine_work)) deallocate(fine_work)
-        if (allocated(fine_work_temperature)) &
-          deallocate(fine_work_temperature)
-        if (allocated(fine_x_flux)) deallocate(fine_x_flux)
-        if (allocated(fine_y_flux)) deallocate(fine_y_flux)
-        allocate(coarse_work, mold=root_start)
-        allocate(coarse_work_temperature, mold=root_start_temperature)
+          patch_set_template%children(child)%patch, &
+          flux_x_i_lower, flux_x_j_lower, coarse_x_flux_support, &
+          flux_y_i_lower, flux_y_j_lower, coarse_y_flux_support, dt, &
+          entity_ok)
+        allocate(coarse_work, mold=coarse_support)
+        allocate(coarse_work_temperature, mold=coarse_support_temperature)
         allocate(fine_work, mold=candidate%children(child)%state)
         allocate(fine_work_temperature, &
           mold=candidate%children(child)%temperature)
@@ -4935,9 +5072,8 @@ contains
           else
             alpha = real(substep - 1, dp) / real(ratio, dp)
           end if
-          call build_reactive_eb_patch_exterior_2d( &
-            species, root_start, root_start_temperature, root_hydro, &
-            root_hydro_temperature, coarse_geometry, &
+          call build_reactive_eb_patch_exterior_from_context_2d( &
+            species, exterior_context, coarse_geometry, &
             patch_set_template%children(child)%geometry, &
             patch_set_template%children(child)%patch, alpha, exterior, &
             entity_ok, candidate%children(child)%state, &
@@ -4961,17 +5097,18 @@ contains
             patch_set_template%children(child)%patch, fine_x_flux, &
             fine_y_flux, fine_dt, entity_ok)
         end do
-        if (entity_ok) call reflux_reactive_eb_state_patch_2d( &
-          species, coarse_corrected, coarse_corrected_temperature, &
-          coarse_geometry, candidate%children(child)%state, &
+        if (entity_ok) call reflux_reactive_eb_state_patch_support_2d( &
+          species, support_i_lower, support_j_lower, coarse_support, &
+          coarse_support_temperature, coarse_geometry, &
+          candidate%children(child)%state, &
           candidate%children(child)%temperature, &
           patch_set_template%children(child)%geometry, &
           patch_set_template%children(child)%patch, flux_register, &
           coarse_work, coarse_work_temperature, fine_work, &
           fine_work_temperature, entity_ok)
         if (entity_ok) then
-          coarse_corrected = coarse_work
-          coarse_corrected_temperature = coarse_work_temperature
+          coarse_support = coarse_work
+          coarse_support_temperature = coarse_work_temperature
           candidate%children(child)%state = fine_work
           candidate%children(child)%temperature = fine_work_temperature
         end if
@@ -4979,14 +5116,19 @@ contains
       call all_ranks_accept_eb_2d( &
         distribution, entity_ok, accepted, global_ok)
       if (.not. global_ok .or. .not. accepted) return
-      call transfer_sparse_root_correction_2d( &
-        distribution, coarse_geometry, nvar, owner, root_owner, &
-        sparse_root_correction_back_tag, coarse_corrected, &
-        coarse_corrected_temperature, transfers, local_ok)
+      call transfer_sparse_child_reflux_support_2d( &
+        distribution, coarse_geometry, &
+        patch_set_template%children(child)%geometry, &
+        patch_set_template%children(child)%patch, nvar, owner, root_owner, &
+        coarse_support, coarse_support_temperature, transfers, local_ok)
       if (.not. local_ok) return
-      if (owner /= root_owner .and. distribution%rank == owner) then
-        deallocate(coarse_corrected)
-        deallocate(coarse_corrected_temperature)
+      if (distribution%rank == root_owner) then
+        coarse_corrected( &
+          :, support_i_lower:support_i_upper, &
+          support_j_lower:support_j_upper) = coarse_support
+        coarse_corrected_temperature( &
+          support_i_lower:support_i_upper, &
+          support_j_lower:support_j_upper) = coarse_support_temperature
       end if
     end do
 

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.149.0` milestone contains the serial verification suite, eight optional
+The `0.150.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -83,11 +83,13 @@ still published only with the final outer commit.
 Hydro also has a direct sparse entrypoint. Each root tile owner receives only
 the neighboring row fragments required for a six-row halo, advances its own
 bounded EB band, and sends its owned input, updated state, and uniquely owned
-flux rows to the root physics owner. The assembled root bundle is sent once
-only to distinct child owners;
-reflux corrections make one point-to-point round trip per remote child, and
-the final root returns as tile-sized payloads. Unrelated ranks never allocate
-the full root bundle, and no hydro numerical field uses an all-rank broadcast.
+flux rows to the root physics owner. For each child, that owner sends one
+compact message containing only four-edge start/end interpolation context,
+patch-plus-two current coarse correction support, and the child-intersecting
+x/y flux rectangle. The child performs ratio subcycling and reflux on that
+support, then returns only corrected support. Remote child owners allocate no
+complete root field. The final root returns as tile-sized payloads; unrelated
+ranks receive no hydro numerical field, and no all-rank field broadcast is used.
 SSPRK2 molecular transport now follows the same sparse ownership boundary.
 For each Euler stage, a root tile owner receives only the neighboring row
 fragments needed for its six-row transport/StateRedist guard, advances that

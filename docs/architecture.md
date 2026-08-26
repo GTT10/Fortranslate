@@ -1613,3 +1613,20 @@ and final y tiles additionally accumulate the lower and upper physical faces.
 A communicator sum combines that `nvar` vector on all ranks before the existing
 tile-local conservation closure. Hydro and explicit materialization/output
 boundaries retain their existing complete-root behavior.
+
+## Compact sparse hydro child context (`0.150.0`)
+
+The root physics owner still assembles the owner-tiled hydro result. It no
+longer sends that complete result to each distinct child owner. For every
+child, it extracts the established four-edge stage-start/stage-end context,
+the current patch-plus-two corrected coarse state and temperature, and only
+the x/y face rectangle intersecting the child's coarse boundary. One packed
+message transfers those arrays when the child is remote.
+
+The child owner reconstructs the established time-interpolated exterior from
+the compact context, accumulates coarse interface flux through the globally
+indexed support API, performs ratio subcycling, and refluxes the compact state
+support locally. Only corrected patch-plus-two state and temperature return to
+the root owner. Child order remains deterministic, so later contexts observe
+earlier reflux corrections. Final corrected-root scatter and hydro tile-result
+assembly remain subsequent ownership boundaries.

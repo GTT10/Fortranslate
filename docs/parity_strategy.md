@@ -2434,3 +2434,18 @@ combine one finite `nvar` vector collectively. Retain serial root/child fields,
 cut-boundary conservation, limiter minima, owner work, public clock, scheduled
 regridding, and late-failure rollback at one, two, four, and eight ranks in
 Release and bounds/FPE-checked Debug before the complete serial regression.
+
+## 0.150.0 compact sparse hydro child-context gates
+
+For each hydro child, extract the complete-root four-edge start/end context,
+current patch-plus-two corrected state/temperature, and intersecting coarse
+x/y flux rectangle. Require the combined payload to be positive and strictly
+smaller than the former complete root start/end/temperature/flux bundle.
+
+For every remote child require one packed context/support/flux message from the
+root physics owner and one corrected-support message back. Remove the distinct-
+child-owner complete bundle allowance from exact traffic. Retain serial
+root/child field parity, deterministic overlapping-child correction, owner
+work, public clock, scheduled regridding, conservation, and late-failure
+rollback at one, two, four, and eight ranks in Release and bounds/FPE-checked
+Debug before the complete serial regression.

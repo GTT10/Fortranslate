@@ -1013,6 +1013,21 @@ halo/child-only point-to-point traffic, root-only cyclic parity, cut-interface
 conservation, owner work, limiter, clock, scheduled-regrid, and rollback gates
 at one, two, four, and eight ranks before the complete serial regression.
 
+## 0.150.0 compact sparse hydro child-context gates
+
+Replace the complete hydro root bundle sent to every distinct remote child
+owner with one child-specific message containing four-edge start/end context,
+current patch-plus-two corrected state/temperature, and intersecting coarse
+x/y flux support. Run coarse-register accumulation and reactive reflux on the
+child through existing globally indexed support APIs, then return only the
+corrected support.
+
+Require the compact payload to be strictly smaller than the former root bundle
+and remove the distinct-owner bundle allowance from exact traffic. Preserve
+serial field parity, deterministic child order, owner work, conservation,
+clock, scheduled-regrid, and rollback gates at one, two, four, and eight ranks
+before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

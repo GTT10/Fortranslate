@@ -299,6 +299,8 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_root_transfers, global_root_transfers
   integer :: expected_local_root_transfers
   integer :: expected_global_root_transfers, root_owner
+  integer(int64) :: compact_hydro_context_values
+  integer(int64) :: legacy_hydro_root_bundle_values
   integer(int64) :: compact_transport_state_values
   integer(int64) :: compact_transport_flux_values
   integer(int64) :: legacy_transport_root_bundle_values
@@ -1538,10 +1540,29 @@ program pelef_mpi_eb_amr_patch_2d
     coarse_geometry, hydro_start_set, sparse_hydro_set, ok)
   call assert_all(ok, "MPI EB AMR sparse hydro scatter", rank)
   root_owner = distribution%root_level_owner()
+  legacy_hydro_root_bundle_values = &
+    2_int64 * int(nvar, int64) * int(coarse_nx, int64) * &
+      int(coarse_ny, int64) + &
+    2_int64 * int(coarse_nx, int64) * int(coarse_ny, int64) + &
+    int(nvar, int64) * int(coarse_nx + 1, int64) * &
+      int(coarse_ny, int64) + &
+    int(nvar, int64) * int(coarse_nx, int64) * &
+      int(coarse_ny + 1, int64)
+  do child = 1, distribution%child_count()
+    compact_hydro_context_values = &
+      mpi_amr_eb_child_transport_state_context_value_count_2d( &
+        nvar, coarse_geometry, hydro_start_set%children(child)%geometry, &
+        hydro_start_set%children(child)%patch) + &
+      mpi_amr_eb_child_coarse_flux_support_value_count_2d( &
+        nvar, coarse_geometry, hydro_start_set%children(child)%geometry, &
+        hydro_start_set%children(child)%patch)
+    call assert_all(compact_hydro_context_values > 0_int64 .and. &
+      compact_hydro_context_values < legacy_hydro_root_bundle_values, &
+      "MPI EB AMR compact hydro child context", rank)
+  end do
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
   expected_local_root_hydro_cells = 0
-  restriction_recipients = .false.
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
     if (rank == owner) expected_local_root_hydro_cells = &
@@ -1573,18 +1594,12 @@ program pelef_mpi_eb_amr_patch_2d
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
     if (owner == root_owner) cycle
-    restriction_recipients(owner + 1) = .true.
     expected_global_root_transfers = expected_global_root_transfers + 2
     if (rank == root_owner) expected_local_root_transfers = &
       expected_local_root_transfers + 1
     if (rank == owner) expected_local_root_transfers = &
       expected_local_root_transfers + 1
   end do
-  restriction_recipients(root_owner + 1) = .false.
-  expected_global_root_transfers = expected_global_root_transfers + &
-    count(restriction_recipients)
-  if (rank == root_owner) expected_local_root_transfers = &
-    expected_local_root_transfers + count(restriction_recipients)
   expected_local_advances = 0
   do tile = 1, distribution%root_tile_count()
     if (distribution%root_tile_is_local(tile)) &
@@ -1619,7 +1634,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
-    "MPI EB AMR targeted sparse hydro root traffic", rank)
+    "MPI EB AMR compact sparse hydro child traffic", rank)
   call MPI_Allreduce( &
     local_root_hydro_cells, global_root_hydro_cells, 1, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)

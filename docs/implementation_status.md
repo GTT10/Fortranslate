@@ -2689,3 +2689,19 @@ that complete post-compute assembly or claim a measured speedup.
 Complete hierarchy materialization remains available only at explicit
 checkpoint, output, restart, and legacy compatibility boundaries. Hydro is
 unchanged and still assembles its temporary complete-root physics bundle.
+
+## Compact sparse hydro child context (`0.150.0`)
+
+- [x] four-edge hydro start/end context extracted on the root physics owner
+- [x] current patch-plus-two corrected state/temperature sent per child
+- [x] only child-intersecting coarse x/y flux rectangles are transferred
+- [x] compact state and flux payload packed into one remote-child message
+- [x] coarse flux register accumulated on the child owner from global bounds
+- [x] hydro reflux runs on patch-plus-two support on the child owner
+- [x] only corrected support returns to the root owner
+- [x] remote child owners allocate no complete root hydro or flux field
+- [x] deterministic child ordering and final root scatter remain unchanged
+
+The root physics owner still assembles the owner-tiled complete hydro result
+and scatters final corrected rows. Direct tile-to-child state/flux routing and
+tile-owner correction are later ownership boundaries.

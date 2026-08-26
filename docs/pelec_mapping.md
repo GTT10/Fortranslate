@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.149.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.150.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
@@ -92,6 +92,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | fine-owner coarse context | direct patch-plus-two start/end/corrected state and temperature plus child-intersecting x/y flux fragments from root tile owners |
 | coarse interface-flux consumption | globally indexed patch-local x/y face rectangles with a complete-root compatibility wrapper |
 | coarse interface-flux ownership | retained root-tile x rows and unique y faces routed directly to the child owner for register accumulation |
+| hydro child context and reflux | root-owner four-edge start/end context, current patch-plus-two correction support, and interface flux rectangle; child-local compact reflux with corrected-support return |
 | child exterior state-context extraction | globally indexed patch-plus-one start/end state and temperature support with a complete-root wrapper |
 | reflux ordering | child-local support reflux, retained owner-local fine field, and ordered corrected fragments returned directly to intersecting root tile owners |
 | final transport root commit | corrected tile state commits locally without root-owner row scatter |
