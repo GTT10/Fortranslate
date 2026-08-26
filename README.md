@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.151.0` milestone contains the serial verification suite, eight optional
+The `0.152.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -82,16 +82,16 @@ hierarchy is materialized between operators. Counts and the limiter minimum are
 still published only with the final outer commit.
 Hydro also has a direct sparse entrypoint. Each root tile owner receives only
 the neighboring row fragments required for a six-row halo, advances its own
-bounded EB band, sends only its owned input and updated state/temperature to
-the root physics owner, and retains its uniquely owned flux rows locally. For
-each child, the root owner sends only four-edge start/end interpolation context
-and patch-plus-two current coarse correction support. Every intersecting tile
-owner routes its x/y interface-flux fragment directly to the child owner. The
-child assembles the compact register, performs ratio subcycling and reflux on
-that support, then returns only corrected support. The root physics owner
-allocates no complete hydro x/y flux field, while complete root state assembly
-and the final tile-sized corrected-state scatter remain. Unrelated ranks
-receive no hydro numerical field, and no all-rank field broadcast is used.
+bounded EB band, and retains its stage-start, stage-end, current corrected
+state/temperature, and uniquely owned flux rows locally. Each child owner
+assembles patch-plus-two start/end/corrected state directly from intersecting
+tile owners and extracts the four-edge interpolation context locally. The same
+tile owners route their x/y interface-flux fragments directly to the child.
+After compact register accumulation, ratio subcycling, and reflux, corrected
+support returns directly to those tile owners in deterministic child order.
+The final corrected root rows commit locally. No complete hydro state,
+temperature, or flux result is assembled on a root physics owner, and there is
+no post-compute tile-result or final-scatter traffic.
 SSPRK2 molecular transport now follows the same sparse ownership boundary.
 For each Euler stage, a root tile owner receives only the neighboring row
 fragments needed for its six-row transport/StateRedist guard, advances that
@@ -661,8 +661,9 @@ The AMR layer provides:
   to intersecting root tile owners, with exact transfer accounting and
   transactional rollback;
 - owner-tiled direct sparse MPI EB hydro with point-to-point six-row halo
-  exchange, bounded tile-local work, state-only result/scatter traffic,
-  tile-to-child interface-flux routing, exact accounting, and serial parity;
+  exchange, bounded tile-local work, direct tile-to-child state/flux and
+  correction routing, zero root-result/scatter traffic, exact accounting, and
+  serial parity;
 - owner-tiled direct sparse MPI EB SSPRK2 transport with point-to-point
   six-row halos, seam-isolated finite periodic-edge bands, targeted
   result/scatter and child traffic, zero-traffic tile-local final blending,

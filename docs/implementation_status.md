@@ -2720,3 +2720,20 @@ tile-owner correction are later ownership boundaries.
 The next ownership boundary is hydro state/support routing directly between
 root tile owners and child owners, including ordered correction return. This
 milestone makes no measured speedup claim.
+
+## Owner-local hydro result and direct state/support routing (`0.152.0`)
+
+- [x] hydro tile owners retain start, end, and current corrected state
+- [x] patch-plus-two state fragments route directly to each child owner
+- [x] child owner extracts the four-edge hydro context from assembled support
+- [x] ordered reflux corrections return directly to intersecting tile owners
+- [x] final corrected hydro root rows commit locally
+- [x] no complete root hydro state, temperature, or flux result is allocated
+- [x] no tile-result or final corrected-row scatter message remains
+- [x] exact hydro traffic contains only halos and direct child fragments
+- [x] superseded private root-bundle communication helpers are removed
+
+Sparse hydro and transport now share the same owner-local state, flux, and
+correction routing boundary. Complete hierarchy materialization remains only
+for explicit output, checkpoint, restart, and legacy compatibility APIs. This
+milestone makes no measured speedup claim.
