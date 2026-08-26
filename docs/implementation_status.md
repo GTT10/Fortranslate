@@ -2462,5 +2462,27 @@ checkpoint I/O, and dynamic tagging remain separate work.
 
 The replicated owner path still stores the complete root input on every rank
 and assembles complete root results for the established child/reflux boundary.
-The sparse path still gathers root tiles to one root physics owner. Direct
-sparse halo exchange and sparse tile-result routing remain separate work.
+The sparse path removes that input replication in the next milestone while
+retaining a root-owner compatibility bundle for child exterior and reflux.
+
+## Sparse MPI owner-tiled reactive EB root hydro (`0.137.0`)
+
+- [x] direct point-to-point state and temperature halo fragments
+- [x] no complete sparse root input assembled before hydrodynamic work
+- [x] one bounded EB band advance on each root tile owner
+- [x] six-row guard shared with the qualified replicated decomposition
+- [x] owned input, state, temperature, x-flux, and unique y-face result routing
+- [x] complete temporary root bundle only on the established root owner
+- [x] unchanged child subcycling, exterior construction, reflux, and scatter
+- [x] exact halo, result, child, correction, and scatter transfer accounting
+- [x] exact local tile-advance and computed-band-cell accounting
+- [x] serial root/child parity at one, two, four, and eight ranks
+- [x] sparse full-physics and public time-loop owner accounting
+- [x] late-failure rollback with zero published work and traffic
+
+The sparse input remains exclusively tile-owned throughout root hydro. A full
+temporary root start/result/flux bundle is still assembled on the root owner
+after tile-local computation because fine-child exterior interpolation and
+deterministic reflux currently consume level-wide arrays. Sparse root
+transport, timestep selection, and distributed coarse/fine interface data are
+subsequent decomposition work.

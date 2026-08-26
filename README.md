@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.136.0` milestone contains the serial verification suite, eight optional
+The `0.137.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -76,9 +76,11 @@ input through commit. Both chemistry half-steps, both SSPRK2 transport
 half-steps, and hydro call their direct sparse entrypoints; no complete child
 hierarchy is materialized between operators. Counts and the limiter minimum are
 still published only with the final outer commit.
-Hydro also has a direct sparse entrypoint. Root tiles are gathered only to the
-root physics owner for the level-wide StateRedist update. The root start,
-updated state, and flux bundle is sent once only to distinct child owners;
+Hydro also has a direct sparse entrypoint. Each root tile owner receives only
+the neighboring row fragments required for a six-row halo, advances its own
+bounded EB band, and sends its owned input, updated state, and uniquely owned
+flux rows to the root physics owner. The assembled root bundle is sent once
+only to distinct child owners;
 reflux corrections make one point-to-point round trip per remote child, and
 the final root returns as tile-sized payloads. Unrelated ranks never allocate
 the full root bundle, and no hydro numerical field uses an all-rank broadcast.
@@ -621,9 +623,9 @@ The AMR layer provides:
 - targeted point-to-point sparse MPI EB restriction from each child owner only
   to intersecting root tile owners, with exact transfer accounting and
   transactional rollback;
-- targeted direct sparse MPI EB hydro root traffic with tile gather/scatter,
-  one bundle per distinct child owner, per-child correction round trips, exact
-  transfer accounting, and no numerical all-rank broadcasts;
+- owner-tiled direct sparse MPI EB hydro with point-to-point six-row halo
+  exchange, bounded tile-local work, targeted result/scatter traffic, one
+  bundle per distinct child owner, exact accounting, and serial parity;
 - targeted direct sparse MPI EB SSPRK2 transport root traffic with two
   Euler-stage gathers/bundles/reflux round trips, targeted final blending,
   tile-local cut-interface closure, exact transfer accounting, and no full
