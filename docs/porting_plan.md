@@ -988,6 +988,19 @@ Require strictly smaller support, bitwise complete/support exterior parity,
 transactional invalid-support rejection, and unchanged serial and sparse MPI
 reactive EB AMR regressions before direct root-tile state routing.
 
+## 0.148.0 direct root-tile state/support routing gates
+
+Retain start, uncorrected-end, and current corrected state/temperature on each
+root transport tile. Route patch-plus-two fragments directly to child owners,
+extract exterior context there, and return child-local reflux corrections to
+the intersecting tile owners in deterministic child order.
+
+Remove the root-owner child context/correction path and final corrected-row
+scatter. Require reduced compact payload, exact tile/child traffic counts,
+serial numerical parity, owner work, limiter, clock, scheduled-regrid,
+cut-boundary conservation, and rollback gates at one, two, four, and eight
+ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

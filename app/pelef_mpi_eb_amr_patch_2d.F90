@@ -50,7 +50,7 @@ program pelef_mpi_eb_amr_patch_2d
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
-    mpi_amr_eb_child_transport_state_context_value_count_2d, &
+    mpi_amr_eb_child_transport_tile_state_support_value_count_2d, &
     mpi_amr_eb_child_coarse_flux_support_value_count_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
     synchronize_owned_reactive_eb_patch_set_2d, &
@@ -252,6 +252,7 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: child, component, global_advances, global_i, global_j, i, ierr
   integer :: band_j_lower, band_j_upper, band_rows, j
   integer :: face_j_lower, face_j_upper
+  integer :: support_j_lower, support_j_upper
   integer :: new_child, old_child, old_i, old_j, owner, source
   integer :: segment_j_lower, segment_j_upper, source_tile, target_rows
   integer :: local_advances, nvar, rank, nranks, tile
@@ -298,7 +299,7 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_root_transfers, global_root_transfers
   integer :: expected_local_root_transfers
   integer :: expected_global_root_transfers, root_owner
-  integer(int64) :: compact_transport_context_values
+  integer(int64) :: compact_transport_state_values
   integer(int64) :: compact_transport_flux_values
   integer(int64) :: legacy_transport_root_bundle_values
   integer :: local_root_materialization_transfers
@@ -1911,8 +1912,8 @@ program pelef_mpi_eb_amr_patch_2d
     int(nvar, int64) * int(coarse_nx, int64) * &
       int(coarse_ny + 1, int64)
   do child = 1, distribution%child_count()
-    compact_transport_context_values = &
-      mpi_amr_eb_child_transport_state_context_value_count_2d( &
+    compact_transport_state_values = &
+      mpi_amr_eb_child_transport_tile_state_support_value_count_2d( &
         nvar, coarse_geometry, &
         transport_start_set%children(child)%geometry, &
         transport_start_set%children(child)%patch)
@@ -1921,11 +1922,11 @@ program pelef_mpi_eb_amr_patch_2d
         nvar, coarse_geometry, &
         transport_start_set%children(child)%geometry, &
         transport_start_set%children(child)%patch)
-    call assert_all(compact_transport_context_values > 0_int64 .and. &
+    call assert_all(compact_transport_state_values > 0_int64 .and. &
       compact_transport_flux_values > 0_int64 .and. &
-      compact_transport_context_values + compact_transport_flux_values < &
+      compact_transport_state_values + compact_transport_flux_values < &
         legacy_transport_root_bundle_values, &
-      "MPI EB AMR direct child context and coarse-flux support", rank)
+      "MPI EB AMR direct tile state and coarse-flux support", rank)
   end do
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
@@ -2016,15 +2017,27 @@ program pelef_mpi_eb_amr_patch_2d
     end do
     deallocate(transport_band_source_rows)
     if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 4
+    expected_global_root_transfers = expected_global_root_transfers + 2
     if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
-    if (rank == root_owner) expected_local_root_transfers = &
       expected_local_root_transfers + 2
   end do
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
+    support_j_lower = max(1, &
+      transport_start_set%children(child)%patch%coarse_j_lower - 2)
+    support_j_upper = min(coarse_ny, &
+      transport_start_set%children(child)%patch%coarse_j_upper + 2)
     do tile = 1, distribution%root_tile_count()
+      source = distribution%root_tiles(tile)%owner
+      if (max(support_j_lower, distribution%root_tiles(tile)%j_lower) <= &
+          min(support_j_upper, distribution%root_tiles(tile)%j_upper) .and. &
+          source /= owner) then
+        expected_global_root_transfers = expected_global_root_transfers + 4
+        if (rank == source) expected_local_root_transfers = &
+          expected_local_root_transfers + 2
+        if (rank == owner) expected_local_root_transfers = &
+          expected_local_root_transfers + 2
+      end if
       band_j_lower = max( &
         transport_start_set%children(child)%patch%coarse_j_lower, &
         distribution%root_tiles(tile)%j_lower)
@@ -2043,18 +2056,11 @@ program pelef_mpi_eb_amr_patch_2d
         face_j_upper)
       if (band_j_lower > band_j_upper .and. &
           segment_j_lower > segment_j_upper) cycle
-      source = distribution%root_tiles(tile)%owner
       if (source == owner) cycle
       expected_global_root_transfers = expected_global_root_transfers + 2
       if (rank == source) expected_local_root_transfers = &
         expected_local_root_transfers + 2
     end do
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 4
-    if (rank == root_owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
   end do
   expected_local_advances = 0
   do tile = 1, distribution%root_tile_count()
@@ -2283,10 +2289,8 @@ program pelef_mpi_eb_amr_patch_2d
     end do
     deallocate(transport_band_source_rows)
     if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 4
+    expected_global_root_transfers = expected_global_root_transfers + 2
     if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
-    if (rank == root_owner) expected_local_root_transfers = &
       expected_local_root_transfers + 2
   end do
   expected_local_advances = 0
