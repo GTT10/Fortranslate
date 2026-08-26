@@ -1099,6 +1099,20 @@ three-level chain with the established fixed-depth Strang implementation. Run
 the complete serial Debug and Release suite and the existing OpenMPI one-,
 two-, four-, and eight-rank gates before acceptance.
 
+## 0.156.0 arbitrary-depth reactive EB patch-tree transport gates
+
+Generalize the qualified fixed-depth EB transport Euler stage into a
+node-recursive operation with parent start/end interpolation, ratio subcycling,
+one diffusive flux register per child, subtree conservation closure, and
+deepest-first synchronization. Compose two complete Euler trees with node-wise
+SSPRK2 blending and EOS temperature recovery on one private candidate.
+
+Require fixed three-level field/temperature parity and exact recursive counts,
+then exercise a four-level branching topology with composite conservation,
+positive limiter theta, changed state, thermodynamic validity, and exact
+rollback. Run the complete serial Debug and Release suite and the existing
+OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation

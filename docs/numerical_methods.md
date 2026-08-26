@@ -2091,3 +2091,32 @@ All stages mutate one private candidate. Consequently, a late chemistry or
 hydrodynamics rejection cannot expose a partially reacted hierarchy, and
 per-level chemistry and hydro call counts are published only with the final
 valid state. Molecular transport is not part of this `R-H-R` operation.
+
+## Arbitrary-depth reactive EB patch-tree molecular transport
+
+For one Euler stage, a node over interval `dt` evaluates the established
+mixture diffusive flux and EB redistribution operator once. A child relation
+with ratio `r` then advances recursively for `r` intervals of `dt/r`, using
+
+```text
+alpha = (s - 1)/r
+```
+
+to interpolate its exterior between the parent start and Euler-end fields.
+One diffusive EB flux register per child accumulates the parent flux with
+weight `dt` and each child flux with weight `dt/r`. Reflux, average-down, and
+outer-flux subtree closure restore the composite conserved representation.
+
+The public second-order update is SSPRK2 over the complete tree:
+
+```text
+U(1)     = Euler_tree(U(n), dt)
+U(2)     = Euler_tree(U(1), dt)
+U(n + 1) = 0.5 [U(n) + U(2)].
+```
+
+The blend is applied to every runtime node, followed by active-cell EOS
+temperature recovery and deepest-first synchronization. Both Euler trees and
+the blend remain private until the final candidate validates; the minimum
+positivity-limiter theta and actual recursive node-call counts follow the same
+commit boundary.

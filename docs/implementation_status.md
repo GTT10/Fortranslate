@@ -2795,3 +2795,21 @@ This milestone removes active-cell reaction and hydro/chemistry Strang
 composition from the remaining serial patch-tree gaps. Arbitrary-depth
 molecular transport, `R-T-H-T-R` full physics, public clock ownership, dynamic
 tagging, checkpoint I/O, and MPI ownership remain separate work.
+
+## Arbitrary-depth reactive EB patch-tree transport (`0.156.0`)
+
+- [x] runtime-depth recursive EB transport Euler advancement
+- [x] parent start/end interpolation and exact per-relation child subcycling
+- [x] one independent diffusive EB flux register per ordered child
+- [x] deterministic reflux, average-down, and subtree conservation closure
+- [x] two complete recursive Euler stages with node-wise SSPRK2 blending
+- [x] EOS temperature recovery and deepest-first final synchronization
+- [x] committed-only minimum limiter theta and per-level node counts
+- [x] fixed three-level SSPRK2 parity with schedule `[2, 4, 8]`
+- [x] four-level branching schedule `[2, 4, 16, 16]`
+- [x] composite conservation, changed-state, validity, and rollback gates
+
+This milestone removes standalone molecular transport from the remaining
+serial patch-tree gaps. Combined `R-T-H-T-R` full physics, public clock
+ownership, dynamic tagging, checkpoint I/O, and MPI ownership remain separate
+work.

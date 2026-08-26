@@ -2530,3 +2530,20 @@ node exactly and publish zero chemistry and hydro counts. Retain all 208 serial
 tests in GNU Fortran Release and bounds/FPE-checked Debug, plus the established
 OpenMPI one-, two-, four-, and eight-rank suite even though the new tree remains
 serial.
+
+## 0.156.0 arbitrary-depth reactive EB patch-tree transport gates
+
+Represent the qualified fixed three-level transport hierarchy as a runtime
+tree and require SSPRK2 node counts `[2, 4, 8]`, positive limiter theta, and
+state/temperature agreement with the fixed-depth implementation. Retain its
+composite conservation, conduction smoothing, and covered-cell invariance
+gates.
+
+Build a separate four-level tree with one middle patch, two separated children,
+and one deeper child. Require the actual branching SSPRK2 schedule
+`[2, 4, 16, 16]`, changed state, positive limiter theta, valid thermodynamics,
+and complete composite-vector conservation. A negative interval must preserve
+every node exactly, return theta one, and publish zero counts. Retain all 208
+serial tests in GNU Fortran Release and bounds/FPE-checked Debug, plus the
+established OpenMPI one-, two-, four-, and eight-rank suite even though the new
+tree remains serial.
