@@ -965,6 +965,19 @@ transactional rejection of incomplete support, and unchanged sparse numerical,
 work, traffic, clock, scheduled-regrid, and rollback gates at one, two, four,
 and eight ranks before the complete serial regression.
 
+## 0.146.0 direct root-tile coarse-flux routing gates
+
+Retain globally indexed x-flux rows and uniquely owned y-faces on every root
+tile owner. Route only child-intersecting fragments to each child owner,
+assemble the compact interface rectangles there, and initialize the coarse
+flux register without root-physics-owner involvement. Remove the register from
+the root-to-child state context.
+
+Require complete fragment coverage, combined compact payload reduction, exact
+distribution-derived message counts, and unchanged sparse numerical, owner-
+work, limiter, clock, scheduled-regrid, and rollback gates at one, two, four,
+and eight ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -2631,3 +2631,18 @@ The root physics owner still owns the complete temporary root x/y flux bundle
 after tile computation. This API removes that shape requirement from flux-
 register accumulation so later root-tile-to-child routing can supply only the
 interface fragments.
+
+## Direct root-tile coarse-flux routing (`0.146.0`)
+
+- [x] each root tile retains its computed x-flux rows and unique y-faces
+- [x] only child-intersecting face fragments route to the child owner
+- [x] child-owner coverage checks reject missing ownership gaps
+- [x] compact coarse register is accumulated on the child owner
+- [x] root-to-child state context contains no flux-register payload
+- [x] context plus interface-flux values remain below the legacy root bundle
+- [x] exact direct-fragment message accounting for both SSPRK2 Euler stages
+
+The root physics owner still assembles the temporary complete root result and
+flux bundle for exterior extraction, support state, boundary closure, ordered
+support merge, and final row scatter. Direct state/support routing is the next
+ownership boundary.

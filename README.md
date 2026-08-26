@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.145.0` milestone contains the serial verification suite, eight optional
+The `0.146.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -35,12 +35,13 @@ and hierarchy-wide average-down inside the transactional `R-T-H-T-R`
 composition.
 The MPI EB AMR bridge executes chemistry, owner-tiled finite-band root hydro
 and transport, and fine ratio subcycles on deterministic physics owners. Fine
-transport owners receive only four-edge start/end exterior samples, a compact
-coarse interface register, and patch-plus-two coarse reflux support; they never
-allocate complete root state, temperature, or x/y-flux arrays. They perform
-reflux on that support locally and return only the corrected support. Fine
-state remains on its owner. Collective input consensus and deferred
-publication preserve exact all-rank rollback.
+transport owners receive only four-edge start/end exterior samples,
+child-intersecting x/y flux fragments from root tile owners, and patch-plus-two
+coarse reflux support; they never allocate complete root state, temperature,
+or x/y-flux arrays. They assemble the compact coarse register, perform reflux
+on that support locally, and return only the corrected support. Fine state
+remains on its owner. Collective input consensus and deferred publication
+preserve exact all-rank rollback.
 One outer MPI transaction now composes those owner operators as
 `R-T-H-T-R`. It publishes the root, children, limiter minimum, and chemistry,
 hydro, and transport counters only after every stage succeeds; a rejection in
@@ -95,24 +96,27 @@ band built from two contiguous source-row fragments. One extra row isolates
 the required six-row guard from the deliberate internal gap; a small root that
 cannot hold that guard uses the complete root band. The resulting temporary
 root/flux bundle remains on the root physics owner. Each fine child receives
-only four-edge start/end samples, its compact coarse interface register, and
-patch-plus-two coarse support, then performs ratio subcycling, fine-flux
-accumulation, and reflux locally. It returns only the corrected coarse support
-for deterministic merge on the root owner. Corrected root rows then return only to their
-tile owners. The final SSPRK2 root blend and EOS
+only four-edge start/end samples and patch-plus-two coarse support from that
+owner. Intersecting root tile owners send their coarse x/y flux fragments
+directly to the child, which assembles its register, performs ratio subcycling,
+fine-flux accumulation, and reflux locally. It returns only corrected coarse
+support for deterministic merge on the root owner. Corrected root rows then
+return only to their tile owners. The final SSPRK2 root blend and EOS
 temperature recovery are cell-local on those owners, so that step needs no root
 gather or scatter. Cut-interface closure broadcasts one conserved `nvar` vector
 and changes unrefined cells directly on each local root tile. A late child
 failure leaves every sparse allocation bitwise unchanged and publishes zero
 work or transfers.
 EB flux registers now store only the patch-plus-one-cell correction support.
-For sparse transport, the root owner accumulates coarse interface fluxes into
-that compact support through patch-local x/y face rectangles, rather than
-requiring complete root flux arrays at the accumulation API. The established
-complete-root call is a compatibility wrapper over the same kernel. The root
-then sends the register with the exterior context and patch-plus-two coarse
-state. Remote child owners allocate no complete root state, temperature, or
-flux field; fine state no longer makes a root round trip for reflux.
+For sparse transport, each root tile owner retains its computed x-flux rows and
+uniquely owned y-faces, then sends only child-intersecting fragments directly
+to that child owner. The child assembles patch-local face rectangles and
+accumulates its coarse register locally; the root physics owner no longer
+builds or sends that register. The established complete-root accumulation call
+is a compatibility wrapper over the same compact kernel. The root sends only
+the exterior context and patch-plus-two coarse state. Remote child owners
+allocate no complete root state, temperature, or flux field; fine state no
+longer makes a root round trip for reflux.
 The sparse hierarchy also selects its own stable coarse interval. Every root
 tile evaluates its EB hydro and molecular-transport limits directly on its
 owner, while fine children do the same and scale their stable fine steps by the

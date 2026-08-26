@@ -1547,3 +1547,23 @@ transport passes patch-local sections of the temporary root flux bundle, so
 the consumer no longer requires level-wide array shapes. The temporary bundle
 is still assembled on the root physics owner; distributing those interface
 fragments directly from root-tile owners is the next ownership boundary.
+
+## Direct root-tile coarse-flux routing (`0.146.0`)
+
+Every sparse root transport tile retains the x-flux rows that correspond to
+its owned cell rows. Y-faces follow the established unique ownership rule: a
+tile owns its lower face through the face below its upper cell, and the final
+tile also owns the upper physical boundary. These retained arrays use global
+y lower bounds.
+
+For each child, every intersecting tile owner sends one packed x/y fragment
+directly to the child owner. The receiver assembles globally indexed compact
+face rectangles and verifies complete coverage before initializing the coarse
+flux register. The root physics owner sends only exterior start/end samples
+and patch-plus-two state/temperature support; the register is absent from that
+message. Child reflux and ordered corrected-support return remain unchanged.
+
+The complete root result and flux bundle still exist on the root physics owner
+for exterior extraction, boundary closure, cumulative support merge, and row
+scatter. The direct flux route removes one dependency from that boundary but
+does not yet distribute state context or corrected support.
