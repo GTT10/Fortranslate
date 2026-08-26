@@ -720,6 +720,8 @@ Required capabilities:
   root tile owners (`0.139.0`)
 - [x] point-to-point finite-halo sparse SSPRK2 root Euler stages with exact
   target-band accounting and deterministic result routing (`0.140.0`)
+- [x] seam-isolated cyclic finite bands for periodic-y sparse root transport
+  targets with exact fragment/work accounting (`0.141.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
 - thermal, viscous, and catalytic wall boundary conditions

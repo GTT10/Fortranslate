@@ -2294,3 +2294,21 @@ one, two, four, and eight ranks. Repeat owner accounting through sparse
 `R-T-H-T-R` and the public time loop. A late failure must preserve every sparse
 field bitwise and publish zero work and traffic. Run Release and bounds/FPE-
 checked Debug before the complete serial regression.
+
+## 0.141.0 sparse MPI periodic-edge cyclic-band gates
+
+Build a dedicated 14-by-21, root-only periodic-y EB transport case. At four
+and eight ranks, require each boundary target to use two increasing global
+source-row fragments whose combined band is smaller than the complete root.
+The band must retain the six-row transport/StateRedist dependency footprint
+plus one seam-isolation row, while one and two ranks exercise the complete-root
+fallback.
+
+Require exact owner advances, point-to-point fragment and result transfers,
+and computed-band-cell totals derived independently in the test. Materialize
+the sparse result and compare state and temperature with a serial SSPRK2
+transport reference at the established `2e-11` scaled tolerance; compare the
+redistribution limiter minimum at `2e-13`. Repeat the existing one-, two-,
+four-, and eight-rank full-physics, public time-loop, and scheduled-regrid
+gates in OpenMPI Release and bounds/FPE-checked Debug, followed by the complete
+serial regression.
