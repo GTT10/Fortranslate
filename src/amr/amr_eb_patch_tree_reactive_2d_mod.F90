@@ -3,9 +3,11 @@ module amr_eb_patch_tree_reactive_2d_mod
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_conserved_to_primitive
+  use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_reconstruction_2d_mod, only: &
@@ -56,7 +58,9 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: synchronize_reactive_amr_eb_patch_tree_2d
   public :: rebuild_reactive_amr_eb_patch_tree_2d
   public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
+  public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_reactive_amr_eb_patch_tree_hydro_2d
+  public :: advance_reactive_amr_eb_patch_tree_strang_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
 
 contains
@@ -401,6 +405,210 @@ contains
     ok = ieee_is_finite(dt) .and. dt > 0.0_dp
     if (.not. ok) dt = 0.0_dp
   end subroutine compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_chemistry_2d( &
+      species, reactions, solution, interval, rtol, atol, ok, &
+      failure_context, level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    real(dp), intent(in) :: interval, rtol, atol
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    integer, allocatable :: candidate_advances(:)
+    character(len=160) :: context
+    logical :: local_ok
+
+    ok = .false.
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(level_advances)) level_advances = 0
+    if (.not. valid_patch_tree_chemistry_inputs( &
+          species, reactions, solution, interval, rtol, atol)) return
+    if (present(level_advances)) then
+      if (size(level_advances) /= solution%level_count()) return
+    end if
+
+    candidate = solution
+    allocate(candidate_advances(candidate%level_count()), source=0)
+    call advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+      species, reactions, candidate, interval, rtol, atol, &
+      candidate_advances, context, local_ok)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "final hierarchy synchronization"
+    call synchronize_candidate(species, candidate, local_ok)
+    if (.not. local_ok .or. .not. candidate%is_valid()) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    solution = candidate
+    if (present(level_advances)) level_advances = candidate_advances
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_chemistry_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_strang_2d( &
+      species, reactions, solution, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, chemistry_enabled, rtol, atol, ok, &
+      state_redist_target_volume_fraction, failure_context, &
+      chemistry_level_advances, hydro_level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: state_redist_target_volume_fraction
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: chemistry_level_advances(:)
+    integer, intent(out), optional :: hydro_level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    integer, allocatable :: candidate_chemistry_advances(:)
+    integer, allocatable :: candidate_hydro_advances(:)
+    character(len=160) :: context
+    real(dp) :: selected_target
+    logical :: local_ok
+
+    ok = .false.
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(chemistry_level_advances)) chemistry_level_advances = 0
+    if (present(hydro_level_advances)) hydro_level_advances = 0
+    selected_target = 0.5_dp
+    if (present(state_redist_target_volume_fraction)) &
+      selected_target = state_redist_target_volume_fraction
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
+        .not. ieee_is_finite(selected_target) .or. &
+        selected_target <= 0.0_dp .or. selected_target > 1.0_dp) return
+    if (chemistry_enabled) then
+      if (.not. valid_patch_tree_chemistry_inputs( &
+            species, reactions, solution, 0.5_dp * dt, rtol, atol)) return
+    end if
+    if (present(chemistry_level_advances)) then
+      if (size(chemistry_level_advances) /= solution%level_count()) return
+    end if
+    if (present(hydro_level_advances)) then
+      if (size(hydro_level_advances) /= solution%level_count()) return
+    end if
+
+    candidate = solution
+    allocate(candidate_chemistry_advances(candidate%level_count()), source=0)
+    allocate(candidate_hydro_advances(candidate%level_count()), source=0)
+    if (chemistry_enabled) then
+      call advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+        species, reactions, candidate, 0.5_dp * dt, rtol, atol, &
+        candidate_chemistry_advances, context, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+
+    call advance_reactive_amr_eb_patch_tree_hydro_2d( &
+      species, candidate, solver, reconstruction, limiter, &
+      state_redist_max_order, dt, local_ok, selected_target, context, &
+      candidate_hydro_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    if (chemistry_enabled) then
+      call advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+        species, reactions, candidate, 0.5_dp * dt, rtol, atol, &
+        candidate_chemistry_advances, context, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+      context = "final hierarchy synchronization"
+      call synchronize_candidate(species, candidate, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+
+    if (.not. candidate%is_valid()) then
+      if (present(failure_context)) failure_context = "final validation"
+      return
+    end if
+    solution = candidate
+    if (present(chemistry_level_advances)) &
+      chemistry_level_advances = candidate_chemistry_advances
+    if (present(hydro_level_advances)) &
+      hydro_level_advances = candidate_hydro_advances
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_strang_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
+      species, reactions, solution, interval, rtol, atol, level_advances, &
+      failure_context, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    real(dp), intent(in) :: interval, rtol, atol
+    integer, intent(inout) :: level_advances(:)
+    character(len=*), intent(inout) :: failure_context
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    logical, allocatable :: active_mask(:, :)
+    logical :: local_ok
+    integer :: level, patch
+
+    ok = .false.
+    if (.not. valid_patch_tree_chemistry_inputs( &
+          species, reactions, solution, interval, rtol, atol) .or. &
+        size(level_advances) /= solution%level_count()) return
+    do level = 1, solution%level_count()
+      do patch = 1, solution%levels(level)%patch_count()
+        call patch_geometry_at( &
+          solution%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) return
+        if (allocated(active_mask)) deallocate(active_mask)
+        allocate(active_mask(geometry%nx, geometry%ny))
+        active_mask = geometry%cell_type /= eb_covered_cell
+        write(failure_context, '(a,i0,a,i0)') &
+          "chemistry level ", level - 1, " patch ", patch
+        call advance_reactive_chemistry_2d( &
+          species, reactions, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, geometry%nx, &
+          geometry%ny, interval, rtol, atol, local_ok, active_mask)
+        if (.not. local_ok) return
+        level_advances(level) = level_advances(level) + 1
+      end do
+    end do
+    ok = .true.
+  end subroutine &
+    advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d
+
+  logical function valid_patch_tree_chemistry_inputs( &
+      species, reactions, solution, interval, rtol, atol) result(valid)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: interval, rtol, atol
+
+    valid = solution%is_valid() .and. &
+      solution%nvar == reactive_nvar(size(species)) .and. &
+      size(reactions) >= 1 .and. ieee_is_finite(interval) .and. &
+      interval >= 0.0_dp .and. ieee_is_finite(rtol) .and. rtol > 0.0_dp .and. &
+      ieee_is_finite(atol) .and. atol > 0.0_dp
+  end function valid_patch_tree_chemistry_inputs
 
   subroutine advance_reactive_amr_eb_patch_tree_hydro_2d( &
       species, solution, solver, reconstruction, limiter, &

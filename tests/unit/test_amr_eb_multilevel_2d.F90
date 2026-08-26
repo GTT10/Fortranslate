@@ -28,7 +28,9 @@ program test_amr_eb_multilevel_2d
     synchronize_reactive_amr_eb_patch_tree_2d, &
     rebuild_reactive_amr_eb_patch_tree_2d, &
     compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
+    advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
+    advance_reactive_amr_eb_patch_tree_strang_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_eb_state_2d, &
@@ -106,6 +108,8 @@ program test_amr_eb_multilevel_2d
   logical :: ok, topology_changed, reference_ok, node_ok
   character(len=128) :: tree_failure_context
   integer, allocatable :: tree_level_advances(:), chain_level_advances(:)
+  integer, allocatable :: tree_chemistry_advances(:)
+  integer, allocatable :: chain_chemistry_advances(:)
   integer :: i, j, k, level, patch, nvar
 
   do j = 0, root_ny
@@ -511,6 +515,72 @@ program test_amr_eb_multilevel_2d
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "arbitrary-depth patch-tree hydro rollback")
 
+  allocate(tree_chemistry_advances(reactive_tree%level_count()))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_before, ok)
+  call require(ok, "patch-tree chemistry initial composite integral")
+  call advance_reactive_amr_eb_patch_tree_chemistry_2d( &
+    species, reactions, reactive_tree, 5.0e-9_dp, 1.0e-7_dp, 1.0e-13_dp, &
+    ok, tree_failure_context, tree_chemistry_advances)
+  call require(ok .and. all(tree_chemistry_advances == [1, 2, 2, 1]), &
+    "arbitrary-depth branching patch-tree chemistry schedule: " // &
+      trim(tree_failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tree_integral_before)))
+  species_change = 0.0_dp
+  do k = 1, size(species)
+    species_change = max(species_change, abs( &
+      tree_integral_after(reactive_species_component(k)) - &
+      tree_integral_before(reactive_species_component(k))))
+  end do
+  call require(ok .and. &
+    abs(tree_integral_after(irho) - tree_integral_before(irho)) <= &
+      2.0e-8_dp * scale .and. &
+    abs(tree_integral_after(iet) - tree_integral_before(iet)) <= &
+      2.0e-8_dp * scale .and. species_change > 1.0e-15_dp * scale .and. &
+    reactive_tree%is_valid(), &
+    "arbitrary-depth patch-tree chemistry conservation and activity")
+
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_before, ok)
+  call require(ok, "patch-tree Strang initial composite integral")
+  call advance_reactive_amr_eb_patch_tree_strang_2d( &
+    species, reactions, reactive_tree, "hllc", "pcm", "mc", 2, 1.0e-8_dp, &
+    .true., 1.0e-7_dp, 1.0e-13_dp, ok, 0.5_dp, tree_failure_context, &
+    tree_chemistry_advances, tree_level_advances)
+  call require(ok .and. &
+    all(tree_chemistry_advances == [2, 4, 4, 2]) .and. &
+    all(tree_level_advances == [1, 4, 8, 8]), &
+    "arbitrary-depth branching patch-tree Strang schedule: " // &
+      trim(tree_failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tree_integral_before)))
+  species_integral_sum = 0.0_dp
+  do k = 1, size(species)
+    species_integral_sum = species_integral_sum + &
+      tree_integral_after(reactive_species_component(k))
+  end do
+  call require(ok .and. &
+    abs(tree_integral_after(irho) - tree_integral_before(irho)) <= &
+      2.0e-8_dp * scale .and. &
+    abs(tree_integral_after(iet) - tree_integral_before(iet)) <= &
+      2.0e-8_dp * scale .and. &
+    abs(species_integral_sum - tree_integral_after(irho)) <= &
+      2.0e-10_dp * scale .and. reactive_tree%is_valid(), &
+    "arbitrary-depth patch-tree Strang conservation and thermodynamics")
+
+  reactive_tree_snapshot = reactive_tree
+  call advance_reactive_amr_eb_patch_tree_strang_2d( &
+    species, reactions, reactive_tree, "unknown", "pcm", "mc", 2, &
+    1.0e-8_dp, .true., 1.0e-7_dp, 1.0e-13_dp, ok, 0.5_dp, &
+    tree_failure_context, tree_chemistry_advances, tree_level_advances)
+  call require(.not. ok .and. all(tree_chemistry_advances == 0) .and. &
+    all(tree_level_advances == 0) .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "arbitrary-depth patch-tree Strang rollback after chemistry")
+
   deallocate(integral_before, integral_after)
   allocate(integral_before(nvar), integral_after(nvar))
   call composite_three_level_eb_integral_2d( &
@@ -698,6 +768,20 @@ program test_amr_eb_multilevel_2d
     integral_before, ok)
   call require(ok, "three-level Strang initial composite integral")
   dt = 1.0e-8_dp
+  chain_tree%levels(1)%patches(1)%state = reactive_root
+  chain_tree%levels(1)%patches(1)%temperature = root_temperature
+  chain_tree%levels(2)%patches(1)%state = reactive_level_one
+  chain_tree%levels(2)%patches(1)%temperature = level_one_temperature
+  chain_tree%levels(3)%patches(1)%state = reactive_level_two
+  chain_tree%levels(3)%patches(1)%temperature = level_two_temperature
+  allocate(chain_chemistry_advances(chain_tree%level_count()))
+  call advance_reactive_amr_eb_patch_tree_strang_2d( &
+    species, reactions, chain_tree, "hllc", "pcm", "mc", 2, dt, .true., &
+    1.0e-7_dp, 1.0e-13_dp, ok, 0.5_dp, tree_failure_context, &
+    chain_chemistry_advances, chain_level_advances)
+  call require(ok .and. all(chain_chemistry_advances == [2, 2, 2]) .and. &
+    all(chain_level_advances == [1, 2, 4]), &
+    "three-level patch-tree Strang schedule: " // trim(tree_failure_context))
   call advance_three_level_reactive_eb_strang_2d( &
     species, reactions, reactive_root, root_temperature, root_geometry, &
     reactive_level_one, level_one_temperature, level_one_geometry, &
@@ -708,6 +792,25 @@ program test_amr_eb_multilevel_2d
     level_one_temperature_sync, reactive_level_two_sync, &
     level_two_temperature_sync, ok, 0.5_dp)
   call require(ok, "three-level reactive EB Strang transaction")
+  scale = max(1.0_dp, maxval(abs(reactive_root_sync)), &
+    maxval(abs(reactive_level_one_sync)), &
+    maxval(abs(reactive_level_two_sync)))
+  call require(maxval(abs(chain_tree%levels(1)%patches(1)%state - &
+      reactive_root_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(2)%patches(1)%state - &
+      reactive_level_one_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(3)%patches(1)%state - &
+      reactive_level_two_sync)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree Strang field parity")
+  scale = max(1.0_dp, maxval(root_temperature_sync), &
+    maxval(level_one_temperature_sync), maxval(level_two_temperature_sync))
+  call require(maxval(abs(chain_tree%levels(1)%patches(1)%temperature - &
+      root_temperature_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(2)%patches(1)%temperature - &
+      level_one_temperature_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(3)%patches(1)%temperature - &
+      level_two_temperature_sync)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree Strang temperature parity")
   call composite_three_level_eb_integral_2d( &
     reactive_root_sync, root_geometry, reactive_level_one_sync, &
     level_one_geometry, root_patch, reactive_level_two_sync, &
@@ -774,6 +877,16 @@ program test_amr_eb_multilevel_2d
     all(reactive_level_two_sync == reactive_level_two) .and. &
     all(level_two_temperature_sync == level_two_temperature), &
     "three-level Strang rollback after chemistry")
+
+  reactive_tree_snapshot = chain_tree
+  call advance_reactive_amr_eb_patch_tree_strang_2d( &
+    species, reactions, chain_tree, "unknown", "pcm", "mc", 2, dt, .true., &
+    1.0e-7_dp, 1.0e-13_dp, ok, 0.5_dp, tree_failure_context, &
+    chain_chemistry_advances, chain_level_advances)
+  call require(.not. ok .and. all(chain_chemistry_advances == 0) .and. &
+    all(chain_level_advances == 0) .and. &
+    reactive_tree_solutions_match(chain_tree, reactive_tree_snapshot), &
+    "three-level patch-tree Strang rollback after chemistry")
 
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 

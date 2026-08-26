@@ -1084,6 +1084,21 @@ fixed-depth implementation; and verify exact rollback plus zero counts after a
 late recursive rejection. Run the complete serial Debug and Release suite and
 the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
 
+## 0.155.0 arbitrary-depth reactive EB patch-tree chemistry gates
+
+Traverse every runtime patch with its own EB active mask and the qualified 2D
+chemistry integrator. Expose standalone chemistry plus one transactional
+`chemistry(dt/2) -> recursive hydro(dt) -> chemistry(dt/2)` operation. Keep the
+accepted tree and public chemistry/hydro counts unchanged until final
+deepest-first synchronization and validation succeed.
+
+Require exact four-level branching chemistry and hydro schedules, composite
+mass/energy/species closure, reaction activity, and rollback after a valid
+chemistry prefix followed by rejected hydrodynamics. Compare a runtime
+three-level chain with the established fixed-depth Strang implementation. Run
+the complete serial Debug and Release suite and the existing OpenMPI one-,
+two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation

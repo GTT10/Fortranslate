@@ -2063,3 +2063,31 @@ species correction is constrained to equal the density correction, and all
 corrected temperatures are recovered through the NASA7 EOS. A final
 deepest-first average-down preserves the composite state after ancestor reflux.
 The whole hierarchy commits only after every recursive operation succeeds.
+
+## Arbitrary-depth reactive EB patch-tree chemistry
+
+For each tree node `(l,p)`, construct the logical chemistry mask
+
+```text
+active(i,j) = cell_type(i,j) /= covered.
+```
+
+The established constant-volume 2D reaction integrator advances only those
+active cells. Chemistry is cell-local, so every patch advances over the same
+physical reaction interval independent of level and refinement ratio. After a
+standalone chemistry transaction, deepest-first average-down restores the
+composite representation before the candidate commits.
+
+The coupled tree operation uses Strang ordering
+
+```text
+chemistry(dt/2) on every patch
+recursive EB hydrodynamics(dt)
+chemistry(dt/2) on every patch
+deepest-first synchronization
+```
+
+All stages mutate one private candidate. Consequently, a late chemistry or
+hydrodynamics rejection cannot expose a partially reacted hierarchy, and
+per-level chemistry and hydro call counts are published only with the final
+valid state. Molecular transport is not part of this `R-H-R` operation.
