@@ -1305,6 +1305,15 @@ candidates only to the physics owner and scatters the blended rows. EB-cut
 conservation broadcasts only its small conserved boundary-change vector and
 applies the uniform correction directly on each locally owned root tile.
 
+In `0.125.0`, timestep selection also consumes the sparse hierarchy directly.
+Root tiles gather once to the root physics owner for the EB hyperbolic and
+parabolic limits. Each fine child evaluates the same limits only on its owner
+and multiplies its local stable step by the refinement ratio to express a
+coarse-interval bound. One communicator minimum selects the global step.
+Control consensus and field validation happen before publication, so rejection
+returns zero dt and zero published transfer count without changing sparse
+state.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

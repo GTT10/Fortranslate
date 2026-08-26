@@ -2231,3 +2231,23 @@ the root diffusive stencil and StateRedist remain level-wide. Full root fields
 now exist only on that owner and ranks that actually own fine children. Root
 physics decomposition, public time-loop control, regridding, checkpointing,
 and output remain separate work.
+
+## Sparse owner-local EB timestep selection (`0.125.0`)
+
+- [x] one targeted sparse root gather to the root physics owner
+- [x] root EB hyperbolic CFL evaluation only on that owner
+- [x] optional root parabolic transport limit only on that owner
+- [x] hydro and transport limits evaluated only for locally owned children
+- [x] refinement-ratio scaling from fine dt to coarse interval
+- [x] one communicator-minimum global stable timestep
+- [x] exact root-gather send accounting
+- [x] serial patch-set hydro/transport timestep parity
+- [x] finite negative child-state collective rejection
+- [x] unchanged sparse state and zero dt/transfer publication on rejection
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The distributed sparse hierarchy can now choose its own qualified coarse
+interval without replicated fine payloads or all-rank root fields. A public
+multi-step driver, dynamic topology, checkpointing, and output remain separate
+work.

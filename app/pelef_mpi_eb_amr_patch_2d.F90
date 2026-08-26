@@ -30,8 +30,11 @@ program pelef_mpi_eb_amr_patch_2d
     advance_reactive_eb_patch_set_hydro_2d
   use amr_eb_multipatch_transport_2d_mod, only: &
     advance_reactive_eb_patch_set_transport_2d
+  use eb_reactive_transport_2d_mod, only: &
+    reactive_eb_transport_timestep_2d
   use reactive_eb_amr_2d_driver_mod, only: &
-    advance_reactive_eb_patch_set_strang_2d
+    advance_reactive_eb_patch_set_strang_2d, &
+    compute_reactive_eb_patch_set_cfl_timestep_2d
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
@@ -46,6 +49,7 @@ program pelef_mpi_eb_amr_patch_2d
     materialize_owned_reactive_eb_patch_set_2d, &
     average_down_sparse_owned_reactive_eb_patch_set_2d, &
     advance_sparse_owned_reactive_eb_patch_set_chemistry_2d, &
+    compute_sparse_owned_reactive_eb_patch_set_timestep_2d, &
     advance_sparse_owned_reactive_eb_patch_set_hydro_2d, &
     advance_sparse_owned_reactive_eb_patch_set_transport_2d, &
     advance_sparse_owned_reactive_eb_patch_set_strang_2d
@@ -73,6 +77,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_hydro_failed_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_hydro_failed_backup_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_transport_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_failed_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_timestep_failed_backup_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_transport_failed_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_transport_failed_backup_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_full_set
@@ -146,6 +153,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: hydro_dt, hydro_change, hydro_scale
   real(dp) :: transport_dt, transport_change, transport_scale
   real(dp) :: transport_theta, transport_reference_theta
+  real(dp) :: timestep_dt, timestep_reference_dt, timestep_entity_dt
+  real(dp) :: timestep_maximum_diffusivity
   real(dp) :: child_sound_speed, child_temperature
   real(dp) :: full_reference_theta, full_theta, full_scale, full_change
   logical :: tags(coarse_nx, coarse_ny), ok
@@ -902,6 +911,88 @@ program pelef_mpi_eb_amr_patch_2d
     transport_reference_temperature, transport_reference_set, &
     transport_reference_theta, ok)
   call assert_all(ok, "serial EB AMR transport reference", rank)
+
+  call compute_reactive_eb_patch_set_cfl_timestep_2d( &
+    species, coarse_state, coarse_temperature, coarse_geometry, &
+    transport_start_set, 0.35_dp, timestep_reference_dt, ok)
+  call assert_all(ok, "serial EB AMR hydro timestep reference", rank)
+  call reactive_eb_transport_timestep_2d( &
+    species, transport, coarse_state, coarse_temperature, coarse_geometry, &
+    0.20_dp, .true., .true., .true., timestep_entity_dt, &
+    timestep_maximum_diffusivity, ok)
+  call assert_all(ok, "serial EB AMR root transport timestep", rank)
+  timestep_reference_dt = min(timestep_reference_dt, timestep_entity_dt)
+  do child = 1, transport_start_set%patch_count()
+    call reactive_eb_transport_timestep_2d( &
+      species, transport, transport_start_set%children(child)%state, &
+      transport_start_set%children(child)%temperature, &
+      transport_start_set%children(child)%geometry, 0.20_dp, .true., &
+      .true., .true., timestep_entity_dt, timestep_maximum_diffusivity, ok)
+    call assert_all(ok, "serial EB AMR child transport timestep", rank)
+    timestep_reference_dt = min(timestep_reference_dt, &
+      real(transport_start_set%children(child)%patch%refinement_ratio, dp) * &
+        timestep_entity_dt)
+  end do
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    distribution, size(species), coarse_state, coarse_temperature, &
+    coarse_geometry, transport_start_set, sparse_timestep_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse timestep scatter", rank)
+  expected_local_root_transfers = 0
+  expected_global_root_transfers = 0
+  root_owner = distribution%root_level_owner()
+  do tile = 1, distribution%root_tile_count()
+    owner = distribution%root_tiles(tile)%owner
+    if (owner == root_owner) cycle
+    expected_global_root_transfers = expected_global_root_transfers + 1
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+  end do
+  call compute_sparse_owned_reactive_eb_patch_set_timestep_2d( &
+    species, transport, distribution, sparse_timestep_set, coarse_geometry, &
+    transport_start_set, 0.35_dp, 0.20_dp, .true., .true., .true., .true., &
+    boundaries, timestep_dt, ok, local_root_transfers)
+  call assert_all(ok .and. abs(timestep_dt - timestep_reference_dt) <= &
+      64.0_dp * epsilon(1.0_dp) * timestep_reference_dt, &
+    "MPI EB AMR sparse timestep serial parity", rank)
+  call MPI_Allreduce( &
+    local_root_transfers, global_root_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transfers == expected_local_root_transfers .and. &
+    global_root_transfers == expected_global_root_transfers, &
+    "MPI EB AMR targeted sparse timestep root gather", rank)
+
+  sparse_timestep_failed_set = sparse_timestep_set
+  child = distribution%child_count()
+  if (distribution%child_is_local(child)) &
+    sparse_timestep_failed_set%children(child)%state(irho, :, :) = -1.0_dp
+  sparse_timestep_failed_backup_set = sparse_timestep_failed_set
+  call compute_sparse_owned_reactive_eb_patch_set_timestep_2d( &
+    species, transport, distribution, sparse_timestep_failed_set, &
+    coarse_geometry, transport_start_set, 0.35_dp, 0.20_dp, .true., .true., &
+    .true., .true., boundaries, timestep_dt, ok, local_root_transfers)
+  call assert_all(.not. ok .and. timestep_dt == 0.0_dp .and. &
+    local_root_transfers == 0 .and. &
+    sparse_timestep_failed_set%local_value_count() == &
+      sparse_timestep_failed_backup_set%local_value_count(), &
+    "MPI EB AMR sparse timestep rejection", rank)
+  ok = .true.
+  do tile = 1, distribution%root_tile_count()
+    if (.not. distribution%root_tile_is_local(tile)) cycle
+    ok = ok .and. &
+      all(sparse_timestep_failed_set%root_tiles(tile)%state == &
+        sparse_timestep_failed_backup_set%root_tiles(tile)%state) .and. &
+      all(sparse_timestep_failed_set%root_tiles(tile)%temperature == &
+        sparse_timestep_failed_backup_set%root_tiles(tile)%temperature)
+  end do
+  do child = 1, distribution%child_count()
+    if (.not. distribution%child_is_local(child)) cycle
+    ok = ok .and. all(sparse_timestep_failed_set%children(child)%state == &
+        sparse_timestep_failed_backup_set%children(child)%state) .and. &
+      all(sparse_timestep_failed_set%children(child)%temperature == &
+        sparse_timestep_failed_backup_set%children(child)%temperature)
+  end do
+  call assert_all(ok, "MPI EB AMR sparse timestep state preservation", rank)
 
   allocate(transport_mpi_state, source=coarse_state)
   allocate(transport_mpi_temperature, source=coarse_temperature)

@@ -2010,3 +2010,19 @@ unchanged, the limiter fallback must remain one, and both published Euler and
 transfer counts must remain zero. The gate runs in GNU Fortran Release and
 bounds/FPE-checked Debug configurations before the complete 208-test
 regression.
+
+## 0.125.0 sparse owner-local MPI reactive EB AMR timestep gates
+
+Build a serial reference from the root and every fine child's EB hyperbolic
+CFL limit plus the enabled molecular-transport stability limit. Scale every
+fine-level limit by its refinement ratio before taking the hierarchy minimum.
+The sparse owner-only result must match that reference within 64 machine
+epsilons at one, two, four, and eight ranks.
+
+The expected communication count is one root gather per non-root-owner tile.
+Each rank's reported sends and the communicator sum must match this independent
+formula, with a zero count at one rank. A finite negative density on the final
+child must reject collectively after any root gather, preserve all sparse
+fields bitwise, and publish zero dt and zero transfers. The gate runs in GNU
+Fortran Release and bounds/FPE-checked Debug configurations before the complete
+208-test regression.
