@@ -1,4 +1,5 @@
 program test_amr_eb_reactive_2d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
@@ -17,6 +18,7 @@ program test_amr_eb_reactive_2d
   use amr_eb_reactive_2d_mod, only: &
     reactive_eb_patch_exterior_context_2d, &
     prolong_reactive_eb_patch_pcm_2d, &
+    extract_reactive_eb_patch_exterior_context_support_2d, &
     extract_reactive_eb_patch_exterior_context_2d, &
     build_reactive_eb_patch_exterior_from_context_2d, &
     build_reactive_eb_patch_exterior_2d, &
@@ -31,18 +33,28 @@ program test_amr_eb_reactive_2d
     (coarse_i_upper - coarse_i_lower + 1) * ratio
   integer, parameter :: fine_ny = &
     (coarse_j_upper - coarse_j_lower + 1) * ratio
+  integer, parameter :: support_i_lower = max(1, coarse_i_lower - 1)
+  integer, parameter :: support_i_upper = min(coarse_nx, coarse_i_upper + 1)
+  integer, parameter :: support_j_lower = max(1, coarse_j_lower - 1)
+  integer, parameter :: support_j_upper = min(coarse_ny, coarse_j_upper + 1)
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(reactive_eb_exterior_state_2d) :: exterior, context_exterior
+  type(reactive_eb_exterior_state_2d) :: support_exterior
   type(reactive_eb_patch_exterior_context_2d) :: exterior_context
+  type(reactive_eb_patch_exterior_context_2d) :: support_context
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp) :: fine_level_set(0:fine_nx, 0:fine_ny)
   real(dp), allocatable :: primitive(:), state_cell(:), mass_fractions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_end(:, :, :)
+  real(dp), allocatable :: coarse_start_support(:, :, :)
+  real(dp), allocatable :: coarse_end_support(:, :, :)
   real(dp), allocatable :: fine_state(:, :, :), restricted_state(:, :, :)
   real(dp), allocatable :: new_coarse_state(:, :, :), new_fine_state(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :), coarse_end_temperature(:, :)
+  real(dp), allocatable :: coarse_start_temperature_support(:, :)
+  real(dp), allocatable :: coarse_end_temperature_support(:, :)
   real(dp), allocatable :: fine_temperature(:, :), restricted_temperature(:, :)
   real(dp), allocatable :: new_coarse_temperature(:, :)
   real(dp), allocatable :: new_fine_temperature(:, :)
@@ -155,6 +167,31 @@ program test_amr_eb_reactive_2d
     coarse_geometry, fine_geometry, patch, nvar, exterior_context, ok)
   call require(ok .and. exterior_context%is_valid(fine_geometry, nvar), &
     "compact coarse exterior context")
+  allocate(coarse_start_support( &
+    nvar, support_i_lower:support_i_upper, &
+    support_j_lower:support_j_upper))
+  allocate(coarse_end_support, mold=coarse_start_support)
+  allocate(coarse_start_temperature_support( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper))
+  allocate(coarse_end_temperature_support, &
+    mold=coarse_start_temperature_support)
+  coarse_start_support = coarse_state( &
+    :, support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  coarse_end_support = coarse_end( &
+    :, support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  coarse_start_temperature_support = coarse_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  coarse_end_temperature_support = coarse_end_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  call require(size(coarse_start_support) < size(coarse_state), &
+    "exterior context uses compact coarse support")
+  call extract_reactive_eb_patch_exterior_context_support_2d( &
+    support_i_lower, support_j_lower, coarse_start_support, &
+    coarse_start_temperature_support, coarse_end_support, &
+    coarse_end_temperature_support, coarse_geometry, fine_geometry, patch, &
+    nvar, support_context, ok)
+  call require(ok .and. support_context%is_valid(fine_geometry, nvar), &
+    "support coarse exterior context")
   call build_reactive_eb_patch_exterior_from_context_2d( &
     species, exterior_context, coarse_geometry, fine_geometry, patch, &
     0.25_dp, context_exterior, ok)
@@ -176,6 +213,51 @@ program test_amr_eb_reactive_2d
     maxval(abs(context_exterior%y_upper_temperature - &
       exterior%y_upper_temperature)) == 0.0_dp, &
     "compact exterior context parity")
+  call build_reactive_eb_patch_exterior_from_context_2d( &
+    species, support_context, coarse_geometry, fine_geometry, patch, &
+    0.25_dp, support_exterior, ok)
+  call require(ok .and. &
+    maxval(abs(support_exterior%x_lower_state - &
+      context_exterior%x_lower_state)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%x_upper_state - &
+      context_exterior%x_upper_state)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%y_lower_state - &
+      context_exterior%y_lower_state)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%y_upper_state - &
+      context_exterior%y_upper_state)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%x_lower_temperature - &
+      context_exterior%x_lower_temperature)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%x_upper_temperature - &
+      context_exterior%x_upper_temperature)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%y_lower_temperature - &
+      context_exterior%y_lower_temperature)) == 0.0_dp .and. &
+    maxval(abs(support_exterior%y_upper_temperature - &
+      context_exterior%y_upper_temperature)) == 0.0_dp, &
+    "support/full exterior context parity")
+  call extract_reactive_eb_patch_exterior_context_support_2d( &
+    support_i_lower + 1, support_j_lower, &
+    coarse_start_support(:, support_i_lower + 1:support_i_upper, :), &
+    coarse_start_temperature_support(support_i_lower + 1:support_i_upper, :), &
+    coarse_end_support(:, support_i_lower + 1:support_i_upper, :), &
+    coarse_end_temperature_support(support_i_lower + 1:support_i_upper, :), &
+    coarse_geometry, fine_geometry, patch, nvar, support_context, ok)
+  call require(.not. ok, "incomplete exterior context support rejection")
+  call extract_reactive_eb_patch_exterior_context_support_2d( &
+    0, support_j_lower, coarse_start_support, &
+    coarse_start_temperature_support, coarse_end_support, &
+    coarse_end_temperature_support, coarse_geometry, fine_geometry, patch, &
+    nvar, support_context, ok)
+  call require(.not. ok, "out-of-root exterior context support rejection")
+  coarse_start_support(1, support_i_lower, support_j_lower) = &
+    ieee_value(0.0_dp, ieee_quiet_nan)
+  call extract_reactive_eb_patch_exterior_context_support_2d( &
+    support_i_lower, support_j_lower, coarse_start_support, &
+    coarse_start_temperature_support, coarse_end_support, &
+    coarse_end_temperature_support, coarse_geometry, fine_geometry, patch, &
+    nvar, support_context, ok)
+  call require(.not. ok, "nonfinite exterior context support rejection")
+  coarse_start_support(1, support_i_lower, support_j_lower) = &
+    coarse_state(1, support_i_lower, support_j_lower)
   found_open_boundary = .false.
   do j = 1, fine_ny
     if (fine_geometry%x_face_fraction(0, j) > 0.0_dp) then

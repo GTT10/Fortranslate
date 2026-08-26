@@ -29,6 +29,7 @@ module amr_eb_reactive_2d_mod
   end type reactive_eb_patch_exterior_context_2d
 
   public :: prolong_reactive_eb_patch_pcm_2d
+  public :: extract_reactive_eb_patch_exterior_context_support_2d
   public :: extract_reactive_eb_patch_exterior_context_2d
   public :: build_reactive_eb_patch_exterior_from_context_2d
   public :: build_reactive_eb_patch_exterior_2d
@@ -134,30 +135,49 @@ contains
       sound_speed, ok)
   end subroutine recover_exterior_cell
 
-  subroutine extract_reactive_eb_patch_exterior_context_2d( &
-      coarse_start, coarse_start_temperature, coarse_end, &
-      coarse_end_temperature, coarse_geometry, fine_geometry, patch, &
-      component_count, context, ok)
-    real(dp), intent(in) :: coarse_start(:, :, :)
-    real(dp), intent(in) :: coarse_start_temperature(:, :)
-    real(dp), intent(in) :: coarse_end(:, :, :)
-    real(dp), intent(in) :: coarse_end_temperature(:, :)
+  subroutine extract_reactive_eb_patch_exterior_context_support_2d( &
+      coarse_i_lower, coarse_j_lower, coarse_start, &
+      coarse_start_temperature, coarse_end, coarse_end_temperature, &
+      coarse_geometry, fine_geometry, patch, component_count, context, ok)
+    integer, intent(in) :: coarse_i_lower, coarse_j_lower
+    real(dp), intent(in) :: &
+      coarse_start(:, coarse_i_lower:, coarse_j_lower:)
+    real(dp), intent(in) :: &
+      coarse_start_temperature(coarse_i_lower:, coarse_j_lower:)
+    real(dp), intent(in) :: &
+      coarse_end(:, coarse_i_lower:, coarse_j_lower:)
+    real(dp), intent(in) :: &
+      coarse_end_temperature(coarse_i_lower:, coarse_j_lower:)
     type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
     integer, intent(in) :: component_count
     type(reactive_eb_patch_exterior_context_2d), intent(out) :: context
     logical, intent(out) :: ok
 
-    integer :: coarse_i, coarse_j, fine_i, fine_j, ratio
+    integer :: coarse_i, coarse_i_upper, coarse_j, coarse_j_upper
+    integer :: expected_i_lower, expected_i_upper
+    integer :: expected_j_lower, expected_j_upper, fine_i, fine_j, ratio
 
     ok = .false.
+    coarse_i_upper = coarse_i_lower + size(coarse_start, 2) - 1
+    coarse_j_upper = coarse_j_lower + size(coarse_start, 3) - 1
+    expected_i_lower = max(1, patch%coarse_i_lower - 1)
+    expected_i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 1)
+    expected_j_lower = max(1, patch%coarse_j_lower - 1)
+    expected_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 1)
     if (component_count < 1 .or. &
         .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
-        any(shape(coarse_start) /= &
-          [component_count, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        size(coarse_start, 1) /= component_count .or. &
+        size(coarse_start, 2) < 1 .or. size(coarse_start, 3) < 1 .or. &
+        coarse_i_lower < 1 .or. coarse_i_upper > coarse_geometry%nx .or. &
+        coarse_j_lower < 1 .or. coarse_j_upper > coarse_geometry%ny .or. &
+        coarse_i_lower > expected_i_lower .or. &
+        coarse_i_upper < expected_i_upper .or. &
+        coarse_j_lower > expected_j_lower .or. &
+        coarse_j_upper < expected_j_upper .or. &
         any(shape(coarse_end) /= shape(coarse_start)) .or. &
         any(shape(coarse_start_temperature) /= &
-          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+          [size(coarse_start, 2), size(coarse_start, 3)]) .or. &
         any(shape(coarse_end_temperature) /= &
           shape(coarse_start_temperature)) .or. &
         any(.not. ieee_is_finite(coarse_start)) .or. &
@@ -241,6 +261,36 @@ contains
       end if
     end do
     ok = context%is_valid(fine_geometry, component_count)
+  end subroutine extract_reactive_eb_patch_exterior_context_support_2d
+
+  subroutine extract_reactive_eb_patch_exterior_context_2d( &
+      coarse_start, coarse_start_temperature, coarse_end, &
+      coarse_end_temperature, coarse_geometry, fine_geometry, patch, &
+      component_count, context, ok)
+    real(dp), intent(in) :: coarse_start(:, :, :)
+    real(dp), intent(in) :: coarse_start_temperature(:, :)
+    real(dp), intent(in) :: coarse_end(:, :, :)
+    real(dp), intent(in) :: coarse_end_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    integer, intent(in) :: component_count
+    type(reactive_eb_patch_exterior_context_2d), intent(out) :: context
+    logical, intent(out) :: ok
+
+    if (any(shape(coarse_start) /= &
+        [component_count, coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_start_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(coarse_end) /= shape(coarse_start)) .or. &
+        any(shape(coarse_end_temperature) /= &
+          shape(coarse_start_temperature))) then
+      ok = .false.
+      return
+    end if
+    call extract_reactive_eb_patch_exterior_context_support_2d( &
+      1, 1, coarse_start, coarse_start_temperature, coarse_end, &
+      coarse_end_temperature, coarse_geometry, fine_geometry, patch, &
+      component_count, context, ok)
   end subroutine extract_reactive_eb_patch_exterior_context_2d
 
   subroutine build_reactive_eb_patch_exterior_from_context_2d( &

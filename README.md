@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.146.0` milestone contains the serial verification suite, eight optional
+The `0.147.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -117,6 +117,10 @@ is a compatibility wrapper over the same compact kernel. The root sends only
 the exterior context and patch-plus-two coarse state. Remote child owners
 allocate no complete root state, temperature, or flux field; fine state no
 longer makes a root round trip for reflux.
+Exterior-context extraction also accepts globally indexed patch-plus-one
+coarse start/end state and temperature support. The complete-root entrypoint
+is a wrapper over that support kernel, enabling the next direct root-tile
+state-context route without changing interpolation or EOS recovery.
 The sparse hierarchy also selects its own stable coarse interval. Every root
 tile evaluates its EB hydro and molecular-transport limits directly on its
 owner, while fine children do the same and scale their stable fine steps by the

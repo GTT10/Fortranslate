@@ -2390,3 +2390,15 @@ existing context and corrected-support messages. Require unchanged serial
 root/child fields, register reset, limiter minima, owner work, public clock,
 scheduled regridding, and late-failure rollback at one, two, four, and eight
 ranks in Release and bounds/FPE-checked Debug.
+
+## 0.147.0 compact exterior state-context gates
+
+Extract one child exterior context from complete root start/end state and
+temperature arrays and a second from a strictly smaller globally indexed
+patch-plus-one support. Reconstruct at an interior coarse-time fraction and
+require bitwise-identical state and temperature on all four fine edges.
+
+Require incomplete, out-of-root, and nonfinite support to reject without a
+valid published context. Retain all established serial reactive EB AMR and
+sparse MPI transport gates before qualifying the support API as the next
+direct state-routing boundary.

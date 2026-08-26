@@ -1567,3 +1567,17 @@ The complete root result and flux bundle still exist on the root physics owner
 for exterior extraction, boundary closure, cumulative support merge, and row
 scatter. The direct flux route removes one dependency from that boundary but
 does not yet distribute state context or corrected support.
+
+## Compact exterior state-context support (`0.147.0`)
+
+Reactive child exterior-context extraction accepts coarse start/end conserved
+state and temperature arrays with explicit global lower bounds. A rectangle
+containing the patch expanded by one coarse cell covers every nonphysical
+coarse/fine boundary sample. Physical sides retain the established placeholder
+values and are filled from fine boundary state during subcycling.
+
+The complete-root entrypoint validates its compatibility arrays and delegates
+to the support kernel. The unit gate reconstructs exterior arrays from complete
+and strictly smaller support contexts and requires bitwise parity. Sparse MPI
+continues to call the complete-root wrapper until root-tile state fragments and
+cumulative corrected support are routed directly.
