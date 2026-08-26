@@ -4,6 +4,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use transport_database_mod, only: &
+    gas_transport_species, load_h2o2_elementary_transport
   use simulation_config_reactive_2d_mod, only: reactive_2d_config
   use reactive_2d_mod, only: initialize_reactive_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
@@ -12,7 +14,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initialize_amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
-    initialize_reactive_amr_eb_patch_tree_2d
+    initialize_reactive_amr_eb_patch_tree_2d, &
+    compute_reactive_amr_eb_patch_tree_timestep_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -21,11 +24,13 @@ program pelef_mpi_amr_eb_patch_tree_2d
     synchronize_owned_reactive_amr_eb_patch_tree_2d, &
     initialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     materialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
-    migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
+    migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
   implicit none
 
   type(MPI_Comm) :: comm
   type(nasa7_species), allocatable :: species(:)
+  type(gas_transport_species), allocatable :: transport(:)
   type(reactive_2d_config) :: config
   type(eb_geometry_2d) :: root_geometry, level_one_geometry
   type(eb_geometry_2d) :: branch_a_geometry, branch_b_geometry
@@ -33,6 +38,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
   type(amr_eb_patch_tree_topology_2d) :: topology
   type(reactive_amr_eb_patch_tree_2d) :: solution, accepted, failed
+  type(reactive_amr_eb_patch_tree_2d) :: physical_solution
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -40,14 +46,18 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(mpi_amr_eb_patch_tree_distribution_2d) :: migrated_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: invalid_distribution
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse, sparse_snapshot
+  type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: physical_sparse
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp) :: base_density, expected_state, expected_temperature
+  real(dp) :: hydro_cfl, mismatched_hydro_cfl, serial_dt, sparse_dt
+  real(dp) :: transport_cfl
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
   integer :: local_publications, global_publications
   integer :: expected_transfers, global_transfers, local_allocated_cells
   integer :: local_nodes, local_transfers, new_owner, old_owner
+  integer :: global_timestep_nodes, local_timestep_nodes
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -61,6 +71,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call assert_all(ok, "MPI EB patch-tree thermodynamic database", comm)
+  call load_h2o2_elementary_transport(transport, ok)
+  call assert_all(ok, "MPI EB patch-tree transport database", comm)
   call build_regular_geometry(8, 8, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
     root_geometry, ok)
   call assert_all(ok, "MPI EB patch-tree root geometry", comm)
@@ -148,6 +160,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call initialize_reactive_amr_eb_patch_tree_2d( &
     species, root_state, root_temperature, topology, solution, ok)
   call assert_all(ok, "MPI EB reactive patch-tree state", comm)
+  physical_solution = solution
 
   call initialize_mpi_amr_eb_patch_tree_distribution_2d( &
     topology, comm, unweighted_distribution, ok, 0)
@@ -276,6 +289,40 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call assert_all(.not. ok .and. local_transfers == 0 .and. &
     sparse_trees_match(sparse, sparse_snapshot), &
     "MPI EB patch-tree sparse migration rollback", comm)
+
+  hydro_cfl = 0.4_dp
+  transport_cfl = 0.2_dp
+  call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_solution, physical_sparse, ok)
+  call assert_all(ok, "MPI EB patch-tree physical sparse state", comm)
+  call compute_reactive_amr_eb_patch_tree_timestep_2d( &
+    species, transport, physical_solution, hydro_cfl, transport_cfl, &
+    .true., .true., .true., serial_dt, ok)
+  call assert_all(ok, "MPI EB patch-tree serial timestep reference", comm)
+  call compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
+    species, transport, migrated_distribution, physical_sparse, hydro_cfl, &
+    transport_cfl, .true., .true., .true., sparse_dt, ok, &
+    local_timestep_nodes)
+  call MPI_Allreduce( &
+    local_timestep_nodes, global_timestep_nodes, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    sparse_dt == serial_dt .and. global_timestep_nodes == 5, &
+    "MPI EB patch-tree sparse timestep parity", comm)
+
+  mismatched_hydro_cfl = hydro_cfl
+  if (nranks > 1) then
+    if (rank == 0) mismatched_hydro_cfl = 0.5_dp * hydro_cfl
+  else
+    mismatched_hydro_cfl = -hydro_cfl
+  end if
+  call compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
+    species, transport, migrated_distribution, physical_sparse, &
+    mismatched_hydro_cfl, transport_cfl, .true., .true., .true., &
+    sparse_dt, ok, local_timestep_nodes)
+  call assert_all(.not. ok .and. sparse_dt == 0.0_dp .and. &
+    local_timestep_nodes == 0, &
+    "MPI EB patch-tree timestep control consensus", comm)
 
   if (rank == 0) solution%levels(1)%patches(1)%temperature(1, 1) = -1.0_dp
   failed = solution
