@@ -687,6 +687,9 @@ Required capabilities:
   final blend scatter, and distributed cut-interface closure (`0.124.0`)
 - [x] owner-local sparse EB hydro/transport CFL timestep selection with
   targeted root gather and coarse-interval child scaling (`0.125.0`)
+- [x] public sparse EB full-physics time loop with dynamic stable-step
+  selection, exact target-time clipping, and committed-prefix accounting
+  (`0.126.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
