@@ -165,6 +165,9 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_restriction_transfers, global_restriction_transfers
   integer :: expected_local_restriction_transfers
   integer :: expected_global_restriction_transfers
+  integer :: local_root_transfers, global_root_transfers
+  integer :: expected_local_root_transfers
+  integer :: expected_global_root_transfers, root_owner
   character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
@@ -739,10 +742,38 @@ program pelef_mpi_eb_amr_patch_2d
     distribution, size(species), coarse_state, coarse_temperature, &
     coarse_geometry, hydro_start_set, sparse_hydro_set, ok)
   call assert_all(ok, "MPI EB AMR sparse hydro scatter", rank)
+  root_owner = distribution%root_level_owner()
+  expected_local_root_transfers = 0
+  expected_global_root_transfers = 0
+  restriction_recipients = .false.
+  do tile = 1, distribution%root_tile_count()
+    owner = distribution%root_tiles(tile)%owner
+    if (owner == root_owner) cycle
+    expected_global_root_transfers = expected_global_root_transfers + 2
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+    if (rank == root_owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+  end do
+  do child = 1, distribution%child_count()
+    owner = distribution%child_owner(child)
+    if (owner == root_owner) cycle
+    restriction_recipients(owner + 1) = .true.
+    expected_global_root_transfers = expected_global_root_transfers + 2
+    if (rank == root_owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+  end do
+  restriction_recipients(root_owner + 1) = .false.
+  expected_global_root_transfers = expected_global_root_transfers + &
+    count(restriction_recipients)
+  if (rank == root_owner) expected_local_root_transfers = &
+    expected_local_root_transfers + count(restriction_recipients)
   call advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &
     species, distribution, sparse_hydro_set, coarse_geometry, &
     hydro_start_set, "hllc", "pcm", "mc", 2, hydro_dt, ok, &
-    local_advances, 0.5_dp)
+    local_advances, 0.5_dp, local_root_transfers)
   call assert_all(ok .and. sparse_hydro_set%is_valid( &
     distribution, coarse_geometry, hydro_start_set) .and. &
     int(sparse_hydro_set%local_value_count()) == sparse_expected_local_values, &
@@ -754,6 +785,13 @@ program pelef_mpi_eb_amr_patch_2d
     local_advances == expected_local_advances .and. &
     global_advances == expected_global_advances, &
     "MPI EB AMR sparse hydro owner accounting", rank)
+  call MPI_Allreduce( &
+    local_root_transfers, global_root_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_root_transfers == expected_local_root_transfers .and. &
+    global_root_transfers == expected_global_root_transfers, &
+    "MPI EB AMR targeted sparse hydro root traffic", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     distribution, sparse_hydro_set, coarse_state, coarse_temperature, &
     coarse_geometry, hydro_start_set, materialized_coarse_state, &
@@ -814,8 +852,9 @@ program pelef_mpi_eb_amr_patch_2d
   call advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &
     species, distribution, sparse_hydro_failed_set, coarse_geometry, &
     hydro_start_set, "hllc", "pcm", "mc", 2, hydro_dt, ok, &
-    local_advances, 0.5_dp)
+    local_advances, 0.5_dp, local_root_transfers)
   call assert_all(.not. ok .and. local_advances == 0 .and. &
+    local_root_transfers == 0 .and. &
     sparse_hydro_failed_set%local_value_count() == &
       sparse_hydro_failed_backup_set%local_value_count(), &
     "MPI EB AMR late sparse hydro rollback", rank)

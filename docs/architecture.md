@@ -1286,13 +1286,22 @@ EOS recovery as before; unrelated ranks neither allocate nor receive the
 buffer. Transfer counts and sparse state publish only after collective
 acceptance.
 
+In `0.123.0`, direct sparse hydro removes all-rank root numerical broadcasts.
+Sparse root tiles send one packed payload to the root physics owner, which
+advances the level-wide root algorithm. That owner sends one packed start,
+updated-state, and flux bundle to each distinct remote child owner. Before and
+after each remote child reflux, the current root correction moves once in each
+direction. After all children succeed, the root owner sends each remote root
+tile only its final row band. Full root arrays therefore exist only on the root
+owner and ranks that actually own fine children.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-targeted root-physics payloads, and distributed EB flux registers remain
-outside this subsystem.
+targeted transport root-physics payloads, and distributed EB flux registers
+remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

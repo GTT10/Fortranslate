@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.122.0` milestone contains the serial verification suite, eight optional
+The `0.123.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -59,10 +59,12 @@ input through commit. Both chemistry half-steps, both SSPRK2 transport
 half-steps, and hydro call their direct sparse entrypoints; no complete child
 hierarchy is materialized between operators. Counts and the limiter minimum are
 still published only with the final outer commit.
-Hydro also has a direct sparse entrypoint. Root tiles are assembled into one
-level-wide temporary for the root StateRedist update, while each fine child is
-subcycled and refluxed only on its owner. No nonowner child payload is created,
-and the result returns through direct sparse average-down.
+Hydro also has a direct sparse entrypoint. Root tiles are gathered only to the
+root physics owner for the level-wide StateRedist update. The root start,
+updated state, and flux bundle is sent once only to distinct child owners;
+reflux corrections make one point-to-point round trip per remote child, and
+the final root returns as tile-sized payloads. Unrelated ranks never allocate
+the full root bundle, and no hydro numerical field uses an all-rank broadcast.
 SSPRK2 molecular transport now follows the same sparse ownership boundary.
 Each fine child performs both Euler stages, ratio subcycling, diffusive flux
 accumulation, reflux, and temperature recovery only on its owner. Root state,
@@ -557,6 +559,9 @@ The AMR layer provides:
 - targeted point-to-point sparse MPI EB restriction from each child owner only
   to intersecting root tile owners, with exact transfer accounting and
   transactional rollback;
+- targeted direct sparse MPI EB hydro root traffic with tile gather/scatter,
+  one bundle per distinct child owner, per-child correction round trips, exact
+  transfer accounting, and no numerical all-rank broadcasts;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

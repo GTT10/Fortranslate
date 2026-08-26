@@ -2183,3 +2183,26 @@ communicator. Root physics fields, coarse-time exterior state, fluxes, and
 reflux corrections still use level-wide synchronization in the direct hydro
 and transport operators. Root decomposition, targeted physics traffic, public
 time-loop control, regridding, checkpointing, and output remain separate work.
+
+## Targeted direct sparse hydro root traffic (`0.123.0`)
+
+- [x] one packed root-tile gather per non-root physics owner tile
+- [x] root physics state and flux allocation only on the root owner
+- [x] one packed root bundle per distinct remote child owner
+- [x] no full root allocation on unrelated ranks
+- [x] one correction payload in each direction per remote child reflux
+- [x] one packed final row-band scatter per remote root tile
+- [x] no all-rank hydro numerical field broadcast
+- [x] exact local and communicator payload-transfer accounting
+- [x] unchanged sparse allocation count after commit
+- [x] serial root and child state and temperature parity
+- [x] exact state, advance-count, and transfer-count rollback
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Hydro still advances the complete root level on one physics owner because root
+EB reconstruction and StateRedist are not decomposed, but its full numerical
+arrays no longer reach unrelated ranks. Direct sparse transport still uses
+all-rank root field broadcasts. Root decomposition, targeted transport traffic,
+public time-loop control, regridding, checkpointing, and output remain separate
+work.

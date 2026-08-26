@@ -39,6 +39,11 @@ module mpi_amr_eb_patch_2d_mod
   private
 
   integer, parameter :: sparse_restriction_tag = 2701
+  integer, parameter :: sparse_root_gather_tag = 2702
+  integer, parameter :: sparse_root_bundle_tag = 2703
+  integer, parameter :: sparse_root_correction_out_tag = 2704
+  integer, parameter :: sparse_root_correction_back_tag = 2705
+  integer, parameter :: sparse_root_scatter_tag = 2706
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
@@ -563,6 +568,361 @@ contains
       distribution, local_ok, accepted, global_ok)
     ok = global_ok .and. accepted
   end subroutine materialize_sparse_root_2d
+
+  subroutine gather_sparse_root_to_owner_2d( &
+      distribution, sparse_patch_set, coarse_geometry, root_state, &
+      root_temperature, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), allocatable, intent(out) :: root_state(:, :, :)
+    real(dp), allocatable, intent(out) :: root_temperature(:, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical :: accepted, global_ok, local_ok
+    integer :: cell_count, ierr, j_lower, j_upper, owner, root_owner
+    integer :: rows, state_count, tile
+
+    ok = .false.
+    root_owner = distribution%root_level_owner()
+    local_ok = root_owner >= 0 .and. root_owner < distribution%nranks .and. &
+      sparse_patch_set%nvar >= 1 .and. &
+      allocated(sparse_patch_set%root_tiles) .and. &
+      size(sparse_patch_set%root_tiles) == distribution%root_tile_count()
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    if (distribution%rank == root_owner) then
+      allocate(root_state( &
+        sparse_patch_set%nvar, coarse_geometry%nx, coarse_geometry%ny), &
+        source=0.0_dp)
+      allocate(root_temperature( &
+        coarse_geometry%nx, coarse_geometry%ny), source=1.0_dp)
+    end if
+    do tile = 1, distribution%root_tile_count()
+      owner = distribution%root_tiles(tile)%owner
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      rows = j_upper - j_lower + 1
+      cell_count = distribution%root_tiles(tile)%cell_count
+      state_count = sparse_patch_set%nvar * cell_count
+      if (owner == root_owner) then
+        if (distribution%rank == root_owner) then
+          root_state(:, :, j_lower:j_upper) = &
+            sparse_patch_set%root_tiles(tile)%state
+          root_temperature(:, j_lower:j_upper) = &
+            sparse_patch_set%root_tiles(tile)%temperature
+        end if
+      else if (distribution%rank == owner) then
+        allocate(payload(state_count + cell_count))
+        payload(1:state_count) = reshape( &
+          sparse_patch_set%root_tiles(tile)%state, [state_count])
+        payload(state_count + 1:state_count + cell_count) = reshape( &
+          sparse_patch_set%root_tiles(tile)%temperature, [cell_count])
+        call MPI_Send( &
+          payload, size(payload), MPI_DOUBLE_PRECISION, root_owner, &
+          sparse_root_gather_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+        deallocate(payload)
+      else if (distribution%rank == root_owner) then
+        allocate(payload(state_count + cell_count))
+        call MPI_Recv( &
+          payload, size(payload), MPI_DOUBLE_PRECISION, owner, &
+          sparse_root_gather_tag, distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        root_state(:, :, j_lower:j_upper) = reshape( &
+          payload(1:state_count), &
+          [sparse_patch_set%nvar, coarse_geometry%nx, rows])
+        root_temperature(:, j_lower:j_upper) = reshape( &
+          payload(state_count + 1:state_count + cell_count), &
+          [coarse_geometry%nx, rows])
+        deallocate(payload)
+      end if
+    end do
+    local_ok = .true.
+    if (distribution%rank == root_owner) local_ok = &
+      allocated(root_state) .and. allocated(root_temperature)
+    if (distribution%rank == root_owner .and. local_ok) local_ok = &
+      all(ieee_is_finite(root_state)) .and. &
+      all(ieee_is_finite(root_temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine gather_sparse_root_to_owner_2d
+
+  subroutine distribute_sparse_root_bundle_to_child_owners_2d( &
+      distribution, coarse_geometry, root_state, root_temperature, &
+      updated_state, updated_temperature, x_flux, y_flux, local_transfers, &
+      ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), allocatable, intent(inout) :: root_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: root_temperature(:, :)
+    real(dp), allocatable, intent(inout) :: updated_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: updated_temperature(:, :)
+    real(dp), allocatable, intent(inout) :: x_flux(:, :, :)
+    real(dp), allocatable, intent(inout) :: y_flux(:, :, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical, allocatable :: recipients(:)
+    logical :: accepted, global_ok, local_ok, participant
+    integer :: child, ierr, nvar, offset, recipient, root_owner
+    integer :: state_count, temperature_count, value_count
+    integer :: x_flux_count, y_flux_count
+
+    ok = .false.
+    root_owner = distribution%root_level_owner()
+    nvar = 0
+    if (distribution%rank == root_owner .and. allocated(root_state)) &
+      nvar = size(root_state, 1)
+    call MPI_Bcast( &
+      nvar, 1, MPI_INTEGER, root_owner, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. nvar < 1) return
+    allocate(recipients(distribution%nranks), source=.false.)
+    do child = 1, distribution%child_count()
+      recipient = distribution%child_owner(child)
+      if (recipient < 0 .or. recipient >= distribution%nranks) return
+      recipients(recipient + 1) = .true.
+    end do
+    state_count = nvar * coarse_geometry%nx * coarse_geometry%ny
+    temperature_count = coarse_geometry%nx * coarse_geometry%ny
+    x_flux_count = nvar * (coarse_geometry%nx + 1) * coarse_geometry%ny
+    y_flux_count = nvar * coarse_geometry%nx * (coarse_geometry%ny + 1)
+    value_count = 2 * state_count + 2 * temperature_count + &
+      x_flux_count + y_flux_count
+
+    if (distribution%rank == root_owner) then
+      local_ok = allocated(root_state) .and. &
+        allocated(root_temperature) .and. allocated(updated_state) .and. &
+        allocated(updated_temperature) .and. allocated(x_flux) .and. &
+        allocated(y_flux)
+      if (.not. local_ok) return
+      allocate(payload(value_count))
+      offset = 0
+      payload(offset + 1:offset + state_count) = &
+        reshape(root_state, [state_count])
+      offset = offset + state_count
+      payload(offset + 1:offset + temperature_count) = &
+        reshape(root_temperature, [temperature_count])
+      offset = offset + temperature_count
+      payload(offset + 1:offset + state_count) = &
+        reshape(updated_state, [state_count])
+      offset = offset + state_count
+      payload(offset + 1:offset + temperature_count) = &
+        reshape(updated_temperature, [temperature_count])
+      offset = offset + temperature_count
+      payload(offset + 1:offset + x_flux_count) = &
+        reshape(x_flux, [x_flux_count])
+      offset = offset + x_flux_count
+      payload(offset + 1:offset + y_flux_count) = &
+        reshape(y_flux, [y_flux_count])
+      do recipient = 0, distribution%nranks - 1
+        if (recipient == root_owner .or. &
+            .not. recipients(recipient + 1)) cycle
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, recipient, &
+          sparse_root_bundle_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+      end do
+    else if (recipients(distribution%rank + 1)) then
+      allocate(payload(value_count))
+      call MPI_Recv( &
+        payload, value_count, MPI_DOUBLE_PRECISION, root_owner, &
+        sparse_root_bundle_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+      allocate(root_state(nvar, coarse_geometry%nx, coarse_geometry%ny))
+      allocate(root_temperature(coarse_geometry%nx, coarse_geometry%ny))
+      allocate(updated_state(nvar, coarse_geometry%nx, coarse_geometry%ny))
+      allocate(updated_temperature(coarse_geometry%nx, coarse_geometry%ny))
+      allocate(x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+      allocate(y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+      offset = 0
+      root_state = reshape( &
+        payload(offset + 1:offset + state_count), shape(root_state))
+      offset = offset + state_count
+      root_temperature = reshape( &
+        payload(offset + 1:offset + temperature_count), &
+        shape(root_temperature))
+      offset = offset + temperature_count
+      updated_state = reshape( &
+        payload(offset + 1:offset + state_count), shape(updated_state))
+      offset = offset + state_count
+      updated_temperature = reshape( &
+        payload(offset + 1:offset + temperature_count), &
+        shape(updated_temperature))
+      offset = offset + temperature_count
+      x_flux = reshape( &
+        payload(offset + 1:offset + x_flux_count), shape(x_flux))
+      offset = offset + x_flux_count
+      y_flux = reshape( &
+        payload(offset + 1:offset + y_flux_count), shape(y_flux))
+    end if
+    participant = distribution%rank == root_owner .or. &
+      recipients(distribution%rank + 1)
+    local_ok = .true.
+    if (participant) local_ok = allocated(root_state) .and. &
+      allocated(root_temperature) .and. allocated(updated_state) .and. &
+      allocated(updated_temperature) .and. allocated(x_flux) .and. &
+      allocated(y_flux)
+    if (participant .and. local_ok) local_ok = &
+      all(ieee_is_finite(root_state)) .and. &
+      all(ieee_is_finite(root_temperature)) .and. &
+      all(ieee_is_finite(updated_state)) .and. &
+      all(ieee_is_finite(updated_temperature)) .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine distribute_sparse_root_bundle_to_child_owners_2d
+
+  subroutine transfer_sparse_root_correction_2d( &
+      distribution, coarse_geometry, nvar, source, destination, tag, state, &
+      temperature, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: nvar, source, destination, tag
+    real(dp), allocatable, intent(inout) :: state(:, :, :)
+    real(dp), allocatable, intent(inout) :: temperature(:, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical :: accepted, global_ok, local_ok, participant
+    integer :: ierr, state_count, temperature_count, value_count
+
+    ok = .false.
+    local_ok = nvar >= 1 .and. source >= 0 .and. &
+      source < distribution%nranks .and. destination >= 0 .and. &
+      destination < distribution%nranks
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    state_count = nvar * coarse_geometry%nx * coarse_geometry%ny
+    temperature_count = coarse_geometry%nx * coarse_geometry%ny
+    value_count = state_count + temperature_count
+    if (source /= destination) then
+      if (distribution%rank == source) then
+        if (.not. allocated(state) .or. .not. allocated(temperature)) return
+        allocate(payload(value_count))
+        payload(1:state_count) = reshape(state, [state_count])
+        payload(state_count + 1:value_count) = &
+          reshape(temperature, [temperature_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, destination, tag, &
+          distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+      else if (distribution%rank == destination) then
+        if (.not. allocated(state)) allocate( &
+          state(nvar, coarse_geometry%nx, coarse_geometry%ny))
+        if (.not. allocated(temperature)) allocate( &
+          temperature(coarse_geometry%nx, coarse_geometry%ny))
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, source, tag, &
+          distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        state = reshape(payload(1:state_count), shape(state))
+        temperature = reshape( &
+          payload(state_count + 1:value_count), shape(temperature))
+      end if
+    end if
+    participant = distribution%rank == source .or. &
+      distribution%rank == destination
+    local_ok = .true.
+    if (participant) local_ok = allocated(state) .and. &
+      allocated(temperature)
+    if (participant .and. local_ok) local_ok = &
+      all(ieee_is_finite(state)) .and. &
+      all(ieee_is_finite(temperature))
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine transfer_sparse_root_correction_2d
+
+  subroutine scatter_sparse_root_from_owner_2d( &
+      distribution, coarse_geometry, patch_set_template, root_state, &
+      root_temperature, sparse_patch_set, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    real(dp), allocatable, intent(in) :: root_state(:, :, :)
+    real(dp), allocatable, intent(in) :: root_temperature(:, :)
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical :: accepted, global_ok, local_ok
+    integer :: cell_count, ierr, j_lower, j_upper, owner, root_owner
+    integer :: rows, state_count, tile
+
+    ok = .false.
+    root_owner = distribution%root_level_owner()
+    local_ok = root_owner >= 0 .and. root_owner < distribution%nranks
+    if (distribution%rank == root_owner .and. local_ok) local_ok = &
+      allocated(root_state) .and. allocated(root_temperature)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    do tile = 1, distribution%root_tile_count()
+      owner = distribution%root_tiles(tile)%owner
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      rows = j_upper - j_lower + 1
+      cell_count = distribution%root_tiles(tile)%cell_count
+      state_count = sparse_patch_set%nvar * cell_count
+      if (owner == root_owner) then
+        if (distribution%rank == root_owner) then
+          sparse_patch_set%root_tiles(tile)%state = &
+            root_state(:, :, j_lower:j_upper)
+          sparse_patch_set%root_tiles(tile)%temperature = &
+            root_temperature(:, j_lower:j_upper)
+        end if
+      else if (distribution%rank == root_owner) then
+        allocate(payload(state_count + cell_count))
+        payload(1:state_count) = reshape( &
+          root_state(:, :, j_lower:j_upper), [state_count])
+        payload(state_count + 1:state_count + cell_count) = reshape( &
+          root_temperature(:, j_lower:j_upper), [cell_count])
+        call MPI_Send( &
+          payload, size(payload), MPI_DOUBLE_PRECISION, owner, &
+          sparse_root_scatter_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+        deallocate(payload)
+      else if (distribution%rank == owner) then
+        allocate(payload(state_count + cell_count))
+        call MPI_Recv( &
+          payload, size(payload), MPI_DOUBLE_PRECISION, root_owner, &
+          sparse_root_scatter_tag, distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        sparse_patch_set%root_tiles(tile)%state = reshape( &
+          payload(1:state_count), &
+          [sparse_patch_set%nvar, coarse_geometry%nx, rows])
+        sparse_patch_set%root_tiles(tile)%temperature = reshape( &
+          payload(state_count + 1:state_count + cell_count), &
+          [coarse_geometry%nx, rows])
+        deallocate(payload)
+      end if
+    end do
+    local_ok = sparse_patch_set%is_valid( &
+      distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine scatter_sparse_root_from_owner_2d
 
   pure logical function coarse_cell_is_refined_2d( &
       patch_set_template, i, j) result(refined)
@@ -1130,7 +1490,7 @@ contains
       species, distribution, sparse_patch_set, coarse_geometry, &
       patch_set_template, solver, reconstruction, limiter, &
       state_redist_max_order, dt, ok, local_level_advances, &
-      state_redist_target_volume_fraction)
+      state_redist_target_volume_fraction, local_root_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
     type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
@@ -1142,6 +1502,7 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_level_advances
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
+    integer, intent(out), optional :: local_root_transfers
 
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
@@ -1165,13 +1526,15 @@ contains
     logical :: accepted, entity_ok, global_ok, local_ok
     integer :: advances, character_index, child, ierr, integer_controls(2)
     integer :: integer_maximum(2), integer_minimum(2)
-    integer :: j_lower, j_upper, nvar, owner, ratio, root_owner, substep
+    integer :: nvar, owner, ratio, root_owner, substep, transfers
     integer :: string_codes(32, 3), string_maximum(32, 3)
-    integer :: string_minimum(32, 3), tile
+    integer :: string_minimum(32, 3)
 
     ok = .false.
     advances = 0
+    transfers = 0
     if (present(local_level_advances)) local_level_advances = 0
+    if (present(local_root_transfers)) local_root_transfers = 0
     selected_target = 0.5_dp
     if (present(state_redist_target_volume_fraction)) &
       selected_target = state_redist_target_volume_fraction
@@ -1236,37 +1599,19 @@ contains
         any(string_minimum /= string_maximum)) return
 
     candidate = sparse_patch_set
-    allocate(root_start( &
-      nvar, coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
-    allocate(root_start_temperature( &
-      coarse_geometry%nx, coarse_geometry%ny), source=1.0_dp)
-    do tile = 1, distribution%root_tile_count()
-      owner = distribution%root_tiles(tile)%owner
-      j_lower = distribution%root_tiles(tile)%j_lower
-      j_upper = distribution%root_tiles(tile)%j_upper
-      if (distribution%root_tile_is_local(tile)) then
-        root_start(:, :, j_lower:j_upper) = &
-          candidate%root_tiles(tile)%state
-        root_start_temperature(:, j_lower:j_upper) = &
-          candidate%root_tiles(tile)%temperature
-      end if
-      call MPI_Bcast( &
-        root_start(:, :, j_lower:j_upper), &
-        nvar * distribution%root_tiles(tile)%cell_count, &
-        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
-      call MPI_Bcast( &
-        root_start_temperature(:, j_lower:j_upper), &
-        distribution%root_tiles(tile)%cell_count, MPI_DOUBLE_PRECISION, &
-        owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
-    end do
-
-    allocate(root_hydro, mold=root_start)
-    allocate(root_hydro_temperature, mold=root_start_temperature)
-    allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
-    allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
     root_owner = distribution%root_level_owner()
+    call gather_sparse_root_to_owner_2d( &
+      distribution, candidate, coarse_geometry, root_start, &
+      root_start_temperature, transfers, local_ok)
+    if (.not. local_ok) return
+    if (distribution%rank == root_owner) then
+      allocate(root_hydro, mold=root_start)
+      allocate(root_hydro_temperature, mold=root_start_temperature)
+      allocate(coarse_x_flux( &
+        nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
+      allocate(coarse_y_flux( &
+        nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    end if
     entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
     if (distribution%rank == root_owner .and. entity_ok) then
       call advance_reactive_eb_level_2d( &
@@ -1279,27 +1624,22 @@ contains
     call all_ranks_accept_eb_2d( &
       distribution, entity_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
-    call MPI_Bcast( &
-      root_hydro, size(root_hydro), MPI_DOUBLE_PRECISION, root_owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      root_hydro_temperature, size(root_hydro_temperature), &
-      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      coarse_x_flux, size(coarse_x_flux), MPI_DOUBLE_PRECISION, &
-      root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      coarse_y_flux, size(coarse_y_flux), MPI_DOUBLE_PRECISION, &
-      root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-
-    allocate(coarse_corrected, source=root_hydro)
-    allocate(coarse_corrected_temperature, source=root_hydro_temperature)
+    call distribute_sparse_root_bundle_to_child_owners_2d( &
+      distribution, coarse_geometry, root_start, root_start_temperature, &
+      root_hydro, root_hydro_temperature, coarse_x_flux, coarse_y_flux, &
+      transfers, local_ok)
+    if (.not. local_ok) return
+    if (distribution%rank == root_owner) then
+      allocate(coarse_corrected, source=root_hydro)
+      allocate(coarse_corrected_temperature, source=root_hydro_temperature)
+    end if
     do child = 1, distribution%child_count()
       owner = distribution%child_owner(child)
+      call transfer_sparse_root_correction_2d( &
+        distribution, coarse_geometry, nvar, root_owner, owner, &
+        sparse_root_correction_out_tag, coarse_corrected, &
+        coarse_corrected_temperature, transfers, local_ok)
+      if (.not. local_ok) return
       entity_ok = owner >= 0 .and. owner < distribution%nranks
       if (distribution%rank == owner .and. entity_ok) then
         call initialize_amr_eb_flux_register_2d( &
@@ -1383,25 +1723,21 @@ contains
       call all_ranks_accept_eb_2d( &
         distribution, entity_ok, accepted, global_ok)
       if (.not. global_ok .or. .not. accepted) return
-      call MPI_Bcast( &
-        coarse_corrected, size(coarse_corrected), MPI_DOUBLE_PRECISION, &
-        owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
-      call MPI_Bcast( &
-        coarse_corrected_temperature, size(coarse_corrected_temperature), &
-        MPI_DOUBLE_PRECISION, owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) return
+      call transfer_sparse_root_correction_2d( &
+        distribution, coarse_geometry, nvar, owner, root_owner, &
+        sparse_root_correction_back_tag, coarse_corrected, &
+        coarse_corrected_temperature, transfers, local_ok)
+      if (.not. local_ok) return
+      if (owner /= root_owner .and. distribution%rank == owner) then
+        deallocate(coarse_corrected)
+        deallocate(coarse_corrected_temperature)
+      end if
     end do
 
-    do tile = 1, distribution%root_tile_count()
-      if (.not. distribution%root_tile_is_local(tile)) cycle
-      j_lower = distribution%root_tiles(tile)%j_lower
-      j_upper = distribution%root_tiles(tile)%j_upper
-      candidate%root_tiles(tile)%state = &
-        coarse_corrected(:, :, j_lower:j_upper)
-      candidate%root_tiles(tile)%temperature = &
-        coarse_corrected_temperature(:, j_lower:j_upper)
-    end do
+    call scatter_sparse_root_from_owner_2d( &
+      distribution, coarse_geometry, patch_set_template, coarse_corrected, &
+      coarse_corrected_temperature, candidate, transfers, local_ok)
+    if (.not. local_ok) return
     call average_down_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, candidate, coarse_geometry, &
       patch_set_template, local_ok)
@@ -1415,6 +1751,7 @@ contains
     sparse_patch_set = candidate
     ok = .true.
     if (present(local_level_advances)) local_level_advances = advances
+    if (present(local_root_transfers)) local_root_transfers = transfers
   end subroutine advance_sparse_owned_reactive_eb_patch_set_hydro_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_transport_2d( &

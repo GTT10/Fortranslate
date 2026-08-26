@@ -1974,3 +1974,20 @@ send candidate restrictions, but every local sparse field must remain bitwise
 unchanged and the published transfer count must remain zero. The gate runs in
 GNU Fortran Release and bounds/FPE-checked Debug configurations before the
 complete 208-test regression.
+
+## 0.123.0 targeted direct sparse MPI reactive EB AMR hydro gates
+
+For a root split into one row tile per available rank, the expected hydro
+payload count is two transfers per non-root-owner tile, one root bundle per
+distinct remote child owner, and two correction transfers per remote child.
+Each rank's reported sends and the communicator sum must match that independent
+formula at one, two, four, and eight ranks; the one-rank count must be zero.
+
+The direct sparse hydro result must retain every rank's exact stored-value
+count and match serial multipatch hydro root and child state and temperature
+within `8e-12` field scale. Finite negative density on the final child may
+follow successful root and earlier-child candidates, but all local sparse
+fields must remain bitwise unchanged and both published advance and transfer
+counts must remain zero. The gate runs in GNU Fortran Release and
+bounds/FPE-checked Debug configurations before the complete 208-test
+regression.
