@@ -574,12 +574,40 @@ program test_amr_eb_multilevel_2d
   root_temperature = temperature_cell
   level_one_temperature = temperature_cell
   level_two_temperature = temperature_cell
+  allocate(chain_tree_plans(2))
+  chain_tree_plans%refinement_ratio = ratio
+  allocate(chain_tree_plans(1)%children(1))
+  allocate(chain_tree_plans(2)%children(1))
+  call set_tree_child_plan( &
+    chain_tree_plans(1)%children(1), 1, root_i_lower, root_i_upper, &
+    root_j_lower, root_j_upper, level_one_geometry)
+  call set_tree_child_plan( &
+    chain_tree_plans(2)%children(1), 1, level_one_i_lower, &
+    level_one_i_upper, level_one_j_lower, level_one_j_upper, &
+    level_two_geometry)
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, chain_tree_plans, chain_tree_topology, ok)
+  call require(ok, "three-level reactive EB chain topology")
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_root, root_temperature, chain_tree_topology, &
+    chain_tree, ok)
+  call require(ok, "three-level reactive EB chain state")
+  chain_tree%levels(2)%patches(1)%state = reactive_level_one
+  chain_tree%levels(2)%patches(1)%temperature = level_one_temperature
+  chain_tree%levels(3)%patches(1)%state = reactive_level_two
+  chain_tree%levels(3)%patches(1)%temperature = level_two_temperature
   call composite_three_level_eb_integral_2d( &
     reactive_root, root_geometry, reactive_level_one, level_one_geometry, &
     root_patch, reactive_level_two, level_two_geometry, level_one_patch, &
     integral_before, ok)
   call require(ok, "three-level hydro initial composite integral")
   dt = 0.015_dp * min(root_geometry%dx, root_geometry%dy) / sound_speed
+  allocate(chain_level_advances(chain_tree%level_count()))
+  call advance_reactive_amr_eb_patch_tree_hydro_2d( &
+    species, chain_tree, "hllc", "pcm", "mc", 2, dt, ok, 0.5_dp, &
+    tree_failure_context, chain_level_advances)
+  call require(ok .and. all(chain_level_advances == [1, 2, 4]), &
+    "three-level patch-tree hydro schedule: " // trim(tree_failure_context))
   call advance_three_level_reactive_eb_hydro_2d( &
     species, reactive_root, root_temperature, root_geometry, &
     reactive_level_one, level_one_temperature, level_one_geometry, &
@@ -589,6 +617,25 @@ program test_amr_eb_multilevel_2d
     level_one_temperature_sync, reactive_level_two_sync, &
     level_two_temperature_sync, ok)
   call require(ok, "recursive three-level reactive EB hydro")
+  scale = max(1.0_dp, maxval(abs(reactive_root_sync)), &
+    maxval(abs(reactive_level_one_sync)), &
+    maxval(abs(reactive_level_two_sync)))
+  call require(maxval(abs(chain_tree%levels(1)%patches(1)%state - &
+      reactive_root_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(2)%patches(1)%state - &
+      reactive_level_one_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(3)%patches(1)%state - &
+      reactive_level_two_sync)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree hydro field parity")
+  scale = max(1.0_dp, maxval(root_temperature_sync), &
+    maxval(level_one_temperature_sync), maxval(level_two_temperature_sync))
+  call require(maxval(abs(chain_tree%levels(1)%patches(1)%temperature - &
+      root_temperature_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(2)%patches(1)%temperature - &
+      level_one_temperature_sync)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(chain_tree%levels(3)%patches(1)%temperature - &
+      level_two_temperature_sync)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree hydro temperature parity")
   call composite_three_level_eb_integral_2d( &
     reactive_root_sync, root_geometry, reactive_level_one_sync, &
     level_one_geometry, root_patch, reactive_level_two_sync, &
