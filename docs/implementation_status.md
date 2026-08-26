@@ -2705,3 +2705,18 @@ unchanged and still assembles its temporary complete-root physics bundle.
 The root physics owner still assembles the owner-tiled complete hydro result
 and scatters final corrected rows. Direct tile-to-child state/flux routing and
 tile-owner correction are later ownership boundaries.
+
+## Direct hydro coarse-flux routing (`0.151.0`)
+
+- [x] hydro tile owners retain x rows and uniquely owned y-faces
+- [x] tile-to-root hydro result payload omits all flux values
+- [x] root-to-child state context contains no flux values
+- [x] intersecting tile owners route compact flux fragments to each child
+- [x] child owner verifies complete x/y interface coverage before accumulation
+- [x] root physics owner allocates no complete hydro x/y flux field
+- [x] exact hydro traffic counts one message per remote tile/child intersection
+- [x] complete root state assembly and corrected-row scatter remain explicit
+
+The next ownership boundary is hydro state/support routing directly between
+root tile owners and child owners, including ordered correction return. This
+milestone makes no measured speedup claim.
