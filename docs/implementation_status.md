@@ -2674,3 +2674,18 @@ The root physics owner still receives the complete temporary tile result and
 flux bundle for compatibility validation and cut-boundary flux closure. This
 milestone removes it from child state/reflux routing but does not yet remove
 that complete post-compute assembly or claim a measured speedup.
+
+## Owner-local root transport result (`0.149.0`)
+
+- [x] transport Euler publishes only owner-local tile state and flux records
+- [x] no remote tile sends a complete owned result to the root physics owner
+- [x] no complete root transport state, temperature, or flux array is allocated
+- [x] left/right boundary flux change is accumulated on every tile owner
+- [x] lower/upper boundary flux change is owned only by the edge tiles
+- [x] one communicator sum replaces root-array boundary closure and broadcast
+- [x] exact transport traffic contains only halos and direct child fragments
+- [x] root-only and cut-interface paths retain serial numerical parity gates
+
+Complete hierarchy materialization remains available only at explicit
+checkpoint, output, restart, and legacy compatibility boundaries. Hydro is
+unchanged and still assembles its temporary complete-root physics bundle.

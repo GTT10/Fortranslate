@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.148.0` milestone contains the serial verification suite, eight optional
+The `0.149.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -91,13 +91,14 @@ the full root bundle, and no hydro numerical field uses an all-rank broadcast.
 SSPRK2 molecular transport now follows the same sparse ownership boundary.
 For each Euler stage, a root tile owner receives only the neighboring row
 fragments needed for its six-row transport/StateRedist guard, advances that
-target EB band, and routes its owned input, result, and unique flux rows to the
-root physics owner. A periodic y-boundary tile uses a boundary-anchored cyclic
-band built from two contiguous source-row fragments. One extra row isolates
+target EB band, and retains its owned stage-start, stage-end, corrected state,
+temperature, and unique flux rows locally. A periodic y-boundary tile uses a
+boundary-anchored cyclic band built from two contiguous source-row fragments.
+One extra row isolates
 the required six-row guard from the deliberate internal gap; a small root that
-cannot hold that guard uses the complete root band. The resulting temporary
-root/flux bundle remains on the root physics owner for compatibility checks and
-cut-boundary closure. Each fine child assembles patch-plus-two stage-start,
+cannot hold that guard uses the complete root band as its local compute band.
+No post-compute complete root state, temperature, or flux bundle is assembled.
+Each fine child assembles patch-plus-two stage-start,
 uncorrected-end, and current corrected state/temperature directly from
 intersecting root tile owners. Those owners also send their coarse x/y flux
 fragments. The child extracts its exterior context, assembles its register,
@@ -105,8 +106,9 @@ performs ratio subcycling, fine-flux accumulation, and reflux locally, then
 returns corrected fragments directly to the same root tile owners. The final
 SSPRK2 root blend and EOS
 temperature recovery are cell-local on those owners, so that step needs no root
-gather or scatter. Cut-interface closure broadcasts one conserved `nvar` vector
-and changes unrefined cells directly on each local root tile. A late child
+gather or scatter. For cut-interface closure, tile owners sum their physical-
+boundary flux contributions and combine one conserved `nvar` vector with
+`MPI_Allreduce`; unrefined-cell corrections remain tile-local. A late child
 failure leaves every sparse allocation bitwise unchanged and publishes zero
 work or transfers.
 EB flux registers now store only the patch-plus-one-cell correction support.

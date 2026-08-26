@@ -1001,6 +1001,18 @@ serial numerical parity, owner work, limiter, clock, scheduled-regrid,
 cut-boundary conservation, and rollback gates at one, two, four, and eight
 ranks before the complete serial regression.
 
+## 0.149.0 owner-local root transport result gates
+
+Remove the complete owned transport result sent from every remote root tile to
+the root physics owner after each Euler stage. Retain stage state and fluxes
+only in owner-local tile records used by direct child routing and final commit.
+
+Replace complete-root cut-boundary flux inspection with tile-local physical-
+boundary contributions and one communicator-wide `nvar` sum. Require exact
+halo/child-only point-to-point traffic, root-only cyclic parity, cut-interface
+conservation, owner work, limiter, clock, scheduled-regrid, and rollback gates
+at one, two, four, and eight ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -1902,7 +1902,6 @@ program pelef_mpi_eb_amr_patch_2d
     distribution, size(species), coarse_state, coarse_temperature, &
     coarse_geometry, transport_start_set, sparse_transport_set, ok)
   call assert_all(ok, "MPI EB AMR sparse transport scatter", rank)
-  root_owner = distribution%root_level_owner()
   legacy_transport_root_bundle_values = &
     2_int64 * int(nvar, int64) * int(coarse_nx, int64) * &
       int(coarse_ny, int64) + &
@@ -2016,10 +2015,6 @@ program pelef_mpi_eb_amr_patch_2d
       segment_j_lower = segment_j_upper + 1
     end do
     deallocate(transport_band_source_rows)
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 2
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
   end do
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
@@ -2098,7 +2093,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
-    "MPI EB AMR targeted sparse transport root traffic", rank)
+    "MPI EB AMR halo/child-only sparse transport traffic", rank)
   call MPI_Allreduce( &
     local_root_transport_cells, global_root_transport_cells, 1, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)
@@ -2151,7 +2146,7 @@ program pelef_mpi_eb_amr_patch_2d
     integer :: global_advances, global_root_transfers
     integer :: global_root_transport_cells, i, ierr, j
     integer :: local_advances, local_root_transfers
-    integer :: local_root_transport_cells, owner, root_owner
+    integer :: local_root_transport_cells, owner
     integer :: segment_j_lower, segment_j_upper, source, source_tile
     integer :: target_rows, tile
 
@@ -2199,7 +2194,6 @@ program pelef_mpi_eb_amr_patch_2d
     cyclic_geometry, cyclic_patch_set, cyclic_sparse_set, ok)
   call assert_all(ok, "MPI EB AMR cyclic transport sparse scatter", rank)
 
-  root_owner = cyclic_distribution%root_level_owner()
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
   expected_local_root_transport_cells = 0
@@ -2288,10 +2282,6 @@ program pelef_mpi_eb_amr_patch_2d
       segment_j_lower = segment_j_upper + 1
     end do
     deallocate(transport_band_source_rows)
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 2
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
   end do
   expected_local_advances = 0
   do tile = 1, cyclic_distribution%root_tile_count()
@@ -2320,7 +2310,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
-    "MPI EB AMR cyclic transport exact root traffic", rank)
+    "MPI EB AMR cyclic transport halo-only traffic", rank)
   call MPI_Allreduce( &
     local_root_transport_cells, global_root_transport_cells, 1, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)
