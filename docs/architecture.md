@@ -1386,10 +1386,19 @@ payload shapes against that descriptor, while the selected root alone holds
 the complete checkpoint fields. The former full patch-set entrypoints remain
 as extraction wrappers. Geometry metadata is still replicated intentionally.
 
+In `0.134.0`, a separate EB patch-tree topology removes the depth limit from
+geometry metadata. A root geometry owns a runtime-sized relation sequence;
+every relation stores its refinement ratio, flattened ordered children,
+parent indices, and parent-to-child offsets. Construction rebuilds every AMR
+patch against its actual parent geometry and validates separated siblings. A
+dynamic whole-tree replacement is staged as a candidate and commits only after
+the complete topology validates; identical plans are explicit no-ops.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
-PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
+PeleC-style multilevel redistribution, arbitrary-depth numerical hierarchy
+operations, dynamic root/middle
 lifecycle ownership, non-outflow refined boundaries, decomposed root-level MPI
 StateRedist, replica-free regrid overlap transfer, distributed sparse
 checkpoint/output, and distributed EB flux registers

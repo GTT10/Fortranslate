@@ -2407,3 +2407,20 @@ Checkpoint-driven topology reconstruction, geometry-only conversion of the
 writer and physics/regrid compatibility boundaries, arbitrary-depth dynamic EB
 topology, and decomposition of the level-wide root physics kernel remain
 separate work.
+
+## Arbitrary-depth geometry-only reactive EB patch-tree topology (`0.134.0`)
+
+- [x] root plus a runtime-sized sequence of refinement relations
+- [x] multiple ordered parents and children on every refinement level
+- [x] parent/local-child to flattened child index mapping
+- [x] per-relation refinement ratios and exact EB patch reconstruction
+- [x] parent geometry, nesting, and separated-sibling validation
+- [x] direct four-level, two-branch construction gate
+- [x] whole-tree transactional rebuild and exact no-op detection
+- [x] invalid-parent rollback preserving the accepted topology
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+This milestone removes the fixed two-/three-level limit from geometry topology
+metadata only. Arbitrary-depth numerical fields, conservative state migration,
+owner distribution, physics recursion, timestep selection, checkpoint I/O, and
+dynamic tagging remain separate work.

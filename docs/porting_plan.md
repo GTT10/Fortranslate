@@ -706,7 +706,10 @@ Required capabilities:
   restart scatter with collective metadata rollback (`0.132.0`)
 - [x] geometry-only replicated child topology for direct sparse checkpoint
   restart without replicated child state or temperature (`0.133.0`)
-- locally resolved multilevel EB redistribution and arbitrary depth
+- [x] arbitrary-depth, branching geometry-only EB patch-tree topology with
+  transactional whole-tree rebuild (`0.134.0`)
+- locally resolved multilevel EB redistribution and arbitrary-depth numerical
+  hierarchy operations
 - thermal, viscous, and catalytic wall boundary conditions
 
 Primary PeleC regression references include:

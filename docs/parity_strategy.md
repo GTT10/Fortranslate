@@ -2169,3 +2169,18 @@ point-to-point traffic and publish an empty sparse set. A missing checkpoint
 must preserve the established empty-state, zero-metadata, zero-traffic result.
 The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
 before the complete 208-test serial regression.
+
+## 0.134.0 arbitrary-depth geometry-only reactive EB topology gates
+
+Build two separated root children, refine both branches once, and refine one
+of those grandchildren again. The resulting four-level topology must validate
+its ordered parent links, flattened child offsets and indices, per-level patch
+counts, refinement ratios, full EB geometry consistency, and sibling
+separation.
+
+Rebuild the accepted three-level tree to the four-level plan and require one
+committed topology change. Repeating the identical plan must report a no-op.
+Changing the deepest child to a nonexistent parent must reject without changing
+the accepted four-level topology. The gate runs inside the established EB
+multilevel unit in GNU Fortran Release and bounds/FPE-checked Debug before the
+complete 208-test serial regression.

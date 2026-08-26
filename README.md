@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.133.0` milestone contains the serial verification suite, eight optional
+The `0.134.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -60,6 +60,10 @@ read buffers stay unallocated and no numerical-field broadcast is used. The
 restart caller now supplies a replicated geometry-only child descriptor; it no
 longer carries replicated child state or temperature fields. Compatibility
 wrappers retain the former full patch-set API for existing callers.
+Separately, a geometry-only 2D EB patch-tree topology now represents any number
+of refinement relations. Each level may branch across multiple ordered parents
+and children, and a complete replacement plan commits only after parent links,
+EB geometry, patch nesting, and sibling separation validate.
 Chemistry now runs directly on those sparse owner allocations. Root tiles and
 children are reacted locally with covered cells masked; only post-reaction
 average-down communicates numerical state. Each child owner sends one
