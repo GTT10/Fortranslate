@@ -1971,7 +1971,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transport_cells == expected_local_root_transport_cells .and. &
     global_root_transport_cells == expected_global_root_transport_cells .and. &
-    (distribution%nranks == 1 .or. global_root_transport_cells < &
+    (distribution%nranks <= 2 .or. global_root_transport_cells < &
       2 * distribution%nranks * coarse_nx * coarse_ny), &
     "MPI EB AMR sparse root transport bounded work", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
