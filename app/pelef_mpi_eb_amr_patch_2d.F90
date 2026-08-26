@@ -28,7 +28,8 @@ program pelef_mpi_eb_amr_patch_2d
     reactive_eb_patch_set_2d, build_amr_eb_regrid_plan_collection_2d, &
     initialize_reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
-    advance_reactive_eb_patch_set_hydro_2d
+    advance_reactive_eb_patch_set_hydro_2d, &
+    regrid_reactive_eb_patch_set_2d
   use amr_eb_multipatch_transport_2d_mod, only: &
     advance_reactive_eb_patch_set_transport_2d
   use eb_reactive_transport_2d_mod, only: &
@@ -48,6 +49,7 @@ program pelef_mpi_eb_amr_patch_2d
     advance_owned_reactive_eb_patch_set_strang_2d, &
     scatter_owned_reactive_eb_patch_set_2d, &
     materialize_owned_reactive_eb_patch_set_2d, &
+    regrid_sparse_owned_reactive_eb_patch_set_2d, &
     average_down_sparse_owned_reactive_eb_patch_set_2d, &
     advance_sparse_owned_reactive_eb_patch_set_chemistry_2d, &
     compute_sparse_owned_reactive_eb_patch_set_timestep_2d, &
@@ -63,11 +65,13 @@ program pelef_mpi_eb_amr_patch_2d
   type(amr_eb_patch_2d) :: geometry_patch
   type(amr_eb_tagging_criteria_2d) :: criteria
   type(amr_eb_regrid_plan_collection_2d) :: collection
+  type(amr_eb_regrid_plan_collection_2d) :: regrid_collection
   type(reactive_eb_patch_set_2d) :: patch_set, local_patch_set
   type(reactive_eb_patch_set_2d) :: synchronized_patch_set
   type(reactive_eb_patch_set_2d) :: materialized_patch_set
   type(reactive_eb_patch_set_2d) :: rejected_materialized_set
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
+  type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_patch_set
@@ -89,6 +93,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_full_failed_backup_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_time_loop_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_limited_time_loop_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_regrid_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -106,6 +111,9 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: full_reference_set, full_mpi_set
   type(reactive_eb_patch_set_2d) :: full_failed_set, full_failed_backup_set
   type(reactive_eb_patch_set_2d) :: time_loop_reference_set
+  type(reactive_eb_patch_set_2d) :: regrid_start_set
+  type(reactive_eb_patch_set_2d) :: regrid_reference_set
+  type(reactive_eb_patch_set_2d) :: sparse_regrid_template
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -153,6 +161,11 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: full_failed_backup_temperature(:, :)
   real(dp), allocatable :: time_loop_reference_state(:, :, :)
   real(dp), allocatable :: time_loop_reference_temperature(:, :)
+  real(dp), allocatable :: regrid_start_state(:, :, :)
+  real(dp), allocatable :: regrid_start_temperature(:, :)
+  real(dp), allocatable :: regrid_reference_state(:, :, :)
+  real(dp), allocatable :: regrid_reference_temperature(:, :)
+  type(eb_geometry_2d), allocatable :: regrid_fine_geometries(:)
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: restriction_recipients(:)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
@@ -167,7 +180,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: time_loop_initial_dt, time_loop_final_time, time_loop_time
   real(dp) :: time_loop_minimum_dt, time_loop_reference_minimum_dt
   real(dp) :: time_loop_reference_theta
-  logical :: tags(coarse_nx, coarse_ny), ok
+  logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
+  logical :: ok, topology_changed
   integer :: child, component, global_advances, i, ierr, j, owner
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
@@ -450,6 +464,120 @@ program pelef_mpi_eb_amr_patch_2d
         patch_set%children(child)%temperature), &
       "MPI EB AMR invalid sparse child rollback", rank)
   end do
+
+  allocate(regrid_start_state, source=coarse_state)
+  allocate(regrid_start_temperature, source=coarse_temperature)
+  regrid_start_set = patch_set
+  do child = 1, regrid_start_set%patch_count()
+    regrid_start_set%children(child)%state = child_factor(child) * &
+      regrid_start_set%children(child)%state
+  end do
+  topology_distribution = distribution
+  sparse_regrid_template = regrid_start_set
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    topology_distribution, size(species), regrid_start_state, &
+    regrid_start_temperature, coarse_geometry, sparse_regrid_template, &
+    sparse_regrid_set, ok)
+  call assert_all(ok, "MPI EB AMR sparse regrid scatter", rank)
+
+  regrid_tags = .false.
+  regrid_tags(2:7, 5:11) = .true.
+  call build_amr_eb_regrid_plan_collection_2d( &
+    regrid_tags, criteria, regrid_collection, ok)
+  call assert_all(ok .and. regrid_collection%patch_count() == 1, &
+    "MPI EB AMR sparse regrid plan", rank)
+  allocate(regrid_fine_geometries(regrid_collection%patch_count()))
+  do child = 1, regrid_collection%patch_count()
+    call build_patch_geometry( &
+      coarse_geometry, regrid_collection%plans(child)%coarse_i_lower, &
+      regrid_collection%plans(child)%coarse_i_upper, &
+      regrid_collection%plans(child)%coarse_j_lower, &
+      regrid_collection%plans(child)%coarse_j_upper, ratio, &
+      regrid_fine_geometries(child), geometry_patch, ok)
+    call assert_all(ok, "MPI EB AMR sparse regrid geometry", rank)
+  end do
+  allocate(regrid_reference_state, mold=coarse_state)
+  allocate(regrid_reference_temperature, mold=coarse_temperature)
+  call regrid_reactive_eb_patch_set_2d( &
+    species, regrid_start_state, regrid_start_temperature, coarse_geometry, &
+    regrid_start_set, regrid_fine_geometries, regrid_collection, ratio, &
+    regrid_reference_state, regrid_reference_temperature, &
+    regrid_reference_set, ok)
+  call assert_all(ok .and. regrid_reference_set%patch_count() == 1, &
+    "serial EB AMR sparse regrid reference", rank)
+
+  call regrid_sparse_owned_reactive_eb_patch_set_2d( &
+    species, topology_distribution, sparse_regrid_set, coarse_geometry, &
+    sparse_regrid_template, regrid_fine_geometries, regrid_collection, 1, &
+    ok, topology_changed)
+  call assert_all(.not. ok .and. .not. topology_changed .and. &
+    topology_distribution%child_count() == distribution%child_count() .and. &
+    all(topology_distribution%child_owners == &
+      distribution%child_owners) .and. &
+    sparse_regrid_template%patch_count() == patch_set%patch_count() .and. &
+    sparse_regrid_set%is_valid( &
+      topology_distribution, coarse_geometry, sparse_regrid_template), &
+    "MPI EB AMR sparse regrid control rollback", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    topology_distribution, sparse_regrid_set, coarse_state, &
+    coarse_temperature, coarse_geometry, sparse_regrid_template, &
+    materialized_coarse_state, materialized_coarse_temperature, &
+    materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == regrid_start_state) .and. &
+    all(materialized_coarse_temperature == regrid_start_temperature), &
+    "MPI EB AMR sparse regrid root rollback", rank)
+  do child = 1, regrid_start_set%patch_count()
+    call assert_all( &
+      all(materialized_patch_set%children(child)%state == &
+        regrid_start_set%children(child)%state) .and. &
+      all(materialized_patch_set%children(child)%temperature == &
+        regrid_start_set%children(child)%temperature), &
+      "MPI EB AMR sparse regrid child rollback", rank)
+  end do
+
+  call regrid_sparse_owned_reactive_eb_patch_set_2d( &
+    species, topology_distribution, sparse_regrid_set, coarse_geometry, &
+    sparse_regrid_template, regrid_fine_geometries, regrid_collection, &
+    ratio, ok, topology_changed)
+  call assert_all(ok .and. topology_changed .and. &
+    topology_distribution%child_count() == 1 .and. &
+    sparse_regrid_template%patch_count() == 1 .and. &
+    topology_distribution%subcycle_exponent == &
+      distribution%subcycle_exponent .and. &
+    sum(topology_distribution%rank_entity_counts) == &
+      topology_distribution%root_tile_count() + 1 .and. &
+    sum(topology_distribution%rank_cell_counts) == coarse_nx * coarse_ny + &
+      regrid_reference_set%children(1)%geometry%nx * &
+        regrid_reference_set%children(1)%geometry%ny .and. &
+    sparse_regrid_set%is_valid( &
+      topology_distribution, coarse_geometry, sparse_regrid_template), &
+    "MPI EB AMR sparse regrid ownership rebuild", rank)
+  sparse_local_values = int(sparse_regrid_set%local_value_count())
+  call MPI_Allreduce( &
+    sparse_local_values, sparse_global_values, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    sparse_local_values == (nvar + 1) * &
+      topology_distribution%rank_cell_counts(rank + 1) .and. &
+    sparse_global_values == (nvar + 1) * &
+      sum(topology_distribution%rank_cell_counts), &
+    "MPI EB AMR sparse regrid one-copy storage", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    topology_distribution, sparse_regrid_set, coarse_state, &
+    coarse_temperature, coarse_geometry, sparse_regrid_template, &
+    materialized_coarse_state, materialized_coarse_temperature, &
+    materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == regrid_reference_state) .and. &
+    all(materialized_coarse_temperature == regrid_reference_temperature), &
+    "MPI EB AMR sparse regrid serial root parity", rank)
+  call assert_all( &
+    all(materialized_patch_set%children(1)%state == &
+      regrid_reference_set%children(1)%state) .and. &
+    all(materialized_patch_set%children(1)%temperature == &
+      regrid_reference_set%children(1)%temperature), &
+    "MPI EB AMR sparse regrid serial child parity", rank)
 
   allocate(chemistry_coarse_state, source=coarse_state)
   allocate(chemistry_coarse_temperature, source=coarse_temperature)
