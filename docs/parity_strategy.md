@@ -2611,3 +2611,18 @@ parity. Corrupt the new owner map on only rank zero and require collective
 rejection, zero transfers, and value-for-value sparse rollback. Retain the
 full established MPI gates and all 208 serial tests in GNU Fortran Release and
 bounds/FPE-checked Debug.
+
+## 0.161.0 MPI owner-local arbitrary-depth EB timestep gates
+
+Reinitialize the accepted physical four-level branching tree into sparse
+storage after rotating ownership. Enable hydro, viscosity, thermal conduction,
+and species diffusion. Require each rank to evaluate only its owned active
+nodes, the global evaluation sum to equal five, and the communicator minimum
+to equal the complete serial patch-tree timestep exactly.
+
+On multiple ranks, supply a different but individually valid hydro CFL on rank
+zero and require collective rejection before node evaluation. On one rank, use
+an invalid negative CFL for the same rejection path. In both cases require zero
+timestep and zero local evaluation accounting. Retain the full established MPI
+gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
+Debug.

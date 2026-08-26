@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.160.0` milestone contains the serial verification suite, nine optional
+The `0.161.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -492,8 +492,10 @@ The sparse numerical representation allocates state and temperature only on
 that node's owner while retaining replicated topology and ownership metadata.
 Explicit materialization reconstructs a complete tree when required, and a
 new owner map migrates changed nodes directly from old owner to new owner into
-a private candidate. Distributed timestep reduction and owner-local physics
-are the next boundaries.
+a private candidate. Combined hydro and explicit-transport stable-step
+selection now evaluates only owner-local active nodes, converts every result
+to the root interval, and reduces the global minimum without materialization.
+Owner-local recursive physics is the next boundary.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

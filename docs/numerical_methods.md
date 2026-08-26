@@ -2204,3 +2204,20 @@ sparse tree from the new owner map. Unchanged owners copy locally; a changed
 owner pair performs direct point-to-point state and temperature transfer. The
 accepted sparse tree remains untouched until every candidate node validates
 against the new distribution.
+
+## MPI owner-local arbitrary-depth EB patch-tree timestep
+
+For every active node owned by a rank, compute the same hyperbolic and optional
+explicit-transport limits as the serial patch tree. If `R(l)` is the cumulative
+refinement product from the root to level `l`, each local node contributes
+
+```text
+dt_root(l,p) = R(l) min(dt_hydro(l,p), dt_transport(l,p)).
+```
+
+The rank-local minimum is reduced with `MPI_MIN`. A rank that owns no active
+node contributes `huge`, so it cannot constrain a valid result; a separate
+active-node sum rejects an entirely covered tree. Collective preflight requires
+identical CFL values, transport-enable flags, and species count, plus valid
+owner-only fields and a replicated distribution descriptor. Thus timestep
+selection neither broadcasts nor materializes numerical fields.
