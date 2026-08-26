@@ -24,7 +24,8 @@ program test_amr_eb_multilevel_transport_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
-    advance_reactive_amr_eb_patch_tree_transport_2d
+    advance_reactive_amr_eb_patch_tree_transport_2d, &
+    composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
   implicit none
@@ -36,6 +37,9 @@ program test_amr_eb_multilevel_transport_2d
   integer, parameter :: level_one_i_lower = 3, level_one_i_upper = 10
   integer, parameter :: level_one_j_lower = 3, level_one_j_upper = 10
   integer, parameter :: level_two_nx = 16, level_two_ny = 16
+  integer, parameter :: branch_a_nx = 8, branch_a_ny = 8
+  integer, parameter :: branch_b_nx = 4, branch_b_ny = 4
+  integer, parameter :: branch_deep_nx = 8, branch_deep_ny = 8
   integer, parameter :: ratio = 2
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -43,10 +47,15 @@ program test_amr_eb_multilevel_transport_2d
   type(reactive_boundary_set_2d) :: boundaries
   type(eb_geometry_2d) :: root_geometry, level_one_geometry
   type(eb_geometry_2d) :: level_two_geometry
+  type(eb_geometry_2d) :: branch_a_geometry, branch_b_geometry
+  type(eb_geometry_2d) :: branch_deep_geometry
   type(amr_eb_patch_2d) :: root_patch, level_one_patch
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: branch_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: tree_topology
+  type(amr_eb_patch_tree_topology_2d) :: branch_topology
   type(reactive_amr_eb_patch_tree_2d) :: tree, tree_snapshot
+  type(reactive_amr_eb_patch_tree_2d) :: branch_tree, branch_snapshot
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: level_one_state(:, :, :)
   real(dp), allocatable :: level_one_temperature(:, :)
@@ -59,10 +68,14 @@ program test_amr_eb_multilevel_transport_2d
   real(dp), allocatable :: new_level_two_state(:, :, :)
   real(dp), allocatable :: new_level_two_temperature(:, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
+  real(dp), allocatable :: branch_integral_before(:), branch_integral_after(:)
   real(dp) :: root_dx, root_dy, level_one_dx, level_one_dy
   real(dp) :: root_x_lower, root_x_upper, root_y_lower, root_y_upper
   real(dp) :: one_x_lower, one_x_upper, one_y_lower, one_y_upper
   real(dp) :: two_x_lower, two_x_upper, two_y_lower, two_y_upper
+  real(dp) :: branch_x_lower, branch_x_upper
+  real(dp) :: branch_y_lower, branch_y_upper
+  real(dp) :: branch_dx, branch_dy, branch_interval
   real(dp) :: base_density, root_dt, one_dt, two_dt, diffusivity
   real(dp) :: interval, initial_span, final_span, minimum_theta, scale
   real(dp) :: tree_minimum_theta
@@ -144,6 +157,31 @@ program test_amr_eb_multilevel_transport_2d
     level_one_patch, ok)
   call require(ok, "level-one patch")
 
+  branch_x_lower = one_x_lower + 2.0_dp * level_one_dx
+  branch_x_upper = one_x_lower + 6.0_dp * level_one_dx
+  branch_y_lower = one_y_lower + 2.0_dp * level_one_dy
+  branch_y_upper = one_y_lower + 6.0_dp * level_one_dy
+  call build_configured_eb_geometry_region_2d( &
+    config, branch_a_nx, branch_a_ny, branch_x_lower, branch_x_upper, &
+    branch_y_lower, branch_y_upper, branch_a_geometry, ok)
+  call require(ok, "branch-a transport geometry")
+  call build_configured_eb_geometry_region_2d( &
+    config, branch_b_nx, branch_b_ny, &
+    one_x_lower + 8.0_dp * level_one_dx, &
+    one_x_lower + 10.0_dp * level_one_dx, &
+    one_y_lower + 8.0_dp * level_one_dy, &
+    one_y_lower + 10.0_dp * level_one_dy, branch_b_geometry, ok)
+  call require(ok, "branch-b transport geometry")
+  branch_dx = (branch_x_upper - branch_x_lower) / real(branch_a_nx, dp)
+  branch_dy = (branch_y_upper - branch_y_lower) / real(branch_a_ny, dp)
+  call build_configured_eb_geometry_region_2d( &
+    config, branch_deep_nx, branch_deep_ny, &
+    branch_x_lower + 2.0_dp * branch_dx, &
+    branch_x_lower + 6.0_dp * branch_dx, &
+    branch_y_lower + 2.0_dp * branch_dy, &
+    branch_y_lower + 6.0_dp * branch_dy, branch_deep_geometry, ok)
+  call require(ok, "deep transport geometry")
+
   call initialize_reactive_2d( &
     species, config%flow, root_state, root_temperature, root_dx, root_dy, &
     base_density, ok)
@@ -164,6 +202,42 @@ program test_amr_eb_multilevel_transport_2d
   call build_reactive_boundary_set_2d( &
     species, config%flow, boundaries, ok)
   call require(ok, "outflow boundary construction")
+
+  allocate(branch_plans(3))
+  branch_plans%refinement_ratio = ratio
+  allocate(branch_plans(1)%children(1))
+  branch_plans(1)%children(1)%parent_patch = 1
+  branch_plans(1)%children(1)%coarse_i_lower = root_i_lower
+  branch_plans(1)%children(1)%coarse_i_upper = root_i_upper
+  branch_plans(1)%children(1)%coarse_j_lower = root_j_lower
+  branch_plans(1)%children(1)%coarse_j_upper = root_j_upper
+  branch_plans(1)%children(1)%geometry = level_one_geometry
+  allocate(branch_plans(2)%children(2))
+  branch_plans(2)%children(1)%parent_patch = 1
+  branch_plans(2)%children(1)%coarse_i_lower = 3
+  branch_plans(2)%children(1)%coarse_i_upper = 6
+  branch_plans(2)%children(1)%coarse_j_lower = 3
+  branch_plans(2)%children(1)%coarse_j_upper = 6
+  branch_plans(2)%children(1)%geometry = branch_a_geometry
+  branch_plans(2)%children(2)%parent_patch = 1
+  branch_plans(2)%children(2)%coarse_i_lower = 9
+  branch_plans(2)%children(2)%coarse_i_upper = 10
+  branch_plans(2)%children(2)%coarse_j_lower = 9
+  branch_plans(2)%children(2)%coarse_j_upper = 10
+  branch_plans(2)%children(2)%geometry = branch_b_geometry
+  allocate(branch_plans(3)%children(1))
+  branch_plans(3)%children(1)%parent_patch = 1
+  branch_plans(3)%children(1)%coarse_i_lower = 3
+  branch_plans(3)%children(1)%coarse_i_upper = 6
+  branch_plans(3)%children(1)%coarse_j_lower = 3
+  branch_plans(3)%children(1)%coarse_j_upper = 6
+  branch_plans(3)%children(1)%geometry = branch_deep_geometry
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, branch_plans, branch_topology, ok)
+  call require(ok, "four-level branching transport topology")
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, branch_topology, branch_tree, ok)
+  call require(ok, "four-level branching transport state")
 
   allocate(integral_before(size(root_state, 1)))
   allocate(integral_after(size(root_state, 1)))
@@ -308,6 +382,46 @@ program test_amr_eb_multilevel_transport_2d
   call require(.not. ok .and. all(level_advances == 0) .and. &
     tree_minimum_theta == 1.0_dp .and. tree_solutions_match(tree, tree_snapshot), &
     "three-level patch-tree transport rollback")
+
+  allocate(branch_integral_before(size(root_state, 1)))
+  allocate(branch_integral_after(size(root_state, 1)))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    branch_tree, branch_integral_before, ok)
+  call require(ok, "branching transport initial composite integral")
+  branch_snapshot = branch_tree
+  if (allocated(level_advances)) deallocate(level_advances)
+  allocate(level_advances(branch_tree%level_count()))
+  branch_interval = min(interval, 1.0e-8_dp)
+  call advance_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, branch_tree, branch_interval, .false., .true., &
+    .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, &
+    config%state_redist_max_order, tree_minimum_theta, ok, failure_context, &
+    level_advances)
+  call require(ok .and. all(level_advances == [2, 4, 8, 8]) .and. &
+    tree_minimum_theta > 0.0_dp .and. &
+    .not. tree_solutions_match(branch_tree, branch_snapshot), &
+    "four-level branching patch-tree transport schedule: " // &
+      trim(failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    branch_tree, branch_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(branch_integral_before)))
+  call require(ok .and. maxval(abs( &
+      branch_integral_after - branch_integral_before)) <= &
+      3.0e-10_dp * scale .and. branch_tree%is_valid(), &
+    "four-level branching patch-tree transport conservation")
+
+  branch_snapshot = branch_tree
+  call advance_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, branch_tree, -branch_interval, .false., .true., &
+    .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, &
+    config%state_redist_max_order, tree_minimum_theta, ok, failure_context, &
+    level_advances)
+  call require(.not. ok .and. all(level_advances == 0) .and. &
+    tree_minimum_theta == 1.0_dp .and. &
+    tree_solutions_match(branch_tree, branch_snapshot), &
+    "four-level branching patch-tree transport rollback")
 
   write(*, '(a)') "test_amr_eb_multilevel_transport_2d: PASS"
 
