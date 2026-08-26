@@ -1410,6 +1410,21 @@ synchronization and complete conserved-vector integral comparison precede the
 commit. Invalid plans, incompatible overlap geometry, failed EOS recovery, or
 failed conservation leave the accepted topology and every field unchanged.
 
+In `0.136.0`, the replicated MPI-owner hydro path no longer selects one rank
+to advance the complete root level. Every root y-tile is extended by at most
+six rows on each side, its owner extracts an exact EB geometry band, and the
+established reactive EB level kernel advances that bounded band. The guard is
+larger than the combined reconstruction, face-centroid interpolation, and
+second-order StateRedist dependency radius.
+
+Each tile publishes state, temperature, and x-face fluxes for its owned cell
+rows. Y-faces use a unique lower-face ownership rule, with the final tile also
+owning the upper physical boundary. Zero-filled rank contributions are summed
+to reconstruct the replicated root result. Collective acceptance precedes
+assembly, and the caller publishes work counters only after later child
+subcycling, reflux, and average-down also commit. The sparse path still gathers
+the root to one physics owner and remains a separate conversion.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

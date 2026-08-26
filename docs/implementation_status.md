@@ -2444,3 +2444,23 @@ This milestone removes the fixed depth limit from serial numerical hierarchy
 storage, synchronization, and conservative topology migration. Runtime physics
 recursion, owner distribution, distributed migration, timestep selection,
 checkpoint I/O, and dynamic tagging remain separate work.
+
+## MPI owner-tiled reactive EB root hydro (`0.136.0`)
+
+- [x] one bounded root geometry/state band per local y-tile
+- [x] six-row guard covering reconstruction and StateRedist dependencies
+- [x] established reactive EB level kernel reused on every tile band
+- [x] owned state, temperature, and x-face row publication
+- [x] unique shared y-face ownership and complete physical-boundary coverage
+- [x] collective root state, temperature, and flux assembly
+- [x] no selected-rank full-root hydro advance or result broadcasts
+- [x] local tile-advance and bounded computed-cell accounting
+- [x] serial root/child parity at one, two, four, and eight ranks
+- [x] owner-tiled root hydro retained inside the complete physics split
+- [x] collective rollback preserving zero published work after late failure
+- [x] OpenMPI Release and bounds/FPE-checked Debug qualification
+
+The replicated owner path still stores the complete root input on every rank
+and assembles complete root results for the established child/reflux boundary.
+The sparse path still gathers root tiles to one root physics owner. Direct
+sparse halo exchange and sparse tile-result routing remain separate work.

@@ -1602,8 +1602,9 @@ program pelef_mpi_eb_amr_patch_2d
   call advance_owned_reactive_eb_patch_set_hydro_2d( &
     species, distribution, hydro_failed_state, hydro_failed_temperature, &
     coarse_geometry, hydro_failed_set, "hllc", "pcm", "mc", 2, hydro_dt, &
-    ok, local_advances, 0.5_dp)
+    ok, local_advances, 0.5_dp, local_root_hydro_cells)
   call assert_all(.not. ok .and. local_advances == 0 .and. &
+    local_root_hydro_cells == 0 .and. &
     all(hydro_failed_state == hydro_failed_backup_state) .and. &
     all(hydro_failed_temperature == hydro_failed_backup_temperature), &
     "MPI EB AMR late hydro failure root rollback", rank)

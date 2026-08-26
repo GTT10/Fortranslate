@@ -2204,3 +2204,21 @@ that names a nonexistent parent must reject with the accepted topology, state,
 and temperature bitwise unchanged. The gate runs inside the established EB
 multilevel unit in GNU Fortran Release and bounds/FPE-checked Debug before the
 complete 208-test serial regression.
+
+## 0.136.0 MPI owner-tiled reactive EB root-hydro gates
+
+Replace the replicated owner path's selected-rank root advance with one
+finite-halo band advance per root tile. At one, two, four, and eight ranks,
+require the assembled root state, recovered temperature, all Cartesian/EB face
+flux effects, every fine child, reflux, and final average-down to match the
+established serial multipatch transaction within the qualified tolerances.
+
+Count exactly one root advance on each tile owner rather than one communicator
+advance on the first tile owner. Independently sum the actual halo-band cell
+counts and require the exact distribution-derived value; above one rank it must
+be smaller than computing the complete root independently on every rank. A late
+child rejection must publish zero advances and zero root work. Repeat the same
+owner accounting and serial parity through the complete chemistry-transport-
+hydro split. Run the gates with OpenMPI at one, two, four, and eight ranks in
+Release and bounds/FPE-checked Debug configurations before the 208-test serial
+regression.

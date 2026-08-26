@@ -710,6 +710,8 @@ Required capabilities:
   transactional whole-tree rebuild (`0.134.0`)
 - [x] arbitrary-depth reactive EB numerical hierarchy with conservative
   synchronization and transactional topology/state migration (`0.135.0`)
+- [x] finite-halo owner-tiled root hydro for the replicated MPI EB AMR path
+  with exact serial parity and bounded work accounting (`0.136.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
 - thermal, viscous, and catalytic wall boundary conditions
