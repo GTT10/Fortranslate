@@ -2271,3 +2271,22 @@ The static sparse EB hierarchy can now advance its own full-physics clock
 without replicated fine payloads. Dynamic sparse topology, checkpoint/restart,
 parallel output, and decomposition of the level-wide root physics kernel
 remain separate work.
+
+## Transactional sparse MPI reactive EB AMR topology rebuild (`0.127.0`)
+
+- [x] public explicit-plan sparse child-topology replacement
+- [x] serial EB average-down, PCM initialization, and old/new overlap retention
+- [x] deterministic subcycle-weighted owner recomputation for the new topology
+- [x] return to rank-local root tiles and exclusive child payloads after regrid
+- [x] exact one-copy global stored-value accounting after owner redistribution
+- [x] atomic distribution, sparse state, and geometry-template publication
+- [x] invalid refinement-ratio rejection before materialization or mutation
+- [x] exact root, child, temperature, and topology parity with serial regrid
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The explicit regrid removes the fixed-topology API restriction but currently
+uses a replicated compatibility window during topology changes. Owner-local
+tag planning, direct old/new overlap transfer, scheduled regrid integration in
+the public clock, checkpoint/restart, parallel output, and root physics
+decomposition remain separate work.
