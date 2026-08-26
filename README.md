@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.138.0` milestone contains the serial verification suite, eight optional
+The `0.139.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -88,11 +88,13 @@ SSPRK2 molecular transport now follows the same sparse ownership boundary.
 Each Euler stage gathers root tiles only to the root physics owner and sends one
 packed root/flux bundle only to distinct child owners. Each fine child performs
 ratio subcycling, diffusive flux accumulation, reflux, and temperature recovery
-only on its owner; remote reflux corrections make one round trip. Final root
-rows and the SSPRK2 blend return only to their tile owners. Cut-interface
-closure broadcasts one conserved `nvar` vector and changes unrefined cells
-directly on each local root tile. A late child failure leaves every sparse
-allocation bitwise unchanged and publishes zero transfers.
+only on its owner; remote reflux corrections make one round trip. Each Euler
+stage returns only final root rows to their tile owners. The final SSPRK2 root
+blend and EOS temperature recovery are now cell-local on those owners, so that
+step needs no root gather or scatter. Cut-interface closure broadcasts one
+conserved `nvar` vector and changes unrefined cells directly on each local root
+tile. A late child failure leaves every sparse allocation bitwise unchanged and
+publishes zero transfers.
 The sparse hierarchy also selects its own stable coarse interval. Every root
 tile evaluates its EB hydro and molecular-transport limits directly on its
 owner, while fine children do the same and scale their stable fine steps by the
@@ -628,9 +630,9 @@ The AMR layer provides:
   exchange, bounded tile-local work, targeted result/scatter traffic, one
   bundle per distinct child owner, exact accounting, and serial parity;
 - targeted direct sparse MPI EB SSPRK2 transport root traffic with two
-  Euler-stage gathers/bundles/reflux round trips, targeted final blending,
-  tile-local cut-interface closure, exact transfer accounting, and no full
-  root-field broadcasts;
+  Euler-stage gathers/bundles/reflux round trips, zero-traffic tile-local final
+  blending, tile-local cut-interface closure, exact transfer accounting, and
+  no full root-field broadcasts;
 - owner-local sparse MPI EB hydro/transport timestep selection with no root
   field traffic, fine-to-coarse subcycle scaling, communicator-minimum
   reduction, serial timestep parity, and collective rejection;

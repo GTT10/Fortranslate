@@ -2501,6 +2501,23 @@ decomposition work.
 - [x] invalid owner state rejection with zero dt and transfer publication
 
 Stable-step selection no longer constructs any complete temporary root field.
-The sparse SSPRK2 transport Euler stages and final blend still gather root
-fields to the selected physics owner and remain the next root decomposition
-target.
+The sparse SSPRK2 transport Euler stages still gather root fields to the
+selected physics owner and remain the next root decomposition target.
+
+## Sparse MPI owner-local SSPRK2 root blend (`0.139.0`)
+
+- [x] final root conserved-state average directly on exclusive tile owners
+- [x] exact EB geometry band extraction for tile-local EOS recovery
+- [x] final root temperature recovery directly on exclusive tile owners
+- [x] no final-blend start-state gather
+- [x] no final-blend second-Euler gather
+- [x] no final-blend row-band scatter
+- [x] unchanged owner-local child blend and final sparse average-down
+- [x] exact four-message root-tile traffic per remote tile across two stages
+- [x] serial root/child parity at one, two, four, and eight ranks
+- [x] late-failure rollback with zero published work and traffic
+
+The final blend is cell-local and therefore needs no neighboring root values.
+The two sparse transport Euler stages still assemble a complete root on the
+physics owner for diffusive fluxes, StateRedist, child context, and reflux.
+Finite-halo transport stages are the next root decomposition target.

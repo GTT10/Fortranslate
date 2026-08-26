@@ -2258,3 +2258,19 @@ counted independently. A finite invalid child state must reject collectively
 with zero dt and zero transfers while preserving every sparse field bitwise.
 Run the gates in OpenMPI Release and bounds/FPE-checked Debug before the
 complete serial regression.
+
+## 0.139.0 sparse MPI owner-local SSPRK2 root-blend gates
+
+After both sparse transport Euler stages succeed, blend every exclusively
+owned root tile directly from its local interval-start and second-Euler
+candidates. Recover temperature with the exact extracted EB row-band geometry.
+At one, two, four, and eight ranks, require root and child state and temperature
+to retain the established serial transport tolerances, and require the limiter
+minimum to retain its established parity tolerance.
+
+For every remote root tile, require exactly four root transfers across the two
+Euler stages: one gather and one scatter per stage. The final blend must add no
+start gather, second-Euler gather, or blended-state scatter. Keep child bundles,
+reflux correction traffic, distributed cut-interface closure, stored-value
+counts, and late-failure rollback unchanged. Run in OpenMPI Release and
+bounds/FPE-checked Debug before the complete serial regression.
