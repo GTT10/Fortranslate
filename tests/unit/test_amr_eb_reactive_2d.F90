@@ -15,7 +15,10 @@ program test_amr_eb_reactive_2d
     amr_eb_patch_2d, build_amr_eb_patch_2d, &
     average_down_reactive_eb_state_patch_2d, composite_eb_integral_2d
   use amr_eb_reactive_2d_mod, only: &
+    reactive_eb_patch_exterior_context_2d, &
     prolong_reactive_eb_patch_pcm_2d, &
+    extract_reactive_eb_patch_exterior_context_2d, &
+    build_reactive_eb_patch_exterior_from_context_2d, &
     build_reactive_eb_patch_exterior_2d, &
     advance_two_level_reactive_eb_hydro_2d
   implicit none
@@ -30,7 +33,8 @@ program test_amr_eb_reactive_2d
     (coarse_j_upper - coarse_j_lower + 1) * ratio
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
-  type(reactive_eb_exterior_state_2d) :: exterior
+  type(reactive_eb_exterior_state_2d) :: exterior, context_exterior
+  type(reactive_eb_patch_exterior_context_2d) :: exterior_context
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp) :: fine_level_set(0:fine_nx, 0:fine_ny)
@@ -146,6 +150,32 @@ program test_amr_eb_reactive_2d
     0.25_dp, exterior, ok)
   call require(ok .and. exterior%is_valid(fine_geometry, nvar), &
     "time-interpolated coarse exterior")
+  call extract_reactive_eb_patch_exterior_context_2d( &
+    coarse_state, coarse_temperature, coarse_end, coarse_end_temperature, &
+    coarse_geometry, fine_geometry, patch, nvar, exterior_context, ok)
+  call require(ok .and. exterior_context%is_valid(fine_geometry, nvar), &
+    "compact coarse exterior context")
+  call build_reactive_eb_patch_exterior_from_context_2d( &
+    species, exterior_context, coarse_geometry, fine_geometry, patch, &
+    0.25_dp, context_exterior, ok)
+  call require(ok .and. &
+    maxval(abs(context_exterior%x_lower_state - &
+      exterior%x_lower_state)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%x_upper_state - &
+      exterior%x_upper_state)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%y_lower_state - &
+      exterior%y_lower_state)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%y_upper_state - &
+      exterior%y_upper_state)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%x_lower_temperature - &
+      exterior%x_lower_temperature)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%x_upper_temperature - &
+      exterior%x_upper_temperature)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%y_lower_temperature - &
+      exterior%y_lower_temperature)) == 0.0_dp .and. &
+    maxval(abs(context_exterior%y_upper_temperature - &
+      exterior%y_upper_temperature)) == 0.0_dp, &
+    "compact exterior context parity")
   found_open_boundary = .false.
   do j = 1, fine_ny
     if (fine_geometry%x_face_fraction(0, j) > 0.0_dp) then

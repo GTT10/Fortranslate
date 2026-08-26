@@ -1994,18 +1994,12 @@ program pelef_mpi_eb_amr_patch_2d
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
     if (owner == root_owner) cycle
-    restriction_recipients(owner + 1) = .true.
-    expected_global_root_transfers = expected_global_root_transfers + 4
+    expected_global_root_transfers = expected_global_root_transfers + 6
     if (rank == root_owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 2
+      expected_local_root_transfers + 4
     if (rank == owner) expected_local_root_transfers = &
       expected_local_root_transfers + 2
   end do
-  restriction_recipients(root_owner + 1) = .false.
-  expected_global_root_transfers = expected_global_root_transfers + &
-    2 * count(restriction_recipients)
-  if (rank == root_owner) expected_local_root_transfers = &
-    expected_local_root_transfers + 2 * count(restriction_recipients)
   expected_local_advances = 0
   do tile = 1, distribution%root_tile_count()
     if (distribution%root_tile_is_local(tile)) &
