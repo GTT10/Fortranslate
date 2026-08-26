@@ -60,7 +60,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_root_halo_tag = 2711
   integer, parameter :: sparse_root_tile_result_tag = 2712
   integer, parameter, public :: mpi_amr_eb_root_tile_hydro_halo_cells = 6
-  integer, parameter, public :: mpi_amr_eb_root_tile_transport_halo_cells = 8
+  integer, parameter, public :: mpi_amr_eb_root_tile_transport_halo_cells = 12
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
