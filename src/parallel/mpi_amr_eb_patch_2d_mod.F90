@@ -57,6 +57,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_regrid_overlap_tag = 2708
   integer, parameter :: sparse_root_materialization_tag = 2709
   integer, parameter :: sparse_root_restart_scatter_tag = 2710
+  integer, parameter, public :: mpi_amr_eb_root_tile_hydro_halo_cells = 6
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
@@ -4402,11 +4403,228 @@ contains
     if (present(local_entity_advances)) local_entity_advances = advances
   end subroutine advance_owned_reactive_eb_patch_set_chemistry_2d
 
+  subroutine advance_owned_reactive_eb_root_tiles_hydro_2d( &
+      species, distribution, state, temperature, geometry, solver, &
+      reconstruction, limiter, state_redist_target_volume_fraction, &
+      state_redist_max_order, dt, new_state, new_temperature, x_flux, &
+      y_flux, ok, local_tile_advances, local_computed_cells)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    real(dp), intent(in) :: state(:, :, :), temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: geometry
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    real(dp), intent(in) :: state_redist_target_volume_fraction, dt
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(out) :: new_state(:, :, :), new_temperature(:, :)
+    real(dp), intent(out) :: x_flux(:, 0:, :), y_flux(:, :, 0:)
+    logical, intent(out) :: ok
+    integer, intent(out) :: local_tile_advances, local_computed_cells
+
+    type(eb_geometry_2d) :: band_geometry
+    real(dp), allocatable :: band_state(:, :, :), band_temperature(:, :)
+    real(dp), allocatable :: band_new_state(:, :, :)
+    real(dp), allocatable :: band_new_temperature(:, :)
+    real(dp), allocatable :: band_x_flux(:, :, :), band_y_flux(:, :, :)
+    real(dp), allocatable :: state_contribution(:, :, :)
+    real(dp), allocatable :: temperature_contribution(:, :)
+    real(dp), allocatable :: x_flux_contribution(:, :, :)
+    real(dp), allocatable :: y_flux_contribution(:, :, :)
+    logical :: accepted, entity_ok, global_ok, local_ok
+    integer :: band_j_lower, band_j_upper, face_j_lower, face_j_upper
+    integer :: ierr, local_face_j_lower, local_face_j_upper
+    integer :: local_j_lower, local_j_upper, nvar, tile
+
+    new_state = 0.0_dp
+    new_temperature = 0.0_dp
+    x_flux = 0.0_dp
+    y_flux = 0.0_dp
+    ok = .false.
+    local_tile_advances = 0
+    local_computed_cells = 0
+    nvar = reactive_nvar(size(species))
+    local_ok = nvar >= 1 .and. &
+      all(shape(state) == [nvar, geometry%nx, geometry%ny]) .and. &
+      all(shape(temperature) == [geometry%nx, geometry%ny]) .and. &
+      all(shape(new_state) == shape(state)) .and. &
+      all(shape(new_temperature) == shape(temperature)) .and. &
+      size(x_flux, 1) == nvar .and. &
+      size(x_flux, 2) == geometry%nx + 1 .and. &
+      size(x_flux, 3) == geometry%ny .and. &
+      size(y_flux, 1) == nvar .and. size(y_flux, 2) == geometry%nx .and. &
+      size(y_flux, 3) == geometry%ny + 1
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(state_contribution, mold=state)
+    allocate(temperature_contribution, mold=temperature)
+    allocate(x_flux_contribution(nvar, 0:geometry%nx, geometry%ny))
+    allocate(y_flux_contribution(nvar, geometry%nx, 0:geometry%ny))
+    state_contribution = 0.0_dp
+    temperature_contribution = 0.0_dp
+    x_flux_contribution = 0.0_dp
+    y_flux_contribution = 0.0_dp
+    entity_ok = .true.
+
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      band_j_lower = max(1, distribution%root_tiles(tile)%j_lower - &
+        mpi_amr_eb_root_tile_hydro_halo_cells)
+      band_j_upper = min(geometry%ny, &
+        distribution%root_tiles(tile)%j_upper + &
+          mpi_amr_eb_root_tile_hydro_halo_cells)
+      call extract_eb_geometry_y_band_2d( &
+        geometry, band_j_lower, band_j_upper, band_geometry, entity_ok)
+      if (.not. entity_ok) exit
+      allocate(band_state, source=state(:, :, band_j_lower:band_j_upper))
+      allocate(band_temperature, &
+        source=temperature(:, band_j_lower:band_j_upper))
+      allocate(band_new_state, mold=band_state)
+      allocate(band_new_temperature, mold=band_temperature)
+      allocate(band_x_flux(nvar, 0:geometry%nx, band_geometry%ny))
+      allocate(band_y_flux(nvar, geometry%nx, 0:band_geometry%ny))
+      call advance_reactive_eb_level_2d( &
+        species, band_state, band_temperature, band_geometry, solver, &
+        reconstruction, limiter, state_redist_target_volume_fraction, &
+        state_redist_max_order, dt, band_new_state, band_new_temperature, &
+        band_x_flux, band_y_flux, entity_ok)
+      if (.not. entity_ok) exit
+
+      local_j_lower = distribution%root_tiles(tile)%j_lower - &
+        band_j_lower + 1
+      local_j_upper = distribution%root_tiles(tile)%j_upper - &
+        band_j_lower + 1
+      state_contribution(:, :, &
+        distribution%root_tiles(tile)%j_lower: &
+          distribution%root_tiles(tile)%j_upper) = &
+        band_new_state(:, :, local_j_lower:local_j_upper)
+      temperature_contribution(:, &
+        distribution%root_tiles(tile)%j_lower: &
+          distribution%root_tiles(tile)%j_upper) = &
+        band_new_temperature(:, local_j_lower:local_j_upper)
+      x_flux_contribution(:, :, &
+        distribution%root_tiles(tile)%j_lower: &
+          distribution%root_tiles(tile)%j_upper) = &
+        band_x_flux(:, :, local_j_lower:local_j_upper)
+
+      face_j_lower = distribution%root_tiles(tile)%j_lower - 1
+      face_j_upper = distribution%root_tiles(tile)%j_upper - 1
+      if (distribution%root_tiles(tile)%j_upper == geometry%ny) &
+        face_j_upper = geometry%ny
+      local_face_j_lower = face_j_lower - band_j_lower + 1
+      local_face_j_upper = face_j_upper - band_j_lower + 1
+      y_flux_contribution(:, :, face_j_lower:face_j_upper) = &
+        band_y_flux(:, :, local_face_j_lower:local_face_j_upper)
+      local_tile_advances = local_tile_advances + 1
+      local_computed_cells = local_computed_cells + &
+        geometry%nx * band_geometry%ny
+      deallocate( &
+        band_state, band_temperature, band_new_state, &
+        band_new_temperature, band_x_flux, band_y_flux)
+    end do
+    call all_ranks_accept_eb_2d( &
+      distribution, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      local_tile_advances = 0
+      local_computed_cells = 0
+      return
+    end if
+
+    call MPI_Allreduce( &
+      state_contribution, new_state, size(new_state), &
+      MPI_DOUBLE_PRECISION, MPI_SUM, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      temperature_contribution, new_temperature, size(new_temperature), &
+      MPI_DOUBLE_PRECISION, MPI_SUM, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      x_flux_contribution, x_flux, size(x_flux), MPI_DOUBLE_PRECISION, &
+      MPI_SUM, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      y_flux_contribution, y_flux, size(y_flux), MPI_DOUBLE_PRECISION, &
+      MPI_SUM, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    ok = all(ieee_is_finite(new_state)) .and. &
+      all(ieee_is_finite(new_temperature)) .and. &
+      all(ieee_is_finite(x_flux)) .and. all(ieee_is_finite(y_flux))
+    if (.not. ok) then
+      local_tile_advances = 0
+      local_computed_cells = 0
+    end if
+  end subroutine advance_owned_reactive_eb_root_tiles_hydro_2d
+
+  subroutine extract_eb_geometry_y_band_2d( &
+      geometry, j_lower, j_upper, band, ok)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: j_lower, j_upper
+    type(eb_geometry_2d), intent(out) :: band
+    logical, intent(out) :: ok
+
+    integer :: ny
+
+    band = eb_geometry_2d()
+    ok = .false.
+    if (.not. geometry%is_valid() .or. j_lower < 1 .or. &
+        j_upper > geometry%ny .or. j_upper < j_lower) return
+    ny = j_upper - j_lower + 1
+    band%nx = geometry%nx
+    band%ny = ny
+    band%x_lower = geometry%x_lower
+    band%x_upper = geometry%x_upper
+    band%y_lower = geometry%y_lower + &
+      real(j_lower - 1, dp) * geometry%dy
+    band%y_upper = geometry%y_lower + real(j_upper, dp) * geometry%dy
+    band%dx = geometry%dx
+    band%dy = geometry%dy
+    allocate(band%volume_fraction(band%nx, ny))
+    allocate(band%cell_centroid_x(band%nx, ny))
+    allocate(band%cell_centroid_y(band%nx, ny))
+    allocate(band%cell_type(band%nx, ny))
+    allocate(band%x_face_fraction(0:band%nx, ny))
+    allocate(band%y_face_fraction(band%nx, 0:ny))
+    allocate(band%x_face_centroid_y(0:band%nx, ny))
+    allocate(band%y_face_centroid_x(band%nx, 0:ny))
+    allocate(band%boundary_length(band%nx, ny))
+    allocate(band%boundary_centroid_x(band%nx, ny))
+    allocate(band%boundary_centroid_y(band%nx, ny))
+    allocate(band%boundary_normal_x(band%nx, ny))
+    allocate(band%boundary_normal_y(band%nx, ny))
+    allocate(band%boundary_normal_integral_x(band%nx, ny))
+    allocate(band%boundary_normal_integral_y(band%nx, ny))
+    band%volume_fraction = geometry%volume_fraction(:, j_lower:j_upper)
+    band%cell_centroid_x = geometry%cell_centroid_x(:, j_lower:j_upper)
+    band%cell_centroid_y = geometry%cell_centroid_y(:, j_lower:j_upper)
+    band%cell_type = geometry%cell_type(:, j_lower:j_upper)
+    band%x_face_fraction = geometry%x_face_fraction(:, j_lower:j_upper)
+    band%x_face_centroid_y = &
+      geometry%x_face_centroid_y(:, j_lower:j_upper)
+    band%y_face_fraction = &
+      geometry%y_face_fraction(:, j_lower - 1:j_upper)
+    band%y_face_centroid_x = &
+      geometry%y_face_centroid_x(:, j_lower - 1:j_upper)
+    band%boundary_length = geometry%boundary_length(:, j_lower:j_upper)
+    band%boundary_centroid_x = &
+      geometry%boundary_centroid_x(:, j_lower:j_upper)
+    band%boundary_centroid_y = &
+      geometry%boundary_centroid_y(:, j_lower:j_upper)
+    band%boundary_normal_x = &
+      geometry%boundary_normal_x(:, j_lower:j_upper)
+    band%boundary_normal_y = &
+      geometry%boundary_normal_y(:, j_lower:j_upper)
+    band%boundary_normal_integral_x = &
+      geometry%boundary_normal_integral_x(:, j_lower:j_upper)
+    band%boundary_normal_integral_y = &
+      geometry%boundary_normal_integral_y(:, j_lower:j_upper)
+    ok = band%is_valid()
+  end subroutine extract_eb_geometry_y_band_2d
+
   subroutine advance_owned_reactive_eb_patch_set_hydro_2d( &
       species, distribution, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, solver, reconstruction, limiter, &
       state_redist_max_order, dt, ok, local_level_advances, &
-      state_redist_target_volume_fraction)
+      state_redist_target_volume_fraction, local_root_hydro_cells)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
     real(dp), intent(inout) :: coarse_state(:, :, :)
@@ -4419,6 +4637,7 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_level_advances
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
+    integer, intent(out), optional :: local_root_hydro_cells
 
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
@@ -4444,13 +4663,15 @@ contains
     logical :: accepted, entity_ok, global_ok, local_ok
     integer :: advances, character_index, child, ierr, integer_controls(2)
     integer :: integer_maximum(2), integer_minimum(2)
-    integer :: nvar, owner, ratio, root_owner, substep
+    integer :: nvar, owner, ratio, root_hydro_cells, root_owner
+    integer :: root_tile_advances, substep
     integer :: string_codes(32, 3), string_maximum(32, 3)
     integer :: string_minimum(32, 3)
 
     ok = .false.
     advances = 0
     if (present(local_level_advances)) local_level_advances = 0
+    if (present(local_root_hydro_cells)) local_root_hydro_cells = 0
     selected_target = 0.5_dp
     if (present(state_redist_target_volume_fraction)) &
       selected_target = state_redist_target_volume_fraction
@@ -4532,35 +4753,15 @@ contains
     allocate(root_hydro_temperature, mold=coarse_temperature)
     allocate(coarse_x_flux(nvar, 0:coarse_geometry%nx, coarse_geometry%ny))
     allocate(coarse_y_flux(nvar, coarse_geometry%nx, 0:coarse_geometry%ny))
+    call advance_owned_reactive_eb_root_tiles_hydro_2d( &
+      species, distribution, root_start, root_start_temperature, &
+      coarse_geometry, trim(solver), trim(reconstruction), trim(limiter), &
+      selected_target, state_redist_max_order, dt, root_hydro, &
+      root_hydro_temperature, coarse_x_flux, coarse_y_flux, entity_ok, &
+      root_tile_advances, root_hydro_cells)
+    if (.not. entity_ok) return
+    advances = advances + root_tile_advances
     root_owner = distribution%root_level_owner()
-    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
-    if (distribution%rank == root_owner .and. entity_ok) then
-      call advance_reactive_eb_level_2d( &
-        species, root_start, root_start_temperature, coarse_geometry, &
-        trim(solver), trim(reconstruction), trim(limiter), selected_target, &
-        state_redist_max_order, dt, root_hydro, root_hydro_temperature, &
-        coarse_x_flux, coarse_y_flux, entity_ok)
-      if (entity_ok) advances = advances + 1
-    end if
-    call all_ranks_accept_eb_2d( &
-      distribution, entity_ok, accepted, global_ok)
-    if (.not. global_ok .or. .not. accepted) return
-    call MPI_Bcast( &
-      root_hydro, size(root_hydro), MPI_DOUBLE_PRECISION, root_owner, &
-      distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      root_hydro_temperature, size(root_hydro_temperature), &
-      MPI_DOUBLE_PRECISION, root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      coarse_x_flux, size(coarse_x_flux), MPI_DOUBLE_PRECISION, &
-      root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
-    call MPI_Bcast( &
-      coarse_y_flux, size(coarse_y_flux), MPI_DOUBLE_PRECISION, &
-      root_owner, distribution%comm, ierr)
-    if (ierr /= MPI_SUCCESS) return
 
     allocate(coarse_corrected, source=root_hydro)
     allocate(coarse_corrected_temperature, source=root_hydro_temperature)
@@ -4695,6 +4896,8 @@ contains
     patch_set = candidate_set
     ok = .true.
     if (present(local_level_advances)) local_level_advances = advances
+    if (present(local_root_hydro_cells)) &
+      local_root_hydro_cells = root_hydro_cells
   end subroutine advance_owned_reactive_eb_patch_set_hydro_2d
 
   subroutine advance_owned_reactive_eb_patch_set_transport_2d( &
