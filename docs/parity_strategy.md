@@ -1941,3 +1941,20 @@ local sparse root and child field must remain bitwise unchanged, the published
 Euler count must remain zero, and the limiter fallback must remain exactly one.
 The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
 before the complete 208-test regression.
+
+## 0.121.0 end-to-end sparse MPI reactive EB AMR full-physics gates
+
+Starting from owner-only sparse root tiles and fine children, the complete
+`R-T-H-T-R` transaction must retain each rank's exact stored-value count and
+match serial multipatch full physics for root and child state and temperature
+within `5e-11` field scale. The transport limiter minimum must match within
+`3e-13`. Local and communicator counts must match two sparse chemistry
+half-steps, one sparse hydro interval, and two sparse SSPRK2 transport
+half-steps on the exclusive physics owners at one, two, four, and eight ranks.
+
+The rejection gate uses valid chemistry and transport controls with an invalid
+hydro solver. The first sparse chemistry and transport candidates may succeed,
+but the caller's local sparse fields must remain bitwise unchanged, all three
+published operator counts must remain zero, and the limiter fallback must
+remain exactly one. The gate runs in GNU Fortran Release and bounds/FPE-checked
+Debug configurations before the complete 208-test regression.
