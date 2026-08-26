@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.134.0
+  VERSION 0.135.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
@@ -49,6 +49,7 @@ add_library(
   src/amr/amr_eb_multilevel_2d_mod.F90
   src/amr/amr_eb_flux_register_2d_mod.F90
   src/amr/amr_eb_reactive_2d_mod.F90
+  src/amr/amr_eb_patch_tree_reactive_2d_mod.F90
   src/amr/amr_eb_multilevel_reactive_2d_mod.F90
   src/amr/amr_eb_regrid_2d_mod.F90
   src/boundary/reactive_boundary_2d_mod.F90

@@ -21,6 +21,12 @@ program test_amr_eb_multilevel_2d
     amr_eb_patch_tree_topology_2d, &
     initialize_amr_eb_patch_tree_topology_2d, &
     rebuild_amr_eb_patch_tree_topology_2d
+  use amr_eb_patch_tree_reactive_2d_mod, only: &
+    reactive_amr_eb_patch_tree_2d, &
+    initialize_reactive_amr_eb_patch_tree_2d, &
+    synchronize_reactive_amr_eb_patch_tree_2d, &
+    rebuild_reactive_amr_eb_patch_tree_2d, &
+    composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_eb_state_2d, &
     average_down_three_level_reactive_eb_state_2d, &
@@ -57,6 +63,8 @@ program test_amr_eb_multilevel_2d
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: extended_tree_plans(:)
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: invalid_tree_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: tree_topology
+  type(reactive_amr_eb_patch_tree_2d) :: reactive_tree
+  type(reactive_amr_eb_patch_tree_2d) :: reactive_tree_snapshot
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: root_level_set(0:root_nx, 0:root_ny)
@@ -67,6 +75,8 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: synchronized_level_one(:, :, :)
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
+  real(dp), allocatable :: tree_integral_before(:), tree_integral_after(:)
+  real(dp), allocatable :: tree_level_two_saved(:, :, :)
   real(dp), allocatable :: reactive_root(:, :, :)
   real(dp), allocatable :: reactive_level_one(:, :, :)
   real(dp), allocatable :: reactive_level_two(:, :, :)
@@ -266,6 +276,74 @@ program test_amr_eb_multilevel_2d
     spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
   reactive_level_two = 0.99_dp * &
     spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, tree_plans, tree_topology, ok)
+  call require(ok, "reactive patch-tree source topology")
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_root, root_temperature, tree_topology, &
+    reactive_tree, ok)
+  call require(ok .and. reactive_tree%is_valid() .and. &
+    reactive_tree%level_count() == 3 .and. &
+    reactive_tree%level_patch_count(1) == 2 .and. &
+    reactive_tree%level_patch_count(2) == 2, &
+    "reactive arbitrary-depth patch-tree initialization")
+  reactive_tree%levels(2)%patches(1)%state = &
+    1.01_dp * reactive_tree%levels(2)%patches(1)%state
+  reactive_tree%levels(2)%patches(2)%state = &
+    0.98_dp * reactive_tree%levels(2)%patches(2)%state
+  reactive_tree%levels(3)%patches(1)%state = &
+    1.02_dp * reactive_tree%levels(3)%patches(1)%state
+  reactive_tree%levels(3)%patches(2)%state = &
+    0.99_dp * reactive_tree%levels(3)%patches(2)%state
+  allocate(tree_integral_before(nvar), tree_integral_after(nvar))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_before, ok)
+  call require(ok, "reactive patch-tree composite integral")
+  call synchronize_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_tree, ok)
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tree_integral_before)))
+  call require(ok .and. maxval(abs(tree_integral_after - &
+    tree_integral_before)) <= 8.0e-12_dp * scale, &
+    "deepest-first reactive patch-tree synchronization")
+  tree_integral_before = tree_integral_after
+  allocate(tree_level_two_saved, source= &
+    reactive_tree%levels(3)%patches(2)%state)
+  call rebuild_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_tree, extended_tree_plans, ok, topology_changed)
+  call require(ok .and. topology_changed .and. &
+    reactive_tree%is_valid() .and. reactive_tree%level_count() == 4 .and. &
+    reactive_tree%level_patch_count(3) == 1, &
+    "reactive arbitrary-depth patch-tree rebuild")
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, tree_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tree_integral_before)))
+  call require(ok .and. maxval(abs(tree_integral_after - &
+    tree_integral_before)) <= 8.0e-12_dp * scale, &
+    "reactive patch-tree rebuild conservation")
+  call require(maxval(abs(reactive_tree%levels(3)%patches(2)%state - &
+    tree_level_two_saved)) <= 8.0e-12_dp * scale, &
+    "same-resolution patch-tree overlap retention")
+  call require(maxval(abs( &
+    reactive_tree%levels(4)%patches(1)%state(:, 1, 1) - &
+    reactive_tree%levels(3)%patches(2)%state(:, 2, 2))) <= &
+    8.0e-12_dp * scale, "new deepest patch PCM initialization")
+
+  reactive_tree_snapshot = reactive_tree
+  call rebuild_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_tree, extended_tree_plans, ok, topology_changed)
+  call require(ok .and. .not. topology_changed .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "unchanged reactive patch-tree rebuild")
+  call rebuild_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_tree, invalid_tree_plans, ok, topology_changed)
+  call require(.not. ok .and. .not. topology_changed .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot) &
+    .and. reactive_tree%topology%relations(3)%children(1)%parent_patch == 2, &
+    "invalid reactive patch-tree rebuild rollback")
+
   deallocate(integral_before, integral_after)
   allocate(integral_before(nvar), integral_after(nvar))
   call composite_three_level_eb_integral_2d( &
@@ -543,6 +621,30 @@ contains
       parent_geometry, child_geometry, i_lower, i_upper, j_lower, j_upper, &
       refinement_ratio, patch, valid)
   end subroutine build_patch_geometry
+
+  logical function reactive_tree_solutions_match(first, second) &
+      result(matches)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second
+
+    integer :: level, patch
+
+    matches = first%is_valid() .and. second%is_valid() .and. &
+      first%nvar == second%nvar .and. &
+      first%level_count() == second%level_count()
+    if (.not. matches) return
+    do level = 1, first%level_count()
+      matches = first%levels(level)%patch_count() == &
+        second%levels(level)%patch_count()
+      if (.not. matches) return
+      do patch = 1, first%levels(level)%patch_count()
+        matches = all(first%levels(level)%patches(patch)%state == &
+            second%levels(level)%patches(patch)%state) .and. &
+          all(first%levels(level)%patches(patch)%temperature == &
+            second%levels(level)%patches(patch)%temperature)
+        if (.not. matches) return
+      end do
+    end do
+  end function reactive_tree_solutions_match
 
   subroutine assert_close(actual, expected, tolerance, message)
     real(dp), intent(in) :: actual, expected, tolerance
