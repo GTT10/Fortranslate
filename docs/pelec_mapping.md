@@ -93,3 +93,4 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | reflux ordering | one corrected-root round trip per remote child |
 | transport SSPRK2 blend | two targeted root gathers and one final row-band scatter |
 | EB-cut conservation closure | communicator-wide conserved vector and tile-local correction |
+| stable coarse timestep | owner-local EB hydro/transport limits, refinement scaling, and communicator minimum |

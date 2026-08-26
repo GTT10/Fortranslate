@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.124.0` milestone contains the serial verification suite, eight optional
+The `0.125.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -74,6 +74,11 @@ rows and the SSPRK2 blend return only to their tile owners. Cut-interface
 closure broadcasts one conserved `nvar` vector and changes unrefined cells
 directly on each local root tile. A late child failure leaves every sparse
 allocation bitwise unchanged and publishes zero transfers.
+The sparse hierarchy also selects its own stable coarse interval. Root tiles
+gather once to the physics owner for EB hydro and molecular-transport limits;
+fine children evaluate only on their owners and scale their stable fine steps
+by the refinement ratio before a communicator-minimum reduction. Invalid owner
+state rejects collectively with zero published dt and transfer count.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -569,6 +574,9 @@ The AMR layer provides:
   Euler-stage gathers/bundles/reflux round trips, targeted final blending,
   tile-local cut-interface closure, exact transfer accounting, and no full
   root-field broadcasts;
+- owner-local sparse MPI EB hydro/transport timestep selection with one
+  targeted root gather, fine-to-coarse subcycle scaling, communicator-minimum
+  reduction, serial timestep parity, and collective rejection;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

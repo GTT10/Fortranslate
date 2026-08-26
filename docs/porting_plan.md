@@ -685,6 +685,8 @@ Required capabilities:
   child-owner bundle, correction round trips, and tile scatter (`0.123.0`)
 - [x] targeted point-to-point direct sparse EB SSPRK2 transport root traffic,
   final blend scatter, and distributed cut-interface closure (`0.124.0`)
+- [x] owner-local sparse EB hydro/transport CFL timestep selection with
+  targeted root gather and coarse-interval child scaling (`0.125.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
