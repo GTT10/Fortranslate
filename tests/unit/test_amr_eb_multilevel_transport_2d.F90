@@ -18,6 +18,13 @@ program test_amr_eb_multilevel_transport_2d
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_multilevel_2d_mod, only: composite_three_level_eb_integral_2d
   use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_pcm_2d
+  use amr_eb_patch_tree_2d_mod, only: &
+    amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
+    initialize_amr_eb_patch_tree_topology_2d
+  use amr_eb_patch_tree_reactive_2d_mod, only: &
+    reactive_amr_eb_patch_tree_2d, &
+    initialize_reactive_amr_eb_patch_tree_2d, &
+    advance_reactive_amr_eb_patch_tree_transport_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
   implicit none
@@ -37,6 +44,9 @@ program test_amr_eb_multilevel_transport_2d
   type(eb_geometry_2d) :: root_geometry, level_one_geometry
   type(eb_geometry_2d) :: level_two_geometry
   type(amr_eb_patch_2d) :: root_patch, level_one_patch
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: tree_plans(:)
+  type(amr_eb_patch_tree_topology_2d) :: tree_topology
+  type(reactive_amr_eb_patch_tree_2d) :: tree, tree_snapshot
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: level_one_state(:, :, :)
   real(dp), allocatable :: level_one_temperature(:, :)
@@ -55,7 +65,10 @@ program test_amr_eb_multilevel_transport_2d
   real(dp) :: two_x_lower, two_x_upper, two_y_lower, two_y_upper
   real(dp) :: base_density, root_dt, one_dt, two_dt, diffusivity
   real(dp) :: interval, initial_span, final_span, minimum_theta, scale
+  real(dp) :: tree_minimum_theta
   logical :: ok
+  character(len=128) :: failure_context
+  integer, allocatable :: level_advances(:)
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -180,6 +193,42 @@ program test_amr_eb_multilevel_transport_2d
   interval = min(2.0e-6_dp, min(root_dt, &
     min(real(ratio, dp) * one_dt, real(ratio * ratio, dp) * two_dt)))
 
+  allocate(tree_plans(2))
+  tree_plans%refinement_ratio = ratio
+  allocate(tree_plans(1)%children(1))
+  tree_plans(1)%children(1)%parent_patch = 1
+  tree_plans(1)%children(1)%coarse_i_lower = root_i_lower
+  tree_plans(1)%children(1)%coarse_i_upper = root_i_upper
+  tree_plans(1)%children(1)%coarse_j_lower = root_j_lower
+  tree_plans(1)%children(1)%coarse_j_upper = root_j_upper
+  tree_plans(1)%children(1)%geometry = level_one_geometry
+  allocate(tree_plans(2)%children(1))
+  tree_plans(2)%children(1)%parent_patch = 1
+  tree_plans(2)%children(1)%coarse_i_lower = level_one_i_lower
+  tree_plans(2)%children(1)%coarse_i_upper = level_one_i_upper
+  tree_plans(2)%children(1)%coarse_j_lower = level_one_j_lower
+  tree_plans(2)%children(1)%coarse_j_upper = level_one_j_upper
+  tree_plans(2)%children(1)%geometry = level_two_geometry
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, tree_plans, tree_topology, ok)
+  call require(ok, "three-level transport tree topology")
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, tree_topology, tree, ok)
+  call require(ok, "three-level transport tree state")
+  tree%levels(2)%patches(1)%state = level_one_state
+  tree%levels(2)%patches(1)%temperature = level_one_temperature
+  tree%levels(3)%patches(1)%state = level_two_state
+  tree%levels(3)%patches(1)%temperature = level_two_temperature
+  allocate(level_advances(tree%level_count()))
+  call advance_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, tree, interval, .false., .true., .false., .false., &
+    boundaries, config%state_redist_target_volume_fraction, &
+    config%state_redist_max_order, tree_minimum_theta, ok, failure_context, &
+    level_advances)
+  call require(ok .and. all(level_advances == [2, 4, 8]) .and. &
+    tree_minimum_theta > 0.999999999_dp, &
+    "three-level patch-tree transport schedule: " // trim(failure_context))
+
   allocate(new_root_state, mold=root_state)
   allocate(new_root_temperature, mold=root_temperature)
   allocate(new_level_one_state, mold=level_one_state)
@@ -197,6 +246,24 @@ program test_amr_eb_multilevel_transport_2d
     new_level_two_temperature, minimum_theta, ok)
   call require(ok .and. minimum_theta > 0.999999999_dp, &
     "three-level transport transaction")
+  scale = max(1.0_dp, maxval(abs(new_root_state)), &
+    maxval(abs(new_level_one_state)), maxval(abs(new_level_two_state)))
+  call require(maxval(abs(tree%levels(1)%patches(1)%state - &
+      new_root_state)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(tree%levels(2)%patches(1)%state - &
+      new_level_one_state)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(tree%levels(3)%patches(1)%state - &
+      new_level_two_state)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree transport field parity")
+  scale = max(1.0_dp, maxval(new_root_temperature), &
+    maxval(new_level_one_temperature), maxval(new_level_two_temperature))
+  call require(maxval(abs(tree%levels(1)%patches(1)%temperature - &
+      new_root_temperature)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(tree%levels(2)%patches(1)%temperature - &
+      new_level_one_temperature)) <= 5.0e-7_dp * scale .and. &
+    maxval(abs(tree%levels(3)%patches(1)%temperature - &
+      new_level_two_temperature)) <= 5.0e-7_dp * scale, &
+    "three-level patch-tree transport temperature parity")
   call composite_three_level_eb_integral_2d( &
     new_root_state, root_geometry, new_level_one_state, level_one_geometry, &
     root_patch, new_level_two_state, level_two_geometry, level_one_patch, &
@@ -232,6 +299,16 @@ program test_amr_eb_multilevel_transport_2d
     all(new_level_two_state == level_two_state), &
     "three-level transport rollback")
 
+  tree_snapshot = tree
+  call advance_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, tree, -interval, .false., .true., .false., .false., &
+    boundaries, config%state_redist_target_volume_fraction, &
+    config%state_redist_max_order, tree_minimum_theta, ok, failure_context, &
+    level_advances)
+  call require(.not. ok .and. all(level_advances == 0) .and. &
+    tree_minimum_theta == 1.0_dp .and. tree_solutions_match(tree, tree_snapshot), &
+    "three-level patch-tree transport rollback")
+
   write(*, '(a)') "test_amr_eb_multilevel_transport_2d: PASS"
 
 contains
@@ -266,6 +343,26 @@ contains
       end do
     end do
   end subroutine assert_covered_unchanged
+
+  logical function tree_solutions_match(first, second) result(match)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second
+    integer :: level, patch
+
+    match = first%level_count() == second%level_count()
+    if (.not. match) return
+    do level = 1, first%level_count()
+      match = first%levels(level)%patch_count() == &
+        second%levels(level)%patch_count()
+      if (.not. match) return
+      do patch = 1, first%levels(level)%patch_count()
+        match = all(first%levels(level)%patches(patch)%state == &
+            second%levels(level)%patches(patch)%state) .and. &
+          all(first%levels(level)%patches(patch)%temperature == &
+            second%levels(level)%patches(patch)%temperature)
+        if (.not. match) return
+      end do
+    end do
+  end function tree_solutions_match
 
   subroutine require(condition, message)
     logical, intent(in) :: condition

@@ -4,14 +4,20 @@ module amr_eb_patch_tree_reactive_2d_mod
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use transport_database_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_conserved_to_primitive
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
+  use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
   use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
+  use eb_reactive_redistribution_2d_mod, only: &
+    advance_reactive_eb_state_redistributed_2d
+  use eb_reactive_transport_2d_mod, only: &
+    reactive_eb_transport_fluxes_rhs_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
   use amr_eb_flux_register_2d_mod, only: &
@@ -21,6 +27,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   use amr_eb_reactive_2d_mod, only: &
     prolong_reactive_eb_patch_pcm_2d, &
     build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
+  use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
     rebuild_amr_eb_patch_tree_topology_2d
@@ -61,6 +68,8 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_reactive_amr_eb_patch_tree_hydro_2d
   public :: advance_reactive_amr_eb_patch_tree_strang_2d
+  public :: advance_reactive_amr_eb_patch_tree_transport_euler_2d
+  public :: advance_reactive_amr_eb_patch_tree_transport_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
 
 contains
@@ -609,6 +618,400 @@ contains
       interval >= 0.0_dp .and. ieee_is_finite(rtol) .and. rtol > 0.0_dp .and. &
       ieee_is_finite(atol) .and. atol > 0.0_dp
   end function valid_patch_tree_chemistry_inputs
+
+  subroutine advance_reactive_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, solution, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
+      minimum_theta, ok, failure_context, level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: max_order
+    real(dp), intent(out) :: minimum_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    real(dp), allocatable :: x_flux(:, :, :), y_flux(:, :, :)
+    integer, allocatable :: candidate_advances(:)
+    character(len=160) :: context
+    real(dp) :: candidate_theta
+    logical :: local_ok
+
+    ok = .false.
+    minimum_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(level_advances)) level_advances = 0
+    if (.not. valid_patch_tree_transport_inputs( &
+          species, transport, solution, interval, target_volume_fraction)) &
+      return
+    if (present(level_advances)) then
+      if (size(level_advances) /= solution%level_count()) return
+    end if
+
+    candidate = solution
+    candidate_theta = 1.0_dp
+    allocate(candidate_advances(candidate%level_count()), source=0)
+    call advance_reactive_amr_eb_patch_tree_transport_node_2d( &
+      species, transport, candidate, 1, 1, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
+      x_flux, y_flux, candidate_theta, candidate_advances, context, local_ok)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "final hierarchy synchronization"
+    call synchronize_candidate(species, candidate, local_ok)
+    if (.not. local_ok .or. .not. candidate%is_valid()) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    solution = candidate
+    minimum_theta = candidate_theta
+    if (present(level_advances)) level_advances = candidate_advances
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_transport_euler_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, solution, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
+      minimum_theta, ok, failure_context, level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: max_order
+    real(dp), intent(out) :: minimum_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    type(eb_geometry_2d) :: geometry
+    real(dp), allocatable :: temperature_work(:, :)
+    integer, allocatable :: first_advances(:), second_advances(:)
+    character(len=160) :: context
+    real(dp) :: first_theta, second_theta
+    logical :: local_ok, transport_active
+    integer :: level, patch
+
+    ok = .false.
+    minimum_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(level_advances)) level_advances = 0
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(interval) .or. interval < 0.0_dp .or. &
+        .not. ieee_is_finite(target_volume_fraction) .or. &
+        target_volume_fraction <= 0.0_dp .or. &
+        target_volume_fraction > 1.0_dp) return
+    if (present(level_advances)) then
+      if (size(level_advances) /= solution%level_count()) return
+    end if
+    transport_active = viscosity_enabled .or. thermal_conduction_enabled .or. &
+      species_diffusion_enabled
+    if (interval <= tiny(1.0_dp) .or. .not. transport_active) then
+      ok = .true.
+      if (present(failure_context)) failure_context = "none"
+      return
+    end if
+    if (size(transport) /= size(species)) return
+
+    candidate = solution
+    allocate(first_advances(candidate%level_count()), source=0)
+    allocate(second_advances(candidate%level_count()), source=0)
+    call advance_reactive_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, candidate, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
+      first_theta, local_ok, context, first_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    call advance_reactive_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, candidate, interval, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
+      second_theta, local_ok, context, second_advances)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        call patch_geometry_at( &
+          candidate%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) then
+          if (present(failure_context)) failure_context = "stage blend geometry"
+          return
+        end if
+        candidate%levels(level)%patches(patch)%state = 0.5_dp * ( &
+          solution%levels(level)%patches(patch)%state + &
+          candidate%levels(level)%patches(patch)%state)
+        if (allocated(temperature_work)) deallocate(temperature_work)
+        allocate(temperature_work(geometry%nx, geometry%ny))
+        call recover_transport_temperature_2d( &
+          species, candidate%levels(level)%patches(patch)%state, &
+          0.5_dp * (solution%levels(level)%patches(patch)%temperature + &
+            candidate%levels(level)%patches(patch)%temperature), geometry, &
+          temperature_work, local_ok)
+        if (.not. local_ok) then
+          if (present(failure_context)) failure_context = &
+            "stage blend temperature recovery"
+          return
+        end if
+        candidate%levels(level)%patches(patch)%temperature = temperature_work
+      end do
+    end do
+    context = "final hierarchy synchronization"
+    call synchronize_candidate(species, candidate, local_ok)
+    if (.not. local_ok .or. .not. candidate%is_valid()) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    solution = candidate
+    minimum_theta = min(first_theta, second_theta)
+    if (present(level_advances)) &
+      level_advances = first_advances + second_advances
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_transport_2d
+
+  recursive subroutine advance_reactive_amr_eb_patch_tree_transport_node_2d( &
+      species, transport, solution, level, patch_index, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, x_flux, y_flux, minimum_theta, &
+      level_advances, failure_context, ok, exterior)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    integer, intent(in) :: level, patch_index, max_order
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), allocatable, intent(out) :: x_flux(:, :, :), y_flux(:, :, :)
+    real(dp), intent(inout) :: minimum_theta
+    integer, intent(inout) :: level_advances(:)
+    character(len=*), intent(inout) :: failure_context
+    logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
+
+    type(eb_geometry_2d) :: geometry, child_geometry
+    type(amr_eb_flux_register_2d), allocatable :: registers(:)
+    type(reactive_eb_exterior_state_2d) :: child_exterior
+    real(dp), allocatable :: state_start(:, :, :), temperature_start(:, :)
+    real(dp), allocatable :: state_end(:, :, :), temperature_end(:, :)
+    real(dp), allocatable :: rhs(:, :, :)
+    real(dp), allocatable :: parent_work(:, :, :), parent_work_temperature(:, :)
+    real(dp), allocatable :: child_work(:, :, :), child_work_temperature(:, :)
+    real(dp), allocatable :: child_x_flux(:, :, :), child_y_flux(:, :, :)
+    real(dp), allocatable :: integral_before(:)
+    real(dp) :: alpha, child_interval, node_theta
+    integer :: child, child_count, first_child, global_child, ratio, substep
+    logical :: local_ok
+
+    ok = .false.
+    if (.not. ieee_is_finite(interval) .or. interval <= 0.0_dp .or. &
+        level < 1 .or. level > solution%level_count() .or. &
+        patch_index < 1 .or. &
+        patch_index > solution%levels(level)%patch_count() .or. &
+        size(level_advances) /= solution%level_count()) return
+    call patch_geometry_at( &
+      solution%topology, level, patch_index, geometry, local_ok)
+    if (.not. local_ok) return
+
+    child_count = 0
+    first_child = 0
+    if (level < solution%level_count()) then
+      first_child = solution%topology%relations(level)% &
+        child_offsets(patch_index) + 1
+      child_count = solution%topology%relations(level)% &
+          child_offsets(patch_index + 1) - &
+        solution%topology%relations(level)%child_offsets(patch_index)
+    end if
+    if (child_count > 0) then
+      allocate(integral_before(solution%nvar))
+      call composite_reactive_amr_eb_patch_subtree_integral_2d( &
+        solution, level, patch_index, integral_before, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    allocate(state_start, source= &
+      solution%levels(level)%patches(patch_index)%state)
+    allocate(temperature_start, source= &
+      solution%levels(level)%patches(patch_index)%temperature)
+    allocate(state_end, mold=state_start)
+    allocate(temperature_end, mold=temperature_start)
+    allocate(rhs, mold=state_start)
+    allocate(x_flux(solution%nvar, 0:geometry%nx, geometry%ny))
+    allocate(y_flux(solution%nvar, geometry%nx, 0:geometry%ny))
+    write(failure_context, '(a,i0,a,i0)') &
+      "transport level ", level - 1, " patch ", patch_index
+    if (present(exterior)) then
+      call reactive_eb_transport_fluxes_rhs_2d( &
+        species, transport, state_start, temperature_start, geometry, &
+        interval, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+        x_flux, y_flux, node_theta, local_ok, exterior)
+    else
+      call reactive_eb_transport_fluxes_rhs_2d( &
+        species, transport, state_start, temperature_start, geometry, &
+        interval, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+        x_flux, y_flux, node_theta, local_ok)
+    end if
+    if (.not. local_ok) return
+    minimum_theta = min(minimum_theta, node_theta)
+    call advance_reactive_eb_state_redistributed_2d( &
+      species, state_start, temperature_start, geometry, rhs, interval, &
+      state_end, temperature_end, local_ok, target_volume_fraction, max_order)
+    if (.not. local_ok) return
+    solution%levels(level)%patches(patch_index)%state = state_end
+    solution%levels(level)%patches(patch_index)%temperature = temperature_end
+    level_advances(level) = level_advances(level) + 1
+    if (child_count == 0) then
+      ok = .true.
+      return
+    end if
+
+    ratio = solution%topology%relations(level)%refinement_ratio
+    child_interval = interval / real(ratio, dp)
+    allocate(registers(child_count))
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      child_geometry = solution%topology%relations(level)% &
+        children(global_child)%geometry
+      call initialize_amr_eb_flux_register_2d( &
+        geometry, child_geometry, &
+        solution%topology%relations(level)%children(global_child)%patch, &
+        solution%nvar, registers(child), local_ok)
+      if (.not. local_ok) return
+      call accumulate_coarse_eb_fluxes_2d( &
+        registers(child), geometry, child_geometry, &
+        solution%topology%relations(level)%children(global_child)%patch, &
+        x_flux, y_flux, interval, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    do substep = 1, ratio
+      alpha = real(substep - 1, dp) / real(ratio, dp)
+      do child = 1, child_count
+        global_child = first_child + child - 1
+        child_geometry = solution%topology%relations(level)% &
+          children(global_child)%geometry
+        call build_reactive_eb_patch_exterior_2d( &
+          species, state_start, temperature_start, state_end, &
+          temperature_end, geometry, child_geometry, &
+          solution%topology%relations(level)%children(global_child)%patch, &
+          alpha, child_exterior, local_ok, &
+          solution%levels(level + 1)%patches(global_child)%state, &
+          solution%levels(level + 1)%patches(global_child)%temperature)
+        if (.not. local_ok) return
+        call advance_reactive_amr_eb_patch_tree_transport_node_2d( &
+          species, transport, solution, level + 1, global_child, &
+          child_interval, viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+          target_volume_fraction, max_order, child_x_flux, child_y_flux, &
+          minimum_theta, level_advances, failure_context, local_ok, &
+          child_exterior)
+        if (.not. local_ok) return
+        call accumulate_fine_eb_fluxes_2d( &
+          registers(child), geometry, child_geometry, &
+          solution%topology%relations(level)%children(global_child)%patch, &
+          child_x_flux, child_y_flux, child_interval, local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
+
+    allocate(parent_work, mold=state_end)
+    allocate(parent_work_temperature, mold=temperature_end)
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      child_geometry = solution%topology%relations(level)% &
+        children(global_child)%geometry
+      if (allocated(child_work)) deallocate(child_work)
+      if (allocated(child_work_temperature)) deallocate(child_work_temperature)
+      allocate(child_work, mold= &
+        solution%levels(level + 1)%patches(global_child)%state)
+      allocate(child_work_temperature, mold= &
+        solution%levels(level + 1)%patches(global_child)%temperature)
+      call reflux_reactive_eb_state_patch_2d( &
+        species, solution%levels(level)%patches(patch_index)%state, &
+        solution%levels(level)%patches(patch_index)%temperature, geometry, &
+        solution%levels(level + 1)%patches(global_child)%state, &
+        solution%levels(level + 1)%patches(global_child)%temperature, &
+        child_geometry, &
+        solution%topology%relations(level)%children(global_child)%patch, &
+        registers(child), parent_work, parent_work_temperature, child_work, &
+        child_work_temperature, local_ok)
+      if (.not. local_ok) return
+      solution%levels(level)%patches(patch_index)%state = parent_work
+      solution%levels(level)%patches(patch_index)%temperature = &
+        parent_work_temperature
+      solution%levels(level + 1)%patches(global_child)%state = child_work
+      solution%levels(level + 1)%patches(global_child)%temperature = &
+        child_work_temperature
+    end do
+
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      child_geometry = solution%topology%relations(level)% &
+        children(global_child)%geometry
+      call average_down_reactive_eb_state_patch_2d( &
+        species, solution%levels(level)%patches(patch_index)%state, &
+        solution%levels(level)%patches(patch_index)%temperature, geometry, &
+        solution%levels(level + 1)%patches(global_child)%state, &
+        child_geometry, &
+        solution%topology%relations(level)%children(global_child)%patch, &
+        parent_work, parent_work_temperature, local_ok)
+      if (.not. local_ok) return
+      solution%levels(level)%patches(patch_index)%state = parent_work
+      solution%levels(level)%patches(patch_index)%temperature = &
+        parent_work_temperature
+    end do
+
+    call close_reactive_amr_eb_patch_subtree_conservation_2d( &
+      species, solution, level, patch_index, integral_before, x_flux, &
+      y_flux, interval, local_ok)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine advance_reactive_amr_eb_patch_tree_transport_node_2d
+
+  logical function valid_patch_tree_transport_inputs( &
+      species, transport, solution, interval, target_volume_fraction) &
+      result(valid)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: interval, target_volume_fraction
+
+    valid = solution%is_valid() .and. &
+      solution%nvar == reactive_nvar(size(species)) .and. &
+      size(transport) == size(species) .and. ieee_is_finite(interval) .and. &
+      interval > 0.0_dp .and. ieee_is_finite(target_volume_fraction) .and. &
+      target_volume_fraction > 0.0_dp .and. &
+      target_volume_fraction <= 1.0_dp
+  end function valid_patch_tree_transport_inputs
 
   subroutine advance_reactive_amr_eb_patch_tree_hydro_2d( &
       species, solution, solver, reconstruction, limiter, &
