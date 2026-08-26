@@ -1028,6 +1028,20 @@ serial field parity, deterministic child order, owner work, conservation,
 clock, scheduled-regrid, and rollback gates at one, two, four, and eight ranks
 before the complete serial regression.
 
+## 0.151.0 direct hydro coarse-flux routing gates
+
+Keep hydro x rows and uniquely owned y-faces on root tile owners. Send only
+state and temperature in remote tile results and in the compact root-to-child
+context, then route every intersecting x/y fragment directly to the child
+owner for covered, finite interface-register assembly.
+
+Require the root physics owner to allocate no complete hydro flux field and
+derive exact traffic from remote halo, state-result, final-scatter, child
+state/correction, and tile/child flux-intersection messages. Preserve serial
+field parity, deterministic child order, owner work, conservation, clock,
+scheduled-regrid, and rollback gates at one, two, four, and eight ranks before
+the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

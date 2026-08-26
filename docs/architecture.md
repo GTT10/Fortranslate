@@ -1630,3 +1630,20 @@ support locally. Only corrected patch-plus-two state and temperature return to
 the root owner. Child order remains deterministic, so later contexts observe
 earlier reflux corrections. Final corrected-root scatter and hydro tile-result
 assembly remain subsequent ownership boundaries.
+
+## Direct hydro coarse-flux routing (`0.151.0`)
+
+Each sparse hydro root tile retains the x-flux rows for its cell rows and the
+same uniquely owned y-faces used by transport. A child owner assembles its
+globally indexed interface rectangles from only the intersecting tile owners.
+Local fragments copy directly; remote fragments use one packed x/y message per
+tile/child intersection. Complete finite coverage is required before the
+coarse register is accumulated.
+
+The tile-to-root hydro result now contains only stage-start and stage-end state
+and temperature. The root-to-child hydro context likewise contains only the
+four-edge start/end context and current patch-plus-two correction support. The
+root physics owner therefore allocates no complete hydro x/y flux array.
+Complete root state assembly, ordered corrected-support merge, and final row
+scatter remain because the root owner still extracts later child contexts and
+publishes the corrected root state.

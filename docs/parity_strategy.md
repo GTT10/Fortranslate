@@ -2449,3 +2449,19 @@ root/child field parity, deterministic overlapping-child correction, owner
 work, public clock, scheduled regridding, conservation, and late-failure
 rollback at one, two, four, and eight ranks in Release and bounds/FPE-checked
 Debug before the complete serial regression.
+
+## 0.151.0 direct hydro coarse-flux routing gates
+
+Retain each hydro root tile's x-flux rows and unique y-faces, then assemble each
+child's interface rectangles from only intersecting tile owners. Require full
+receiver coverage, finite values, and a positive combined state-context plus
+interface-flux value count smaller than the former complete root bundle.
+
+Remove flux values from both the tile-to-root hydro result and root-to-child
+state context. Derive exact point-to-point traffic from finite-band halos,
+remote tile state results, remote final row scatters, remote child state and
+correction messages, and one flux message per remote tile/child intersection.
+Retain serial root/child field parity, deterministic overlapping-child
+correction, owner work, public clock, scheduled regridding, conservation, and
+late-failure rollback at one, two, four, and eight ranks in Release and bounds/
+FPE-checked Debug before the complete serial regression.
