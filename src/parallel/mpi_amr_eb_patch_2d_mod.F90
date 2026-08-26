@@ -4322,16 +4322,12 @@ contains
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
-    type(mpi_amr_eb_root_tile_transport_flux_2d), allocatable :: &
-      local_tile_fluxes(:)
     real(dp), allocatable :: coarse_corrected(:, :, :)
     real(dp), allocatable :: coarse_corrected_temperature(:, :)
     real(dp), allocatable :: coarse_work(:, :, :)
     real(dp), allocatable :: coarse_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :)
     real(dp), allocatable :: coarse_y_flux(:, :, :)
-    real(dp), allocatable :: coarse_x_flux_support(:, :, :)
-    real(dp), allocatable :: coarse_y_flux_support(:, :, :)
     real(dp), allocatable :: fine_work(:, :, :)
     real(dp), allocatable :: fine_work_temperature(:, :)
     real(dp), allocatable :: fine_x_flux(:, :, :)
@@ -4732,6 +4728,8 @@ contains
     type(amr_eb_flux_register_2d) :: flux_register
     type(reactive_eb_exterior_state_2d) :: exterior
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    type(mpi_amr_eb_root_tile_transport_flux_2d), allocatable :: &
+      local_tile_fluxes(:)
     real(dp), allocatable :: coarse_candidate(:, :, :)
     real(dp), allocatable :: coarse_candidate_temperature(:, :)
     real(dp), allocatable :: coarse_corrected(:, :, :)
@@ -4740,6 +4738,8 @@ contains
     real(dp), allocatable :: coarse_work_temperature(:, :)
     real(dp), allocatable :: coarse_x_flux(:, :, :)
     real(dp), allocatable :: coarse_y_flux(:, :, :)
+    real(dp), allocatable :: coarse_x_flux_support(:, :, :)
+    real(dp), allocatable :: coarse_y_flux_support(:, :, :)
     real(dp), allocatable :: fine_rhs(:, :, :), fine_work(:, :, :)
     real(dp), allocatable :: fine_work_temperature(:, :)
     real(dp), allocatable :: coarse_support(:, :, :)
