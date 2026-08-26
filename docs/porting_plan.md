@@ -716,6 +716,8 @@ Required capabilities:
   targeted result routing and exact traffic/work accounting (`0.137.0`)
 - [x] zero-gather sparse EB hydro/transport timestep selection directly on
   root tile and child owners (`0.138.0`)
+- [x] zero-traffic final sparse SSPRK2 root blend and EOS recovery directly on
+  root tile owners (`0.139.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
 - thermal, viscous, and catalytic wall boundary conditions

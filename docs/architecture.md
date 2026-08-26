@@ -1317,6 +1317,16 @@ an unbounded interval. Control consensus and field validation happen before
 publication, so rejection returns zero dt and zero transfer count without
 changing sparse state.
 
+In `0.139.0`, the final sparse SSPRK2 root blend no longer materializes either
+candidate on the root physics owner. After the second Euler stage returns its
+owned row bands, every root tile owner averages its local interval-start and
+second-Euler states, extracts the matching EB geometry band, and recovers
+temperature through the mixture EOS. One collective acceptance precedes child
+blending and average-down. This removes two root gathers and one row-band
+scatter per transport call. The two Euler stages retain their root
+gather/scatter boundary because diffusive flux construction and StateRedist
+still require neighboring rows.
+
 In `0.126.0`, a public sparse time loop composes that selector with the direct
 owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after
 every accepted state, the final interval is clipped to the target time, and
