@@ -2330,3 +2330,19 @@ serial root/child field tolerances at one, two, four, and eight ranks. Repeat
 full physics, public time-loop, scheduled-regrid, and late-failure rollback in
 OpenMPI Release and bounds/FPE-checked Debug before the complete serial
 regression.
+
+## 0.143.0 compact sparse child transport-context gates
+
+Extract the four-edge start/end coarse context and require its reconstructed
+exterior state and temperature to match the complete-root builder exactly.
+For every qualification child, require the context-plus-coarse-register value
+count to be positive and smaller than the former complete root
+start/end/temperature/x-y-flux bundle.
+
+For a remote child and each transport Euler stage, require exactly three
+messages: compact context and coarse mismatch from root to child, evolved fine
+state plus accumulated mismatch from child to root, and corrected fine state
+from root to child. Reflux remains ordered on the root owner. Retain exact
+owner work accounting, limiter minima, serial root/child tolerances, public
+time-loop accounting, and late-failure rollback at one, two, four, and eight
+ranks in Release and bounds/FPE-checked Debug.

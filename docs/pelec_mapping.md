@@ -84,13 +84,13 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.142.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.143.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
 | root hydro and transport physics | owner-tiled finite-halo hydro and transport Euler stages with targeted result/scatter routing |
-| fine-owner coarse context | one packed root start/update/temperature/flux bundle per distinct owner |
-| reflux ordering | one corrected-root round trip per remote child |
+| fine-owner coarse context | per-child four-edge start/end samples plus compact coarse interface register |
+| reflux ordering | evolved fine/register return, root-owner deterministic reflux, and corrected-fine return |
 | transport SSPRK2 blend | tile-local conserved-state average and EB-band EOS recovery with no root-field traffic |
 | EB-cut conservation closure | communicator-wide conserved vector and tile-local correction |
 | stable coarse timestep | owner-local EB hydro/transport limits, refinement scaling, and communicator minimum |

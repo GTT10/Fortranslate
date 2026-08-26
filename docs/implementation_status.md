@@ -2583,3 +2583,20 @@ Each distinct child owner still receives one complete root start/end/flux
 input bundle per Euler stage. Compact exterior and interface-flux routing are
 the next boundary; this milestone removes only the repeated full-root reflux
 correction round trips.
+
+## Compact sparse child transport context (`0.143.0`)
+
+- [x] raw start/end coarse exterior samples stored only on four child edges
+- [x] compact-context reconstruction identical to the complete-root builder
+- [x] coarse interface flux accumulated into the compact register on root
+- [x] child owner advances only fine state and compact register data
+- [x] evolved fine state and accumulated mismatch returned in one payload
+- [x] deterministic reflux performed on the root physics owner
+- [x] corrected fine state returned without any complete root array
+- [x] exact three-message remote-child transaction per Euler stage
+- [x] context payload required to be smaller than the former root bundle
+- [x] serial root/child parity retained at one, two, four, and eight ranks
+
+The complete root result still exists transiently on the root physics owner
+after owner-tiled Euler work. Distributing final reflux across root-tile owners
+is subsequent work; transport child owners no longer receive that result.

@@ -1497,3 +1497,22 @@ distributed sparse checkpoint/output, and distributed EB flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.
+
+## Compact sparse child transport context (`0.143.0`)
+
+The sparse transport child phase separates coarse data needed for fine
+boundary reconstruction from coarse data needed for reflux. A
+`reactive_eb_patch_exterior_context_2d` stores raw start/end conserved state
+and temperature samples only on the four fine-patch edges. Physical-boundary
+sides retain safe placeholders and are filled from the current fine boundary
+state during each substep. Reconstructing from this context uses the same
+conserved-state time interpolation and EOS recovery as the complete-root path.
+
+The root physics owner initializes each compact patch-plus-one-cell flux
+register and accumulates the coarse interface flux before routing the context
+to the child owner. The child performs its ratio subcycles, accumulates fine
+fluxes into that register, and returns one fine state/temperature/register
+payload. The root owner applies reflux in deterministic child order and sends
+back one corrected fine state/temperature payload. A remote child therefore
+allocates no complete root start, end, temperature, or x/y-flux array. Hydro
+keeps its existing complete child bundle and correction route.
