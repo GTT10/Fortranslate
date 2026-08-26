@@ -2026,3 +2026,22 @@ child must reject collectively after any root gather, preserve all sparse
 fields bitwise, and publish zero dt and zero transfers. The gate runs in GNU
 Fortran Release and bounds/FPE-checked Debug configurations before the complete
 208-test regression.
+
+## 0.126.0 public sparse MPI reactive EB AMR time-loop gates
+
+Choose a target time equal to `1.25` times the initial serial full-physics
+stable interval so at least two dynamically selected steps are required and
+the final one is clipped. An independent serial patch-set loop recomputes the
+combined EB hydro/transport limit after each accepted state. The sparse public
+loop must reach the target exactly and match the serial step count, minimum dt,
+limiter minimum, root state and temperature, and every child state and
+temperature at one, two, four, and eight ranks.
+
+Local and communicator-summed chemistry, hydro, and transport counts must equal
+the independently expected per-step owner counts multiplied by the committed
+step count. Timestep root-gather traffic must obey the same multiplication. A
+second run with a total-step limit of one must reject before the next interval,
+retain exactly the first committed state, clock, minimum dt, and diagnostics,
+and leave the sparse hierarchy valid. The gate runs in GNU Fortran Release and
+bounds/FPE-checked Debug configurations before the complete 208-test
+regression.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.125.0` milestone contains the serial verification suite, eight optional
+The `0.126.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -79,6 +79,12 @@ gather once to the physics owner for EB hydro and molecular-transport limits;
 fine children evaluate only on their owners and scale their stable fine steps
 by the refinement ratio before a communicator-minimum reduction. Invalid owner
 state rejects collectively with zero published dt and transfer count.
+The same sparse hierarchy now owns a public full-physics time loop. It
+recomputes that distributed stable interval before every `R-T-H-T-R` step,
+clips the last interval exactly to the requested target time, and publishes
+time, step, operator-count, limiter, and timestep-traffic diagnostics only
+after each complete step commits. A later step limit or physics rejection
+preserves the already committed prefix and its matching diagnostics.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -577,6 +583,9 @@ The AMR layer provides:
 - owner-local sparse MPI EB hydro/transport timestep selection with one
   targeted root gather, fine-to-coarse subcycle scaling, communicator-minimum
   reduction, serial timestep parity, and collective rejection;
+- public sparse MPI EB multi-step `R-T-H-T-R` advancement with a freshly
+  selected stable interval per step, exact final-time clipping, committed-only
+  clock and diagnostic publication, and serial full-field parity;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

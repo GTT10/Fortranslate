@@ -2251,3 +2251,23 @@ The distributed sparse hierarchy can now choose its own qualified coarse
 interval without replicated fine payloads or all-rank root fields. A public
 multi-step driver, dynamic topology, checkpointing, and output remain separate
 work.
+
+## Public sparse MPI reactive EB AMR time loop (`0.126.0`)
+
+- [x] public target-time loop over the direct sparse `R-T-H-T-R` transaction
+- [x] fresh owner-local hydro/transport stability selection before every step
+- [x] exact final-time clipping with a positive finite accepted interval
+- [x] communicator consensus for clock, limits, tolerances, and controls
+- [x] time and total-step publication only after a complete split-step commit
+- [x] committed-only chemistry, hydro, transport, limiter, and timestep-traffic
+  accounting
+- [x] preservation of earlier accepted states and diagnostics at a later
+  total-step limit
+- [x] serial dynamic-timestep root, child, and temperature parity
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The static sparse EB hierarchy can now advance its own full-physics clock
+without replicated fine payloads. Dynamic sparse topology, checkpoint/restart,
+parallel output, and decomposition of the level-wide root physics kernel
+remain separate work.

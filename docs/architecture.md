@@ -1314,14 +1314,22 @@ Control consensus and field validation happen before publication, so rejection
 returns zero dt and zero published transfer count without changing sparse
 state.
 
+In `0.126.0`, a public sparse time loop composes that selector with the direct
+owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after
+every accepted state, the final interval is clipped to the target time, and
+time, total step count, minimum accepted dt, operator counts, limiter minimum,
+and timestep root-traffic counts publish only after a whole split step commits.
+If a later step fails or reaches the configured total-step limit, earlier
+committed states and their exact accounting remain visible.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-public sparse time-loop control, dynamic sparse topology, and distributed EB
-flux registers
+dynamic sparse topology, distributed sparse checkpoint/output, and distributed
+EB flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.
