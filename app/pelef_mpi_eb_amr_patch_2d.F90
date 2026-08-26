@@ -1878,11 +1878,11 @@ program pelef_mpi_eb_amr_patch_2d
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
     if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 7
+    expected_global_root_transfers = expected_global_root_transfers + 4
     if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 4
+      expected_local_root_transfers + 2
     if (rank == root_owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 3
+      expected_local_root_transfers + 2
   end do
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)

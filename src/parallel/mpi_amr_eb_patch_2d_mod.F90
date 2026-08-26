@@ -3578,17 +3578,12 @@ contains
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
     integer, intent(out), optional :: local_root_transfers
 
+    type(eb_geometry_2d) :: root_tile_geometry
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate, euler, stage, start
-    real(dp), allocatable :: candidate_root(:, :, :)
-    real(dp), allocatable :: candidate_root_temperature(:, :)
-    real(dp), allocatable :: euler_root(:, :, :)
-    real(dp), allocatable :: euler_root_temperature(:, :)
-    real(dp), allocatable :: start_root(:, :, :)
-    real(dp), allocatable :: start_root_temperature(:, :)
     real(dp) :: selected_target, theta_one, theta_two
     logical :: accepted, entity_ok, global_ok, local_ok
-    integer :: advances_one, advances_two, child, nvar, owner, root_owner
-    integer :: transfers, transfers_one, transfers_two
+    integer :: advances_one, advances_two, child, nvar, owner, tile
+    integer :: transfers_one, transfers_two
 
     ok = .false.
     if (present(local_euler_advances)) local_euler_advances = 0
@@ -3635,34 +3630,26 @@ contains
       transfers_two)
     if (.not. local_ok) return
 
-    transfers = 0
-    call gather_sparse_root_to_owner_2d( &
-      distribution, start, coarse_geometry, start_root, &
-      start_root_temperature, transfers, local_ok)
-    if (.not. local_ok) return
-    call gather_sparse_root_to_owner_2d( &
-      distribution, euler, coarse_geometry, euler_root, &
-      euler_root_temperature, transfers, local_ok)
-    if (.not. local_ok) return
     candidate = start
-    root_owner = distribution%root_level_owner()
-    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
-    if (distribution%rank == root_owner .and. entity_ok) then
-      allocate(candidate_root, mold=start_root)
-      allocate(candidate_root_temperature, mold=start_root_temperature)
-      candidate_root = 0.5_dp * (start_root + euler_root)
+    entity_ok = .true.
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      call extract_eb_geometry_y_band_2d( &
+        coarse_geometry, distribution%root_tiles(tile)%j_lower, &
+        distribution%root_tiles(tile)%j_upper, root_tile_geometry, entity_ok)
+      if (.not. entity_ok) exit
+      candidate%root_tiles(tile)%state = 0.5_dp * &
+        (start%root_tiles(tile)%state + euler%root_tiles(tile)%state)
       call recover_transport_temperature_2d( &
-        species, candidate_root, &
-        0.5_dp * (start_root_temperature + euler_root_temperature), &
-        coarse_geometry, candidate_root_temperature, entity_ok)
-    end if
+        species, candidate%root_tiles(tile)%state, &
+        0.5_dp * (start%root_tiles(tile)%temperature + &
+          euler%root_tiles(tile)%temperature), root_tile_geometry, &
+        candidate%root_tiles(tile)%temperature, entity_ok)
+      if (.not. entity_ok) exit
+    end do
     call all_ranks_accept_eb_2d( &
       distribution, entity_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
-    call scatter_sparse_root_from_owner_2d( &
-      distribution, coarse_geometry, patch_set_template, candidate_root, &
-      candidate_root_temperature, candidate, transfers, local_ok)
-    if (.not. local_ok) return
 
     do child = 1, distribution%child_count()
       owner = distribution%child_owner(child)
@@ -3697,7 +3684,7 @@ contains
       local_euler_advances = advances_one + advances_two
     if (present(minimum_theta)) minimum_theta = min(theta_one, theta_two)
     if (present(local_root_transfers)) &
-      local_root_transfers = transfers_one + transfers_two + transfers
+      local_root_transfers = transfers_one + transfers_two
   end subroutine advance_sparse_owned_reactive_eb_patch_set_transport_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_transport_euler_2d( &
