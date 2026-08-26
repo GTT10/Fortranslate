@@ -13,7 +13,8 @@ program pelef_mpi_eb_amr_patch_2d
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
   use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d
+    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d, &
+    boundary_y_lower, reactive_boundary_is_periodic
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
@@ -231,7 +232,8 @@ program pelef_mpi_eb_amr_patch_2d
   logical :: geometry_perturbed, ok, topology_changed
   logical :: io_files_ok
   integer :: child, component, global_advances, global_i, global_j, i, ierr
-  integer :: j, new_child, old_child, old_i, old_j, owner, source
+  integer :: band_j_lower, band_j_upper, j
+  integer :: new_child, old_child, old_i, old_j, owner, source
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_root_hydro_cells, global_root_hydro_cells
@@ -1882,20 +1884,26 @@ program pelef_mpi_eb_amr_patch_2d
   restriction_recipients = .false.
   do tile = 1, distribution%root_tile_count()
     owner = distribution%root_tiles(tile)%owner
+    band_j_lower = max(1, distribution%root_tiles(tile)%j_lower - &
+      mpi_amr_eb_root_tile_transport_halo_cells)
+    band_j_upper = min(coarse_ny, &
+      distribution%root_tiles(tile)%j_upper + &
+        mpi_amr_eb_root_tile_transport_halo_cells)
+    if (reactive_boundary_is_periodic( &
+        boundaries%face(boundary_y_lower)) .and. &
+        (distribution%root_tiles(tile)%j_lower == 1 .or. &
+         distribution%root_tiles(tile)%j_upper == coarse_ny)) then
+      band_j_lower = 1
+      band_j_upper = coarse_ny
+    end if
     if (rank == owner) expected_local_root_transport_cells = &
       expected_local_root_transport_cells + 2 * coarse_nx * ( &
-        min(coarse_ny, distribution%root_tiles(tile)%j_upper + &
-          mpi_amr_eb_root_tile_transport_halo_cells) - &
-        max(1, distribution%root_tiles(tile)%j_lower - &
-          mpi_amr_eb_root_tile_transport_halo_cells) + 1)
+        band_j_upper - band_j_lower + 1)
     do source = 1, distribution%root_tile_count()
       if (distribution%root_tiles(source)%owner == owner) cycle
-      if (min( &
-          coarse_ny, distribution%root_tiles(tile)%j_upper + &
-            mpi_amr_eb_root_tile_transport_halo_cells) < &
+      if (band_j_upper < &
           distribution%root_tiles(source)%j_lower .or. &
-          max(1, distribution%root_tiles(tile)%j_lower - &
-            mpi_amr_eb_root_tile_transport_halo_cells) > &
+          band_j_lower > &
           distribution%root_tiles(source)%j_upper) cycle
       expected_global_root_transfers = expected_global_root_transfers + 2
       if (rank == distribution%root_tiles(source)%owner) &
@@ -1971,8 +1979,8 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transport_cells == expected_local_root_transport_cells .and. &
     global_root_transport_cells == expected_global_root_transport_cells .and. &
-    (distribution%nranks <= 4 .or. global_root_transport_cells < &
-      2 * distribution%nranks * coarse_nx * coarse_ny), &
+    global_root_transport_cells <= &
+      2 * distribution%nranks * coarse_nx * coarse_ny, &
     "MPI EB AMR sparse root transport bounded work", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     distribution, sparse_transport_set, coarse_state, coarse_temperature, &

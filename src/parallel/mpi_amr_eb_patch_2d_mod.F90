@@ -11,7 +11,8 @@ module mpi_amr_eb_patch_2d_mod
     reactive_conserved_to_primitive
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, validate_reactive_boundary_set_2d
+    reactive_boundary_set_2d, validate_reactive_boundary_set_2d, &
+    boundary_y_lower, reactive_boundary_is_periodic
   use transport_database_mod, only: &
     gas_transport_species, compatible_transport_database
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
@@ -2445,6 +2446,13 @@ contains
       band_j_upper = min(geometry%ny, &
         distribution%root_tiles(target)%j_upper + &
           mpi_amr_eb_root_tile_transport_halo_cells)
+      if (reactive_boundary_is_periodic( &
+          boundaries%face(boundary_y_lower)) .and. &
+          (distribution%root_tiles(target)%j_lower == 1 .or. &
+           distribution%root_tiles(target)%j_upper == geometry%ny)) then
+        band_j_lower = 1
+        band_j_upper = geometry%ny
+      end if
       band_rows = band_j_upper - band_j_lower + 1
       entity_ok = .true.
       if (distribution%rank == target_owner) then
