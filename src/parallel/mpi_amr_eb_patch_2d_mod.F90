@@ -1790,11 +1790,6 @@ contains
     real(dp), intent(in), optional :: state_redist_target_volume_fraction
 
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
-    type(reactive_eb_patch_set_2d) :: materialized_set
-    real(dp), allocatable :: fallback_state(:, :, :)
-    real(dp), allocatable :: fallback_temperature(:, :)
-    real(dp), allocatable :: materialized_state(:, :, :)
-    real(dp), allocatable :: materialized_temperature(:, :)
     real(dp) :: selected_target, theta, theta_one, theta_two
     logical :: local_ok
     integer :: chemistry_one, chemistry_two, hydro_advances
@@ -1816,45 +1811,26 @@ contains
       coarse_geometry, patch_set_template, local_ok, chemistry_one)
     if (.not. local_ok) return
 
-    allocate(fallback_state( &
-      candidate%nvar, coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
-    allocate(fallback_temperature( &
-      coarse_geometry%nx, coarse_geometry%ny), source=1.0_dp)
-    allocate(materialized_state, mold=fallback_state)
-    allocate(materialized_temperature, mold=fallback_temperature)
-    call materialize_owned_reactive_eb_patch_set_2d( &
-      distribution, candidate, fallback_state, fallback_temperature, &
-      coarse_geometry, patch_set_template, materialized_state, &
-      materialized_temperature, materialized_set, local_ok)
+    call advance_sparse_owned_reactive_eb_patch_set_transport_2d( &
+      species, transport, distribution, candidate, coarse_geometry, &
+      patch_set_template, 0.5_dp * dt, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, local_ok, &
+      transport_one, theta_one, selected_target)
+    if (.not. local_ok) return
+    call advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &
+      species, distribution, candidate, coarse_geometry, patch_set_template, &
+      solver, reconstruction, limiter, state_redist_max_order, dt, local_ok, &
+      hydro_advances, selected_target)
+    if (.not. local_ok) return
+    call advance_sparse_owned_reactive_eb_patch_set_transport_2d( &
+      species, transport, distribution, candidate, coarse_geometry, &
+      patch_set_template, 0.5_dp * dt, viscosity_enabled, &
+      thermal_conduction_enabled, species_diffusion_enabled, &
+      barodiffusion_enabled, boundaries, state_redist_max_order, local_ok, &
+      transport_two, theta_two, selected_target)
     if (.not. local_ok) return
 
-    call advance_owned_reactive_eb_patch_set_transport_2d( &
-      species, transport, distribution, materialized_state, &
-      materialized_temperature, coarse_geometry, materialized_set, &
-      0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
-      state_redist_max_order, local_ok, transport_one, theta_one, &
-      selected_target)
-    if (.not. local_ok) return
-    call advance_owned_reactive_eb_patch_set_hydro_2d( &
-      species, distribution, materialized_state, materialized_temperature, &
-      coarse_geometry, materialized_set, solver, reconstruction, limiter, &
-      state_redist_max_order, dt, local_ok, hydro_advances, selected_target)
-    if (.not. local_ok) return
-    call advance_owned_reactive_eb_patch_set_transport_2d( &
-      species, transport, distribution, materialized_state, &
-      materialized_temperature, coarse_geometry, materialized_set, &
-      0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
-      state_redist_max_order, local_ok, transport_two, theta_two, &
-      selected_target)
-    if (.not. local_ok) return
-
-    call scatter_owned_reactive_eb_patch_set_2d( &
-      distribution, size(species), materialized_state, &
-      materialized_temperature, coarse_geometry, materialized_set, &
-      candidate, local_ok)
-    if (.not. local_ok) return
     call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
       species, reactions, 0.5_dp * dt, rtol, atol, distribution, candidate, &
       coarse_geometry, patch_set_template, local_ok, chemistry_two)

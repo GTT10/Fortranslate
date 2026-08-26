@@ -2141,3 +2141,24 @@ root transport and EB StateRedist are not decomposed. The outer sparse
 wiring these direct component operators into that transaction, targeted
 root/coarse-fine traffic, time-loop control, regridding, checkpointing, and
 output remain separate work.
+
+## End-to-end full physics on sparse MPI reactive EB AMR storage (`0.121.0`)
+
+- [x] direct sparse `R-T-H-T-R` composition
+- [x] direct sparse chemistry for both reaction half-steps
+- [x] direct sparse SSPRK2 transport for both transport half-steps
+- [x] direct sparse hydro for the central hyperbolic interval
+- [x] no complete fine-child hierarchy between physics operators
+- [x] unchanged committed sparse allocation count
+- [x] exact local and global chemistry, hydro, and transport accounting
+- [x] serial root and child state and temperature parity
+- [x] serial transport-limiter parity
+- [x] outer rollback after first chemistry and transport succeed
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+The complete qualified physics split now retains globally single-copy fine
+payloads from sparse input through sparse output. Component entrypoints still
+assemble and synchronize level-wide root temporaries. Root decomposition,
+targeted root and coarse/fine traffic, public time-loop control, regridding,
+checkpointing, and output remain separate work.

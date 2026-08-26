@@ -1269,6 +1269,14 @@ closure corrects only uncovered, unrefined root cells. The two Euler candidates
 remain private until the SSPRK2 blend, direct sparse average-down, and collective
 validation all succeed.
 
+In `0.121.0`, the sparse outer `R-T-H-T-R` transaction removes its central
+replicated compatibility window. It composes the direct sparse chemistry,
+SSPRK2 transport, hydro, transport, and chemistry entrypoints on one private
+sparse candidate. Each component may use its root-level temporary, but no fine
+child payload crosses into a complete replicated hierarchy. The caller state,
+all operator counts, and the transport limiter minimum remain unchanged until
+every component transaction succeeds.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

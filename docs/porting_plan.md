@@ -677,6 +677,8 @@ Required capabilities:
 - [x] direct sparse MPI EB AMR SSPRK2 transport with root-level temporary
   synchronization, owner-local child diffusive reflux, and distributed
   cut-interface conservation closure (`0.120.0`)
+- [x] end-to-end sparse MPI EB AMR `R-T-H-T-R` composition without a
+  replicated fine-child compatibility window (`0.121.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

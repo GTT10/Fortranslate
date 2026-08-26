@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.120.0` milestone contains the serial verification suite, eight optional
+The `0.121.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -53,10 +53,11 @@ average-down communicates numerical state. Each child owner broadcasts one
 coarse-footprint restriction buffer, and intersecting root tile owners recover
 temperature and apply it locally. Chemistry no longer materializes a complete
 hierarchy.
-The complete sparse `R-T-H-T-R` transaction retains sparse input and output.
-Its two chemistry stages stay on sparse owners; one complete temporary
-hierarchy is used only for the central transport-hydro-transport compatibility
-window and is discarded before the final chemistry commit.
+The complete sparse `R-T-H-T-R` transaction now remains on sparse owners from
+input through commit. Both chemistry half-steps, both SSPRK2 transport
+half-steps, and hydro call their direct sparse entrypoints; no complete child
+hierarchy is materialized between operators. Counts and the limiter minimum are
+still published only with the final outer commit.
 Hydro also has a direct sparse entrypoint. Root tiles are assembled into one
 level-wide temporary for the root StateRedist update, while each fine child is
 subcycled and refluxed only on its owner. No nonowner child payload is created,
@@ -564,6 +565,9 @@ The AMR layer provides:
 - a direct sparse `R-T-H-T-R` transaction with owner-only stage execution,
   exact call accounting, serial parity, missing-database rejection, and outer
   rollback after a later-stage failure;
+- an end-to-end sparse MPI EB AMR `R-T-H-T-R` transaction that composes direct
+  sparse chemistry, SSPRK2 transport, and hydro without a replicated child
+  compatibility window;
 - transactional topology-changing sparse regrid with rebuilt owner maps,
   exact overlap retention, one-copy persistent storage, serial parity, and
   invalid-plan rollback;
