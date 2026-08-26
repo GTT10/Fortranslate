@@ -1295,13 +1295,24 @@ direction. After all children succeed, the root owner sends each remote root
 tile only its final row band. Full root arrays therefore exist only on the root
 owner and ranks that actually own fine children.
 
+In `0.124.0`, direct sparse SSPRK2 transport uses the same targeted root
+ownership boundary in both Euler stages. Root tiles gather only to the root
+physics owner; each distinct remote child owner receives one packed start,
+updated-state, temperature, and diffusive-flux bundle. Cumulative reflux
+corrections make one round trip per remote child, and only final row bands
+return to remote root tile owners. The final SSPRK2 blend gathers its two root
+candidates only to the physics owner and scatters the blended rows. EB-cut
+conservation broadcasts only its small conserved boundary-change vector and
+applies the uniform correction directly on each locally owned root tile.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-targeted transport root-physics payloads, and distributed EB flux registers
+public sparse time-loop control, dynamic sparse topology, and distributed EB
+flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

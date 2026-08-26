@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.123.0` milestone contains the serial verification suite, eight optional
+The `0.124.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -66,11 +66,14 @@ reflux corrections make one point-to-point round trip per remote child, and
 the final root returns as tile-sized payloads. Unrelated ranks never allocate
 the full root bundle, and no hydro numerical field uses an all-rank broadcast.
 SSPRK2 molecular transport now follows the same sparse ownership boundary.
-Each fine child performs both Euler stages, ratio subcycling, diffusive flux
-accumulation, reflux, and temperature recovery only on its owner. Root state,
-temperature, and flux arrays remain level-wide temporaries, while cut-interface
-closure uses a distributed composite integral and changes only unrefined root
-cells. A late child failure leaves every sparse allocation bitwise unchanged.
+Each Euler stage gathers root tiles only to the root physics owner and sends one
+packed root/flux bundle only to distinct child owners. Each fine child performs
+ratio subcycling, diffusive flux accumulation, reflux, and temperature recovery
+only on its owner; remote reflux corrections make one round trip. Final root
+rows and the SSPRK2 blend return only to their tile owners. Cut-interface
+closure broadcasts one conserved `nvar` vector and changes unrefined cells
+directly on each local root tile. A late child failure leaves every sparse
+allocation bitwise unchanged and publishes zero transfers.
 The EB transfer foundation also accepts one strictly nested three-level
 hierarchy, computes its composite integral without double counting, and
 average-downs its generic or reactive state from the deepest level to the root
@@ -562,6 +565,10 @@ The AMR layer provides:
 - targeted direct sparse MPI EB hydro root traffic with tile gather/scatter,
   one bundle per distinct child owner, per-child correction round trips, exact
   transfer accounting, and no numerical all-rank broadcasts;
+- targeted direct sparse MPI EB SSPRK2 transport root traffic with two
+  Euler-stage gathers/bundles/reflux round trips, targeted final blending,
+  tile-local cut-interface closure, exact transfer accounting, and no full
+  root-field broadcasts;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;
