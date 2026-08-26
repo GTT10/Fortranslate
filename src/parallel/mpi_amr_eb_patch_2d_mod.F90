@@ -33,6 +33,7 @@ module mpi_amr_eb_patch_2d_mod
     reactive_eb_transport_fluxes_rhs_2d, reactive_eb_transport_timestep_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
+    accumulate_coarse_eb_fluxes_patch_support_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_reactive_eb_state_patch_support_2d, &
     reflux_reactive_eb_state_patch_2d
@@ -4536,6 +4537,10 @@ contains
     real(dp) :: alpha, coarse_theta, fine_dt, fine_theta, local_theta
     logical :: accepted, cut_interface, entity_ok, global_ok, local_ok
     integer :: advances, child, i, ierr, j, nvar, owner, ratio
+    integer :: flux_x_i_lower, flux_x_i_upper
+    integer :: flux_x_j_lower, flux_x_j_upper
+    integer :: flux_y_i_lower, flux_y_i_upper
+    integer :: flux_y_j_lower, flux_y_j_upper
     integer :: root_owner, root_tile_advances, root_transport_cells
     integer :: substep, support_i_lower, support_i_upper
     integer :: support_j_lower, support_j_upper, transfers
@@ -4606,6 +4611,22 @@ contains
       support_j_upper = min( &
         coarse_geometry%ny, &
         patch_set_template%children(child)%patch%coarse_j_upper + 2)
+      flux_x_i_lower = &
+        patch_set_template%children(child)%patch%coarse_i_lower - 1
+      flux_x_i_upper = &
+        patch_set_template%children(child)%patch%coarse_i_upper
+      flux_x_j_lower = &
+        patch_set_template%children(child)%patch%coarse_j_lower
+      flux_x_j_upper = &
+        patch_set_template%children(child)%patch%coarse_j_upper
+      flux_y_i_lower = &
+        patch_set_template%children(child)%patch%coarse_i_lower
+      flux_y_i_upper = &
+        patch_set_template%children(child)%patch%coarse_i_upper
+      flux_y_j_lower = &
+        patch_set_template%children(child)%patch%coarse_j_lower - 1
+      flux_y_j_upper = &
+        patch_set_template%children(child)%patch%coarse_j_upper
       entity_ok = owner >= 0 .and. owner < distribution%nranks
       if (distribution%rank == root_owner .and. entity_ok) then
         call extract_reactive_eb_patch_exterior_context_2d( &
@@ -4618,11 +4639,16 @@ contains
           coarse_geometry, patch_set_template%children(child)%geometry, &
           patch_set_template%children(child)%patch, nvar, flux_register, &
           entity_ok)
-        if (entity_ok) call accumulate_coarse_eb_fluxes_2d( &
+        if (entity_ok) call accumulate_coarse_eb_fluxes_patch_support_2d( &
           flux_register, coarse_geometry, &
           patch_set_template%children(child)%geometry, &
-          patch_set_template%children(child)%patch, coarse_x_flux, &
-          coarse_y_flux, dt, entity_ok)
+          patch_set_template%children(child)%patch, &
+          flux_x_i_lower, flux_x_j_lower, coarse_x_flux( &
+            :, flux_x_i_lower:flux_x_i_upper, &
+            flux_x_j_lower:flux_x_j_upper), &
+          flux_y_i_lower, flux_y_j_lower, coarse_y_flux( &
+            :, flux_y_i_lower:flux_y_i_upper, &
+            flux_y_j_lower:flux_y_j_upper), dt, entity_ok)
         if (entity_ok) then
           allocate(coarse_support( &
             nvar, support_i_lower:support_i_upper, &

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.144.0` milestone contains the serial verification suite, eight optional
+The `0.145.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -107,10 +107,12 @@ failure leaves every sparse allocation bitwise unchanged and publishes zero
 work or transfers.
 EB flux registers now store only the patch-plus-one-cell correction support.
 For sparse transport, the root owner accumulates coarse interface fluxes into
-that compact support before sending it with the exterior context and the
-patch-plus-two coarse state. Remote child owners allocate no complete root
-state, temperature, or flux field; fine state no longer makes a root round
-trip for reflux.
+that compact support through patch-local x/y face rectangles, rather than
+requiring complete root flux arrays at the accumulation API. The established
+complete-root call is a compatibility wrapper over the same kernel. The root
+then sends the register with the exterior context and patch-plus-two coarse
+state. Remote child owners allocate no complete root state, temperature, or
+flux field; fine state no longer makes a root round trip for reflux.
 The sparse hierarchy also selects its own stable coarse interval. Every root
 tile evaluates its EB hydro and molecular-transport limits directly on its
 owner, while fine children do the same and scale their stable fine steps by the

@@ -2617,3 +2617,17 @@ is subsequent work; transport child owners no longer receive that result.
 The root physics owner still assembles the temporary complete root Euler
 result and merges returned supports before row scatter. Direct context and
 correction routing between root-tile owners is subsequent work.
+
+## Compact coarse interface-flux accumulation (`0.145.0`)
+
+- [x] coarse flux accumulation accepts globally indexed x/y face rectangles
+- [x] validation requires every active coarse/fine interface face
+- [x] invalid or nonfinite support leaves the register bitwise unchanged
+- [x] complete-root accumulation remains a thin compatibility wrapper
+- [x] compact/full correction arrays are bitwise identical
+- [x] sparse MPI transport passes only each child's interface rectangles
+
+The root physics owner still owns the complete temporary root x/y flux bundle
+after tile computation. This API removes that shape requirement from flux-
+register accumulation so later root-tile-to-child routing can supply only the
+interface fragments.

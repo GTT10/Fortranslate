@@ -953,6 +953,18 @@ the former root bundle, exactly two messages per remote child per Euler stage,
 and unchanged numerical, owner-work, rollback, and public-clock gates at one,
 two, four, and eight ranks before the complete serial regression.
 
+## 0.145.0 compact coarse interface-flux gates
+
+Generalize coarse EB flux-register accumulation to accept globally indexed
+x/y face rectangles that contain the active coarse/fine interface. Preserve
+the complete-root entrypoint as a wrapper and switch sparse MPI child-register
+initialization to the compact call.
+
+Require compact/full bitwise correction parity, strict payload reduction,
+transactional rejection of incomplete support, and unchanged sparse numerical,
+work, traffic, clock, scheduled-regrid, and rollback gates at one, two, four,
+and eight ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

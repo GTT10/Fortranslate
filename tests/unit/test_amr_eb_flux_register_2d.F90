@@ -13,6 +13,7 @@ program test_amr_eb_flux_register_2d
     amr_eb_patch_2d, build_amr_eb_patch_2d, composite_eb_integral_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
+    accumulate_coarse_eb_fluxes_patch_support_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_eb_state_patch_2d, &
     reflux_reactive_eb_state_patch_support_2d, &
@@ -31,13 +32,25 @@ program test_amr_eb_flux_register_2d
   integer, parameter :: support_i_upper = min(coarse_nx, coarse_i_upper + 2)
   integer, parameter :: support_j_lower = max(1, coarse_j_lower - 2)
   integer, parameter :: support_j_upper = min(coarse_ny, coarse_j_upper + 2)
+  integer, parameter :: coarse_x_i_lower = coarse_i_lower - 1
+  integer, parameter :: coarse_x_i_upper = coarse_i_upper
+  integer, parameter :: coarse_x_j_lower = coarse_j_lower
+  integer, parameter :: coarse_x_j_upper = coarse_j_upper
+  integer, parameter :: coarse_y_i_lower = coarse_i_lower
+  integer, parameter :: coarse_y_i_upper = coarse_i_upper
+  integer, parameter :: coarse_y_j_lower = coarse_j_lower - 1
+  integer, parameter :: coarse_y_j_upper = coarse_j_upper
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
   type(amr_eb_flux_register_2d) :: register, support_register
+  type(amr_eb_flux_register_2d) :: coarse_support_register
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp) :: fine_level_set(0:fine_nx, 0:fine_ny)
   real(dp), allocatable :: coarse_x_flux(:, :, :), coarse_y_flux(:, :, :)
+  real(dp), allocatable :: coarse_x_flux_support(:, :, :)
+  real(dp), allocatable :: coarse_y_flux_support(:, :, :)
+  real(dp), allocatable :: coarse_support_baseline(:, :, :)
   real(dp), allocatable :: fine_x_flux(:, :, :), fine_y_flux(:, :, :)
   real(dp), allocatable :: coarse_state(:, :, :), fine_state(:, :, :)
   real(dp), allocatable :: refluxed_coarse(:, :, :), refluxed_fine(:, :, :)
@@ -133,6 +146,42 @@ program test_amr_eb_flux_register_2d
     register, coarse_geometry, fine_geometry, patch, &
     coarse_x_flux, coarse_y_flux, dt, ok)
   call require(ok, "coarse EB flux accumulation")
+  call initialize_amr_eb_flux_register_2d( &
+    coarse_geometry, fine_geometry, patch, 2, coarse_support_register, ok)
+  call require(ok, "coarse support register initialization")
+  allocate(coarse_x_flux_support( &
+    2, coarse_x_i_lower:coarse_x_i_upper, &
+    coarse_x_j_lower:coarse_x_j_upper))
+  allocate(coarse_y_flux_support( &
+    2, coarse_y_i_lower:coarse_y_i_upper, &
+    coarse_y_j_lower:coarse_y_j_upper))
+  coarse_x_flux_support = coarse_x_flux( &
+    :, coarse_x_i_lower:coarse_x_i_upper, &
+    coarse_x_j_lower:coarse_x_j_upper)
+  coarse_y_flux_support = coarse_y_flux( &
+    :, coarse_y_i_lower:coarse_y_i_upper, &
+    coarse_y_j_lower:coarse_y_j_upper)
+  call require( &
+    size(coarse_x_flux_support) + size(coarse_y_flux_support) < &
+      size(coarse_x_flux) + size(coarse_y_flux), &
+    "compact coarse interface-flux support")
+  call accumulate_coarse_eb_fluxes_patch_support_2d( &
+    coarse_support_register, coarse_geometry, fine_geometry, patch, &
+    coarse_x_i_lower, coarse_x_j_lower, coarse_x_flux_support, &
+    coarse_y_i_lower, coarse_y_j_lower, coarse_y_flux_support, dt, ok)
+  call require(ok .and. maxval(abs(coarse_support_register%correction - &
+    register%correction)) == 0.0_dp, &
+    "compact/full coarse interface-flux accumulation parity")
+  allocate(coarse_support_baseline, source=coarse_support_register%correction)
+  call accumulate_coarse_eb_fluxes_patch_support_2d( &
+    coarse_support_register, coarse_geometry, fine_geometry, patch, &
+    coarse_x_i_lower + 1, coarse_x_j_lower, &
+    coarse_x_flux_support(:, coarse_x_i_lower + 1:coarse_x_i_upper, :), &
+    coarse_y_i_lower, coarse_y_j_lower, coarse_y_flux_support, dt, ok)
+  call require(.not. ok .and. &
+    maxval(abs(coarse_support_register%correction - &
+      coarse_support_baseline)) == 0.0_dp, &
+    "incomplete coarse interface-flux support rollback")
   call accumulate_fine_eb_fluxes_2d( &
     register, coarse_geometry, fine_geometry, patch, &
     fine_x_flux, fine_y_flux, 0.5_dp * dt, ok)
