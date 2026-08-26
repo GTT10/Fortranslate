@@ -2024,7 +2024,7 @@ level `l` to the root as
 R(1) = 1,  R(l) = product(q=1..l-1, r(q)).
 ```
 
-The stable root interval is therefore
+The hydro-only stable root interval is therefore
 
 ```text
 dt_root = min_over_all_nodes[R(l) dt(l,p)].
@@ -2034,8 +2034,13 @@ The traversal includes every branch and ignores covered cells through the
 shared single-node kernel. A fully covered node contributes no constraint; an
 entirely inactive tree, nonfinite control, or failed active-node conversion
 rejects with deterministic zero output. Selection does not mutate topology,
-state, or temperature. This hyperbolic selector does not yet compose transport
-limits or advance the arbitrary-depth 2D EB tree.
+state, or temperature.
+
+For full physics, the same traversal also evaluates the explicit viscosity,
+conduction, and species-diffusion limit on each active node. The root interval
+is the minimum of the scaled hyperbolic and active transport limits over all
+nodes. Barodiffusion changes the species flux but adds no independent
+diffusivity constraint.
 
 ## Arbitrary-depth reactive EB patch-tree hydrodynamics
 
@@ -2140,3 +2145,24 @@ tree validation. Only then are conserved state, temperature, the minimum theta
 from both transport half-steps, and the chemistry/transport/hydro node-count
 vectors committed. This outer transaction makes a rejection after any valid
 prefix observationally equivalent to no attempted step.
+
+## Arbitrary-depth reactive EB patch-tree time loop
+
+At accepted time `t`, the public clock recomputes the combined all-node stable
+interval and clips it to the requested target:
+
+```text
+dt = min(dt_hydro_and_transport(tree), final_time - t).
+```
+
+One complete `R-T-H-T-R` operation runs on a private tree candidate. Only
+after that candidate succeeds are the tree, `t + dt`, total step count,
+minimum accepted interval, minimum transport theta, and per-level physics
+counts published. The next stability calculation therefore always observes
+the last accepted state.
+
+If the first step rejects, state and all clock/accounting outputs remain at
+their input values or deterministic neutral outputs. If a later step rejects
+or the maximum step count is reached, earlier accepted steps remain visible
+and the failed candidate does not. Reaching the target within the floating-
+point time tolerance assigns the requested final time exactly.

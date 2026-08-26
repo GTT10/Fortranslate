@@ -1127,6 +1127,20 @@ thermodynamics, and rollback after valid reaction and transport prefixes. Run
 the complete serial Debug and Release suite and the existing OpenMPI one-,
 two-, four-, and eight-rank gates before acceptance.
 
+## 0.158.0 public arbitrary-depth reactive EB patch-tree time-loop gates
+
+Add an all-node stable-step selector that reduces both hyperbolic and active
+explicit transport limits after cumulative refinement scaling. Compose it
+with the qualified `R-T-H-T-R` transaction in a caller-owned target-time loop
+with exact stop clipping and a maximum-step bound.
+
+Treat each interval as one candidate transaction and publish tree state,
+clock, step count, minimum accepted interval, limiter minimum, and accumulated
+per-level physics counts only after acceptance. Require independent two-step
+parity, exact accounting, committed-prefix behavior at the step bound, and
+exact first-step rollback. Run the complete serial Debug and Release suite and
+the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation

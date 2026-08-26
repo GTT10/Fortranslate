@@ -1752,6 +1752,19 @@ Chemistry patch calls, transport Euler-node calls, hydro node calls, and the
 minimum transport limiter theta accumulate privately. Final deepest-first
 synchronization and complete tree validation precede one atomic publication.
 Any rejection after an earlier valid physics prefix therefore preserves the
-accepted hierarchy and returns zero public counts plus theta one. Public
-time/step ownership, dynamic tags, checkpoint I/O, and MPI ownership remain
-separate.
+accepted hierarchy and returns zero public counts plus theta one. Dynamic
+tags, checkpoint I/O, and MPI ownership remain separate.
+
+## Arbitrary-depth reactive EB patch-tree time loop (`0.158.0`)
+
+The public clock recomputes both active-cell hyperbolic and explicit mixture
+transport limits on every runtime node. Each local interval is multiplied by
+the cumulative ancestor refinement product before the global tree minimum is
+clipped to the remaining target time.
+
+Every accepted interval runs the full `R-T-H-T-R` operation on a private tree
+candidate. The candidate tree, time, total step count, minimum accepted
+interval, limiter minimum, and accumulated per-level physics counts publish
+together. A rejected first step changes nothing; reaching the caller's step
+limit after prior success retains exactly that committed prefix. Dynamic tags,
+checkpoint I/O, and MPI ownership remain separate.
