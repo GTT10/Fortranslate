@@ -3,7 +3,14 @@ module mpi_amr_eb_patch_tree_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
   use precision_mod, only: dp
-  use eb_geometry_2d_mod, only: eb_geometry_2d
+  use nasa7_thermo_mod, only: nasa7_species
+  use transport_database_mod, only: &
+    gas_transport_species, compatible_transport_database
+  use reactive_1d_mod, only: reactive_nvar
+  use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use eb_reactive_transport_2d_mod, only: &
+    reactive_eb_transport_timestep_2d
   use amr_eb_patch_tree_2d_mod, only: amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d
@@ -68,6 +75,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
+  public :: compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
 
 contains
 
@@ -638,6 +646,147 @@ contains
     ok = .true.
     if (present(local_entity_transfers)) local_entity_transfers = transfers
   end subroutine migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
+      species, transport, distribution, sparse, hydro_cfl, transport_cfl, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, dt, ok, local_active_nodes)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    real(dp), intent(in) :: hydro_cfl, transport_cfl
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_active_nodes
+
+    type(eb_geometry_2d) :: geometry
+    real(dp) :: global_dt, level_scale, local_dt, maximum_diffusivity
+    real(dp) :: node_dt, numeric_maximum(2), numeric_minimum(2)
+    real(dp) :: numeric_values(2), scaled_dt
+    integer :: global_nodes, ierr, integer_maximum(4), integer_minimum(4)
+    integer :: integer_values(4), level, local_nodes, patch
+    integer :: refinement_ratio
+    logical :: accepted, entity_ok, global_ok, local_ok, matches
+    logical :: transport_active
+
+    dt = 0.0_dp
+    ok = .false.
+    local_nodes = 0
+    if (present(local_active_nodes)) local_active_nodes = 0
+    transport_active = viscosity_enabled .or. &
+      thermal_conduction_enabled .or. species_diffusion_enabled
+    numeric_values = [hydro_cfl, transport_cfl]
+    integer_values = [ &
+      size(species), merge(1, 0, viscosity_enabled), &
+      merge(1, 0, thermal_conduction_enabled), &
+      merge(1, 0, species_diffusion_enabled)]
+
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    local_ok = matches .and. sparse%is_valid(distribution) .and. &
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      all(ieee_is_finite(numeric_values)) .and. &
+      hydro_cfl > 0.0_dp .and. hydro_cfl <= 1.0_dp .and. &
+      transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp
+    if (local_ok .and. transport_active) &
+      local_ok = compatible_transport_database(species, transport)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      numeric_values, numeric_minimum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_maximum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    local_dt = huge(1.0_dp)
+    level_scale = 1.0_dp
+    entity_ok = .true.
+    do level = 1, sparse%level_count()
+      if (level > 1) then
+        refinement_ratio = &
+          sparse%topology%relations(level - 1)%refinement_ratio
+        if (level_scale > huge(1.0_dp) / real(refinement_ratio, dp)) then
+          entity_ok = .false.
+          exit
+        end if
+        level_scale = level_scale * real(refinement_ratio, dp)
+      end if
+      do patch = 1, sparse%levels(level)%patch_count()
+        if (.not. distribution%is_local(level - 1, patch)) cycle
+        call topology_patch_geometry_2d( &
+          sparse%topology, level - 1, patch, geometry, entity_ok)
+        if (.not. entity_ok) exit
+        if (count(geometry%cell_type /= eb_covered_cell) == 0) cycle
+        local_nodes = local_nodes + 1
+        call compute_reactive_eb_cfl_timestep_2d( &
+          species, sparse%levels(level)%patches(patch)%state, &
+          sparse%levels(level)%patches(patch)%temperature, geometry, &
+          hydro_cfl, node_dt, entity_ok)
+        if (.not. entity_ok) exit
+        if (node_dt > huge(1.0_dp) / level_scale) then
+          scaled_dt = huge(1.0_dp)
+        else
+          scaled_dt = level_scale * node_dt
+        end if
+        local_dt = min(local_dt, scaled_dt)
+        if (transport_active) then
+          call reactive_eb_transport_timestep_2d( &
+            species, transport, &
+            sparse%levels(level)%patches(patch)%state, &
+            sparse%levels(level)%patches(patch)%temperature, geometry, &
+            transport_cfl, viscosity_enabled, &
+            thermal_conduction_enabled, species_diffusion_enabled, &
+            node_dt, maximum_diffusivity, entity_ok)
+          if (.not. entity_ok) exit
+          if (node_dt > huge(1.0_dp) / level_scale) then
+            scaled_dt = huge(1.0_dp)
+          else
+            scaled_dt = level_scale * node_dt
+          end if
+          local_dt = min(local_dt, scaled_dt)
+        end if
+      end do
+      if (.not. entity_ok) exit
+    end do
+
+    local_ok = entity_ok .and. ieee_is_finite(local_dt) .and. &
+      local_dt > 0.0_dp
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      local_dt, global_dt, 1, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      local_nodes, global_nodes, 1, MPI_INTEGER, MPI_SUM, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. global_nodes < 1 .or. &
+        .not. ieee_is_finite(global_dt) .or. global_dt <= 0.0_dp .or. &
+        global_dt >= huge(1.0_dp)) return
+
+    dt = global_dt
+    ok = .true.
+    if (present(local_active_nodes)) local_active_nodes = local_nodes
+  end subroutine compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
 
   subroutine allocate_sparse_tree_layout_2d( &
       distribution, nvar, topology, sparse, ok)

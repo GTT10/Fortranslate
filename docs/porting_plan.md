@@ -1168,6 +1168,18 @@ rollback at one, two, four, and eight ranks. Run the complete existing MPI and
 serial Debug/Release suite before acceptance. Defer distributed sparse
 timestep reduction and owner-local recursive physics routing.
 
+## 0.161.0 MPI owner-local arbitrary-depth EB timestep gates
+
+Evaluate hyperbolic and explicit-transport stability limits only on each
+node's sparse owner. Convert every local interval to root time with the
+cumulative refinement product, reduce the communicator minimum, and publish
+exact active-node accounting without materializing a complete tree.
+
+Require exact serial-selector parity after owner rotation and collective
+rejection of rank-local CFL disagreement at one, two, four, and eight ranks.
+Run the complete existing MPI and serial Debug/Release suite before acceptance.
+Defer owner-local recursive hydro, transport, chemistry, and clock routing.
+
 Each implementation PR should normally contain:
 
 1. implementation

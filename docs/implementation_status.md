@@ -2878,3 +2878,19 @@ timestep reduction, and owner-local recursive physics remain separate work.
 This milestone removes replicated persistent fields from the arbitrary-depth
 MPI tree. Distributed sparse timestep reduction and owner-local recursive
 physics remain separate work.
+
+## MPI owner-local arbitrary-depth EB patch-tree timestep (`0.161.0`)
+
+- [x] owner-local hyperbolic EB stability evaluation
+- [x] owner-local explicit mixture-transport stability evaluation
+- [x] cumulative refinement-product conversion to one root interval
+- [x] communicator-wide minimum with neutral empty-rank contribution
+- [x] exact global active-node evaluation accounting
+- [x] collective CFL, transport-flag, distribution, and sparse-state checks
+- [x] exact parity with the complete serial patch-tree selector
+- [x] collective rank-local control-mismatch rejection with neutral outputs
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes materialization from distributed timestep selection.
+Owner-local recursive hydro, transport, chemistry, and public clock execution
+remain separate work.

@@ -1801,3 +1801,17 @@ is replaced only after every rank validates the complete candidate. Invalid or
 inconsistent owner metadata rejects before transfer and preserves the accepted
 sparse tree exactly. Distributed timestep reduction and owner-local recursive
 physics remain separate.
+
+## MPI owner-local arbitrary-depth EB patch-tree timestep (`0.161.0`)
+
+The combined hyperbolic and explicit-transport stability scan now consumes the
+sparse tree directly. Each rank visits only its owned active nodes, evaluates
+the qualified EB hydro and transport limits, and multiplies each node interval
+by its cumulative ancestor refinement product. Ranks with no active ownership
+contribute a neutral huge value.
+
+The communicator minimum is published only after collective distribution,
+field, species-layout, CFL, and transport-control checks. The sum of evaluated
+nodes must be nonzero, and the final root interval must be finite, positive,
+and non-huge. No replicated numerical tree is constructed. Recursive hydro,
+transport, and chemistry execution remain separate owner-local boundaries.
