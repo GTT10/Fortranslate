@@ -2600,3 +2600,20 @@ correction round trips.
 The complete root result still exists transiently on the root physics owner
 after owner-tiled Euler work. Distributing final reflux across root-tile owners
 is subsequent work; transport child owners no longer receive that result.
+
+## Compact child-local reactive reflux support (`0.144.0`)
+
+- [x] nonreactive reflux accepts globally indexed coarse support arrays
+- [x] reactive reflux recovers only support and fine active-cell temperatures
+- [x] complete-root reflux remains an exact support-wrapper compatibility API
+- [x] patch-plus-two support routed with compact child exterior context
+- [x] fine child state remains exclusively on its owner through reflux
+- [x] only corrected coarse support returns to the root physics owner
+- [x] deterministic overlapping-support merge remains in child order
+- [x] two messages per remote child per transport Euler stage
+- [x] combined context/support payload smaller than the former root bundle
+- [x] strictly smaller globally indexed support/full reactive reflux unit parity
+
+The root physics owner still assembles the temporary complete root Euler
+result and merges returned supports before row scatter. Direct context and
+correction routing between root-tile owners is subsequent work.

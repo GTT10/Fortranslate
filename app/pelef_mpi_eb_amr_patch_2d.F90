@@ -50,7 +50,7 @@ program pelef_mpi_eb_amr_patch_2d
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
-    mpi_amr_eb_child_transport_context_value_count_2d, &
+    mpi_amr_eb_child_transport_reflux_context_value_count_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
     synchronize_owned_reactive_eb_patch_set_2d, &
     advance_owned_reactive_eb_patch_set_chemistry_2d, &
@@ -1909,14 +1909,14 @@ program pelef_mpi_eb_amr_patch_2d
       int(coarse_ny + 1, int64)
   do child = 1, distribution%child_count()
     compact_transport_context_values = &
-      mpi_amr_eb_child_transport_context_value_count_2d( &
+      mpi_amr_eb_child_transport_reflux_context_value_count_2d( &
         nvar, coarse_geometry, &
         transport_start_set%children(child)%geometry, &
         transport_start_set%children(child)%patch)
     call assert_all(compact_transport_context_values > 0_int64 .and. &
       compact_transport_context_values < &
         legacy_transport_root_bundle_values, &
-      "MPI EB AMR compact child transport context", rank)
+      "MPI EB AMR compact child reflux context", rank)
   end do
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
@@ -2016,9 +2016,9 @@ program pelef_mpi_eb_amr_patch_2d
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
     if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 6
+    expected_global_root_transfers = expected_global_root_transfers + 4
     if (rank == root_owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 4
+      expected_local_root_transfers + 2
     if (rank == owner) expected_local_root_transfers = &
       expected_local_root_transfers + 2
   end do

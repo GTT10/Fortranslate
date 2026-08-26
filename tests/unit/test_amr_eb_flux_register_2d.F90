@@ -14,20 +14,26 @@ program test_amr_eb_flux_register_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
-    reflux_eb_state_patch_2d, reflux_reactive_eb_state_patch_2d
+    reflux_eb_state_patch_2d, &
+    reflux_reactive_eb_state_patch_support_2d, &
+    reflux_reactive_eb_state_patch_2d
   implicit none
 
   integer, parameter :: coarse_nx = 8, coarse_ny = 8
-  integer, parameter :: coarse_i_lower = 2, coarse_i_upper = 6
+  integer, parameter :: coarse_i_lower = 2, coarse_i_upper = 5
   integer, parameter :: coarse_j_lower = 2, coarse_j_upper = 6
   integer, parameter :: ratio = 2
   integer, parameter :: fine_nx = &
     (coarse_i_upper - coarse_i_lower + 1) * ratio
   integer, parameter :: fine_ny = &
     (coarse_j_upper - coarse_j_lower + 1) * ratio
+  integer, parameter :: support_i_lower = max(1, coarse_i_lower - 2)
+  integer, parameter :: support_i_upper = min(coarse_nx, coarse_i_upper + 2)
+  integer, parameter :: support_j_lower = max(1, coarse_j_lower - 2)
+  integer, parameter :: support_j_upper = min(coarse_ny, coarse_j_upper + 2)
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(amr_eb_patch_2d) :: patch
-  type(amr_eb_flux_register_2d) :: register
+  type(amr_eb_flux_register_2d) :: register, support_register
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp) :: fine_level_set(0:fine_nx, 0:fine_ny)
@@ -41,9 +47,15 @@ program test_amr_eb_flux_register_2d
   real(dp), allocatable :: reactive_coarse(:, :, :), reactive_fine(:, :, :)
   real(dp), allocatable :: reactive_refluxed_coarse(:, :, :)
   real(dp), allocatable :: reactive_refluxed_fine(:, :, :)
+  real(dp), allocatable :: support_refluxed_coarse(:, :, :)
+  real(dp), allocatable :: support_refluxed_fine(:, :, :)
+  real(dp), allocatable :: support_coarse_input(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :), fine_temperature(:, :)
   real(dp), allocatable :: refluxed_coarse_temperature(:, :)
   real(dp), allocatable :: refluxed_fine_temperature(:, :)
+  real(dp), allocatable :: support_temperature_input(:, :)
+  real(dp), allocatable :: support_coarse_temperature(:, :)
+  real(dp), allocatable :: support_fine_temperature(:, :)
   real(dp), allocatable :: primitive(:), state_cell(:), mass_fractions(:)
   real(dp) :: mole_fractions(7), x, y, fine_x_lower, fine_x_upper
   real(dp) :: fine_y_lower, fine_y_upper, dt, raw_integral
@@ -248,12 +260,53 @@ program test_amr_eb_flux_register_2d
     register, coarse_geometry, fine_geometry, patch, &
     reactive_fine_x, reactive_fine_y, 1.0e-3_dp, ok)
   call require(ok, "reactive fine-flux accumulation")
+  support_register = register
+  allocate(support_coarse_input( &
+    nvar, support_i_lower:support_i_upper, &
+    support_j_lower:support_j_upper))
+  allocate(support_temperature_input( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper))
+  allocate(support_refluxed_coarse( &
+    nvar, support_i_lower:support_i_upper, &
+    support_j_lower:support_j_upper))
+  allocate(support_refluxed_fine, mold=reactive_fine)
+  allocate(support_coarse_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper))
+  allocate(support_fine_temperature, mold=fine_temperature)
+  support_coarse_input = reactive_coarse( &
+    :, support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  support_temperature_input = coarse_temperature( &
+    support_i_lower:support_i_upper, support_j_lower:support_j_upper)
+  call require(size(support_coarse_input) < size(reactive_coarse), &
+    "reactive reflux uses compact coarse support")
+  call reflux_reactive_eb_state_patch_support_2d( &
+    species, support_i_lower, support_j_lower, support_coarse_input, &
+    support_temperature_input, coarse_geometry, reactive_fine, &
+    fine_temperature, fine_geometry, patch, support_register, &
+    support_refluxed_coarse, support_coarse_temperature, &
+    support_refluxed_fine, support_fine_temperature, ok)
+  call require(ok .and. maxval(abs(support_register%correction)) == 0.0_dp, &
+    "reactive support re-reflux transaction")
   call reflux_reactive_eb_state_patch_2d( &
     species, reactive_coarse, coarse_temperature, coarse_geometry, &
     reactive_fine, fine_temperature, fine_geometry, patch, register, &
     reactive_refluxed_coarse, refluxed_coarse_temperature, &
     reactive_refluxed_fine, refluxed_fine_temperature, ok)
   call require(ok, "reactive EB re-reflux transaction")
+  call require( &
+    maxval(abs(support_refluxed_coarse - &
+      reactive_refluxed_coarse( &
+        :, support_i_lower:support_i_upper, &
+        support_j_lower:support_j_upper))) == 0.0_dp .and. &
+    maxval(abs(support_refluxed_fine - &
+      reactive_refluxed_fine)) == 0.0_dp .and. &
+    maxval(abs(support_coarse_temperature - &
+      refluxed_coarse_temperature( &
+        support_i_lower:support_i_upper, &
+        support_j_lower:support_j_upper))) == 0.0_dp .and. &
+    maxval(abs(support_fine_temperature - &
+      refluxed_fine_temperature)) == 0.0_dp, &
+    "reactive support/full re-reflux parity")
   state_scale = max(1.0_dp, maxval(abs(state_cell)))
   call require(maxval(abs(reactive_refluxed_coarse - reactive_coarse)) > &
     1.0e-15_dp * state_scale, "reactive re-reflux changes active state")

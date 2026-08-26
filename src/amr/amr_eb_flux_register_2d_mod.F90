@@ -28,7 +28,9 @@ module amr_eb_flux_register_2d_mod
   public :: initialize_amr_eb_flux_register_2d
   public :: accumulate_coarse_eb_fluxes_2d
   public :: accumulate_fine_eb_fluxes_2d
+  public :: reflux_eb_state_patch_support_2d
   public :: reflux_eb_state_patch_2d
+  public :: reflux_reactive_eb_state_patch_support_2d
   public :: reflux_reactive_eb_state_patch_2d
 
 contains
@@ -358,14 +360,19 @@ contains
     end if
   end function cells_connected
 
-  subroutine reflux_eb_state_patch_2d( &
-      coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
-      register, refluxed_coarse_state, refluxed_fine_state, ok)
-    real(dp), intent(in) :: coarse_state(:, :, :), fine_state(:, :, :)
-    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+  subroutine reflux_eb_state_patch_support_2d( &
+      coarse_i_lower, coarse_j_lower, coarse_state, coarse_geometry, &
+      fine_state, fine_geometry, patch, register, refluxed_coarse_state, &
+      refluxed_fine_state, ok)
+    integer, intent(in) :: coarse_i_lower, coarse_j_lower
+    real(dp), intent(in) :: coarse_state(:, coarse_i_lower:, coarse_j_lower:)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(in) :: fine_state(:, :, :)
+    type(eb_geometry_2d), intent(in) :: fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
     type(amr_eb_flux_register_2d), intent(inout) :: register
-    real(dp), intent(out) :: refluxed_coarse_state(:, :, :)
+    real(dp), intent(out) :: &
+      refluxed_coarse_state(:, coarse_i_lower:, coarse_j_lower:)
     real(dp), intent(out) :: refluxed_fine_state(:, :, :)
     logical, intent(out) :: ok
 
@@ -373,15 +380,28 @@ contains
     real(dp), allocatable :: correction(:), extensive_correction(:)
     real(dp), allocatable :: recipient_increment(:)
     real(dp) :: kappa, neighbor_volume
+    integer :: coarse_i_upper, coarse_j_upper
+    integer :: expected_i_lower, expected_i_upper
+    integer :: expected_j_lower, expected_j_upper
     integer :: i, j, offset_i, offset_j, neighbor_i, neighbor_j
     integer :: fine_i_lower, fine_i_upper, fine_j_lower, fine_j_upper, ratio
 
     refluxed_coarse_state = 0.0_dp
     refluxed_fine_state = 0.0_dp
     ok = .false.
+    coarse_i_upper = coarse_i_lower + size(coarse_state, 2) - 1
+    coarse_j_upper = coarse_j_lower + size(coarse_state, 3) - 1
+    expected_i_lower = max(1, patch%coarse_i_lower - 2)
+    expected_i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 2)
+    expected_j_lower = max(1, patch%coarse_j_lower - 2)
+    expected_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 2)
     if (size(coarse_state, 1) /= register%component_count .or. &
-        size(coarse_state, 2) /= coarse_geometry%nx .or. &
-        size(coarse_state, 3) /= coarse_geometry%ny .or. &
+        coarse_i_lower < 1 .or. coarse_i_upper > coarse_geometry%nx .or. &
+        coarse_j_lower < 1 .or. coarse_j_upper > coarse_geometry%ny .or. &
+        coarse_i_lower > expected_i_lower .or. &
+        coarse_i_upper < expected_i_upper .or. &
+        coarse_j_lower > expected_j_lower .or. &
+        coarse_j_upper < expected_j_upper .or. &
         size(fine_state, 1) /= register%component_count .or. &
         size(fine_state, 2) /= fine_geometry%nx .or. &
         size(fine_state, 3) /= fine_geometry%ny .or. &
@@ -393,7 +413,9 @@ contains
         any(.not. ieee_is_finite(coarse_state)) .or. &
         any(.not. ieee_is_finite(fine_state))) return
 
-    allocate(coarse_increment, mold=coarse_state)
+    allocate(coarse_increment( &
+      register%component_count, coarse_i_lower:coarse_i_upper, &
+      coarse_j_lower:coarse_j_upper))
     allocate(fine_increment, mold=fine_state)
     allocate(correction(register%component_count))
     allocate(extensive_correction(register%component_count))
@@ -470,22 +492,44 @@ contains
     end if
     call register%reset()
     ok = .true.
+  end subroutine reflux_eb_state_patch_support_2d
+
+  subroutine reflux_eb_state_patch_2d( &
+      coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+      register, refluxed_coarse_state, refluxed_fine_state, ok)
+    real(dp), intent(in) :: coarse_state(:, :, :), fine_state(:, :, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    type(amr_eb_flux_register_2d), intent(inout) :: register
+    real(dp), intent(out) :: refluxed_coarse_state(:, :, :)
+    real(dp), intent(out) :: refluxed_fine_state(:, :, :)
+    logical, intent(out) :: ok
+
+    call reflux_eb_state_patch_support_2d( &
+      1, 1, coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+      register, refluxed_coarse_state, refluxed_fine_state, ok)
   end subroutine reflux_eb_state_patch_2d
 
-  subroutine reflux_reactive_eb_state_patch_2d( &
-      species, coarse_state, coarse_temperature, coarse_geometry, &
-      fine_state, fine_temperature, fine_geometry, patch, register, &
-      refluxed_coarse_state, refluxed_coarse_temperature, &
-      refluxed_fine_state, refluxed_fine_temperature, ok)
+  subroutine reflux_reactive_eb_state_patch_support_2d( &
+      species, coarse_i_lower, coarse_j_lower, coarse_state, &
+      coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+      fine_geometry, patch, register, refluxed_coarse_state, &
+      refluxed_coarse_temperature, refluxed_fine_state, &
+      refluxed_fine_temperature, ok)
     type(nasa7_species), intent(in) :: species(:)
-    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    integer, intent(in) :: coarse_i_lower, coarse_j_lower
+    real(dp), intent(in) :: coarse_state(:, coarse_i_lower:, coarse_j_lower:)
+    real(dp), intent(in) :: &
+      coarse_temperature(coarse_i_lower:, coarse_j_lower:)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
     real(dp), intent(in) :: fine_state(:, :, :), fine_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: fine_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
     type(amr_eb_flux_register_2d), intent(inout) :: register
-    real(dp), intent(out) :: refluxed_coarse_state(:, :, :)
-    real(dp), intent(out) :: refluxed_coarse_temperature(:, :)
+    real(dp), intent(out) :: &
+      refluxed_coarse_state(:, coarse_i_lower:, coarse_j_lower:)
+    real(dp), intent(out) :: &
+      refluxed_coarse_temperature(coarse_i_lower:, coarse_j_lower:)
     real(dp), intent(out) :: refluxed_fine_state(:, :, :)
     real(dp), intent(out) :: refluxed_fine_temperature(:, :)
     logical, intent(out) :: ok
@@ -497,7 +541,7 @@ contains
     real(dp), allocatable :: candidate_fine_temperature(:, :), primitive(:)
     real(dp) :: recovered_temperature, sound_speed
     logical :: local_ok
-    integer :: i, j, nvar
+    integer :: coarse_i_upper, coarse_j_upper, i, j, nvar
 
     refluxed_coarse_state = 0.0_dp
     refluxed_coarse_temperature = 0.0_dp
@@ -505,10 +549,12 @@ contains
     refluxed_fine_temperature = 0.0_dp
     ok = .false.
     nvar = reactive_nvar(size(species))
+    coarse_i_upper = coarse_i_lower + size(coarse_state, 2) - 1
+    coarse_j_upper = coarse_j_lower + size(coarse_state, 3) - 1
     if (nvar < 1 .or. size(coarse_state, 1) /= nvar .or. &
         size(fine_state, 1) /= nvar .or. &
         any(shape(coarse_temperature) /= &
-          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+          [size(coarse_state, 2), size(coarse_state, 3)]) .or. &
         any(shape(fine_temperature) /= &
           [fine_geometry%nx, fine_geometry%ny]) .or. &
         any(shape(refluxed_coarse_state) /= shape(coarse_state)) .or. &
@@ -525,18 +571,22 @@ contains
         any(.not. ieee_is_finite(fine_temperature))) return
 
     candidate_register = register
-    allocate(candidate_coarse_state, mold=coarse_state)
+    allocate(candidate_coarse_state( &
+      nvar, coarse_i_lower:coarse_i_upper, coarse_j_lower:coarse_j_upper))
     allocate(candidate_fine_state, mold=fine_state)
-    call reflux_eb_state_patch_2d( &
-      coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
-      candidate_register, candidate_coarse_state, candidate_fine_state, local_ok)
+    call reflux_eb_state_patch_support_2d( &
+      coarse_i_lower, coarse_j_lower, coarse_state, coarse_geometry, &
+      fine_state, fine_geometry, patch, candidate_register, &
+      candidate_coarse_state, candidate_fine_state, local_ok)
     if (.not. local_ok) return
-    allocate(candidate_coarse_temperature, source=coarse_temperature)
+    allocate(candidate_coarse_temperature( &
+      coarse_i_lower:coarse_i_upper, coarse_j_lower:coarse_j_upper))
+    candidate_coarse_temperature = coarse_temperature
     allocate(candidate_fine_temperature, source=fine_temperature)
     allocate(primitive(reactive_nprim(size(species))))
 
-    do j = 1, coarse_geometry%ny
-      do i = 1, coarse_geometry%nx
+    do j = coarse_j_lower, coarse_j_upper
+      do i = coarse_i_lower, coarse_i_upper
         if (coarse_geometry%cell_type(i, j) == eb_covered_cell) then
           candidate_coarse_state(:, i, j) = coarse_state(:, i, j)
           cycle
@@ -571,6 +621,31 @@ contains
     refluxed_fine_temperature = candidate_fine_temperature
     register = candidate_register
     ok = .true.
+  end subroutine reflux_reactive_eb_state_patch_support_2d
+
+  subroutine reflux_reactive_eb_state_patch_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, register, &
+      refluxed_coarse_state, refluxed_coarse_temperature, &
+      refluxed_fine_state, refluxed_fine_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    real(dp), intent(in) :: fine_state(:, :, :), fine_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    type(amr_eb_flux_register_2d), intent(inout) :: register
+    real(dp), intent(out) :: refluxed_coarse_state(:, :, :)
+    real(dp), intent(out) :: refluxed_coarse_temperature(:, :)
+    real(dp), intent(out) :: refluxed_fine_state(:, :, :)
+    real(dp), intent(out) :: refluxed_fine_temperature(:, :)
+    logical, intent(out) :: ok
+
+    call reflux_reactive_eb_state_patch_support_2d( &
+      species, 1, 1, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_state, fine_temperature, fine_geometry, patch, register, &
+      refluxed_coarse_state, refluxed_coarse_temperature, &
+      refluxed_fine_state, refluxed_fine_temperature, ok)
   end subroutine reflux_reactive_eb_state_patch_2d
 
 end module amr_eb_flux_register_2d_mod

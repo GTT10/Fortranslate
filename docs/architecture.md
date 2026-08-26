@@ -1516,3 +1516,20 @@ payload. The root owner applies reflux in deterministic child order and sends
 back one corrected fine state/temperature payload. A remote child therefore
 allocates no complete root start, end, temperature, or x/y-flux array. Hydro
 keeps its existing complete child bundle and correction route.
+
+## Compact child-local reactive reflux (`0.144.0`)
+
+The EB reflux kernel accepts a coarse array whose declared lower bounds are
+global coarse indices. The array may be the complete root or any rectangle
+containing the patch expanded by two coarse cells. Flux mismatch occupies the
+patch-plus-one ring; the second cell contains every cardinal or diagonal
+recipient of cut-cell redistribution. Reactive temperature recovery scans only
+the supplied coarse support and the complete fine patch. Existing complete-
+root callers are thin wrappers over the same kernel.
+
+Sparse transport includes the current patch-plus-two coarse state and
+temperature in the child context payload. The fine owner subcycles, accumulates
+fine interface flux, refluxes locally, retains the corrected fine field, and
+returns only corrected coarse support. The root owner merges that support in
+ordered child sequence. A remote child transaction therefore contains two
+messages per Euler stage and no fine-state round trip.

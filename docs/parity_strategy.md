@@ -2346,3 +2346,20 @@ from root to child. Reflux remains ordered on the root owner. Retain exact
 owner work accounting, limiter minima, serial root/child tolerances, public
 time-loop accounting, and late-failure rollback at one, two, four, and eight
 ranks in Release and bounds/FPE-checked Debug.
+
+## 0.144.0 compact child-local reactive reflux gates
+
+Run reactive reflux once through complete-root compatibility arrays and once
+through a strictly smaller array passed to the global-index support entrypoint,
+and require bitwise-identical coarse state and temperature on the supplied
+support plus bitwise-identical complete fine state and temperature. Both
+successful registers must reset; established nonphysical rollback remains
+unchanged.
+
+For sparse MPI transport, require the combined exterior/register/patch-plus-
+two context payload to be smaller than the former complete root bundle. A
+remote child must use exactly two messages per Euler stage: context/support
+from root to child and corrected support from child to root. Retain exact
+root/child field tolerances, limiter minima, owner work, public-clock traffic,
+scheduled regridding, and late-failure rollback at one, two, four, and eight
+ranks in Release and bounds/FPE-checked Debug.
