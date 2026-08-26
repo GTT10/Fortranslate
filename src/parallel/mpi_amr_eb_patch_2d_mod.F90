@@ -55,6 +55,7 @@ module mpi_amr_eb_patch_2d_mod
   integer, parameter :: sparse_regrid_prolongation_tag = 2707
   integer, parameter :: sparse_regrid_overlap_tag = 2708
   integer, parameter :: sparse_root_materialization_tag = 2709
+  integer, parameter :: sparse_root_restart_scatter_tag = 2710
 
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
@@ -131,6 +132,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: scatter_owned_reactive_eb_patch_set_2d
   public :: materialize_owned_reactive_eb_patch_set_2d
   public :: gather_sparse_owned_reactive_eb_patch_set_to_root_2d
+  public :: scatter_root_reactive_eb_patch_set_to_sparse_2d
   public :: regrid_sparse_owned_reactive_eb_patch_set_2d
   public :: regrid_tagged_sparse_owned_reactive_eb_patch_set_2d
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
@@ -680,6 +682,224 @@ contains
     ok = .true.
     if (present(local_transfers)) local_transfers = transfers
   end subroutine gather_sparse_owned_reactive_eb_patch_set_to_root_2d
+
+  subroutine scatter_root_reactive_eb_patch_set_to_sparse_2d( &
+      distribution, nspecies, root_coarse_state, root_coarse_temperature, &
+      coarse_geometry, root_patch_set, patch_set_template, root, &
+      sparse_patch_set, ok, local_transfers)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    integer, intent(in) :: nspecies
+    real(dp), allocatable, intent(in) :: root_coarse_state(:, :, :)
+    real(dp), allocatable, intent(in) :: root_coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: root_patch_set
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
+    integer, intent(in) :: root
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: sparse_patch_set
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_transfers
+
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
+    type(MPI_Status) :: status
+    real(dp), allocatable :: payload(:)
+    logical :: accepted, global_ok, local_ok
+    integer :: cell_count, child, height, ierr, j_lower, j_upper, nvar
+    integer :: owner, root_maximum, root_minimum, state_count, tile
+    integer :: transfers, value_count
+
+    sparse_patch_set = mpi_amr_eb_sparse_patch_set_2d()
+    ok = .false.
+    transfers = 0
+    if (present(local_transfers)) local_transfers = 0
+    nvar = reactive_nvar(nspecies)
+    local_ok = nspecies >= 1 .and. root >= 0 .and. &
+      root < distribution%nranks .and. &
+      distribution%is_valid(coarse_geometry, patch_set_template) .and. &
+      patch_set_template%is_valid(coarse_geometry, nvar)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      root, root_minimum, 1, MPI_INTEGER, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      root, root_maximum, 1, MPI_INTEGER, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. root_minimum /= root_maximum) return
+
+    if (distribution%rank == root) then
+      local_ok = allocated(root_coarse_state) .and. &
+        allocated(root_coarse_temperature)
+      if (local_ok) then
+        local_ok = all(shape(root_coarse_state) == &
+          [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
+          all(shape(root_coarse_temperature) == &
+            [coarse_geometry%nx, coarse_geometry%ny]) .and. &
+          all(ieee_is_finite(root_coarse_state)) .and. &
+          all(ieee_is_finite(root_coarse_temperature))
+      end if
+      if (local_ok) local_ok = &
+        root_patch_set%is_valid(coarse_geometry, nvar)
+      if (local_ok) local_ok = &
+        reactive_eb_patch_set_topology_matches_2d( &
+          root_patch_set, patch_set_template)
+    else
+      local_ok = .not. allocated(root_coarse_state) .and. &
+        .not. allocated(root_coarse_temperature) .and. &
+        root_patch_set%patch_count() == 0
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    candidate%rank = distribution%rank
+    candidate%nranks = distribution%nranks
+    candidate%nvar = nvar
+    allocate(candidate%root_tiles(distribution%root_tile_count()))
+    allocate(candidate%children(distribution%child_count()))
+    do tile = 1, distribution%root_tile_count()
+      owner = distribution%root_tiles(tile)%owner
+      j_lower = distribution%root_tiles(tile)%j_lower
+      j_upper = distribution%root_tiles(tile)%j_upper
+      height = j_upper - j_lower + 1
+      cell_count = distribution%root_tiles(tile)%cell_count
+      state_count = nvar * cell_count
+      value_count = state_count + cell_count
+      if (owner == root) then
+        if (distribution%rank == root) then
+          allocate(candidate%root_tiles(tile)%state, &
+            source=root_coarse_state(:, :, j_lower:j_upper))
+          allocate(candidate%root_tiles(tile)%temperature, &
+            source=root_coarse_temperature(:, j_lower:j_upper))
+        end if
+      else if (distribution%rank == root) then
+        allocate(payload(value_count))
+        payload(1:state_count) = reshape( &
+          root_coarse_state(:, :, j_lower:j_upper), [state_count])
+        payload(state_count + 1:value_count) = reshape( &
+          root_coarse_temperature(:, j_lower:j_upper), [cell_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, owner, &
+          sparse_root_restart_scatter_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        transfers = transfers + 1
+      else if (distribution%rank == owner) then
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, root, &
+          sparse_root_restart_scatter_tag, distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        allocate(candidate%root_tiles(tile)%state(nvar, coarse_geometry%nx, &
+          height))
+        allocate(candidate%root_tiles(tile)%temperature( &
+          coarse_geometry%nx, height))
+        candidate%root_tiles(tile)%state = reshape( &
+          payload(1:state_count), [nvar, coarse_geometry%nx, height])
+        candidate%root_tiles(tile)%temperature = reshape( &
+          payload(state_count + 1:value_count), &
+          [coarse_geometry%nx, height])
+      end if
+      if (allocated(payload)) deallocate(payload)
+    end do
+
+    do child = 1, distribution%child_count()
+      owner = distribution%child_owner(child)
+      cell_count = distribution%child_cell_counts(child)
+      state_count = nvar * cell_count
+      value_count = state_count + cell_count
+      if (owner == root) then
+        if (distribution%rank == root) then
+          allocate(candidate%children(child)%state, &
+            source=root_patch_set%children(child)%state)
+          allocate(candidate%children(child)%temperature, &
+            source=root_patch_set%children(child)%temperature)
+        end if
+      else if (distribution%rank == root) then
+        allocate(payload(value_count))
+        payload(1:state_count) = reshape( &
+          root_patch_set%children(child)%state, [state_count])
+        payload(state_count + 1:value_count) = reshape( &
+          root_patch_set%children(child)%temperature, [cell_count])
+        call MPI_Send( &
+          payload, value_count, MPI_DOUBLE_PRECISION, owner, &
+          sparse_root_restart_scatter_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        transfers = transfers + 1
+      else if (distribution%rank == owner) then
+        allocate(payload(value_count))
+        call MPI_Recv( &
+          payload, value_count, MPI_DOUBLE_PRECISION, root, &
+          sparse_root_restart_scatter_tag, distribution%comm, status, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        allocate(candidate%children(child)%state, mold= &
+          patch_set_template%children(child)%state)
+        allocate(candidate%children(child)%temperature, mold= &
+          patch_set_template%children(child)%temperature)
+        candidate%children(child)%state = reshape( &
+          payload(1:state_count), shape( &
+            candidate%children(child)%state))
+        candidate%children(child)%temperature = reshape( &
+          payload(state_count + 1:value_count), shape( &
+            candidate%children(child)%temperature))
+      end if
+      if (allocated(payload)) deallocate(payload)
+    end do
+
+    local_ok = candidate%is_valid( &
+      distribution, coarse_geometry, patch_set_template)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    sparse_patch_set = candidate
+    ok = .true.
+    if (present(local_transfers)) local_transfers = transfers
+  end subroutine scatter_root_reactive_eb_patch_set_to_sparse_2d
+
+  pure logical function reactive_eb_patch_set_topology_matches_2d( &
+      first, second) result(matches)
+    type(reactive_eb_patch_set_2d), intent(in) :: first, second
+
+    real(dp), parameter :: tolerance = 5.0e3_dp * epsilon(1.0_dp)
+    integer :: child
+
+    matches = first%patch_count() == second%patch_count()
+    if (.not. matches) return
+    do child = 1, first%patch_count()
+      matches = all([ &
+        first%children(child)%patch%coarse_i_lower, &
+        first%children(child)%patch%coarse_i_upper, &
+        first%children(child)%patch%coarse_j_lower, &
+        first%children(child)%patch%coarse_j_upper, &
+        first%children(child)%patch%refinement_ratio, &
+        first%children(child)%geometry%nx, &
+        first%children(child)%geometry%ny] == [ &
+        second%children(child)%patch%coarse_i_lower, &
+        second%children(child)%patch%coarse_i_upper, &
+        second%children(child)%patch%coarse_j_lower, &
+        second%children(child)%patch%coarse_j_upper, &
+        second%children(child)%patch%refinement_ratio, &
+        second%children(child)%geometry%nx, &
+        second%children(child)%geometry%ny])
+      if (.not. matches) return
+      matches = all(abs([ &
+        first%children(child)%geometry%x_lower, &
+        first%children(child)%geometry%x_upper, &
+        first%children(child)%geometry%y_lower, &
+        first%children(child)%geometry%y_upper, &
+        first%children(child)%geometry%dx, &
+        first%children(child)%geometry%dy] - [ &
+        second%children(child)%geometry%x_lower, &
+        second%children(child)%geometry%x_upper, &
+        second%children(child)%geometry%y_lower, &
+        second%children(child)%geometry%y_upper, &
+        second%children(child)%geometry%dx, &
+        second%children(child)%geometry%dy]) <= tolerance) .and. &
+        all(first%children(child)%geometry%cell_type == &
+          second%children(child)%geometry%cell_type) .and. &
+        all(abs(first%children(child)%geometry%volume_fraction - &
+          second%children(child)%geometry%volume_fraction) <= tolerance)
+      if (.not. matches) return
+    end do
+  end function reactive_eb_patch_set_topology_matches_2d
 
   subroutine regrid_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &

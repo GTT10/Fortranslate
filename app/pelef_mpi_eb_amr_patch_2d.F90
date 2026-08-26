@@ -54,6 +54,7 @@ program pelef_mpi_eb_amr_patch_2d
     scatter_owned_reactive_eb_patch_set_2d, &
     materialize_owned_reactive_eb_patch_set_2d, &
     gather_sparse_owned_reactive_eb_patch_set_to_root_2d, &
+    scatter_root_reactive_eb_patch_set_to_sparse_2d, &
     regrid_sparse_owned_reactive_eb_patch_set_2d, &
     average_down_sparse_owned_reactive_eb_patch_set_2d, &
     advance_sparse_owned_reactive_eb_patch_set_chemistry_2d, &
@@ -64,6 +65,7 @@ program pelef_mpi_eb_amr_patch_2d
     advance_sparse_owned_reactive_eb_patch_set_to_time_2d
   use mpi_amr_eb_io_2d_mod, only: &
     write_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
+    read_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
     write_sparse_owned_reactive_eb_patch_set_2d_csv
   implicit none
 
@@ -110,6 +112,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_regrid_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_failed_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_restart_set
   type(reactive_eb_amr_2d_config) :: io_config
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
@@ -267,6 +270,8 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_global_root_materialization_transfers
   integer :: invalid_materialization_root
   integer :: checkpoint_steps, checkpoint_regrids
+  integer :: local_restart_transfers, global_restart_transfers
+  integer :: expected_local_restart_transfers
   character(len=160) :: full_failure_context
   character(len=*), parameter :: sparse_checkpoint_path = &
     "pelef_mpi_eb_amr_sparse_io.chk"
@@ -580,6 +585,41 @@ program pelef_mpi_eb_amr_patch_2d
       expected_global_root_materialization_transfers, &
     "MPI EB AMR root-only materialization traffic", rank)
 
+  expected_local_restart_transfers = 0
+  if (rank == root_owner) expected_local_restart_transfers = &
+    expected_global_root_materialization_transfers
+  call scatter_root_reactive_eb_patch_set_to_sparse_2d( &
+    distribution, size(species), root_materialized_state, &
+    root_materialized_temperature, coarse_geometry, &
+    root_materialized_patch_set, patch_set, root_owner, sparse_restart_set, &
+    ok, local_restart_transfers)
+  call MPI_Allreduce( &
+    local_restart_transfers, global_restart_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    local_restart_transfers == expected_local_restart_transfers .and. &
+    global_restart_transfers == &
+      expected_global_root_materialization_transfers .and. &
+    sparse_restart_set%local_value_count() == &
+      sparse_patch_set%local_value_count(), &
+    "MPI EB AMR direct root restart scatter accounting", rank)
+  ok = .true.
+  do tile = 1, distribution%root_tile_count()
+    if (.not. distribution%root_tile_is_local(tile)) cycle
+    ok = ok .and. all(sparse_restart_set%root_tiles(tile)%state == &
+        sparse_patch_set%root_tiles(tile)%state) .and. &
+      all(sparse_restart_set%root_tiles(tile)%temperature == &
+        sparse_patch_set%root_tiles(tile)%temperature)
+  end do
+  do child = 1, distribution%child_count()
+    if (.not. distribution%child_is_local(child)) cycle
+    ok = ok .and. all(sparse_restart_set%children(child)%state == &
+        sparse_patch_set%children(child)%state) .and. &
+      all(sparse_restart_set%children(child)%temperature == &
+        sparse_patch_set%children(child)%temperature)
+  end do
+  call assert_all(ok, "MPI EB AMR direct root restart scatter parity", rank)
+
   io_config%eb%flow%nx = coarse_nx
   io_config%eb%flow%ny = coarse_ny
   io_config%eb%flow%x_lower = coarse_geometry%x_lower
@@ -651,10 +691,65 @@ program pelef_mpi_eb_amr_patch_2d
               synchronized_patch_set%children(child)%temperature)))
       end do
     end if
-    call remove_nonempty_file(sparse_checkpoint_path, io_files_ok)
   end if
   call assert_all(io_files_ok, &
     "MPI EB AMR sparse checkpoint round-trip parity", rank)
+
+  call read_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+    sparse_checkpoint_path, species, io_config, distribution, &
+    coarse_geometry, patch_set, root_owner, sparse_restart_set, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    local_restart_transfers)
+  call MPI_Allreduce( &
+    local_restart_transfers, global_restart_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    checkpoint_time == 1.0e-6_dp .and. checkpoint_steps == 1 .and. &
+    checkpoint_regrids == 0 .and. &
+    checkpoint_minimum_dt == 1.0e-6_dp .and. &
+    checkpoint_base_density == 0.31_dp .and. &
+    local_restart_transfers == expected_local_restart_transfers .and. &
+    global_restart_transfers == &
+      expected_global_root_materialization_transfers .and. &
+    sparse_restart_set%local_value_count() == &
+      sparse_patch_set%local_value_count(), &
+    "MPI EB AMR sparse checkpoint restart accounting", rank)
+  ok = .true.
+  do tile = 1, distribution%root_tile_count()
+    if (.not. distribution%root_tile_is_local(tile)) cycle
+    ok = ok .and. all(sparse_restart_set%root_tiles(tile)%state == &
+        sparse_patch_set%root_tiles(tile)%state) .and. &
+      all(sparse_restart_set%root_tiles(tile)%temperature == &
+        sparse_patch_set%root_tiles(tile)%temperature)
+  end do
+  do child = 1, distribution%child_count()
+    if (.not. distribution%child_is_local(child)) cycle
+    ok = ok .and. all(sparse_restart_set%children(child)%state == &
+        sparse_patch_set%children(child)%state) .and. &
+      all(sparse_restart_set%children(child)%temperature == &
+        sparse_patch_set%children(child)%temperature)
+  end do
+  call assert_all(ok, "MPI EB AMR sparse checkpoint restart parity", rank)
+  io_files_ok = .true.
+  if (rank == root_owner) then
+    call remove_nonempty_file(sparse_checkpoint_path, io_files_ok)
+  end if
+  call assert_all(io_files_ok, &
+    "MPI EB AMR sparse checkpoint restart cleanup", rank)
+
+  call read_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+    missing_checkpoint_path, species, io_config, distribution, &
+    coarse_geometry, patch_set, root_owner, sparse_restart_set, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    local_restart_transfers)
+  call assert_all(.not. ok .and. local_restart_transfers == 0 .and. &
+    sparse_restart_set%local_value_count() == 0 .and. &
+    checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
+    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
+    checkpoint_base_density == 0.0_dp, &
+    "MPI EB AMR sparse checkpoint read failure propagation", rank)
 
   call write_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
     missing_checkpoint_path, species, io_config, distribution, &
