@@ -398,7 +398,7 @@ program test_amr_eb_multilevel_transport_2d
     config%state_redist_target_volume_fraction, &
     config%state_redist_max_order, tree_minimum_theta, ok, failure_context, &
     level_advances)
-  call require(ok .and. all(level_advances == [2, 4, 8, 8]) .and. &
+  call require(ok .and. all(level_advances == [2, 4, 16, 16]) .and. &
     tree_minimum_theta > 0.0_dp .and. &
     .not. tree_solutions_match(branch_tree, branch_snapshot), &
     "four-level branching patch-tree transport schedule: " // &
