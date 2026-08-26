@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.137.0` milestone contains the serial verification suite, eight optional
+The `0.138.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -93,11 +93,12 @@ rows and the SSPRK2 blend return only to their tile owners. Cut-interface
 closure broadcasts one conserved `nvar` vector and changes unrefined cells
 directly on each local root tile. A late child failure leaves every sparse
 allocation bitwise unchanged and publishes zero transfers.
-The sparse hierarchy also selects its own stable coarse interval. Root tiles
-gather once to the physics owner for EB hydro and molecular-transport limits;
-fine children evaluate only on their owners and scale their stable fine steps
-by the refinement ratio before a communicator-minimum reduction. Invalid owner
-state rejects collectively with zero published dt and transfer count.
+The sparse hierarchy also selects its own stable coarse interval. Every root
+tile evaluates its EB hydro and molecular-transport limits directly on its
+owner, while fine children do the same and scale their stable fine steps by the
+refinement ratio. One communicator-minimum reduction selects the interval with
+zero root-field traffic. Invalid owner state rejects collectively with zero
+published dt and transfer count.
 The same sparse hierarchy now owns a public full-physics time loop. It
 recomputes that distributed stable interval before every `R-T-H-T-R` step,
 clips the last interval exactly to the requested target time, and publishes
@@ -630,8 +631,8 @@ The AMR layer provides:
   Euler-stage gathers/bundles/reflux round trips, targeted final blending,
   tile-local cut-interface closure, exact transfer accounting, and no full
   root-field broadcasts;
-- owner-local sparse MPI EB hydro/transport timestep selection with one
-  targeted root gather, fine-to-coarse subcycle scaling, communicator-minimum
+- owner-local sparse MPI EB hydro/transport timestep selection with no root
+  field traffic, fine-to-coarse subcycle scaling, communicator-minimum
   reduction, serial timestep parity, and collective rejection;
 - public sparse MPI EB multi-step `R-T-H-T-R` advancement with a freshly
   selected stable interval per step, exact final-time clipping, committed-only

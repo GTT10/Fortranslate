@@ -2484,5 +2484,23 @@ The sparse input remains exclusively tile-owned throughout root hydro. A full
 temporary root start/result/flux bundle is still assembled on the root owner
 after tile-local computation because fine-child exterior interpolation and
 deterministic reflux currently consume level-wide arrays. Sparse root
-transport, timestep selection, and distributed coarse/fine interface data are
-subsequent decomposition work.
+transport and distributed coarse/fine interface data are subsequent
+decomposition work.
+
+## Sparse MPI owner-local EB timestep selection (`0.138.0`)
+
+- [x] exact EB geometry band extraction for every locally owned root tile
+- [x] root hyperbolic CFL evaluation directly on exclusive tile state
+- [x] root parabolic transport limit directly on exclusive tile state
+- [x] fully covered root-tile and child skipping
+- [x] child-owner limits retained with refinement-ratio coarse scaling
+- [x] one communicator-minimum selection with zero root-field transfers
+- [x] exact serial hydro/transport timestep parity
+- [x] zero timestep traffic through the public multi-step clock
+- [x] scheduled-regrid traffic kept distinct from timestep traffic
+- [x] invalid owner state rejection with zero dt and transfer publication
+
+Stable-step selection no longer constructs any complete temporary root field.
+The sparse SSPRK2 transport Euler stages and final blend still gather root
+fields to the selected physics owner and remain the next root decomposition
+target.

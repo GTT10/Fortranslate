@@ -3178,13 +3178,12 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_root_transfers
 
-    real(dp), allocatable :: root_state(:, :, :)
-    real(dp), allocatable :: root_temperature(:, :)
+    type(eb_geometry_2d) :: root_tile_geometry
     real(dp) :: entity_dt, global_dt, local_dt, maximum_diffusivity
     real(dp) :: numeric_controls(2), numeric_maximum(2), numeric_minimum(2)
     logical :: accepted, entity_ok, global_ok, local_ok, transport_active
     integer :: child, ierr, integer_controls(5), integer_maximum(5)
-    integer :: integer_minimum(5), ratio, root_owner, transfers
+    integer :: integer_minimum(5), ratio, tile, transfers
 
     dt = 0.0_dp
     ok = .false.
@@ -3231,30 +3230,36 @@ contains
       0.5_dp, local_ok)
     if (.not. local_ok) return
 
-    call gather_sparse_root_to_owner_2d( &
-      distribution, sparse_patch_set, coarse_geometry, root_state, &
-      root_temperature, transfers, local_ok)
-    if (.not. local_ok) return
-    root_owner = distribution%root_level_owner()
     transport_active = viscosity_enabled .or. thermal_conduction_enabled .or. &
       species_diffusion_enabled
     local_dt = huge(1.0_dp)
-    entity_ok = root_owner >= 0 .and. root_owner < distribution%nranks
-    if (distribution%rank == root_owner .and. entity_ok) then
+    entity_ok = .true.
+    do tile = 1, distribution%root_tile_count()
+      if (.not. distribution%root_tile_is_local(tile)) cycle
+      call extract_eb_geometry_y_band_2d( &
+        coarse_geometry, distribution%root_tiles(tile)%j_lower, &
+        distribution%root_tiles(tile)%j_upper, root_tile_geometry, entity_ok)
+      if (.not. entity_ok) exit
+      if (count(root_tile_geometry%cell_type /= eb_covered_cell) == 0) cycle
       call compute_reactive_eb_cfl_timestep_2d( &
-        species, root_state, root_temperature, coarse_geometry, hydro_cfl, &
-        entity_dt, entity_ok)
+        species, sparse_patch_set%root_tiles(tile)%state, &
+        sparse_patch_set%root_tiles(tile)%temperature, root_tile_geometry, &
+        hydro_cfl, entity_dt, entity_ok)
       if (entity_ok) local_dt = min(local_dt, entity_dt)
       if (entity_ok .and. transport_active) then
         call reactive_eb_transport_timestep_2d( &
-          species, transport, root_state, root_temperature, coarse_geometry, &
+          species, transport, sparse_patch_set%root_tiles(tile)%state, &
+          sparse_patch_set%root_tiles(tile)%temperature, root_tile_geometry, &
           transport_cfl, viscosity_enabled, thermal_conduction_enabled, &
           species_diffusion_enabled, entity_dt, maximum_diffusivity, entity_ok)
         if (entity_ok) local_dt = min(local_dt, entity_dt)
       end if
-    end if
+      if (.not. entity_ok) exit
+    end do
     do child = 1, distribution%child_count()
       if (.not. distribution%child_is_local(child)) cycle
+      if (count(patch_set_template%children(child)%geometry%cell_type /= &
+          eb_covered_cell) == 0) cycle
       call compute_reactive_eb_cfl_timestep_2d( &
         species, sparse_patch_set%children(child)%state, &
         sparse_patch_set%children(child)%temperature, &
@@ -3283,7 +3288,7 @@ contains
       local_dt, global_dt, 1, MPI_DOUBLE_PRECISION, MPI_MIN, &
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. ieee_is_finite(global_dt) .or. &
-        global_dt <= 0.0_dp) return
+        global_dt <= 0.0_dp .or. global_dt >= huge(1.0_dp)) return
 
     dt = global_dt
     ok = .true.

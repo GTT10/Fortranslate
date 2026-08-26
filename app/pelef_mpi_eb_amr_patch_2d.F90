@@ -1740,14 +1740,6 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ok, "MPI EB AMR sparse timestep scatter", rank)
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
-  root_owner = distribution%root_level_owner()
-  do tile = 1, distribution%root_tile_count()
-    owner = distribution%root_tiles(tile)%owner
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 1
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 1
-  end do
   call compute_sparse_owned_reactive_eb_patch_set_timestep_2d( &
     species, transport, distribution, sparse_timestep_set, coarse_geometry, &
     transport_start_set, 0.35_dp, 0.20_dp, .true., .true., .true., .true., &
@@ -1761,7 +1753,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
-    "MPI EB AMR targeted sparse timestep root gather", rank)
+    "MPI EB AMR owner-local sparse timestep zero traffic", rank)
 
   sparse_timestep_failed_set = sparse_timestep_set
   child = distribution%child_count()
@@ -2264,14 +2256,6 @@ program pelef_mpi_eb_amr_patch_2d
     "MPI EB AMR sparse time-loop global accounting", rank)
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
-  root_owner = distribution%root_level_owner()
-  do tile = 1, distribution%root_tile_count()
-    owner = distribution%root_tiles(tile)%owner
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 1
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 1
-  end do
   call MPI_Allreduce( &
     local_root_transfers, global_root_transfers, 1, MPI_INTEGER, MPI_SUM, &
     MPI_COMM_WORLD, ierr)
@@ -2455,12 +2439,21 @@ program pelef_mpi_eb_amr_patch_2d
           expected_local_regrid_overlap_transfers + 1
     end do
   end do
+  expected_local_root_transfers = 0
+  expected_global_root_transfers = 0
+  root_owner = distribution%root_level_owner()
+  do tile = 1, distribution%root_tile_count()
+    owner = distribution%root_tiles(tile)%owner
+    if (owner == root_owner) cycle
+    expected_global_root_transfers = expected_global_root_transfers + 1
+    if (rank == owner) expected_local_root_transfers = &
+      expected_local_root_transfers + 1
+  end do
   call MPI_Allreduce( &
     scheduled_regrid_transfers, global_scheduled_regrid_transfers, 1, &
     MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
   call assert_all(ierr == MPI_SUCCESS .and. &
-    scheduled_timestep_transfers == &
-      scheduled_steps * expected_local_root_transfers .and. &
+    scheduled_timestep_transfers == 0 .and. &
     scheduled_regrid_transfers == expected_local_root_transfers .and. &
     global_scheduled_regrid_transfers == expected_global_root_transfers, &
     "MPI EB AMR scheduled-regrid root traffic", rank)
@@ -2605,7 +2598,7 @@ program pelef_mpi_eb_amr_patch_2d
     local_chemistry_advances == expected_local_chemistry .and. &
     local_hydro_advances == expected_local_hydro .and. &
     local_transport_advances == expected_local_transport .and. &
-    local_root_transfers == expected_local_root_transfers .and. &
+    local_root_transfers == 0 .and. &
     sparse_limited_time_loop_set%is_valid( &
       distribution, coarse_geometry, patch_set), &
     "MPI EB AMR sparse time-loop committed step limit", rank)
