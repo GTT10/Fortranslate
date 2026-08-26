@@ -2488,9 +2488,9 @@ FPE-checked Debug before the complete serial regression.
 Evaluate a four-level, two-branch numerical EB tree with the established
 single-node active-cell CFL kernel. Independently reduce every node-local limit
 after multiplication by the cumulative refinement product and require the new
-tree selector to match. Make the deepest node uniquely limiting and require the
-published root interval to equal its local interval times all three refinement
-ratios.
+tree selector to match, skipping the fully covered branch as a nonconstraint.
+Make the deepest node uniquely limiting and require the published root interval
+to equal its local interval times all three refinement ratios.
 
 Require the selector to leave every state and temperature value unchanged. A
 nonfinite CFL must reject with zero output and the same read-only contract.

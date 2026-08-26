@@ -1675,7 +1675,9 @@ for every root and child node without materializing another hierarchy.
 Tree traversal carries the cumulative product of relation refinement ratios.
 Each node-local interval is multiplied by that product before entering the
 root-time minimum, matching the number of temporal subcycles from that node to
-the root. Invalid trees, species layouts, CFL controls, node states, or an
-overflowing cumulative scale reject with zero timestep. The accepted hierarchy
-is read-only throughout selection. Hydro, chemistry, transport, public clock
-ownership, and MPI distribution remain separate arbitrary-depth operations.
+the root. Fully covered nodes impose no stability constraint and are skipped;
+an entirely inactive tree rejects. Invalid trees, species layouts, CFL
+controls, active-node states, or an overflowing cumulative scale reject with
+zero timestep. The accepted hierarchy is read-only throughout selection.
+Hydro, chemistry, transport, public clock ownership, and MPI distribution
+remain separate arbitrary-depth operations.

@@ -334,7 +334,7 @@ contains
 
     type(eb_geometry_2d) :: geometry
     real(dp) :: level_scale, node_dt, scaled_dt
-    integer :: level, patch, refinement_ratio
+    integer :: level, patch, refinement_ratio, active_nodes
     logical :: local_ok
 
     dt = 0.0_dp
@@ -346,6 +346,7 @@ contains
 
     dt = huge(1.0_dp)
     level_scale = 1.0_dp
+    active_nodes = 0
     do level = 1, solution%level_count()
       if (level > 1) then
         refinement_ratio = &
@@ -364,6 +365,8 @@ contains
           dt = 0.0_dp
           return
         end if
+        if (count(geometry%cell_type /= eb_covered_cell) == 0) cycle
+        active_nodes = active_nodes + 1
         call compute_reactive_eb_cfl_timestep_2d( &
           species, solution%levels(level)%patches(patch)%state, &
           solution%levels(level)%patches(patch)%temperature, geometry, &
@@ -380,6 +383,10 @@ contains
         dt = min(dt, scaled_dt)
       end do
     end do
+    if (active_nodes == 0) then
+      dt = 0.0_dp
+      return
+    end if
     ok = ieee_is_finite(dt) .and. dt > 0.0_dp
     if (.not. ok) dt = 0.0_dp
   end subroutine compute_reactive_amr_eb_patch_tree_cfl_timestep_2d

@@ -12,7 +12,8 @@ program test_amr_eb_multilevel_2d
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved
-  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_patch_tree_2d_mod, only: &
@@ -675,11 +676,12 @@ contains
     type(eb_geometry_2d) :: geometry
     real(dp) :: level_scale, local_dt
     logical :: local_ok
-    integer :: level, patch
+    integer :: level, patch, active_nodes
 
     reference_dt = huge(1.0_dp)
     valid = .false.
     level_scale = 1.0_dp
+    active_nodes = 0
     do level = 1, solution%level_count()
       if (level > 1) level_scale = level_scale * real( &
         solution%topology%relations(level - 1)%refinement_ratio, dp)
@@ -690,6 +692,8 @@ contains
           geometry = solution%topology%relations(level - 1)% &
             children(patch)%geometry
         end if
+        if (count(geometry%cell_type /= eb_covered_cell) == 0) cycle
+        active_nodes = active_nodes + 1
         call compute_reactive_eb_cfl_timestep_2d( &
           local_species, solution%levels(level)%patches(patch)%state, &
           solution%levels(level)%patches(patch)%temperature, geometry, &
@@ -698,7 +702,8 @@ contains
         reference_dt = min(reference_dt, level_scale * local_dt)
       end do
     end do
-    valid = ieee_is_finite(reference_dt) .and. reference_dt > 0.0_dp
+    valid = active_nodes > 0 .and. ieee_is_finite(reference_dt) .and. &
+      reference_dt > 0.0_dp
   end subroutine reference_reactive_tree_cfl_timestep
 
   subroutine set_tree_child_plan( &

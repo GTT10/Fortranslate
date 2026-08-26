@@ -2742,6 +2742,7 @@ milestone makes no measured speedup claim.
 
 - [x] one shared active-cell EB CFL kernel below driver and AMR layers
 - [x] every root and child patch evaluated on its own EB geometry
+- [x] fully covered nodes skipped while an entirely inactive tree rejects
 - [x] cumulative refinement-product conversion to one root interval
 - [x] arbitrary-depth and branching traversal with no fixed level count
 - [x] species-layout, finite-CFL, node-conversion, and scale validation

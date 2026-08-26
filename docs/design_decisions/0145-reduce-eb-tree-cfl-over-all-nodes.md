@@ -17,8 +17,9 @@ wrapper and call the shared kernel directly from the patch-tree module.
 Traverse every level and patch. Multiply each node-local CFL interval by the
 cumulative product of the preceding relation refinement ratios, then take one
 minimum in root time. Validate the tree, reactive component count, finite CFL,
-every node conversion, and cumulative-scale arithmetic before publishing.
-Return zero on failure and treat the hierarchy as read-only.
+every active-node conversion, and cumulative-scale arithmetic before
+publishing. A fully covered node imposes no constraint; reject an entirely
+inactive tree. Return zero on failure and treat the hierarchy as read-only.
 
 ## Consequences
 

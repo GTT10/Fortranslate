@@ -2030,8 +2030,9 @@ The stable root interval is therefore
 dt_root = min_over_all_nodes[R(l) dt(l,p)].
 ```
 
-The traversal includes every branch, ignores covered cells through the shared
-single-node kernel, and rejects a nonfinite control or failed node conversion
-with deterministic zero output. It does not mutate topology, state, or
-temperature. This hyperbolic selector does not yet compose transport limits or
-advance the arbitrary-depth 2D EB tree.
+The traversal includes every branch and ignores covered cells through the
+shared single-node kernel. A fully covered node contributes no constraint; an
+entirely inactive tree, nonfinite control, or failed active-node conversion
+rejects with deterministic zero output. Selection does not mutate topology,
+state, or temperature. This hyperbolic selector does not yet compose transport
+limits or advance the arbitrary-depth 2D EB tree.
