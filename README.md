@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.121.0` milestone contains the serial verification suite, eight optional
+The `0.122.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -49,10 +49,11 @@ children; an explicit materialization boundary reconstructs the replicated
 hierarchy when a legacy operator or output path still requires it.
 Chemistry now runs directly on those sparse owner allocations. Root tiles and
 children are reacted locally with covered cells masked; only post-reaction
-average-down communicates numerical state. Each child owner broadcasts one
-coarse-footprint restriction buffer, and intersecting root tile owners recover
-temperature and apply it locally. Chemistry no longer materializes a complete
-hierarchy.
+average-down communicates numerical state. Each child owner sends one
+coarse-footprint restriction buffer only to the distinct root tile owners that
+intersect it; unrelated ranks receive nothing. Those owners recover temperature
+and apply the restriction locally. Chemistry no longer materializes a complete
+hierarchy or broadcasts child restrictions.
 The complete sparse `R-T-H-T-R` transaction now remains on sparse owners from
 input through commit. Both chemistry half-steps, both SSPRK2 transport
 half-steps, and hydro call their direct sparse entrypoints; no complete child
@@ -553,6 +554,9 @@ The AMR layer provides:
 - direct owner-only chemistry on sparse AMR payloads with distributed
   average-down, parent/child ghost fill, adjacent PPM ghost replacement, and
   exact collective rollback;
+- targeted point-to-point sparse MPI EB restriction from each child owner only
+  to intersecting root tile owners, with exact transfer accounting and
+  transactional rollback;
 - direct recursive hydro on sparse AMR payloads with mixed-ratio subcycling,
   replicated flux-register metadata, owner-local reflux/average-down,
   cross-owner PPM face reconciliation, and exact rollback;

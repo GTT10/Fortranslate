@@ -2162,3 +2162,24 @@ payloads from sparse input through sparse output. Component entrypoints still
 assemble and synchronize level-wide root temporaries. Root decomposition,
 targeted root and coarse/fine traffic, public time-loop control, regridding,
 checkpointing, and output remain separate work.
+
+## Targeted sparse EB average-down traffic (`0.122.0`)
+
+- [x] one child-owner restriction buffer per fine child
+- [x] exact intersecting root-owner recipient discovery
+- [x] duplicate recipient elimination when one owner has multiple root tiles
+- [x] no restriction allocation or receive on unrelated ranks
+- [x] point-to-point transfer only to distinct remote recipients
+- [x] local application when child and root tile share an owner
+- [x] unchanged covered-cell preservation and owner-local EOS recovery
+- [x] exact local and communicator transfer accounting
+- [x] bitwise serial chemistry and average-down parity
+- [x] exact state and published-count rollback after EOS rejection
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+Sparse average-down no longer broadcasts every child restriction across the
+communicator. Root physics fields, coarse-time exterior state, fluxes, and
+reflux corrections still use level-wide synchronization in the direct hydro
+and transport operators. Root decomposition, targeted physics traffic, public
+time-loop control, regridding, checkpointing, and output remain separate work.
