@@ -35,9 +35,12 @@ program pelef_mpi_eb_amr_patch_2d
     advance_reactive_eb_patch_set_transport_2d
   use eb_reactive_transport_2d_mod, only: &
     reactive_eb_transport_timestep_2d
+  use simulation_config_reactive_eb_amr_2d_mod, only: &
+    reactive_eb_amr_2d_config
   use reactive_eb_amr_2d_driver_mod, only: &
     advance_reactive_eb_patch_set_strang_2d, &
-    compute_reactive_eb_patch_set_cfl_timestep_2d
+    compute_reactive_eb_patch_set_cfl_timestep_2d, &
+    read_reactive_eb_amr_patch_set_2d_checkpoint
   use mpi_amr_eb_patch_2d_mod, only: &
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
@@ -59,6 +62,9 @@ program pelef_mpi_eb_amr_patch_2d
     advance_sparse_owned_reactive_eb_patch_set_transport_2d, &
     advance_sparse_owned_reactive_eb_patch_set_strang_2d, &
     advance_sparse_owned_reactive_eb_patch_set_to_time_2d
+  use mpi_amr_eb_io_2d_mod, only: &
+    write_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
+    write_sparse_owned_reactive_eb_patch_set_2d_csv
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -74,6 +80,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: synchronized_patch_set
   type(reactive_eb_patch_set_2d) :: materialized_patch_set
   type(reactive_eb_patch_set_2d) :: root_materialized_patch_set
+  type(reactive_eb_patch_set_2d) :: checkpoint_patch_set
   type(reactive_eb_patch_set_2d) :: rejected_materialized_set
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
@@ -103,6 +110,7 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_regrid_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_failed_set
+  type(reactive_eb_amr_2d_config) :: io_config
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -138,6 +146,8 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: materialized_coarse_temperature(:, :)
   real(dp), allocatable :: root_materialized_state(:, :, :)
   real(dp), allocatable :: root_materialized_temperature(:, :)
+  real(dp), allocatable :: checkpoint_state(:, :, :)
+  real(dp), allocatable :: checkpoint_temperature(:, :)
   real(dp), allocatable :: rejected_materialized_state(:, :, :)
   real(dp), allocatable :: rejected_materialized_temperature(:, :)
   real(dp), allocatable :: chemistry_coarse_state(:, :, :)
@@ -186,6 +196,7 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: scheduled_reference_temperature(:, :)
   type(eb_geometry_2d), allocatable :: regrid_fine_geometries(:)
   type(eb_geometry_2d), allocatable :: rejected_regrid_fine_geometries(:)
+  type(eb_geometry_2d) :: checkpoint_geometry
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: regrid_recipients(:)
   logical, allocatable :: restriction_recipients(:)
@@ -205,8 +216,11 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: scheduled_time, scheduled_minimum_dt
   real(dp) :: scheduled_reference_minimum_dt, scheduled_reference_theta
   real(dp) :: scheduled_theta
+  real(dp) :: checkpoint_time, checkpoint_minimum_dt
+  real(dp) :: checkpoint_base_density
   logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
   logical :: geometry_perturbed, ok, topology_changed
+  logical :: io_files_ok
   integer :: child, component, global_advances, global_i, global_j, i, ierr
   integer :: j, new_child, old_child, old_i, old_j, owner
   integer :: local_advances, nvar, rank, nranks, tile
@@ -252,7 +266,22 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_local_root_materialization_transfers
   integer :: expected_global_root_materialization_transfers
   integer :: invalid_materialization_root
+  integer :: checkpoint_steps, checkpoint_regrids
   character(len=160) :: full_failure_context
+  character(len=*), parameter :: sparse_checkpoint_path = &
+    "pelef_mpi_eb_amr_sparse_io.chk"
+  character(len=*), parameter :: sparse_root_output_path = &
+    "pelef_mpi_eb_amr_sparse_root.csv"
+  character(len=*), parameter :: sparse_fine_output_path = &
+    "pelef_mpi_eb_amr_sparse_fine.csv"
+  character(len=*), parameter :: sparse_fine_output_path_1 = &
+    "pelef_mpi_eb_amr_sparse_fine_patch0001.csv"
+  character(len=*), parameter :: sparse_fine_output_path_2 = &
+    "pelef_mpi_eb_amr_sparse_fine_patch0002.csv"
+  character(len=*), parameter :: missing_checkpoint_path = &
+    "pelef_missing_output_directory/sparse_io.chk"
+  character(len=*), parameter :: missing_root_output_path = &
+    "pelef_missing_output_directory/sparse_root.csv"
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -550,6 +579,123 @@ program pelef_mpi_eb_amr_patch_2d
     global_root_materialization_transfers == &
       expected_global_root_materialization_transfers, &
     "MPI EB AMR root-only materialization traffic", rank)
+
+  io_config%eb%flow%nx = coarse_nx
+  io_config%eb%flow%ny = coarse_ny
+  io_config%eb%flow%x_lower = coarse_geometry%x_lower
+  io_config%eb%flow%x_upper = coarse_geometry%x_upper
+  io_config%eb%flow%y_lower = coarse_geometry%y_lower
+  io_config%eb%flow%y_upper = coarse_geometry%y_upper
+  io_config%eb%flow%final_time = 2.0e-6_dp
+  io_config%eb%flow%reconstruction = "pcm"
+  io_config%eb%flow%use_transverse_correction = .false.
+  io_config%eb%flow%boundary_x_lower = "outflow"
+  io_config%eb%flow%boundary_x_upper = "outflow"
+  io_config%eb%flow%boundary_y_lower = "outflow"
+  io_config%eb%flow%boundary_y_upper = "outflow"
+  io_config%eb%flow%output_file = sparse_root_output_path
+  io_config%eb%plane_normal_x = 1.0_dp
+  io_config%eb%plane_normal_y = 1.0_dp
+  io_config%eb%plane_offset = 0.78_dp
+  io_config%coarse_i_lower = collection%plans(1)%coarse_i_lower
+  io_config%coarse_i_upper = collection%plans(1)%coarse_i_upper
+  io_config%coarse_j_lower = collection%plans(1)%coarse_j_lower
+  io_config%coarse_j_upper = collection%plans(1)%coarse_j_upper
+  io_config%refinement_ratio = ratio
+  io_config%multipatch_enabled = .true.
+  io_config%dynamic_regridding = .true.
+  io_config%fine_output_file = sparse_fine_output_path
+  call write_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+    sparse_checkpoint_path, species, io_config, distribution, &
+    sparse_patch_set, coarse_geometry, patch_set, root_owner, 1.0e-6_dp, &
+    1, 0, 1.0e-6_dp, 0.31_dp, ok, &
+    local_root_materialization_transfers)
+  call MPI_Allreduce( &
+    local_root_materialization_transfers, &
+    global_root_materialization_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    local_root_materialization_transfers == &
+      expected_local_root_materialization_transfers .and. &
+    global_root_materialization_transfers == &
+      expected_global_root_materialization_transfers, &
+    "MPI EB AMR sparse checkpoint transfer accounting", rank)
+  io_files_ok = .true.
+  if (rank == root_owner) then
+    call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+      sparse_checkpoint_path, species, io_config, checkpoint_state, &
+      checkpoint_temperature, checkpoint_geometry, checkpoint_patch_set, &
+      checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+      checkpoint_minimum_dt, checkpoint_base_density, io_files_ok)
+    if (io_files_ok) then
+      io_files_ok = all(checkpoint_state == synchronized_coarse_state) .and. &
+        maxval(abs(checkpoint_temperature - &
+          synchronized_coarse_temperature)) <= &
+          3.0e-12_dp * max(1.0_dp, &
+            maxval(abs(synchronized_coarse_temperature))) .and. &
+        checkpoint_geometry%is_valid() .and. &
+        checkpoint_patch_set%patch_count() == patch_set%patch_count() .and. &
+        checkpoint_time == 1.0e-6_dp .and. checkpoint_steps == 1 .and. &
+        checkpoint_regrids == 0 .and. &
+        checkpoint_minimum_dt == 1.0e-6_dp .and. &
+        checkpoint_base_density == 0.31_dp
+    end if
+    if (io_files_ok) then
+      do child = 1, patch_set%patch_count()
+        io_files_ok = io_files_ok .and. &
+          all(checkpoint_patch_set%children(child)%state == &
+            synchronized_patch_set%children(child)%state) .and. &
+          maxval(abs(checkpoint_patch_set%children(child)%temperature - &
+            synchronized_patch_set%children(child)%temperature)) <= &
+            3.0e-12_dp * max(1.0_dp, maxval(abs( &
+              synchronized_patch_set%children(child)%temperature)))
+      end do
+    end if
+    call remove_nonempty_file(sparse_checkpoint_path, io_files_ok)
+  end if
+  call assert_all(io_files_ok, &
+    "MPI EB AMR sparse checkpoint round-trip parity", rank)
+
+  call write_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+    missing_checkpoint_path, species, io_config, distribution, &
+    sparse_patch_set, coarse_geometry, patch_set, root_owner, 1.0e-6_dp, &
+    1, 0, 1.0e-6_dp, 0.31_dp, ok, &
+    local_root_materialization_transfers)
+  call assert_all(.not. ok .and. &
+    local_root_materialization_transfers == 0, &
+    "MPI EB AMR sparse checkpoint failure propagation", rank)
+
+  call write_sparse_owned_reactive_eb_patch_set_2d_csv( &
+    species, io_config, distribution, sparse_patch_set, coarse_geometry, &
+    patch_set, root_owner, 1.0e-6_dp, ok, &
+    local_root_materialization_transfers)
+  call MPI_Allreduce( &
+    local_root_materialization_transfers, &
+    global_root_materialization_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    local_root_materialization_transfers == &
+      expected_local_root_materialization_transfers .and. &
+    global_root_materialization_transfers == &
+      expected_global_root_materialization_transfers, &
+    "MPI EB AMR sparse CSV transfer accounting", rank)
+  io_files_ok = .true.
+  if (rank == root_owner) then
+    call remove_nonempty_file(sparse_root_output_path, io_files_ok)
+    call remove_nonempty_file(sparse_fine_output_path_1, io_files_ok)
+    call remove_nonempty_file(sparse_fine_output_path_2, io_files_ok)
+  end if
+  call assert_all(io_files_ok, "MPI EB AMR sparse CSV publication", rank)
+
+  io_config%eb%flow%output_file = missing_root_output_path
+  call write_sparse_owned_reactive_eb_patch_set_2d_csv( &
+    species, io_config, distribution, sparse_patch_set, coarse_geometry, &
+    patch_set, root_owner, 1.0e-6_dp, ok, &
+    local_root_materialization_transfers)
+  call assert_all(.not. ok .and. &
+    local_root_materialization_transfers == 0, &
+    "MPI EB AMR sparse CSV failure propagation", rank)
+  io_config%eb%flow%output_file = sparse_root_output_path
 
   invalid_materialization_root = root_owner
   if (nranks == 1) then
@@ -2353,6 +2499,30 @@ program pelef_mpi_eb_amr_patch_2d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine remove_nonempty_file(path, valid)
+    character(len=*), intent(in) :: path
+    logical, intent(inout) :: valid
+
+    logical :: exists
+    integer :: file_size, status, unit
+
+    exists = .false.
+    file_size = 0
+    inquire(file=trim(path), exist=exists, size=file_size, iostat=status)
+    if (status /= 0 .or. .not. exists .or. file_size < 1) then
+      valid = .false.
+      return
+    end if
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      iostat=status)
+    if (status /= 0) then
+      valid = .false.
+      return
+    end if
+    close(unit, status="delete", iostat=status)
+    valid = valid .and. status == 0
+  end subroutine remove_nonempty_file
 
   pure real(dp) function root_tile_factor(local_tile) result(value)
     integer, intent(in) :: local_tile
