@@ -17,7 +17,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   use eb_reactive_redistribution_2d_mod, only: &
     advance_reactive_eb_state_redistributed_2d
   use eb_reactive_transport_2d_mod, only: &
-    reactive_eb_transport_fluxes_rhs_2d
+    reactive_eb_transport_timestep_2d, reactive_eb_transport_fluxes_rhs_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
   use amr_eb_flux_register_2d_mod, only: &
@@ -65,10 +65,12 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: synchronize_reactive_amr_eb_patch_tree_2d
   public :: rebuild_reactive_amr_eb_patch_tree_2d
   public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
+  public :: compute_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_reactive_amr_eb_patch_tree_hydro_2d
   public :: advance_reactive_amr_eb_patch_tree_strang_2d
   public :: advance_reactive_amr_eb_patch_tree_full_physics_2d
+  public :: advance_reactive_amr_eb_patch_tree_to_time_2d
   public :: advance_reactive_amr_eb_patch_tree_transport_euler_2d
   public :: advance_reactive_amr_eb_patch_tree_transport_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
@@ -416,6 +418,101 @@ contains
     if (.not. ok) dt = 0.0_dp
   end subroutine compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
 
+  subroutine compute_reactive_amr_eb_patch_tree_timestep_2d( &
+      species, transport, solution, hydro_cfl, transport_cfl, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, dt, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: hydro_cfl, transport_cfl
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    real(dp) :: level_scale, maximum_diffusivity, node_dt, scaled_dt
+    integer :: active_nodes, level, patch, refinement_ratio
+    logical :: local_ok, transport_active
+
+    dt = 0.0_dp
+    ok = .false.
+    transport_active = viscosity_enabled .or. thermal_conduction_enabled .or. &
+      species_diffusion_enabled
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(hydro_cfl) .or. hydro_cfl <= 0.0_dp .or. &
+        hydro_cfl > 1.0_dp .or. &
+        .not. ieee_is_finite(transport_cfl) .or. &
+        transport_cfl <= 0.0_dp .or. transport_cfl > 0.5_dp .or. &
+        (transport_active .and. size(transport) /= size(species))) return
+
+    dt = huge(1.0_dp)
+    level_scale = 1.0_dp
+    active_nodes = 0
+    do level = 1, solution%level_count()
+      if (level > 1) then
+        refinement_ratio = &
+          solution%topology%relations(level - 1)%refinement_ratio
+        if (level_scale > huge(1.0_dp) / &
+            real(refinement_ratio, dp)) then
+          dt = 0.0_dp
+          return
+        end if
+        level_scale = level_scale * real(refinement_ratio, dp)
+      end if
+      do patch = 1, solution%levels(level)%patch_count()
+        call patch_geometry_at( &
+          solution%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) then
+          dt = 0.0_dp
+          return
+        end if
+        if (count(geometry%cell_type /= eb_covered_cell) == 0) cycle
+        active_nodes = active_nodes + 1
+        call compute_reactive_eb_cfl_timestep_2d( &
+          species, solution%levels(level)%patches(patch)%state, &
+          solution%levels(level)%patches(patch)%temperature, geometry, &
+          hydro_cfl, node_dt, local_ok)
+        if (.not. local_ok) then
+          dt = 0.0_dp
+          return
+        end if
+        if (node_dt > huge(1.0_dp) / level_scale) then
+          scaled_dt = huge(1.0_dp)
+        else
+          scaled_dt = level_scale * node_dt
+        end if
+        dt = min(dt, scaled_dt)
+        if (transport_active) then
+          call reactive_eb_transport_timestep_2d( &
+            species, transport, &
+            solution%levels(level)%patches(patch)%state, &
+            solution%levels(level)%patches(patch)%temperature, geometry, &
+            transport_cfl, viscosity_enabled, thermal_conduction_enabled, &
+            species_diffusion_enabled, node_dt, maximum_diffusivity, local_ok)
+          if (.not. local_ok) then
+            dt = 0.0_dp
+            return
+          end if
+          if (node_dt > huge(1.0_dp) / level_scale) then
+            scaled_dt = huge(1.0_dp)
+          else
+            scaled_dt = level_scale * node_dt
+          end if
+          dt = min(dt, scaled_dt)
+        end if
+      end do
+    end do
+    if (active_nodes == 0) then
+      dt = 0.0_dp
+      return
+    end if
+    ok = ieee_is_finite(dt) .and. dt > 0.0_dp .and. dt < huge(1.0_dp)
+    if (.not. ok) dt = 0.0_dp
+  end subroutine compute_reactive_amr_eb_patch_tree_timestep_2d
+
   subroutine advance_reactive_amr_eb_patch_tree_chemistry_2d( &
       species, reactions, solution, interval, rtol, atol, ok, &
       failure_context, level_advances)
@@ -710,6 +807,166 @@ contains
     ok = .true.
     if (present(failure_context)) failure_context = "none"
   end subroutine advance_reactive_amr_eb_patch_tree_full_physics_2d
+
+  subroutine advance_reactive_amr_eb_patch_tree_to_time_2d( &
+      species, reactions, transport, solution, solver, reconstruction, &
+      limiter, state_redist_max_order, time, final_time, steps, &
+      maximum_steps, hydro_cfl, transport_cfl, chemistry_enabled, rtol, &
+      atol, viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      state_redist_target_volume_fraction, minimum_dt, &
+      minimum_transport_theta, ok, failure_context, advanced_steps, &
+      chemistry_level_advances, transport_level_advances, &
+      hydro_level_advances)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: state_redist_max_order
+    real(dp), intent(inout) :: time
+    real(dp), intent(in) :: final_time
+    integer, intent(inout) :: steps
+    integer, intent(in) :: maximum_steps
+    real(dp), intent(in) :: hydro_cfl, transport_cfl, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(in) :: state_redist_target_volume_fraction
+    real(dp), intent(out) :: minimum_dt, minimum_transport_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: advanced_steps
+    integer, intent(out), optional :: chemistry_level_advances(:)
+    integer, intent(out), optional :: transport_level_advances(:)
+    integer, intent(out), optional :: hydro_level_advances(:)
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    integer, allocatable :: accumulated_chemistry(:)
+    integer, allocatable :: accumulated_transport(:)
+    integer, allocatable :: accumulated_hydro(:)
+    integer, allocatable :: step_chemistry(:), step_transport(:)
+    integer, allocatable :: step_hydro(:)
+    character(len=160) :: context
+    real(dp) :: dt, remaining, step_theta, time_tolerance
+    logical :: local_ok, transport_active
+
+    ok = .false.
+    minimum_dt = 0.0_dp
+    minimum_transport_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(advanced_steps)) advanced_steps = 0
+    if (present(chemistry_level_advances)) chemistry_level_advances = 0
+    if (present(transport_level_advances)) transport_level_advances = 0
+    if (present(hydro_level_advances)) hydro_level_advances = 0
+    transport_active = viscosity_enabled .or. thermal_conduction_enabled .or. &
+      species_diffusion_enabled
+    time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(final_time))
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(time) .or. time < 0.0_dp .or. &
+        .not. ieee_is_finite(final_time) .or. &
+        final_time < time - time_tolerance .or. &
+        steps < 0 .or. maximum_steps < steps .or. &
+        .not. ieee_is_finite(hydro_cfl) .or. hydro_cfl <= 0.0_dp .or. &
+        hydro_cfl > 1.0_dp .or. &
+        .not. ieee_is_finite(transport_cfl) .or. &
+        transport_cfl <= 0.0_dp .or. transport_cfl > 0.5_dp .or. &
+        .not. ieee_is_finite(rtol) .or. rtol <= 0.0_dp .or. &
+        .not. ieee_is_finite(atol) .or. atol <= 0.0_dp .or. &
+        .not. ieee_is_finite(state_redist_target_volume_fraction) .or. &
+        state_redist_target_volume_fraction <= 0.0_dp .or. &
+        state_redist_target_volume_fraction > 1.0_dp .or. &
+        (transport_active .and. size(transport) /= size(species))) return
+    if (present(chemistry_level_advances)) then
+      if (size(chemistry_level_advances) /= solution%level_count()) return
+    end if
+    if (present(transport_level_advances)) then
+      if (size(transport_level_advances) /= solution%level_count()) return
+    end if
+    if (present(hydro_level_advances)) then
+      if (size(hydro_level_advances) /= solution%level_count()) return
+    end if
+
+    allocate(accumulated_chemistry(solution%level_count()), source=0)
+    allocate(accumulated_transport(solution%level_count()), source=0)
+    allocate(accumulated_hydro(solution%level_count()), source=0)
+    allocate(step_chemistry(solution%level_count()), source=0)
+    allocate(step_transport(solution%level_count()), source=0)
+    allocate(step_hydro(solution%level_count()), source=0)
+    do
+      remaining = final_time - time
+      if (remaining <= time_tolerance) exit
+      if (steps >= maximum_steps) then
+        if (present(failure_context)) failure_context = "maximum steps"
+        return
+      end if
+      context = "timestep"
+      call compute_reactive_amr_eb_patch_tree_timestep_2d( &
+        species, transport, solution, hydro_cfl, transport_cfl, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, dt, local_ok)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+      dt = min(dt, remaining)
+      if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+
+      candidate = solution
+      step_chemistry = 0
+      step_transport = 0
+      step_hydro = 0
+      call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+        species, reactions, transport, candidate, solver, reconstruction, &
+        limiter, state_redist_max_order, dt, chemistry_enabled, rtol, atol, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+        state_redist_target_volume_fraction, step_theta, local_ok, context, &
+        step_chemistry, step_transport, step_hydro)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+      if (any(step_chemistry > huge(steps) - accumulated_chemistry) .or. &
+          any(step_transport > huge(steps) - accumulated_transport) .or. &
+          any(step_hydro > huge(steps) - accumulated_hydro)) then
+        if (present(failure_context)) failure_context = &
+          "advance count overflow"
+        return
+      end if
+
+      solution = candidate
+      time = time + dt
+      steps = steps + 1
+      accumulated_chemistry = accumulated_chemistry + step_chemistry
+      accumulated_transport = accumulated_transport + step_transport
+      accumulated_hydro = accumulated_hydro + step_hydro
+      if (minimum_dt == 0.0_dp) then
+        minimum_dt = dt
+      else
+        minimum_dt = min(minimum_dt, dt)
+      end if
+      minimum_transport_theta = min(minimum_transport_theta, step_theta)
+      if (present(advanced_steps)) advanced_steps = advanced_steps + 1
+      if (present(chemistry_level_advances)) &
+        chemistry_level_advances = accumulated_chemistry
+      if (present(transport_level_advances)) &
+        transport_level_advances = accumulated_transport
+      if (present(hydro_level_advances)) &
+        hydro_level_advances = accumulated_hydro
+    end do
+
+    time = final_time
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine advance_reactive_amr_eb_patch_tree_to_time_2d
 
   subroutine advance_reactive_amr_eb_patch_tree_chemistry_candidate_2d( &
       species, reactions, solution, interval, rtol, atol, level_advances, &

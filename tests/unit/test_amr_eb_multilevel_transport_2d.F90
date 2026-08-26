@@ -27,8 +27,11 @@ program test_amr_eb_multilevel_transport_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
+    compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
+    compute_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_transport_2d, &
     advance_reactive_amr_eb_patch_tree_full_physics_2d, &
+    advance_reactive_amr_eb_patch_tree_to_time_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
@@ -65,6 +68,8 @@ program test_amr_eb_multilevel_transport_2d
   type(reactive_amr_eb_patch_tree_2d) :: branch_tree, branch_snapshot
   type(reactive_amr_eb_patch_tree_2d) :: full_tree, full_snapshot
   type(reactive_amr_eb_patch_tree_2d) :: branch_full_tree
+  type(reactive_amr_eb_patch_tree_2d) :: time_tree, time_reference_tree
+  type(reactive_amr_eb_patch_tree_2d) :: limited_tree, limited_snapshot
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: level_one_state(:, :, :)
   real(dp), allocatable :: level_one_temperature(:, :)
@@ -86,6 +91,9 @@ program test_amr_eb_multilevel_transport_2d
   real(dp) :: branch_y_lower, branch_y_upper
   real(dp) :: branch_dx, branch_dy, branch_interval
   real(dp) :: full_interval
+  real(dp) :: hydro_dt, time_dt, time_value, time_final
+  real(dp) :: time_minimum_dt, time_reference, reference_minimum_dt
+  real(dp) :: reference_theta, step_dt, step_theta, time_tolerance
   real(dp) :: base_density, root_dt, one_dt, two_dt, diffusivity
   real(dp) :: interval, initial_span, final_span, minimum_theta, scale
   real(dp) :: tree_minimum_theta
@@ -94,6 +102,7 @@ program test_amr_eb_multilevel_transport_2d
   integer, allocatable :: level_advances(:)
   integer, allocatable :: chemistry_advances(:), transport_advances(:)
   integer, allocatable :: hydro_advances(:)
+  integer :: time_steps, reference_steps, advanced_steps
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -537,6 +546,134 @@ program test_amr_eb_multilevel_transport_2d
       branch_integral_after - branch_integral_before)) <= &
       3.0e-8_dp * scale, &
     "four-level branching patch-tree full-physics conservation")
+
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, tree_topology, &
+    time_reference_tree, ok)
+  call require(ok, "three-level time-loop reference state")
+  time_reference_tree%levels(2)%patches(1)%state = level_one_state
+  time_reference_tree%levels(2)%patches(1)%temperature = &
+    level_one_temperature
+  time_reference_tree%levels(3)%patches(1)%state = level_two_state
+  time_reference_tree%levels(3)%patches(1)%temperature = &
+    level_two_temperature
+  time_tree = time_reference_tree
+  limited_snapshot = time_reference_tree
+  call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
+    species, time_reference_tree, 0.004_dp, hydro_dt, ok)
+  call require(ok, "three-level hydro CFL timestep")
+  call compute_reactive_amr_eb_patch_tree_timestep_2d( &
+    species, transport, time_reference_tree, 0.004_dp, 0.30_dp, &
+    .false., .true., .false., time_dt, ok)
+  scale = max(1.0_dp, abs(hydro_dt), abs(root_dt), &
+    abs(real(ratio, dp) * one_dt), &
+    abs(real(ratio * ratio, dp) * two_dt))
+  call require(ok .and. abs(time_dt - min(hydro_dt, root_dt, &
+      real(ratio, dp) * one_dt, &
+      real(ratio * ratio, dp) * two_dt)) <= &
+      128.0_dp * epsilon(1.0_dp) * scale, &
+    "three-level combined hydro-transport timestep")
+
+  if (allocated(chemistry_advances)) deallocate(chemistry_advances)
+  if (allocated(transport_advances)) deallocate(transport_advances)
+  if (allocated(hydro_advances)) deallocate(hydro_advances)
+  allocate(chemistry_advances(time_reference_tree%level_count()))
+  allocate(transport_advances(time_reference_tree%level_count()))
+  allocate(hydro_advances(time_reference_tree%level_count()))
+  time_final = 1.25_dp * time_dt
+  time_reference = 0.0_dp
+  reference_steps = 0
+  reference_minimum_dt = 0.0_dp
+  reference_theta = 1.0_dp
+  time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+    max(tiny(1.0_dp), abs(time_final))
+  do while (time_final - time_reference > time_tolerance)
+    call compute_reactive_amr_eb_patch_tree_timestep_2d( &
+      species, transport, time_reference_tree, 0.004_dp, 0.30_dp, &
+      .false., .true., .false., step_dt, ok)
+    call require(ok, "manual time-loop timestep")
+    step_dt = min(step_dt, time_final - time_reference)
+    call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+      species, reactions, transport, time_reference_tree, "hllc", "pcm", &
+      "mc", config%state_redist_max_order, step_dt, .true., 1.0e-7_dp, &
+      1.0e-13_dp, .false., .true., .false., .false., boundaries, &
+      config%state_redist_target_volume_fraction, step_theta, ok, &
+      failure_context, chemistry_advances, transport_advances, &
+      hydro_advances)
+    call require(ok, "manual full-physics time-loop step: " // &
+      trim(failure_context))
+    time_reference = time_reference + step_dt
+    reference_steps = reference_steps + 1
+    if (reference_minimum_dt == 0.0_dp) then
+      reference_minimum_dt = step_dt
+    else
+      reference_minimum_dt = min(reference_minimum_dt, step_dt)
+    end if
+    reference_theta = min(reference_theta, step_theta)
+  end do
+  time_reference = time_final
+  call require(reference_steps == 2, "manual two-step reference schedule")
+
+  time_value = 0.0_dp
+  time_steps = 0
+  call advance_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, time_tree, "hllc", "pcm", "mc", &
+    config%state_redist_max_order, time_value, time_final, time_steps, 8, &
+    0.004_dp, 0.30_dp, .true., 1.0e-7_dp, 1.0e-13_dp, .false., .true., &
+    .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, time_minimum_dt, &
+    tree_minimum_theta, ok, failure_context, advanced_steps, &
+    chemistry_advances, transport_advances, hydro_advances)
+  call require(ok .and. time_value == time_final .and. &
+    time_steps == reference_steps .and. advanced_steps == reference_steps &
+    .and. all(chemistry_advances == reference_steps * [2, 2, 2]) .and. &
+    all(transport_advances == reference_steps * [4, 8, 16]) .and. &
+    all(hydro_advances == reference_steps * [1, 2, 4]) .and. &
+    abs(time_minimum_dt - reference_minimum_dt) <= &
+      128.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(reference_minimum_dt)) .and. &
+    tree_minimum_theta == reference_theta .and. &
+    tree_solutions_match(time_tree, time_reference_tree), &
+    "three-level adaptive time-loop parity: " // trim(failure_context))
+
+  limited_tree = limited_snapshot
+  time_value = 0.0_dp
+  time_steps = 0
+  call advance_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, limited_tree, "hllc", "pcm", "mc", &
+    config%state_redist_max_order, time_value, time_final, time_steps, 1, &
+    0.004_dp, 0.30_dp, .true., 1.0e-7_dp, 1.0e-13_dp, .false., .true., &
+    .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, time_minimum_dt, &
+    tree_minimum_theta, ok, failure_context, advanced_steps, &
+    chemistry_advances, transport_advances, hydro_advances)
+  call require(.not. ok .and. trim(failure_context) == "maximum steps" &
+    .and. time_steps == 1 .and. advanced_steps == 1 .and. &
+    time_value > 0.0_dp .and. time_value < time_final .and. &
+    time_minimum_dt == time_value .and. &
+    all(chemistry_advances == [2, 2, 2]) .and. &
+    all(transport_advances == [4, 8, 16]) .and. &
+    all(hydro_advances == [1, 2, 4]) .and. &
+    .not. tree_solutions_match(limited_tree, limited_snapshot), &
+    "time-loop maximum-step committed prefix")
+
+  limited_tree = limited_snapshot
+  time_value = 0.0_dp
+  time_steps = 0
+  call advance_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, limited_tree, "unknown", "pcm", "mc", &
+    config%state_redist_max_order, time_value, time_final, time_steps, 8, &
+    0.004_dp, 0.30_dp, .true., 1.0e-7_dp, 1.0e-13_dp, .false., .true., &
+    .false., .false., boundaries, &
+    config%state_redist_target_volume_fraction, time_minimum_dt, &
+    tree_minimum_theta, ok, failure_context, advanced_steps, &
+    chemistry_advances, transport_advances, hydro_advances)
+  call require(.not. ok .and. time_value == 0.0_dp .and. time_steps == 0 &
+    .and. advanced_steps == 0 .and. time_minimum_dt == 0.0_dp .and. &
+    tree_minimum_theta == 1.0_dp .and. all(chemistry_advances == 0) .and. &
+    all(transport_advances == 0) .and. all(hydro_advances == 0) .and. &
+    tree_solutions_match(limited_tree, limited_snapshot), &
+    "time-loop failed first-step rollback")
 
   write(*, '(a)') "test_amr_eb_multilevel_transport_2d: PASS"
 
