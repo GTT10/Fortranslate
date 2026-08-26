@@ -26,6 +26,7 @@ program pelef_mpi_eb_amr_patch_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
     reactive_eb_patch_set_2d, build_amr_eb_regrid_plan_collection_2d, &
+    plan_reactive_eb_temperature_regrid_collection_2d, &
     initialize_reactive_eb_patch_set_2d, &
     average_down_reactive_eb_patch_set_2d, &
     advance_reactive_eb_patch_set_hydro_2d, &
@@ -64,8 +65,10 @@ program pelef_mpi_eb_amr_patch_2d
   type(eb_geometry_2d), allocatable :: fine_geometries(:)
   type(amr_eb_patch_2d) :: geometry_patch
   type(amr_eb_tagging_criteria_2d) :: criteria
+  type(amr_eb_tagging_criteria_2d) :: scheduled_criteria
   type(amr_eb_regrid_plan_collection_2d) :: collection
   type(amr_eb_regrid_plan_collection_2d) :: regrid_collection
+  type(amr_eb_regrid_plan_collection_2d) :: scheduled_collection
   type(reactive_eb_patch_set_2d) :: patch_set, local_patch_set
   type(reactive_eb_patch_set_2d) :: synchronized_patch_set
   type(reactive_eb_patch_set_2d) :: materialized_patch_set
@@ -74,6 +77,8 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: rejected_distribution
+  type(mpi_amr_eb_patch_distribution_2d) :: scheduled_distribution
+  type(mpi_amr_eb_patch_distribution_2d) :: scheduled_failed_distribution
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_patch_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: invalid_sparse_patch_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_chemistry_set
@@ -94,6 +99,8 @@ program pelef_mpi_eb_amr_patch_2d
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_time_loop_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_limited_time_loop_set
   type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_regrid_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_set
+  type(mpi_amr_eb_sparse_patch_set_2d) :: sparse_scheduled_failed_set
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -114,6 +121,10 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: regrid_start_set
   type(reactive_eb_patch_set_2d) :: regrid_reference_set
   type(reactive_eb_patch_set_2d) :: sparse_regrid_template
+  type(reactive_eb_patch_set_2d) :: scheduled_start_set
+  type(reactive_eb_patch_set_2d) :: scheduled_reference_set
+  type(reactive_eb_patch_set_2d) :: scheduled_template
+  type(reactive_eb_patch_set_2d) :: scheduled_failed_template
   real(dp) :: coarse_level_set(0:coarse_nx, 0:coarse_ny)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -165,6 +176,10 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: regrid_start_temperature(:, :)
   real(dp), allocatable :: regrid_reference_state(:, :, :)
   real(dp), allocatable :: regrid_reference_temperature(:, :)
+  real(dp), allocatable :: scheduled_start_state(:, :, :)
+  real(dp), allocatable :: scheduled_start_temperature(:, :)
+  real(dp), allocatable :: scheduled_reference_state(:, :, :)
+  real(dp), allocatable :: scheduled_reference_temperature(:, :)
   type(eb_geometry_2d), allocatable :: regrid_fine_geometries(:)
   logical, allocatable :: active_mask(:, :)
   logical, allocatable :: restriction_recipients(:)
@@ -180,6 +195,10 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: time_loop_initial_dt, time_loop_final_time, time_loop_time
   real(dp) :: time_loop_minimum_dt, time_loop_reference_minimum_dt
   real(dp) :: time_loop_reference_theta
+  real(dp) :: scheduled_initial_dt, scheduled_final_time
+  real(dp) :: scheduled_time, scheduled_minimum_dt
+  real(dp) :: scheduled_reference_minimum_dt, scheduled_reference_theta
+  real(dp) :: scheduled_theta
   logical :: tags(coarse_nx, coarse_ny), regrid_tags(coarse_nx, coarse_ny)
   logical :: ok, topology_changed
   integer :: child, component, global_advances, i, ierr, j, owner
@@ -194,6 +213,12 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: expected_global_hydro, expected_global_transport
   integer :: time_loop_steps, time_loop_reference_steps
   integer :: time_loop_advanced_steps
+  integer :: scheduled_steps, scheduled_reference_steps
+  integer :: scheduled_advanced_steps, scheduled_regrid_evaluations
+  integer :: scheduled_reference_evaluations, scheduled_regrids
+  integer :: scheduled_reference_regrids, scheduled_timestep_transfers
+  integer :: scheduled_regrid_transfers, global_scheduled_regrid_transfers
+  integer :: failing_geometry_calls
   integer :: inconsistent_exponent
   integer :: sparse_local_values, sparse_global_values
   integer :: sparse_expected_local_values, sparse_expected_global_values
@@ -1628,6 +1653,173 @@ program pelef_mpi_eb_amr_patch_2d
       "MPI EB AMR sparse time-loop serial child parity", rank)
   end do
 
+  allocate(scheduled_start_state, mold=coarse_state)
+  allocate(scheduled_start_temperature, mold=coarse_temperature)
+  call initialize_scheduled_regrid_state( &
+    scheduled_start_state, scheduled_start_temperature, ok)
+  call assert_all(ok, "serial EB AMR scheduled-regrid state", rank)
+  call initialize_reactive_eb_patch_set_2d( &
+    species, scheduled_start_state, scheduled_start_temperature, &
+    coarse_geometry, fine_geometries, collection, ratio, &
+    scheduled_start_set, ok)
+  call assert_all(ok .and. scheduled_start_set%patch_count() == 2, &
+    "serial EB AMR scheduled-regrid hierarchy", rank)
+  scheduled_criteria%relative_gradient_threshold = 1.0e-4_dp
+  scheduled_criteria%absolute_gradient_threshold = 1.0e-3_dp
+  scheduled_criteria%scale_floor = 1.0_dp
+  scheduled_criteria%buffer_cells = 0
+  scheduled_criteria%minimum_patch_cells_x = 5
+  scheduled_criteria%minimum_patch_cells_y = 5
+  scheduled_criteria%maximum_patch_gap_cells = 0
+  call plan_reactive_eb_temperature_regrid_collection_2d( &
+    scheduled_start_temperature, coarse_geometry, scheduled_criteria, &
+    regrid_tags, scheduled_collection, ok)
+  call assert_all(ok .and. scheduled_collection%patch_count() >= 1, &
+    "serial EB AMR scheduled-regrid temperature tags", rank)
+  call compute_serial_full_physics_timestep( &
+    scheduled_start_state, scheduled_start_temperature, scheduled_start_set, &
+    scheduled_initial_dt, ok)
+  call assert_all(ok, "serial EB AMR scheduled-regrid timestep", rank)
+  scheduled_final_time = 1.01_dp * scheduled_initial_dt
+  allocate(scheduled_reference_state, mold=coarse_state)
+  allocate(scheduled_reference_temperature, mold=coarse_temperature)
+  call advance_serial_full_physics_to_time_with_regrid( &
+    scheduled_start_state, scheduled_start_temperature, &
+    scheduled_start_set, scheduled_final_time, 2, scheduled_criteria, &
+    scheduled_reference_state, scheduled_reference_temperature, &
+    scheduled_reference_set, scheduled_reference_steps, &
+    scheduled_reference_minimum_dt, scheduled_reference_theta, &
+    scheduled_reference_evaluations, scheduled_reference_regrids, ok)
+  call assert_all(ok .and. scheduled_reference_steps == 2 .and. &
+    scheduled_reference_evaluations == 1 .and. &
+    scheduled_reference_regrids == 1, &
+    "serial EB AMR scheduled-regrid reference", rank)
+
+  scheduled_distribution = distribution
+  scheduled_template = scheduled_start_set
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    scheduled_distribution, size(species), scheduled_start_state, &
+    scheduled_start_temperature, coarse_geometry, scheduled_template, &
+    sparse_scheduled_set, ok)
+  call assert_all(ok, "MPI EB AMR scheduled-regrid scatter", rank)
+  scheduled_time = 0.0_dp
+  scheduled_steps = 0
+  scheduled_regrid_evaluations = 0
+  scheduled_regrids = 0
+  call advance_sparse_owned_reactive_eb_patch_set_to_time_2d( &
+    species, reactions, transport, scheduled_distribution, &
+    sparse_scheduled_set, coarse_geometry, scheduled_template, "hllc", &
+    "pcm", "mc", 2, scheduled_time, scheduled_final_time, scheduled_steps, &
+    16, 0.35_dp, 0.20_dp, 1.0e-8_dp, 1.0e-14_dp, .true., .true., .true., &
+    .true., boundaries, ok, scheduled_minimum_dt, &
+    advanced_steps=scheduled_advanced_steps, &
+    minimum_transport_theta=scheduled_theta, &
+    local_timestep_root_transfers=scheduled_timestep_transfers, &
+    regrid_evaluations=scheduled_regrid_evaluations, &
+    regrids=scheduled_regrids, regrid_interval=2, &
+    regrid_criteria=scheduled_criteria, refinement_ratio=ratio, &
+    geometry_builder=build_scheduled_patch_geometry, &
+    local_regrid_root_transfers=scheduled_regrid_transfers)
+  call assert_all(ok .and. scheduled_time == scheduled_final_time .and. &
+    scheduled_steps == scheduled_reference_steps .and. &
+    scheduled_advanced_steps == scheduled_reference_steps .and. &
+    scheduled_regrid_evaluations == scheduled_reference_evaluations .and. &
+    scheduled_regrids == scheduled_reference_regrids .and. &
+    abs(scheduled_minimum_dt - scheduled_reference_minimum_dt) <= &
+      128.0_dp * epsilon(1.0_dp) * scheduled_reference_minimum_dt .and. &
+    abs(scheduled_theta - scheduled_reference_theta) <= &
+      5.0e-13_dp * max(1.0_dp, abs(scheduled_reference_theta)) .and. &
+    same_patch_topology(scheduled_template, scheduled_reference_set), &
+    "MPI EB AMR scheduled-regrid public control", rank)
+  call MPI_Allreduce( &
+    scheduled_regrid_transfers, global_scheduled_regrid_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    scheduled_timestep_transfers == &
+      scheduled_steps * expected_local_root_transfers .and. &
+    scheduled_regrid_transfers == expected_local_root_transfers .and. &
+    global_scheduled_regrid_transfers == expected_global_root_transfers, &
+    "MPI EB AMR scheduled-regrid root traffic", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    scheduled_distribution, sparse_scheduled_set, scheduled_start_state, &
+    scheduled_start_temperature, coarse_geometry, scheduled_template, &
+    materialized_coarse_state, materialized_coarse_temperature, &
+    materialized_patch_set, ok)
+  full_scale = max(1.0_dp, maxval(abs(scheduled_reference_state)))
+  call assert_all(ok .and. &
+    maxval(abs(materialized_coarse_state - scheduled_reference_state)) <= &
+      2.0e-10_dp * full_scale .and. &
+    maxval(abs(materialized_coarse_temperature - &
+      scheduled_reference_temperature)) <= 2.0e-10_dp * &
+        max(1.0_dp, maxval(abs(scheduled_reference_temperature))), &
+    "MPI EB AMR scheduled-regrid serial root parity", rank)
+  do child = 1, materialized_patch_set%patch_count()
+    call assert_all( &
+      maxval(abs(materialized_patch_set%children(child)%state - &
+        scheduled_reference_set%children(child)%state)) <= &
+          2.0e-10_dp * full_scale .and. &
+      maxval(abs(materialized_patch_set%children(child)%temperature - &
+        scheduled_reference_set%children(child)%temperature)) <= &
+          2.0e-10_dp * max(1.0_dp, maxval(abs( &
+            scheduled_reference_set%children(child)%temperature))), &
+      "MPI EB AMR scheduled-regrid serial child parity", rank)
+  end do
+
+  scheduled_failed_distribution = distribution
+  scheduled_failed_template = scheduled_start_set
+  call scatter_owned_reactive_eb_patch_set_2d( &
+    scheduled_failed_distribution, size(species), scheduled_start_state, &
+    scheduled_start_temperature, coarse_geometry, scheduled_failed_template, &
+    sparse_scheduled_failed_set, ok)
+  call assert_all(ok, "MPI EB AMR scheduled-regrid rollback scatter", rank)
+  scheduled_time = 0.0_dp
+  scheduled_steps = 0
+  scheduled_regrid_evaluations = 0
+  scheduled_regrids = 0
+  failing_geometry_calls = 0
+  call advance_sparse_owned_reactive_eb_patch_set_to_time_2d( &
+    species, reactions, transport, scheduled_failed_distribution, &
+    sparse_scheduled_failed_set, coarse_geometry, scheduled_failed_template, &
+    "hllc", "pcm", "mc", 2, scheduled_time, &
+    0.25_dp * scheduled_initial_dt, scheduled_steps, 1, 0.35_dp, 0.20_dp, &
+    1.0e-8_dp, 1.0e-14_dp, .true., .true., .true., .true., boundaries, ok, &
+    scheduled_minimum_dt, advanced_steps=scheduled_advanced_steps, &
+    local_timestep_root_transfers=scheduled_timestep_transfers, &
+    regrid_evaluations=scheduled_regrid_evaluations, &
+    regrids=scheduled_regrids, regrid_interval=1, &
+    regrid_criteria=scheduled_criteria, refinement_ratio=ratio, &
+    geometry_builder=reject_scheduled_patch_geometry, &
+    local_regrid_root_transfers=scheduled_regrid_transfers)
+  call assert_all(.not. ok .and. failing_geometry_calls >= 1 .and. &
+    scheduled_time == 0.0_dp .and. scheduled_steps == 0 .and. &
+    scheduled_advanced_steps == 0 .and. scheduled_minimum_dt == 0.0_dp .and. &
+    scheduled_timestep_transfers == 0 .and. &
+    scheduled_regrid_evaluations == 0 .and. scheduled_regrids == 0 .and. &
+    scheduled_regrid_transfers == 0 .and. &
+    scheduled_failed_distribution%child_count() == &
+      distribution%child_count() .and. &
+    all(scheduled_failed_distribution%child_owners == &
+      distribution%child_owners) .and. &
+    same_patch_topology(scheduled_failed_template, scheduled_start_set), &
+    "MPI EB AMR scheduled-regrid atomic failure", rank)
+  call materialize_owned_reactive_eb_patch_set_2d( &
+    scheduled_failed_distribution, sparse_scheduled_failed_set, &
+    scheduled_start_state, scheduled_start_temperature, coarse_geometry, &
+    scheduled_failed_template, materialized_coarse_state, &
+    materialized_coarse_temperature, materialized_patch_set, ok)
+  call assert_all(ok .and. &
+    all(materialized_coarse_state == scheduled_start_state) .and. &
+    all(materialized_coarse_temperature == scheduled_start_temperature), &
+    "MPI EB AMR scheduled-regrid failed root rollback", rank)
+  do child = 1, materialized_patch_set%patch_count()
+    call assert_all( &
+      all(materialized_patch_set%children(child)%state == &
+        scheduled_start_set%children(child)%state) .and. &
+      all(materialized_patch_set%children(child)%temperature == &
+        scheduled_start_set%children(child)%temperature), &
+      "MPI EB AMR scheduled-regrid failed child rollback", rank)
+  end do
+
   call scatter_owned_reactive_eb_patch_set_2d( &
     distribution, size(species), coarse_state, coarse_temperature, &
     coarse_geometry, patch_set, sparse_limited_time_loop_set, ok)
@@ -1867,6 +2059,210 @@ contains
       abs(time - target_time) <= tolerance .and. &
       ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
   end subroutine advance_serial_full_physics_to_time
+
+  subroutine initialize_scheduled_regrid_state( &
+      state, state_temperature, valid)
+    real(dp), intent(out) :: state(:, :, :), state_temperature(:, :)
+    logical, intent(out) :: valid
+
+    real(dp), allocatable :: cell_primitive(:), cell_state(:)
+    real(dp) :: cell_sound_speed, cell_temperature, pressure
+    integer :: local_i, local_j, local_species
+
+    valid = .false.
+    if (any(shape(state) /= [nvar, coarse_nx, coarse_ny]) .or. &
+        any(shape(state_temperature) /= [coarse_nx, coarse_ny])) return
+    allocate(cell_primitive(reactive_nprim(size(species))))
+    allocate(cell_state(nvar))
+    do local_j = 1, coarse_ny
+      do local_i = 1, coarse_nx
+        pressure = 135000.0_dp
+        if (local_i >= 8 .and. local_i <= 11 .and. &
+            local_j >= 8 .and. local_j <= 11) pressure = 1.04_dp * pressure
+        cell_primitive(1:5) = [0.31_dp, 0.0_dp, 0.0_dp, 0.0_dp, pressure]
+        do local_species = 1, size(species)
+          cell_primitive(reactive_mass_fraction_component(local_species)) = &
+            mass_fractions(local_species)
+        end do
+        call reactive_primitive_to_conserved( &
+          species, cell_primitive, cell_state, cell_temperature, &
+          cell_sound_speed, valid)
+        if (.not. valid) return
+        state(:, local_i, local_j) = cell_state
+        state_temperature(local_i, local_j) = cell_temperature
+      end do
+    end do
+    valid = all(ieee_is_finite(state)) .and. &
+      all(ieee_is_finite(state_temperature)) .and. &
+      all(state_temperature > 0.0_dp)
+  end subroutine initialize_scheduled_regrid_state
+
+  subroutine advance_serial_full_physics_to_time_with_regrid( &
+      start_state, start_temperature, start_set, target_time, &
+      regrid_interval, regrid_criteria, final_state, final_temperature, &
+      final_set, completed_steps, minimum_dt, minimum_theta, &
+      regrid_evaluations, regrids, valid)
+    real(dp), intent(in) :: start_state(:, :, :), start_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(in) :: start_set
+    real(dp), intent(in) :: target_time
+    integer, intent(in) :: regrid_interval
+    type(amr_eb_tagging_criteria_2d), intent(in) :: regrid_criteria
+    real(dp), intent(out) :: final_state(:, :, :), final_temperature(:, :)
+    type(reactive_eb_patch_set_2d), intent(out) :: final_set
+    integer, intent(out) :: completed_steps, regrid_evaluations, regrids
+    real(dp), intent(out) :: minimum_dt, minimum_theta
+    logical, intent(out) :: valid
+
+    type(amr_eb_regrid_plan_collection_2d) :: local_collection
+    type(reactive_eb_patch_set_2d) :: candidate_set, regridded_set
+    type(eb_geometry_2d), allocatable :: planned_geometries(:)
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp), allocatable :: regridded_state(:, :, :)
+    real(dp), allocatable :: regridded_temperature(:, :)
+    logical, allocatable :: local_tags(:, :)
+    real(dp) :: dt, local_theta, remaining, time, tolerance
+    logical :: changed
+    integer :: local_child
+    character(len=160) :: failure_context
+
+    final_state = start_state
+    final_temperature = start_temperature
+    final_set = start_set
+    completed_steps = 0
+    regrid_evaluations = 0
+    regrids = 0
+    minimum_dt = 0.0_dp
+    minimum_theta = 1.0_dp
+    valid = .false.
+    if (regrid_interval < 1 .or. &
+        .not. regrid_criteria%is_valid(coarse_nx, coarse_ny)) return
+    time = 0.0_dp
+    tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(target_time))
+    allocate(candidate_state, mold=start_state)
+    allocate(candidate_temperature, mold=start_temperature)
+    allocate(regridded_state, mold=start_state)
+    allocate(regridded_temperature, mold=start_temperature)
+    allocate(local_tags(coarse_nx, coarse_ny))
+    do
+      remaining = target_time - time
+      if (remaining <= tolerance) exit
+      if (completed_steps >= 16) return
+      call compute_serial_full_physics_timestep( &
+        final_state, final_temperature, final_set, dt, valid)
+      if (.not. valid) return
+      dt = min(dt, remaining)
+      call advance_reactive_eb_patch_set_strang_2d( &
+        species, reactions, final_state, final_temperature, coarse_geometry, &
+        final_set, "hllc", "pcm", "mc", 2, dt, .true., 1.0e-8_dp, &
+        1.0e-14_dp, candidate_state, candidate_temperature, candidate_set, &
+        valid, target_volume_fraction=0.5_dp, &
+        failure_context=failure_context, transport=transport, &
+        transport_enabled=.true., viscosity_enabled=.true., &
+        thermal_conduction_enabled=.true., species_diffusion_enabled=.true., &
+        barodiffusion_enabled=.true., minimum_transport_theta=local_theta, &
+        boundaries=boundaries)
+      if (.not. valid) return
+      if (modulo(completed_steps + 1, regrid_interval) == 0) then
+        call plan_reactive_eb_temperature_regrid_collection_2d( &
+          candidate_temperature, coarse_geometry, regrid_criteria, &
+          local_tags, local_collection, valid)
+        if (.not. valid) return
+        if (allocated(planned_geometries)) deallocate(planned_geometries)
+        allocate(planned_geometries(local_collection%patch_count()))
+        do local_child = 1, local_collection%patch_count()
+          call build_scheduled_patch_geometry( &
+            coarse_geometry, &
+            local_collection%plans(local_child)%coarse_i_lower, &
+            local_collection%plans(local_child)%coarse_i_upper, &
+            local_collection%plans(local_child)%coarse_j_lower, &
+            local_collection%plans(local_child)%coarse_j_upper, ratio, &
+            planned_geometries(local_child), valid)
+          if (.not. valid) return
+        end do
+        call regrid_reactive_eb_patch_set_2d( &
+          species, candidate_state, candidate_temperature, coarse_geometry, &
+          candidate_set, planned_geometries, local_collection, ratio, &
+          regridded_state, regridded_temperature, regridded_set, valid)
+        if (.not. valid) return
+        changed = .not. same_patch_topology(candidate_set, regridded_set)
+        candidate_state = regridded_state
+        candidate_temperature = regridded_temperature
+        candidate_set = regridded_set
+        regrid_evaluations = regrid_evaluations + 1
+        if (changed) regrids = regrids + 1
+      end if
+      final_state = candidate_state
+      final_temperature = candidate_temperature
+      final_set = candidate_set
+      time = time + dt
+      completed_steps = completed_steps + 1
+      if (minimum_dt == 0.0_dp) then
+        minimum_dt = dt
+      else
+        minimum_dt = min(minimum_dt, dt)
+      end if
+      minimum_theta = min(minimum_theta, local_theta)
+    end do
+    valid = completed_steps >= 1 .and. &
+      abs(time - target_time) <= tolerance .and. &
+      ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+  end subroutine advance_serial_full_physics_to_time_with_regrid
+
+  pure logical function same_patch_topology(first, second) result(same)
+    type(reactive_eb_patch_set_2d), intent(in) :: first, second
+
+    integer :: local_child
+
+    same = first%patch_count() == second%patch_count()
+    if (.not. same) return
+    do local_child = 1, first%patch_count()
+      same = all([ &
+        first%children(local_child)%patch%coarse_i_lower, &
+        first%children(local_child)%patch%coarse_i_upper, &
+        first%children(local_child)%patch%coarse_j_lower, &
+        first%children(local_child)%patch%coarse_j_upper, &
+        first%children(local_child)%patch%refinement_ratio] == [ &
+        second%children(local_child)%patch%coarse_i_lower, &
+        second%children(local_child)%patch%coarse_i_upper, &
+        second%children(local_child)%patch%coarse_j_lower, &
+        second%children(local_child)%patch%coarse_j_upper, &
+        second%children(local_child)%patch%refinement_ratio])
+      if (.not. same) return
+    end do
+  end function same_patch_topology
+
+  subroutine build_scheduled_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    logical, intent(out) :: valid
+
+    type(amr_eb_patch_2d) :: local_patch
+
+    call build_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, local_patch, valid)
+  end subroutine build_scheduled_patch_geometry
+
+  subroutine reject_scheduled_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    logical, intent(out) :: valid
+
+    failing_geometry_calls = failing_geometry_calls + 1
+    fine_geometry = eb_geometry_2d()
+    valid = root_geometry%is_valid() .and. i_lower <= i_upper .and. &
+      j_lower <= j_upper .and. refinement_ratio >= 2 .and. .false.
+  end subroutine reject_scheduled_patch_geometry
 
   subroutine build_patch_geometry( &
       root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
