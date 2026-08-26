@@ -1277,13 +1277,22 @@ child payload crosses into a complete replicated hierarchy. The caller state,
 all operator counts, and the transport limiter minimum remain unchanged until
 every component transaction succeeds.
 
+In `0.122.0`, direct sparse average-down replaces its per-child communicator
+broadcast with targeted point-to-point restriction transfer. Each child owner
+computes one coarse-footprint buffer, derives the distinct root tile owners
+whose y ranges intersect that footprint, and sends only to remote members of
+that set. A recipient applies the same conserved restriction and owner-local
+EOS recovery as before; unrelated ranks neither allocate nor receive the
+buffer. Transfer counts and sparse state publish only after collective
+acceptance.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-sparse EB field storage, point-to-point payloads, and distributed EB flux
-registers remain outside this subsystem.
+targeted root-physics payloads, and distributed EB flux registers remain
+outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

@@ -38,6 +38,8 @@ module mpi_amr_eb_patch_2d_mod
   implicit none
   private
 
+  integer, parameter :: sparse_restriction_tag = 2701
+
   type, public :: mpi_amr_eb_root_tile_2d
     integer :: owner = -1
     integer :: i_lower = 1
@@ -780,15 +782,69 @@ contains
     ok = global_ok .and. accepted
   end subroutine close_sparse_cut_patch_set_conservation_2d
 
+  subroutine transfer_sparse_restriction_to_root_owners_2d( &
+      distribution, child_owner, coarse_j_lower, coarse_j_upper, nvar, &
+      coarse_width, restricted_state, local_transfers, ok)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    integer, intent(in) :: child_owner, coarse_j_lower, coarse_j_upper
+    integer, intent(in) :: nvar, coarse_width
+    real(dp), allocatable, intent(inout) :: restricted_state(:, :, :)
+    integer, intent(inout) :: local_transfers
+    logical, intent(out) :: ok
+
+    type(MPI_Status) :: status
+    logical, allocatable :: recipients(:)
+    integer :: ierr, recipient, tile, value_count
+
+    ok = .false.
+    if (child_owner < 0 .or. child_owner >= distribution%nranks .or. &
+        coarse_j_lower < 1 .or. coarse_j_upper < coarse_j_lower .or. &
+        nvar < 1 .or. coarse_width < 1) return
+    allocate(recipients(distribution%nranks), source=.false.)
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%j_upper < coarse_j_lower .or. &
+          distribution%root_tiles(tile)%j_lower > coarse_j_upper) cycle
+      recipient = distribution%root_tiles(tile)%owner
+      if (recipient < 0 .or. recipient >= distribution%nranks) return
+      recipients(recipient + 1) = .true.
+    end do
+    if (.not. any(recipients)) return
+    value_count = nvar * coarse_width * &
+      (coarse_j_upper - coarse_j_lower + 1)
+
+    if (distribution%rank == child_owner) then
+      if (.not. allocated(restricted_state)) return
+      if (size(restricted_state) /= value_count) return
+      do recipient = 0, distribution%nranks - 1
+        if (recipient == child_owner .or. &
+            .not. recipients(recipient + 1)) cycle
+        call MPI_Send( &
+          restricted_state, value_count, MPI_DOUBLE_PRECISION, recipient, &
+          sparse_restriction_tag, distribution%comm, ierr)
+        if (ierr /= MPI_SUCCESS) return
+        local_transfers = local_transfers + 1
+      end do
+    else if (recipients(distribution%rank + 1)) then
+      allocate(restricted_state( &
+        nvar, coarse_width, coarse_j_upper - coarse_j_lower + 1))
+      call MPI_Recv( &
+        restricted_state, value_count, MPI_DOUBLE_PRECISION, child_owner, &
+        sparse_restriction_tag, distribution%comm, status, ierr)
+      if (ierr /= MPI_SUCCESS) return
+    end if
+    ok = .true.
+  end subroutine transfer_sparse_restriction_to_root_owners_2d
+
   subroutine average_down_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
-      patch_set_template, ok)
+      patch_set_template, ok, local_restriction_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
     type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
     type(eb_geometry_2d), intent(in) :: coarse_geometry
     type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
     logical, intent(out) :: ok
+    integer, intent(out), optional :: local_restriction_transfers
 
     type(mpi_amr_eb_sparse_patch_set_2d) :: backup, candidate
     real(dp), allocatable :: primitive(:), restricted_state(:, :, :)
@@ -798,9 +854,12 @@ contains
     integer :: coarse_j_lower, coarse_j_upper, component, fine_i_lower
     integer :: fine_i_upper, fine_j_lower, fine_j_upper, ierr, local_i
     integer :: local_j, nspecies, nspecies_maximum, nspecies_minimum
-    integer :: owner, ratio, tile
+    integer :: owner, ratio, tile, transfers
 
     ok = .false.
+    transfers = 0
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = 0
     local_ok = size(species) >= 1 .and. &
       sparse_patch_set%nvar == reactive_nvar(size(species)) .and. &
       sparse_patch_set%is_valid( &
@@ -830,14 +889,13 @@ contains
         patch_set_template%children(child)%patch%coarse_j_lower
       coarse_j_upper = &
         patch_set_template%children(child)%patch%coarse_j_upper
-      allocate(restricted_state( &
-        candidate%nvar, coarse_i_upper - coarse_i_lower + 1, &
-        coarse_j_upper - coarse_j_lower + 1))
-      restricted_state = 0.0_dp
       owner = distribution%child_owner(child)
       ratio = &
         patch_set_template%children(child)%patch%refinement_ratio
       if (distribution%rank == owner) then
+        allocate(restricted_state( &
+          candidate%nvar, coarse_i_upper - coarse_i_lower + 1, &
+          coarse_j_upper - coarse_j_lower + 1), source=0.0_dp)
         do coarse_j = coarse_j_lower, coarse_j_upper
           local_j = coarse_j - coarse_j_lower + 1
           fine_j_lower = (coarse_j - coarse_j_lower) * ratio + 1
@@ -868,17 +926,26 @@ contains
           end do
         end do
       end if
-      call MPI_Bcast( &
-        restricted_state, size(restricted_state), MPI_DOUBLE_PRECISION, &
-        owner, distribution%comm, ierr)
-      if (ierr /= MPI_SUCCESS) then
+      call transfer_sparse_restriction_to_root_owners_2d( &
+        distribution, owner, coarse_j_lower, coarse_j_upper, &
+        candidate%nvar, coarse_i_upper - coarse_i_lower + 1, &
+        restricted_state, transfers, local_ok)
+      if (.not. local_ok) then
         sparse_patch_set = backup
         return
       end if
 
-      entity_ok = all(ieee_is_finite(restricted_state))
+      entity_ok = .true.
+      if (allocated(restricted_state)) &
+        entity_ok = all(ieee_is_finite(restricted_state))
       do tile = 1, distribution%root_tile_count()
         if (.not. distribution%root_tile_is_local(tile)) cycle
+        if (distribution%root_tiles(tile)%j_upper < coarse_j_lower .or. &
+            distribution%root_tiles(tile)%j_lower > coarse_j_upper) cycle
+        if (.not. allocated(restricted_state)) then
+          entity_ok = .false.
+          cycle
+        end if
         do coarse_j = max( &
             distribution%root_tiles(tile)%j_lower, &
             coarse_j_lower), &
@@ -919,7 +986,7 @@ contains
         sparse_patch_set = backup
         return
       end if
-      deallocate(restricted_state)
+      if (allocated(restricted_state)) deallocate(restricted_state)
     end do
 
     local_ok = candidate%is_valid( &
@@ -932,12 +999,14 @@ contains
     end if
     sparse_patch_set = candidate
     ok = .true.
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = transfers
   end subroutine average_down_sparse_owned_reactive_eb_patch_set_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
       species, reactions, interval, relative_tolerance, absolute_tolerance, &
       distribution, sparse_patch_set, coarse_geometry, patch_set_template, &
-      ok, local_entity_advances)
+      ok, local_entity_advances, local_restriction_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: interval, relative_tolerance, absolute_tolerance
@@ -947,18 +1016,22 @@ contains
     type(reactive_eb_patch_set_2d), intent(in) :: patch_set_template
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_entity_advances
+    integer, intent(out), optional :: local_restriction_transfers
 
     type(mpi_amr_eb_sparse_patch_set_2d) :: backup, candidate
     real(dp) :: controls(3), control_maximum(3), control_minimum(3)
     logical, allocatable :: active_mask(:, :)
     logical :: accepted, entity_ok, global_ok, local_ok
-    integer :: advances, child, ierr, integer_controls(2)
+    integer :: advances, average_down_transfers, child, ierr
+    integer :: integer_controls(2)
     integer :: integer_maximum(2), integer_minimum(2)
     integer :: j_lower, j_upper, tile
 
     ok = .false.
     advances = 0
     if (present(local_entity_advances)) local_entity_advances = 0
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = 0
     controls = [interval, relative_tolerance, absolute_tolerance]
     integer_controls = [size(species), size(reactions)]
     local_ok = interval >= 0.0_dp .and. relative_tolerance > 0.0_dp .and. &
@@ -1041,7 +1114,7 @@ contains
 
     call average_down_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, candidate, coarse_geometry, &
-      patch_set_template, local_ok)
+      patch_set_template, local_ok, average_down_transfers)
     if (.not. local_ok) then
       sparse_patch_set = backup
       return
@@ -1049,6 +1122,8 @@ contains
     sparse_patch_set = candidate
     ok = .true.
     if (present(local_entity_advances)) local_entity_advances = advances
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = average_down_transfers
   end subroutine advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
 
   subroutine advance_sparse_owned_reactive_eb_patch_set_hydro_2d( &

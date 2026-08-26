@@ -679,6 +679,8 @@ Required capabilities:
   cut-interface conservation closure (`0.120.0`)
 - [x] end-to-end sparse MPI EB AMR `R-T-H-T-R` composition without a
   replicated fine-child compatibility window (`0.121.0`)
+- [x] targeted point-to-point sparse EB child restriction only to intersecting
+  root tile owners with exact transfer accounting (`0.122.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

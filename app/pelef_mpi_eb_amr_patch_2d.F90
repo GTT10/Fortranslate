@@ -140,6 +140,7 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp), allocatable :: full_failed_backup_state(:, :, :)
   real(dp), allocatable :: full_failed_backup_temperature(:, :)
   logical, allocatable :: active_mask(:, :)
+  logical, allocatable :: restriction_recipients(:)
   real(dp) :: mole_fractions(7), x, y, temperature, sound_speed, factor
   real(dp) :: chemistry_interval, chemistry_change, state_scale
   real(dp) :: hydro_dt, hydro_change, hydro_scale
@@ -148,7 +149,7 @@ program pelef_mpi_eb_amr_patch_2d
   real(dp) :: child_sound_speed, child_temperature
   real(dp) :: full_reference_theta, full_theta, full_scale, full_change
   logical :: tags(coarse_nx, coarse_ny), ok
-  integer :: child, component, global_advances, i, ierr, j
+  integer :: child, component, global_advances, i, ierr, j, owner
   integer :: local_advances, nvar, rank, nranks, tile
   integer :: expected_global_advances, expected_local_advances
   integer :: local_chemistry_advances, local_hydro_advances
@@ -161,6 +162,9 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: inconsistent_exponent
   integer :: sparse_local_values, sparse_global_values
   integer :: sparse_expected_local_values, sparse_expected_global_values
+  integer :: local_restriction_transfers, global_restriction_transfers
+  integer :: expected_local_restriction_transfers
+  integer :: expected_global_restriction_transfers
   character(len=160) :: full_failure_context
 
   call MPI_Init(ierr)
@@ -464,10 +468,32 @@ program pelef_mpi_eb_amr_patch_2d
     distribution, size(species), coarse_state, coarse_temperature, &
     coarse_geometry, patch_set, sparse_chemistry_set, ok)
   call assert_all(ok, "MPI EB AMR sparse chemistry scatter", rank)
+  allocate(restriction_recipients(nranks))
+  expected_local_restriction_transfers = 0
+  expected_global_restriction_transfers = 0
+  do child = 1, distribution%child_count()
+    restriction_recipients = .false.
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%j_upper < &
+          patch_set%children(child)%patch%coarse_j_lower .or. &
+          distribution%root_tiles(tile)%j_lower > &
+          patch_set%children(child)%patch%coarse_j_upper) cycle
+      owner = distribution%root_tiles(tile)%owner
+      restriction_recipients(owner + 1) = .true.
+    end do
+    owner = distribution%child_owner(child)
+    restriction_recipients(owner + 1) = .false.
+    expected_global_restriction_transfers = &
+      expected_global_restriction_transfers + &
+      count(restriction_recipients)
+    if (rank == owner) expected_local_restriction_transfers = &
+      expected_local_restriction_transfers + &
+      count(restriction_recipients)
+  end do
   call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
     species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
     distribution, sparse_chemistry_set, coarse_geometry, patch_set, ok, &
-    local_advances)
+    local_advances, local_restriction_transfers)
   call assert_all(ok .and. sparse_chemistry_set%is_valid( &
     distribution, coarse_geometry, patch_set) .and. &
     int(sparse_chemistry_set%local_value_count()) == &
@@ -481,6 +507,15 @@ program pelef_mpi_eb_amr_patch_2d
     global_advances == distribution%root_tile_count() + &
       distribution%child_count(), &
     "MPI EB AMR sparse chemistry owner accounting", rank)
+  call MPI_Allreduce( &
+    local_restriction_transfers, global_restriction_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_restriction_transfers == &
+      expected_local_restriction_transfers .and. &
+    global_restriction_transfers == &
+      expected_global_restriction_transfers, &
+    "MPI EB AMR targeted sparse restriction accounting", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     distribution, sparse_chemistry_set, coarse_state, coarse_temperature, &
     coarse_geometry, patch_set, materialized_coarse_state, &
@@ -578,8 +613,9 @@ program pelef_mpi_eb_amr_patch_2d
   call advance_sparse_owned_reactive_eb_patch_set_chemistry_2d( &
     species, reactions, chemistry_interval, 1.0e-8_dp, 1.0e-14_dp, &
     distribution, sparse_failed_set, coarse_geometry, patch_set, ok, &
-    local_advances)
+    local_advances, local_restriction_transfers)
   call assert_all(.not. ok .and. local_advances == 0 .and. &
+    local_restriction_transfers == 0 .and. &
     sparse_failed_set%local_value_count() == &
       sparse_failed_backup_set%local_value_count(), &
     "MPI EB AMR late sparse chemistry rollback", rank)
@@ -603,8 +639,9 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ok, "MPI EB AMR sparse chemistry child rollback", rank)
 
   call average_down_sparse_owned_reactive_eb_patch_set_2d( &
-    species, distribution, sparse_failed_set, coarse_geometry, patch_set, ok)
-  call assert_all(.not. ok .and. &
+    species, distribution, sparse_failed_set, coarse_geometry, patch_set, &
+    ok, local_restriction_transfers)
+  call assert_all(.not. ok .and. local_restriction_transfers == 0 .and. &
     sparse_failed_set%local_value_count() == &
       sparse_failed_backup_set%local_value_count(), &
     "MPI EB AMR direct sparse average-down rejection", rank)

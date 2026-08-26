@@ -1958,3 +1958,19 @@ but the caller's local sparse fields must remain bitwise unchanged, all three
 published operator counts must remain zero, and the limiter fallback must
 remain exactly one. The gate runs in GNU Fortran Release and bounds/FPE-checked
 Debug configurations before the complete 208-test regression.
+
+## 0.122.0 targeted sparse MPI reactive EB AMR average-down gates
+
+For every child, derive the unique root tile owners whose row bands intersect
+its coarse footprint, excluding the child owner itself. The child owner must
+report exactly one point-to-point restriction transfer per remaining owner;
+the communicator sum must equal the independently computed recipient count at
+one, two, four, and eight ranks. With one rank the count must be zero.
+
+The chemistry path that consumes this average-down must retain its exact sparse
+stored-value count and reproduce serial root and child state and temperature
+bitwise. A direct average-down rejection from finite negative child density may
+send candidate restrictions, but every local sparse field must remain bitwise
+unchanged and the published transfer count must remain zero. The gate runs in
+GNU Fortran Release and bounds/FPE-checked Debug configurations before the
+complete 208-test regression.
