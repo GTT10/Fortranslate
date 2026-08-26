@@ -1702,6 +1702,6 @@ unrefined parent cells with EOS recovery and mass/species closure validation.
 After the root recursion succeeds, one deepest-first synchronization restores
 all coarse representations before the candidate commits. A failed level
 advance, exterior fill, register operation, reflux, conservation closure, EOS
-recovery, or final validation leaves the accepted tree and published per-level
-advance counts unchanged. Chemistry, molecular transport, a public clock,
+recovery, or final validation leaves the accepted tree unchanged and returns
+zero per-level advance counts. Chemistry, molecular transport, a public clock,
 dynamic tags, checkpoint I/O, and MPI ownership remain separate.
