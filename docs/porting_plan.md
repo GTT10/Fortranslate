@@ -1042,6 +1042,20 @@ field parity, deterministic child order, owner work, conservation, clock,
 scheduled-regrid, and rollback gates at one, two, four, and eight ranks before
 the complete serial regression.
 
+## 0.152.0 owner-local hydro result gates
+
+Retain start, uncorrected-end, and current corrected hydro state/temperature on
+root tile owners. Route patch-plus-two state directly to child owners, extract
+the four-edge context there, and return reflux corrections directly to every
+intersecting tile owner in deterministic child order.
+
+Remove remote tile results, complete root hydro result allocation, root-owner
+support merge, and final row scatter. Require exact traffic to contain only
+finite-band halos and direct state, flux, and correction fragments. Preserve
+serial field parity, owner work, conservation, clock, scheduled-regrid, and
+rollback gates at one, two, four, and eight ranks before the complete serial
+regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

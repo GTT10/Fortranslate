@@ -2465,3 +2465,20 @@ Retain serial root/child field parity, deterministic overlapping-child
 correction, owner work, public clock, scheduled regridding, conservation, and
 late-failure rollback at one, two, four, and eight ranks in Release and bounds/
 FPE-checked Debug before the complete serial regression.
+
+## 0.152.0 owner-local hydro result gates
+
+Retain stage-start, uncorrected stage-end, and current corrected hydro state and
+temperature on root tile owners. Assemble each child's patch-plus-two state
+support from intersecting tile owners, extract the exterior context on the
+child, and return reflux corrections directly before assembling the next child.
+Require the state-support plus interface-flux value count to remain positive
+and smaller than the former complete root bundle.
+
+Remove tile-to-root state results, complete root hydro result allocation,
+root-owner correction merge, and final row scatter. Derive exact point-to-point
+traffic from finite-band halos and direct state, flux, and correction fragments
+only. Retain serial root/child fields, deterministic overlapping-child
+correction, owner work, public clock, scheduled regridding, conservation, and
+late-failure rollback at one, two, four, and eight ranks in Release and bounds/
+FPE-checked Debug before the complete serial regression.

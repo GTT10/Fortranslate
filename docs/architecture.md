@@ -1647,3 +1647,20 @@ root physics owner therefore allocates no complete hydro x/y flux array.
 Complete root state assembly, ordered corrected-support merge, and final row
 scatter remain because the root owner still extracts later child contexts and
 publishes the corrected root state.
+
+## Owner-local hydro result and direct state/support routing (`0.152.0`)
+
+Hydro root tiles retain stage-start, uncorrected stage-end, and current
+corrected state and temperature beside their owner-local flux records. For each
+child, intersecting tile owners send only patch-plus-two row fragments to the
+child owner. That owner assembles globally indexed start/end/corrected support,
+checks complete coverage, and extracts the established four-edge interpolation
+context locally.
+
+After child-local subcycling and reflux, corrected support returns directly to
+each intersecting root tile owner before the next child is assembled. Final
+corrected root rows publish locally, so sparse hydro has no complete root state,
+temperature, or flux result, no remote tile-result message, and no final root
+scatter. Finite-band halos, deterministic child order, direct flux fragments,
+and hierarchy-wide average-down remain unchanged. Superseded private root-
+bundle, root-context, correction, and scatter communication helpers are absent.

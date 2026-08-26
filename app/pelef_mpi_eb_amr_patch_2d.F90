@@ -50,7 +50,6 @@ program pelef_mpi_eb_amr_patch_2d
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
-    mpi_amr_eb_child_transport_state_context_value_count_2d, &
     mpi_amr_eb_child_transport_tile_state_support_value_count_2d, &
     mpi_amr_eb_child_coarse_flux_support_value_count_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
@@ -300,7 +299,7 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: local_root_transfers, global_root_transfers
   integer :: expected_local_root_transfers
   integer :: expected_global_root_transfers, root_owner
-  integer(int64) :: compact_hydro_child_values
+  integer(int64) :: direct_hydro_child_values
   integer(int64) :: legacy_hydro_root_bundle_values
   integer(int64) :: compact_transport_state_values
   integer(int64) :: compact_transport_flux_values
@@ -1550,16 +1549,16 @@ program pelef_mpi_eb_amr_patch_2d
     int(nvar, int64) * int(coarse_nx, int64) * &
       int(coarse_ny + 1, int64)
   do child = 1, distribution%child_count()
-    compact_hydro_child_values = &
-      mpi_amr_eb_child_transport_state_context_value_count_2d( &
+    direct_hydro_child_values = &
+      mpi_amr_eb_child_transport_tile_state_support_value_count_2d( &
         nvar, coarse_geometry, hydro_start_set%children(child)%geometry, &
         hydro_start_set%children(child)%patch) + &
       mpi_amr_eb_child_coarse_flux_support_value_count_2d( &
         nvar, coarse_geometry, hydro_start_set%children(child)%geometry, &
         hydro_start_set%children(child)%patch)
-    call assert_all(compact_hydro_child_values > 0_int64 .and. &
-      compact_hydro_child_values < legacy_hydro_root_bundle_values, &
-      "MPI EB AMR compact direct hydro child values", rank)
+    call assert_all(direct_hydro_child_values > 0_int64 .and. &
+      direct_hydro_child_values < legacy_hydro_root_bundle_values, &
+      "MPI EB AMR direct hydro tile child values", rank)
   end do
   expected_local_root_transfers = 0
   expected_global_root_transfers = 0
@@ -1585,24 +1584,24 @@ program pelef_mpi_eb_amr_patch_2d
       if (rank == distribution%root_tiles(source)%owner) &
         expected_local_root_transfers = expected_local_root_transfers + 1
     end do
-    if (owner == root_owner) cycle
-    expected_global_root_transfers = expected_global_root_transfers + 2
-    if (rank == owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 1
-    if (rank == root_owner) expected_local_root_transfers = &
-      expected_local_root_transfers + 1
   end do
   do child = 1, distribution%child_count()
     owner = distribution%child_owner(child)
-    if (owner /= root_owner) then
-      expected_global_root_transfers = expected_global_root_transfers + 2
-      if (rank == root_owner) expected_local_root_transfers = &
-        expected_local_root_transfers + 1
-      if (rank == owner) expected_local_root_transfers = &
-        expected_local_root_transfers + 1
-    end if
     do tile = 1, distribution%root_tile_count()
       source = distribution%root_tiles(tile)%owner
+      support_j_lower = max( &
+        1, hydro_start_set%children(child)%patch%coarse_j_lower - 2)
+      support_j_upper = min( &
+        coarse_ny, hydro_start_set%children(child)%patch%coarse_j_upper + 2)
+      if (max(support_j_lower, distribution%root_tiles(tile)%j_lower) <= &
+          min(support_j_upper, distribution%root_tiles(tile)%j_upper) .and. &
+          source /= owner) then
+        expected_global_root_transfers = expected_global_root_transfers + 2
+        if (rank == source) expected_local_root_transfers = &
+          expected_local_root_transfers + 1
+        if (rank == owner) expected_local_root_transfers = &
+          expected_local_root_transfers + 1
+      end if
       band_j_lower = max( &
         hydro_start_set%children(child)%patch%coarse_j_lower, &
         distribution%root_tiles(tile)%j_lower)
@@ -1661,7 +1660,7 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(ierr == MPI_SUCCESS .and. &
     local_root_transfers == expected_local_root_transfers .and. &
     global_root_transfers == expected_global_root_transfers, &
-    "MPI EB AMR direct coarse-flux sparse hydro traffic", rank)
+    "MPI EB AMR direct state/flux sparse hydro traffic", rank)
   call MPI_Allreduce( &
     local_root_hydro_cells, global_root_hydro_cells, 1, MPI_INTEGER, &
     MPI_SUM, MPI_COMM_WORLD, ierr)
