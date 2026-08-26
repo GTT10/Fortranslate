@@ -15,6 +15,12 @@ program test_amr_eb_multilevel_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
+  use amr_eb_patch_tree_2d_mod, only: &
+    amr_eb_patch_tree_child_plan_2d, &
+    amr_eb_patch_tree_level_plan_2d, &
+    amr_eb_patch_tree_topology_2d, &
+    initialize_amr_eb_patch_tree_topology_2d, &
+    rebuild_amr_eb_patch_tree_topology_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_eb_state_2d, &
     average_down_three_level_reactive_eb_state_2d, &
@@ -40,7 +46,17 @@ program test_amr_eb_multilevel_2d
     (level_one_j_upper - level_one_j_lower + 1) * ratio
   type(eb_geometry_2d) :: root_geometry
   type(eb_geometry_2d) :: level_one_geometry, level_two_geometry
+  type(eb_geometry_2d) :: tree_level_one_geometry_a
+  type(eb_geometry_2d) :: tree_level_one_geometry_b
+  type(eb_geometry_2d) :: tree_level_two_geometry_a
+  type(eb_geometry_2d) :: tree_level_two_geometry_b
+  type(eb_geometry_2d) :: tree_level_three_geometry
   type(amr_eb_patch_2d) :: root_patch, level_one_patch
+  type(amr_eb_patch_2d) :: tree_scratch_patch
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: extended_tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: invalid_tree_plans(:)
+  type(amr_eb_patch_tree_topology_2d) :: tree_topology
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: root_level_set(0:root_nx, 0:root_ny)
@@ -65,7 +81,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: scale, dt, species_integral_sum, species_change
-  logical :: ok
+  logical :: ok, topology_changed
   integer :: i, j, k, nvar
 
   do j = 0, root_ny
@@ -87,6 +103,82 @@ program test_amr_eb_multilevel_2d
     level_one_j_lower, level_one_j_upper, ratio, level_two_geometry, &
     level_one_patch, ok)
   call require(ok, "three-level finest geometry")
+
+  call build_patch_geometry( &
+    root_geometry, 1, 2, 1, 2, ratio, tree_level_one_geometry_a, &
+    tree_scratch_patch, ok)
+  call require(ok, "patch-tree first root child geometry")
+  call build_patch_geometry( &
+    root_geometry, 6, 8, 6, 8, ratio, tree_level_one_geometry_b, &
+    tree_scratch_patch, ok)
+  call require(ok, "patch-tree second root child geometry")
+  call build_patch_geometry( &
+    tree_level_one_geometry_a, 1, 4, 1, 4, ratio, &
+    tree_level_two_geometry_a, tree_scratch_patch, ok)
+  call require(ok, "patch-tree first branch geometry")
+  call build_patch_geometry( &
+    tree_level_one_geometry_b, 2, 5, 2, 5, ratio, &
+    tree_level_two_geometry_b, tree_scratch_patch, ok)
+  call require(ok, "patch-tree second branch geometry")
+  call build_patch_geometry( &
+    tree_level_two_geometry_b, 2, 7, 2, 7, ratio, &
+    tree_level_three_geometry, tree_scratch_patch, ok)
+  call require(ok, "patch-tree fourth-level geometry")
+
+  allocate(tree_plans(2))
+  tree_plans%refinement_ratio = ratio
+  allocate(tree_plans(1)%children(2), tree_plans(2)%children(2))
+  call set_tree_child_plan( &
+    tree_plans(1)%children(1), 1, 1, 2, 1, 2, &
+    tree_level_one_geometry_a)
+  call set_tree_child_plan( &
+    tree_plans(1)%children(2), 1, 6, 8, 6, 8, &
+    tree_level_one_geometry_b)
+  call set_tree_child_plan( &
+    tree_plans(2)%children(1), 1, 1, 4, 1, 4, &
+    tree_level_two_geometry_a)
+  call set_tree_child_plan( &
+    tree_plans(2)%children(2), 2, 2, 5, 2, 5, &
+    tree_level_two_geometry_b)
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, tree_plans, tree_topology, ok)
+  call require(ok .and. tree_topology%is_valid() .and. &
+    tree_topology%level_count() == 3 .and. &
+    tree_topology%level_patch_count(0) == 1 .and. &
+    tree_topology%level_patch_count(1) == 2 .and. &
+    tree_topology%level_patch_count(2) == 2 .and. &
+    tree_topology%relations(1)%child_index(1, 2) == 2 .and. &
+    tree_topology%relations(2)%child_index(2, 1) == 2, &
+    "branching EB patch-tree topology")
+
+  allocate(extended_tree_plans(3))
+  extended_tree_plans(1:2) = tree_plans
+  extended_tree_plans(3)%refinement_ratio = ratio
+  allocate(extended_tree_plans(3)%children(1))
+  call set_tree_child_plan( &
+    extended_tree_plans(3)%children(1), 2, 2, 7, 2, 7, &
+    tree_level_three_geometry)
+  call rebuild_amr_eb_patch_tree_topology_2d( &
+    tree_topology, extended_tree_plans, ok, topology_changed)
+  call require(ok .and. topology_changed .and. &
+    tree_topology%is_valid() .and. tree_topology%level_count() == 4 .and. &
+    tree_topology%level_patch_count(3) == 1 .and. &
+    tree_topology%relations(3)%child_index(1, 1) == 0 .and. &
+    tree_topology%relations(3)%child_index(2, 1) == 1, &
+    "arbitrary-depth EB patch-tree rebuild")
+  call rebuild_amr_eb_patch_tree_topology_2d( &
+    tree_topology, extended_tree_plans, ok, topology_changed)
+  call require(ok .and. .not. topology_changed, &
+    "unchanged EB patch-tree rebuild")
+
+  invalid_tree_plans = extended_tree_plans
+  invalid_tree_plans(3)%children(1)%parent_patch = 3
+  call rebuild_amr_eb_patch_tree_topology_2d( &
+    tree_topology, invalid_tree_plans, ok, topology_changed)
+  call require(.not. ok .and. .not. topology_changed .and. &
+    tree_topology%is_valid() .and. tree_topology%level_count() == 4 .and. &
+    tree_topology%relations(3)%children(1)%parent_patch == 2, &
+    "invalid EB patch-tree rebuild rollback")
   call require( &
     any(level_two_geometry%x_face_fraction(0, :) < 1.0_dp) .or. &
     any(level_two_geometry%x_face_fraction(level_two_geometry%nx, :) < &
@@ -394,6 +486,21 @@ program test_amr_eb_multilevel_2d
   write(*, '(a)') "test_amr_eb_multilevel_2d: PASS"
 
 contains
+
+  subroutine set_tree_child_plan( &
+      plan, parent_patch, i_lower, i_upper, j_lower, j_upper, geometry)
+    type(amr_eb_patch_tree_child_plan_2d), intent(out) :: plan
+    integer, intent(in) :: parent_patch
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    type(eb_geometry_2d), intent(in) :: geometry
+
+    plan%parent_patch = parent_patch
+    plan%coarse_i_lower = i_lower
+    plan%coarse_i_upper = i_upper
+    plan%coarse_j_lower = j_lower
+    plan%coarse_j_upper = j_upper
+    plan%geometry = geometry
+  end subroutine set_tree_child_plan
 
   subroutine build_patch_geometry( &
       parent_geometry, i_lower, i_upper, j_lower, j_upper, &
