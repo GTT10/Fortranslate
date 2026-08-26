@@ -145,6 +145,10 @@ contains
     allocate(candidate%levels(1)%patches(1)%state, source=root_state)
     allocate(candidate%levels(1)%patches(1)%temperature, &
       source=root_temperature)
+    call recover_patch_temperature( &
+      species, candidate%levels(1)%patches(1), topology%root_geometry, &
+      local_ok)
+    if (.not. local_ok) return
 
     do relation = 1, size(topology%relations)
       allocate(candidate%levels(relation + 1)%patches( &
@@ -380,13 +384,23 @@ contains
     type(reactive_amr_eb_patch_tree_2d), intent(inout) :: candidate
     logical, intent(out) :: ok
 
-    type(eb_geometry_2d) :: parent_geometry
+    type(eb_geometry_2d) :: geometry, parent_geometry
     real(dp), allocatable :: state_work(:, :, :), temperature_work(:, :)
     logical :: local_ok
-    integer :: child, parent, relation
+    integer :: child, level, parent, patch, relation
 
     ok = .false.
     if (.not. candidate%is_valid()) return
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        call patch_geometry_at( &
+          candidate%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) return
+        call recover_patch_temperature( &
+          species, candidate%levels(level)%patches(patch), geometry, local_ok)
+        if (.not. local_ok) return
+      end do
+    end do
     do relation = size(candidate%topology%relations), 1, -1
       do child = 1, &
           candidate%topology%relations(relation)%child_patch_count()
