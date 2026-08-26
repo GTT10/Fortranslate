@@ -181,7 +181,17 @@ program test_amr_eb_flux_register_2d
   call require(.not. ok .and. &
     maxval(abs(coarse_support_register%correction - &
       coarse_support_baseline)) == 0.0_dp, &
-    "incomplete coarse interface-flux support rollback")
+    "incomplete x-face coarse interface-flux support rollback")
+  call accumulate_coarse_eb_fluxes_patch_support_2d( &
+    coarse_support_register, coarse_geometry, fine_geometry, patch, &
+    coarse_x_i_lower, coarse_x_j_lower, coarse_x_flux_support, &
+    coarse_y_i_lower, coarse_y_j_lower + 1, &
+    coarse_y_flux_support(:, :, coarse_y_j_lower + 1:coarse_y_j_upper), &
+    dt, ok)
+  call require(.not. ok .and. &
+    maxval(abs(coarse_support_register%correction - &
+      coarse_support_baseline)) == 0.0_dp, &
+    "incomplete y-face coarse interface-flux support rollback")
   call accumulate_fine_eb_fluxes_2d( &
     register, coarse_geometry, fine_geometry, patch, &
     fine_x_flux, fine_y_flux, 0.5_dp * dt, ok)
