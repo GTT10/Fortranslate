@@ -2386,3 +2386,24 @@ The caller still supplies a replicated geometry and full patch-set template
 whose topology must match the checkpoint. A geometry-only topology descriptor,
 checkpoint-driven dynamic topology reconstruction, and a cross-run rank-count
 redistribution application remain separate work.
+
+## Geometry-only sparse MPI reactive EB AMR restart topology (`0.133.0`)
+
+- [x] public child geometry/topology descriptor without state or temperature
+- [x] direct construction from fine geometries and an ordered patch collection
+- [x] validated extraction from an established full reactive patch set
+- [x] distribution and sparse-payload validation against geometry only
+- [x] direct root-to-owner restart scatter without non-root full child fields
+- [x] root-only checkpoint read accepting the geometry-only descriptor
+- [x] compatibility wrappers retaining the former full patch-set interfaces
+- [x] exact owner-local root/child parity and restart transfer accounting
+- [x] collective empty-state and zero-traffic rollback for invalid topology
+- [x] OpenMPI one-, two-, four-, and eight-rank gates
+- [x] GNU Fortran Release and bounds/FPE-checked Debug qualification
+
+EB geometry arrays and compact patch boxes remain intentionally replicated,
+but restart no longer needs replicated child conserved or temperature fields.
+Checkpoint-driven topology reconstruction, geometry-only conversion of the
+writer and physics/regrid compatibility boundaries, arbitrary-depth dynamic EB
+topology, and decomposition of the level-wide root physics kernel remain
+separate work.

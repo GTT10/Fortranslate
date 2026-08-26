@@ -2152,3 +2152,20 @@ clock metadata at one, two, four, and eight ranks. A missing checkpoint must
 return an empty sparse set, zero clock metadata, and zero traffic collectively.
 The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
 before the complete 208-test serial regression.
+
+## 0.133.0 geometry-only sparse MPI reactive EB AMR restart gates
+
+Extract a descriptor containing only each child's EB geometry and patch box,
+then perform the direct root-to-owner scatter without passing replicated child
+state or temperature fields. Every owner-local root tile and child must remain
+bitwise identical to the original sparse payload, with the same exact local and
+communicator-summed remote-entity transfer formula at one, two, four, and eight
+ranks.
+
+Read the formatted checkpoint on the selected root through the geometry-only
+API and require the same field, stored-value, and clock-metadata parity. A
+descriptor with invalid EB volume fractions must reject collectively before
+point-to-point traffic and publish an empty sparse set. A missing checkpoint
+must preserve the established empty-state, zero-metadata, zero-traffic result.
+The gate runs in GNU Fortran Release and bounds/FPE-checked Debug configurations
+before the complete 208-test serial regression.

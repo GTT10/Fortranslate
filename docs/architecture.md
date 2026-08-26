@@ -1378,6 +1378,14 @@ empty on entry. Clock metadata and the sparse candidate publish only after
 root agreement, successful read, direct scatter, and collective validation;
 failure returns an empty sparse set, zero metadata, and zero traffic.
 
+In `0.133.0`, the restart topology is represented separately from its reactive
+fields. Each child descriptor contains only its EB geometry and coarse/fine
+patch box; conserved state and temperature are absent from the type. The
+root-only reader and direct scatter validate distributions and owner-local
+payload shapes against that descriptor, while the selected root alone holds
+the complete checkpoint fields. The former full patch-set entrypoints remain
+as extraction wrappers. Geometry metadata is still replicated intentionally.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved

@@ -29,7 +29,7 @@ program pelef_mpi_eb_amr_patch_2d
     build_amr_eb_regrid_plan_collection_2d, &
     plan_reactive_eb_temperature_regrid_collection_2d, &
     initialize_reactive_eb_patch_set_2d, &
-    extract_reactive_eb_patch_topology_2d, &
+    initialize_reactive_eb_patch_topology_2d, &
     average_down_reactive_eb_patch_set_2d, &
     advance_reactive_eb_patch_set_hydro_2d, &
     regrid_reactive_eb_patch_set_2d
@@ -360,16 +360,16 @@ program pelef_mpi_eb_amr_patch_2d
       fine_geometries(child), geometry_patch, ok)
     call assert_all(ok, "MPI EB AMR child geometry", rank)
   end do
+  call initialize_reactive_eb_patch_topology_2d( &
+    coarse_geometry, fine_geometries, collection, ratio, restart_topology, ok)
+  call assert_all(ok .and. restart_topology%is_valid(coarse_geometry) .and. &
+    restart_topology%patch_count() == collection%patch_count(), &
+    "MPI EB AMR geometry-only restart topology", rank)
   call initialize_reactive_eb_patch_set_2d( &
     species, coarse_state, coarse_temperature, coarse_geometry, &
     fine_geometries, collection, ratio, patch_set, ok)
   call assert_all(ok .and. patch_set%patch_count() == 2, &
     "MPI EB AMR patch set", rank)
-  call extract_reactive_eb_patch_topology_2d( &
-    coarse_geometry, nvar, patch_set, restart_topology, ok)
-  call assert_all(ok .and. restart_topology%is_valid(coarse_geometry) .and. &
-    restart_topology%patch_count() == patch_set%patch_count(), &
-    "MPI EB AMR geometry-only restart topology", rank)
 
   call initialize_mpi_amr_eb_patch_distribution_2d( &
     coarse_geometry, patch_set, MPI_COMM_WORLD, distribution, ok, 2)

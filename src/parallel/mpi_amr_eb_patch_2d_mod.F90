@@ -1108,7 +1108,47 @@ contains
         all(patch_set%children(child)%geometry%cell_type == &
           topology%children(child)%geometry%cell_type) .and. &
         all(abs(patch_set%children(child)%geometry%volume_fraction - &
-          topology%children(child)%geometry%volume_fraction) <= tolerance)
+          topology%children(child)%geometry%volume_fraction) <= &
+            tolerance) .and. &
+        all(abs(patch_set%children(child)%geometry%cell_centroid_x - &
+          topology%children(child)%geometry%cell_centroid_x) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%cell_centroid_y - &
+          topology%children(child)%geometry%cell_centroid_y) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%x_face_fraction - &
+          topology%children(child)%geometry%x_face_fraction) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%y_face_fraction - &
+          topology%children(child)%geometry%y_face_fraction) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%x_face_centroid_y - &
+          topology%children(child)%geometry%x_face_centroid_y) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%y_face_centroid_x - &
+          topology%children(child)%geometry%y_face_centroid_x) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_length - &
+          topology%children(child)%geometry%boundary_length) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_centroid_x - &
+          topology%children(child)%geometry%boundary_centroid_x) <= &
+            tolerance) .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_centroid_y - &
+          topology%children(child)%geometry%boundary_centroid_y) <= &
+            tolerance) .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_normal_x - &
+          topology%children(child)%geometry%boundary_normal_x) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_normal_y - &
+          topology%children(child)%geometry%boundary_normal_y) <= tolerance) &
+        .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_normal_integral_x - &
+          topology%children(child)%geometry%boundary_normal_integral_x) <= &
+            tolerance) .and. all(abs( &
+          patch_set%children(child)%geometry%boundary_normal_integral_y - &
+          topology%children(child)%geometry%boundary_normal_integral_y) <= &
+            tolerance)
       if (.not. matches) return
     end do
   end function reactive_eb_patch_set_matches_topology_2d

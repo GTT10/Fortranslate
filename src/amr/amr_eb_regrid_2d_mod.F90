@@ -95,6 +95,7 @@ module amr_eb_regrid_2d_mod
   public :: plan_reactive_eb_temperature_regrid_2d
   public :: plan_reactive_eb_temperature_regrid_collection_2d
   public :: initialize_reactive_eb_patch_set_2d
+  public :: initialize_reactive_eb_patch_topology_2d
   public :: extract_reactive_eb_patch_topology_2d
   public :: average_down_reactive_eb_patch_set_2d
   public :: composite_reactive_eb_patch_set_integral_2d
@@ -753,6 +754,45 @@ contains
     patch_set = candidate
     ok = .true.
   end subroutine initialize_reactive_eb_patch_set_2d
+
+  subroutine initialize_reactive_eb_patch_topology_2d( &
+      coarse_geometry, fine_geometries, collection, refinement_ratio, &
+      topology, ok)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(eb_geometry_2d), intent(in) :: fine_geometries(:)
+    type(amr_eb_regrid_plan_collection_2d), intent(in) :: collection
+    integer, intent(in) :: refinement_ratio
+    type(reactive_eb_patch_topology_2d), intent(out) :: topology
+    logical, intent(out) :: ok
+
+    type(reactive_eb_patch_topology_2d) :: candidate
+    logical :: local_ok
+    integer :: child
+
+    topology = reactive_eb_patch_topology_2d()
+    ok = .false.
+    if (refinement_ratio < 2 .or. .not. coarse_geometry%is_valid() .or. &
+        .not. collection%is_valid() .or. &
+        collection%coarse_nx /= coarse_geometry%nx .or. &
+        collection%coarse_ny /= coarse_geometry%ny .or. &
+        size(fine_geometries) /= collection%patch_count()) return
+
+    allocate(candidate%children(collection%patch_count()))
+    do child = 1, collection%patch_count()
+      call build_amr_eb_patch_2d( &
+        coarse_geometry, fine_geometries(child), &
+        collection%plans(child)%coarse_i_lower, &
+        collection%plans(child)%coarse_i_upper, &
+        collection%plans(child)%coarse_j_lower, &
+        collection%plans(child)%coarse_j_upper, refinement_ratio, &
+        candidate%children(child)%patch, local_ok)
+      if (.not. local_ok) return
+      candidate%children(child)%geometry = fine_geometries(child)
+    end do
+    if (.not. candidate%is_valid(coarse_geometry)) return
+    topology = candidate
+    ok = .true.
+  end subroutine initialize_reactive_eb_patch_topology_2d
 
   subroutine average_down_reactive_eb_patch_set_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
