@@ -1305,14 +1305,17 @@ candidates only to the physics owner and scatters the blended rows. EB-cut
 conservation broadcasts only its small conserved boundary-change vector and
 applies the uniform correction directly on each locally owned root tile.
 
-In `0.125.0`, timestep selection also consumes the sparse hierarchy directly.
-Root tiles gather once to the root physics owner for the EB hyperbolic and
-parabolic limits. Each fine child evaluates the same limits only on its owner
-and multiplies its local stable step by the refinement ratio to express a
-coarse-interval bound. One communicator minimum selects the global step.
-Control consensus and field validation happen before publication, so rejection
-returns zero dt and zero published transfer count without changing sparse
-state.
+In `0.125.0`, timestep selection first consumed the sparse hierarchy through a
+targeted root gather. In `0.138.0`, each root tile owner extracts its exact EB
+geometry row band and evaluates both hyperbolic and parabolic limits directly
+on its exclusively owned state. Each fine child evaluates the same limits only
+on its owner and multiplies its local stable step by the refinement ratio to
+express a coarse-interval bound. One communicator minimum selects the global
+step with no root numerical-field traffic. Fully covered tile bands are
+skipped, while an entirely inactive hierarchy rejects rather than publishing
+an unbounded interval. Control consensus and field validation happen before
+publication, so rejection returns zero dt and zero transfer count without
+changing sparse state.
 
 In `0.126.0`, a public sparse time loop composes that selector with the direct
 owner-only `R-T-H-T-R` transaction. The stable interval is recomputed after

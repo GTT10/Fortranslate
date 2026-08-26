@@ -2242,3 +2242,19 @@ through sparse `R-T-H-T-R` and the public time loop. A late child rejection
 must leave all sparse fields bitwise unchanged and publish zero advances,
 computed cells, and transfers. Run the gates in OpenMPI Release and
 bounds/FPE-checked Debug before the complete serial regression.
+
+## 0.138.0 sparse MPI owner-local EB timestep gates
+
+Evaluate the hyperbolic CFL and optional molecular-transport stability limit
+directly on every exclusively owned root tile and fine child. Root tile calls
+must use the exact extracted EB row-band geometry; fine limits must retain
+their refinement-ratio conversion to a coarse interval. A communicator minimum
+must match the serial complete-hierarchy timestep within `64 epsilon` at one,
+two, four, and eight ranks while reporting exactly zero root transfers.
+
+The public clipped time loop and scheduled-regrid loop must also publish zero
+timestep root traffic on every accepted step. Regrid-planning traffic remains
+counted independently. A finite invalid child state must reject collectively
+with zero dt and zero transfers while preserving every sparse field bitwise.
+Run the gates in OpenMPI Release and bounds/FPE-checked Debug before the
+complete serial regression.
