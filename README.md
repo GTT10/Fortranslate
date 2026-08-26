@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.153.0` milestone contains the serial verification suite, eight optional
+The `0.154.0` milestone contains the serial verification suite, eight optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -455,9 +455,9 @@ two-cell-safe planning region, and does not yet support checkpoint/restart.
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
 coarse-to-fine spatial slopes, multipatch EB AMR molecular
-transport, dynamic middle/root topology, arbitrary-depth EB levels,
-transport-enabled checkpoint/restart, arbitrary-depth EB physics recursion,
-and MPI distribution are not yet
+transport, dynamic middle/root topology, arbitrary-depth EB application
+lifecycle, transport-enabled checkpoint/restart, arbitrary-depth EB chemistry/
+transport composition, and MPI distribution are not yet
 connected. The public EB AMR application now owns
 either restartable sibling rectangles or an
 explicit three-level hierarchy with an optionally dynamic finest patch.
@@ -470,8 +470,12 @@ whole-tree topology replacement. Same-resolution physical overlap is retained
 only after local EB geometry checks; EOS or conservation failure leaves the
 accepted tree unchanged. It also evaluates the active-cell CFL limit on every
 runtime node containing fluid and scales each local limit by the cumulative
-refinement product before publishing one stable root interval. This core is not
-yet connected to the public physics time loop or MPI ownership.
+refinement product before publishing one stable root interval. Reactive EB
+hydrodynamics now walks the same runtime tree recursively: every child takes its
+exact ratio subcycles, owns one flux register, refluxes into its actual parent,
+and participates in subtree conservation closure and deepest-first final
+synchronization. This core is not yet connected to chemistry, molecular
+transport, a public physics time loop, or MPI ownership.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

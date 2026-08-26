@@ -2036,3 +2036,30 @@ entirely inactive tree, nonfinite control, or failed active-node conversion
 rejects with deterministic zero output. Selection does not mutate topology,
 state, or temperature. This hyperbolic selector does not yet compose transport
 limits or advance the arbitrary-depth 2D EB tree.
+
+## Arbitrary-depth reactive EB patch-tree hydrodynamics
+
+Let a parent node advance over interval `dt` and let its child relation have
+ratio `r`. The parent is advanced once with the qualified EB level operator.
+Every child is then advanced recursively `r` times with interval `dt/r`.
+Exterior state for child substep `s` is interpolated between the parent's
+start and uncorrected end states at
+
+```text
+alpha = (s - 1)/r                 for PCM,
+alpha = (s - 1/2)/r               for characteristic PLM.
+```
+
+One register per child accumulates the parent flux with weight `dt` and each
+child flux with weight `dt/r`. After all substeps, deterministic child-order
+reflux and reactive average-down make the finer state authoritative. The same
+operation recurses without a compile-time level limit or single-parent chain
+assumption.
+
+For every node with children, subtree conservation is checked against flux
+through that node's outer EB boundary. Density, total-energy, and species
+residuals are closed only on active parent cells not represented by a child;
+species correction is constrained to equal the density correction, and all
+corrected temperatures are recovered through the NASA7 EOS. A final
+deepest-first average-down preserves the composite state after ancestor reflux.
+The whole hierarchy commits only after every recursive operation succeeds.

@@ -2756,3 +2756,24 @@ This milestone removes timestep selection from the remaining serial patch-tree
 gaps. Arbitrary-depth hydrodynamics, chemistry, molecular transport, public
 clock ownership, dynamic tagging, checkpoint I/O, and MPI ownership for this
 new 2D EB tree remain separate work.
+
+## Arbitrary-depth reactive EB patch-tree hydrodynamics (`0.154.0`)
+
+- [x] runtime-depth recursive EB level advancement
+- [x] multiple ordered children attached to their actual parent patch
+- [x] exact per-relation ratio subcycling and parent-time interpolation
+- [x] one independent coarse/fine EB flux register per child
+- [x] deterministic reflux and reactive average-down at every relation
+- [x] composite subtree conservation closure against outer-boundary flux
+- [x] active unrefined-parent correction with NASA7 temperature recovery
+- [x] deepest-first final synchronization before atomic tree commit
+- [x] optional committed-only per-level node-advance counts
+- [x] four-level two-branch schedule `[1, 4, 8, 8]`
+- [x] mass, total-energy, and every-species composite conservation gates
+- [x] fixed three-level field/temperature parity and schedule `[1, 2, 4]`
+- [x] invalid-solver rollback preserving every node and zeroing counts
+
+This milestone removes hyperbolic advancement from the remaining serial
+patch-tree gaps. Arbitrary-depth chemistry, molecular transport, full-physics
+composition, public clock ownership, dynamic tagging, checkpoint I/O, and MPI
+ownership for this new 2D EB tree remain separate work.

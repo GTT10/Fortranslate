@@ -485,10 +485,6 @@ program test_amr_eb_multilevel_2d
   call composite_integral_reactive_amr_eb_patch_tree_2d( &
     reactive_tree, tree_integral_after, ok)
   scale = max(1.0_dp, maxval(abs(tree_integral_before)))
-  if (ok) write(*, '(a,3(es16.8,1x))') &
-    "patch-tree hydro residual rho/E/scale: ", &
-    tree_integral_after(irho) - tree_integral_before(irho), &
-    tree_integral_after(iet) - tree_integral_before(iet), scale
   call require(ok .and. &
     abs(tree_integral_after(irho) - tree_integral_before(irho)) <= &
       2.0e-8_dp * scale .and. &
