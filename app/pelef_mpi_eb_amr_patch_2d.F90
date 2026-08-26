@@ -2598,7 +2598,7 @@ program pelef_mpi_eb_amr_patch_2d
     local_chemistry_advances == expected_local_chemistry .and. &
     local_hydro_advances == expected_local_hydro .and. &
     local_transport_advances == expected_local_transport .and. &
-    local_root_transfers == expected_local_root_transfers .and. &
+    local_root_transfers == 0 .and. &
     sparse_limited_time_loop_set%is_valid( &
       distribution, coarse_geometry, patch_set), &
     "MPI EB AMR sparse time-loop committed step limit", rank)
