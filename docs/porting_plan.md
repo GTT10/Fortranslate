@@ -681,6 +681,8 @@ Required capabilities:
   replicated fine-child compatibility window (`0.121.0`)
 - [x] targeted point-to-point sparse EB child restriction only to intersecting
   root tile owners with exact transfer accounting (`0.122.0`)
+- [x] targeted point-to-point direct sparse EB hydro root gather, distinct
+  child-owner bundle, correction round trips, and tile scatter (`0.123.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 
