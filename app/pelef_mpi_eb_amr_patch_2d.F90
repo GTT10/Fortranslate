@@ -1837,7 +1837,12 @@ program pelef_mpi_eb_amr_patch_2d
     regrids=scheduled_regrids, regrid_interval=2, &
     regrid_criteria=scheduled_criteria, refinement_ratio=ratio, &
     geometry_builder=build_scheduled_patch_geometry, &
-    local_regrid_root_transfers=scheduled_regrid_transfers)
+    local_regrid_root_transfers=scheduled_regrid_transfers, &
+    local_regrid_restriction_transfers= &
+      local_regrid_restriction_transfers, &
+    local_regrid_prolongation_transfers= &
+      local_regrid_prolongation_transfers, &
+    local_regrid_overlap_transfers=local_regrid_overlap_transfers)
   call assert_all(ok .and. scheduled_time == scheduled_final_time .and. &
     scheduled_steps == scheduled_reference_steps .and. &
     scheduled_advanced_steps == scheduled_reference_steps .and. &
@@ -1849,6 +1854,73 @@ program pelef_mpi_eb_amr_patch_2d
       5.0e-13_dp * max(1.0_dp, abs(scheduled_reference_theta)) .and. &
     same_patch_topology(scheduled_template, scheduled_reference_set), &
     "MPI EB AMR scheduled-regrid public control", rank)
+  expected_local_regrid_restriction_transfers = 0
+  expected_global_regrid_restriction_transfers = 0
+  do child = 1, distribution%child_count()
+    regrid_recipients = .false.
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%j_upper < &
+          scheduled_start_set%children(child)%patch%coarse_j_lower .or. &
+          distribution%root_tiles(tile)%j_lower > &
+          scheduled_start_set%children(child)%patch%coarse_j_upper) cycle
+      owner = distribution%root_tiles(tile)%owner
+      regrid_recipients(owner + 1) = .true.
+    end do
+    owner = distribution%child_owner(child)
+    regrid_recipients(owner + 1) = .false.
+    expected_global_regrid_restriction_transfers = &
+      expected_global_regrid_restriction_transfers + &
+      count(regrid_recipients)
+    if (rank == owner) expected_local_regrid_restriction_transfers = &
+      expected_local_regrid_restriction_transfers + &
+      count(regrid_recipients)
+  end do
+  regrid_recipients = .false.
+  do child = 1, scheduled_distribution%child_count()
+    owner = scheduled_distribution%child_owner(child)
+    regrid_recipients(owner + 1) = .true.
+  end do
+  expected_local_regrid_prolongation_transfers = 0
+  expected_global_regrid_prolongation_transfers = 0
+  do owner = 0, nranks - 1
+    if (.not. regrid_recipients(owner + 1)) cycle
+    do tile = 1, distribution%root_tile_count()
+      if (distribution%root_tiles(tile)%owner == owner) cycle
+      expected_global_regrid_prolongation_transfers = &
+        expected_global_regrid_prolongation_transfers + 1
+      if (rank == distribution%root_tiles(tile)%owner) &
+        expected_local_regrid_prolongation_transfers = &
+          expected_local_regrid_prolongation_transfers + 1
+    end do
+  end do
+  expected_local_regrid_overlap_transfers = 0
+  expected_global_regrid_overlap_transfers = 0
+  do new_child = 1, scheduled_template%patch_count()
+    do old_child = 1, scheduled_start_set%patch_count()
+      if (scheduled_start_set%children(old_child)%patch%refinement_ratio /= &
+          scheduled_template%children(new_child)%patch%refinement_ratio) cycle
+      if (max( &
+          scheduled_start_set%children(old_child)%patch%coarse_i_lower, &
+          scheduled_template%children(new_child)%patch%coarse_i_lower) > &
+          min( &
+            scheduled_start_set%children(old_child)%patch%coarse_i_upper, &
+            scheduled_template%children(new_child)%patch%coarse_i_upper) &
+          .or. max( &
+            scheduled_start_set%children(old_child)%patch%coarse_j_lower, &
+            scheduled_template%children(new_child)%patch%coarse_j_lower) > &
+          min( &
+            scheduled_start_set%children(old_child)%patch%coarse_j_upper, &
+            scheduled_template%children(new_child)%patch%coarse_j_upper)) &
+        cycle
+      if (distribution%child_owner(old_child) == &
+          scheduled_distribution%child_owner(new_child)) cycle
+      expected_global_regrid_overlap_transfers = &
+        expected_global_regrid_overlap_transfers + 1
+      if (rank == distribution%child_owner(old_child)) &
+        expected_local_regrid_overlap_transfers = &
+          expected_local_regrid_overlap_transfers + 1
+    end do
+  end do
   call MPI_Allreduce( &
     scheduled_regrid_transfers, global_scheduled_regrid_transfers, 1, &
     MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
@@ -1858,6 +1930,35 @@ program pelef_mpi_eb_amr_patch_2d
     scheduled_regrid_transfers == expected_local_root_transfers .and. &
     global_scheduled_regrid_transfers == expected_global_root_transfers, &
     "MPI EB AMR scheduled-regrid root traffic", rank)
+  call MPI_Allreduce( &
+    local_regrid_restriction_transfers, &
+    global_regrid_restriction_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_restriction_transfers == &
+      expected_local_regrid_restriction_transfers .and. &
+    global_regrid_restriction_transfers == &
+      expected_global_regrid_restriction_transfers, &
+    "MPI EB AMR scheduled-regrid restriction traffic", rank)
+  call MPI_Allreduce( &
+    local_regrid_prolongation_transfers, &
+    global_regrid_prolongation_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_prolongation_transfers == &
+      expected_local_regrid_prolongation_transfers .and. &
+    global_regrid_prolongation_transfers == &
+      expected_global_regrid_prolongation_transfers, &
+    "MPI EB AMR scheduled-regrid prolongation traffic", rank)
+  call MPI_Allreduce( &
+    local_regrid_overlap_transfers, global_regrid_overlap_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. &
+    local_regrid_overlap_transfers == &
+      expected_local_regrid_overlap_transfers .and. &
+    global_regrid_overlap_transfers == &
+      expected_global_regrid_overlap_transfers, &
+    "MPI EB AMR scheduled-regrid overlap traffic", rank)
   call materialize_owned_reactive_eb_patch_set_2d( &
     scheduled_distribution, sparse_scheduled_set, scheduled_start_state, &
     scheduled_start_temperature, coarse_geometry, scheduled_template, &
@@ -1907,13 +2008,21 @@ program pelef_mpi_eb_amr_patch_2d
     regrids=scheduled_regrids, regrid_interval=1, &
     regrid_criteria=scheduled_criteria, refinement_ratio=ratio, &
     geometry_builder=reject_scheduled_patch_geometry, &
-    local_regrid_root_transfers=scheduled_regrid_transfers)
+    local_regrid_root_transfers=scheduled_regrid_transfers, &
+    local_regrid_restriction_transfers= &
+      local_regrid_restriction_transfers, &
+    local_regrid_prolongation_transfers= &
+      local_regrid_prolongation_transfers, &
+    local_regrid_overlap_transfers=local_regrid_overlap_transfers)
   call assert_all(.not. ok .and. failing_geometry_calls >= 1 .and. &
     scheduled_time == 0.0_dp .and. scheduled_steps == 0 .and. &
     scheduled_advanced_steps == 0 .and. scheduled_minimum_dt == 0.0_dp .and. &
     scheduled_timestep_transfers == 0 .and. &
     scheduled_regrid_evaluations == 0 .and. scheduled_regrids == 0 .and. &
     scheduled_regrid_transfers == 0 .and. &
+    local_regrid_restriction_transfers == 0 .and. &
+    local_regrid_prolongation_transfers == 0 .and. &
+    local_regrid_overlap_transfers == 0 .and. &
     scheduled_failed_distribution%child_count() == &
       distribution%child_count() .and. &
     all(scheduled_failed_distribution%child_owners == &

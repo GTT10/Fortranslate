@@ -1164,7 +1164,8 @@ contains
   subroutine regrid_tagged_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
       patch_set_template, criteria, refinement_ratio, geometry_builder, &
-      ok, changed, local_root_transfers)
+      ok, changed, local_root_transfers, local_restriction_transfers, &
+      local_prolongation_transfers, local_overlap_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_distribution_2d), intent(inout) :: distribution
     type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
@@ -1175,6 +1176,9 @@ contains
     procedure(sparse_eb_geometry_builder_2d) :: geometry_builder
     logical, intent(out) :: ok, changed
     integer, intent(out), optional :: local_root_transfers
+    integer, intent(out), optional :: local_restriction_transfers
+    integer, intent(out), optional :: local_prolongation_transfers
+    integer, intent(out), optional :: local_overlap_transfers
 
     type(amr_eb_regrid_plan_collection_2d) :: collection
     type(eb_geometry_2d), allocatable :: fine_geometries(:)
@@ -1186,12 +1190,21 @@ contains
     integer, allocatable :: metadata(:)
     integer :: child, header(4), ierr, index, integer_controls(5)
     integer :: integer_maximum(5), integer_minimum(5), patch_count
-    integer :: root_owner, transfers
+    integer :: overlap_transfers, prolongation_transfers
+    integer :: restriction_transfers, root_owner, transfers
 
     ok = .false.
     changed = .false.
     transfers = 0
+    restriction_transfers = 0
+    prolongation_transfers = 0
+    overlap_transfers = 0
     if (present(local_root_transfers)) local_root_transfers = 0
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = 0
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = 0
+    if (present(local_overlap_transfers)) local_overlap_transfers = 0
     numeric_controls = [ &
       criteria%relative_gradient_threshold, &
       criteria%absolute_gradient_threshold, criteria%scale_floor]
@@ -1320,7 +1333,8 @@ contains
     call regrid_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &
       patch_set_template, fine_geometries, collection, refinement_ratio, &
-      local_ok, changed)
+      local_ok, changed, restriction_transfers, prolongation_transfers, &
+      overlap_transfers)
     if (.not. local_ok) then
       changed = .false.
       return
@@ -1328,6 +1342,12 @@ contains
 
     ok = .true.
     if (present(local_root_transfers)) local_root_transfers = transfers
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = restriction_transfers
+    if (present(local_prolongation_transfers)) &
+      local_prolongation_transfers = prolongation_transfers
+    if (present(local_overlap_transfers)) &
+      local_overlap_transfers = overlap_transfers
   end subroutine regrid_tagged_sparse_owned_reactive_eb_patch_set_2d
 
   subroutine gather_sparse_root_to_owner_2d( &
@@ -3127,7 +3147,9 @@ contains
       local_transport_euler_advances, minimum_transport_theta, &
       state_redist_target_volume_fraction, local_timestep_root_transfers, &
       regrid_evaluations, regrids, regrid_interval, regrid_criteria, &
-      refinement_ratio, geometry_builder, local_regrid_root_transfers)
+      refinement_ratio, geometry_builder, local_regrid_root_transfers, &
+      local_regrid_restriction_transfers, &
+      local_regrid_prolongation_transfers, local_regrid_overlap_transfers)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -3159,6 +3181,9 @@ contains
     type(amr_eb_tagging_criteria_2d), intent(in), optional :: regrid_criteria
     procedure(sparse_eb_geometry_builder_2d), optional :: geometry_builder
     integer, intent(out), optional :: local_regrid_root_transfers
+    integer, intent(out), optional :: local_regrid_restriction_transfers
+    integer, intent(out), optional :: local_regrid_prolongation_transfers
+    integer, intent(out), optional :: local_regrid_overlap_transfers
 
     type(amr_eb_tagging_criteria_2d) :: selected_regrid_criteria
     type(mpi_amr_eb_patch_distribution_2d) :: candidate_distribution
@@ -3173,8 +3198,13 @@ contains
     integer :: integer_controls(11), integer_maximum(11)
     integer :: integer_minimum(11)
     integer :: regrid_transfers, selected_regrid_evaluations
+    integer :: regrid_overlap_transfers, regrid_prolongation_transfers
+    integer :: regrid_restriction_transfers
     integer :: selected_regrid_interval, selected_regrids
     integer :: selected_refinement_ratio, step_regrid_transfers
+    integer :: step_regrid_overlap_transfers
+    integer :: step_regrid_prolongation_transfers
+    integer :: step_regrid_restriction_transfers
     integer :: step_chemistry, step_hydro, step_timestep_transfers
     integer :: step_transport, timestep_transfers, transport_advances
 
@@ -3185,6 +3215,9 @@ contains
     transport_advances = 0
     timestep_transfers = 0
     regrid_transfers = 0
+    regrid_restriction_transfers = 0
+    regrid_prolongation_transfers = 0
+    regrid_overlap_transfers = 0
     if (present(advanced_steps)) advanced_steps = 0
     if (present(local_chemistry_advances)) local_chemistry_advances = 0
     if (present(local_hydro_advances)) local_hydro_advances = 0
@@ -3195,6 +3228,12 @@ contains
       local_timestep_root_transfers = 0
     if (present(local_regrid_root_transfers)) &
       local_regrid_root_transfers = 0
+    if (present(local_regrid_restriction_transfers)) &
+      local_regrid_restriction_transfers = 0
+    if (present(local_regrid_prolongation_transfers)) &
+      local_regrid_prolongation_transfers = 0
+    if (present(local_regrid_overlap_transfers)) &
+      local_regrid_overlap_transfers = 0
     selected_target = 0.5_dp
     if (present(state_redist_target_volume_fraction)) &
       selected_target = state_redist_target_volume_fraction
@@ -3214,7 +3253,10 @@ contains
     regrid_requested = present(regrid_evaluations) .or. present(regrids) .or. &
       present(regrid_interval) .or. present(regrid_criteria) .or. &
       present(refinement_ratio) .or. present(geometry_builder) .or. &
-      present(local_regrid_root_transfers)
+      present(local_regrid_root_transfers) .or. &
+      present(local_regrid_restriction_transfers) .or. &
+      present(local_regrid_prolongation_transfers) .or. &
+      present(local_regrid_overlap_transfers)
     regrid_enabled = &
       present(regrid_evaluations) .and. present(regrids) .and. &
       present(regrid_interval) .and. present(regrid_criteria) .and. &
@@ -3291,6 +3333,9 @@ contains
       scheduled_regrid = regrid_enabled .and. &
         modulo(steps + 1, selected_regrid_interval) == 0
       step_regrid_transfers = 0
+      step_regrid_restriction_transfers = 0
+      step_regrid_prolongation_transfers = 0
+      step_regrid_overlap_transfers = 0
       step_changed = .false.
       if (scheduled_regrid) then
         candidate_distribution = distribution
@@ -3309,7 +3354,10 @@ contains
           species, candidate_distribution, candidate_sparse_patch_set, &
           coarse_geometry, candidate_patch_set_template, &
           selected_regrid_criteria, selected_refinement_ratio, &
-          geometry_builder, local_ok, step_changed, step_regrid_transfers)
+          geometry_builder, local_ok, step_changed, step_regrid_transfers, &
+          step_regrid_restriction_transfers, &
+          step_regrid_prolongation_transfers, &
+          step_regrid_overlap_transfers)
         if (.not. local_ok) return
         distribution = candidate_distribution
         sparse_patch_set = candidate_sparse_patch_set
@@ -3333,6 +3381,12 @@ contains
       transport_advances = transport_advances + step_transport
       timestep_transfers = timestep_transfers + step_timestep_transfers
       regrid_transfers = regrid_transfers + step_regrid_transfers
+      regrid_restriction_transfers = regrid_restriction_transfers + &
+        step_regrid_restriction_transfers
+      regrid_prolongation_transfers = regrid_prolongation_transfers + &
+        step_regrid_prolongation_transfers
+      regrid_overlap_transfers = regrid_overlap_transfers + &
+        step_regrid_overlap_transfers
       if (scheduled_regrid) then
         selected_regrid_evaluations = selected_regrid_evaluations + 1
         if (step_changed) selected_regrids = selected_regrids + 1
@@ -3355,6 +3409,12 @@ contains
         local_timestep_root_transfers = timestep_transfers
       if (present(local_regrid_root_transfers)) &
         local_regrid_root_transfers = regrid_transfers
+      if (present(local_regrid_restriction_transfers)) &
+        local_regrid_restriction_transfers = regrid_restriction_transfers
+      if (present(local_regrid_prolongation_transfers)) &
+        local_regrid_prolongation_transfers = regrid_prolongation_transfers
+      if (present(local_regrid_overlap_transfers)) &
+        local_regrid_overlap_transfers = regrid_overlap_transfers
       if (present(regrid_evaluations)) &
         regrid_evaluations = selected_regrid_evaluations
       if (present(regrids)) regrids = selected_regrids
