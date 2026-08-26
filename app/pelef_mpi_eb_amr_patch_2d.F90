@@ -50,6 +50,7 @@ program pelef_mpi_eb_amr_patch_2d
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     initialize_mpi_amr_eb_patch_distribution_2d, &
+    mpi_amr_eb_child_transport_state_context_value_count_2d, &
     mpi_amr_eb_child_transport_tile_state_support_value_count_2d, &
     mpi_amr_eb_child_coarse_flux_support_value_count_2d, &
     mpi_amr_eb_distribution_matches_patch_set_2d, &
