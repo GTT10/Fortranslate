@@ -383,11 +383,14 @@ program test_amr_eb_multilevel_2d
     species, reactive_tree, 0.4_dp, tree_dt, ok)
   call reference_reactive_tree_cfl_timestep( &
     species, reactive_tree, 0.4_dp, reference_tree_dt, reference_ok)
-  call require(ok .and. reference_ok .and. &
-    abs(tree_dt - reference_tree_dt) <= &
-      2.0e-12_dp * max(1.0_dp, abs(reference_tree_dt)) .and. &
-    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+  call require(ok, "arbitrary-depth patch-tree CFL acceptance")
+  call require(reference_ok, "reference patch-tree CFL acceptance")
+  call assert_close( &
+    tree_dt, reference_tree_dt, 2.0e-12_dp, &
     "arbitrary-depth reactive patch-tree CFL traversal")
+  call require( &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "read-only patch-tree CFL traversal")
   initial_tree_dt = tree_dt
 
   primitive(1:5) = [0.31_dp, 3000.0_dp, -1.0_dp, 0.0_dp, 135000.0_dp]
