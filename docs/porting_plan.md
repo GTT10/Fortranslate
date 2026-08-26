@@ -925,6 +925,21 @@ PR 010  PeleC-style Riemann solver
 ...
 ```
 
+## 0.143.0 sparse MPI compact child transport-context gates
+
+Replace the complete root transport bundle sent to every distinct child owner
+with a per-child four-edge start/end exterior context and the compact coarse
+flux-register mismatch. Advance fine transport only on the child owner, return
+the evolved fine field and accumulated register to the root physics owner,
+apply reflux there in deterministic child order, and return only the corrected
+fine field.
+
+Require remote children to allocate no complete root state, temperature, or
+x/y-flux field. Verify exact complete-root/context exterior parity, a strict
+context payload reduction, three messages per remote child per Euler stage,
+and unchanged numerical, work, rollback, and public-clock gates at one, two,
+four, and eight ranks before the complete serial regression.
+
 Each implementation PR should normally contain:
 
 1. implementation

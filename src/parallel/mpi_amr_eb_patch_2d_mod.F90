@@ -136,6 +136,7 @@ module mpi_amr_eb_patch_2d_mod
   end interface
 
   public :: initialize_mpi_amr_eb_patch_distribution_2d
+  public :: mpi_amr_eb_child_transport_context_value_count_2d
   public :: mpi_amr_eb_distribution_matches_patch_set_2d
   public :: synchronize_owned_reactive_eb_patch_set_2d
   public :: advance_owned_reactive_eb_patch_set_chemistry_2d
@@ -160,6 +161,30 @@ module mpi_amr_eb_patch_2d_mod
   public :: advance_sparse_owned_reactive_eb_patch_set_to_time_2d
 
 contains
+
+  pure integer(int64) function &
+      mpi_amr_eb_child_transport_context_value_count_2d( &
+        component_count, coarse_geometry, fine_geometry, patch) &
+      result(value_count)
+    integer, intent(in) :: component_count
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+
+    integer(int64) :: correction_cells, edge_values
+
+    value_count = -1_int64
+    if (component_count < 1 .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry)) return
+    edge_values = 4_int64 * int(component_count + 1, int64) * &
+      int(fine_geometry%nx + fine_geometry%ny, int64)
+    correction_cells = &
+      int(min(coarse_geometry%nx, patch%coarse_i_upper + 1) - &
+        max(1, patch%coarse_i_lower - 1) + 1, int64) * &
+      int(min(coarse_geometry%ny, patch%coarse_j_upper + 1) - &
+        max(1, patch%coarse_j_lower - 1) + 1, int64)
+    value_count = edge_values + &
+      int(component_count, int64) * correction_cells
+  end function mpi_amr_eb_child_transport_context_value_count_2d
 
   pure logical function mpi_amr_eb_root_tile_is_valid( &
       self, nx, ny, nranks) result(valid)
@@ -3012,9 +3037,10 @@ contains
     type(MPI_Status) :: status
     real(dp), allocatable :: payload(:)
     logical :: accepted, global_ok, local_ok, participant
+    integer(int64) :: context_value_count
     integer :: correction_count, correction_i_lower, correction_i_upper
     integer :: correction_j_lower, correction_j_upper, ierr, offset
-    integer :: edge_count, value_count
+    integer :: value_count
 
     ok = .false.
     local_ok = component_count >= 1 .and. source >= 0 .and. &
@@ -3034,12 +3060,15 @@ contains
     correction_i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 1)
     correction_j_lower = max(1, patch%coarse_j_lower - 1)
     correction_j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 1)
-    edge_count = 4 * (component_count + 1) * &
-      (fine_geometry%nx + fine_geometry%ny)
     correction_count = component_count * &
       (correction_i_upper - correction_i_lower + 1) * &
       (correction_j_upper - correction_j_lower + 1)
-    value_count = edge_count + correction_count
+    context_value_count = &
+      mpi_amr_eb_child_transport_context_value_count_2d( &
+        component_count, coarse_geometry, fine_geometry, patch)
+    if (context_value_count < 1_int64 .or. &
+        context_value_count > int(huge(value_count), int64)) return
+    value_count = int(context_value_count)
     if (source /= destination) then
       if (distribution%rank == source) then
         allocate(payload(value_count))
@@ -3325,92 +3354,6 @@ contains
     ok = global_ok .and. accepted
   end subroutine transfer_sparse_root_correction_2d
 
-  subroutine transfer_sparse_root_patch_correction_2d( &
-      distribution, coarse_geometry, nvar, patch, source, destination, tag, &
-      state, temperature, local_transfers, ok)
-    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
-    type(eb_geometry_2d), intent(in) :: coarse_geometry
-    integer, intent(in) :: nvar
-    type(amr_eb_patch_2d), intent(in) :: patch
-    integer, intent(in) :: source, destination, tag
-    real(dp), allocatable, intent(inout) :: state(:, :, :)
-    real(dp), allocatable, intent(inout) :: temperature(:, :)
-    integer, intent(inout) :: local_transfers
-    logical, intent(out) :: ok
-
-    type(MPI_Status) :: status
-    real(dp), allocatable :: payload(:)
-    logical :: accepted, global_ok, local_ok, participant
-    integer :: cell_count, i_lower, i_upper, ierr, j_lower, j_upper
-    integer :: state_count, value_count
-
-    ok = .false.
-    ! Flux mismatch lives one coarse cell outside the patch. Cut-cell
-    ! redistribution can move it through one further cardinal/diagonal edge.
-    i_lower = max(1, patch%coarse_i_lower - 2)
-    i_upper = min(coarse_geometry%nx, patch%coarse_i_upper + 2)
-    j_lower = max(1, patch%coarse_j_lower - 2)
-    j_upper = min(coarse_geometry%ny, patch%coarse_j_upper + 2)
-    local_ok = nvar >= 1 .and. source >= 0 .and. &
-      source < distribution%nranks .and. destination >= 0 .and. &
-      destination < distribution%nranks .and. &
-      patch%coarse_i_lower >= 1 .and. &
-      patch%coarse_i_upper <= coarse_geometry%nx .and. &
-      patch%coarse_j_lower >= 1 .and. &
-      patch%coarse_j_upper <= coarse_geometry%ny .and. &
-      patch%coarse_i_lower <= patch%coarse_i_upper .and. &
-      patch%coarse_j_lower <= patch%coarse_j_upper
-    participant = distribution%rank == source .or. &
-      distribution%rank == destination
-    if (participant .and. local_ok) local_ok = allocated(state) .and. &
-      allocated(temperature)
-    if (participant .and. local_ok) local_ok = &
-      all(shape(state) == &
-        [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
-      all(shape(temperature) == &
-        [coarse_geometry%nx, coarse_geometry%ny]) .and. &
-      all(ieee_is_finite(state)) .and. &
-      all(ieee_is_finite(temperature))
-    call all_ranks_accept_eb_2d( &
-      distribution, local_ok, accepted, global_ok)
-    if (.not. global_ok .or. .not. accepted) return
-
-    cell_count = (i_upper - i_lower + 1) * (j_upper - j_lower + 1)
-    state_count = nvar * cell_count
-    value_count = state_count + cell_count
-    if (source /= destination) then
-      if (distribution%rank == source) then
-        allocate(payload(value_count))
-        payload(1:state_count) = reshape( &
-          state(:, i_lower:i_upper, j_lower:j_upper), [state_count])
-        payload(state_count + 1:value_count) = reshape( &
-          temperature(i_lower:i_upper, j_lower:j_upper), [cell_count])
-        call MPI_Send( &
-          payload, value_count, MPI_DOUBLE_PRECISION, destination, tag, &
-          distribution%comm, ierr)
-        if (ierr /= MPI_SUCCESS) return
-        local_transfers = local_transfers + 1
-      else if (distribution%rank == destination) then
-        allocate(payload(value_count))
-        call MPI_Recv( &
-          payload, value_count, MPI_DOUBLE_PRECISION, source, tag, &
-          distribution%comm, status, ierr)
-        if (ierr /= MPI_SUCCESS) return
-        state(:, i_lower:i_upper, j_lower:j_upper) = reshape( &
-          payload(1:state_count), &
-          [nvar, i_upper - i_lower + 1, j_upper - j_lower + 1])
-        temperature(i_lower:i_upper, j_lower:j_upper) = reshape( &
-          payload(state_count + 1:value_count), &
-          [i_upper - i_lower + 1, j_upper - j_lower + 1])
-      end if
-    end if
-    local_ok = .true.
-    if (participant) local_ok = all(ieee_is_finite(state)) .and. &
-      all(ieee_is_finite(temperature))
-    call all_ranks_accept_eb_2d( &
-      distribution, local_ok, accepted, global_ok)
-    ok = global_ok .and. accepted
-  end subroutine transfer_sparse_root_patch_correction_2d
 
   subroutine scatter_sparse_root_from_owner_2d( &
       distribution, coarse_geometry, patch_set_template, root_state, &
