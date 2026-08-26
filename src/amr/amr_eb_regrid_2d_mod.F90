@@ -70,6 +70,18 @@ module amr_eb_regrid_2d_mod
     procedure :: is_valid => reactive_eb_fine_patch_is_valid
   end type reactive_eb_fine_patch_2d
 
+  type, public :: reactive_eb_patch_geometry_2d
+    type(eb_geometry_2d) :: geometry
+    type(amr_eb_patch_2d) :: patch
+  end type reactive_eb_patch_geometry_2d
+
+  type, public :: reactive_eb_patch_topology_2d
+    type(reactive_eb_patch_geometry_2d), allocatable :: children(:)
+  contains
+    procedure :: patch_count => reactive_eb_patch_topology_patch_count
+    procedure :: is_valid => reactive_eb_patch_topology_is_valid
+  end type reactive_eb_patch_topology_2d
+
   type, public :: reactive_eb_patch_set_2d
     type(reactive_eb_fine_patch_2d), allocatable :: children(:)
   contains
@@ -83,6 +95,7 @@ module amr_eb_regrid_2d_mod
   public :: plan_reactive_eb_temperature_regrid_2d
   public :: plan_reactive_eb_temperature_regrid_collection_2d
   public :: initialize_reactive_eb_patch_set_2d
+  public :: extract_reactive_eb_patch_topology_2d
   public :: average_down_reactive_eb_patch_set_2d
   public :: composite_reactive_eb_patch_set_integral_2d
   public :: regrid_reactive_eb_patch_set_2d
@@ -243,6 +256,69 @@ contains
     count = 0
     if (allocated(self%children)) count = size(self%children)
   end function reactive_eb_patch_set_patch_count
+
+  pure integer function reactive_eb_patch_topology_patch_count(self) &
+      result(count)
+    class(reactive_eb_patch_topology_2d), intent(in) :: self
+
+    count = 0
+    if (allocated(self%children)) count = size(self%children)
+  end function reactive_eb_patch_topology_patch_count
+
+  pure logical function reactive_eb_patch_topology_is_valid( &
+      self, coarse_geometry) result(valid)
+    class(reactive_eb_patch_topology_2d), intent(in) :: self
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+
+    integer :: first, second
+
+    valid = coarse_geometry%is_valid() .and. allocated(self%children)
+    if (.not. valid) return
+    do first = 1, size(self%children)
+      valid = self%children(first)%geometry%is_valid() .and. &
+        self%children(first)%patch%is_valid( &
+          coarse_geometry, self%children(first)%geometry)
+      if (.not. valid) return
+      do second = first + 1, size(self%children)
+        valid = &
+          self%children(first)%patch%coarse_i_upper + &
+            eb_patch_set_separation_cells < &
+              self%children(second)%patch%coarse_i_lower .or. &
+          self%children(second)%patch%coarse_i_upper + &
+            eb_patch_set_separation_cells < &
+              self%children(first)%patch%coarse_i_lower .or. &
+          self%children(first)%patch%coarse_j_upper + &
+            eb_patch_set_separation_cells < &
+              self%children(second)%patch%coarse_j_lower .or. &
+          self%children(second)%patch%coarse_j_upper + &
+            eb_patch_set_separation_cells < &
+              self%children(first)%patch%coarse_j_lower
+        if (.not. valid) return
+      end do
+    end do
+  end function reactive_eb_patch_topology_is_valid
+
+  subroutine extract_reactive_eb_patch_topology_2d( &
+      coarse_geometry, nvar, patch_set, topology, ok)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    integer, intent(in) :: nvar
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    type(reactive_eb_patch_topology_2d), intent(out) :: topology
+    logical, intent(out) :: ok
+
+    integer :: child
+
+    topology = reactive_eb_patch_topology_2d()
+    ok = patch_set%is_valid(coarse_geometry, nvar)
+    if (.not. ok) return
+    allocate(topology%children(patch_set%patch_count()))
+    do child = 1, patch_set%patch_count()
+      topology%children(child)%geometry = &
+        patch_set%children(child)%geometry
+      topology%children(child)%patch = patch_set%children(child)%patch
+    end do
+    ok = topology%is_valid(coarse_geometry)
+  end subroutine extract_reactive_eb_patch_topology_2d
 
   pure logical function reactive_eb_patch_set_is_valid( &
       self, coarse_geometry, nvar) result(valid)

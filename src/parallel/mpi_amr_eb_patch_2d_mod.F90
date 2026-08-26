@@ -32,7 +32,8 @@ module mpi_amr_eb_patch_2d_mod
     reflux_reactive_eb_state_patch_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
-    reactive_eb_patch_set_2d, &
+    reactive_eb_patch_set_2d, reactive_eb_patch_topology_2d, &
+    extract_reactive_eb_patch_topology_2d, &
     average_down_reactive_eb_patch_set_2d, &
     composite_reactive_eb_patch_set_integral_2d, &
     plan_reactive_eb_temperature_regrid_collection_2d
@@ -133,6 +134,9 @@ module mpi_amr_eb_patch_2d_mod
   public :: materialize_owned_reactive_eb_patch_set_2d
   public :: gather_sparse_owned_reactive_eb_patch_set_to_root_2d
   public :: scatter_root_reactive_eb_patch_set_to_sparse_2d
+  public :: scatter_root_reactive_eb_topology_to_sparse_2d
+  public :: mpi_amr_eb_distribution_matches_topology_2d
+  public :: mpi_amr_eb_sparse_patch_set_matches_topology_2d
   public :: regrid_sparse_owned_reactive_eb_patch_set_2d
   public :: regrid_tagged_sparse_owned_reactive_eb_patch_set_2d
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
@@ -313,6 +317,106 @@ contains
         size(self%root_tiles) + patch_set%patch_count()
   end function mpi_amr_eb_distribution_is_valid
 
+  pure logical function mpi_amr_eb_distribution_matches_topology_2d( &
+      distribution, coarse_geometry, topology) result(matches)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_topology_2d), intent(in) :: topology
+
+    integer, allocatable :: cells(:), entities(:)
+    integer(int64), allocatable :: work(:)
+    integer(int64) :: expected_cells, expected_work, level_scale
+    integer :: child, exponent, expected_j_lower, owner, ratio, tile
+
+    matches = distribution%rank >= 0 .and. distribution%nranks >= 1 .and. &
+      distribution%rank < distribution%nranks .and. &
+      distribution%subcycle_exponent >= 0 .and. &
+      distribution%subcycle_exponent <= 2 .and. &
+      topology%is_valid(coarse_geometry) .and. &
+      allocated(distribution%root_tiles) .and. &
+      allocated(distribution%child_owners) .and. &
+      allocated(distribution%child_cell_counts) .and. &
+      allocated(distribution%child_work_counts) .and. &
+      allocated(distribution%rank_cell_counts) .and. &
+      allocated(distribution%rank_entity_counts) .and. &
+      allocated(distribution%rank_work_counts)
+    if (.not. matches) return
+    matches = size(distribution%root_tiles) >= 1 .and. &
+      size(distribution%root_tiles) <= &
+        min(coarse_geometry%ny, distribution%nranks) .and. &
+      size(distribution%child_owners) == topology%patch_count() .and. &
+      size(distribution%child_cell_counts) == topology%patch_count() .and. &
+      size(distribution%child_work_counts) == topology%patch_count() .and. &
+      size(distribution%rank_cell_counts) == distribution%nranks .and. &
+      size(distribution%rank_entity_counts) == distribution%nranks .and. &
+      size(distribution%rank_work_counts) == distribution%nranks
+    if (.not. matches) return
+
+    allocate(cells(distribution%nranks), entities(distribution%nranks))
+    allocate(work(distribution%nranks))
+    cells = 0
+    entities = 0
+    work = 0_int64
+    expected_j_lower = 1
+    do tile = 1, size(distribution%root_tiles)
+      matches = distribution%root_tiles(tile)%is_valid( &
+        coarse_geometry%nx, coarse_geometry%ny, distribution%nranks) .and. &
+        distribution%root_tiles(tile)%j_lower == expected_j_lower
+      if (.not. matches) return
+      expected_j_lower = distribution%root_tiles(tile)%j_upper + 1
+      owner = distribution%root_tiles(tile)%owner + 1
+      cells(owner) = cells(owner) + &
+        distribution%root_tiles(tile)%cell_count
+      entities(owner) = entities(owner) + 1
+      work(owner) = work(owner) + distribution%root_tiles(tile)%work_count
+    end do
+    if (expected_j_lower /= coarse_geometry%ny + 1) then
+      matches = .false.
+      return
+    end if
+
+    do child = 1, topology%patch_count()
+      matches = distribution%child_owners(child) >= 0 .and. &
+        distribution%child_owners(child) < distribution%nranks
+      if (.not. matches) return
+      expected_cells = int(topology%children(child)%geometry%nx, int64) * &
+        int(topology%children(child)%geometry%ny, int64)
+      if (expected_cells > &
+          int(huge(distribution%child_cell_counts(child)), int64)) then
+        matches = .false.
+        return
+      end if
+      ratio = topology%children(child)%patch%refinement_ratio
+      level_scale = 1_int64
+      do exponent = 1, distribution%subcycle_exponent
+        if (ratio < 1 .or. &
+            level_scale > huge(level_scale) / int(ratio, int64)) then
+          matches = .false.
+          return
+        end if
+        level_scale = level_scale * int(ratio, int64)
+      end do
+      if (expected_cells > huge(expected_work) / level_scale) then
+        matches = .false.
+        return
+      end if
+      expected_work = expected_cells * level_scale
+      matches = int(distribution%child_cell_counts(child), int64) == &
+          expected_cells .and. &
+        distribution%child_work_counts(child) == expected_work
+      if (.not. matches) return
+      owner = distribution%child_owners(child) + 1
+      cells(owner) = cells(owner) + distribution%child_cell_counts(child)
+      entities(owner) = entities(owner) + 1
+      work(owner) = work(owner) + distribution%child_work_counts(child)
+    end do
+    matches = all(cells == distribution%rank_cell_counts) .and. &
+      all(entities == distribution%rank_entity_counts) .and. &
+      all(work == distribution%rank_work_counts) .and. &
+      sum(distribution%rank_entity_counts) == &
+        size(distribution%root_tiles) + topology%patch_count()
+  end function mpi_amr_eb_distribution_matches_topology_2d
+
   logical function mpi_amr_eb_sparse_patch_set_is_valid( &
       self, distribution, coarse_geometry, patch_set) result(valid)
     class(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: self
@@ -364,6 +468,72 @@ contains
       end if
     end do
   end function mpi_amr_eb_sparse_patch_set_is_valid
+
+  logical function mpi_amr_eb_sparse_patch_set_matches_topology_2d( &
+      sparse_patch_set, distribution, coarse_geometry, topology) &
+      result(matches)
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(in) :: sparse_patch_set
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_topology_2d), intent(in) :: topology
+
+    logical :: local
+    integer :: child, height, tile
+
+    matches = sparse_patch_set%rank == distribution%rank .and. &
+      sparse_patch_set%nranks == distribution%nranks .and. &
+      sparse_patch_set%nvar >= 1 .and. &
+      allocated(sparse_patch_set%root_tiles) .and. &
+      allocated(sparse_patch_set%children) .and. &
+      mpi_amr_eb_distribution_matches_topology_2d( &
+        distribution, coarse_geometry, topology)
+    if (.not. matches) return
+    matches = size(sparse_patch_set%root_tiles) == &
+        distribution%root_tile_count() .and. &
+      size(sparse_patch_set%children) == distribution%child_count()
+    if (.not. matches) return
+    do tile = 1, size(sparse_patch_set%root_tiles)
+      local = distribution%root_tile_is_local(tile)
+      matches = &
+        (allocated(sparse_patch_set%root_tiles(tile)%state) .eqv. local) &
+        .and. (allocated( &
+          sparse_patch_set%root_tiles(tile)%temperature) .eqv. local)
+      if (.not. matches) return
+      if (local) then
+        height = distribution%root_tiles(tile)%j_upper - &
+          distribution%root_tiles(tile)%j_lower + 1
+        matches = all(shape(sparse_patch_set%root_tiles(tile)%state) == &
+            [sparse_patch_set%nvar, coarse_geometry%nx, height]) .and. &
+          all(shape(sparse_patch_set%root_tiles(tile)%temperature) == &
+            [coarse_geometry%nx, height]) .and. &
+          all(ieee_is_finite( &
+            sparse_patch_set%root_tiles(tile)%state)) .and. &
+          all(ieee_is_finite( &
+            sparse_patch_set%root_tiles(tile)%temperature))
+        if (.not. matches) return
+      end if
+    end do
+    do child = 1, size(sparse_patch_set%children)
+      local = distribution%child_is_local(child)
+      matches = (allocated( &
+          sparse_patch_set%children(child)%state) .eqv. local) .and. &
+        (allocated(sparse_patch_set%children(child)%temperature) .eqv. local)
+      if (.not. matches) return
+      if (local) then
+        matches = all(shape(sparse_patch_set%children(child)%state) == &
+            [sparse_patch_set%nvar, &
+              topology%children(child)%geometry%nx, &
+              topology%children(child)%geometry%ny]) .and. &
+          all(shape(sparse_patch_set%children(child)%temperature) == &
+            [topology%children(child)%geometry%nx, &
+              topology%children(child)%geometry%ny]) .and. &
+          all(ieee_is_finite(sparse_patch_set%children(child)%state)) .and. &
+          all(ieee_is_finite( &
+            sparse_patch_set%children(child)%temperature))
+        if (.not. matches) return
+      end if
+    end do
+  end function mpi_amr_eb_sparse_patch_set_matches_topology_2d
 
   pure integer(int64) function &
       mpi_amr_eb_sparse_patch_set_local_value_count(self) result(count)
@@ -699,6 +869,44 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_transfers
 
+    type(reactive_eb_patch_topology_2d) :: topology
+    logical :: extracted
+    integer :: transfers
+
+    sparse_patch_set = mpi_amr_eb_sparse_patch_set_2d()
+    ok = .false.
+    transfers = 0
+    if (present(local_transfers)) local_transfers = 0
+    extracted = .false.
+    if (nspecies >= 1) then
+      call extract_reactive_eb_patch_topology_2d( &
+        coarse_geometry, reactive_nvar(nspecies), patch_set_template, &
+        topology, extracted)
+    end if
+    if (.not. extracted) topology = reactive_eb_patch_topology_2d()
+    call scatter_root_reactive_eb_topology_to_sparse_2d( &
+      distribution, nspecies, root_coarse_state, root_coarse_temperature, &
+      coarse_geometry, root_patch_set, topology, root, sparse_patch_set, &
+      ok, transfers)
+    if (ok .and. present(local_transfers)) local_transfers = transfers
+  end subroutine scatter_root_reactive_eb_patch_set_to_sparse_2d
+
+  subroutine scatter_root_reactive_eb_topology_to_sparse_2d( &
+      distribution, nspecies, root_coarse_state, root_coarse_temperature, &
+      coarse_geometry, root_patch_set, topology, root, &
+      sparse_patch_set, ok, local_transfers)
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    integer, intent(in) :: nspecies
+    real(dp), allocatable, intent(in) :: root_coarse_state(:, :, :)
+    real(dp), allocatable, intent(in) :: root_coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(in) :: root_patch_set
+    type(reactive_eb_patch_topology_2d), intent(in) :: topology
+    integer, intent(in) :: root
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: sparse_patch_set
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_transfers
+
     type(mpi_amr_eb_sparse_patch_set_2d) :: candidate
     type(MPI_Status) :: status
     real(dp), allocatable :: payload(:)
@@ -711,11 +919,13 @@ contains
     ok = .false.
     transfers = 0
     if (present(local_transfers)) local_transfers = 0
-    nvar = reactive_nvar(nspecies)
+    nvar = 0
+    if (nspecies >= 1) nvar = reactive_nvar(nspecies)
     local_ok = nspecies >= 1 .and. root >= 0 .and. &
       root < distribution%nranks .and. &
-      distribution%is_valid(coarse_geometry, patch_set_template) .and. &
-      patch_set_template%is_valid(coarse_geometry, nvar)
+      mpi_amr_eb_distribution_matches_topology_2d( &
+        distribution, coarse_geometry, topology) .and. &
+      topology%is_valid(coarse_geometry)
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
@@ -740,8 +950,7 @@ contains
       if (local_ok) local_ok = &
         root_patch_set%is_valid(coarse_geometry, nvar)
       if (local_ok) local_ok = &
-        reactive_eb_patch_set_topology_matches_2d( &
-          root_patch_set, patch_set_template)
+        reactive_eb_patch_set_matches_topology_2d(root_patch_set, topology)
     else
       local_ok = .not. allocated(root_coarse_state) .and. &
         .not. allocated(root_coarse_temperature) .and. &
@@ -830,10 +1039,12 @@ contains
           payload, value_count, MPI_DOUBLE_PRECISION, root, &
           sparse_root_restart_scatter_tag, distribution%comm, status, ierr)
         if (ierr /= MPI_SUCCESS) return
-        allocate(candidate%children(child)%state, mold= &
-          patch_set_template%children(child)%state)
-        allocate(candidate%children(child)%temperature, mold= &
-          patch_set_template%children(child)%temperature)
+        allocate(candidate%children(child)%state(nvar, &
+          topology%children(child)%geometry%nx, &
+          topology%children(child)%geometry%ny))
+        allocate(candidate%children(child)%temperature( &
+          topology%children(child)%geometry%nx, &
+          topology%children(child)%geometry%ny))
         candidate%children(child)%state = reshape( &
           payload(1:state_count), shape( &
             candidate%children(child)%state))
@@ -844,62 +1055,63 @@ contains
       if (allocated(payload)) deallocate(payload)
     end do
 
-    local_ok = candidate%is_valid( &
-      distribution, coarse_geometry, patch_set_template)
+    local_ok = mpi_amr_eb_sparse_patch_set_matches_topology_2d( &
+      candidate, distribution, coarse_geometry, topology)
     call all_ranks_accept_eb_2d( &
       distribution, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
     sparse_patch_set = candidate
     ok = .true.
     if (present(local_transfers)) local_transfers = transfers
-  end subroutine scatter_root_reactive_eb_patch_set_to_sparse_2d
+  end subroutine scatter_root_reactive_eb_topology_to_sparse_2d
 
-  pure logical function reactive_eb_patch_set_topology_matches_2d( &
-      first, second) result(matches)
-    type(reactive_eb_patch_set_2d), intent(in) :: first, second
+  pure logical function reactive_eb_patch_set_matches_topology_2d( &
+      patch_set, topology) result(matches)
+    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
+    type(reactive_eb_patch_topology_2d), intent(in) :: topology
 
     real(dp), parameter :: tolerance = 5.0e3_dp * epsilon(1.0_dp)
     integer :: child
 
-    matches = first%patch_count() == second%patch_count()
+    matches = patch_set%patch_count() == topology%patch_count()
     if (.not. matches) return
-    do child = 1, first%patch_count()
+    do child = 1, patch_set%patch_count()
       matches = all([ &
-        first%children(child)%patch%coarse_i_lower, &
-        first%children(child)%patch%coarse_i_upper, &
-        first%children(child)%patch%coarse_j_lower, &
-        first%children(child)%patch%coarse_j_upper, &
-        first%children(child)%patch%refinement_ratio, &
-        first%children(child)%geometry%nx, &
-        first%children(child)%geometry%ny] == [ &
-        second%children(child)%patch%coarse_i_lower, &
-        second%children(child)%patch%coarse_i_upper, &
-        second%children(child)%patch%coarse_j_lower, &
-        second%children(child)%patch%coarse_j_upper, &
-        second%children(child)%patch%refinement_ratio, &
-        second%children(child)%geometry%nx, &
-        second%children(child)%geometry%ny])
+        patch_set%children(child)%patch%coarse_i_lower, &
+        patch_set%children(child)%patch%coarse_i_upper, &
+        patch_set%children(child)%patch%coarse_j_lower, &
+        patch_set%children(child)%patch%coarse_j_upper, &
+        patch_set%children(child)%patch%refinement_ratio, &
+        patch_set%children(child)%geometry%nx, &
+        patch_set%children(child)%geometry%ny] == [ &
+        topology%children(child)%patch%coarse_i_lower, &
+        topology%children(child)%patch%coarse_i_upper, &
+        topology%children(child)%patch%coarse_j_lower, &
+        topology%children(child)%patch%coarse_j_upper, &
+        topology%children(child)%patch%refinement_ratio, &
+        topology%children(child)%geometry%nx, &
+        topology%children(child)%geometry%ny])
       if (.not. matches) return
       matches = all(abs([ &
-        first%children(child)%geometry%x_lower, &
-        first%children(child)%geometry%x_upper, &
-        first%children(child)%geometry%y_lower, &
-        first%children(child)%geometry%y_upper, &
-        first%children(child)%geometry%dx, &
-        first%children(child)%geometry%dy] - [ &
-        second%children(child)%geometry%x_lower, &
-        second%children(child)%geometry%x_upper, &
-        second%children(child)%geometry%y_lower, &
-        second%children(child)%geometry%y_upper, &
-        second%children(child)%geometry%dx, &
-        second%children(child)%geometry%dy]) <= tolerance) .and. &
-        all(first%children(child)%geometry%cell_type == &
-          second%children(child)%geometry%cell_type) .and. &
-        all(abs(first%children(child)%geometry%volume_fraction - &
-          second%children(child)%geometry%volume_fraction) <= tolerance)
+        patch_set%children(child)%geometry%x_lower, &
+        patch_set%children(child)%geometry%x_upper, &
+        patch_set%children(child)%geometry%y_lower, &
+        patch_set%children(child)%geometry%y_upper, &
+        patch_set%children(child)%geometry%dx, &
+        patch_set%children(child)%geometry%dy] - [ &
+        topology%children(child)%geometry%x_lower, &
+        topology%children(child)%geometry%x_upper, &
+        topology%children(child)%geometry%y_lower, &
+        topology%children(child)%geometry%y_upper, &
+        topology%children(child)%geometry%dx, &
+        topology%children(child)%geometry%dy]) <= tolerance) .and. &
+        all(patch_set%children(child)%geometry%cell_type == &
+          topology%children(child)%geometry%cell_type) .and. &
+        all(abs(patch_set%children(child)%geometry%volume_fraction - &
+          topology%children(child)%geometry%volume_fraction) <= tolerance)
       if (.not. matches) return
     end do
-  end function reactive_eb_patch_set_topology_matches_2d
+  end function reactive_eb_patch_set_matches_topology_2d
 
   subroutine regrid_sparse_owned_reactive_eb_patch_set_2d( &
       species, distribution, sparse_patch_set, coarse_geometry, &

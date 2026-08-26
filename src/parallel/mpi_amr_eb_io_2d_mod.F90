@@ -2,8 +2,11 @@ module mpi_amr_eb_io_2d_mod
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_2d_mod, only: eb_geometry_2d
-  use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
+  use amr_eb_regrid_2d_mod, only: &
+    reactive_eb_patch_set_2d, reactive_eb_patch_topology_2d, &
+    extract_reactive_eb_patch_topology_2d
   use simulation_config_reactive_eb_2d_mod, only: reactive_eb_2d_config
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
@@ -15,12 +18,14 @@ module mpi_amr_eb_io_2d_mod
     mpi_amr_eb_patch_distribution_2d, &
     mpi_amr_eb_sparse_patch_set_2d, &
     gather_sparse_owned_reactive_eb_patch_set_to_root_2d, &
-    scatter_root_reactive_eb_patch_set_to_sparse_2d
+    scatter_root_reactive_eb_topology_to_sparse_2d, &
+    mpi_amr_eb_distribution_matches_topology_2d
   implicit none
   private
 
   public :: write_sparse_owned_reactive_eb_patch_set_2d_checkpoint
   public :: read_sparse_owned_reactive_eb_patch_set_2d_checkpoint
+  public :: read_sparse_owned_reactive_eb_topology_2d_checkpoint
   public :: write_sparse_owned_reactive_eb_patch_set_2d_csv
 
 contains
@@ -89,6 +94,39 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_transfers
 
+    type(reactive_eb_patch_topology_2d) :: topology
+    logical :: extracted
+
+    extracted = .false.
+    if (size(species) >= 1) then
+      call extract_reactive_eb_patch_topology_2d( &
+        coarse_geometry, reactive_nvar(size(species)), patch_set_template, &
+        topology, extracted)
+    end if
+    if (.not. extracted) topology = reactive_eb_patch_topology_2d()
+    call read_sparse_owned_reactive_eb_topology_2d_checkpoint( &
+      path, species, config, distribution, coarse_geometry, topology, root, &
+      sparse_patch_set, time, steps, regrids, minimum_dt, base_density, ok, &
+      local_transfers)
+  end subroutine read_sparse_owned_reactive_eb_patch_set_2d_checkpoint
+
+  subroutine read_sparse_owned_reactive_eb_topology_2d_checkpoint( &
+      path, species, config, distribution, coarse_geometry, topology, root, &
+      sparse_patch_set, time, steps, regrids, minimum_dt, base_density, ok, &
+      local_transfers)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    type(mpi_amr_eb_patch_distribution_2d), intent(in) :: distribution
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_topology_2d), intent(in) :: topology
+    integer, intent(in) :: root
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(out) :: sparse_patch_set
+    real(dp), intent(out) :: time, minimum_dt, base_density
+    integer, intent(out) :: steps, regrids
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_transfers
+
     type(eb_geometry_2d) :: loaded_geometry
     type(reactive_eb_patch_set_2d) :: loaded_patch_set
     real(dp), allocatable :: loaded_state(:, :, :)
@@ -110,7 +148,10 @@ contains
     integer_metadata = 0
     if (present(local_transfers)) local_transfers = 0
 
-    read_ok = root >= 0 .and. root < distribution%nranks
+    read_ok = size(species) >= 1 .and. root >= 0 .and. &
+      root < distribution%nranks .and. &
+      mpi_amr_eb_distribution_matches_topology_2d( &
+        distribution, coarse_geometry, topology)
     call MPI_Allreduce( &
       read_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. accepted) return
@@ -143,9 +184,9 @@ contains
       distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS) return
 
-    call scatter_root_reactive_eb_patch_set_to_sparse_2d( &
+    call scatter_root_reactive_eb_topology_to_sparse_2d( &
       distribution, size(species), loaded_state, loaded_temperature, &
-      coarse_geometry, loaded_patch_set, patch_set_template, root, &
+      coarse_geometry, loaded_patch_set, topology, root, &
       sparse_patch_set, scattered, transfers)
     if (.not. scattered) return
 
@@ -156,7 +197,7 @@ contains
     regrids = integer_metadata(2)
     ok = .true.
     if (present(local_transfers)) local_transfers = transfers
-  end subroutine read_sparse_owned_reactive_eb_patch_set_2d_checkpoint
+  end subroutine read_sparse_owned_reactive_eb_topology_2d_checkpoint
 
   subroutine write_sparse_owned_reactive_eb_patch_set_2d_csv( &
       species, config, distribution, sparse_patch_set, coarse_geometry, &

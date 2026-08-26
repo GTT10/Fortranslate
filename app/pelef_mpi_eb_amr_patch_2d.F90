@@ -25,9 +25,11 @@ program pelef_mpi_eb_amr_patch_2d
     amr_eb_patch_2d, build_amr_eb_patch_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
-    reactive_eb_patch_set_2d, build_amr_eb_regrid_plan_collection_2d, &
+    reactive_eb_patch_set_2d, reactive_eb_patch_topology_2d, &
+    build_amr_eb_regrid_plan_collection_2d, &
     plan_reactive_eb_temperature_regrid_collection_2d, &
     initialize_reactive_eb_patch_set_2d, &
+    extract_reactive_eb_patch_topology_2d, &
     average_down_reactive_eb_patch_set_2d, &
     advance_reactive_eb_patch_set_hydro_2d, &
     regrid_reactive_eb_patch_set_2d
@@ -54,7 +56,7 @@ program pelef_mpi_eb_amr_patch_2d
     scatter_owned_reactive_eb_patch_set_2d, &
     materialize_owned_reactive_eb_patch_set_2d, &
     gather_sparse_owned_reactive_eb_patch_set_to_root_2d, &
-    scatter_root_reactive_eb_patch_set_to_sparse_2d, &
+    scatter_root_reactive_eb_topology_to_sparse_2d, &
     regrid_sparse_owned_reactive_eb_patch_set_2d, &
     average_down_sparse_owned_reactive_eb_patch_set_2d, &
     advance_sparse_owned_reactive_eb_patch_set_chemistry_2d, &
@@ -65,7 +67,7 @@ program pelef_mpi_eb_amr_patch_2d
     advance_sparse_owned_reactive_eb_patch_set_to_time_2d
   use mpi_amr_eb_io_2d_mod, only: &
     write_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
-    read_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
+    read_sparse_owned_reactive_eb_topology_2d_checkpoint, &
     write_sparse_owned_reactive_eb_patch_set_2d_csv
   implicit none
 
@@ -84,6 +86,8 @@ program pelef_mpi_eb_amr_patch_2d
   type(reactive_eb_patch_set_2d) :: root_materialized_patch_set
   type(reactive_eb_patch_set_2d) :: checkpoint_patch_set
   type(reactive_eb_patch_set_2d) :: rejected_materialized_set
+  type(reactive_eb_patch_topology_2d) :: restart_topology
+  type(reactive_eb_patch_topology_2d) :: invalid_restart_topology
   type(mpi_amr_eb_patch_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_distribution_2d) :: topology_distribution
   type(mpi_amr_eb_patch_distribution_2d) :: invalid_distribution
@@ -361,6 +365,11 @@ program pelef_mpi_eb_amr_patch_2d
     fine_geometries, collection, ratio, patch_set, ok)
   call assert_all(ok .and. patch_set%patch_count() == 2, &
     "MPI EB AMR patch set", rank)
+  call extract_reactive_eb_patch_topology_2d( &
+    coarse_geometry, nvar, patch_set, restart_topology, ok)
+  call assert_all(ok .and. restart_topology%is_valid(coarse_geometry) .and. &
+    restart_topology%patch_count() == patch_set%patch_count(), &
+    "MPI EB AMR geometry-only restart topology", rank)
 
   call initialize_mpi_amr_eb_patch_distribution_2d( &
     coarse_geometry, patch_set, MPI_COMM_WORLD, distribution, ok, 2)
@@ -588,10 +597,11 @@ program pelef_mpi_eb_amr_patch_2d
   expected_local_restart_transfers = 0
   if (rank == root_owner) expected_local_restart_transfers = &
     expected_global_root_materialization_transfers
-  call scatter_root_reactive_eb_patch_set_to_sparse_2d( &
+  call scatter_root_reactive_eb_topology_to_sparse_2d( &
     distribution, size(species), root_materialized_state, &
     root_materialized_temperature, coarse_geometry, &
-    root_materialized_patch_set, patch_set, root_owner, sparse_restart_set, &
+    root_materialized_patch_set, restart_topology, root_owner, &
+    sparse_restart_set, &
     ok, local_restart_transfers)
   call MPI_Allreduce( &
     local_restart_transfers, global_restart_transfers, 1, MPI_INTEGER, &
@@ -619,6 +629,18 @@ program pelef_mpi_eb_amr_patch_2d
         sparse_patch_set%children(child)%temperature)
   end do
   call assert_all(ok, "MPI EB AMR direct root restart scatter parity", rank)
+
+  invalid_restart_topology = restart_topology
+  invalid_restart_topology%children(1)%geometry%volume_fraction(1, 1) = &
+    2.0_dp
+  call scatter_root_reactive_eb_topology_to_sparse_2d( &
+    distribution, size(species), root_materialized_state, &
+    root_materialized_temperature, coarse_geometry, &
+    root_materialized_patch_set, invalid_restart_topology, root_owner, &
+    sparse_restart_set, ok, local_restart_transfers)
+  call assert_all(.not. ok .and. local_restart_transfers == 0 .and. &
+    sparse_restart_set%local_value_count() == 0, &
+    "MPI EB AMR invalid geometry-only restart topology rollback", rank)
 
   io_config%eb%flow%nx = coarse_nx
   io_config%eb%flow%ny = coarse_ny
@@ -695,9 +717,9 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(io_files_ok, &
     "MPI EB AMR sparse checkpoint round-trip parity", rank)
 
-  call read_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+  call read_sparse_owned_reactive_eb_topology_2d_checkpoint( &
     sparse_checkpoint_path, species, io_config, distribution, &
-    coarse_geometry, patch_set, root_owner, sparse_restart_set, &
+    coarse_geometry, restart_topology, root_owner, sparse_restart_set, &
     checkpoint_time, checkpoint_steps, checkpoint_regrids, &
     checkpoint_minimum_dt, checkpoint_base_density, ok, &
     local_restart_transfers)
@@ -738,9 +760,9 @@ program pelef_mpi_eb_amr_patch_2d
   call assert_all(io_files_ok, &
     "MPI EB AMR sparse checkpoint restart cleanup", rank)
 
-  call read_sparse_owned_reactive_eb_patch_set_2d_checkpoint( &
+  call read_sparse_owned_reactive_eb_topology_2d_checkpoint( &
     missing_checkpoint_path, species, io_config, distribution, &
-    coarse_geometry, patch_set, root_owner, sparse_restart_set, &
+    coarse_geometry, restart_topology, root_owner, sparse_restart_set, &
     checkpoint_time, checkpoint_steps, checkpoint_regrids, &
     checkpoint_minimum_dt, checkpoint_base_density, ok, &
     local_restart_transfers)
