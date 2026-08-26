@@ -2521,3 +2521,26 @@ The final blend is cell-local and therefore needs no neighboring root values.
 The two sparse transport Euler stages still assemble a complete root on the
 physics owner for diffusive fluxes, StateRedist, child context, and reflux.
 Finite-halo transport stages are the next root decomposition target.
+
+## Sparse MPI owner-tiled SSPRK2 root Euler stages (`0.140.0`)
+
+- [x] direct point-to-point state and temperature halo fragments per stage
+- [x] no unconditional selected-root gather before transport work
+- [x] one explicit EB transport/StateRedist band per root tile and Euler stage
+- [x] six-row guard covering the composed transport and redistribution stencil
+- [x] complete-root compatibility band for periodic y-boundary tiles
+- [x] owned input, result, temperature, x-flux, and unique y-face routing
+- [x] complete temporary root bundle only after distributed tile computation
+- [x] unchanged child subcycling, exterior construction, reflux, and scatter
+- [x] exact halo, result, child, correction, and scatter transfer accounting
+- [x] exact local tile-advance and computed-band-cell accounting
+- [x] serial root/child/limiter parity at one, two, four, and eight ranks
+- [x] sparse full-physics and public time-loop owner accounting
+- [x] late-failure rollback with zero published work and traffic
+
+The sparse root input remains persistently tile-owned, while each target owner
+materializes only its required temporary band. Periodic y-boundary targets use
+a complete band so cyclic wrap remains exact. Fine-child context and cumulative
+reflux also retain a complete temporary root bundle on the established physics
+owner. Cyclic band geometry and distributed coarse/fine interface data are
+subsequent decomposition work.
