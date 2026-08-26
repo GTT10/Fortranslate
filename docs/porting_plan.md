@@ -690,6 +690,9 @@ Required capabilities:
 - [x] public sparse EB full-physics time loop with dynamic stable-step
   selection, exact target-time clipping, and committed-prefix accounting
   (`0.126.0`)
+- [x] transactional explicit sparse EB topology rebuild with serial overlap
+  retention, deterministic owner recomputation, and one-copy post-regrid
+  storage (`0.127.0`)
 - locally resolved multilevel EB redistribution and arbitrary depth
 - thermal, viscous, and catalytic wall boundary conditions
 

@@ -1322,14 +1322,22 @@ and timestep root-traffic counts publish only after a whole split step commits.
 If a later step fails or reaches the configured total-step limit, earlier
 committed states and their exact accounting remain visible.
 
+In `0.127.0`, an explicit sparse topology transaction materializes the current
+owner fields, applies the established serial multipatch EB average-down,
+prolongation, and overlap-retention regrid, recomputes deterministic ownership
+for the new ordered children, and scatters the result back to one-copy sparse
+storage. Distribution, sparse payloads, and geometry template commit together;
+invalid controls or any intermediate failure leave all three unchanged. This
+correctness-first compatibility window is confined to regrid events.
+
 Unsplit transverse prediction, fourth-order StateRedist slopes, periodic ghost
 neighborhoods, thermal/viscous/catalytic walls, coarse-to-fine spatial slopes,
 same-level diffusive exchange for touching siblings, locally resolved
 PeleC-style multilevel redistribution, arbitrary depth, dynamic root/middle
 lifecycle ownership,
 non-outflow refined boundaries, decomposed root-level MPI StateRedist,
-dynamic sparse topology, distributed sparse checkpoint/output, and distributed
-EB flux registers
+owner-local tag planning and replica-free regrid overlap transfer, distributed
+sparse checkpoint/output, and distributed EB flux registers
 remain outside this subsystem.
 Dynamic three-level mode changes only the finest patch inside a
 fixed middle level and rejects finest removal and siblings.

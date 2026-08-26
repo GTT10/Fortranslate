@@ -28,8 +28,10 @@ module mpi_amr_eb_patch_2d_mod
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_reactive_eb_state_patch_2d
   use amr_eb_regrid_2d_mod, only: &
-    reactive_eb_patch_set_2d, average_down_reactive_eb_patch_set_2d, &
-    composite_reactive_eb_patch_set_integral_2d
+    amr_eb_regrid_plan_collection_2d, reactive_eb_patch_set_2d, &
+    average_down_reactive_eb_patch_set_2d, &
+    composite_reactive_eb_patch_set_integral_2d, &
+    regrid_reactive_eb_patch_set_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     level_two_interface_is_regular
@@ -107,6 +109,7 @@ module mpi_amr_eb_patch_2d_mod
   public :: advance_owned_reactive_eb_patch_set_strang_2d
   public :: scatter_owned_reactive_eb_patch_set_2d
   public :: materialize_owned_reactive_eb_patch_set_2d
+  public :: regrid_sparse_owned_reactive_eb_patch_set_2d
   public :: average_down_sparse_owned_reactive_eb_patch_set_2d
   public :: advance_sparse_owned_reactive_eb_patch_set_chemistry_2d
   public :: compute_sparse_owned_reactive_eb_patch_set_timestep_2d
@@ -509,6 +512,130 @@ contains
     patch_set = candidate_set
     ok = .true.
   end subroutine materialize_owned_reactive_eb_patch_set_2d
+
+  subroutine regrid_sparse_owned_reactive_eb_patch_set_2d( &
+      species, distribution, sparse_patch_set, coarse_geometry, &
+      patch_set_template, new_fine_geometries, new_collection, &
+      refinement_ratio, ok, changed)
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_distribution_2d), intent(inout) :: distribution
+    type(mpi_amr_eb_sparse_patch_set_2d), intent(inout) :: sparse_patch_set
+    type(eb_geometry_2d), intent(in) :: coarse_geometry
+    type(reactive_eb_patch_set_2d), intent(inout) :: patch_set_template
+    type(eb_geometry_2d), intent(in) :: new_fine_geometries(:)
+    type(amr_eb_regrid_plan_collection_2d), intent(in) :: new_collection
+    integer, intent(in) :: refinement_ratio
+    logical, intent(out) :: ok, changed
+
+    type(mpi_amr_eb_patch_distribution_2d) :: candidate_distribution
+    type(mpi_amr_eb_sparse_patch_set_2d) :: candidate_sparse_patch_set
+    type(reactive_eb_patch_set_2d) :: candidate_patch_set
+    type(reactive_eb_patch_set_2d) :: materialized_patch_set
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :)
+    real(dp), allocatable :: fallback_state(:, :, :)
+    real(dp), allocatable :: fallback_temperature(:, :)
+    real(dp), allocatable :: materialized_state(:, :, :)
+    real(dp), allocatable :: materialized_temperature(:, :)
+    logical :: accepted, global_ok, local_changed, local_ok
+    integer :: child, controls(5), controls_maximum(5), controls_minimum(5)
+    integer :: ierr, nvar
+
+    ok = .false.
+    changed = .false.
+    nvar = reactive_nvar(size(species))
+    local_ok = size(species) >= 1 .and. refinement_ratio >= 2 .and. &
+      new_collection%is_valid() .and. &
+      new_collection%coarse_nx == coarse_geometry%nx .and. &
+      new_collection%coarse_ny == coarse_geometry%ny .and. &
+      size(new_fine_geometries) == new_collection%patch_count() .and. &
+      sparse_patch_set%nvar == nvar .and. &
+      sparse_patch_set%is_valid( &
+        distribution, coarse_geometry, patch_set_template)
+    if (local_ok) then
+      do child = 1, size(new_fine_geometries)
+        local_ok = local_ok .and. new_fine_geometries(child)%is_valid()
+      end do
+    end if
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    controls = [ &
+      refinement_ratio, new_collection%coarse_nx, &
+      new_collection%coarse_ny, new_collection%tagged_cell_count, &
+      new_collection%patch_count()]
+    call MPI_Allreduce( &
+      controls, controls_minimum, 5, MPI_INTEGER, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      controls, controls_maximum, 5, MPI_INTEGER, MPI_MAX, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(controls_minimum /= controls_maximum)) return
+
+    allocate(fallback_state(nvar, coarse_geometry%nx, coarse_geometry%ny), &
+      source=0.0_dp)
+    allocate(fallback_temperature( &
+      coarse_geometry%nx, coarse_geometry%ny), source=0.0_dp)
+    allocate(materialized_state, mold=fallback_state)
+    allocate(materialized_temperature, mold=fallback_temperature)
+    call materialize_owned_reactive_eb_patch_set_2d( &
+      distribution, sparse_patch_set, fallback_state, fallback_temperature, &
+      coarse_geometry, patch_set_template, materialized_state, &
+      materialized_temperature, materialized_patch_set, local_ok)
+    if (.not. local_ok) return
+
+    allocate(candidate_state, mold=materialized_state)
+    allocate(candidate_temperature, mold=materialized_temperature)
+    call regrid_reactive_eb_patch_set_2d( &
+      species, materialized_state, materialized_temperature, &
+      coarse_geometry, materialized_patch_set, new_fine_geometries, &
+      new_collection, refinement_ratio, candidate_state, &
+      candidate_temperature, candidate_patch_set, local_ok)
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    local_changed = &
+      materialized_patch_set%patch_count() /= candidate_patch_set%patch_count()
+    if (.not. local_changed) then
+      do child = 1, candidate_patch_set%patch_count()
+        local_changed = any([ &
+          materialized_patch_set%children(child)%patch%coarse_i_lower, &
+          materialized_patch_set%children(child)%patch%coarse_i_upper, &
+          materialized_patch_set%children(child)%patch%coarse_j_lower, &
+          materialized_patch_set%children(child)%patch%coarse_j_upper, &
+          materialized_patch_set%children(child)%patch%refinement_ratio] /= &
+          [candidate_patch_set%children(child)%patch%coarse_i_lower, &
+          candidate_patch_set%children(child)%patch%coarse_i_upper, &
+          candidate_patch_set%children(child)%patch%coarse_j_lower, &
+          candidate_patch_set%children(child)%patch%coarse_j_upper, &
+          candidate_patch_set%children(child)%patch%refinement_ratio])
+        if (local_changed) exit
+      end do
+    end if
+    call initialize_mpi_amr_eb_patch_distribution_2d( &
+      coarse_geometry, candidate_patch_set, distribution%comm, &
+      candidate_distribution, local_ok, distribution%subcycle_exponent)
+    if (.not. local_ok) return
+    call scatter_owned_reactive_eb_patch_set_2d( &
+      candidate_distribution, size(species), candidate_state, &
+      candidate_temperature, coarse_geometry, candidate_patch_set, &
+      candidate_sparse_patch_set, local_ok)
+    if (.not. local_ok) return
+    local_ok = candidate_sparse_patch_set%is_valid( &
+      candidate_distribution, coarse_geometry, candidate_patch_set)
+    call all_ranks_accept_eb_2d( &
+      candidate_distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    distribution = candidate_distribution
+    sparse_patch_set = candidate_sparse_patch_set
+    patch_set_template = candidate_patch_set
+    changed = local_changed
+    ok = .true.
+  end subroutine regrid_sparse_owned_reactive_eb_patch_set_2d
 
   subroutine gather_sparse_root_to_owner_2d( &
       distribution, sparse_patch_set, coarse_geometry, root_state, &

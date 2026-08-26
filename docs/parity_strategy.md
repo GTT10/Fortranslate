@@ -2045,3 +2045,20 @@ retain exactly the first committed state, clock, minimum dt, and diagnostics,
 and leave the sparse hierarchy valid. The gate runs in GNU Fortran Release and
 bounds/FPE-checked Debug configurations before the complete 208-test
 regression.
+
+## 0.127.0 transactional sparse MPI reactive EB AMR regrid gates
+
+Start from two separated ratio-two child patches and give each child a distinct
+but thermodynamically consistent conserved-state scale. Build an independent
+serial reference that replaces them with one shifted and resized child. The
+sparse regrid must reproduce the serial averaged root, retained fine overlap,
+newly prolonged fine cells, temperatures, and ordered topology exactly at one,
+two, four, and eight ranks.
+
+After ownership is recomputed, each rank's stored values must equal `nvar+1`
+times its assigned root/child cell count, and the communicator sum must contain
+exactly one numerical copy of the rebuilt hierarchy. A refinement ratio of one
+must reject before materialization and preserve the old distribution, child
+owners, sparse fields, template, and `changed=false` result. The gate runs in
+GNU Fortran Release and bounds/FPE-checked Debug configurations before the
+complete 208-test regression.
