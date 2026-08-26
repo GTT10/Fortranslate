@@ -1069,6 +1069,21 @@ finite positive output, deterministic zero on invalid input, and a read-only
 state/temperature contract. Run the complete serial Debug and Release suite and
 the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
 
+## 0.154.0 arbitrary-depth reactive EB patch-tree hydro gates
+
+Generalize the qualified fixed-depth EB advance into a node-recursive
+transaction. Retain parent start/end state for child time interpolation,
+subcycle each relation by its runtime ratio, and own one flux register per
+ordered child. Reflux, average down, and close each refined subtree against its
+outer-boundary flux before a deepest-first final synchronization and atomic
+commit.
+
+Require a four-level branching schedule and composite density, energy, and
+species conservation; compare a runtime three-level chain with the qualified
+fixed-depth implementation; and verify exact rollback plus zero counts after a
+late recursive rejection. Run the complete serial Debug and Release suite and
+the existing OpenMPI one-, two-, four-, and eight-rank gates before acceptance.
+
 Each implementation PR should normally contain:
 
 1. implementation

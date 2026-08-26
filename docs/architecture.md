@@ -1681,3 +1681,27 @@ controls, active-node states, or an overflowing cumulative scale reject with
 zero timestep. The accepted hierarchy is read-only throughout selection.
 Hydro, chemistry, transport, public clock ownership, and MPI distribution
 remain separate arbitrary-depth operations.
+
+## Arbitrary-depth reactive EB patch-tree hydro (`0.154.0`)
+
+Hydrodynamics is a transaction over a private numerical-tree candidate. One
+recursive invocation advances one node for its supplied interval and retains
+the node's start state, uncorrected end state, and x/y EB fluxes. If the node
+has children, each child receives time-interpolated exterior state from those
+two parent endpoints and advances recursively for exactly the relation ratio
+substeps.
+
+Every parent/child pair owns an independent EB flux register. Coarse flux is
+accumulated once for the parent interval; child flux is accumulated after every
+recursive substep. Children reflux in topology order, then average down into
+their actual parent. Each refined subtree compares its before/after composite
+integral against flux through the parent node's outer boundary. Any remaining
+density, total-energy, and species residual is distributed over active,
+unrefined parent cells with EOS recovery and mass/species closure validation.
+
+After the root recursion succeeds, one deepest-first synchronization restores
+all coarse representations before the candidate commits. A failed level
+advance, exterior fill, register operation, reflux, conservation closure, EOS
+recovery, or final validation leaves the accepted tree unchanged and returns
+zero per-level advance counts. Chemistry, molecular transport, a public clock,
+dynamic tags, checkpoint I/O, and MPI ownership remain separate.

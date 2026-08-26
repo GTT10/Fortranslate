@@ -2497,3 +2497,18 @@ nonfinite CFL must reject with zero output and the same read-only contract.
 Retain all serial tests in GNU Fortran Release and bounds/FPE-checked Debug, then
 retain the established OpenMPI one-, two-, four-, and eight-rank suite even
 though this milestone adds no MPI communication.
+
+## 0.154.0 arbitrary-depth reactive EB patch-tree hydro gates
+
+Advance the existing four-level, two-branch EB numerical tree with PCM and the
+qualified level kernel. Require committed per-level node counts `[1, 4, 8, 8]`,
+positive finite temperatures, a changed solution, and conservation of density,
+total energy, and every species in the stationary-boundary composite integral.
+
+Represent the existing cut-interface fixed three-level hierarchy as a runtime
+patch-tree chain. Require `[1, 2, 4]` scheduling and field/temperature agreement
+with the qualified fixed-depth advance within the documented floating-point
+tolerance. An invalid solver must reject with zero published counts and exact
+tree rollback. Retain all 208 serial tests in GNU Fortran Release and bounds/
+FPE-checked Debug, plus the established OpenMPI one-, two-, four-, and eight-
+rank suite even though the new tree remains serial.
