@@ -978,6 +978,16 @@ distribution-derived message counts, and unchanged sparse numerical, owner-
 work, limiter, clock, scheduled-regrid, and rollback gates at one, two, four,
 and eight ranks before the complete serial regression.
 
+## 0.147.0 compact exterior state-context gates
+
+Generalize reactive child exterior-context extraction to globally indexed
+coarse start/end state and temperature support containing the patch-plus-one
+footprint. Preserve complete-root extraction as a wrapper.
+
+Require strictly smaller support, bitwise complete/support exterior parity,
+transactional invalid-support rejection, and unchanged serial and sparse MPI
+reactive EB AMR regressions before direct root-tile state routing.
+
 Each implementation PR should normally contain:
 
 1. implementation

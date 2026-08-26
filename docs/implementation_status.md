@@ -2646,3 +2646,15 @@ The root physics owner still assembles the temporary complete root result and
 flux bundle for exterior extraction, support state, boundary closure, ordered
 support merge, and final row scatter. Direct state/support routing is the next
 ownership boundary.
+
+## Compact exterior state-context support (`0.147.0`)
+
+- [x] context extraction accepts globally indexed coarse support arrays
+- [x] patch-plus-one start/end state and temperature is sufficient
+- [x] complete-root extraction remains a support-wrapper compatibility API
+- [x] compact/full context reconstruction is bitwise identical
+- [x] incomplete, out-of-root, or nonfinite support rejects transactionally
+
+Sparse MPI still extracts state context on the root physics owner in this
+milestone. The support API removes the complete-root shape dependency required
+before root tile owners can route start/end state fragments directly.
