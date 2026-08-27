@@ -1235,6 +1235,20 @@ and collective interval-mismatch rollback at one, two, four, and eight ranks.
 Run the complete MPI and serial Debug/Release suite before acceptance. Defer
 owner-local full-physics composition and the public sparse clock.
 
+## 0.166.0 MPI owner-local arbitrary-depth EB full-physics gates
+
+Compose the qualified sparse chemistry, SSPRK2 transport, and recursive hydro
+entrypoints as one private `R-T-H-T-R` candidate. Establish outer consensus
+before optional-physics branching, accumulate each operator and transfer class
+separately, reduce the two transport limiter minima, and publish only after
+final sparse validation.
+
+Require exact serial split scheduling and topology/map-derived traffic, plus
+field, temperature, limiter, and composite-integral parity. Reject a rank-local
+interval mismatch before mutation with zero public diagnostics at one, two,
+four, and eight ranks. Run the complete MPI and serial Debug/Release suite
+before acceptance. Defer the owner-local target-time clock.
+
 Each implementation PR should normally contain:
 
 1. implementation

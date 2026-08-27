@@ -2308,3 +2308,23 @@ owner. A deepest-first direct average-down follows the blend, adding one remote
 transfer for every distinct-owner relation. The public limiter is the
 communicator minimum over both stages. All fields and diagnostics commit only
 after final sparse validation.
+
+## MPI owner-local arbitrary-depth EB full physics
+
+For accepted sparse tree `U^n`, timestep `dt`, reaction operator `R`, SSPRK2
+transport operator `T`, and recursively subcycled hydro operator `H`, compute
+
+```text
+U* = R(dt/2) T(dt/2) H(dt) T(dt/2) R(dt/2) U^n.
+```
+
+Disabled chemistry omits both `R` applications. Disabled explicit transport
+makes each `T` application an accepted no-op with unit limiter. Every active
+operator consumes and returns only owner-local sparse fields through its
+qualified communication schedule.
+
+The outer operation accumulates chemistry-node, transport-Euler, and hydro-node
+advances independently, along with their three transfer categories. Its
+minimum transport limiter is the minimum from both half-steps. The accepted
+tree is assigned from `U*` only after every stage and final sparse validation
+succeed; failures expose neither a partial split state nor partial accounting.

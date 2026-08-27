@@ -2964,3 +2964,21 @@ separate work.
 This milestone removes materialization from recursive molecular transport.
 Owner-local full-physics composition and the sparse public clock remain
 separate work.
+
+## MPI owner-local arbitrary-depth EB full physics (`0.166.0`)
+
+- [x] one private sparse `R-T-H-T-R` candidate
+- [x] optional owner-local chemistry half-steps
+- [x] two owner-local SSPRK2 transport half-steps
+- [x] one owner-local recursively subcycled hydro interval
+- [x] outer consensus before optional-physics branching
+- [x] late-stage failure discards every accepted prefix
+- [x] committed-only chemistry, transport, and hydro level counts
+- [x] separate exact chemistry, transport, and hydro transfer accounting
+- [x] minimum transport limiter across both half-steps
+- [x] serial full-tree field, limiter, and conservation parity
+- [x] collective control-mismatch rollback with zero public accounting
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes materialization from arbitrary-depth sparse full-physics
+composition. The owner-local target-time clock remains separate work.
