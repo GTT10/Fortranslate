@@ -46,6 +46,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
   integer, parameter :: patch_tree_checkpoint_schema = 1
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 2
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -71,6 +72,22 @@ module amr_eb_patch_tree_reactive_2d_mod
       reactive_amr_eb_patch_tree_level_patch_count_at
     procedure :: is_valid => reactive_amr_eb_patch_tree_is_valid
   end type reactive_amr_eb_patch_tree_2d
+
+  type, public :: reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
+    character(len=32) :: geometry = ""
+    character(len=32) :: chemistry_model = ""
+    character(len=32) :: riemann_solver = ""
+    character(len=32) :: reconstruction = ""
+    character(len=32) :: limiter = ""
+    integer :: mesh_and_regrid(10) = 0
+    integer :: physics_and_regrid_flags(7) = 0
+    real(dp) :: domain(4) = 0.0_dp
+    real(dp) :: geometry_parameters(6) = 0.0_dp
+    real(dp) :: numerical_controls(8) = 0.0_dp
+  contains
+    procedure :: is_valid => patch_tree_checkpoint_fingerprint_is_valid_2d
+    procedure :: matches => patch_tree_checkpoint_fingerprints_match_2d
+  end type reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
 
   abstract interface
     subroutine reactive_amr_eb_tree_geometry_builder_2d( &
@@ -107,6 +124,60 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: composite_reactive_amr_eb_patch_subtree_integral_2d
 
 contains
+
+  pure logical function patch_tree_checkpoint_fingerprint_is_valid_2d( &
+      self) result(valid)
+    class(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in) :: self
+
+    valid = len_trim(self%geometry) > 0 .and. &
+      len_trim(self%chemistry_model) > 0 .and. &
+      len_trim(self%riemann_solver) > 0 .and. &
+      len_trim(self%reconstruction) > 0 .and. &
+      len_trim(self%limiter) > 0 .and. &
+      all(self%mesh_and_regrid(1:4) >= 1) .and. &
+      all(self%mesh_and_regrid(5:) >= 0) .and. &
+      all(self%physics_and_regrid_flags >= 0) .and. &
+      all(self%physics_and_regrid_flags <= 1) .and. &
+      all(ieee_is_finite(self%domain)) .and. &
+      all(ieee_is_finite(self%geometry_parameters)) .and. &
+      all(ieee_is_finite(self%numerical_controls))
+  end function patch_tree_checkpoint_fingerprint_is_valid_2d
+
+  pure logical function patch_tree_checkpoint_fingerprints_match_2d( &
+      self, other) result(matches)
+    class(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in) :: self
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in) :: other
+
+    matches = self%is_valid() .and. other%is_valid()
+    if (.not. matches) return
+    matches = trim(self%geometry) == trim(other%geometry) .and. &
+      trim(self%chemistry_model) == trim(other%chemistry_model) .and. &
+      trim(self%riemann_solver) == trim(other%riemann_solver) .and. &
+      trim(self%reconstruction) == trim(other%reconstruction) .and. &
+      trim(self%limiter) == trim(other%limiter) .and. &
+      all(self%mesh_and_regrid == other%mesh_and_regrid) .and. &
+      all(self%physics_and_regrid_flags == &
+        other%physics_and_regrid_flags) .and. &
+      all(checkpoint_fingerprint_real_matches_2d( &
+        self%domain, other%domain)) .and. &
+      all(checkpoint_fingerprint_real_matches_2d( &
+        self%geometry_parameters, other%geometry_parameters)) .and. &
+      all(checkpoint_fingerprint_real_matches_2d( &
+        self%numerical_controls, other%numerical_controls))
+  end function patch_tree_checkpoint_fingerprints_match_2d
+
+  pure elemental logical function checkpoint_fingerprint_real_matches_2d( &
+      lhs, rhs) result(matches)
+    real(dp), intent(in) :: lhs, rhs
+
+    matches = ieee_is_finite(lhs) .and. ieee_is_finite(rhs)
+    if (.not. matches) return
+    matches = abs(lhs - rhs) <= 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(lhs), abs(rhs))
+  end function checkpoint_fingerprint_real_matches_2d
 
   pure integer function reactive_amr_eb_patch_tree_level_patch_count(self) &
       result(count)
@@ -425,16 +496,83 @@ contains
     if (present(failure_context)) failure_context = "none"
   end subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d
 
+  subroutine write_patch_tree_checkpoint_fingerprint_2d( &
+      unit, fingerprint, status)
+    integer, intent(in) :: unit
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in) :: fingerprint
+    integer, intent(out) :: status
+
+    status = 0
+    write(unit, '(a)', iostat=status) trim(fingerprint%geometry)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%chemistry_model)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%riemann_solver)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%reconstruction)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%limiter)
+    if (status /= 0) return
+    write(unit, '(*(i0,1x))', iostat=status) &
+      fingerprint%mesh_and_regrid
+    if (status /= 0) return
+    write(unit, '(*(i0,1x))', iostat=status) &
+      fingerprint%physics_and_regrid_flags
+    if (status /= 0) return
+    write(unit, '(*(es27.18e3,1x))', iostat=status) fingerprint%domain
+    if (status /= 0) return
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      fingerprint%geometry_parameters
+    if (status /= 0) return
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      fingerprint%numerical_controls
+  end subroutine write_patch_tree_checkpoint_fingerprint_2d
+
+  subroutine read_patch_tree_checkpoint_fingerprint_2d( &
+      unit, fingerprint, status)
+    integer, intent(in) :: unit
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(out) :: fingerprint
+    integer, intent(out) :: status
+
+    fingerprint = reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d()
+    read(unit, '(a)', iostat=status) fingerprint%geometry
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%chemistry_model
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%riemann_solver
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%reconstruction
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%limiter
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%mesh_and_regrid
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%physics_and_regrid_flags
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%domain
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%geometry_parameters
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%numerical_controls
+    if (status /= 0) return
+    if (.not. fingerprint%is_valid()) status = 1
+  end subroutine read_patch_tree_checkpoint_fingerprint_2d
+
   subroutine write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-      path, species, solution, time, steps, regrids, minimum_dt, ok)
+      path, species, solution, time, steps, regrids, minimum_dt, ok, &
+      fingerprint)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
     real(dp), intent(in) :: time, minimum_dt
     integer, intent(in) :: steps, regrids
     logical, intent(out) :: ok
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in), optional :: fingerprint
 
-    integer :: unit, status, species_index, relation, child
+    integer :: unit, status, species_index, relation, child, schema
     integer :: level, patch, i, j
 
     ok = .false.
@@ -444,6 +582,11 @@ contains
         solution%level_count() > checkpoint_maximum_levels .or. &
         .not. patch_tree_checkpoint_metadata_is_valid( &
           time, steps, regrids, minimum_dt)) return
+    if (present(fingerprint)) then
+      if (.not. fingerprint%is_valid()) return
+    end if
+    schema = patch_tree_checkpoint_schema
+    if (present(fingerprint)) schema = patch_tree_checkpoint_fingerprint_schema
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
@@ -451,13 +594,18 @@ contains
     write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
-      patch_tree_checkpoint_schema, size(species), solution%nvar, &
+      schema, size(species), solution%nvar, &
       solution%level_count()
     if (status /= 0) go to 900
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
       if (status /= 0) go to 900
     end do
+    if (present(fingerprint)) then
+      call write_patch_tree_checkpoint_fingerprint_2d( &
+        unit, fingerprint, status)
+      if (status /= 0) go to 900
+    end if
 
     call write_patch_tree_checkpoint_geometry_2d( &
       unit, solution%topology%root_geometry, status)
@@ -520,7 +668,7 @@ contains
 
   subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, maximum_levels, solution, time, steps, regrids, &
-      minimum_dt, ok)
+      minimum_dt, ok, fingerprint)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: maximum_levels
@@ -528,11 +676,15 @@ contains
     real(dp), intent(out) :: time, minimum_dt
     integer, intent(out) :: steps, regrids
     logical, intent(out) :: ok
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in), optional :: fingerprint
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
     type(reactive_amr_eb_patch_tree_2d) :: candidate
     type(eb_geometry_2d) :: root_geometry, geometry
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: &
+      stored_fingerprint
     character(len=1024) :: magic, stored_name, end_marker
     logical :: local_ok
     integer :: unit, status, schema, stored_species, stored_nvar
@@ -558,8 +710,13 @@ contains
       go to 900
     read(unit, *, iostat=status) schema, stored_species, stored_nvar, &
       stored_levels
-    if (status /= 0 .or. schema /= patch_tree_checkpoint_schema .or. &
-        stored_species /= size(species) .or. &
+    if (status /= 0) go to 900
+    if (present(fingerprint)) then
+      if (schema /= patch_tree_checkpoint_fingerprint_schema) go to 900
+    else
+      if (schema /= patch_tree_checkpoint_schema) go to 900
+    end if
+    if (stored_species /= size(species) .or. &
         stored_nvar /= reactive_nvar(size(species)) .or. &
         stored_levels < 1 .or. stored_levels > maximum_levels) go to 900
     do species_index = 1, stored_species
@@ -567,6 +724,12 @@ contains
       if (status /= 0 .or. &
           trim(stored_name) /= trim(species(species_index)%name)) go to 900
     end do
+    if (present(fingerprint)) then
+      call read_patch_tree_checkpoint_fingerprint_2d( &
+        unit, stored_fingerprint, status)
+      if (status /= 0) go to 900
+      if (.not. fingerprint%matches(stored_fingerprint)) go to 900
+    end if
 
     call read_patch_tree_checkpoint_geometry_2d( &
       unit, root_geometry, status)

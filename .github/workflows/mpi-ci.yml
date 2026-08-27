@@ -71,6 +71,10 @@ jobs:
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/reference.nml mpi_eb_tree_restart_reference.csv
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/checkpoint_stop.nml mpi_eb_tree_restart_stopped.csv
+          if mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/incompatible_restart.nml mpi_eb_tree_restart_incompatible.csv; then
+            echo "incompatible checkpoint fingerprint was accepted"
+            exit 1
+          fi
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np8.csv
           python3 tools/check_reactive_eb_patch_tree_restart_2d.py --checkpoint patch_tree_restart.chk --reference mpi_eb_tree_restart_reference.csv --stopped mpi_eb_tree_restart_stopped.csv --restarted mpi_eb_tree_restarted_np4.csv mpi_eb_tree_restarted_np8.csv

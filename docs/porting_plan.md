@@ -1403,6 +1403,18 @@ complete MPI gate chain, and all 214 serial tests in GNU Fortran Release and
 bounds/FPE-checked Debug. Defer explicit application/checkpoint compatibility
 fingerprints.
 
+## 0.178.0 public patch-tree checkpoint fingerprint gates
+
+Add a structured compatibility fingerprint to public serial and sparse-MPI
+arbitrary-depth EB checkpoints. Include mesh/domain, EB construction, physics,
+StateRedist, hierarchy, and regridding controls; exclude continuation length,
+output/checkpoint scheduling, communicator size, and ownership weighting.
+
+Require valid serial and 2-to-4/eight-rank MPI restarts to retain complete-field
+parity. Require a CFL-mismatched restart to fail transactionally in serial and
+MPI, while retaining low-level schema-1 compatibility and all 215 serial and
+MPI Debug/Release gates.
+
 Each implementation PR should normally contain:
 
 1. implementation

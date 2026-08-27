@@ -1848,10 +1848,16 @@ add_test(
   COMMAND $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
     "${PROJECT_SOURCE_DIR}/cases/reactive_eb_patch_tree_restart_2d/restart.nml"
 )
+add_test(
+  NAME regression_reactive_eb_patch_tree_restart_2d_incompatible
+  COMMAND $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
+    "${PROJECT_SOURCE_DIR}/cases/reactive_eb_patch_tree_restart_2d/incompatible_restart.nml"
+)
 set_tests_properties(
   regression_reactive_eb_patch_tree_restart_2d_reference
   regression_reactive_eb_patch_tree_restart_2d_checkpoint_stop
   regression_reactive_eb_patch_tree_restart_2d_restart
+  regression_reactive_eb_patch_tree_restart_2d_incompatible
   PROPERTIES
     WORKING_DIRECTORY "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}"
     TIMEOUT 300
@@ -1860,6 +1866,12 @@ set_tests_properties(
   regression_reactive_eb_patch_tree_restart_2d_restart
   PROPERTIES DEPENDS
     regression_reactive_eb_patch_tree_restart_2d_checkpoint_stop
+)
+set_tests_properties(
+  regression_reactive_eb_patch_tree_restart_2d_incompatible
+  PROPERTIES
+    DEPENDS regression_reactive_eb_patch_tree_restart_2d_checkpoint_stop
+    WILL_FAIL TRUE
 )
 add_test(
   NAME regression_reactive_eb_patch_tree_restart_2d_check

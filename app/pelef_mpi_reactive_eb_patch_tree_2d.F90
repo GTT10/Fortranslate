@@ -26,6 +26,10 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
     initialize_amr_eb_patch_tree_topology_2d
+  use amr_eb_patch_tree_reactive_2d_mod, only: &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
+  use reactive_eb_amr_2d_driver_mod, only: &
+    build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -50,6 +54,7 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   type(eb_geometry_2d) :: root_geometry
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: topology
+  type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: fingerprint
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: new_distribution
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse
@@ -82,6 +87,9 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   if (.not. ok) call abort_run(trim(message), 2)
   if (config%three_level_enabled .or. config%multipatch_enabled) &
     call abort_run("Sparse MPI patch tree excludes fixed-depth modes", 2)
+  call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
+    config, fingerprint, ok)
+  if (.not. ok) call abort_run("Checkpoint fingerprint failed", 2)
   output_path = config%eb%flow%output_file
   if (argument_count == 2) call get_command_argument(2, output_path)
   if (len_trim(output_path) == 0) call abort_run("Output path is empty", 2)
@@ -127,7 +135,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
     call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       config%restart_file, species, MPI_COMM_WORLD, io_root, &
       config%patch_tree_maximum_levels, config%patch_tree_mpi_work_exponent, &
-      distribution, sparse, time, steps, regrids, minimum_dt, ok)
+      distribution, sparse, time, steps, regrids, minimum_dt, ok, &
+      fingerprint=fingerprint)
     if (.not. ok) call abort_run("Sparse patch-tree restart failed", 4)
   else
     call build_configured_eb_geometry_2d(config%eb, root_geometry, ok)
@@ -325,7 +334,7 @@ contains
 
     call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       config%checkpoint_file, species, distribution, sparse, io_root, time, &
-      steps, regrids, minimum_dt, checkpoint_ok)
+      steps, regrids, minimum_dt, checkpoint_ok, fingerprint=fingerprint)
   end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)

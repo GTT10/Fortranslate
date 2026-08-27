@@ -40,6 +40,7 @@ module reactive_eb_amr_2d_driver_mod
     initialize_amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
     regrid_tagged_reactive_amr_eb_patch_tree_2d, &
     write_reactive_amr_eb_patch_tree_2d_checkpoint, &
@@ -100,6 +101,7 @@ module reactive_eb_amr_2d_driver_mod
   public :: simulate_reactive_eb_amr_patch_set_2d
   public :: simulate_three_level_reactive_eb_amr_2d
   public :: simulate_reactive_amr_eb_patch_tree_2d
+  public :: build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
 
 contains
 
@@ -3547,6 +3549,53 @@ contains
     if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_reactive_eb_amr_patch_set_2d
 
+  subroutine build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
+      config, fingerprint, ok)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(out) :: fingerprint
+    logical, intent(out) :: ok
+
+    fingerprint = reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d()
+    fingerprint%geometry = trim(config%eb%geometry)
+    fingerprint%chemistry_model = trim(config%eb%flow%chemistry_model)
+    fingerprint%riemann_solver = trim(config%eb%flow%riemann_solver)
+    fingerprint%reconstruction = trim(config%eb%flow%reconstruction)
+    fingerprint%limiter = trim(config%eb%flow%limiter)
+    fingerprint%mesh_and_regrid = [ &
+      config%eb%flow%nx, config%eb%flow%ny, &
+      config%patch_tree_maximum_levels, config%refinement_ratio, &
+      config%eb%state_redist_max_order, config%regrid_interval, &
+      config%regrid_buffer_cells, config%regrid_minimum_patch_cells_x, &
+      config%regrid_minimum_patch_cells_y, &
+      config%regrid_maximum_patch_gap_cells]
+    fingerprint%physics_and_regrid_flags = [ &
+      merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%eb%flow%viscosity_enabled), &
+      merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+      merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+      merge(1, 0, config%eb%flow%barodiffusion_enabled), &
+      merge(1, 0, config%dynamic_regridding), &
+      merge(1, 0, config%remove_fine_patch_when_untagged)]
+    fingerprint%domain = [ &
+      config%eb%flow%x_lower, config%eb%flow%x_upper, &
+      config%eb%flow%y_lower, config%eb%flow%y_upper]
+    fingerprint%geometry_parameters = [ &
+      config%eb%plane_normal_x, config%eb%plane_normal_y, &
+      config%eb%plane_offset, config%eb%circle_center_x, &
+      config%eb%circle_center_y, config%eb%circle_radius]
+    fingerprint%numerical_controls = [ &
+      config%eb%state_redist_target_volume_fraction, &
+      config%eb%flow%cfl, config%eb%flow%transport_cfl, &
+      config%eb%flow%chemistry_relative_tolerance, &
+      config%eb%flow%chemistry_absolute_tolerance, &
+      config%regrid_relative_temperature_gradient, &
+      config%regrid_absolute_temperature_gradient, &
+      config%regrid_temperature_scale_floor]
+    ok = fingerprint%is_valid()
+  end subroutine &
+    build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
+
   subroutine simulate_reactive_amr_eb_patch_tree_2d( &
       species, reactions, transport, config, solution, time, steps, regrids, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok, &
@@ -3568,6 +3617,7 @@ contains
     type(amr_eb_patch_tree_topology_2d) :: topology
     type(amr_eb_tagging_criteria_2d) :: criteria
     type(reactive_boundary_set_2d) :: boundaries
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: fingerprint
     type(eb_geometry_2d) :: root_geometry
     real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
     real(dp) :: dx, dy, dt, remaining, step_theta, time_tolerance
@@ -3595,6 +3645,9 @@ contains
         (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &
         (config%eb%flow%transport_enabled .and. &
          size(transport) /= size(species))) return
+    call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
+      config, fingerprint, local_ok)
+    if (.not. local_ok) return
     call build_reactive_boundary_set_2d( &
       species, config%eb%flow, boundaries, local_ok)
     if (.not. local_ok) return
@@ -3613,7 +3666,7 @@ contains
       if (present(failure_context)) failure_context = "checkpoint restart"
       call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%restart_file, species, config%patch_tree_maximum_levels, &
-        solution, time, steps, regrids, minimum_dt, local_ok)
+        solution, time, steps, regrids, minimum_dt, local_ok, fingerprint)
       if (.not. local_ok) return
       nvar = solution%nvar
       base_density = solution%levels(1)%patches(1)%state(irho, 1, 1)
@@ -3717,7 +3770,7 @@ contains
           if (present(failure_context)) failure_context = "checkpoint write"
           call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
             config%checkpoint_file, species, solution, time, steps, regrids, &
-            minimum_dt, local_ok)
+            minimum_dt, local_ok, fingerprint)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -3734,7 +3787,7 @@ contains
       if (present(failure_context)) failure_context = "final checkpoint write"
       call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%checkpoint_file, species, solution, time, steps, regrids, &
-        minimum_dt, local_ok)
+        minimum_dt, local_ok, fingerprint)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final integral"
