@@ -2894,3 +2894,20 @@ physics remain separate work.
 This milestone removes materialization from distributed timestep selection.
 Owner-local recursive hydro, transport, chemistry, and public clock execution
 remain separate work.
+
+## MPI owner-local arbitrary-depth EB patch-tree chemistry (`0.162.0`)
+
+- [x] owner-local active-cell chemistry on one private sparse candidate
+- [x] owner-local conserved-state temperature recovery
+- [x] per-node collective acceptance and committed-only advance accounting
+- [x] deepest-first parent/child synchronization
+- [x] local restriction for shared ownership
+- [x] direct child-state transfer to a distinct parent owner
+- [x] exact map-derived restriction-transfer accounting
+- [x] exact state and temperature parity with the complete serial tree
+- [x] collective control-mismatch rollback with zero public accounting
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes materialization from chemistry and average-down.
+Owner-local recursive hydro, transport, and public clock execution remain
+separate work.

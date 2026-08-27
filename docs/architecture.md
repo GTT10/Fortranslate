@@ -1815,3 +1815,18 @@ field, species-layout, CFL, and transport-control checks. The sum of evaluated
 nodes must be nonzero, and the final root interval must be finite, positive,
 and non-huge. No replicated numerical tree is constructed. Recursive hydro,
 transport, and chemistry execution remain separate owner-local boundaries.
+
+## MPI owner-local arbitrary-depth EB patch-tree chemistry (`0.162.0`)
+
+Chemistry now advances one private sparse candidate. Every rank traverses the
+same node order, but only the assigned owner runs the active-cell reactor and
+temperature recovery. A collective accept boundary follows every node so a
+rank-local failure cannot expose an accepted prefix or desynchronize later
+communication.
+
+Hierarchy synchronization then traverses relations deepest-first. When child
+and parent share an owner, average-down is local. Otherwise the child owner
+sends conserved state directly to the parent owner, which applies the same EB
+restriction kernel as the serial tree. Every child has a collective accept
+boundary, and the sparse candidate commits only after final all-rank
+validation. Recursive hydro and transport remain separate owner-local work.
