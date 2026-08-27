@@ -48,7 +48,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
   integer, parameter :: patch_tree_checkpoint_schema = 1
-  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 2
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 3
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -81,11 +81,14 @@ module amr_eb_patch_tree_reactive_2d_mod
     character(len=32) :: riemann_solver = ""
     character(len=32) :: reconstruction = ""
     character(len=32) :: limiter = ""
+    character(len=24) :: embedded_wall_kind = ""
+    character(len=24) :: embedded_wall_thermal = ""
     integer :: mesh_and_regrid(10) = 0
-    integer :: physics_and_regrid_flags(7) = 0
+    integer :: physics_and_regrid_flags(8) = 0
     real(dp) :: domain(4) = 0.0_dp
     real(dp) :: geometry_parameters(6) = 0.0_dp
     real(dp) :: numerical_controls(8) = 0.0_dp
+    real(dp) :: embedded_wall_values(4) = 0.0_dp
   contains
     procedure :: is_valid => patch_tree_checkpoint_fingerprint_is_valid_2d
     procedure :: matches => patch_tree_checkpoint_fingerprints_match_2d
@@ -137,13 +140,30 @@ contains
       len_trim(self%riemann_solver) > 0 .and. &
       len_trim(self%reconstruction) > 0 .and. &
       len_trim(self%limiter) > 0 .and. &
+      (trim(self%embedded_wall_kind) == "slip_wall" .or. &
+       trim(self%embedded_wall_kind) == "no_slip_wall") .and. &
+      (trim(self%embedded_wall_thermal) == "adiabatic" .or. &
+       trim(self%embedded_wall_thermal) == "isothermal") .and. &
       all(self%mesh_and_regrid(1:4) >= 1) .and. &
       all(self%mesh_and_regrid(5:) >= 0) .and. &
       all(self%physics_and_regrid_flags >= 0) .and. &
       all(self%physics_and_regrid_flags <= 1) .and. &
       all(ieee_is_finite(self%domain)) .and. &
       all(ieee_is_finite(self%geometry_parameters)) .and. &
-      all(ieee_is_finite(self%numerical_controls))
+      all(ieee_is_finite(self%numerical_controls)) .and. &
+      all(ieee_is_finite(self%embedded_wall_values)) .and. &
+      self%embedded_wall_values(1) > 0.0_dp
+    if (.not. valid) return
+    if (trim(self%embedded_wall_thermal) == "isothermal") &
+      valid = self%physics_and_regrid_flags(2) == 1 .and. &
+        self%physics_and_regrid_flags(4) == 1
+    if (.not. valid) return
+    if (trim(self%embedded_wall_kind) == "no_slip_wall") &
+      valid = self%physics_and_regrid_flags(2) == 1 .and. &
+        self%physics_and_regrid_flags(3) == 1
+    if (.not. valid) return
+    if (maxval(abs(self%embedded_wall_values(2:4))) > 0.0_dp) &
+      valid = trim(self%embedded_wall_kind) == "no_slip_wall"
   end function patch_tree_checkpoint_fingerprint_is_valid_2d
 
   pure logical function patch_tree_checkpoint_fingerprints_match_2d( &
@@ -160,6 +180,10 @@ contains
       trim(self%riemann_solver) == trim(other%riemann_solver) .and. &
       trim(self%reconstruction) == trim(other%reconstruction) .and. &
       trim(self%limiter) == trim(other%limiter) .and. &
+      trim(self%embedded_wall_kind) == &
+        trim(other%embedded_wall_kind) .and. &
+      trim(self%embedded_wall_thermal) == &
+        trim(other%embedded_wall_thermal) .and. &
       all(self%mesh_and_regrid == other%mesh_and_regrid) .and. &
       all(self%physics_and_regrid_flags == &
         other%physics_and_regrid_flags) .and. &
@@ -168,7 +192,9 @@ contains
       all(checkpoint_fingerprint_real_matches_2d( &
         self%geometry_parameters, other%geometry_parameters)) .and. &
       all(checkpoint_fingerprint_real_matches_2d( &
-        self%numerical_controls, other%numerical_controls))
+        self%numerical_controls, other%numerical_controls)) .and. &
+      all(checkpoint_fingerprint_real_matches_2d( &
+        self%embedded_wall_values, other%embedded_wall_values))
   end function patch_tree_checkpoint_fingerprints_match_2d
 
   pure elemental logical function checkpoint_fingerprint_real_matches_2d( &
@@ -516,6 +542,10 @@ contains
     if (status /= 0) return
     write(unit, '(a)', iostat=status) trim(fingerprint%limiter)
     if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%embedded_wall_kind)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%embedded_wall_thermal)
+    if (status /= 0) return
     write(unit, '(*(i0,1x))', iostat=status) &
       fingerprint%mesh_and_regrid
     if (status /= 0) return
@@ -529,6 +559,9 @@ contains
     if (status /= 0) return
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
       fingerprint%numerical_controls
+    if (status /= 0) return
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      fingerprint%embedded_wall_values
   end subroutine write_patch_tree_checkpoint_fingerprint_2d
 
   subroutine read_patch_tree_checkpoint_fingerprint_2d( &
@@ -549,6 +582,10 @@ contains
     if (status /= 0) return
     read(unit, '(a)', iostat=status) fingerprint%limiter
     if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%embedded_wall_kind
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%embedded_wall_thermal
+    if (status /= 0) return
     read(unit, *, iostat=status) fingerprint%mesh_and_regrid
     if (status /= 0) return
     read(unit, *, iostat=status) fingerprint%physics_and_regrid_flags
@@ -558,6 +595,8 @@ contains
     read(unit, *, iostat=status) fingerprint%geometry_parameters
     if (status /= 0) return
     read(unit, *, iostat=status) fingerprint%numerical_controls
+    if (status /= 0) return
+    read(unit, *, iostat=status) fingerprint%embedded_wall_values
     if (status /= 0) return
     if (.not. fingerprint%is_valid()) status = 1
   end subroutine read_patch_tree_checkpoint_fingerprint_2d

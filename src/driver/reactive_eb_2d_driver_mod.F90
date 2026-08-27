@@ -28,6 +28,7 @@ module reactive_eb_2d_driver_mod
 
   public :: build_configured_eb_geometry_2d
   public :: build_configured_eb_geometry_region_2d
+  public :: build_configured_reactive_boundary_set_2d
   public :: compute_reactive_eb_cfl_timestep_2d
   public :: reactive_eb_integrals_2d
   public :: reactive_eb_extrema_2d
@@ -36,6 +37,21 @@ module reactive_eb_2d_driver_mod
   public :: write_reactive_eb_2d_csv
 
 contains
+
+  subroutine build_configured_reactive_boundary_set_2d( &
+      species, config, boundaries, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_2d_config), intent(in) :: config
+    type(reactive_boundary_set_2d), intent(out) :: boundaries
+    logical, intent(out) :: ok
+
+    call build_reactive_boundary_set_2d( &
+      species, config%flow, boundaries, ok)
+    if (.not. ok) return
+    call configure_reactive_embedded_wall_2d( &
+      boundaries, config%embedded_wall_kind, config%embedded_wall_thermal, &
+      config%embedded_wall_temperature, config%embedded_wall_velocity, ok)
+  end subroutine build_configured_reactive_boundary_set_2d
 
   pure logical function supported_reactive_eb_hydro_config(config) &
       result(supported)
@@ -403,13 +419,8 @@ contains
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (.not. supported_reactive_eb_hydro_config(config)) return
     if (config%flow%transport_enabled .and. .not. present(transport)) return
-    call build_reactive_boundary_set_2d( &
-      species, config%flow, boundaries, local_ok)
-    if (.not. local_ok) return
-    call configure_reactive_embedded_wall_2d( &
-      boundaries, config%embedded_wall_kind, config%embedded_wall_thermal, &
-      config%embedded_wall_temperature, config%embedded_wall_velocity, &
-      local_ok)
+    call build_configured_reactive_boundary_set_2d( &
+      species, config, boundaries, local_ok)
     if (.not. local_ok) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return

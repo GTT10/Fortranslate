@@ -12,6 +12,8 @@ program test_reactive_eb_amr_2d_driver
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, composite_eb_integral_2d
   use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
+  use amr_eb_patch_tree_reactive_2d_mod, only: &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use reactive_eb_amr_2d_driver_mod, only: &
@@ -26,11 +28,14 @@ program test_reactive_eb_amr_2d_driver
     compute_reactive_eb_patch_set_cfl_timestep_2d, &
     simulate_reactive_eb_amr_patch_set_2d, &
     compute_three_level_reactive_eb_cfl_timestep_2d, &
-    simulate_three_level_reactive_eb_amr_2d
+    simulate_three_level_reactive_eb_amr_2d, &
+    build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
   implicit none
 
   type(reactive_eb_amr_2d_config) :: config
+  type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: &
+    wall_fingerprint, changed_wall_fingerprint
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
   type(eb_geometry_2d) :: level_two_geometry
   type(eb_geometry_2d) :: checkpoint_coarse_geometry
@@ -375,15 +380,17 @@ program test_reactive_eb_amr_2d_driver
     time == 0.0_dp, "missing AMR transport database rejection")
 
   config%eb%embedded_wall_thermal = "isothermal"
-  call simulate_reactive_eb_amr_2d( &
-    species, reactions, config, coarse_state, coarse_temperature, &
-    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
-    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
-    minimum_dt, base_density, ok, transport, minimum_transport_theta)
-  call require(.not. ok .and. steps == 0 .and. regrids == 0 .and. &
-    time == 0.0_dp, "unqualified AMR embedded-wall transport rejection")
-  config%eb%embedded_wall_thermal = "adiabatic"
-
+  config%eb%embedded_wall_temperature = 1500.0_dp
+  call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
+    config, wall_fingerprint, ok)
+  call require(ok .and. &
+    trim(wall_fingerprint%embedded_wall_thermal) == "isothermal" .and. &
+    wall_fingerprint%embedded_wall_values(1) == 1500.0_dp, &
+    "patch-tree embedded-wall checkpoint fingerprint")
+  changed_wall_fingerprint = wall_fingerprint
+  changed_wall_fingerprint%embedded_wall_values(1) = 1510.0_dp
+  call require(.not. wall_fingerprint%matches(changed_wall_fingerprint), &
+    "patch-tree wall-temperature fingerprint mismatch")
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
@@ -391,7 +398,7 @@ program test_reactive_eb_amr_2d_driver
     minimum_dt, base_density, ok, transport, minimum_transport_theta)
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &
     max(1.0_dp, abs(initial_integrals)))
-  call require(ok, "runnable two-level AMR transport")
+  call require(ok, "runnable two-level AMR isothermal-wall transport")
   call require(steps >= 1 .and. &
     time == config%eb%flow%final_time .and. minimum_dt > 0.0_dp, &
     "two-level AMR transport time loop")
@@ -407,9 +414,31 @@ program test_reactive_eb_amr_2d_driver
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
     fine_active, time, steps, regrids, initial_integrals, final_integrals, &
     minimum_dt, base_density, ok, transport, minimum_transport_theta)
-  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
-    "unqualified AMR transport checkpoint rejection")
+  call require(ok .and. steps >= 1 .and. &
+    time == config%eb%flow%final_time, &
+    "AMR wall-transport checkpoint write")
   config%checkpoint_file = ""
+  config%restart_file = checkpoint_path
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  call require(ok .and. steps >= 1 .and. &
+    time == config%eb%flow%final_time, &
+    "AMR wall-transport checkpoint restart")
+  config%eb%embedded_wall_temperature = 1510.0_dp
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "AMR wall-temperature checkpoint mismatch rejection")
+  config%restart_file = ""
+  config%eb%embedded_wall_thermal = "adiabatic"
+  config%eb%embedded_wall_temperature = 300.0_dp
+  call delete_checkpoint(checkpoint_path)
 
   config%eb%flow%transport_enabled = .false.
   config%eb%flow%nx = 14

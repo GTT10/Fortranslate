@@ -17,10 +17,10 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config, read_reactive_eb_amr_2d_configuration
   use reactive_2d_mod, only: initialize_reactive_2d
-  use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, build_reactive_boundary_set_2d
+  use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
   use reactive_eb_2d_driver_mod, only: &
-    build_configured_eb_geometry_2d, build_configured_eb_geometry_region_2d
+    build_configured_eb_geometry_2d, build_configured_eb_geometry_region_2d, &
+    build_configured_reactive_boundary_set_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d
   use amr_eb_regrid_2d_mod, only: amr_eb_tagging_criteria_2d
   use amr_eb_patch_tree_2d_mod, only: &
@@ -112,8 +112,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   case default
     call abort_run("Unknown chemistry model", 3)
   end select
-  call build_reactive_boundary_set_2d( &
-    species, config%eb%flow, boundaries, ok)
+  call build_configured_reactive_boundary_set_2d( &
+    species, config%eb, boundaries, ok)
   if (.not. ok) call abort_run("Boundary initialization failed", 3)
 
   criteria%relative_gradient_threshold = &
