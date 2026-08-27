@@ -47,8 +47,8 @@ module amr_eb_patch_tree_reactive_2d_mod
     5.0e4_dp * epsilon(1.0_dp)
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
-  integer, parameter :: patch_tree_checkpoint_schema = 4
-  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 7
+  integer, parameter :: patch_tree_checkpoint_schema = 5
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 8
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -631,7 +631,7 @@ contains
       path, species, solution, time, steps, regrids, minimum_dt, ok, &
       fingerprint, minimum_transport_theta, initial_integrals, &
       chemistry_level_advances, transport_level_advances, &
-      hydro_level_advances)
+      hydro_level_advances, regrid_evaluations, cumulative_tagged_cells)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
@@ -645,9 +645,13 @@ contains
     integer, intent(in), optional :: chemistry_level_advances(:)
     integer, intent(in), optional :: transport_level_advances(:)
     integer, intent(in), optional :: hydro_level_advances(:)
+    integer, intent(in), optional :: regrid_evaluations
+    integer, intent(in), optional :: cumulative_tagged_cells
 
     integer :: unit, status, species_index, relation, child, schema
     integer :: counter_levels, counter_presence, level, patch, i, j
+    integer :: history_presence, selected_regrid_evaluations
+    integer :: selected_cumulative_tagged_cells
     integer, allocatable :: selected_chemistry_advances(:)
     integer, allocatable :: selected_transport_advances(:)
     integer, allocatable :: selected_hydro_advances(:)
@@ -701,6 +705,19 @@ contains
       allocate(selected_transport_advances(counter_levels), source=0)
       allocate(selected_hydro_advances(counter_levels), source=0)
     end if
+    history_presence = count([ &
+      present(regrid_evaluations), present(cumulative_tagged_cells)])
+    if (history_presence /= 0 .and. history_presence /= 2) return
+    if (history_presence == 2) then
+      selected_regrid_evaluations = regrid_evaluations
+      selected_cumulative_tagged_cells = cumulative_tagged_cells
+    else
+      selected_regrid_evaluations = regrids
+      selected_cumulative_tagged_cells = 0
+    end if
+    if (.not. patch_tree_checkpoint_regrid_history_is_valid( &
+        steps, regrids, selected_regrid_evaluations, &
+        selected_cumulative_tagged_cells)) return
     schema = patch_tree_checkpoint_schema
     if (present(fingerprint)) schema = patch_tree_checkpoint_fingerprint_schema
 
@@ -768,6 +785,9 @@ contains
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) selected_hydro_advances
     if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      selected_regrid_evaluations, selected_cumulative_tagged_cells
+    if (status /= 0) go to 900
     do level = 1, solution%level_count()
       do patch = 1, solution%levels(level)%patch_count()
         write(unit, '(*(i0,1x))', iostat=status) &
@@ -799,7 +819,8 @@ contains
       path, species, maximum_levels, solution, time, steps, regrids, &
       minimum_dt, ok, fingerprint, minimum_transport_theta, &
       initial_integrals, chemistry_level_advances, &
-      transport_level_advances, hydro_level_advances)
+      transport_level_advances, hydro_level_advances, &
+      regrid_evaluations, cumulative_tagged_cells)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: maximum_levels
@@ -814,6 +835,8 @@ contains
     integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
     integer, allocatable, intent(out), optional :: transport_level_advances(:)
     integer, allocatable, intent(out), optional :: hydro_level_advances(:)
+    integer, intent(out), optional :: regrid_evaluations
+    integer, intent(out), optional :: cumulative_tagged_cells
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -827,7 +850,8 @@ contains
     integer :: stored_levels, stored_relation, relation_patches
     integer :: species_index, relation, child, level, patch, i, j
     integer :: stored_level, stored_patch, stored_nx, stored_ny
-    integer :: stored_counter_levels
+    integer :: stored_counter_levels, stored_regrid_evaluations
+    integer :: stored_cumulative_tagged_cells
     integer, allocatable :: stored_chemistry_advances(:)
     integer, allocatable :: stored_transport_advances(:)
     integer, allocatable :: stored_hydro_advances(:)
@@ -839,6 +863,8 @@ contains
     minimum_dt = 0.0_dp
     stored_minimum_transport_theta = 1.0_dp
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (present(regrid_evaluations)) regrid_evaluations = 0
+    if (present(cumulative_tagged_cells)) cumulative_tagged_cells = 0
     steps = 0
     regrids = 0
     ok = .false.
@@ -929,6 +955,12 @@ contains
           steps, stored_levels, maximum_levels, &
           stored_chemistry_advances, stored_transport_advances, &
           stored_hydro_advances)) go to 900
+    read(unit, *, iostat=status) stored_regrid_evaluations, &
+      stored_cumulative_tagged_cells
+    if (status /= 0 .or. &
+        .not. patch_tree_checkpoint_regrid_history_is_valid( &
+          steps, regrids, stored_regrid_evaluations, &
+          stored_cumulative_tagged_cells)) go to 900
 
     candidate%nvar = stored_nvar
     candidate%topology = topology
@@ -991,6 +1023,10 @@ contains
       allocate(transport_level_advances, source=stored_transport_advances)
     if (present(hydro_level_advances)) &
       allocate(hydro_level_advances, source=stored_hydro_advances)
+    if (present(regrid_evaluations)) &
+      regrid_evaluations = stored_regrid_evaluations
+    if (present(cumulative_tagged_cells)) &
+      cumulative_tagged_cells = stored_cumulative_tagged_cells
     ok = .true.
     return
 
@@ -3051,6 +3087,25 @@ contains
       all(chemistry_advances == 0) .and. &
       all(transport_advances == 0) .and. all(hydro_advances == 0)
   end function patch_tree_checkpoint_operator_counters_are_valid
+
+  pure logical function patch_tree_checkpoint_regrid_history_is_valid( &
+      steps, regrids, regrid_evaluations, cumulative_tagged_cells) &
+      result(valid)
+    integer, intent(in) :: steps, regrids, regrid_evaluations
+    integer, intent(in) :: cumulative_tagged_cells
+
+    valid = steps >= 0 .and. regrids >= 0 .and. &
+      regrid_evaluations >= regrids .and. &
+      cumulative_tagged_cells >= 0
+    if (.not. valid) return
+    if (steps == huge(steps)) then
+      valid = .false.
+      return
+    end if
+    valid = regrid_evaluations <= steps + 1
+    if (valid .and. regrid_evaluations == 0) &
+      valid = cumulative_tagged_cells == 0
+  end function patch_tree_checkpoint_regrid_history_is_valid
 
   subroutine write_patch_tree_checkpoint_geometry_2d( &
       unit, geometry, status)

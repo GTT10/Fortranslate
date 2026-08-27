@@ -31,7 +31,8 @@ program pelef_reactive_eb_patch_tree_2d
   real(dp) :: base_density, conservation_error, minimum_dt
   real(dp) :: minimum_transport_theta, time
   character(len=1024) :: input_path, message
-  integer :: level, regrids, steps
+  integer :: cumulative_tagged_cells, level, regrid_evaluations
+  integer :: regrids, steps
   logical :: ok
 
   if (command_argument_count() /= 1) then
@@ -71,7 +72,8 @@ program pelef_reactive_eb_patch_tree_2d
     species, reactions, transport, config, solution, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok, &
     message, minimum_transport_theta, chemistry_level_advances, &
-    transport_level_advances, hydro_level_advances)
+    transport_level_advances, hydro_level_advances, &
+    regrid_evaluations, cumulative_tagged_cells)
   if (.not. ok) then
     write(*, '(a,1x,a)') "Patch-tree failure stage:", trim(message)
     error stop "Reactive EB patch-tree 2D simulation failed"
@@ -91,6 +93,8 @@ program pelef_reactive_eb_patch_tree_2d
   end do
   write(*, '(a,i0)') "Completed root steps: ", steps
   write(*, '(a,i0)') "Completed regrids: ", regrids
+  write(*, '(a,i0)') "Regrid evaluations: ", regrid_evaluations
+  write(*, '(a,i0)') "Cumulative tagged cells: ", cumulative_tagged_cells
   write(*, '(a,l2)') "Stopped after checkpoint: ", &
     time < config%eb%flow%final_time
   write(*, '(a,es24.16)') "Final time: ", time

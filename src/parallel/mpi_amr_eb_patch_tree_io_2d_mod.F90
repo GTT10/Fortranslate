@@ -80,7 +80,8 @@ contains
       minimum_dt, ok, local_entity_transfers, fingerprint, &
       minimum_transport_theta, initial_integrals, &
       chemistry_level_advances, transport_level_advances, &
-      hydro_level_advances)
+      hydro_level_advances, regrid_evaluations, &
+      cumulative_tagged_cells)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -97,6 +98,8 @@ contains
     integer, intent(in), optional :: chemistry_level_advances(:)
     integer, intent(in), optional :: transport_level_advances(:)
     integer, intent(in), optional :: hydro_level_advances(:)
+    integer, intent(in), optional :: regrid_evaluations
+    integer, intent(in), optional :: cumulative_tagged_cells
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
     logical :: controls_ok, gathered_ok, write_ok
@@ -116,7 +119,8 @@ contains
     call checkpoint_write_controls_match_2d( &
       distribution%comm, root, time, minimum_dt, &
       selected_minimum_transport_theta, steps, regrids, sparse%nvar, &
-      controls_ok, initial_integrals)
+      controls_ok, initial_integrals, regrid_evaluations, &
+      cumulative_tagged_cells)
     if (.not. controls_ok) return
     call checkpoint_operator_counters_match_2d( &
       distribution%comm, sparse%level_count(), chemistry_level_advances, &
@@ -154,7 +158,8 @@ contains
           path, species, gathered, time, steps, regrids, minimum_dt, &
           write_ok, fingerprint, selected_minimum_transport_theta, &
           selected_initial_integrals, selected_chemistry_advances, &
-          selected_transport_advances, selected_hydro_advances)
+          selected_transport_advances, selected_hydro_advances, &
+          regrid_evaluations, cumulative_tagged_cells)
       else if (write_ok) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, write_ok, &
@@ -162,7 +167,9 @@ contains
           initial_integrals=selected_initial_integrals, &
           chemistry_level_advances=selected_chemistry_advances, &
           transport_level_advances=selected_transport_advances, &
-          hydro_level_advances=selected_hydro_advances)
+          hydro_level_advances=selected_hydro_advances, &
+          regrid_evaluations=regrid_evaluations, &
+          cumulative_tagged_cells=cumulative_tagged_cells)
       end if
     end if
     call MPI_Bcast( &
@@ -178,7 +185,8 @@ contains
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
       local_entity_transfers, fingerprint, minimum_transport_theta, &
       initial_integrals, chemistry_level_advances, &
-      transport_level_advances, hydro_level_advances)
+      transport_level_advances, hydro_level_advances, &
+      regrid_evaluations, cumulative_tagged_cells)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -196,6 +204,8 @@ contains
     integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
     integer, allocatable, intent(out), optional :: transport_level_advances(:)
     integer, allocatable, intent(out), optional :: hydro_level_advances(:)
+    integer, intent(out), optional :: regrid_evaluations
+    integer, intent(out), optional :: cumulative_tagged_cells
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -204,7 +214,7 @@ contains
     integer, allocatable :: restored_transport_advances(:)
     integer, allocatable :: restored_hydro_advances(:)
     real(dp) :: real_metadata(3)
-    integer :: counter_levels, ierr, integer_metadata(2), rank, transfers
+    integer :: counter_levels, ierr, integer_metadata(4), rank, transfers
     logical :: controls_ok, distributed_ok, read_ok, topology_ok
 
     distribution = mpi_amr_eb_patch_tree_distribution_2d()
@@ -212,6 +222,8 @@ contains
     time = 0.0_dp
     minimum_dt = 0.0_dp
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (present(regrid_evaluations)) regrid_evaluations = 0
+    if (present(cumulative_tagged_cells)) cumulative_tagged_cells = 0
     steps = 0
     regrids = 0
     ok = .false.
@@ -236,7 +248,7 @@ contains
           integer_metadata(1), integer_metadata(2), real_metadata(2), &
           read_ok, fingerprint, real_metadata(3), restored_initial_integrals, &
           restored_chemistry_advances, restored_transport_advances, &
-          restored_hydro_advances)
+          restored_hydro_advances, integer_metadata(3), integer_metadata(4))
       else
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
@@ -245,7 +257,9 @@ contains
           initial_integrals=restored_initial_integrals, &
           chemistry_level_advances=restored_chemistry_advances, &
           transport_level_advances=restored_transport_advances, &
-          hydro_level_advances=restored_hydro_advances)
+          hydro_level_advances=restored_hydro_advances, &
+          regrid_evaluations=integer_metadata(3), &
+          cumulative_tagged_cells=integer_metadata(4))
       end if
     end if
     call MPI_Bcast(read_ok, 1, MPI_LOGICAL, root, comm, ierr)
@@ -316,6 +330,10 @@ contains
       allocate(transport_level_advances, source=restored_transport_advances)
     if (present(hydro_level_advances)) &
       allocate(hydro_level_advances, source=restored_hydro_advances)
+    if (present(regrid_evaluations)) &
+      regrid_evaluations = integer_metadata(3)
+    if (present(cumulative_tagged_cells)) &
+      cumulative_tagged_cells = integer_metadata(4)
     steps = integer_metadata(1)
     regrids = integer_metadata(2)
     ok = .true.
@@ -324,22 +342,34 @@ contains
 
   subroutine checkpoint_write_controls_match_2d( &
       comm, root, time, minimum_dt, minimum_transport_theta, &
-      steps, regrids, nvar, ok, initial_integrals)
+      steps, regrids, nvar, ok, initial_integrals, regrid_evaluations, &
+      cumulative_tagged_cells)
     type(MPI_Comm), intent(in) :: comm
     integer, intent(in) :: root, steps, regrids, nvar
     real(dp), intent(in) :: time, minimum_dt, minimum_transport_theta
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: initial_integrals(:)
+    integer, intent(in), optional :: regrid_evaluations
+    integer, intent(in), optional :: cumulative_tagged_cells
 
     real(dp) :: real_values(3), real_minimum(3), real_maximum(3)
     real(dp), allocatable :: integral_minimum(:), integral_maximum(:)
-    integer :: ierr, integer_values(5), integer_minimum(5), nranks
-    integer :: integer_maximum(5), integral_presence
+    integer :: ierr, integer_values(9), integer_minimum(9), nranks
+    integer :: integer_maximum(9), integral_presence, history_presence
     logical :: accepted, local_ok
 
     real_values = [time, minimum_dt, minimum_transport_theta]
     integral_presence = merge(1, 0, present(initial_integrals))
-    integer_values = [root, steps, regrids, integral_presence, nvar]
+    history_presence = count([ &
+      present(regrid_evaluations), present(cumulative_tagged_cells)])
+    integer_values = [ &
+      root, steps, regrids, integral_presence, nvar, &
+      merge(1, 0, present(regrid_evaluations)), &
+      merge(1, 0, present(cumulative_tagged_cells)), 0, 0]
+    if (present(regrid_evaluations)) &
+      integer_values(8) = regrid_evaluations
+    if (present(cumulative_tagged_cells)) &
+      integer_values(9) = cumulative_tagged_cells
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) then
       ok = .false.
@@ -349,7 +379,16 @@ contains
       ieee_is_finite(time) .and. ieee_is_finite(minimum_dt) .and. &
       ieee_is_finite(minimum_transport_theta) .and. &
       minimum_transport_theta >= 0.0_dp .and. &
-      minimum_transport_theta <= 1.0_dp
+      minimum_transport_theta <= 1.0_dp .and. &
+      (history_presence == 0 .or. history_presence == 2)
+    if (local_ok .and. history_presence == 2) then
+      local_ok = steps >= 0 .and. steps < huge(steps) .and. &
+        regrids >= 0 .and. regrid_evaluations >= regrids .and. &
+        regrid_evaluations <= steps + 1 .and. &
+        cumulative_tagged_cells >= 0
+      if (local_ok .and. regrid_evaluations == 0) &
+        local_ok = cumulative_tagged_cells == 0
+    end if
     call MPI_Allreduce( &
       local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. accepted) then

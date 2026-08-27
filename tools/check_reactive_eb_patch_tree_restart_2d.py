@@ -21,6 +21,10 @@ COUNTER_PREFIXES = (
     "Transport level advances:",
     "Hydro level advances:",
 )
+INTEGER_DIAGNOSTIC_PREFIXES = (
+    "Regrid evaluations:",
+    "Cumulative tagged cells:",
+)
 
 
 def load(path: Path) -> dict[tuple[int, int, int, int], dict[str, str]]:
@@ -65,7 +69,7 @@ def check_checkpoint(path: Path) -> None:
     if lines[-1] != "END_CHECKPOINT":
         raise AssertionError("incomplete patch-tree checkpoint")
     schema, species, nvar, levels = (int(value) for value in lines[1].split())
-    if schema != 7 or species != 7 or nvar <= species or levels != 4:
+    if schema != 8 or species != 7 or nvar <= species or levels != 4:
         raise AssertionError("invalid patch-tree checkpoint header")
     fingerprint = 2 + species
     if lines[fingerprint + 5] != "linear":
@@ -101,6 +105,20 @@ def load_level_counters(path: Path, prefix: str) -> tuple[int, ...]:
     if any(value < 0 for value in values):
         raise AssertionError(f"{path.name}: negative {prefix}")
     return values
+
+
+def load_integer_diagnostic(path: Path, prefix: str) -> int:
+    matches = [
+        line.removeprefix(prefix).split()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(matches) != 1 or len(matches[0]) != 1:
+        raise AssertionError(f"{path.name}: missing or invalid {prefix}")
+    value = int(matches[0][0])
+    if value < 0:
+        raise AssertionError(f"{path.name}: negative {prefix}")
+    return value
 
 
 def unique_time(rows: dict[tuple[int, int, int, int], dict[str, str]]) -> float:
@@ -179,6 +197,12 @@ def main() -> None:
             prefix: load_level_counters(args.reference_log, prefix)
             for prefix in COUNTER_PREFIXES
         }
+        reference_integer_diagnostics = {
+            prefix: load_integer_diagnostic(args.reference_log, prefix)
+            for prefix in INTEGER_DIAGNOSTIC_PREFIXES
+        }
+        if any(value < 1 for value in reference_integer_diagnostics.values()):
+            raise AssertionError("reference did not exercise AMR regrid history")
         for index, log_path in enumerate(args.restarted_logs, start=1):
             compare_diagnostic(
                 f"restart {index} conservation history",
@@ -196,6 +220,13 @@ def main() -> None:
                     raise AssertionError(
                         f"restart {index} {prefix} {actual} != "
                         f"{reference_counters[prefix]}"
+                    )
+            for prefix in INTEGER_DIAGNOSTIC_PREFIXES:
+                actual = load_integer_diagnostic(log_path, prefix)
+                if actual != reference_integer_diagnostics[prefix]:
+                    raise AssertionError(
+                        f"restart {index} {prefix} {actual} != "
+                        f"{reference_integer_diagnostics[prefix]}"
                     )
     print("check_reactive_eb_patch_tree_restart_2d: PASS")
 

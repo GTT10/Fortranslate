@@ -1661,6 +1661,19 @@ outputs after failed reads. Capture the public uninterrupted and restarted
 logs and require exact counter-vector equality across the serial and
 two-to-four/eight-rank continuation chains.
 
+## 0.199.0 restart-persistent AMR regrid history
+
+Advance the arbitrary-depth checkpoint envelope to base schema 5 and public
+fingerprinted schema 8. Store cumulative successful tag/regrid evaluations and
+the sum of globally tagged cells. Count an evaluation only after its complete
+transaction succeeds, including evaluations that retain the existing
+topology.
+
+Require exact direct serial recovery, sparse rank consensus, selected-root
+broadcast, and neutral outputs after rejected reads. Extend serial and
+two-to-four/eight-rank restart log comparison so both adaptation diagnostics
+match the uninterrupted logical run exactly.
+
 Each implementation PR should normally contain:
 
 1. implementation

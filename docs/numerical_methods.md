@@ -2584,6 +2584,23 @@ vector is checkpointed identically on every rank. Restart restores all slots,
 including counters for levels absent from the stored topology but still
 within the configured maximum depth.
 
+Let `E` be the number of committed scheduled tag/regrid evaluations and `G`
+the number of those evaluations that changed topology. If evaluation `k`
+tags `N_k` cells across all eligible parent patches, the application updates
+
+```text
+E <- E + 1,
+N_tag <- N_tag + N_k,
+G <- G + [topology changed].
+```
+
+These updates occur only after planning, geometry construction, state
+migration, and final validation all succeed. Thus `G <= E <= steps + 1`, where
+the extra evaluation is the optional initialization regrid. Sparse planning
+already reduces `N_k` across owners, so every rank checkpoints the same global
+history. Restart restores `E` and `N_tag` with `G` before the next scheduled
+decision.
+
 ## Interface-local multilevel EB residual closure
 
 Let `P_c` be a direct child's rectangle in parent-cell indices. For each side

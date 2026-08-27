@@ -149,6 +149,7 @@ program test_amr_eb_multilevel_2d
   integer, allocatable :: restored_checkpoint_hydro_advances(:)
   integer :: i, j, k, level, patch, nvar
   integer :: tagged_cells
+  integer :: checkpoint_regrid_evaluations, checkpoint_tagged_cells
   integer :: checkpoint_steps, checkpoint_regrids, checkpoint_unit, status
   integer :: csv_lines, csv_unit, expected_csv_cells
 
@@ -571,7 +572,8 @@ program test_amr_eb_multilevel_2d
     initial_integrals=checkpoint_initial_integrals, &
     chemistry_level_advances=checkpoint_chemistry_advances, &
     transport_level_advances=checkpoint_transport_advances, &
-    hydro_level_advances=checkpoint_hydro_advances)
+    hydro_level_advances=checkpoint_hydro_advances, &
+    regrid_evaluations=4, cumulative_tagged_cells=37)
   call require(ok, "arbitrary-depth EB patch-tree checkpoint write")
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
@@ -580,7 +582,9 @@ program test_amr_eb_multilevel_2d
     initial_integrals=restored_checkpoint_initial_integrals, &
     chemistry_level_advances=restored_checkpoint_chemistry_advances, &
     transport_level_advances=restored_checkpoint_transport_advances, &
-    hydro_level_advances=restored_checkpoint_hydro_advances)
+    hydro_level_advances=restored_checkpoint_hydro_advances, &
+    regrid_evaluations=checkpoint_regrid_evaluations, &
+    cumulative_tagged_cells=checkpoint_tagged_cells)
   call require(allocated(restored_checkpoint_initial_integrals), &
     "arbitrary-depth EB checkpoint conservation baseline allocation")
   call require(allocated(restored_checkpoint_chemistry_advances) .and. &
@@ -595,6 +599,8 @@ program test_amr_eb_multilevel_2d
     checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
     checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
     checkpoint_minimum_transport_theta == 0.625_dp .and. &
+    checkpoint_regrid_evaluations == 4 .and. &
+    checkpoint_tagged_cells == 37 .and. &
     all(restored_checkpoint_initial_integrals == &
       checkpoint_initial_integrals) .and. &
     all(restored_checkpoint_chemistry_advances == &
@@ -612,11 +618,14 @@ program test_amr_eb_multilevel_2d
     initial_integrals=restored_checkpoint_initial_integrals, &
     chemistry_level_advances=restored_checkpoint_chemistry_advances, &
     transport_level_advances=restored_checkpoint_transport_advances, &
-    hydro_level_advances=restored_checkpoint_hydro_advances)
+    hydro_level_advances=restored_checkpoint_hydro_advances, &
+    regrid_evaluations=checkpoint_regrid_evaluations, &
+    cumulative_tagged_cells=checkpoint_tagged_cells)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid() .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
     checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
     checkpoint_minimum_transport_theta == 1.0_dp .and. &
+    checkpoint_regrid_evaluations == 0 .and. checkpoint_tagged_cells == 0 .and. &
     .not. allocated(restored_checkpoint_initial_integrals) .and. &
     .not. allocated(restored_checkpoint_chemistry_advances) .and. &
     .not. allocated(restored_checkpoint_transport_advances) .and. &
@@ -675,6 +684,18 @@ program test_amr_eb_multilevel_2d
   call require(.not. ok .and. &
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "negative EB patch-tree operator counter rejection")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, regrid_evaluations=4)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "partial EB patch-tree regrid history rejection")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, regrid_evaluations=1, cumulative_tagged_cells=37)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "invalid EB patch-tree regrid history rejection")
   open(newunit=checkpoint_unit, file=tree_checkpoint_path, status="old", &
     action="readwrite", iostat=status)
   call require(status == 0, "open EB patch-tree checkpoint for cleanup")
