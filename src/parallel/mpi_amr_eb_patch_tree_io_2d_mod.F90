@@ -9,6 +9,7 @@ module mpi_amr_eb_patch_tree_io_2d_mod
     initialize_amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d, &
     write_reactive_amr_eb_patch_tree_2d_checkpoint, &
     read_reactive_amr_eb_patch_tree_2d_checkpoint, &
     write_reactive_amr_eb_patch_tree_2d_csv
@@ -74,7 +75,7 @@ contains
 
   subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, distribution, sparse, root, time, steps, regrids, &
-      minimum_dt, ok, local_entity_transfers)
+      minimum_dt, ok, local_entity_transfers, fingerprint)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -84,6 +85,8 @@ contains
     integer, intent(in) :: steps, regrids
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_entity_transfers
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in), optional :: fingerprint
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
     logical :: controls_ok, gathered_ok, write_ok
@@ -104,9 +107,16 @@ contains
       distribution, sparse, root, gathered, gathered_ok, transfers)
     if (.not. gathered_ok) return
     write_ok = .true.
-    if (distribution%rank == root) call &
-      write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        path, species, gathered, time, steps, regrids, minimum_dt, write_ok)
+    if (distribution%rank == root) then
+      if (present(fingerprint)) then
+        call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+          path, species, gathered, time, steps, regrids, minimum_dt, &
+          write_ok, fingerprint)
+      else
+        call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+          path, species, gathered, time, steps, regrids, minimum_dt, write_ok)
+      end if
+    end if
     call MPI_Bcast( &
       write_ok, 1, MPI_LOGICAL, root, distribution%comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. write_ok) return
@@ -118,7 +128,7 @@ contains
   subroutine read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, comm, root, maximum_levels, subcycle_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
-      local_entity_transfers)
+      local_entity_transfers, fingerprint)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -129,6 +139,8 @@ contains
     integer, intent(out) :: steps, regrids
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_entity_transfers
+    type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
+      intent(in), optional :: fingerprint
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -156,9 +168,18 @@ contains
     if (.not. controls_ok) return
 
     read_ok = .true.
-    if (rank == root) call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
-      path, species, maximum_levels, loaded, real_metadata(1), &
-      integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok)
+    if (rank == root) then
+      if (present(fingerprint)) then
+        call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+          path, species, maximum_levels, loaded, real_metadata(1), &
+          integer_metadata(1), integer_metadata(2), real_metadata(2), &
+          read_ok, fingerprint)
+      else
+        call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+          path, species, maximum_levels, loaded, real_metadata(1), &
+          integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok)
+      end if
+    end if
     call MPI_Bcast(read_ok, 1, MPI_LOGICAL, root, comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. read_ok) return
     call MPI_Bcast( &
