@@ -949,7 +949,8 @@ contains
     real(dp), allocatable :: candidate_temperature(:, :), primitive(:)
     real(dp) :: recovered_temperature, sound_speed
     logical :: local_ok, recovery_ok
-    integer :: failed_i, failed_j, nvar, selected_max_order
+    integer :: failed_i, failed_j, provisional_i, provisional_j
+    integer :: nvar, selected_max_order
     real(dp) :: selected_target
 
     new_state = 0.0_dp
@@ -977,11 +978,13 @@ contains
     allocate(provisional_state(nvar, geometry%nx, geometry%ny))
     allocate(redistributed_state(nvar, geometry%nx, geometry%ny))
     provisional_state = state
-    do j = 1, geometry%ny
-      do i = 1, geometry%nx
-        if (geometry%cell_type(i, j) == eb_covered_cell) cycle
-        provisional_state(:, i, j) = state(:, i, j) + &
-          dt * conservative_rhs(:, i, j)
+    do provisional_j = 1, geometry%ny
+      do provisional_i = 1, geometry%nx
+        if (geometry%cell_type(provisional_i, provisional_j) == &
+            eb_covered_cell) cycle
+        provisional_state(:, provisional_i, provisional_j) = &
+          state(:, provisional_i, provisional_j) + &
+          dt * conservative_rhs(:, provisional_i, provisional_j)
       end do
     end do
     selected_target = 0.5_dp
