@@ -72,17 +72,17 @@ module reactive_eb_amr_2d_driver_mod
 
   character(len=*), parameter :: reactive_eb_amr_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_amr_checkpoint_schema = 2
+  integer, parameter :: reactive_eb_amr_checkpoint_schema = 3
   character(len=*), parameter :: reactive_eb_patch_set_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 2
+  integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 3
   character(len=*), parameter :: reactive_eb_three_level_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_three_level_checkpoint_schema = 2
+  integer, parameter :: reactive_eb_three_level_checkpoint_schema = 3
   character(len=*), parameter :: &
     reactive_eb_dynamic_three_level_checkpoint_magic = &
       "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 2
+  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 3
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_three_level_reactive_eb_cfl_timestep_2d
@@ -146,9 +146,6 @@ contains
       config%refinement_ratio >= 2 .and. &
       (trim(config%prolongation_method) == "pcm" .or. &
        trim(config%prolongation_method) == "linear") .and. &
-      (trim(config%prolongation_method) == "pcm" .or. &
-       (len_trim(config%checkpoint_file) == 0 .and. &
-        len_trim(config%restart_file) == 0)) .and. &
       config%regrid_interval >= 1 .and. &
       (.not. config%remove_fine_patch_when_untagged .or. &
        config%dynamic_regridding) .and. &
@@ -1556,7 +1553,6 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
@@ -1628,6 +1624,8 @@ contains
     write(unit, '(a)', iostat=status) trim(config%eb%flow%reconstruction)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%limiter)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%prolongation_method)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -1723,6 +1721,7 @@ contains
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
@@ -1741,6 +1740,7 @@ contains
     stored_solver = ""
     stored_reconstruction = ""
     stored_limiter = ""
+    stored_prolongation_method = ""
     end_marker = ""
     stored_domain = 0.0_dp
     stored_geometry_values = 0.0_dp
@@ -1776,7 +1776,6 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         config%multipatch_enabled .or. config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
@@ -1829,6 +1828,9 @@ contains
     read(unit, '(a)', iostat=status) stored_limiter
     if (status /= 0 .or. &
         trim(stored_limiter) /= trim(config%eb%flow%limiter)) go to 900
+    read(unit, '(a)', iostat=status) stored_prolongation_method
+    if (status /= 0 .or. trim(stored_prolongation_method) /= &
+        trim(config%prolongation_method)) go to 900
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -1974,7 +1976,6 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         .not. config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
@@ -2032,6 +2033,8 @@ contains
     write(unit, '(a)', iostat=status) trim(config%eb%flow%reconstruction)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%limiter)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%prolongation_method)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -2124,6 +2127,7 @@ contains
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
@@ -2175,7 +2179,6 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         .not. config%multipatch_enabled .or. &
         config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -2230,6 +2233,9 @@ contains
     read(unit, '(a)', iostat=status) stored_limiter
     if (status /= 0 .or. &
         trim(stored_limiter) /= trim(config%eb%flow%limiter)) go to 900
+    read(unit, '(a)', iostat=status) stored_prolongation_method
+    if (status /= 0 .or. trim(stored_prolongation_method) /= &
+        trim(config%prolongation_method)) go to 900
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -2385,7 +2391,6 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_three_level_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         .not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
         .not. level_one_patch%is_valid( &
           level_one_geometry, level_two_geometry) .or. &
@@ -2483,6 +2488,8 @@ contains
     write(unit, '(a)', iostat=status) trim(config%eb%flow%reconstruction)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%limiter)
+    if (status /= 0) go to 900
+    write(unit, '(a)', iostat=status) trim(config%prolongation_method)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -2590,6 +2597,7 @@ contains
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(5), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
@@ -2614,8 +2622,7 @@ contains
     if (present(regrids)) regrids = 0
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
-        .not. supported_three_level_reactive_eb_amr_config(config) .or. &
-        trim(config%prolongation_method) /= "pcm") return
+        .not. supported_three_level_reactive_eb_amr_config(config)) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return
@@ -2675,6 +2682,9 @@ contains
     read(unit, '(a)', iostat=status) stored_limiter
     if (status /= 0 .or. &
         trim(stored_limiter) /= trim(config%eb%flow%limiter)) go to 900
+    read(unit, '(a)', iostat=status) stored_prolongation_method
+    if (status /= 0 .or. trim(stored_prolongation_method) /= &
+        trim(config%prolongation_method)) go to 900
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
@@ -3656,12 +3666,12 @@ contains
 
     fingerprint = reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d()
     ok = .false.
-    if (trim(config%prolongation_method) /= "pcm") return
     fingerprint%geometry = trim(config%eb%geometry)
     fingerprint%chemistry_model = trim(config%eb%flow%chemistry_model)
     fingerprint%riemann_solver = trim(config%eb%flow%riemann_solver)
     fingerprint%reconstruction = trim(config%eb%flow%reconstruction)
     fingerprint%limiter = trim(config%eb%flow%limiter)
+    fingerprint%prolongation_method = trim(config%prolongation_method)
     fingerprint%embedded_wall_kind = trim(config%eb%embedded_wall_kind)
     fingerprint%embedded_wall_thermal = &
       trim(config%eb%embedded_wall_thermal)
@@ -3747,7 +3757,6 @@ contains
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         config%three_level_enabled .or. config%multipatch_enabled .or. &
-        trim(config%prolongation_method) /= "pcm" .or. &
         config%patch_tree_maximum_levels < 1 .or. &
         config%patch_tree_maximum_levels > 64 .or. &
         (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &
@@ -3798,7 +3807,8 @@ contains
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "root tree"
       call initialize_reactive_amr_eb_patch_tree_2d( &
-        species, root_state, root_temperature, topology, solution, local_ok)
+        species, root_state, root_temperature, topology, solution, local_ok, &
+        config%prolongation_method)
       if (.not. local_ok) return
       nvar = solution%nvar
       if (config%dynamic_regridding .and. &
@@ -3807,7 +3817,8 @@ contains
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
           species, solution, criteria, config%patch_tree_maximum_levels, &
           config%refinement_ratio, build_patch_tree_geometry, local_ok, &
-          changed, tagged_cells)
+          changed, tagged_cells, &
+          prolongation_method=config%prolongation_method)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
@@ -3869,7 +3880,8 @@ contains
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
           species, solution, criteria, config%patch_tree_maximum_levels, &
           config%refinement_ratio, build_patch_tree_geometry, local_ok, &
-          changed, tagged_cells)
+          changed, tagged_cells, &
+          prolongation_method=config%prolongation_method)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if

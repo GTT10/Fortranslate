@@ -48,13 +48,15 @@ def check_checkpoint(path: Path) -> None:
     if lines[-1] != "END_CHECKPOINT":
         raise AssertionError("incomplete dynamic three-level checkpoint")
     schema, species_count, _ = (int(value) for value in lines[1].split())
-    if schema != 2 or species_count < 1:
+    if schema != 3 or species_count < 1:
         raise AssertionError("invalid dynamic checkpoint schema header")
     metadata = 2 + species_count
-    controls = [int(value) for value in lines[metadata + 14].split()]
+    if lines[metadata + 12] != "linear":
+        raise AssertionError("checkpoint did not preserve linear prolongation")
+    controls = [int(value) for value in lines[metadata + 15].split()]
     if controls != [1, 1, 0, 4, 4, 0]:
         raise AssertionError(f"incorrect regrid controls {controls}")
-    finest_patch = [int(value) for value in lines[metadata + 17].split()]
+    finest_patch = [int(value) for value in lines[metadata + 18].split()]
     if finest_patch == [6, 9, 6, 9, 2]:
         raise AssertionError("checkpoint retained the configured 8x8 seed")
     if (
@@ -62,7 +64,7 @@ def check_checkpoint(path: Path) -> None:
         or (finest_patch[3] - finest_patch[2] + 1) * finest_patch[4] != 28
     ):
         raise AssertionError(f"incorrect stored finest topology {finest_patch}")
-    time_record = lines[metadata + 18].split()
+    time_record = lines[metadata + 19].split()
     if len(time_record) != 5 or int(time_record[3]) < 1:
         raise AssertionError("checkpoint did not preserve the regrid count")
 

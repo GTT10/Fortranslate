@@ -51,6 +51,7 @@
 
 &eb_amr
   refinement_ratio = 2
+  prolongation_method = "linear"
   patch_tree_maximum_levels = 4
   patch_tree_mpi_work_exponent = 0
   three_level_enabled = .false.

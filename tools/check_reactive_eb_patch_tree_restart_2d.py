@@ -56,8 +56,11 @@ def check_checkpoint(path: Path) -> None:
     if lines[-1] != "END_CHECKPOINT":
         raise AssertionError("incomplete patch-tree checkpoint")
     schema, species, nvar, levels = (int(value) for value in lines[1].split())
-    if schema != 3 or species != 7 or nvar <= species or levels != 4:
+    if schema != 4 or species != 7 or nvar <= species or levels != 4:
         raise AssertionError("invalid patch-tree checkpoint header")
+    fingerprint = 2 + species
+    if lines[fingerprint + 5] != "linear":
+        raise AssertionError("checkpoint did not preserve linear prolongation")
 
 
 def unique_time(rows: dict[tuple[int, int, int, int], dict[str, str]]) -> float:

@@ -51,6 +51,7 @@
   coarse_j_lower = 2
   coarse_j_upper = 7
   refinement_ratio = 2
+  prolongation_method = "linear"
   three_level_enabled = .true.
   level_two_i_lower = 3
   level_two_i_upper = 10

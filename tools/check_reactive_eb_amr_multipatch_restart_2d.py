@@ -60,8 +60,11 @@ def main() -> None:
     if checkpoint_lines[0] != "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT":
         raise AssertionError("multipatch checkpoint magic mismatch")
     header = [int(value) for value in checkpoint_lines[1].split()]
-    if len(header) != 4 or header[0] != 2 or header[3] != 2:
+    if len(header) != 4 or header[0] != 3 or header[3] != 2:
         raise AssertionError(f"checkpoint did not preserve two patches: {header}")
+    metadata = 2 + header[1]
+    if checkpoint_lines[metadata + 12] != "linear":
+        raise AssertionError("checkpoint did not preserve linear prolongation")
     if checkpoint_lines[-1] != "END_CHECKPOINT":
         raise AssertionError("multipatch checkpoint end marker mismatch")
 

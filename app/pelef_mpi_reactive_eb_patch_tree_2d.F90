@@ -87,8 +87,6 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   if (.not. ok) call abort_run(trim(message), 2)
   if (config%three_level_enabled .or. config%multipatch_enabled) &
     call abort_run("Sparse MPI patch tree excludes fixed-depth modes", 2)
-  if (trim(config%prolongation_method) /= "pcm") &
-    call abort_run("Sparse MPI patch tree currently requires PCM", 2)
   call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
     config, fingerprint, ok)
   if (.not. ok) call abort_run("Checkpoint fingerprint failed", 2)
@@ -178,7 +176,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, new_distribution, ok, changed, &
-        tagged_cells, transferred_cells)
+        tagged_cells, transferred_cells, &
+        prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Initial sparse regrid failed", 4)
       distribution = new_distribution
       if (changed) regrids = regrids + 1
@@ -236,7 +235,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, new_distribution, ok, changed, &
-        tagged_cells, transferred_cells)
+        tagged_cells, transferred_cells, &
+        prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Periodic sparse regrid failed", 5)
       distribution = new_distribution
       if (changed) regrids = regrids + 1

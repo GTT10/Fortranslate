@@ -56,6 +56,7 @@
   coarse_j_lower = 2
   coarse_j_upper = 6
   refinement_ratio = 2
+  prolongation_method = "linear"
   multipatch_enabled = .true.
   dynamic_regridding = .true.
   regrid_at_initialization = .true.
