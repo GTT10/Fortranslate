@@ -2656,3 +2656,20 @@ one rank, use an invalid selector. Require collective rejection, a zero
 integral, and zero public local-node accounting. Retain the full established
 MPI gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-
 checked Debug.
+
+## 0.164.0 MPI owner-local arbitrary-depth EB hydro gates
+
+Advance the post-chemistry physical four-level branching tree through one
+small stable hydro interval after owner rotation. Require global per-level
+node advances `[1, 2, 8, 8]`, and require grouped sender traffic to equal the
+topology/owner-map sum of `parent_invocations * (refinement_ratio + 4)` for
+every distinct-owner edge.
+
+Materialize only after the transaction and require state/temperature parity
+with the complete serial recursive hydro reference within qualified roundoff.
+Also compare sparse and serial composite conserved integrals. On multiple
+ranks, supply a different but valid interval on rank zero; on one rank, use a
+negative interval. Require collective preflight rejection, exact sparse
+rollback, zero advances, and zero transfers. Retain the full established MPI
+gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
+Debug.
