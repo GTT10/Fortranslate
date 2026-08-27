@@ -1488,12 +1488,13 @@ level advancement, ghost fill, prolongation, or regridding.
 The configured coarse-to-fine method initializes child `f` from parent `c`.
 PCM uses `U_f=U_c`. Limited-linear mode adds component-wise MC slopes. A
 regular parent whose complete child block is regular uses Cartesian child
-offsets with zero arithmetic mean. A cut parent uses distances between active
-coarse fluid-volume centroids, MC slopes when both directional neighbors
-exist, and a one-sided derivative next to the embedded boundary. Its fine
-fluid-centroid offsets have their volume-fraction-weighted mean removed, so
-average-down returns the cut-parent state exactly. A component-wise factor
-then limits every active child to the active 3-by-3 coarse-neighbor envelope.
+offsets with zero arithmetic mean. A cut parent fits one multidimensional
+gradient to its connected active 3-by-3 coarse fluid-volume centroids. A
+full-rank normal matrix recovers both directions; rank-one support retains the
+minimum-norm tangent gradient. Its fine fluid-centroid offsets have their
+volume-fraction-weighted mean removed, so average-down returns the cut-parent
+state exactly. Component-wise factors bound both connected coarse predictions
+and every active child by the active 3-by-3 coarse-neighbor envelope.
 Covered and other topology-mismatched parents use PCM. An inadmissible linear
 parent is retried completely with PCM. Every active child is accepted only
 after conserved-to-primitive EOS recovery supplies a valid temperature.

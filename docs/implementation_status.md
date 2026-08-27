@@ -3376,3 +3376,21 @@ candidate, the whole provisional state is redistributed again with the
 conservative zeroth-order kernel before commit. PCM remains the public default.
 Exact AMReX EB interpolation, least-squares multidimensional gradients, and
 higher-order cut-cell reconstruction are not claimed.
+
+## Multidimensional cut-parent prolongation (`0.187.0`)
+
+- [x] connected active coarse-cell 3-by-3 stencil
+- [x] fluid-volume-centroid least-squares normal equations
+- [x] full-rank two-dimensional gradient recovery
+- [x] minimum-norm rank-one tangent recovery
+- [x] coarse-neighbor and fine-child component envelope limiting
+- [x] exact fluid-centroid tangential-affine cut-parent reproduction
+- [x] retained fine-volume-weighted conservation and EOS/PCM transaction
+- [x] shared fixed-depth, arbitrary-depth, serial, and sparse-MPI dispatcher
+
+Configured limited-linear initialization now retains a genuinely
+multidimensional smooth gradient at an EB-cut parent. Diagonal neighbors enter
+only through an active face-connected path, so the fit does not cross a
+covered corner. Rank-deficient stencils retain variation only in their
+resolved tangent direction. Exact AMReX interpolation, quadratic cut-parent
+reconstruction, and geometry coarsening are not claimed.

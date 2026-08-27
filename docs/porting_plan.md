@@ -1513,6 +1513,21 @@ cut-parent children, component bounds, regular-parent exactness, and EB
 prolongation/average-down conservation before using the shared dispatcher in
 all existing serial and sparse-MPI lifecycles.
 
+## 0.187.0 multidimensional cut-parent prolongation
+
+Replace independent coordinate secants at EB-cut parents with a connected
+3-by-3 least-squares fit over coarse fluid-volume centroids. Admit a diagonal
+sample only when an open two-face path reaches it. Solve a full-rank
+two-dimensional normal matrix, retain the minimum-norm tangent for rank-one
+support, and use zero slope when no direction is resolved.
+
+Limit connected coarse-centroid predictions and active fine children to the
+local active component envelope. Retain the fine-volume-weighted zero-mean
+offset, average-down conservation, EOS recovery, and parent-local PCM retry.
+Qualify an interface-tangential affine field defined at fluid centroids before
+retaining every fixed-depth, arbitrary-depth, serial, and sparse-MPI lifecycle
+gate.
+
 Each implementation PR should normally contain:
 
 1. implementation
