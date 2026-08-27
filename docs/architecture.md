@@ -1870,3 +1870,25 @@ All fields, per-level advance counts, and grouped direct-transfer counts remain
 inside one private sparse candidate until the complete recursive root operation
 validates collectively. A control mismatch or later owner failure therefore
 publishes zero accounting and preserves the accepted sparse tree exactly.
+
+## MPI owner-local arbitrary-depth EB patch-tree transport (`0.165.0`)
+
+Each SSPRK2 Euler stage follows the recursive hydro ownership schedule, but the
+node owner evaluates molecular-transport fluxes, the conservative RHS, and
+StateRedist. Parent start/end exterior context crosses a distinct-owner edge
+once per node invocation, and each fine substep returns its diffusive fluxes
+directly to the parent-owner register. Reflux and ordered average-down reuse the
+same direct child-state routes and subtree conservation closure as hydro.
+
+The second Euler stage advances a private copy of the first. Every owner then
+blends its own start and second-stage fields and recovers temperature locally.
+One final deepest-first restriction makes covered parent cells authoritative;
+no complete numerical node or tree is constructed on a nonowner. The public
+minimum limiter is an `MPI_MIN` over owner-local values.
+
+Boundary data, transport flags, interval, redistribution controls, species
+layout, topology, ownership, and sparse fields must agree before advancement.
+The two Euler stages, final blend, hierarchy synchronization, limiter minimum,
+per-level advances, and grouped direct-transfer counts publish only after the
+complete sparse candidate validates. Full-physics composition and the public
+sparse clock remain separate transactions.
