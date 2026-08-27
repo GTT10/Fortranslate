@@ -2262,3 +2262,28 @@ collective control, rejects invalid or rank-inconsistent selections, and only
 the parent owner constructs each new child before existing direct routing.
 The established overlap retention, EOS recovery, synchronization,
 conservation checks, and atomic publication remain downstream.
+
+## Conservative limited-linear cut-parent prolongation (`0.186.0`)
+
+The shared limited-linear kernel now treats an EB-cut parent as a fluid-volume
+control volume instead of forcing it to PCM. It measures directional
+differences between active coarse fluid centroids, uses MC limiting when both
+sides exist, and retains a one-sided derivative next to covered geometry. A
+component-wise envelope limiter bounds reconstructed children by the active
+3-by-3 coarse neighborhood.
+
+Fine fluid-centroid offsets generally do not have zero mean within a cut
+parent. The kernel removes their fine-volume-fraction-weighted mean before
+reconstruction, so EB average-down recovers the source conserved state to
+roundoff. Covered parents and regular parents with topology-mismatched child
+blocks retain PCM. EOS recovery and the existing parent-local PCM retry remain
+the final transactional acceptance boundary. Because fixed-depth, patch-tree,
+serial, and sparse-MPI lifecycles already share this dispatcher, they inherit
+the cut-parent behavior without a new checkpoint identity field.
+
+The end-to-end reactive qualification also closes the interaction with
+second-order weighted StateRedist. If its reconstructed conserved state fails
+EOS recovery, the provisional state is redistributed again with order zero.
+Both candidates use the same neighborhood partition, so the retry retains the
+componentwise volume-conservation contract and the transaction commits only an
+EOS-admissible whole-level state.

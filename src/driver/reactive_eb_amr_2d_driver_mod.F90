@@ -526,7 +526,7 @@ contains
       new_level_two_temperature, ok, target_volume_fraction, transport, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, boundaries)
+      minimum_transport_theta, boundaries, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
@@ -558,6 +558,7 @@ contains
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -593,6 +594,7 @@ contains
     new_level_two_temperature = level_two_temperature
     ok = .false.
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (present(failure_context)) failure_context = "input validation"
     if (chemistry_enabled .and. size(reactions) < 1) return
     selected_target = 0.5_dp
     if (present(target_volume_fraction)) &
@@ -620,14 +622,17 @@ contains
     allocate(level_two_candidate, source=level_two_state)
     allocate(level_two_candidate_temperature, source=level_two_temperature)
     if (chemistry_enabled) then
+      if (present(failure_context)) failure_context = "first root chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
         root_candidate, root_candidate_temperature, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "first middle chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
         level_one_candidate, level_one_candidate_temperature, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "first finest chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
         level_two_candidate, level_two_candidate_temperature, local_ok)
@@ -641,6 +646,7 @@ contains
       allocate(transport_level_one_temperature, mold=level_one_temperature)
       allocate(transport_level_two, mold=level_two_state)
       allocate(transport_level_two_temperature, mold=level_two_temperature)
+      if (present(failure_context)) failure_context = "first transport"
       call advance_three_level_reactive_eb_transport_2d( &
         species, transport, root_candidate, root_candidate_temperature, &
         root_geometry, level_one_candidate, level_one_candidate_temperature, &
@@ -651,7 +657,7 @@ contains
         state_redist_max_order, transport_root, transport_root_temperature, &
         transport_level_one, transport_level_one_temperature, &
         transport_level_two, transport_level_two_temperature, &
-        stage_transport_theta, local_ok)
+        stage_transport_theta, local_ok, failure_context)
       if (.not. local_ok) return
       root_candidate = transport_root
       root_candidate_temperature = transport_root_temperature
@@ -668,6 +674,7 @@ contains
     allocate(hydro_level_one_temperature, mold=level_one_temperature)
     allocate(hydro_level_two, mold=level_two_state)
     allocate(hydro_level_two_temperature, mold=level_two_temperature)
+    if (present(failure_context)) failure_context = "hydro"
     call advance_three_level_reactive_eb_hydro_2d( &
       species, root_candidate, root_candidate_temperature, root_geometry, &
       level_one_candidate, level_one_candidate_temperature, &
@@ -686,6 +693,7 @@ contains
     level_two_candidate_temperature = hydro_level_two_temperature
 
     if (use_transport) then
+      if (present(failure_context)) failure_context = "second transport"
       call advance_three_level_reactive_eb_transport_2d( &
         species, transport, root_candidate, root_candidate_temperature, &
         root_geometry, level_one_candidate, level_one_candidate_temperature, &
@@ -696,7 +704,7 @@ contains
         state_redist_max_order, transport_root, transport_root_temperature, &
         transport_level_one, transport_level_one_temperature, &
         transport_level_two, transport_level_two_temperature, &
-        stage_transport_theta, local_ok)
+        stage_transport_theta, local_ok, failure_context)
       if (.not. local_ok) return
       root_candidate = transport_root
       root_candidate_temperature = transport_root_temperature
@@ -708,14 +716,17 @@ contains
     end if
 
     if (chemistry_enabled) then
+      if (present(failure_context)) failure_context = "second root chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
         root_candidate, root_candidate_temperature, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "second middle chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
         level_one_candidate, level_one_candidate_temperature, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "second finest chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
         level_two_candidate, level_two_candidate_temperature, local_ok)
@@ -724,6 +735,7 @@ contains
       allocate(synchronized_root_temperature, mold=root_temperature)
       allocate(synchronized_level_one, mold=level_one_state)
       allocate(synchronized_level_one_temperature, mold=level_one_temperature)
+      if (present(failure_context)) failure_context = "final synchronization"
       call average_down_three_level_reactive_eb_state_2d( &
         species, root_candidate, root_candidate_temperature, root_geometry, &
         level_one_candidate, level_one_candidate_temperature, &
@@ -747,6 +759,7 @@ contains
     if (present(minimum_transport_theta)) &
       minimum_transport_theta = transport_theta
     ok = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine advance_three_level_reactive_eb_strang_2d
 
   subroutine advance_reactive_eb_patch_set_strang_2d( &
@@ -3336,7 +3349,7 @@ contains
           config%eb%flow%thermal_conduction_enabled, &
           config%eb%flow%species_diffusion_enabled, &
           config%eb%flow%barodiffusion_enabled, step_transport_theta, &
-          boundaries)
+          boundaries, failure_context)
       else
         call advance_three_level_reactive_eb_strang_2d( &
           species, reactions, root_state, root_temperature, root_geometry, &
@@ -3351,7 +3364,8 @@ contains
           root_candidate_temperature, level_one_candidate, &
           level_one_candidate_temperature, level_two_candidate, &
           level_two_candidate_temperature, local_ok, &
-          config%eb%state_redist_target_volume_fraction)
+          config%eb%state_redist_target_volume_fraction, &
+          failure_context=failure_context)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) return

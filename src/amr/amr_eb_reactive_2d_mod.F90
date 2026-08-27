@@ -6,7 +6,7 @@ module amr_eb_reactive_2d_mod
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use slope_limiter_mod, only: limited_slope
   use eb_geometry_2d_mod, only: &
-    eb_geometry_2d, eb_covered_cell, eb_regular_cell
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d, &
     build_reactive_eb_face_center_fluxes_2d, &
@@ -153,13 +153,19 @@ contains
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :), primitive(:)
-    real(dp), allocatable :: slope_x(:), slope_y(:)
-    real(dp) :: delta_minus, delta_plus, offset_x, offset_y
+    real(dp), allocatable :: maximum_state(:), minimum_state(:)
+    real(dp), allocatable :: slope_x(:), slope_y(:), theta(:)
+    real(dp) :: delta, delta_minus, delta_plus
+    real(dp) :: distance_minus, distance_plus
+    real(dp) :: mean_offset_x, mean_offset_y, offset_x, offset_y
+    real(dp) :: raw_offset_x, raw_offset_y, total_weight, weight
     real(dp) :: recovered_temperature, sound_speed
+    logical :: has_minus, has_plus, is_cut_parent
     logical :: local_ok, parent_ok, use_linear
     integer :: child_i, child_j, coarse_i, coarse_j, component
     integer :: fine_i, fine_i_lower, fine_i_upper
     integer :: fine_j, fine_j_lower, fine_j_upper, nvar, ratio
+    integer :: neighbor_i, neighbor_j
 
     fine_state = 0.0_dp
     fine_temperature = 0.0_dp
@@ -181,7 +187,8 @@ contains
     allocate(candidate_state, mold=fine_state)
     allocate(candidate_temperature, mold=fine_temperature)
     allocate(primitive(reactive_nprim(size(species))))
-    allocate(slope_x(nvar), slope_y(nvar))
+    allocate(maximum_state(nvar), minimum_state(nvar))
+    allocate(slope_x(nvar), slope_y(nvar), theta(nvar))
     candidate_state = 0.0_dp
     candidate_temperature = 0.0_dp
     ratio = patch%refinement_ratio
@@ -191,8 +198,8 @@ contains
       do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
         fine_i_lower = (coarse_i - patch%coarse_i_lower) * ratio + 1
         fine_i_upper = fine_i_lower + ratio - 1
-        ! Keep EB-cut parents piecewise constant. Cartesian child offsets then
-        ! sum to zero exactly on every parent that accepts linear slopes.
+        is_cut_parent = &
+          coarse_geometry%cell_type(coarse_i, coarse_j) == eb_cut_cell
         use_linear = &
           coarse_geometry%cell_type(coarse_i, coarse_j) == &
             eb_regular_cell .and. &
@@ -201,6 +208,8 @@ contains
             eb_regular_cell)
         slope_x = 0.0_dp
         slope_y = 0.0_dp
+        mean_offset_x = 0.0_dp
+        mean_offset_y = 0.0_dp
         if (use_linear) then
           do component = 1, nvar
             delta_minus = 0.0_dp
@@ -239,17 +248,196 @@ contains
               delta_minus, delta_plus, "mc", slope_y(component), local_ok)
             if (.not. local_ok) return
           end do
+        else if (is_cut_parent) then
+          ! Use active coarse neighbors at their fluid-volume centroids. A
+          ! one-sided derivative is retained next to the embedded boundary;
+          ! the child-envelope limiter below prevents a new component bound.
+          use_linear = .true.
+          minimum_state = coarse_state(:, coarse_i, coarse_j)
+          maximum_state = coarse_state(:, coarse_i, coarse_j)
+          do neighbor_j = max(1, coarse_j - 1), &
+              min(coarse_geometry%ny, coarse_j + 1)
+            do neighbor_i = max(1, coarse_i - 1), &
+                min(coarse_geometry%nx, coarse_i + 1)
+              if (coarse_geometry%cell_type(neighbor_i, neighbor_j) == &
+                  eb_covered_cell) cycle
+              minimum_state = min( &
+                minimum_state, coarse_state(:, neighbor_i, neighbor_j))
+              maximum_state = max( &
+                maximum_state, coarse_state(:, neighbor_i, neighbor_j))
+            end do
+          end do
+
+          do component = 1, nvar
+            has_minus = .false.
+            has_plus = .false.
+            delta_minus = 0.0_dp
+            delta_plus = 0.0_dp
+            if (coarse_i > 1) then
+              has_minus = coarse_geometry%cell_type(coarse_i - 1, coarse_j) &
+                /= eb_covered_cell
+              if (has_minus) then
+                distance_minus = 1.0_dp + &
+                  coarse_geometry%cell_centroid_x(coarse_i, coarse_j) - &
+                  coarse_geometry%cell_centroid_x(coarse_i - 1, coarse_j)
+                if (distance_minus > 0.0_dp) &
+                  delta_minus = ( &
+                    coarse_state(component, coarse_i, coarse_j) - &
+                    coarse_state(component, coarse_i - 1, coarse_j)) / &
+                    distance_minus
+              end if
+            end if
+            if (coarse_i < coarse_geometry%nx) then
+              has_plus = coarse_geometry%cell_type(coarse_i + 1, coarse_j) &
+                /= eb_covered_cell
+              if (has_plus) then
+                distance_plus = 1.0_dp + &
+                  coarse_geometry%cell_centroid_x(coarse_i + 1, coarse_j) - &
+                  coarse_geometry%cell_centroid_x(coarse_i, coarse_j)
+                if (distance_plus > 0.0_dp) &
+                  delta_plus = ( &
+                    coarse_state(component, coarse_i + 1, coarse_j) - &
+                    coarse_state(component, coarse_i, coarse_j)) / &
+                    distance_plus
+              end if
+            end if
+            if (has_minus .and. has_plus) then
+              call limited_slope( &
+                delta_minus, delta_plus, "mc", slope_x(component), local_ok)
+              if (.not. local_ok) return
+            else if (has_minus) then
+              slope_x(component) = delta_minus
+            else if (has_plus) then
+              slope_x(component) = delta_plus
+            end if
+
+            has_minus = .false.
+            has_plus = .false.
+            delta_minus = 0.0_dp
+            delta_plus = 0.0_dp
+            if (coarse_j > 1) then
+              has_minus = coarse_geometry%cell_type(coarse_i, coarse_j - 1) &
+                /= eb_covered_cell
+              if (has_minus) then
+                distance_minus = 1.0_dp + &
+                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j) - &
+                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j - 1)
+                if (distance_minus > 0.0_dp) &
+                  delta_minus = ( &
+                    coarse_state(component, coarse_i, coarse_j) - &
+                    coarse_state(component, coarse_i, coarse_j - 1)) / &
+                    distance_minus
+              end if
+            end if
+            if (coarse_j < coarse_geometry%ny) then
+              has_plus = coarse_geometry%cell_type(coarse_i, coarse_j + 1) &
+                /= eb_covered_cell
+              if (has_plus) then
+                distance_plus = 1.0_dp + &
+                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j + 1) - &
+                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j)
+                if (distance_plus > 0.0_dp) &
+                  delta_plus = ( &
+                    coarse_state(component, coarse_i, coarse_j + 1) - &
+                    coarse_state(component, coarse_i, coarse_j)) / &
+                    distance_plus
+              end if
+            end if
+            if (has_minus .and. has_plus) then
+              call limited_slope( &
+                delta_minus, delta_plus, "mc", slope_y(component), local_ok)
+              if (.not. local_ok) return
+            else if (has_minus) then
+              slope_y(component) = delta_minus
+            else if (has_plus) then
+              slope_y(component) = delta_plus
+            end if
+          end do
+
+          ! Fine fluid-centroid offsets need not have zero mean in a cut
+          ! parent. Remove their volume-weighted mean before reconstruction so
+          ! average-down returns the parent state exactly.
+          total_weight = 0.0_dp
+          do child_j = 1, ratio
+            fine_j = fine_j_lower + child_j - 1
+            do child_i = 1, ratio
+              fine_i = fine_i_lower + child_i - 1
+              weight = fine_geometry%volume_fraction(fine_i, fine_j)
+              if (weight <= 0.0_dp) cycle
+              raw_offset_x = ( &
+                real(child_i, dp) - 0.5_dp + &
+                fine_geometry%cell_centroid_x(fine_i, fine_j)) / &
+                real(ratio, dp) - 0.5_dp
+              raw_offset_y = ( &
+                real(child_j, dp) - 0.5_dp + &
+                fine_geometry%cell_centroid_y(fine_i, fine_j)) / &
+                real(ratio, dp) - 0.5_dp
+              total_weight = total_weight + weight
+              mean_offset_x = mean_offset_x + weight * raw_offset_x
+              mean_offset_y = mean_offset_y + weight * raw_offset_y
+            end do
+          end do
+          if (total_weight <= 0.0_dp) then
+            use_linear = .false.
+          else
+            mean_offset_x = mean_offset_x / total_weight
+            mean_offset_y = mean_offset_y / total_weight
+            theta = 1.0_dp
+            do child_j = 1, ratio
+              fine_j = fine_j_lower + child_j - 1
+              do child_i = 1, ratio
+                fine_i = fine_i_lower + child_i - 1
+                if (fine_geometry%cell_type(fine_i, fine_j) == &
+                    eb_covered_cell) cycle
+                offset_x = ( &
+                  real(child_i, dp) - 0.5_dp + &
+                  fine_geometry%cell_centroid_x(fine_i, fine_j)) / &
+                  real(ratio, dp) - 0.5_dp - mean_offset_x
+                offset_y = ( &
+                  real(child_j, dp) - 0.5_dp + &
+                  fine_geometry%cell_centroid_y(fine_i, fine_j)) / &
+                  real(ratio, dp) - 0.5_dp - mean_offset_y
+                do component = 1, nvar
+                  delta = offset_x * slope_x(component) + &
+                    offset_y * slope_y(component)
+                  if (delta > 0.0_dp) then
+                    theta(component) = min(theta(component), &
+                      (maximum_state(component) - &
+                       coarse_state(component, coarse_i, coarse_j)) / delta)
+                  else if (delta < 0.0_dp) then
+                    theta(component) = min(theta(component), &
+                      (minimum_state(component) - &
+                       coarse_state(component, coarse_i, coarse_j)) / delta)
+                  end if
+                end do
+              end do
+            end do
+            theta = max(0.0_dp, min(1.0_dp, theta))
+            slope_x = theta * slope_x
+            slope_y = theta * slope_y
+          end if
         end if
 
         parent_ok = .true.
         do child_j = 1, ratio
           fine_j = fine_j_lower + child_j - 1
-          offset_y = (real(child_j, dp) - 0.5_dp) / &
-            real(ratio, dp) - 0.5_dp
           do child_i = 1, ratio
             fine_i = fine_i_lower + child_i - 1
-            offset_x = (real(child_i, dp) - 0.5_dp) / &
-              real(ratio, dp) - 0.5_dp
+            if (is_cut_parent .and. use_linear) then
+              offset_x = ( &
+                real(child_i, dp) - 0.5_dp + &
+                fine_geometry%cell_centroid_x(fine_i, fine_j)) / &
+                real(ratio, dp) - 0.5_dp - mean_offset_x
+              offset_y = ( &
+                real(child_j, dp) - 0.5_dp + &
+                fine_geometry%cell_centroid_y(fine_i, fine_j)) / &
+                real(ratio, dp) - 0.5_dp - mean_offset_y
+            else
+              offset_x = (real(child_i, dp) - 0.5_dp) / &
+                real(ratio, dp) - 0.5_dp
+              offset_y = (real(child_j, dp) - 0.5_dp) / &
+                real(ratio, dp) - 0.5_dp
+            end if
             candidate_state(:, fine_i, fine_j) = &
               coarse_state(:, coarse_i, coarse_j) + &
               offset_x * slope_x + offset_y * slope_y

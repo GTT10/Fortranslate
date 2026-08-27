@@ -42,7 +42,7 @@ program test_eb_reactive_redistribution_2d
   real(dp) :: alpha, large_kappa, neighborhood_a, neighborhood_b
   real(dp) :: qhat_a, qhat_b, expected_shared
   real(dp) :: cell_coordinate_x, cell_coordinate_y, linear_error
-  logical :: ok
+  logical :: ok, used_order_zero_fallback
   integer :: i, j, k, nvar
 
   call load_h2o2_elementary_thermo(species, ok)
@@ -223,6 +223,15 @@ program test_eb_reactive_redistribution_2d
       "weighted reactive advance conservation")
   end do
 
+  conservative_rhs = 0.0_dp
+  call advance_reactive_eb_state_redistributed_2d( &
+    species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
+    new_state, new_temperature, ok, 0.5_dp, 2, &
+    used_order_zero_fallback=used_order_zero_fallback)
+  call require(ok .and. .not. used_order_zero_fallback, &
+    "admissible second-order StateRedist avoids fallback")
+
+  conservative_rhs(:, cut_i, 1) = -2.0_dp * state_cell
   call advance_reactive_eb_state_redistributed_2d( &
     species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
     new_state, new_temperature, ok, kappa)
@@ -234,11 +243,12 @@ program test_eb_reactive_redistribution_2d
   conservative_rhs(:, cut_i, 1) = -50.0_dp * state_cell
   call advance_reactive_eb_state_redistributed_2d( &
     species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
-    new_state, new_temperature, ok)
-  call require(.not. ok .and. &
+    new_state, new_temperature, ok, 0.5_dp, 2, &
+    used_order_zero_fallback=used_order_zero_fallback)
+  call require(.not. ok .and. used_order_zero_fallback .and. &
     maxval(abs(new_state - state)) == 0.0_dp .and. &
     maxval(abs(new_temperature - temperature)) == 0.0_dp, &
-    "weighted nonphysical advance transaction")
+    "nonphysical second-order fallback transaction")
 
   do j = 0, overlap_ny
     do i = 0, overlap_nx

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.185.0` milestone contains the serial verification suite, ten optional
+The `0.186.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -38,11 +38,13 @@ no-slip selections unless the matching thermal or viscous transport operator
 is enabled. Fixed-depth and arbitrary-depth AMR applications now apply the
 same configured wall. Their checkpoint contracts record the wall kind,
 thermal mode, temperature, velocity, transport switches, and transport CFL,
-and reject incompatible restarts transactionally. The
-EB AMR library also exposes conservative MC-limited linear prolongation for
-topology-consistent regular parents. Fine-child offsets sum to zero within
-each such parent; cut or topology-mismatched parents retain PCM, and an
-inadmissible linear candidate retries transactionally with PCM. The
+and reject incompatible restarts transactionally. The EB AMR library also
+exposes conservative MC-limited linear prolongation. Regular parents use
+Cartesian child offsets. Cut parents form slopes between fluid-volume
+centroids, remove the volume-fraction-weighted mean child offset, and limit
+every conserved component to the active coarse-neighbor envelope. Covered or
+topology-mismatched parents retain PCM, and an inadmissible linear candidate
+retries transactionally with PCM. The
 fixed-depth public AMR configuration now selects `pcm` or `linear` through
 `prolongation_method` in `&eb_amr`; the selection is used by two-level,
 dynamic-regrid, separated sibling-patch, and three-level initialization. The
@@ -53,8 +55,11 @@ the `0.184.0` boundary. In `0.185.0`, every fixed-depth checkpoint advances to
 schema 3 and the shared arbitrary-depth fingerprint advances to schema 4 to
 record the method. Linear initialization, dynamic regridding, checkpointing,
 and restart are therefore active in the public two-level, multipatch,
-three-level, serial arbitrary-depth, and sparse-MPI arbitrary-depth cases.
-The arbitrary-depth 2D EB tree can also write one composite CSV containing
+three-level, serial arbitrary-depth, and sparse-MPI arbitrary-depth cases. In
+`0.186.0`, the same configured linear path therefore preserves each cut
+parent's volume-weighted conserved average while retaining nonconstant
+active-child states next to the embedded boundary. The arbitrary-depth 2D EB
+tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial
 `pelef_reactive_eb_patch_tree_2d` application now reads the established 2D
