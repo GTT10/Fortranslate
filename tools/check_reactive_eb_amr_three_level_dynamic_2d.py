@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check tag-driven finest-patch regridding in public three-level EB AMR."""
+"""Check parent-first regridding in public fixed three-level EB AMR."""
 
 from __future__ import annotations
 
@@ -37,6 +37,24 @@ def dimensions(rows: list[dict[str, str]]) -> tuple[int, int]:
     return len(x_coordinates), len(y_coordinates)
 
 
+def axis_extent(
+    rows: list[dict[str, str]], coordinate: str
+) -> tuple[float, float, float]:
+    coordinates = sorted({float(row[coordinate]) for row in rows})
+    spacings = [b - a for a, b in zip(coordinates, coordinates[1:])]
+    if not spacings:
+        raise AssertionError(f"{coordinate}: level has fewer than two cells")
+    spacing = sum(spacings) / len(spacings)
+    tolerance = 2.0e-12 * max(1.0, abs(spacing))
+    if any(abs(value - spacing) > tolerance for value in spacings):
+        raise AssertionError(f"{coordinate}: nonuniform level spacing")
+    return (
+        coordinates[0] - 0.5 * spacing,
+        coordinates[-1] + 0.5 * spacing,
+        spacing,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
@@ -54,22 +72,32 @@ def main() -> None:
         raise AssertionError(f"incomplete root EB coverage {root_cell_types}")
     if dimensions(middle) == (20, 20):
         raise AssertionError("middle patch retained the configured seed")
-    for name, rows in (("middle", middle), ("finest", finest)):
-        cell_types = {int(row["cell_type"]) for row in rows}
-        if 2 not in cell_types:
-            raise AssertionError(f"{name}: missing cut-cell coverage {cell_types}")
+    middle_cell_types = {int(row["cell_type"]) for row in middle}
+    if 1 not in middle_cell_types:
+        raise AssertionError(f"middle: missing cut-cell coverage {middle_cell_types}")
+    finest_cell_types = {int(row["cell_type"]) for row in finest}
+    if finest_cell_types != {2}:
+        raise AssertionError(f"finest: expected regular cells {finest_cell_types}")
     finest_dimensions = dimensions(finest)
     if min(finest_dimensions) < 8:
         raise AssertionError("finest patch is smaller than the tagged minimum")
-    x_coordinates = sorted({float(row["x"]) for row in finest})
-    y_coordinates = sorted({float(row["y"]) for row in finest})
-    dx = min(b - a for a, b in zip(x_coordinates, x_coordinates[1:]))
-    if not (
-        x_coordinates[0] - 0.5 * dx
-        < 0.00437
-        < x_coordinates[-1] + 0.5 * dx
-    ):
-        raise AssertionError("finest patch does not cross the embedded boundary")
+    for coordinate in ("x", "y"):
+        middle_lower, middle_upper, middle_spacing = axis_extent(
+            middle, coordinate
+        )
+        finest_lower, finest_upper, finest_spacing = axis_extent(
+            finest, coordinate
+        )
+        tolerance = 2.0e-12 * max(1.0, abs(middle_spacing))
+        if abs(2.0 * finest_spacing - middle_spacing) > tolerance:
+            raise AssertionError(f"{coordinate}: incorrect refinement ratio")
+        if (
+            finest_lower < middle_lower + 2.0 * middle_spacing - tolerance
+            or finest_upper > middle_upper - 2.0 * middle_spacing + tolerance
+        ):
+            raise AssertionError(
+                f"{coordinate}: finest patch violates the two-cell middle margin"
+            )
     print("check_reactive_eb_amr_three_level_dynamic_2d: PASS")
 
 
