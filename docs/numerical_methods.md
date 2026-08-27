@@ -2237,3 +2237,23 @@ child state is sent directly once to `owner(p)`; otherwise no communication is
 needed. The parent owner applies the serial EB average-down operation in child
 order and retains the updated parent state and temperature. No child
 temperature or complete tree is transmitted.
+
+## MPI sparse arbitrary-depth EB composite integrals
+
+For a selected node, construct a Boolean mask from all of its direct child
+rectangles. The node owner contributes
+
+```text
+I_local = sum(unrefined cells) alpha(i,j) U(i,j) dx dy,
+```
+
+where `alpha` is EB volume fraction. Every rank then follows every descendant
+relation, but only the owner of each visited node evaluates cells. A single
+communicator `MPI_SUM` produces the composite conserved vector; a companion
+integer sum verifies that at least one owner node contributed and supplies
+diagnostic accounting.
+
+The complete-tree operation selects the root. A subtree selection is accepted
+only when level, patch, and vector extent agree on every rank. This makes the
+reduction suitable for recursive conservation closure without introducing a
+replicated numerical-tree boundary.
