@@ -20,6 +20,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initialize_reactive_amr_eb_patch_tree_2d, &
     compute_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
+    advance_reactive_amr_eb_patch_tree_hydro_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d, &
     composite_reactive_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
@@ -33,6 +34,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d, &
     composite_sparse_amr_eb_patch_tree_integral_2d, &
     composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
@@ -50,6 +52,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: solution, accepted, failed
   type(reactive_amr_eb_patch_tree_2d) :: physical_solution
   type(reactive_amr_eb_patch_tree_2d) :: serial_chemistry
+  type(reactive_amr_eb_patch_tree_2d) :: serial_hydro
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -63,7 +66,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: base_density, expected_state, expected_temperature
   real(dp) :: hydro_cfl, mismatched_hydro_cfl, serial_dt, sparse_dt
   real(dp) :: transport_cfl
-  real(dp) :: chemistry_interval, mismatched_interval
+  real(dp) :: chemistry_interval, hydro_interval, mismatched_interval
   real(dp) :: integral_scale
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
@@ -76,8 +79,12 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: global_restriction_transfers, local_restriction_transfers
   integer :: expected_integral_nodes, global_integral_nodes
   integer :: local_integral_nodes, selected_integral_patch
+  integer :: expected_hydro_transfers, global_hydro_transfers
+  integer :: local_hydro_transfers
   integer, allocatable :: global_chemistry_advances(:)
   integer, allocatable :: local_chemistry_advances(:)
+  integer, allocatable :: global_hydro_advances(:)
+  integer, allocatable :: local_hydro_advances(:)
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -431,6 +438,60 @@ program pelef_mpi_amr_eb_patch_tree_2d
     local_integral_nodes == 0, &
     "MPI EB patch-tree subtree selector consensus", comm)
 
+  hydro_interval = 0.05_dp * serial_dt
+  serial_hydro = serial_chemistry
+  call advance_reactive_amr_eb_patch_tree_hydro_2d( &
+    species, serial_hydro, "hllc", "pcm", "mc", 2, hydro_interval, ok)
+  call assert_all(ok, "MPI EB patch-tree serial hydro reference", comm)
+  allocate(local_hydro_advances(topology%level_count()))
+  allocate(global_hydro_advances(topology%level_count()))
+  expected_hydro_transfers = expected_sparse_hydro_transfers( &
+    topology, migrated_distribution)
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d( &
+    species, migrated_distribution, physical_sparse, "hllc", "pcm", &
+    "mc", 2, hydro_interval, ok, 0.5_dp, &
+    local_level_advances=local_hydro_advances, &
+    local_entity_transfers=local_hydro_transfers)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, &
+    size(local_hydro_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_hydro_transfers, global_hydro_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_sparse, materialized, local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    all(global_hydro_advances == [1, 2, 8, 8]) .and. &
+    global_hydro_transfers == expected_hydro_transfers .and. &
+    tree_solutions_close(materialized, serial_hydro, 5.0e-10_dp), &
+    "MPI EB patch-tree owner-local hydro parity", comm)
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    serial_hydro, serial_integral, ok)
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
+    migrated_distribution, physical_sparse, sparse_integral, local_ok)
+  integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+  call assert_all(ok .and. local_ok .and. &
+    maxval(abs(sparse_integral - serial_integral)) <= &
+      5.0e-10_dp * integral_scale, &
+    "MPI EB patch-tree owner-local hydro conservation", comm)
+
+  sparse_snapshot = physical_sparse
+  mismatched_interval = hydro_interval
+  if (nranks > 1) then
+    if (rank == 0) mismatched_interval = 0.5_dp * hydro_interval
+  else
+    mismatched_interval = -hydro_interval
+  end if
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d( &
+    species, migrated_distribution, physical_sparse, "hllc", "pcm", &
+    "mc", 2, mismatched_interval, ok, 0.5_dp, &
+    local_level_advances=local_hydro_advances, &
+    local_entity_transfers=local_hydro_transfers)
+  call assert_all(.not. ok .and. all(local_hydro_advances == 0) .and. &
+    local_hydro_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree hydro control rollback", comm)
+
   sparse_snapshot = physical_sparse
   mismatched_interval = chemistry_interval
   if (nranks > 1) then
@@ -510,6 +571,71 @@ contains
       end do
     end do
   end function tree_solutions_match
+
+  logical function tree_solutions_close( &
+      first, second, relative_tolerance) result(matches)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second
+    real(dp), intent(in) :: relative_tolerance
+
+    real(dp) :: scale
+    integer :: candidate_level, candidate_patch
+
+    matches = relative_tolerance >= 0.0_dp .and. &
+      first%level_count() == second%level_count()
+    if (.not. matches) return
+    do candidate_level = 1, first%level_count()
+      matches = first%levels(candidate_level)%patch_count() == &
+        second%levels(candidate_level)%patch_count()
+      if (.not. matches) return
+      do candidate_patch = 1, &
+          first%levels(candidate_level)%patch_count()
+        scale = max(1.0_dp, maxval(abs(first%levels(candidate_level)% &
+          patches(candidate_patch)%state)), &
+          maxval(abs(second%levels(candidate_level)% &
+            patches(candidate_patch)%state)))
+        matches = maxval(abs(first%levels(candidate_level)% &
+            patches(candidate_patch)%state - second%levels(candidate_level)% &
+              patches(candidate_patch)%state)) <= &
+          relative_tolerance * scale
+        if (.not. matches) return
+        scale = max(1.0_dp, maxval(first%levels(candidate_level)% &
+          patches(candidate_patch)%temperature), &
+          maxval(second%levels(candidate_level)% &
+            patches(candidate_patch)%temperature))
+        matches = maxval(abs(first%levels(candidate_level)% &
+            patches(candidate_patch)%temperature - &
+          second%levels(candidate_level)%patches(candidate_patch)% &
+            temperature)) <= relative_tolerance * scale
+        if (.not. matches) return
+      end do
+    end do
+  end function tree_solutions_close
+
+  integer function expected_sparse_hydro_transfers( &
+      tree_topology, tree_distribution) result(count)
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: tree_topology
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
+      tree_distribution
+
+    integer :: child_index, parent_index, parent_invocations
+    integer :: ratio, relation_index
+
+    count = 0
+    parent_invocations = 1
+    do relation_index = 1, size(tree_topology%relations)
+      ratio = tree_topology%relations(relation_index)%refinement_ratio
+      do child_index = 1, tree_topology%relations(relation_index)% &
+          child_patch_count()
+        parent_index = tree_topology%relations(relation_index)% &
+          children(child_index)%parent_patch
+        if (tree_distribution%owner_of( &
+              relation_index - 1, parent_index) /= &
+            tree_distribution%owner_of(relation_index, child_index)) &
+          count = count + parent_invocations * (ratio + 4)
+      end do
+      parent_invocations = parent_invocations * ratio
+    end do
+  end function expected_sparse_hydro_transfers
 
   logical function sparse_trees_match(first, second) result(matches)
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: &
