@@ -15,7 +15,12 @@
   use_transverse_correction = .false.
   chemistry_enabled = .false.
   chemistry_model = "elementary"
-  transport_enabled = .false.
+  transport_enabled = .true.
+  viscosity_enabled = .false.
+  thermal_conduction_enabled = .true.
+  species_diffusion_enabled = .false.
+  barodiffusion_enabled = .false.
+  transport_cfl = 0.35
   boundary_x_lower = "outflow"
   boundary_x_upper = "outflow"
   boundary_y_lower = "outflow"

@@ -1591,6 +1591,17 @@ identify domain-inclusive patches. Qualify an independent serial restart and a
 two-rank checkpoint restarted at four and eight ranks with changed ownership
 weight, while retaining fingerprint mismatch rejection and full field parity.
 
+## 0.193.0 boundary-touching arbitrary-depth transport
+
+Enable thermal conduction in both public x-upper patch-tree cases. Exercise
+the recursive `r^2` transport schedule, coarse-time child context, physical-
+side diffusive register omission, reflux, and composite synchronization in
+serial and sparse-MPI execution.
+
+Carry the active transport fingerprint through checkpoint-stop and independent
+restart. Retain exact 1/2/4/8-rank fresh-run parity and the two-rank checkpoint
+to four-/eight-rank continuation gate without adding duplicate regressions.
+
 Each implementation PR should normally contain:
 
 1. implementation
