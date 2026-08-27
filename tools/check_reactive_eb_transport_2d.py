@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check public adiabatic-slip EB thermal conduction."""
+"""Check public configured-wall EB thermal and viscous transport."""
 
 from __future__ import annotations
 
@@ -75,8 +75,11 @@ def main() -> None:
     )
     if wall_heating <= 1.0e-8:
         raise AssertionError("configured isothermal EB wall did not heat cut cells")
-    wall_speed = max(abs(float(row["v"])) for _, row in cut_pairs)
-    if wall_speed <= 1.0e-12:
+    wall_velocity_response = max(
+        abs(float(transport_row["v"]) - float(reference_row["v"]))
+        for reference_row, transport_row in cut_pairs
+    )
+    if wall_velocity_response <= 1.0e-12:
         raise AssertionError("configured moving no-slip EB wall transferred no momentum")
     print("check_reactive_eb_transport_2d: PASS")
 

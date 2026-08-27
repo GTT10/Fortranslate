@@ -2934,6 +2934,8 @@ sparse-MPI applications carry the same values in their shared fingerprint.
 
 Parity evidence requires an active isothermal wall to advance through a public
 two-level AMR lifecycle, write and restart its checkpoint, and reject a changed
-wall temperature without advancing the clock. Exact PeleC checkpoint-file
-compatibility is not claimed; the contract is PeleF-internal and intentionally
-rejects older schemas.
+wall temperature without advancing the clock. The installed application also
+reads a moving no-slip wall from its namelist and must produce cut-cell heating
+and tangential momentum in the established two-level transport regression.
+Exact PeleC checkpoint-file compatibility is not claimed; the contract is
+PeleF-internal and intentionally rejects older schemas.

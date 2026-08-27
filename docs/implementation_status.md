@@ -3292,8 +3292,11 @@ configured boundary set.
 - [x] arbitrary-depth checkpoint fingerprint schema 3
 - [x] exact wall string and tolerance-aware real-value restart matching
 - [x] active isothermal-wall two-level checkpoint/restart regression
+- [x] public moving no-slip/isothermal two-level AMR transport regression
 - [x] wall-temperature mismatch transactional rejection
 - [x] arbitrary-depth wall-fingerprint mismatch regression
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
 
 The public AMR applications no longer reject transport checkpointing solely
 because transport is enabled. Restart remains strict: older checkpoint schemas

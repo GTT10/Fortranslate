@@ -490,17 +490,17 @@ a dedicated schema and may stop and resume the same hierarchy without changing
 the established single-patch or patch-set formats. Three-level mode remains
 mutually exclusive with multipatch siblings. Its dynamic path keeps
 the middle patch fixed, retains the finest patch, ignores tags outside its
-two-cell-safe planning region, and does not yet support checkpoint/restart.
+two-cell-safe planning region, and uses a distinct checkpoint schema to
+restart the dynamic finest topology and regrid cadence transactionally.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
-periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
-coarse-to-fine spatial slopes, multipatch EB AMR molecular
-transport, dynamic middle/root topology, arbitrary-depth EB application
-lifecycle, transport-enabled checkpoint/restart, and MPI
-distribution are not yet
-connected. The public EB AMR application now owns
-either restartable sibling rectangles or an
-explicit three-level hierarchy with an optionally dynamic finest patch.
+periodic/ghost-cell neighborhoods, catalytic embedded-wall species transfer,
+higher-order wall-normal gradients, coarse-to-fine spatial slopes, and
+dynamic middle/root topology are not yet connected. The fixed-depth public EB
+AMR application remains serial and owns either restartable sibling rectangles
+or an explicit three-level hierarchy with an optionally dynamic finest patch;
+the separate arbitrary-depth application provides the qualified sparse-MPI
+lifecycle.
 
 The separate EB patch-tree core now owns reactive conserved state and
 temperature on arbitrary-depth, branching topology. It initializes children
