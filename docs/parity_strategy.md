@@ -2690,3 +2690,19 @@ interval on rank zero; on one rank, use a negative interval. Require collective
 preflight rejection, exact sparse rollback, unit limiter, zero advances, and
 zero transfers. Retain all established MPI gates and all 208 serial tests in
 GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.166.0 MPI owner-local arbitrary-depth EB full-physics gates
+
+Starting from the qualified post-transport physical tree, apply one small
+`R-T-H-T-R` interval with chemistry and every explicit-transport component
+enabled. Require global chemistry advances `[2, 2, 4, 2]`, transport Euler
+advances `[4, 8, 32, 32]`, and hydro advances `[1, 2, 8, 8]`. Require two
+chemistry restriction schedules, two complete SSPRK2 transport schedules, and
+one hydro schedule from the topology/owner-map traffic formulas.
+
+Materialize only after the outer transaction. Require state, temperature,
+minimum-limiter, and composite-integral parity with the complete serial split
+reference within qualified accumulated roundoff. A rank-dependent or negative
+interval must reject before mutation with unit limiter and zero counters in
+every category. Retain all established MPI gates and all 208 serial tests in
+GNU Fortran Release and bounds/FPE-checked Debug.
