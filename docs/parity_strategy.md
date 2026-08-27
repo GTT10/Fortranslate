@@ -2656,3 +2656,37 @@ one rank, use an invalid selector. Require collective rejection, a zero
 integral, and zero public local-node accounting. Retain the full established
 MPI gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-
 checked Debug.
+
+## 0.164.0 MPI owner-local arbitrary-depth EB hydro gates
+
+Advance the post-chemistry physical four-level branching tree through one
+small stable hydro interval after owner rotation. Require global per-level
+node advances `[1, 2, 8, 8]`, and require grouped sender traffic to equal the
+topology/owner-map sum of `parent_invocations * (refinement_ratio + 4)` for
+every distinct-owner edge.
+
+Materialize only after the transaction and require state/temperature parity
+with the complete serial recursive hydro reference within qualified roundoff.
+Also compare sparse and serial composite conserved integrals. On multiple
+ranks, supply a different but valid interval on rank zero; on one rank, use a
+negative interval. Require collective preflight rejection, exact sparse
+rollback, zero advances, and zero transfers. Retain the full established MPI
+gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
+Debug.
+
+## 0.165.0 MPI owner-local arbitrary-depth EB transport gates
+
+Advance the post-hydro physical four-level branching tree through one small
+stable SSPRK2 transport interval after owner rotation. Require global per-level
+Euler advances `[2, 4, 16, 16]`. Require grouped sender traffic to equal twice
+the qualified hydro edge-route formula plus one final distinct-owner
+restriction transfer per relation.
+
+Materialize only after the transaction and require state, temperature, and
+minimum-limiter parity with the complete serial recursive transport reference
+within qualified roundoff. Compare sparse and serial composite conserved
+integrals independently. On multiple ranks, supply a different but valid
+interval on rank zero; on one rank, use a negative interval. Require collective
+preflight rejection, exact sparse rollback, unit limiter, zero advances, and
+zero transfers. Retain all established MPI gates and all 208 serial tests in
+GNU Fortran Release and bounds/FPE-checked Debug.

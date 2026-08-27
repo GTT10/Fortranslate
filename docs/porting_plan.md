@@ -1207,6 +1207,34 @@ eight ranks. Run the complete existing MPI and serial Debug/Release suite
 before acceptance. Use this reduction as the conservation prerequisite for
 owner-local recursive hydro; defer transport and public clock routing.
 
+## 0.164.0 MPI owner-local arbitrary-depth EB hydro gates
+
+Route the established recursive hydro schedule directly over sparse owners.
+Send compact parent-time exterior context to a distinct child owner, return
+fine fluxes to the parent register after every substep, and route corrected
+child state through parent-owner reflux and ordered average-down. Reuse sparse
+subtree reductions for conservation closure and commit one private candidate.
+
+Require serial field/composite parity, exact per-level advance scheduling,
+topology/map-derived grouped-transfer counts, and collective interval-mismatch
+rollback at one, two, four, and eight ranks. Run the complete existing MPI and
+serial Debug/Release suite before acceptance. Defer owner-local recursive
+transport and the public sparse full-physics clock.
+
+## 0.165.0 MPI owner-local arbitrary-depth EB transport gates
+
+Route both SSPRK2 Euler stages over sparse node owners. Reuse compact parent-
+time context, direct fine-flux return, parent-owner registers, child-state
+reflux round trips, ordered average-down, and owner-local subtree conservation
+closure. Blend the accepted and second-stage fields and recover EOS temperature
+only on the node owner, then perform one direct deepest-first synchronization.
+
+Require serial field, temperature, limiter, and composite-integral parity;
+exact per-level Euler scheduling; topology/map-derived grouped-transfer counts;
+and collective interval-mismatch rollback at one, two, four, and eight ranks.
+Run the complete MPI and serial Debug/Release suite before acceptance. Defer
+owner-local full-physics composition and the public sparse clock.
+
 Each implementation PR should normally contain:
 
 1. implementation
