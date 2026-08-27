@@ -3140,3 +3140,20 @@ sparse MPI public counterpart remain separate qualification work.
 This milestone closes application-level checkpoint/restart parity for the
 serial arbitrary-depth EB tree. Cross-rank public MPI application restart and
 input/checkpoint compatibility fingerprints remain later lifecycle work.
+
+## Public sparse-MPI arbitrary-depth EB application (`0.175.0`)
+
+- [x] installed namelist-driven sparse MPI executable
+- [x] configurable depth-weighted MPI ownership exponent
+- [x] owner-local recursive initial and periodic tagging/regridding
+- [x] owner-local timestep and transactional full-physics clock
+- [x] sparse checkpoint write and rank-neutral restart entrypoints
+- [x] collective integrals and selected-root composite CSV output
+- [x] 1/2/4/8-rank four-level topology and complete-field parity
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 214 serial regressions retained in MPI and non-MPI builds
+
+Fresh startup still constructs one replicated root field before sparse
+conversion; arbitrary-depth child fields are never replicated. Removing the
+root startup copy and qualifying public cross-rank application restart remain
+later lifecycle work.

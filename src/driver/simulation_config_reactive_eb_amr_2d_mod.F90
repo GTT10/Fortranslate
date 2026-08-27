@@ -14,6 +14,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: coarse_j_upper = 3
     integer :: refinement_ratio = 2
     integer :: patch_tree_maximum_levels = 4
+    integer :: patch_tree_mpi_work_exponent = 2
     logical :: three_level_enabled = .false.
     integer :: level_two_i_lower = 3
     integer :: level_two_i_upper = 4
@@ -53,7 +54,7 @@ contains
 
     integer :: coarse_i_lower, coarse_i_upper
     integer :: coarse_j_lower, coarse_j_upper, refinement_ratio
-    integer :: patch_tree_maximum_levels
+    integer :: patch_tree_maximum_levels, patch_tree_mpi_work_exponent
     integer :: level_two_i_lower, level_two_i_upper
     integer :: level_two_j_lower, level_two_j_upper
     integer :: level_one_nx, level_one_ny
@@ -74,7 +75,7 @@ contains
     character(len=1024) :: level_two_output_file
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, refinement_ratio, &
-      patch_tree_maximum_levels, &
+      patch_tree_maximum_levels, patch_tree_mpi_work_exponent, &
       three_level_enabled, level_two_i_lower, level_two_i_upper, &
       level_two_j_lower, level_two_j_upper, &
       multipatch_enabled, dynamic_regridding, regrid_at_initialization, &
@@ -98,6 +99,7 @@ contains
     coarse_j_upper = config%coarse_j_upper
     refinement_ratio = config%refinement_ratio
     patch_tree_maximum_levels = config%patch_tree_maximum_levels
+    patch_tree_mpi_work_exponent = config%patch_tree_mpi_work_exponent
     three_level_enabled = config%three_level_enabled
     level_two_i_lower = config%level_two_i_lower
     level_two_i_upper = config%level_two_i_upper
@@ -160,6 +162,12 @@ contains
         patch_tree_maximum_levels > 64) then
       ok = .false.
       message = "EB AMR patch-tree maximum levels must be between 1 and 64"
+      return
+    end if
+    if (patch_tree_mpi_work_exponent < 0 .or. &
+        patch_tree_mpi_work_exponent > 2) then
+      ok = .false.
+      message = "EB AMR patch-tree MPI work exponent must be between 0 and 2"
       return
     end if
     level_one_nx = (coarse_i_upper - coarse_i_lower + 1) * &
@@ -258,6 +266,7 @@ contains
     config%coarse_j_upper = coarse_j_upper
     config%refinement_ratio = refinement_ratio
     config%patch_tree_maximum_levels = patch_tree_maximum_levels
+    config%patch_tree_mpi_work_exponent = patch_tree_mpi_work_exponent
     config%three_level_enabled = three_level_enabled
     config%level_two_i_lower = level_two_i_lower
     config%level_two_i_upper = level_two_i_upper
