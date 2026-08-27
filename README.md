@@ -6,14 +6,18 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.172.0` milestone contains the serial verification suite, nine optional
+The `0.173.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
 patch-tree checkpoint and restart it with a different MPI rank count. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
-writer root and reports completion collectively. The
+writer root and reports completion collectively. A dedicated serial
+`pelef_reactive_eb_patch_tree_2d` application now reads the established 2D
+reactive/EB/AMR namelists, builds up to a configured depth from temperature
+tags, advances the complete `R-T-H-T-R` physics clock, regrids periodically,
+and writes that composite CSV. The
 serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
 its composite conserved state, and can compose active-cell chemistry with the
@@ -531,6 +535,16 @@ current rank count, and scatters fields directly to their new owners. Sparse
 MPI composite output reuses the selected-root gather boundary, invokes the
 serial writer only there, and leaves complete numerical output unallocated on
 all other ranks.
+
+The public `pelef_reactive_eb_patch_tree_2d` executable connects this serial
+tree to the existing `&reactive_2d`, `&embedded_boundary`, and `&eb_amr`
+inputs. `patch_tree_maximum_levels` bounds recursive temperature-tag planning;
+the established refinement ratio, clustering controls, physics switches,
+checkpoint paths, and output path drive the same qualified core operations.
+The application starts from a root-only EB field or the self-describing tree
+checkpoint, optionally regrids at initialization and at the configured step
+cadence, advances one stable root interval transactionally, and publishes one
+composite CSV at completion or checkpoint stop.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

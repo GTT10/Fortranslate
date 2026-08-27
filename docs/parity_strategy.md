@@ -2800,3 +2800,17 @@ Require the global sender count to equal the number of nodes not owned by that
 root, and let only that root inspect and delete the file. Run this gate at one,
 two, four, and eight ranks in GNU Fortran Release and bounds/FPE-checked Debug,
 then retain all established MPI gates and all 208 serial tests.
+
+## 0.173.0 runnable serial arbitrary-depth EB application gates
+
+Run the public patch-tree executable from the established reactive 2D, EB, and
+AMR namelists. Start from a 12-by-12 plane-EB hotspot and require recursive
+temperature tags to populate levels zero through three before advancing to the
+requested final time.
+
+Read the single composite CSV and require unique level/patch/local-index cell
+identities, the exact refinement-scaled spacing on every level, finite fields,
+valid volume fractions, positive density/pressure/temperature, all three EB
+cell classes, seven ordered species columns, and mass-fraction closure within
+`8e-12`. Retain the complete 210-test suite in GNU Fortran Release and bounds/
+FPE-checked Debug.

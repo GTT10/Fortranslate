@@ -2462,3 +2462,23 @@ N_output = sum_p [owner(p) /= q].
 Only `q` converts conserved state to primitive variables and writes the file.
 This is an explicit output materialization boundary, not part of the owner-
 local physics path.
+
+## Input-driven serial EB patch-tree clock
+
+The runnable patch-tree application starts from a root interval `t=0` or
+checkpoint time. Before each committed step it computes
+
+```text
+dt = min(dt_hydro, dt_transport, t_final - t),
+```
+
+where every node limit is scaled to its root-level interval by the cumulative
+refinement product. The complete step is the established transactional
+`R-T-H-T-R` composition. Only after success are `t`, the root-step count,
+minimum accepted `dt`, and minimum transport limiter updated.
+
+When the committed step count reaches the regrid cadence, every prospective
+parent is tagged independently and the topology is rebuilt transactionally up
+to `patch_tree_maximum_levels`. The same configured plane or circle is sampled
+at each child resolution. Checkpoint cadence is evaluated after regridding, so
+the stored topology is exactly the topology published for the next step.

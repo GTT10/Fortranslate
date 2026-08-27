@@ -1336,6 +1336,20 @@ counts and exact topology-derived leaf-row counts at one, two, four, and eight
 ranks. Run the complete MPI and serial Debug/Release suite before acceptance.
 Defer the runnable arbitrary-depth 2D EB application lifecycle.
 
+## 0.173.0 runnable serial arbitrary-depth EB application gates
+
+Add a dedicated executable that reuses the established reactive 2D, EB, and
+AMR namelists while selecting the arbitrary-depth numerical tree. Initialize or
+restart the tree, apply scheduled recursive tags, select stable all-node root
+steps, advance `R-T-H-T-R`, invoke scheduled/final checkpoints, and write one
+composite CSV.
+
+Require a public input case to populate four levels and finish with valid EB,
+thermodynamic, species-closure, spacing, identity, and time data. Run the full
+210-test serial suite in GNU Fortran Release and bounds/FPE-checked Debug.
+Defer application-level checkpoint/restart comparison and public sparse MPI
+application integration.
+
 Each implementation PR should normally contain:
 
 1. implementation

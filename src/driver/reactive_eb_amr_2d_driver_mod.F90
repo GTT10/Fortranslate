@@ -1,6 +1,7 @@
 module reactive_eb_amr_2d_driver_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use state_indices_mod, only: irho
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: gas_transport_species
@@ -34,6 +35,18 @@ module reactive_eb_amr_2d_driver_mod
     advance_three_level_reactive_eb_hydro_2d
   use amr_eb_multilevel_transport_2d_mod, only: &
     advance_three_level_reactive_eb_transport_2d
+  use amr_eb_patch_tree_2d_mod, only: &
+    amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
+    initialize_amr_eb_patch_tree_topology_2d
+  use amr_eb_patch_tree_reactive_2d_mod, only: &
+    reactive_amr_eb_patch_tree_2d, &
+    initialize_reactive_amr_eb_patch_tree_2d, &
+    regrid_tagged_reactive_amr_eb_patch_tree_2d, &
+    write_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    read_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    compute_reactive_amr_eb_patch_tree_timestep_2d, &
+    advance_reactive_amr_eb_patch_tree_full_physics_2d, &
+    composite_integral_reactive_amr_eb_patch_tree_2d
   use amr_eb_multipatch_transport_2d_mod, only: &
     advance_reactive_eb_patch_set_transport_2d
   use amr_eb_regrid_2d_mod, only: &
@@ -86,6 +99,7 @@ module reactive_eb_amr_2d_driver_mod
   public :: simulate_reactive_eb_amr_2d
   public :: simulate_reactive_eb_amr_patch_set_2d
   public :: simulate_three_level_reactive_eb_amr_2d
+  public :: simulate_reactive_amr_eb_patch_tree_2d
 
 contains
 
@@ -3532,5 +3546,237 @@ contains
       minimum_transport_theta = local_minimum_transport_theta
     if (ok .and. present(failure_context)) failure_context = "none"
   end subroutine simulate_reactive_eb_amr_patch_set_2d
+
+  subroutine simulate_reactive_amr_eb_patch_tree_2d( &
+      species, reactions, transport, config, solution, time, steps, regrids, &
+      initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+      failure_context, minimum_transport_theta)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    type(reactive_amr_eb_patch_tree_2d), intent(out) :: solution
+    real(dp), intent(out) :: time, minimum_dt, base_density
+    integer, intent(out) :: steps, regrids
+    real(dp), allocatable, intent(out) :: initial_integrals(:)
+    real(dp), allocatable, intent(out) :: final_integrals(:)
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    real(dp), intent(out), optional :: minimum_transport_theta
+
+    type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
+    type(amr_eb_patch_tree_topology_2d) :: topology
+    type(amr_eb_tagging_criteria_2d) :: criteria
+    type(reactive_boundary_set_2d) :: boundaries
+    type(eb_geometry_2d) :: root_geometry
+    real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
+    real(dp) :: dx, dy, dt, remaining, step_theta, time_tolerance
+    real(dp) :: local_minimum_transport_theta
+    logical :: changed, local_ok, stopped_after_checkpoint
+    integer :: last_checkpoint_step, nvar, tagged_cells
+
+    solution = reactive_amr_eb_patch_tree_2d()
+    time = 0.0_dp
+    minimum_dt = 0.0_dp
+    base_density = 0.0_dp
+    steps = 0
+    regrids = 0
+    ok = .false.
+    local_minimum_transport_theta = 1.0_dp
+    stopped_after_checkpoint = .false.
+    last_checkpoint_step = -1
+    if (present(failure_context)) failure_context = "input validation"
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (.not. supported_reactive_eb_amr_config(config) .or. &
+        config%three_level_enabled .or. config%multipatch_enabled .or. &
+        config%patch_tree_maximum_levels < 1 .or. &
+        config%patch_tree_maximum_levels > 64 .or. &
+        (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &
+        (config%eb%flow%transport_enabled .and. &
+         size(transport) /= size(species))) return
+    call build_reactive_boundary_set_2d( &
+      species, config%eb%flow, boundaries, local_ok)
+    if (.not. local_ok) return
+
+    criteria%relative_gradient_threshold = &
+      config%regrid_relative_temperature_gradient
+    criteria%absolute_gradient_threshold = &
+      config%regrid_absolute_temperature_gradient
+    criteria%scale_floor = config%regrid_temperature_scale_floor
+    criteria%buffer_cells = config%regrid_buffer_cells
+    criteria%minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
+    criteria%minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
+    criteria%maximum_patch_gap_cells = config%regrid_maximum_patch_gap_cells
+
+    if (len_trim(config%restart_file) > 0) then
+      if (present(failure_context)) failure_context = "checkpoint restart"
+      call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+        config%restart_file, species, config%patch_tree_maximum_levels, &
+        solution, time, steps, regrids, minimum_dt, local_ok)
+      if (.not. local_ok) return
+      nvar = solution%nvar
+      base_density = solution%levels(1)%patches(1)%state(irho, 1, 1)
+    else
+      if (present(failure_context)) failure_context = "root geometry"
+      call build_configured_eb_geometry_2d(config%eb, root_geometry, local_ok)
+      if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "root initialization"
+      call initialize_reactive_2d( &
+        species, config%eb%flow, root_state, root_temperature, dx, dy, &
+        base_density, local_ok)
+      if (.not. local_ok) return
+      if (abs(dx - root_geometry%dx) > &
+            8.0_dp * epsilon(1.0_dp) * root_geometry%dx .or. &
+          abs(dy - root_geometry%dy) > &
+            8.0_dp * epsilon(1.0_dp) * root_geometry%dy) return
+      allocate(empty_plans(0))
+      if (present(failure_context)) failure_context = "root topology"
+      call initialize_amr_eb_patch_tree_topology_2d( &
+        root_geometry, empty_plans, topology, local_ok)
+      if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "root tree"
+      call initialize_reactive_amr_eb_patch_tree_2d( &
+        species, root_state, root_temperature, topology, solution, local_ok)
+      if (.not. local_ok) return
+      nvar = solution%nvar
+      if (config%dynamic_regridding .and. &
+          config%regrid_at_initialization) then
+        if (present(failure_context)) failure_context = "initial regrid"
+        call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+          species, solution, criteria, config%patch_tree_maximum_levels, &
+          config%refinement_ratio, build_patch_tree_geometry, local_ok, &
+          changed, tagged_cells)
+        if (.not. local_ok) return
+        if (changed) regrids = regrids + 1
+      end if
+      minimum_dt = huge(1.0_dp)
+    end if
+
+    allocate(initial_integrals(nvar), final_integrals(nvar))
+    if (present(failure_context)) failure_context = "initial integral"
+    call composite_integral_reactive_amr_eb_patch_tree_2d( &
+      solution, initial_integrals, local_ok)
+    if (.not. local_ok) return
+    time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(config%eb%flow%final_time))
+
+    do
+      remaining = config%eb%flow%final_time - time
+      if (remaining <= time_tolerance) exit
+      if (steps >= config%eb%flow%maximum_steps) then
+        if (present(failure_context)) failure_context = "maximum steps"
+        return
+      end if
+      if (present(failure_context)) failure_context = "timestep"
+      call compute_reactive_amr_eb_patch_tree_timestep_2d( &
+        species, transport, solution, config%eb%flow%cfl, &
+        config%eb%flow%transport_cfl, &
+        config%eb%flow%viscosity_enabled, &
+        config%eb%flow%thermal_conduction_enabled, &
+        config%eb%flow%species_diffusion_enabled, dt, local_ok)
+      if (.not. local_ok) return
+      dt = min(dt, remaining)
+      if (present(failure_context)) failure_context = "full physics"
+      call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+        species, reactions, transport, solution, &
+        config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
+        config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
+        config%eb%flow%chemistry_enabled, &
+        config%eb%flow%chemistry_relative_tolerance, &
+        config%eb%flow%chemistry_absolute_tolerance, &
+        config%eb%flow%viscosity_enabled, &
+        config%eb%flow%thermal_conduction_enabled, &
+        config%eb%flow%species_diffusion_enabled, &
+        config%eb%flow%barodiffusion_enabled, boundaries, &
+        config%eb%state_redist_target_volume_fraction, step_theta, local_ok)
+      if (.not. local_ok) return
+      time = time + dt
+      minimum_dt = min(minimum_dt, dt)
+      local_minimum_transport_theta = min( &
+        local_minimum_transport_theta, step_theta)
+      steps = steps + 1
+
+      if (config%dynamic_regridding .and. &
+          modulo(steps, config%regrid_interval) == 0) then
+        if (present(failure_context)) failure_context = "periodic regrid"
+        call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+          species, solution, criteria, config%patch_tree_maximum_levels, &
+          config%refinement_ratio, build_patch_tree_geometry, local_ok, &
+          changed, tagged_cells)
+        if (.not. local_ok) return
+        if (changed) regrids = regrids + 1
+      end if
+      if (config%checkpoint_interval > 0) then
+        if (modulo(steps, config%checkpoint_interval) == 0) then
+          if (present(failure_context)) failure_context = "checkpoint write"
+          call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            config%checkpoint_file, species, solution, time, steps, regrids, &
+            minimum_dt, local_ok)
+          if (.not. local_ok) return
+          last_checkpoint_step = steps
+          if (config%checkpoint_stop_after_write) then
+            stopped_after_checkpoint = .true.
+            exit
+          end if
+        end if
+      end if
+    end do
+
+    if (.not. stopped_after_checkpoint) time = config%eb%flow%final_time
+    if (len_trim(config%checkpoint_file) > 0 .and. &
+        last_checkpoint_step /= steps) then
+      if (present(failure_context)) failure_context = "final checkpoint write"
+      call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+        config%checkpoint_file, species, solution, time, steps, regrids, &
+        minimum_dt, local_ok)
+      if (.not. local_ok) return
+    end if
+    if (present(failure_context)) failure_context = "final integral"
+    call composite_integral_reactive_amr_eb_patch_tree_2d( &
+      solution, final_integrals, local_ok)
+    if (.not. local_ok) return
+    ok = solution%is_valid() .and. steps > 0 .and. &
+      ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = local_minimum_transport_theta
+    if (ok .and. present(failure_context)) failure_context = "none"
+
+  contains
+
+    subroutine build_patch_tree_geometry( &
+        parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+        coarse_j_upper, refinement_ratio, child_geometry, geometry_ok)
+      type(eb_geometry_2d), intent(in) :: parent_geometry
+      integer, intent(in) :: coarse_i_lower, coarse_i_upper
+      integer, intent(in) :: coarse_j_lower, coarse_j_upper
+      integer, intent(in) :: refinement_ratio
+      type(eb_geometry_2d), intent(out) :: child_geometry
+      logical, intent(out) :: geometry_ok
+
+      real(dp) :: x_lower, x_upper, y_lower, y_upper
+      integer :: nx, ny
+
+      geometry_ok = coarse_i_lower >= 1 .and. &
+        coarse_i_upper <= parent_geometry%nx .and. &
+        coarse_j_lower >= 1 .and. coarse_j_upper <= parent_geometry%ny .and. &
+        coarse_i_upper >= coarse_i_lower .and. &
+        coarse_j_upper >= coarse_j_lower .and. refinement_ratio >= 2
+      if (.not. geometry_ok) return
+      nx = (coarse_i_upper - coarse_i_lower + 1) * refinement_ratio
+      ny = (coarse_j_upper - coarse_j_lower + 1) * refinement_ratio
+      x_lower = parent_geometry%x_lower + &
+        real(coarse_i_lower - 1, dp) * parent_geometry%dx
+      x_upper = parent_geometry%x_lower + &
+        real(coarse_i_upper, dp) * parent_geometry%dx
+      y_lower = parent_geometry%y_lower + &
+        real(coarse_j_lower - 1, dp) * parent_geometry%dy
+      y_upper = parent_geometry%y_lower + &
+        real(coarse_j_upper, dp) * parent_geometry%dy
+      call build_configured_eb_geometry_region_2d( &
+        config%eb, nx, ny, x_lower, x_upper, y_lower, y_upper, &
+        child_geometry, geometry_ok)
+    end subroutine build_patch_tree_geometry
+
+  end subroutine simulate_reactive_amr_eb_patch_tree_2d
 
 end module reactive_eb_amr_2d_driver_mod

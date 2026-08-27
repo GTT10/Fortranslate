@@ -2036,3 +2036,24 @@ root materializes the complete numerical tree and opens the CSV. Every remote
 node contributes one entity transfer; non-root ranks retain only their owned
 fields. The root broadcasts the final write status, and transfer counts remain
 neutral when control, gather, thermodynamic conversion, or file output fails.
+
+## Runnable serial arbitrary-depth EB application (`0.173.0`)
+
+`pelef_reactive_eb_patch_tree_2d` is a separate public executable so the
+legacy single-patch, sibling-multipatch, and fixed three-level application
+contracts remain unchanged. It reuses their reactive-flow, embedded-boundary,
+and AMR namelists and adds only `patch_tree_maximum_levels`.
+
+A fresh run constructs the configured root EB geometry and reactive field,
+initializes a root-only tree, and optionally applies recursive temperature-tag
+planning before the first step. Each committed root step selects the minimum
+hydro/transport limit over all nodes, advances the qualified `R-T-H-T-R`
+transaction, then applies scheduled topology rebuild and checkpoint output.
+Restart delegates to the self-describing tree reader. Completion, checkpoint
+stop, or restart all use the same single composite CSV writer.
+
+The driver owns time, step, regrid, minimum-dt, and transport-limiter state.
+Numerical topology and fields remain owned by the patch-tree core; geometry
+construction is an internal callback using the configured plane or circle over
+each child region. Existing fixed-depth application modes do not call this
+path.
