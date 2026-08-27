@@ -4003,7 +4003,8 @@ contains
   subroutine simulate_reactive_amr_eb_patch_tree_2d( &
       species, reactions, transport, config, solution, time, steps, regrids, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok, &
-      failure_context, minimum_transport_theta)
+      failure_context, minimum_transport_theta, chemistry_level_advances, &
+      transport_level_advances, hydro_level_advances)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -4016,6 +4017,9 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out), optional :: failure_context
     real(dp), intent(out), optional :: minimum_transport_theta
+    integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
+    integer, allocatable, intent(out), optional :: transport_level_advances(:)
+    integer, allocatable, intent(out), optional :: hydro_level_advances(:)
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -4031,6 +4035,12 @@ contains
     logical :: species_diffusion_active, stopped_after_checkpoint
     logical :: thermal_conduction_active, viscosity_active
     integer :: last_checkpoint_step, nvar, tagged_cells
+    integer, allocatable :: accumulated_chemistry_advances(:)
+    integer, allocatable :: accumulated_transport_advances(:)
+    integer, allocatable :: accumulated_hydro_advances(:)
+    integer, allocatable :: step_chemistry_advances(:)
+    integer, allocatable :: step_transport_advances(:)
+    integer, allocatable :: step_hydro_advances(:)
 
     solution = reactive_amr_eb_patch_tree_2d()
     time = 0.0_dp
@@ -4081,8 +4091,16 @@ contains
       call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%restart_file, species, config%patch_tree_maximum_levels, &
         solution, time, steps, regrids, minimum_dt, local_ok, fingerprint, &
-        local_minimum_transport_theta, initial_integrals)
+        local_minimum_transport_theta, initial_integrals, &
+        accumulated_chemistry_advances, accumulated_transport_advances, &
+        accumulated_hydro_advances)
       if (.not. local_ok) return
+      if (size(accumulated_chemistry_advances) /= &
+            config%patch_tree_maximum_levels .or. &
+          size(accumulated_transport_advances) /= &
+            config%patch_tree_maximum_levels .or. &
+          size(accumulated_hydro_advances) /= &
+            config%patch_tree_maximum_levels) return
       nvar = solution%nvar
       base_density = solution%levels(1)%patches(1)%state(irho, 1, 1)
     else
@@ -4126,6 +4144,12 @@ contains
       call composite_integral_reactive_amr_eb_patch_tree_2d( &
         solution, initial_integrals, local_ok)
       if (.not. local_ok) return
+      allocate(accumulated_chemistry_advances( &
+        config%patch_tree_maximum_levels), source=0)
+      allocate(accumulated_transport_advances( &
+        config%patch_tree_maximum_levels), source=0)
+      allocate(accumulated_hydro_advances( &
+        config%patch_tree_maximum_levels), source=0)
     end if
 
     allocate(final_integrals(nvar))
@@ -4148,6 +4172,14 @@ contains
       if (.not. local_ok) return
       dt = min(dt, remaining)
       if (present(failure_context)) failure_context = "full physics"
+      if (allocated(step_chemistry_advances)) &
+        deallocate(step_chemistry_advances)
+      if (allocated(step_transport_advances)) &
+        deallocate(step_transport_advances)
+      if (allocated(step_hydro_advances)) deallocate(step_hydro_advances)
+      allocate(step_chemistry_advances(solution%level_count()), source=0)
+      allocate(step_transport_advances(solution%level_count()), source=0)
+      allocate(step_hydro_advances(solution%level_count()), source=0)
       call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
         species, reactions, transport, solution, &
         config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
@@ -4158,12 +4190,35 @@ contains
         viscosity_active, thermal_conduction_active, &
         species_diffusion_active, barodiffusion_active, boundaries, &
         config%eb%state_redist_target_volume_fraction, step_theta, local_ok, &
-        physics_context)
+        physics_context, step_chemistry_advances, step_transport_advances, &
+        step_hydro_advances)
       if (.not. local_ok) then
         if (present(failure_context)) &
           failure_context = "full physics: " // trim(physics_context)
         return
       end if
+      if (any(step_chemistry_advances > &
+            huge(1) - accumulated_chemistry_advances( &
+              1:size(step_chemistry_advances))) .or. &
+          any(step_transport_advances > &
+            huge(1) - accumulated_transport_advances( &
+              1:size(step_transport_advances))) .or. &
+          any(step_hydro_advances > &
+            huge(1) - accumulated_hydro_advances( &
+              1:size(step_hydro_advances)))) then
+        if (present(failure_context)) failure_context = &
+          "operator counter overflow"
+        return
+      end if
+      accumulated_chemistry_advances(1:size(step_chemistry_advances)) = &
+        accumulated_chemistry_advances(1:size(step_chemistry_advances)) + &
+        step_chemistry_advances
+      accumulated_transport_advances(1:size(step_transport_advances)) = &
+        accumulated_transport_advances(1:size(step_transport_advances)) + &
+        step_transport_advances
+      accumulated_hydro_advances(1:size(step_hydro_advances)) = &
+        accumulated_hydro_advances(1:size(step_hydro_advances)) + &
+        step_hydro_advances
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
       local_minimum_transport_theta = min( &
@@ -4187,7 +4242,9 @@ contains
           call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
             config%checkpoint_file, species, solution, time, steps, regrids, &
             minimum_dt, local_ok, fingerprint, &
-            local_minimum_transport_theta, initial_integrals)
+            local_minimum_transport_theta, initial_integrals, &
+            accumulated_chemistry_advances, &
+            accumulated_transport_advances, accumulated_hydro_advances)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -4205,7 +4262,8 @@ contains
       call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%checkpoint_file, species, solution, time, steps, regrids, &
         minimum_dt, local_ok, fingerprint, local_minimum_transport_theta, &
-        initial_integrals)
+        initial_integrals, accumulated_chemistry_advances, &
+        accumulated_transport_advances, accumulated_hydro_advances)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final integral"
@@ -4216,6 +4274,12 @@ contains
       ieee_is_finite(minimum_dt) .and. minimum_dt > 0.0_dp
     if (present(minimum_transport_theta)) &
       minimum_transport_theta = local_minimum_transport_theta
+    if (present(chemistry_level_advances)) allocate( &
+      chemistry_level_advances, source=accumulated_chemistry_advances)
+    if (present(transport_level_advances)) allocate( &
+      transport_level_advances, source=accumulated_transport_advances)
+    if (present(hydro_level_advances)) allocate( &
+      hydro_level_advances, source=accumulated_hydro_advances)
     if (ok .and. present(failure_context)) failure_context = "none"
 
   contains

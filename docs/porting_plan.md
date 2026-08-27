@@ -1647,6 +1647,20 @@ failed reads. Extend the public two-to-four/eight-rank restart checker to
 compare the cumulative conservation error and limiter minimum with the
 uninterrupted reference.
 
+## 0.198.0 restart-persistent AMR operator counters
+
+Advance the arbitrary-depth checkpoint envelope to base schema 4 and public
+fingerprinted schema 7. Store fixed-capacity, per-level cumulative chemistry,
+transport, and hydro patch-advance vectors. Size public-driver vectors to the
+configured maximum tree depth so a temporary topology shrink does not discard
+deeper-level history.
+
+Require direct serial recovery with capacity beyond the populated depth,
+sparse rank consensus, selected-root broadcast, and unallocated optional
+outputs after failed reads. Capture the public uninterrupted and restarted
+logs and require exact counter-vector equality across the serial and
+two-to-four/eight-rank continuation chains.
+
 Each implementation PR should normally contain:
 
 1. implementation

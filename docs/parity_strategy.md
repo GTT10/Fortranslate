@@ -3136,3 +3136,17 @@ Capture the uninterrupted and changed-rank restart application diagnostics.
 In addition to identity-keyed field parity, require the restarted final
 conservation error and minimum transport limiter to match the uninterrupted
 logical run.
+
+## 0.198.0 checkpointed AMR operator-counter gates
+
+Write synthetic chemistry, transport, and hydro vectors whose capacity is
+larger than the stored topology depth. Require exact schema-7 serial and
+selected-root sparse recovery, rejection when the restart depth cannot hold
+the vector, collective rejection when ranks disagree, and no allocated
+counter output after a rejected read.
+
+For public applications, capture the three reported level-counter lines from
+the uninterrupted run and every independent restart. Require exact vector
+equality after the serial split and after two-rank checkpoint continuation on
+four and eight ranks, in addition to the existing field, conservation, and
+limiter gates.

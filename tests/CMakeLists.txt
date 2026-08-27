@@ -1863,17 +1863,32 @@ set(REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY
 file(MAKE_DIRECTORY "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}")
 add_test(
   NAME regression_reactive_eb_patch_tree_restart_2d_reference
-  COMMAND $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/run_and_capture.py"
+    --log
+      "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/reference.log"
+    --
+    $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
     "${PROJECT_SOURCE_DIR}/cases/reactive_eb_patch_tree_restart_2d/reference.nml"
 )
 add_test(
   NAME regression_reactive_eb_patch_tree_restart_2d_checkpoint_stop
-  COMMAND $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/run_and_capture.py"
+    --log
+      "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/stopped.log"
+    --
+    $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
     "${PROJECT_SOURCE_DIR}/cases/reactive_eb_patch_tree_restart_2d/checkpoint_stop.nml"
 )
 add_test(
   NAME regression_reactive_eb_patch_tree_restart_2d_restart
-  COMMAND $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/run_and_capture.py"
+    --log
+      "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/restarted.log"
+    --
+    $<TARGET_FILE:pelef_reactive_eb_patch_tree_2d>
     "${PROJECT_SOURCE_DIR}/cases/reactive_eb_patch_tree_restart_2d/restart.nml"
 )
 add_test(
@@ -1913,6 +1928,10 @@ add_test(
       "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/patch_tree_restart_stopped.csv"
     --restarted
       "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/patch_tree_restart_restarted.csv"
+    --reference-log
+      "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/reference.log"
+    --restarted-logs
+      "${REACTIVE_EB_PATCH_TREE_RESTART_2D_WORK_DIRECTORY}/restarted.log"
 )
 set_tests_properties(
   regression_reactive_eb_patch_tree_restart_2d_check

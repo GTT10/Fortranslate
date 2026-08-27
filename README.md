@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.197.0` milestone contains the serial verification suite, ten optional
+The `0.198.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -18,7 +18,7 @@ another weighting and reproduce an uninterrupted one-rank reference. The
 fresh sparse-MPI 2D EB path now constructs its numerical root state on the
 single owning rank and moves those arrays directly into sparse storage;
 non-owners never allocate a root state or temperature field. The public serial
-and sparse-MPI patch-tree checkpoints now store a schema-6
+and sparse-MPI patch-tree checkpoints now store a schema-7
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
@@ -90,7 +90,12 @@ the cumulative minimum transport limiter across serial and sparse-MPI restart,
 instead of resetting that diagnostic at the continuation boundary. In
 `0.197.0`, schema-6 checkpoints retain the original composite-integral
 baseline too, so the reported final conservation error continues to cover the
-complete logical run instead of only its post-restart suffix. The tree
+complete logical run instead of only its post-restart suffix. In `0.198.0`,
+schema-7 checkpoints also retain cumulative chemistry, transport, and hydro
+patch advances for every configured AMR level. The fixed-capacity vectors
+preserve dormant deeper-level history when regridding temporarily shrinks the
+tree, and sparse MPI restores the same global counters after a rank-count or
+ownership change. The tree
 can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial

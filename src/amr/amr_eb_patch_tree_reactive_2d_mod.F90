@@ -47,8 +47,8 @@ module amr_eb_patch_tree_reactive_2d_mod
     5.0e4_dp * epsilon(1.0_dp)
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
-  integer, parameter :: patch_tree_checkpoint_schema = 3
-  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 6
+  integer, parameter :: patch_tree_checkpoint_schema = 4
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 7
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -629,7 +629,9 @@ contains
 
   subroutine write_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, solution, time, steps, regrids, minimum_dt, ok, &
-      fingerprint, minimum_transport_theta, initial_integrals)
+      fingerprint, minimum_transport_theta, initial_integrals, &
+      chemistry_level_advances, transport_level_advances, &
+      hydro_level_advances)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
@@ -640,9 +642,15 @@ contains
       intent(in), optional :: fingerprint
     real(dp), intent(in), optional :: minimum_transport_theta
     real(dp), intent(in), optional :: initial_integrals(:)
+    integer, intent(in), optional :: chemistry_level_advances(:)
+    integer, intent(in), optional :: transport_level_advances(:)
+    integer, intent(in), optional :: hydro_level_advances(:)
 
     integer :: unit, status, species_index, relation, child, schema
-    integer :: level, patch, i, j
+    integer :: counter_levels, counter_presence, level, patch, i, j
+    integer, allocatable :: selected_chemistry_advances(:)
+    integer, allocatable :: selected_transport_advances(:)
+    integer, allocatable :: selected_hydro_advances(:)
     real(dp), allocatable :: selected_initial_integrals(:)
     real(dp) :: selected_minimum_transport_theta
     logical :: local_ok
@@ -670,6 +678,28 @@ contains
       call composite_integral_reactive_amr_eb_patch_tree_2d( &
         solution, selected_initial_integrals, local_ok)
       if (.not. local_ok) return
+    end if
+    counter_presence = count([ &
+      present(chemistry_level_advances), &
+      present(transport_level_advances), &
+      present(hydro_level_advances)])
+    if (counter_presence /= 0 .and. counter_presence /= 3) return
+    if (counter_presence == 3) then
+      counter_levels = size(chemistry_level_advances)
+      if (.not. patch_tree_checkpoint_operator_counters_are_valid( &
+          steps, solution%level_count(), checkpoint_maximum_levels, &
+          chemistry_level_advances, transport_level_advances, &
+          hydro_level_advances)) return
+      allocate(selected_chemistry_advances, source= &
+        chemistry_level_advances)
+      allocate(selected_transport_advances, source= &
+        transport_level_advances)
+      allocate(selected_hydro_advances, source=hydro_level_advances)
+    else
+      counter_levels = solution%level_count()
+      allocate(selected_chemistry_advances(counter_levels), source=0)
+      allocate(selected_transport_advances(counter_levels), source=0)
+      allocate(selected_hydro_advances(counter_levels), source=0)
     end if
     schema = patch_tree_checkpoint_schema
     if (present(fingerprint)) schema = patch_tree_checkpoint_fingerprint_schema
@@ -728,6 +758,16 @@ contains
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
       selected_initial_integrals
     if (status /= 0) go to 900
+    write(unit, '(i0)', iostat=status) counter_levels
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      selected_chemistry_advances
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      selected_transport_advances
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) selected_hydro_advances
+    if (status /= 0) go to 900
     do level = 1, solution%level_count()
       do patch = 1, solution%levels(level)%patch_count()
         write(unit, '(*(i0,1x))', iostat=status) &
@@ -758,7 +798,8 @@ contains
   subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, maximum_levels, solution, time, steps, regrids, &
       minimum_dt, ok, fingerprint, minimum_transport_theta, &
-      initial_integrals)
+      initial_integrals, chemistry_level_advances, &
+      transport_level_advances, hydro_level_advances)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: maximum_levels
@@ -770,6 +811,9 @@ contains
       intent(in), optional :: fingerprint
     real(dp), intent(out), optional :: minimum_transport_theta
     real(dp), allocatable, intent(out), optional :: initial_integrals(:)
+    integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
+    integer, allocatable, intent(out), optional :: transport_level_advances(:)
+    integer, allocatable, intent(out), optional :: hydro_level_advances(:)
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -783,6 +827,10 @@ contains
     integer :: stored_levels, stored_relation, relation_patches
     integer :: species_index, relation, child, level, patch, i, j
     integer :: stored_level, stored_patch, stored_nx, stored_ny
+    integer :: stored_counter_levels
+    integer, allocatable :: stored_chemistry_advances(:)
+    integer, allocatable :: stored_transport_advances(:)
+    integer, allocatable :: stored_hydro_advances(:)
     real(dp), allocatable :: stored_initial_integrals(:)
     real(dp) :: stored_minimum_transport_theta
 
@@ -865,6 +913,22 @@ contains
     read(unit, *, iostat=status) stored_initial_integrals
     if (status /= 0 .or. &
         any(.not. ieee_is_finite(stored_initial_integrals))) go to 900
+    read(unit, *, iostat=status) stored_counter_levels
+    if (status /= 0 .or. stored_counter_levels < stored_levels .or. &
+        stored_counter_levels > maximum_levels) go to 900
+    allocate(stored_chemistry_advances(stored_counter_levels))
+    allocate(stored_transport_advances(stored_counter_levels))
+    allocate(stored_hydro_advances(stored_counter_levels))
+    read(unit, *, iostat=status) stored_chemistry_advances
+    if (status /= 0) go to 900
+    read(unit, *, iostat=status) stored_transport_advances
+    if (status /= 0) go to 900
+    read(unit, *, iostat=status) stored_hydro_advances
+    if (status /= 0 .or. &
+        .not. patch_tree_checkpoint_operator_counters_are_valid( &
+          steps, stored_levels, maximum_levels, &
+          stored_chemistry_advances, stored_transport_advances, &
+          stored_hydro_advances)) go to 900
 
     candidate%nvar = stored_nvar
     candidate%topology = topology
@@ -921,6 +985,12 @@ contains
       minimum_transport_theta = stored_minimum_transport_theta
     if (present(initial_integrals)) &
       allocate(initial_integrals, source=stored_initial_integrals)
+    if (present(chemistry_level_advances)) &
+      allocate(chemistry_level_advances, source=stored_chemistry_advances)
+    if (present(transport_level_advances)) &
+      allocate(transport_level_advances, source=stored_transport_advances)
+    if (present(hydro_level_advances)) &
+      allocate(hydro_level_advances, source=stored_hydro_advances)
     ok = .true.
     return
 
@@ -2959,6 +3029,28 @@ contains
     valid = time > 0.0_dp .and. minimum_dt > 0.0_dp .and. &
       minimum_dt <= time + tolerance .and. regrids <= steps + 1
   end function patch_tree_checkpoint_metadata_is_valid
+
+  pure logical function patch_tree_checkpoint_operator_counters_are_valid( &
+      steps, populated_levels, maximum_levels, chemistry_advances, &
+      transport_advances, hydro_advances) result(valid)
+    integer, intent(in) :: steps, populated_levels, maximum_levels
+    integer, intent(in) :: chemistry_advances(:), transport_advances(:)
+    integer, intent(in) :: hydro_advances(:)
+
+    integer :: counter_levels
+
+    counter_levels = size(chemistry_advances)
+    valid = populated_levels >= 1 .and. maximum_levels >= populated_levels .and. &
+      counter_levels >= populated_levels .and. &
+      counter_levels <= maximum_levels .and. &
+      size(transport_advances) == counter_levels .and. &
+      size(hydro_advances) == counter_levels .and. &
+      all(chemistry_advances >= 0) .and. &
+      all(transport_advances >= 0) .and. all(hydro_advances >= 0)
+    if (valid .and. steps == 0) valid = &
+      all(chemistry_advances == 0) .and. &
+      all(transport_advances == 0) .and. all(hydro_advances == 0)
+  end function patch_tree_checkpoint_operator_counters_are_valid
 
   subroutine write_patch_tree_checkpoint_geometry_2d( &
       unit, geometry, status)

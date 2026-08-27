@@ -61,6 +61,15 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   type(amr_eb_tagging_criteria_2d) :: criteria
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
+  integer, allocatable :: chemistry_level_advances(:)
+  integer, allocatable :: transport_level_advances(:)
+  integer, allocatable :: hydro_level_advances(:)
+  integer, allocatable :: local_step_chemistry_advances(:)
+  integer, allocatable :: local_step_transport_advances(:)
+  integer, allocatable :: local_step_hydro_advances(:)
+  integer, allocatable :: global_step_chemistry_advances(:)
+  integer, allocatable :: global_step_transport_advances(:)
+  integer, allocatable :: global_step_hydro_advances(:)
   real(dp) :: base_density, conservation_error, dt, dx, dy
   real(dp) :: minimum_dt, minimum_transport_theta, remaining
   real(dp) :: step_theta, time, time_tolerance
@@ -149,8 +158,18 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
       fingerprint=fingerprint, &
       minimum_transport_theta=minimum_transport_theta, &
-      initial_integrals=initial_integrals)
+      initial_integrals=initial_integrals, &
+      chemistry_level_advances=chemistry_level_advances, &
+      transport_level_advances=transport_level_advances, &
+      hydro_level_advances=hydro_level_advances)
     if (.not. ok) call abort_run("Sparse patch-tree restart failed", 4)
+    if (size(chemistry_level_advances) /= &
+          config%patch_tree_maximum_levels .or. &
+        size(transport_level_advances) /= &
+          config%patch_tree_maximum_levels .or. &
+        size(hydro_level_advances) /= &
+          config%patch_tree_maximum_levels) &
+      call abort_run("Sparse patch-tree counter capacity mismatch", 4)
   else
     call build_configured_eb_geometry_2d(config%eb, root_geometry, ok)
     if (.not. ok) call abort_run("Root EB geometry failed", 4)
@@ -200,6 +219,12 @@ program pelef_mpi_reactive_eb_patch_tree_2d
     call composite_sparse_amr_eb_patch_tree_integral_2d( &
       distribution, sparse, initial_integrals, ok)
     if (.not. ok) call abort_run("Initial sparse integral failed", 4)
+    allocate(chemistry_level_advances( &
+      config%patch_tree_maximum_levels), source=0)
+    allocate(transport_level_advances( &
+      config%patch_tree_maximum_levels), source=0)
+    allocate(hydro_level_advances( &
+      config%patch_tree_maximum_levels), source=0)
   end if
 
   time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
@@ -221,6 +246,24 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       thermal_conduction_active, species_diffusion_active, dt, ok)
     if (.not. ok) call abort_run("Sparse patch-tree timestep failed", 5)
     dt = min(dt, remaining)
+    if (allocated(local_step_chemistry_advances)) &
+      deallocate(local_step_chemistry_advances)
+    if (allocated(local_step_transport_advances)) &
+      deallocate(local_step_transport_advances)
+    if (allocated(local_step_hydro_advances)) &
+      deallocate(local_step_hydro_advances)
+    if (allocated(global_step_chemistry_advances)) &
+      deallocate(global_step_chemistry_advances)
+    if (allocated(global_step_transport_advances)) &
+      deallocate(global_step_transport_advances)
+    if (allocated(global_step_hydro_advances)) &
+      deallocate(global_step_hydro_advances)
+    allocate(local_step_chemistry_advances(sparse%level_count()), source=0)
+    allocate(local_step_transport_advances(sparse%level_count()), source=0)
+    allocate(local_step_hydro_advances(sparse%level_count()), source=0)
+    allocate(global_step_chemistry_advances(sparse%level_count()), source=0)
+    allocate(global_step_transport_advances(sparse%level_count()), source=0)
+    allocate(global_step_hydro_advances(sparse%level_count()), source=0)
     call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
       species, reactions, transport, distribution, sparse, &
       config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
@@ -231,9 +274,47 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       viscosity_active, thermal_conduction_active, &
       species_diffusion_active, barodiffusion_active, boundaries, &
       config%eb%state_redist_target_volume_fraction, step_theta, ok, &
-      physics_context)
+      physics_context, local_step_chemistry_advances, &
+      local_step_transport_advances, local_step_hydro_advances)
     if (.not. ok) call abort_run( &
       "Sparse full physics failed: " // trim(physics_context), 5)
+    call MPI_Allreduce( &
+      local_step_chemistry_advances, global_step_chemistry_advances, &
+      size(local_step_chemistry_advances), MPI_INTEGER, MPI_SUM, &
+      MPI_COMM_WORLD, ierr)
+    if (ierr /= MPI_SUCCESS) &
+      call abort_run("Sparse chemistry counter reduction failed", 5)
+    call MPI_Allreduce( &
+      local_step_transport_advances, global_step_transport_advances, &
+      size(local_step_transport_advances), MPI_INTEGER, MPI_SUM, &
+      MPI_COMM_WORLD, ierr)
+    if (ierr /= MPI_SUCCESS) &
+      call abort_run("Sparse transport counter reduction failed", 5)
+    call MPI_Allreduce( &
+      local_step_hydro_advances, global_step_hydro_advances, &
+      size(local_step_hydro_advances), MPI_INTEGER, MPI_SUM, &
+      MPI_COMM_WORLD, ierr)
+    if (ierr /= MPI_SUCCESS) &
+      call abort_run("Sparse hydro counter reduction failed", 5)
+    if (any(global_step_chemistry_advances > &
+          huge(1) - chemistry_level_advances( &
+            1:size(global_step_chemistry_advances))) .or. &
+        any(global_step_transport_advances > &
+          huge(1) - transport_level_advances( &
+            1:size(global_step_transport_advances))) .or. &
+        any(global_step_hydro_advances > &
+          huge(1) - hydro_level_advances( &
+            1:size(global_step_hydro_advances)))) &
+      call abort_run("Sparse operator counter overflow", 5)
+    chemistry_level_advances(1:size(global_step_chemistry_advances)) = &
+      chemistry_level_advances(1:size(global_step_chemistry_advances)) + &
+      global_step_chemistry_advances
+    transport_level_advances(1:size(global_step_transport_advances)) = &
+      transport_level_advances(1:size(global_step_transport_advances)) + &
+      global_step_transport_advances
+    hydro_level_advances(1:size(global_step_hydro_advances)) = &
+      hydro_level_advances(1:size(global_step_hydro_advances)) + &
+      global_step_hydro_advances
     time = time + dt
     minimum_dt = min(minimum_dt, dt)
     minimum_transport_theta = min(minimum_transport_theta, step_theta)
@@ -300,6 +381,12 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       minimum_transport_theta
     write(*, '(a,es24.16)') "Maximum composite conservation error: ", &
       conservation_error
+    write(*, '(a,*(1x,i0))') "Chemistry level advances:", &
+      chemistry_level_advances
+    write(*, '(a,*(1x,i0))') "Transport level advances:", &
+      transport_level_advances
+    write(*, '(a,*(1x,i0))') "Hydro level advances:", &
+      hydro_level_advances
     write(*, '(a,1x,a)') "Composite output:", trim(output_path)
   end if
 
@@ -348,7 +435,10 @@ contains
       config%checkpoint_file, species, distribution, sparse, io_root, time, &
       steps, regrids, minimum_dt, checkpoint_ok, fingerprint=fingerprint, &
       minimum_transport_theta=minimum_transport_theta, &
-      initial_integrals=initial_integrals)
+      initial_integrals=initial_integrals, &
+      chemistry_level_advances=chemistry_level_advances, &
+      transport_level_advances=transport_level_advances, &
+      hydro_level_advances=hydro_level_advances)
   end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)

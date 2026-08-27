@@ -141,6 +141,12 @@ program test_amr_eb_multilevel_2d
   integer, allocatable :: tree_level_advances(:), chain_level_advances(:)
   integer, allocatable :: tree_chemistry_advances(:)
   integer, allocatable :: chain_chemistry_advances(:)
+  integer, allocatable :: checkpoint_chemistry_advances(:)
+  integer, allocatable :: checkpoint_transport_advances(:)
+  integer, allocatable :: checkpoint_hydro_advances(:)
+  integer, allocatable :: restored_checkpoint_chemistry_advances(:)
+  integer, allocatable :: restored_checkpoint_transport_advances(:)
+  integer, allocatable :: restored_checkpoint_hydro_advances(:)
   integer :: i, j, k, level, patch, nvar
   integer :: tagged_cells
   integer :: checkpoint_steps, checkpoint_regrids, checkpoint_unit, status
@@ -556,18 +562,31 @@ program test_amr_eb_multilevel_2d
   reactive_tree_snapshot = reactive_tree
   allocate(checkpoint_initial_integrals(nvar))
   checkpoint_initial_integrals = tree_integral_before + 0.125_dp
+  checkpoint_chemistry_advances = [2, 4, 8, 16, 0, 0]
+  checkpoint_transport_advances = [2, 8, 32, 128, 0, 0]
+  checkpoint_hydro_advances = [1, 2, 4, 8, 0, 0]
   call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
     0.01_dp, ok, minimum_transport_theta=0.625_dp, &
-    initial_integrals=checkpoint_initial_integrals)
+    initial_integrals=checkpoint_initial_integrals, &
+    chemistry_level_advances=checkpoint_chemistry_advances, &
+    transport_level_advances=checkpoint_transport_advances, &
+    hydro_level_advances=checkpoint_hydro_advances)
   call require(ok, "arbitrary-depth EB patch-tree checkpoint write")
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
-    tree_checkpoint_path, species, 4, checkpoint_tree, checkpoint_time, &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
     minimum_transport_theta=checkpoint_minimum_transport_theta, &
-    initial_integrals=restored_checkpoint_initial_integrals)
+    initial_integrals=restored_checkpoint_initial_integrals, &
+    chemistry_level_advances=restored_checkpoint_chemistry_advances, &
+    transport_level_advances=restored_checkpoint_transport_advances, &
+    hydro_level_advances=restored_checkpoint_hydro_advances)
   call require(allocated(restored_checkpoint_initial_integrals), &
     "arbitrary-depth EB checkpoint conservation baseline allocation")
+  call require(allocated(restored_checkpoint_chemistry_advances) .and. &
+    allocated(restored_checkpoint_transport_advances) .and. &
+    allocated(restored_checkpoint_hydro_advances), &
+    "arbitrary-depth EB checkpoint operator counter allocation")
   call require(ok .and. checkpoint_tree%is_valid() .and. &
     patch_tree_topologies_match_2d( &
       checkpoint_tree%topology, reactive_tree%topology) .and. &
@@ -577,19 +596,31 @@ program test_amr_eb_multilevel_2d
     checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
     checkpoint_minimum_transport_theta == 0.625_dp .and. &
     all(restored_checkpoint_initial_integrals == &
-      checkpoint_initial_integrals), &
+      checkpoint_initial_integrals) .and. &
+    all(restored_checkpoint_chemistry_advances == &
+      checkpoint_chemistry_advances) .and. &
+    all(restored_checkpoint_transport_advances == &
+      checkpoint_transport_advances) .and. &
+    all(restored_checkpoint_hydro_advances == &
+      checkpoint_hydro_advances), &
     "arbitrary-depth EB patch-tree checkpoint round trip")
 
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 3, checkpoint_tree, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
     minimum_transport_theta=checkpoint_minimum_transport_theta, &
-    initial_integrals=restored_checkpoint_initial_integrals)
+    initial_integrals=restored_checkpoint_initial_integrals, &
+    chemistry_level_advances=restored_checkpoint_chemistry_advances, &
+    transport_level_advances=restored_checkpoint_transport_advances, &
+    hydro_level_advances=restored_checkpoint_hydro_advances)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid() .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
     checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
     checkpoint_minimum_transport_theta == 1.0_dp .and. &
-    .not. allocated(restored_checkpoint_initial_integrals), &
+    .not. allocated(restored_checkpoint_initial_integrals) .and. &
+    .not. allocated(restored_checkpoint_chemistry_advances) .and. &
+    .not. allocated(restored_checkpoint_transport_advances) .and. &
+    .not. allocated(restored_checkpoint_hydro_advances), &
     "EB patch-tree checkpoint maximum-depth rejection")
 
   allocate(checkpoint_species, source=species)
@@ -597,7 +628,7 @@ program test_amr_eb_multilevel_2d
   checkpoint_species(1) = checkpoint_species(2)
   checkpoint_species(2) = species_scratch
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
-    tree_checkpoint_path, checkpoint_species, 4, checkpoint_tree, &
+    tree_checkpoint_path, checkpoint_species, 6, checkpoint_tree, &
     checkpoint_time, checkpoint_steps, checkpoint_regrids, &
     checkpoint_minimum_dt, ok)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
@@ -629,6 +660,21 @@ program test_amr_eb_multilevel_2d
   call require(.not. ok .and. &
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "nonfinite EB patch-tree conservation baseline rejection")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, chemistry_level_advances=checkpoint_chemistry_advances)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "partial EB patch-tree operator counter rejection")
+  checkpoint_chemistry_advances(1) = -1
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, chemistry_level_advances=checkpoint_chemistry_advances, &
+    transport_level_advances=checkpoint_transport_advances, &
+    hydro_level_advances=checkpoint_hydro_advances)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "negative EB patch-tree operator counter rejection")
   open(newunit=checkpoint_unit, file=tree_checkpoint_path, status="old", &
     action="readwrite", iostat=status)
   call require(status == 0, "open EB patch-tree checkpoint for cleanup")
