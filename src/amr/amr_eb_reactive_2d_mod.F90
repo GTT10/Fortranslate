@@ -163,6 +163,8 @@ contains
       do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
         fine_i_lower = (coarse_i - patch%coarse_i_lower) * ratio + 1
         fine_i_upper = fine_i_lower + ratio - 1
+        ! Keep EB-cut parents piecewise constant. Cartesian child offsets then
+        ! sum to zero exactly on every parent that accepts linear slopes.
         use_linear = &
           coarse_geometry%cell_type(coarse_i, coarse_j) == &
             eb_regular_cell .and. &
@@ -244,6 +246,8 @@ contains
           if (.not. parent_ok) exit
         end do
         if (.not. parent_ok .and. use_linear) then
+          ! A component-wise conservative slope may still leave the EOS
+          ! admissible set; retry this parent with the qualified PCM state.
           do fine_j = fine_j_lower, fine_j_upper
             do fine_i = fine_i_lower, fine_i_upper
               candidate_state(:, fine_i, fine_j) = &

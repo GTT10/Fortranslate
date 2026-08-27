@@ -1465,6 +1465,15 @@ arbitrary-depth serial/MPI fingerprint with every wall and molecular-transport
 compatibility control. Qualify active isothermal-wall checkpoint/restart and
 mismatch rollback while preserving the established low-level stepping APIs.
 
+## 0.183.0 EB-safe limited-linear AMR prolongation
+
+Add a conservative MC-limited coarse-to-fine initializer for reactive 2D EB
+patches. Apply nonzero slopes only when the parent and all of its children are
+regular, retain PCM across EB topology changes, recover child temperatures
+through the EOS, and retry a parent with PCM if a linear child is inadmissible.
+Qualify analytic linear reproduction, prolong/restrict conservation, cut-parent
+fallback, and neutral-output rejection before exposing runtime selection.
+
 Each implementation PR should normally contain:
 
 1. implementation
