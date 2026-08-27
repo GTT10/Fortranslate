@@ -68,9 +68,11 @@ program test_amr_eb_reactive_2d
   real(dp) :: mole_fractions(7), x, y, fine_x_lower, fine_x_upper
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale, dt, expected_scale
-  real(dp) :: linear_factor, linear_expected
-  logical :: ok, found_cut_parent, found_open_boundary
-  integer :: i, j, k, linear_fine_i, linear_fine_j, nvar, component
+  real(dp) :: cut_difference, linear_factor, linear_expected
+  real(dp) :: neighbor_maximum, neighbor_minimum
+  logical :: ok, found_cut_linear, found_cut_parent, found_open_boundary
+  integer :: child_i, child_j, i, j, k, linear_fine_i, linear_fine_j
+  integer :: neighbor_i, neighbor_j, nvar, component
 
   do j = 0, coarse_ny
     y = real(j, dp) / real(coarse_ny, dp)
@@ -196,21 +198,56 @@ program test_amr_eb_reactive_2d
     "limited-linear interior child value")
   call require(maxval(abs(linear_fine_temperature - temperature_cell)) <= &
     3.0e-8_dp, "limited-linear child temperature recovery")
+  found_cut_linear = .false.
   found_cut_parent = .false.
   do j = coarse_j_lower, coarse_j_upper
     do i = coarse_i_lower, coarse_i_upper
       if (coarse_geometry%cell_type(i, j) /= eb_cut_cell) cycle
       linear_fine_i = (i - coarse_i_lower) * ratio + 1
       linear_fine_j = (j - coarse_j_lower) * ratio + 1
-      call require(maxval(abs(linear_fine_state( &
-        :, linear_fine_i:linear_fine_i + ratio - 1, &
-        linear_fine_j:linear_fine_j + ratio - 1) - &
-        spread(spread(linear_coarse_state(:, i, j), 2, ratio), 3, ratio))) <= &
-        2.0e-13_dp * state_scale, "cut-parent PCM fallback")
+      cut_difference = 0.0_dp
+      do child_j = linear_fine_j, linear_fine_j + ratio - 1
+        do child_i = linear_fine_i, linear_fine_i + ratio - 1
+          if (fine_geometry%cell_type(child_i, child_j) == &
+              eb_covered_cell) cycle
+          cut_difference = max(cut_difference, maxval(abs( &
+            linear_fine_state(:, child_i, child_j) - &
+            linear_coarse_state(:, i, j))))
+        end do
+      end do
+      if (cut_difference > 2.0e-13_dp * state_scale) &
+        found_cut_linear = .true.
+      do component = 1, nvar
+        neighbor_minimum = linear_coarse_state(component, i, j)
+        neighbor_maximum = neighbor_minimum
+        do neighbor_j = max(1, j - 1), min(coarse_ny, j + 1)
+          do neighbor_i = max(1, i - 1), min(coarse_nx, i + 1)
+            if (coarse_geometry%cell_type(neighbor_i, neighbor_j) == &
+                eb_covered_cell) cycle
+            neighbor_minimum = min(neighbor_minimum, &
+              linear_coarse_state(component, neighbor_i, neighbor_j))
+            neighbor_maximum = max(neighbor_maximum, &
+              linear_coarse_state(component, neighbor_i, neighbor_j))
+          end do
+        end do
+        do child_j = linear_fine_j, linear_fine_j + ratio - 1
+          do child_i = linear_fine_i, linear_fine_i + ratio - 1
+            if (fine_geometry%cell_type(child_i, child_j) == &
+                eb_covered_cell) cycle
+            call require( &
+              linear_fine_state(component, child_i, child_j) >= &
+                neighbor_minimum - 2.0e-13_dp * state_scale .and. &
+              linear_fine_state(component, child_i, child_j) <= &
+                neighbor_maximum + 2.0e-13_dp * state_scale, &
+              "limited-linear cut-parent component bounds")
+          end do
+        end do
+      end do
       found_cut_parent = .true.
     end do
   end do
   call require(found_cut_parent, "limited-linear cut-parent coverage")
+  call require(found_cut_linear, "limited-linear cut-parent variation")
   linear_coarse_state(1, 5, 5) = ieee_value(0.0_dp, ieee_quiet_nan)
   call prolong_reactive_eb_patch_linear_2d( &
     species, linear_coarse_state, linear_coarse_temperature, &
