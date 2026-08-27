@@ -12,6 +12,8 @@ from pathlib import Path
 MAGIC = "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
 FINAL_TIME = 3.0e-9
 IDENTITY = ("level", "patch", "i", "j")
+X_UPPER = 0.012
+ROOT_DX = X_UPPER / 12.0
 
 
 def load(path: Path) -> dict[tuple[int, int, int, int], dict[str, str]]:
@@ -70,6 +72,25 @@ def unique_time(rows: dict[tuple[int, int, int, int], dict[str, str]]) -> float:
     return next(iter(times))
 
 
+def check_x_upper_boundary(
+    label: str,
+    rows: dict[tuple[int, int, int, int], dict[str, str]],
+) -> None:
+    levels = {key[0] for key in rows}
+    boundary_levels = {
+        key[0]
+        for key, row in rows.items()
+        if abs(
+            float(row["x"]) + 0.5 * float(row["cell_dx"]) - X_UPPER
+        )
+        <= 2.0e-14 * ROOT_DX
+    }
+    if boundary_levels != levels:
+        raise AssertionError(
+            f"{label}: not every level reaches x-upper {boundary_levels}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -91,6 +112,7 @@ def main() -> None:
         levels = {key[0] for key in rows}
         if levels != {0, 1, 2, 3}:
             raise AssertionError(f"{label}: expected four levels, found {levels}")
+        check_x_upper_boundary(label, rows)
     stopped_time = unique_time(stopped)
     if not 0.0 < stopped_time < FINAL_TIME:
         raise AssertionError("checkpoint run did not stop before final time")

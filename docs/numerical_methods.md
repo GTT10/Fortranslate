@@ -1255,6 +1255,11 @@ outflow-boundary child. On its physical side, the fine boundary state supplies
 the exterior value and no coarse/fine flux-register contribution is formed;
 the remaining sides retain coarse-time interpolation and reflux.
 
+The same domain-inclusive bounds are serialized in the arbitrary-depth
+checkpoint. Restart rebuilds the geometry from those stored bounds before it
+recomputes sparse owners, so a child at a physical side remains there across a
+rank-count or ownership-weight change without adding a boundary flag.
+
 Adjacent children of one parent remain separate owners. Before each fine
 substep, a child first receives its time-interpolated parent ghosts. Any ghost
 fine index covered by a sibling is then replaced exactly by that sibling's

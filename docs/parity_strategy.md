@@ -3064,3 +3064,15 @@ Run the same input through the sparse-MPI application at one, two, four, and
 eight ranks. Check the one-rank topology contract and require every ordered
 composite identity and numeric field to match across rank counts before the
 ordinary Debug/Release and complete MPI regression chains are accepted.
+
+## 0.192.0 boundary-touching patch-tree restart gates
+
+Write a schema-4 four-level x-upper checkpoint after at least one committed
+step. Require the stopped composite output and every independent continuation
+to retain exact boundary contact at all levels.
+
+Compare the serial uninterrupted and restarted outputs by composite identity
+and every numeric field. Repeat with a two-rank checkpoint and four- and
+eight-rank restarts under a different ownership weight. Retain terminal-marker,
+fingerprint-mismatch, topology, time, and field-parity gates in the complete
+Debug/Release chains.
