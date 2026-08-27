@@ -3575,3 +3575,18 @@ Public serial and sparse-MPI patch-tree applications now report cumulative
 per-level operator work over the complete logical run. Counter storage follows
 configured maximum depth rather than current topology depth, so dynamic
 coarsening and later level recreation retain earlier counts.
+
+## Restart-persistent AMR regrid history (`0.199.0`)
+
+- [x] schema-5 base and schema-8 fingerprinted checkpoint envelopes
+- [x] cumulative successful tag/regrid evaluation count
+- [x] cumulative tagged-cell count across all evaluated parent patches
+- [x] serial exact round trip and neutral failure rollback
+- [x] sparse rank consensus and selected-root metadata broadcast
+- [x] collective rejection of rank-disagreed regrid history
+- [x] uninterrupted/restarted serial diagnostic comparison
+- [x] two-to-four/eight-rank sparse restart diagnostic comparison
+
+The public adaptation diagnostics now cover the complete logical run rather
+than only the current process suffix. A successful evaluation that leaves the
+topology unchanged is still counted; a failed transaction is not.

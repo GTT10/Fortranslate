@@ -154,6 +154,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: local_regrid_restriction_transfers
   integer :: global_tagging_evaluations, local_tagging_evaluations
   integer :: serial_tagged_cells, tagged_cells, transferred_cells
+  integer :: checkpoint_regrid_evaluations, checkpoint_tagged_cells
   integer :: checkpoint_root, checkpoint_steps, checkpoint_regrids
   integer :: checkpoint_maximum_levels, checkpoint_unit, checkpoint_status
   integer :: expected_checkpoint_transfers
@@ -491,7 +492,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initial_integrals=checkpoint_initial_integrals, &
     chemistry_level_advances=checkpoint_chemistry_advances, &
     transport_level_advances=checkpoint_transport_advances, &
-    hydro_level_advances=checkpoint_hydro_advances)
+    hydro_level_advances=checkpoint_hydro_advances, &
+    regrid_evaluations=4, cumulative_tagged_cells=37)
   call MPI_Allreduce( &
     local_checkpoint_transfers, global_checkpoint_transfers, 1, &
     MPI_INTEGER, MPI_SUM, comm, ierr)
@@ -509,7 +511,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
       initial_integrals=checkpoint_initial_integrals, &
       chemistry_level_advances=checkpoint_chemistry_advances, &
       transport_level_advances=checkpoint_transport_advances, &
-      hydro_level_advances=checkpoint_hydro_advances)
+      hydro_level_advances=checkpoint_hydro_advances, &
+      regrid_evaluations=4, cumulative_tagged_cells=37)
     call assert_all(.not. ok .and. local_checkpoint_transfers == 0, &
       "MPI EB patch-tree checkpoint baseline consensus", comm)
     if (rank == 0) checkpoint_initial_integrals(1) = &
@@ -523,11 +526,38 @@ program pelef_mpi_amr_eb_patch_tree_2d
       initial_integrals=checkpoint_initial_integrals, &
       chemistry_level_advances=checkpoint_chemistry_advances, &
       transport_level_advances=checkpoint_transport_advances, &
-      hydro_level_advances=checkpoint_hydro_advances)
+      hydro_level_advances=checkpoint_hydro_advances, &
+      regrid_evaluations=4, cumulative_tagged_cells=37)
     call assert_all(.not. ok .and. local_checkpoint_transfers == 0, &
       "MPI EB patch-tree checkpoint counter consensus", comm)
     if (rank == 0) checkpoint_chemistry_advances(1) = &
       checkpoint_chemistry_advances(1) - 1
+    call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+      checkpoint_path, species, migrated_distribution, physical_sparse, &
+      checkpoint_root, 0.125_dp, 5, 2, 0.01_dp, ok, &
+      local_checkpoint_transfers, minimum_transport_theta=0.625_dp, &
+      initial_integrals=checkpoint_initial_integrals, &
+      chemistry_level_advances=checkpoint_chemistry_advances, &
+      transport_level_advances=checkpoint_transport_advances, &
+      hydro_level_advances=checkpoint_hydro_advances, &
+      regrid_evaluations=4)
+    call assert_all(.not. ok .and. local_checkpoint_transfers == 0, &
+      "MPI EB patch-tree checkpoint partial regrid history", comm)
+    checkpoint_regrid_evaluations = 4
+    if (rank == 0) checkpoint_regrid_evaluations = 5
+    call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+      checkpoint_path, species, migrated_distribution, physical_sparse, &
+      checkpoint_root, 0.125_dp, 5, 2, 0.01_dp, ok, &
+      local_checkpoint_transfers, minimum_transport_theta=0.625_dp, &
+      initial_integrals=checkpoint_initial_integrals, &
+      chemistry_level_advances=checkpoint_chemistry_advances, &
+      transport_level_advances=checkpoint_transport_advances, &
+      hydro_level_advances=checkpoint_hydro_advances, &
+      regrid_evaluations=checkpoint_regrid_evaluations, &
+      cumulative_tagged_cells=37)
+    call assert_all(.not. ok .and. local_checkpoint_transfers == 0, &
+      "MPI EB patch-tree checkpoint regrid history consensus", comm)
+    checkpoint_regrid_evaluations = 4
   end if
 
   call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
@@ -539,7 +569,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initial_integrals=restored_checkpoint_initial_integrals, &
     chemistry_level_advances=restored_checkpoint_chemistry_advances, &
     transport_level_advances=restored_checkpoint_transport_advances, &
-    hydro_level_advances=restored_checkpoint_hydro_advances)
+    hydro_level_advances=restored_checkpoint_hydro_advances, &
+    regrid_evaluations=checkpoint_regrid_evaluations, &
+    cumulative_tagged_cells=checkpoint_tagged_cells)
   call assert_all(allocated(restored_checkpoint_initial_integrals), &
     "MPI EB checkpoint conservation baseline allocation", comm)
   call assert_all(allocated(restored_checkpoint_chemistry_advances) .and. &
@@ -572,6 +604,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
     checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
     checkpoint_minimum_transport_theta == 0.625_dp .and. &
+    checkpoint_regrid_evaluations == 4 .and. &
+    checkpoint_tagged_cells == 37 .and. &
     all(restored_checkpoint_initial_integrals == &
       checkpoint_initial_integrals) .and. &
     all(restored_checkpoint_chemistry_advances == &
@@ -598,13 +632,16 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initial_integrals=restored_checkpoint_initial_integrals, &
     chemistry_level_advances=restored_checkpoint_chemistry_advances, &
     transport_level_advances=restored_checkpoint_transport_advances, &
-    hydro_level_advances=restored_checkpoint_hydro_advances)
+    hydro_level_advances=restored_checkpoint_hydro_advances, &
+    regrid_evaluations=checkpoint_regrid_evaluations, &
+    cumulative_tagged_cells=checkpoint_tagged_cells)
   call assert_all(.not. ok .and. local_checkpoint_transfers == 0 .and. &
     checkpoint_distribution%level_count() == 0 .and. &
     checkpoint_sparse%level_count() == 0 .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
     checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
     checkpoint_minimum_transport_theta == 1.0_dp .and. &
+    checkpoint_regrid_evaluations == 0 .and. checkpoint_tagged_cells == 0 .and. &
     .not. allocated(restored_checkpoint_initial_integrals) .and. &
     .not. allocated(restored_checkpoint_chemistry_advances) .and. &
     .not. allocated(restored_checkpoint_transport_advances) .and. &

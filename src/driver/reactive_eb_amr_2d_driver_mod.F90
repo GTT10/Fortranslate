@@ -4004,7 +4004,8 @@ contains
       species, reactions, transport, config, solution, time, steps, regrids, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok, &
       failure_context, minimum_transport_theta, chemistry_level_advances, &
-      transport_level_advances, hydro_level_advances)
+      transport_level_advances, hydro_level_advances, &
+      regrid_evaluations, cumulative_tagged_cells)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -4020,6 +4021,8 @@ contains
     integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
     integer, allocatable, intent(out), optional :: transport_level_advances(:)
     integer, allocatable, intent(out), optional :: hydro_level_advances(:)
+    integer, intent(out), optional :: regrid_evaluations
+    integer, intent(out), optional :: cumulative_tagged_cells
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -4034,6 +4037,8 @@ contains
     logical :: barodiffusion_active, changed, local_ok
     logical :: species_diffusion_active, stopped_after_checkpoint
     logical :: thermal_conduction_active, viscosity_active
+    integer :: accumulated_regrid_evaluations
+    integer :: accumulated_tagged_cells
     integer :: last_checkpoint_step, nvar, tagged_cells
     integer, allocatable :: accumulated_chemistry_advances(:)
     integer, allocatable :: accumulated_transport_advances(:)
@@ -4048,12 +4053,16 @@ contains
     base_density = 0.0_dp
     steps = 0
     regrids = 0
+    accumulated_regrid_evaluations = 0
+    accumulated_tagged_cells = 0
     ok = .false.
     local_minimum_transport_theta = 1.0_dp
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
     if (present(failure_context)) failure_context = "input validation"
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
+    if (present(regrid_evaluations)) regrid_evaluations = 0
+    if (present(cumulative_tagged_cells)) cumulative_tagged_cells = 0
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         config%three_level_enabled .or. config%multipatch_enabled .or. &
         config%patch_tree_maximum_levels < 1 .or. &
@@ -4093,7 +4102,8 @@ contains
         solution, time, steps, regrids, minimum_dt, local_ok, fingerprint, &
         local_minimum_transport_theta, initial_integrals, &
         accumulated_chemistry_advances, accumulated_transport_advances, &
-        accumulated_hydro_advances)
+        accumulated_hydro_advances, accumulated_regrid_evaluations, &
+        accumulated_tagged_cells)
       if (.not. local_ok) return
       if (size(accumulated_chemistry_advances) /= &
             config%patch_tree_maximum_levels .or. &
@@ -4135,6 +4145,8 @@ contains
           config%refinement_ratio, build_patch_tree_geometry, local_ok, &
           changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
+        if (.not. local_ok) return
+        call accumulate_regrid_history(tagged_cells, local_ok)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
@@ -4234,6 +4246,8 @@ contains
           changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
         if (.not. local_ok) return
+        call accumulate_regrid_history(tagged_cells, local_ok)
+        if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
       if (config%checkpoint_interval > 0) then
@@ -4244,7 +4258,8 @@ contains
             minimum_dt, local_ok, fingerprint, &
             local_minimum_transport_theta, initial_integrals, &
             accumulated_chemistry_advances, &
-            accumulated_transport_advances, accumulated_hydro_advances)
+            accumulated_transport_advances, accumulated_hydro_advances, &
+            accumulated_regrid_evaluations, accumulated_tagged_cells)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -4263,7 +4278,8 @@ contains
         config%checkpoint_file, species, solution, time, steps, regrids, &
         minimum_dt, local_ok, fingerprint, local_minimum_transport_theta, &
         initial_integrals, accumulated_chemistry_advances, &
-        accumulated_transport_advances, accumulated_hydro_advances)
+        accumulated_transport_advances, accumulated_hydro_advances, &
+        accumulated_regrid_evaluations, accumulated_tagged_cells)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final integral"
@@ -4280,9 +4296,32 @@ contains
       transport_level_advances, source=accumulated_transport_advances)
     if (present(hydro_level_advances)) allocate( &
       hydro_level_advances, source=accumulated_hydro_advances)
+    if (present(regrid_evaluations)) &
+      regrid_evaluations = accumulated_regrid_evaluations
+    if (present(cumulative_tagged_cells)) &
+      cumulative_tagged_cells = accumulated_tagged_cells
     if (ok .and. present(failure_context)) failure_context = "none"
 
   contains
+
+    subroutine accumulate_regrid_history(tagged, history_ok)
+      integer, intent(in) :: tagged
+      logical, intent(out) :: history_ok
+
+      history_ok = tagged >= 0 .and. &
+        accumulated_regrid_evaluations < &
+          huge(accumulated_regrid_evaluations) .and. &
+        tagged <= huge(accumulated_tagged_cells) - &
+          accumulated_tagged_cells
+      if (.not. history_ok) then
+        if (present(failure_context)) failure_context = &
+          "regrid history overflow"
+        return
+      end if
+      accumulated_regrid_evaluations = &
+        accumulated_regrid_evaluations + 1
+      accumulated_tagged_cells = accumulated_tagged_cells + tagged
+    end subroutine accumulate_regrid_history
 
     subroutine build_patch_tree_geometry( &
         parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &

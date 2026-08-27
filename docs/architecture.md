@@ -2474,3 +2474,19 @@ deltas; the application sums them across the communicator before accumulation
 and requires every rank to present identical global vectors to the selected
 I/O root. Restart broadcasts all counters before repartitioning numerical
 fields. Failed reads publish no optional counter arrays.
+
+## Restart-persistent AMR regrid history (`0.199.0`)
+
+The public patch-tree applications now retain two cumulative adaptation
+diagnostics: the number of successful scheduled tag/regrid evaluations and the
+sum of cells tagged by those evaluations. An evaluation is counted after the
+complete regrid transaction succeeds, whether or not its candidate topology
+differs from the current tree. Failed planning, geometry construction, or
+migration contributes nothing.
+
+Base checkpoint schema 5 and fingerprinted schema 8 store both nonnegative
+integers after the operator-counter vectors. The evaluation count must cover
+the committed regrid count and cannot exceed one initialization evaluation
+plus one evaluation per committed root step. Sparse writers require exact
+communicator agreement before gathering fields; restart broadcasts both values
+with the clock metadata before redistributing owners.

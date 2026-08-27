@@ -3150,3 +3150,14 @@ the uninterrupted run and every independent restart. Require exact vector
 equality after the serial split and after two-rank checkpoint continuation on
 four and eight ranks, in addition to the existing field, conservation, and
 limiter gates.
+
+## 0.199.0 checkpointed AMR regrid-history gates
+
+Write synthetic regrid-evaluation and cumulative tagged-cell values through
+the direct serial and selected-root sparse APIs. Require exact schema-8
+recovery, rejection of partial or inconsistent history, communicator-wide
+rejection of rank disagreement, and neutral scalar outputs after failed reads.
+
+Capture both public diagnostics in the existing serial and sparse restart
+logs. Require the independent serial continuation and two-rank checkpoint to
+four-/eight-rank continuations to match their uninterrupted reference exactly.

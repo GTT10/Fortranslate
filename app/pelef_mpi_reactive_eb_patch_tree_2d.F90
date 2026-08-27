@@ -77,8 +77,9 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   character(len=160) :: physics_context
   integer :: argument_count, ierr, last_checkpoint_step, nranks, rank
   integer :: local_root_initializers, root_initializer_ranks
+  integer :: cumulative_tagged_cells, regrid_evaluations
   integer :: regrids, steps, tagged_cells, transferred_cells
-  logical :: barodiffusion_active, changed, ok, restart_run
+  logical :: barodiffusion_active, changed, history_ok, ok, restart_run
   logical :: species_diffusion_active, stopped_after_checkpoint
   logical :: thermal_conduction_active, viscosity_active
 
@@ -148,6 +149,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   time = 0.0_dp
   steps = 0
   regrids = 0
+  regrid_evaluations = 0
+  cumulative_tagged_cells = 0
   minimum_dt = 0.0_dp
   minimum_transport_theta = 1.0_dp
   restart_run = len_trim(config%restart_file) > 0
@@ -161,7 +164,9 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       initial_integrals=initial_integrals, &
       chemistry_level_advances=chemistry_level_advances, &
       transport_level_advances=transport_level_advances, &
-      hydro_level_advances=hydro_level_advances)
+      hydro_level_advances=hydro_level_advances, &
+      regrid_evaluations=regrid_evaluations, &
+      cumulative_tagged_cells=cumulative_tagged_cells)
     if (.not. ok) call abort_run("Sparse patch-tree restart failed", 4)
     if (size(chemistry_level_advances) /= &
           config%patch_tree_maximum_levels .or. &
@@ -211,6 +216,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         tagged_cells, transferred_cells, &
         prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Initial sparse regrid failed", 4)
+      call accumulate_regrid_history(tagged_cells, history_ok)
+      if (.not. history_ok) call abort_run("Regrid history overflow", 4)
       distribution = new_distribution
       if (changed) regrids = regrids + 1
     end if
@@ -329,6 +336,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         tagged_cells, transferred_cells, &
         prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Periodic sparse regrid failed", 5)
+      call accumulate_regrid_history(tagged_cells, history_ok)
+      if (.not. history_ok) call abort_run("Regrid history overflow", 5)
       distribution = new_distribution
       if (changed) regrids = regrids + 1
     end if
@@ -368,6 +377,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
     write(*, '(a,i0)') "Patches: ", sum(distribution%rank_patch_counts)
     write(*, '(a,i0)') "Completed root steps: ", steps
     write(*, '(a,i0)') "Completed regrids: ", regrids
+    write(*, '(a,i0)') "Regrid evaluations: ", regrid_evaluations
+    write(*, '(a,i0)') "Cumulative tagged cells: ", cumulative_tagged_cells
     write(*, '(a,i0)') "MPI work exponent: ", &
       config%patch_tree_mpi_work_exponent
     if (.not. restart_run) write(*, '(a,i0)') &
@@ -394,6 +405,18 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine accumulate_regrid_history(tagged, history_ok)
+    integer, intent(in) :: tagged
+    logical, intent(out) :: history_ok
+
+    history_ok = tagged >= 0 .and. &
+      regrid_evaluations < huge(regrid_evaluations) .and. &
+      tagged <= huge(cumulative_tagged_cells) - cumulative_tagged_cells
+    if (.not. history_ok) return
+    regrid_evaluations = regrid_evaluations + 1
+    cumulative_tagged_cells = cumulative_tagged_cells + tagged
+  end subroutine accumulate_regrid_history
 
   subroutine build_patch_tree_geometry( &
       parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
@@ -438,7 +461,9 @@ contains
       initial_integrals=initial_integrals, &
       chemistry_level_advances=chemistry_level_advances, &
       transport_level_advances=transport_level_advances, &
-      hydro_level_advances=hydro_level_advances)
+      hydro_level_advances=hydro_level_advances, &
+      regrid_evaluations=regrid_evaluations, &
+      cumulative_tagged_cells=cumulative_tagged_cells)
   end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)
