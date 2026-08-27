@@ -2246,3 +2246,19 @@ formats and the arbitrary-depth checkpoint fingerprint do not yet store the
 method. Configuration preflight consequently rejects linear whenever a
 fixed-depth checkpoint or restart path is active, and arbitrary-depth serial
 and sparse-MPI orchestration rejects non-PCM before allocating a candidate.
+
+## Restart-safe arbitrary-depth prolongation selection (`0.185.0`)
+
+The single-patch, sibling-patch, static three-level, and dynamic three-level
+formatted checkpoint schemas advance to version 3. Each writes the selected
+prolongation method beside the reconstruction controls and compares it before
+reading topology or numerical fields. A mismatch leaves the result neutral.
+
+The serial/sparse patch-tree fingerprint advances to schema 4 and owns the
+same method string. Serial iterative tag planning, final tree rebuilding, and
+sparse owner-local candidate planning and rebuilding now pass the selection to
+the shared prolongation dispatcher. Sparse MPI encodes `pcm` and `linear` as a
+collective control, rejects invalid or rank-inconsistent selections, and only
+the parent owner constructs each new child before existing direct routing.
+The established overlap retention, EOS recovery, synchronization,
+conservation checks, and atomic publication remain downstream.

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.184.0` milestone contains the serial verification suite, ten optional
+The `0.185.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -18,7 +18,7 @@ another weighting and reproduce an uninterrupted one-rank reference. The
 fresh sparse-MPI 2D EB path now constructs its numerical root state on the
 single owning rank and moves those arrays directly into sparse storage;
 non-owners never allocate a root state or temperature field. The public serial
-and sparse-MPI patch-tree checkpoints now store a schema-3
+and sparse-MPI patch-tree checkpoints now store a schema-4
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
@@ -48,7 +48,12 @@ fixed-depth public AMR configuration now selects `pcm` or `linear` through
 dynamic-regrid, separated sibling-patch, and three-level initialization. The
 public hot-wall transport case selects `linear`. Because the selection is not
 yet stored in checkpoint identity, fixed-depth checkpoint/restart and the
-serial or sparse-MPI arbitrary-depth patch tree explicitly remain PCM-only.
+serial or sparse-MPI arbitrary-depth patch tree explicitly remain PCM-only at
+the `0.184.0` boundary. In `0.185.0`, every fixed-depth checkpoint advances to
+schema 3 and the shared arbitrary-depth fingerprint advances to schema 4 to
+record the method. Linear initialization, dynamic regridding, checkpointing,
+and restart are therefore active in the public two-level, multipatch,
+three-level, serial arbitrary-depth, and sparse-MPI arbitrary-depth cases.
 The arbitrary-depth 2D EB tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial

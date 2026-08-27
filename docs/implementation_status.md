@@ -3337,3 +3337,20 @@ Checkpoint files do not yet identify the selected method, so linear mode is
 deliberately limited to fresh fixed-depth runs. Adding the method to every
 fixed-depth schema and the shared patch-tree fingerprint remains the next
 lifecycle milestone before linear arbitrary-depth or restart claims.
+
+## Restart-safe arbitrary-depth prolongation selection (`0.185.0`)
+
+- [x] fixed-depth checkpoint schemas advanced to version 3
+- [x] method stored and matched for single-patch and sibling-patch restart
+- [x] method stored and matched for static and dynamic three-level restart
+- [x] shared serial/sparse patch-tree fingerprint schema 4
+- [x] serial arbitrary-depth initialization and iterative regrid propagation
+- [x] sparse-MPI owner-local linear prolongation and direct child routing
+- [x] collective sparse-MPI method validation and rank consensus
+- [x] public four-level serial and 1/2/4/8-rank linear regrid qualification
+- [x] two-rank linear checkpoint with four-/eight-rank restart parity
+- [x] fixed-depth and arbitrary-depth method-mismatch rejection
+
+PCM remains the public default. Limited-linear slopes are still restricted to
+topology-consistent regular parent/child blocks; EB-cut parents and
+inadmissible candidates keep the established PCM fallback.

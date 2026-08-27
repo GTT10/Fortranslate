@@ -1486,6 +1486,19 @@ fixed-depth checkpoint/restart requests and keep arbitrary-depth serial and
 sparse-MPI patch trees PCM-only. Track the method in those schemas before
 lifting either restriction.
 
+## 0.185.0 restart-safe arbitrary-depth prolongation selection
+
+Advance every fixed-depth checkpoint schema and the shared serial/sparse
+patch-tree fingerprint with `prolongation_method`. Remove the temporary
+PCM-only lifecycle guards only after reads reject a method mismatch before
+publication.
+
+Propagate the selected dispatcher through iterative serial tag planning and
+rebuild, plus sparse-MPI owner-local candidate construction and final rebuild.
+Require collective method agreement and retain direct parent-owner to
+child-owner routing. Qualify public fixed-depth, four-level serial, 1/2/4/8
+rank, and cross-rank restart cases with linear prolongation.
+
 Each implementation PR should normally contain:
 
 1. implementation
