@@ -1444,6 +1444,19 @@ boundary consensus, all 215 serial tests, and the full MPI Debug/Release chain.
 Defer catalytic species fluxes, higher-order wall stencils, namelist exposure,
 and nondefault-wall checkpoint fingerprints.
 
+## 0.181.0 public single-level embedded-wall controls
+
+Expose wall kind, thermal mode, temperature, and velocity in the established
+`&embedded_boundary` namelist. Validate their transport dependencies and apply
+them transactionally to the shared boundary set before the single-level public
+clock starts. Exercise the installed application with a hot, tangentially
+moving no-slip wall and require cut-cell heat and momentum response.
+
+Reject active nondefault values in checkpoint-capable AMR application
+preflight until they join every restart compatibility record. Retain all 215
+serial tests and the full MPI Debug/Release chain. Defer AMR namelist/checkpoint
+exposure, catalytic fluxes, and higher-order wall stencils.
+
 Each implementation PR should normally contain:
 
 1. implementation

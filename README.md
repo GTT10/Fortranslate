@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.180.0` milestone contains the serial verification suite, ten optional
+The `0.181.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -31,6 +31,13 @@ embedded walls. The validated embedded-wall control travels with the existing
 boundary set, so the same kernel is used by single-level, fixed-depth,
 multipatch, arbitrary-depth, serial, and sparse-MPI transport paths; the
 default remains adiabatic, free slip, and species impermeable. The
+single-level public EB application now reads `embedded_wall_kind`,
+`embedded_wall_thermal`, `embedded_wall_temperature`, and the three-component
+`embedded_wall_velocity` from `&embedded_boundary`. It rejects isothermal or
+no-slip selections unless the matching thermal or viscous transport operator
+is enabled. Checkpoint-capable AMR applications continue to reject active
+nondefault embedded-wall inputs until those values enter their compatibility
+formats. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial

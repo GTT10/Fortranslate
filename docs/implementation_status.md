@@ -3259,3 +3259,25 @@ right-hand side without changing its AMR or MPI stepping interfaces. Embedded
 species conversion/catalytic kinetics, higher-order wall-normal gradients,
 public namelist controls, and checkpoint compatibility for nondefault wall
 values remain separate work.
+
+## Public single-level embedded-wall configuration (`0.181.0`)
+
+- [x] `embedded_wall_kind` slip/no-slip namelist control
+- [x] `embedded_wall_thermal` adiabatic/isothermal namelist control
+- [x] positive `embedded_wall_temperature` validation
+- [x] finite three-component `embedded_wall_velocity` validation
+- [x] thermal-conduction requirement for isothermal walls
+- [x] viscosity requirement for no-slip walls
+- [x] no-slip requirement for moving walls
+- [x] transactional boundary-set configuration
+- [x] public single-level EB application integration
+- [x] public cut-cell heating and tangential wall-momentum regression
+- [x] direct-API invalid-control rejection
+- [x] active nondefault AMR application preflight rejection
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
+
+Checkpoint-capable AMR application exposure remains deferred until every
+nondefault embedded-wall value participates in restart compatibility. The
+underlying AMR and sparse-MPI transport kernels already consume an explicitly
+configured boundary set.
