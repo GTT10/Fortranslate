@@ -1674,6 +1674,19 @@ broadcast, and neutral outputs after rejected reads. Extend serial and
 two-to-four/eight-rank restart log comparison so both adaptation diagnostics
 match the uninterrupted logical run exactly.
 
+## 0.200.0 public branching patch-tree lifecycle
+
+Replace the single-feature public boundary and restart cases with separated
+boundary-touching and interior temperature features. Require at least two
+leaf-visible patch identities on one level while all four levels retain the
+x-upper boundary branch.
+
+Reuse the existing full-physics fresh and restart processes. Qualify serial and
+sparse 1/2/4/8-rank field parity, independent serial continuation, and a
+two-rank checkpoint restarted at four and eight ranks under changed ownership.
+Keep schema 8 because the existing topology and fingerprint already represent
+ordered parent/child branching without new compatibility state.
+
 Each implementation PR should normally contain:
 
 1. implementation

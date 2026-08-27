@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.199.0` milestone contains the serial verification suite, ten optional
+The `0.200.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -99,7 +99,11 @@ ownership change. The checkpoint also retains the cumulative number of
 scheduled regrid evaluations and tagged
 cells in `0.199.0`. Schema-8 restart therefore reports the same AMR adaptation
 history as an uninterrupted run, including after sparse ownership and rank
-count changes. The tree
+count changes. In `0.200.0`, the public full-physics case carries two separated
+temperature features so the runtime tree branches while one branch continues
+to touch the x-upper physical boundary. Fresh serial/sparse execution,
+independent serial restart, and two-rank checkpoint continuation at four and
+eight ranks now retain both branches with identity-keyed field parity. The tree
 can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial

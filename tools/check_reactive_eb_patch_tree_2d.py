@@ -13,6 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--require-x-upper-boundary", action="store_true")
+    parser.add_argument("--require-branching", action="store_true")
     args = parser.parse_args()
 
     with args.output.open(newline="", encoding="utf-8") as stream:
@@ -42,6 +43,7 @@ def main() -> None:
 
     identities: set[tuple[int, int, int, int]] = set()
     levels: set[int] = set()
+    patches_by_level: dict[int, set[int]] = {}
     x_upper_levels: set[int] = set()
     cell_types: set[int] = set()
     root_dx = 0.012 / 12.0
@@ -55,6 +57,7 @@ def main() -> None:
             raise AssertionError(f"duplicate patch-tree cell identity {identity}")
         identities.add(identity)
         levels.add(level)
+        patches_by_level.setdefault(level, set()).add(int(row["patch"]))
         cell_types.add(int(row["cell_type"]))
         expected_spacing = root_dx / 2**level
         if abs(float(row["cell_dx"]) - expected_spacing) > 2.0e-14 * root_dx:
@@ -86,6 +89,13 @@ def main() -> None:
             "not every populated AMR level reaches the x-upper physical boundary: "
             f"{x_upper_levels}"
         )
+    if args.require_branching and not any(
+        len(patches) >= 2 for patches in patches_by_level.values()
+    ):
+        counts = {
+            level: len(patches) for level, patches in patches_by_level.items()
+        }
+        raise AssertionError(f"patch tree did not branch: {counts}")
     print("check_reactive_eb_patch_tree_2d: PASS")
 
 

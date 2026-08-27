@@ -2490,3 +2490,18 @@ the committed regrid count and cannot exceed one initialization evaluation
 plus one evaluation per committed root step. Sparse writers require exact
 communicator agreement before gathering fields; restart broadcasts both values
 with the clock metadata before redistributing owners.
+
+## Public branching patch-tree lifecycle (`0.200.0`)
+
+The public boundary and restart inputs now initialize two separated reactive
+temperature features. One feature is centered on the x-upper physical side;
+the other remains in the interior. Zero-gap clustering therefore produces at
+least two ordered patches on a populated level while the boundary branch
+continues recursively through all four configured levels.
+
+No numerical representation or checkpoint field changes. Existing ordered
+parent/child relations already encode branching, and schema 8 serializes the
+complete topology. The stronger fresh and restart gates inspect composite
+level/patch identities so a one-patch chain cannot satisfy the public case,
+then retain exact serial/sparse and changed-rank field comparisons across both
+branches.

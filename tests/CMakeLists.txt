@@ -1852,6 +1852,7 @@ add_test(
     --output
       "${REACTIVE_EB_PATCH_TREE_BOUNDARY_2D_WORK_DIRECTORY}/reactive_eb_patch_tree_boundary_2d.csv"
     --require-x-upper-boundary
+    --require-branching
 )
 set_tests_properties(
   regression_reactive_eb_patch_tree_boundary_2d_check
