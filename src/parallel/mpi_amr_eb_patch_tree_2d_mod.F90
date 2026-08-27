@@ -4486,11 +4486,24 @@ contains
         all(ieee_is_finite( &
           boundaries%face(side)%prescribed_species_flux))
     end do
+    local_ok = local_ok .and. &
+      allocated(boundaries%embedded_wall%inflow_primitive) .and. &
+      allocated(boundaries%embedded_wall%prescribed_species_flux)
+    if (local_ok) then
+      local_ok = &
+        size(boundaries%embedded_wall%inflow_primitive) == nprimitive .and. &
+        size(boundaries%embedded_wall%prescribed_species_flux) == &
+          nspecies .and. &
+        all(ieee_is_finite( &
+          boundaries%embedded_wall%inflow_primitive)) .and. &
+        all(ieee_is_finite( &
+          boundaries%embedded_wall%prescribed_species_flux))
+    end if
     call all_ranks_accept_2d( &
       comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
 
-    allocate(integer_values(24 * 3 * 4))
+    allocate(integer_values(24 * 3 * 5))
     allocate(integer_minimum(size(integer_values)))
     allocate(integer_maximum(size(integer_values)))
     integer_values = 0
@@ -4513,6 +4526,22 @@ contains
         index = index + 1
       end do
     end do
+    do character_index = 1, 24
+      integer_values(index) = iachar( &
+        boundaries%embedded_wall%kind(character_index:character_index))
+      index = index + 1
+    end do
+    do character_index = 1, 24
+      integer_values(index) = iachar( &
+        boundaries%embedded_wall%thermal(character_index:character_index))
+      index = index + 1
+    end do
+    do character_index = 1, 24
+      integer_values(index) = iachar( &
+        boundaries%embedded_wall%wall_species( &
+          character_index:character_index))
+      index = index + 1
+    end do
     call MPI_Allreduce( &
       integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
       MPI_MIN, comm, ierr)
@@ -4523,7 +4552,7 @@ contains
     if (ierr /= MPI_SUCCESS .or. &
         any(integer_minimum /= integer_maximum)) return
 
-    allocate(numeric_values(4 * (5 + nspecies + nprimitive)))
+    allocate(numeric_values(5 * (5 + nspecies + nprimitive)))
     allocate(numeric_minimum(size(numeric_values)))
     allocate(numeric_maximum(size(numeric_values)))
     index = 1
@@ -4540,6 +4569,17 @@ contains
         boundaries%face(side)%inflow_primitive
       index = index + nprimitive
     end do
+    numeric_values(index:index + 4) = [ &
+      boundaries%embedded_wall%wall_temperature, &
+      boundaries%embedded_wall%wall_velocity, &
+      boundaries%embedded_wall%inflow_temperature]
+    index = index + 5
+    numeric_values(index:index + nspecies - 1) = &
+      boundaries%embedded_wall%prescribed_species_flux
+    index = index + nspecies
+    numeric_values(index:index + nprimitive - 1) = &
+      boundaries%embedded_wall%inflow_primitive
+    index = index + nprimitive
     local_ok = index == size(numeric_values) + 1 .and. &
       all(ieee_is_finite(numeric_values))
     call all_ranks_accept_2d(comm, local_ok, accepted, global_ok)

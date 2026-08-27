@@ -1,5 +1,6 @@
 program test_reactive_eb_transport_2d
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
@@ -12,7 +13,8 @@ program test_reactive_eb_transport_2d
   use reactive_eb_2d_driver_mod, only: &
     build_configured_eb_geometry_2d, reactive_eb_integrals_2d
   use eb_reactive_transport_2d_mod, only: &
-    reactive_eb_transport_timestep_2d, advance_reactive_eb_transport_2d
+    reactive_eb_transport_timestep_2d, reactive_eb_transport_rhs_2d, &
+    reactive_eb_wall_transport_flux_2d, advance_reactive_eb_transport_2d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -23,6 +25,8 @@ program test_reactive_eb_transport_2d
   real(dp), allocatable :: state(:, :, :), temperature(:, :)
   real(dp), allocatable :: saved_state(:, :, :), saved_temperature(:, :)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
+  real(dp), allocatable :: wall_flux(:)
+  real(dp), allocatable :: default_rhs(:, :, :), wall_rhs(:, :, :)
   real(dp) :: dx, dy, base_density, dt, maximum_diffusivity, interval
   real(dp) :: initial_span, final_span, minimum_theta, scale
   logical :: ok
@@ -70,6 +74,46 @@ program test_reactive_eb_transport_2d
   call build_reactive_boundary_set_2d( &
     species, config%flow, boundaries, ok)
   call require(ok, "outflow boundary construction")
+
+  allocate(wall_flux(size(state, 1)))
+  boundaries%embedded_wall%kind = "no_slip_wall"
+  boundaries%embedded_wall%thermal = "isothermal"
+  boundaries%embedded_wall%wall_temperature = 1200.0_dp
+  boundaries%embedded_wall%wall_velocity = [5.0_dp, -2.0_dp, 1.0_dp]
+  call reactive_eb_wall_transport_flux_2d( &
+    species, transport, state(:, geometry%nx, geometry%ny), &
+    temperature(geometry%nx, geometry%ny), [1.0_dp, 0.0_dp], &
+    0.5_dp * geometry%dx, boundaries%embedded_wall, .false., .true., &
+    wall_flux, ok)
+  call require(ok .and. wall_flux(iet) > 0.0_dp, &
+    "hot isothermal EB wall heats fluid")
+  call require(wall_flux(irho) == 0.0_dp .and. &
+    all(wall_flux(imx:imz) == 0.0_dp), &
+    "thermal EB wall has no mass or momentum leakage")
+  call reactive_eb_wall_transport_flux_2d( &
+    species, transport, state(:, geometry%nx, geometry%ny), &
+    temperature(geometry%nx, geometry%ny), [1.0_dp, 0.0_dp], &
+    0.5_dp * geometry%dx, boundaries%embedded_wall, .true., .false., &
+    wall_flux, ok)
+  call require(ok .and. wall_flux(imx) > 0.0_dp .and. &
+    wall_flux(imy) < 0.0_dp .and. wall_flux(imz) > 0.0_dp .and. &
+    wall_flux(iet) > 0.0_dp, "moving no-slip EB wall viscous work")
+  boundaries%embedded_wall%kind = "slip_wall"
+  call reactive_eb_wall_transport_flux_2d( &
+    species, transport, state(:, geometry%nx, geometry%ny), &
+    temperature(geometry%nx, geometry%ny), [1.0_dp, 0.0_dp], &
+    0.5_dp * geometry%dx, boundaries%embedded_wall, .true., .false., &
+    wall_flux, ok)
+  call require(ok .and. all(wall_flux == 0.0_dp), &
+    "slip EB wall has zero viscous transfer")
+  call reactive_eb_wall_transport_flux_2d( &
+    species, transport, state(:, geometry%nx, geometry%ny), &
+    temperature(geometry%nx, geometry%ny), [1.0_dp, 0.0_dp], &
+    -geometry%dx, boundaries%embedded_wall, .true., .true., wall_flux, ok)
+  call require(.not. ok .and. all(wall_flux == 0.0_dp), &
+    "invalid EB wall distance is transactional")
+  boundaries%embedded_wall%thermal = "adiabatic"
+  boundaries%embedded_wall%wall_velocity = 0.0_dp
 
   allocate(initial_integrals(size(state, 1)))
   allocate(final_integrals(size(state, 1)))
@@ -122,6 +166,32 @@ program test_reactive_eb_transport_2d
     minimum_theta, ok)
   call require(.not. ok .and. all(state == saved_state) .and. &
     all(temperature == saved_temperature), "invalid interval rollback")
+
+  allocate(default_rhs, mold=state)
+  allocate(wall_rhs, mold=state)
+  call reactive_eb_transport_rhs_2d( &
+    species, transport, state, temperature, geometry, interval, .true., &
+    .true., .false., .false., boundaries, default_rhs, minimum_theta, ok)
+  call require(ok, "adiabatic slip EB wall transport RHS")
+  boundaries%embedded_wall%kind = "no_slip_wall"
+  boundaries%embedded_wall%thermal = "isothermal"
+  boundaries%embedded_wall%wall_temperature = &
+    maxval(temperature, mask=geometry%cell_type /= eb_covered_cell) + &
+      200.0_dp
+  boundaries%embedded_wall%wall_velocity = [4.0_dp, 0.0_dp, 0.0_dp]
+  call reactive_eb_transport_rhs_2d( &
+    species, transport, state, temperature, geometry, interval, .true., &
+    .true., .false., .false., boundaries, wall_rhs, minimum_theta, ok)
+  call require(ok, "isothermal no-slip EB wall transport RHS")
+  call require(any(abs(wall_rhs(iet, :, :) - default_rhs(iet, :, :)) > &
+    0.0_dp .and. geometry%cell_type == eb_cut_cell), &
+    "embedded heat flux enters cut-cell RHS")
+  call require(any(abs(wall_rhs(imx, :, :) - default_rhs(imx, :, :)) > &
+    0.0_dp .and. geometry%cell_type == eb_cut_cell), &
+    "embedded viscous flux enters cut-cell RHS")
+  call require(all(wall_rhs(:, :, :) == default_rhs(:, :, :), &
+    mask=spread(geometry%cell_type /= eb_cut_cell, 1, size(state, 1))), &
+    "embedded wall transport is confined to cut cells")
 
   write(*, '(a)') "test_reactive_eb_transport_2d: PASS"
 
