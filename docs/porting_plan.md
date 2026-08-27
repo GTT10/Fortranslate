@@ -1324,6 +1324,18 @@ rank-dependent controls and species identity before traffic with neutral public
 outputs. Run the complete MPI and serial Debug/Release suite before acceptance.
 Defer arbitrary-depth composite output.
 
+## 0.172.0 arbitrary-depth EB composite output gates
+
+Write one serial CSV from the complete branching tree. Exclude cells covered
+by direct children and include level/patch identity, EB geometry diagnostics,
+conserved and primitive fields, temperature, and ordered mass fractions.
+
+For sparse MPI, gather each node directly to a caller-selected writer root and
+invoke the same serial writer only there. Require exact remote-node transfer
+counts and exact topology-derived leaf-row counts at one, two, four, and eight
+ranks. Run the complete MPI and serial Debug/Release suite before acceptance.
+Defer the runnable arbitrary-depth 2D EB application lifecycle.
+
 Each implementation PR should normally contain:
 
 1. implementation

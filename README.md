@@ -6,11 +6,14 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.171.0` milestone contains the serial verification suite, nine optional
+The `0.172.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
 patch-tree checkpoint and restart it with a different MPI rank count. The
+arbitrary-depth 2D EB tree can also write one composite CSV containing every
+leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
+writer root and reports completion collectively. The
 serial two-dimensional EB AMR driver can create, move, resize, remove, and
 re-create one fine rectangle from temperature-gradient tags while preserving
 its composite conserved state, and can compose active-cell chemistry with the
@@ -487,8 +490,8 @@ clock, step count, limiter minimum, and per-level physics counts together.
 The same serial tree now synchronizes accepted fields, tags temperature
 gradients independently on every prospective parent, clusters disconnected
 features, constructs caller-defined EB child geometry, and transactionally
-rebuilds or collapses the arbitrary-depth topology. Checkpoint I/O remains
-separate.
+rebuilds or collapses the arbitrary-depth topology. The same tree writes a
+single composite CSV in which cells covered by finer AMR patches are omitted.
 
 An MPI ownership descriptor maps every arbitrary-depth tree node to a
 deterministic rank using allocated cells and optional subcycle-weighted work.
@@ -524,8 +527,10 @@ The serial arbitrary-depth tree now writes and reads a self-describing
 formatted checkpoint containing its complete topology, EB metrics, fields,
 and lifecycle metadata. Sparse MPI writes now gather numerical nodes only to a
 selected root, while restart broadcasts geometry, recomputes ownership for the
-current rank count, and scatters fields directly to their new owners. Composite
-arbitrary-depth output is the next lifecycle boundary.
+current rank count, and scatters fields directly to their new owners. Sparse
+MPI composite output reuses the selected-root gather boundary, invokes the
+serial writer only there, and leaves complete numerical output unallocated on
+all other ranks.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

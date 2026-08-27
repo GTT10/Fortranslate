@@ -10,7 +10,8 @@ module mpi_amr_eb_patch_tree_io_2d_mod
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     write_reactive_amr_eb_patch_tree_2d_checkpoint, &
-    read_reactive_amr_eb_patch_tree_2d_checkpoint
+    read_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    write_reactive_amr_eb_patch_tree_2d_csv
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -26,8 +27,50 @@ module mpi_amr_eb_patch_tree_io_2d_mod
 
   public :: write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint
   public :: read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint
+  public :: write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv
 
 contains
+
+  subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv( &
+      path, species, distribution, sparse, root, time, ok, &
+      local_entity_transfers)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    integer, intent(in) :: root
+    real(dp), intent(in) :: time
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_transfers
+
+    type(reactive_amr_eb_patch_tree_2d) :: gathered
+    logical :: controls_ok, gathered_ok, write_ok
+    integer :: ierr, transfers
+
+    ok = .false.
+    transfers = 0
+    if (present(local_entity_transfers)) local_entity_transfers = 0
+    call output_write_controls_match_2d( &
+      distribution%comm, root, time, controls_ok)
+    if (.not. controls_ok) return
+    call checkpoint_species_match_2d( &
+      distribution%comm, distribution%rank, root, species, controls_ok)
+    if (.not. controls_ok) return
+
+    call gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d( &
+      distribution, sparse, root, gathered, gathered_ok, transfers)
+    if (.not. gathered_ok) return
+    write_ok = .true.
+    if (distribution%rank == root) call &
+      write_reactive_amr_eb_patch_tree_2d_csv( &
+        path, species, gathered, time, write_ok)
+    call MPI_Bcast( &
+      write_ok, 1, MPI_LOGICAL, root, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. write_ok) return
+
+    ok = .true.
+    if (present(local_entity_transfers)) local_entity_transfers = transfers
+  end subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv
 
   subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, distribution, sparse, root, time, steps, regrids, &
@@ -208,6 +251,53 @@ contains
       all(real_minimum == real_maximum) .and. &
       all(integer_minimum == integer_maximum)
   end subroutine checkpoint_write_controls_match_2d
+
+  subroutine output_write_controls_match_2d(comm, root, time, ok)
+    type(MPI_Comm), intent(in) :: comm
+    integer, intent(in) :: root
+    real(dp), intent(in) :: time
+    logical, intent(out) :: ok
+
+    real(dp) :: maximum_time, minimum_time
+    integer :: ierr, maximum_root, minimum_root, nranks
+    logical :: accepted, local_ok
+
+    call MPI_Comm_size(comm, nranks, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    local_ok = root >= 0 .and. root < nranks .and. &
+      ieee_is_finite(time) .and. time >= 0.0_dp
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. accepted) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      time, minimum_time, 1, MPI_DOUBLE_PRECISION, MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      time, maximum_time, 1, MPI_DOUBLE_PRECISION, MPI_MAX, comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce(root, minimum_root, 1, MPI_INTEGER, MPI_MIN, &
+      comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce(root, maximum_root, 1, MPI_INTEGER, MPI_MAX, &
+      comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. minimum_time == maximum_time .and. &
+      minimum_root == maximum_root
+  end subroutine output_write_controls_match_2d
 
   subroutine checkpoint_read_controls_match_2d( &
       comm, root, maximum_levels, subcycle_exponent, rank, ok)

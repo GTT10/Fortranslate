@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.171.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.172.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
@@ -104,7 +104,8 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | explicit topology change | direct child-to-root restriction, distinct-new-owner PCM root assembly, overlap owner migration, and atomic one-copy commit |
 | arbitrary-depth dynamic topology | per-parent owner-local temperature tags, compact plan reduction, caller EB geometry rebuild, deterministic redistribution, direct retained-overlap migration, and atomic commit |
 | arbitrary-depth checkpoint/restart | selected-root gather/write, root-only read, compact geometry broadcast, owner-map recomputation, and direct rank-neutral scatter |
+| arbitrary-depth composite output | one deterministic finest-available-cell CSV, with selected-root direct sparse gather and root-only file access |
 | checkpoint/output boundary | one packed payload per remote root tile or child gathered only to a selected root; non-root complete fields stay unallocated |
 | formatted checkpoint and CSV output | selected root alone invokes the serial-compatible checkpoint writer and deterministic root/child CSV writers; completion status is collective |
 | formatted checkpoint restart | selected root alone reads complete fields, then sends each root tile or child directly to its current sparse owner from a replicated geometry-only descriptor with no field broadcast or non-root child-field template |
-| arbitrary-depth EB numerical tree | runtime relation sequence with ordered parent/child offsets, branching, per-level refinement ratios, transactional state migration, composite integration, all-node hydro/transport stable-step reduction, recursive ratio-subcycled hydrodynamics and SSPRK2 molecular transport, per-child reflux, subtree conservation closure, active-cell chemistry, atomic `R-H-R`/`R-T-H-T-R` splitting, a stop-time-clipped committed-step clock, serial per-parent temperature-tag planning with caller-defined EB geometry and transactional rebuild/collapse, deterministic subcycle-weighted MPI node ownership, owner-only field allocation, explicit materialization, direct old-owner to new-owner migration, owner-local hydro/transport timestep reduction, owner-local chemistry with direct deepest-first restriction, owner-local whole-tree/subtree composite integration, owner-local recursive hydro, owner-local recursive SSPRK2 transport, owner-local sparse `R-T-H-T-R` composition, and an owner-local target-time clock with committed diagnostics and direct context/flux/reflux routing; MPI tag planning and checkpoint I/O remain future work |
+| arbitrary-depth EB numerical tree | runtime relation sequence with ordered parent/child offsets, branching, per-level refinement ratios, transactional state migration, composite integration and CSV output, all-node hydro/transport stable-step reduction, recursive ratio-subcycled hydrodynamics and SSPRK2 molecular transport, per-child reflux, subtree conservation closure, active-cell chemistry, atomic `R-H-R`/`R-T-H-T-R` splitting, a stop-time-clipped committed-step clock, serial and owner-local MPI per-parent temperature-tag planning/rebuild, deterministic subcycle-weighted MPI node ownership, owner-only field allocation, direct owner migration and physics routing, and rank-neutral selected-root checkpoint/restart |

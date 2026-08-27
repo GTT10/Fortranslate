@@ -54,11 +54,14 @@ program pelef_mpi_amr_eb_patch_tree_2d
     composite_sparse_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_io_2d_mod, only: &
     write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint, &
-    read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint
+    read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv
   implicit none
 
   character(len=*), parameter :: checkpoint_path = &
     "mpi_amr_eb_patch_tree.chk"
+  character(len=*), parameter :: output_path = &
+    "mpi_amr_eb_patch_tree.csv"
 
   type(MPI_Comm) :: comm
   type(nasa7_species), allocatable :: species(:)
@@ -146,6 +149,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: checkpoint_maximum_levels, checkpoint_unit, checkpoint_status
   integer :: expected_checkpoint_transfers
   integer :: local_checkpoint_transfers, global_checkpoint_transfers
+  integer :: output_root, expected_output_cells, expected_output_transfers
+  integer :: local_output_transfers, global_output_transfers
+  integer :: output_lines, output_status, output_cleanup_status, output_unit
   integer :: global_clock_timestep_evaluations
   integer :: local_clock_timestep_evaluations
   integer :: serial_clock_advanced_steps, serial_clock_steps
@@ -161,6 +167,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer, allocatable :: serial_clock_transport_advances(:)
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok, topology_changed
+  character(len=4096) :: output_line
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI initialization failed"
@@ -400,6 +407,56 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     migrated_distribution, physical_solution, physical_sparse, ok)
   call assert_all(ok, "MPI EB patch-tree physical sparse state", comm)
+
+  output_root = nranks - 1
+  expected_output_transfers = 0
+  do level = 1, migrated_distribution%level_count()
+    do patch = 1, migrated_distribution%levels(level)%patch_count()
+      if (migrated_distribution%owner_of(level - 1, patch) /= &
+          output_root) expected_output_transfers = &
+        expected_output_transfers + 1
+    end do
+  end do
+  call write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv( &
+    output_path, species, migrated_distribution, physical_sparse, &
+    output_root, 0.125_dp, ok, local_output_transfers)
+  call MPI_Allreduce( &
+    local_output_transfers, global_output_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    global_output_transfers == expected_output_transfers, &
+    "MPI EB patch-tree root-only composite CSV write", comm)
+
+  call MPI_Barrier(comm, ierr)
+  output_lines = 0
+  output_status = 0
+  if (rank == output_root) then
+    open(newunit=output_unit, file=output_path, status="old", &
+      action="read", iostat=output_status)
+    if (output_status == 0) then
+      read(output_unit, '(a)', iostat=output_status) output_line
+      if (output_status == 0 .and. &
+          index(output_line, "volume_fraction") == 0) output_status = 1
+      if (output_status == 0) then
+        do
+          read(output_unit, '(a)', iostat=output_status) output_line
+          if (output_status /= 0) exit
+          output_lines = output_lines + 1
+        end do
+        if (output_status < 0) output_status = 0
+      end if
+      close(output_unit, status="delete", iostat=output_cleanup_status)
+      if (output_cleanup_status /= 0) output_status = output_cleanup_status
+    end if
+  end if
+  call MPI_Bcast( &
+    output_lines, 1, MPI_INTEGER, output_root, comm, ierr)
+  call MPI_Bcast( &
+    output_status, 1, MPI_INTEGER, output_root, comm, ierr)
+  expected_output_cells = composite_tree_cell_count(topology)
+  call assert_all(ierr == MPI_SUCCESS .and. output_status == 0 .and. &
+    output_lines == expected_output_cells, &
+    "MPI EB patch-tree composite CSV leaf-cell count", comm)
 
   checkpoint_root = nranks - 1
   expected_checkpoint_transfers = 0
@@ -1277,6 +1334,35 @@ contains
       end do
     end do
   end function expected_remote_tree_edges
+
+  integer function composite_tree_cell_count(tree_topology) result(count)
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: tree_topology
+
+    integer :: child_index, relation_index
+
+    count = 0
+    if (.not. tree_topology%is_valid()) return
+    count = tree_topology%root_geometry%nx * &
+      tree_topology%root_geometry%ny
+    do relation_index = 1, tree_topology%level_count() - 1
+      do child_index = 1, tree_topology%relations(relation_index)% &
+          child_patch_count()
+        count = count + tree_topology%relations(relation_index)% &
+          children(child_index)%geometry%nx * &
+          tree_topology%relations(relation_index)% &
+            children(child_index)%geometry%ny
+        count = count - &
+          (tree_topology%relations(relation_index)%children(child_index)% &
+            patch%coarse_i_upper - &
+           tree_topology%relations(relation_index)%children(child_index)% &
+            patch%coarse_i_lower + 1) * &
+          (tree_topology%relations(relation_index)%children(child_index)% &
+            patch%coarse_j_upper - &
+           tree_topology%relations(relation_index)%children(child_index)% &
+            patch%coarse_j_lower + 1)
+      end do
+    end do
+  end function composite_tree_cell_count
 
   logical function tree_solutions_match(first, second) result(matches)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second

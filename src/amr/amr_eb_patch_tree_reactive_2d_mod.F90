@@ -7,6 +7,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   use transport_database_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
+    reactive_mass_fraction_component, &
     reactive_conserved_to_primitive
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
@@ -92,6 +93,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: regrid_tagged_reactive_amr_eb_patch_tree_2d
   public :: write_reactive_amr_eb_patch_tree_2d_checkpoint
   public :: read_reactive_amr_eb_patch_tree_2d_checkpoint
+  public :: write_reactive_amr_eb_patch_tree_2d_csv
   public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
   public :: compute_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
@@ -661,6 +663,102 @@ contains
     steps = 0
     regrids = 0
   end subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint
+
+  subroutine write_reactive_amr_eb_patch_tree_2d_csv( &
+      path, species, solution, time, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: time
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    real(dp), allocatable :: primitive(:)
+    logical, allocatable :: refined(:, :)
+    real(dp) :: local_temperature, sound_speed, x, y
+    logical :: local_ok
+    integer :: child, i, j, k, level, patch, relation, status, unit
+
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        .not. ieee_is_finite(time) .or. time < 0.0_dp) return
+    allocate(primitive(reactive_nprim(size(species))))
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', advance='no', iostat=status) &
+      "level,patch,i,j,cell_dx,cell_dy,time,x,y,volume_fraction," // &
+      "cell_type,boundary_length,boundary_normal_x,boundary_normal_y," // &
+      "rho,u,v,w,pressure,temperature,rhoE"
+    if (status /= 0) go to 900
+    do k = 1, size(species)
+      write(unit, '(a)', advance='no', iostat=status) &
+        ",Y_" // trim(species(k)%name)
+      if (status /= 0) go to 900
+    end do
+    write(unit, '(a)', iostat=status) ""
+    if (status /= 0) go to 900
+
+    do level = 1, solution%level_count()
+      do patch = 1, solution%levels(level)%patch_count()
+        call patch_geometry_at( &
+          solution%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) go to 900
+        allocate(refined(geometry%nx, geometry%ny), source=.false.)
+        if (level < solution%level_count()) then
+          relation = level
+          do child = 1, &
+              solution%topology%relations(relation)%child_patch_count()
+            if (solution%topology%relations(relation)%children(child)% &
+                parent_patch /= patch) cycle
+            refined( &
+              solution%topology%relations(relation)%children(child)%patch% &
+                coarse_i_lower: &
+              solution%topology%relations(relation)%children(child)%patch% &
+                coarse_i_upper, &
+              solution%topology%relations(relation)%children(child)%patch% &
+                coarse_j_lower: &
+              solution%topology%relations(relation)%children(child)%patch% &
+                coarse_j_upper) = .true.
+          end do
+        end if
+        do j = 1, geometry%ny
+          y = geometry%y_lower + (real(j, dp) - 0.5_dp) * geometry%dy
+          do i = 1, geometry%nx
+            if (refined(i, j)) cycle
+            x = geometry%x_lower + (real(i, dp) - 0.5_dp) * geometry%dx
+            call reactive_conserved_to_primitive( &
+              species, solution%levels(level)%patches(patch)%state(:, i, j), &
+              solution%levels(level)%patches(patch)%temperature(i, j), &
+              primitive, local_temperature, sound_speed, local_ok)
+            if (.not. local_ok) go to 900
+            write(unit, '(*(g0,:,","))', iostat=status) &
+              level - 1, patch, i, j, geometry%dx, geometry%dy, time, &
+              x, y, geometry%volume_fraction(i, j), &
+              geometry%cell_type(i, j), geometry%boundary_length(i, j), &
+              geometry%boundary_normal_x(i, j), &
+              geometry%boundary_normal_y(i, j), &
+              solution%levels(level)%patches(patch)%state(irho, i, j), &
+              primitive(2), primitive(3), primitive(4), primitive(5), &
+              local_temperature, &
+              solution%levels(level)%patches(patch)%state(iet, i, j), &
+              (primitive(reactive_mass_fraction_component(k)), &
+                k = 1, size(species))
+            if (status /= 0) go to 900
+          end do
+        end do
+        deallocate(refined)
+      end do
+    end do
+    close(unit, iostat=status)
+    ok = status == 0
+    return
+
+900 continue
+    close(unit)
+  end subroutine write_reactive_amr_eb_patch_tree_2d_csv
 
   subroutine rebuild_reactive_amr_eb_patch_tree_2d( &
       species, solution, plans, ok, changed, failure_context)

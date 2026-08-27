@@ -33,6 +33,7 @@ program test_amr_eb_multilevel_2d
     regrid_tagged_reactive_amr_eb_patch_tree_2d, &
     write_reactive_amr_eb_patch_tree_2d_checkpoint, &
     read_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    write_reactive_amr_eb_patch_tree_2d_csv, &
     compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
@@ -53,6 +54,8 @@ program test_amr_eb_multilevel_2d
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
   character(len=*), parameter :: tree_checkpoint_path = &
     "reactive_amr_eb_patch_tree.chk"
+  character(len=*), parameter :: tree_csv_path = &
+    "reactive_amr_eb_patch_tree.csv"
   integer, parameter :: root_i_lower = 2, root_i_upper = 7
   integer, parameter :: root_j_lower = 2, root_j_upper = 7
   integer, parameter :: level_one_nx = &
@@ -129,12 +132,14 @@ program test_amr_eb_multilevel_2d
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
   logical :: ok, topology_changed, reference_ok, node_ok
   character(len=128) :: tree_failure_context
+  character(len=4096) :: csv_line
   integer, allocatable :: tree_level_advances(:), chain_level_advances(:)
   integer, allocatable :: tree_chemistry_advances(:)
   integer, allocatable :: chain_chemistry_advances(:)
   integer :: i, j, k, level, patch, nvar
   integer :: tagged_cells
   integer :: checkpoint_steps, checkpoint_regrids, checkpoint_unit, status
+  integer :: csv_lines, csv_unit, expected_csv_cells
 
   do j = 0, root_ny
     y = real(j, dp) / real(root_ny, dp)
@@ -565,6 +570,30 @@ program test_amr_eb_multilevel_2d
   call require(status == 0, "open EB patch-tree checkpoint for cleanup")
   close(checkpoint_unit, status="delete", iostat=status)
   call require(status == 0, "delete EB patch-tree checkpoint")
+
+  call write_reactive_amr_eb_patch_tree_2d_csv( &
+    tree_csv_path, species, reactive_tree, 0.125_dp, ok)
+  call require(ok, "arbitrary-depth EB patch-tree composite CSV write")
+  open(newunit=csv_unit, file=tree_csv_path, status="old", &
+    action="read", iostat=status)
+  call require(status == 0, "open EB patch-tree composite CSV")
+  read(csv_unit, '(a)', iostat=status) csv_line
+  call require(status == 0 .and. &
+    index(csv_line, "volume_fraction") > 0 .and. &
+    index(csv_line, "Y_" // trim(species(1)%name)) > 0 .and. &
+    index(csv_line, "Y_" // trim(species(size(species))%name)) > 0, &
+    "EB patch-tree composite CSV header")
+  csv_lines = 0
+  do
+    read(csv_unit, '(a)', iostat=status) csv_line
+    if (status /= 0) exit
+    csv_lines = csv_lines + 1
+  end do
+  expected_csv_cells = composite_tree_cell_count(reactive_tree%topology)
+  call require(csv_lines == expected_csv_cells, &
+    "EB patch-tree composite CSV leaf-cell count")
+  close(csv_unit, status="delete", iostat=status)
+  call require(status == 0, "delete EB patch-tree composite CSV")
 
   reactive_tree_snapshot = reactive_tree
   call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
@@ -1222,6 +1251,33 @@ contains
       end do
     end do
   end function reactive_tree_solutions_match
+
+  integer function composite_tree_cell_count(topology) result(count)
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
+
+    integer :: child, relation
+
+    count = 0
+    if (.not. topology%is_valid()) return
+    count = topology%root_geometry%nx * topology%root_geometry%ny
+    do relation = 1, topology%level_count() - 1
+      do child = 1, &
+          topology%relations(relation)%child_patch_count()
+        count = count + &
+          topology%relations(relation)%children(child)%geometry%nx * &
+          topology%relations(relation)%children(child)%geometry%ny
+        count = count - &
+          (topology%relations(relation)%children(child)%patch% &
+            coarse_i_upper - &
+           topology%relations(relation)%children(child)%patch% &
+            coarse_i_lower + 1) * &
+          (topology%relations(relation)%children(child)%patch% &
+            coarse_j_upper - &
+           topology%relations(relation)%children(child)%patch% &
+            coarse_j_lower + 1)
+      end do
+    end do
+  end function composite_tree_cell_count
 
   logical function reactive_tree_solutions_close( &
       first, second, tolerance) result(matches)
