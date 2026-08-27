@@ -14,6 +14,9 @@ module reactive_eb_amr_2d_driver_mod
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
+  use simulation_config_reactive_eb_2d_mod, only: &
+    reactive_eb_wall_configuration_is_valid, &
+    reactive_eb_wall_transport_is_active
   use reactive_eb_2d_driver_mod, only: &
     build_configured_eb_geometry_2d, &
     build_configured_eb_geometry_region_2d, &
@@ -137,6 +140,8 @@ contains
       config%eb%state_redist_target_volume_fraction <= 1.0_dp .and. &
       (config%eb%state_redist_max_order == 0 .or. &
        config%eb%state_redist_max_order == 2) .and. &
+      reactive_eb_wall_configuration_is_valid(config%eb) .and. &
+      .not. reactive_eb_wall_transport_is_active(config%eb) .and. &
       config%coarse_i_lower >= 1 .and. &
       config%coarse_i_upper <= config%eb%flow%nx .and. &
       config%coarse_j_lower >= 1 .and. &

@@ -36,6 +36,7 @@ module reactive_boundary_2d_mod
   end type reactive_boundary_set_2d
 
   public :: build_reactive_boundary_set_2d
+  public :: configure_reactive_embedded_wall_2d
   public :: initialize_periodic_boundary_set_2d
   public :: validate_reactive_boundary_set_2d
   public :: sample_reactive_primitive_2d
@@ -46,6 +47,25 @@ module reactive_boundary_2d_mod
   public :: reactive_boundary_has_prescribed_species_flux
 
 contains
+
+  subroutine configure_reactive_embedded_wall_2d( &
+      boundaries, kind, thermal, wall_temperature, wall_velocity, ok)
+    type(reactive_boundary_set_2d), intent(inout) :: boundaries
+    character(len=*), intent(in) :: kind, thermal
+    real(dp), intent(in) :: wall_temperature, wall_velocity(3)
+    logical, intent(out) :: ok
+
+    type(reactive_boundary_set_2d) :: candidate
+
+    candidate = boundaries
+    candidate%embedded_wall%kind = trim(kind)
+    candidate%embedded_wall%thermal = trim(thermal)
+    candidate%embedded_wall%wall_temperature = wall_temperature
+    candidate%embedded_wall%wall_velocity = wall_velocity
+    call validate_reactive_boundary_set_2d(candidate, ok)
+    if (.not. ok) return
+    boundaries = candidate
+  end subroutine configure_reactive_embedded_wall_2d
 
   pure logical function reactive_boundary_is_periodic(face) result(is_periodic)
     type(reactive_boundary_face_2d), intent(in) :: face

@@ -14,13 +14,15 @@ module reactive_eb_2d_driver_mod
   use reactive_2d_mod, only: &
     initialize_reactive_2d, advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, build_reactive_boundary_set_2d
+    reactive_boundary_set_2d, build_reactive_boundary_set_2d, &
+    configure_reactive_embedded_wall_2d
   use eb_geometry_2d_mod, only: &
     eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
   use eb_reactive_hydro_2d_mod, only: advance_reactive_eb_hydro_2d
   use eb_reactive_transport_2d_mod, only: &
     reactive_eb_transport_timestep_2d, advance_reactive_eb_transport_2d
-  use simulation_config_reactive_eb_2d_mod, only: reactive_eb_2d_config
+  use simulation_config_reactive_eb_2d_mod, only: &
+    reactive_eb_2d_config, reactive_eb_wall_configuration_is_valid
   implicit none
   private
 
@@ -62,7 +64,8 @@ contains
       config%state_redist_target_volume_fraction > 0.0_dp .and. &
       config%state_redist_target_volume_fraction <= 1.0_dp .and. &
       (config%state_redist_max_order == 0 .or. &
-       config%state_redist_max_order == 2)
+       config%state_redist_max_order == 2) .and. &
+      reactive_eb_wall_configuration_is_valid(config)
   end function supported_reactive_eb_hydro_config
 
   subroutine build_configured_eb_geometry_2d(config, geometry, ok)
@@ -402,6 +405,11 @@ contains
     if (config%flow%transport_enabled .and. .not. present(transport)) return
     call build_reactive_boundary_set_2d( &
       species, config%flow, boundaries, local_ok)
+    if (.not. local_ok) return
+    call configure_reactive_embedded_wall_2d( &
+      boundaries, config%embedded_wall_kind, config%embedded_wall_thermal, &
+      config%embedded_wall_temperature, config%embedded_wall_velocity, &
+      local_ok)
     if (.not. local_ok) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return
