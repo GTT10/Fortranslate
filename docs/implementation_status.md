@@ -3198,3 +3198,21 @@ This milestone removes the last intentionally replicated numerical field from
 fresh public sparse-MPI application startup. Geometry and relation metadata
 remain replicated for deterministic planning; application/checkpoint input
 compatibility fingerprints remain later lifecycle work.
+
+## Public patch-tree checkpoint compatibility fingerprint (`0.178.0`)
+
+- [x] structured mesh, EB, physics, and regridding fingerprint
+- [x] public serial and sparse-MPI schema-2 checkpoint writes
+- [x] fingerprint validation before topology or field payload reads
+- [x] exact integer, flag, and method-name compatibility checks
+- [x] round-trip-safe real-control compatibility checks
+- [x] final-time, output, checkpoint schedule, rank, and ownership mutability
+- [x] serial incompatible-CFL restart rejection with neutral outputs
+- [x] collective MPI incompatible-CFL restart rejection
+- [x] unchanged 2-to-4/eight-rank valid restart parity
+- [x] schema-1 low-level verification compatibility retained
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
+
+This milestone closes explicit public application/checkpoint input
+compatibility for the arbitrary-depth EB tree.

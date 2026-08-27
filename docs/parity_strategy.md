@@ -2867,3 +2867,16 @@ four-level application parity gate. Retain the independent two-rank
 checkpoint-stop and four-/eight-rank restart gate, the complete MPI gate
 chain, and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked
 Debug.
+
+## 0.178.0 public patch-tree checkpoint fingerprint gates
+
+Write the public four-level checkpoint with schema 2 and require the structured
+mesh/EB/physics/regrid fingerprint. Restart it through the existing serial and
+MPI inputs and retain exact final topology plus complete-field parity. Change
+only CFL in a separate restart input and require serial and four-rank MPI
+processes to reject it before publishing topology, fields, or output.
+
+Continue to permit the established rank-count and work-exponent changes across
+the MPI checkpoint boundary. Retain the schema-1 low-level checkpoint tests,
+the complete MPI gate chain, and all 215 serial tests in GNU Fortran Release
+and bounds/FPE-checked Debug.

@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.177.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.178.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
@@ -110,6 +110,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | public sparse MPI arbitrary-depth application | namelist-driven sparse ownership, owner-local lifecycle, selected-root I/O, and 1/2/4/8-rank composite parity |
 | public sparse MPI cross-rank restart | two-rank checkpoint-stop followed by independent four- and eight-rank restarts with ownership-weight changes and identity-keyed parity against an uninterrupted one-rank process |
 | public sparse MPI fresh initialization | geometry-only topology and ownership first, reactive fields allocated on the sole root-node owner, then zero-copy allocatable transfer into sparse storage with no non-owner numerical root field |
+| public checkpoint compatibility | schema-2 structured mesh, EB, physics, StateRedist, hierarchy, and regrid fingerprint shared by serial and sparse-MPI applications with continuation and ownership controls explicitly excluded |
 | checkpoint/output boundary | one packed payload per remote root tile or child gathered only to a selected root; non-root complete fields stay unallocated |
 | formatted checkpoint and CSV output | selected root alone invokes the serial-compatible checkpoint writer and deterministic root/child CSV writers; completion status is collective |
 | formatted checkpoint restart | selected root alone reads complete fields, then sends each root tile or child directly to its current sparse owner from a replicated geometry-only descriptor with no field broadcast or non-root child-field template |

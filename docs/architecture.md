@@ -2124,3 +2124,20 @@ driver requires exactly one initializer rank and requires both source arrays
 to be unallocated after the transfer before recursive owner-local tagging can
 begin. Replicated EB geometry and tree relations remain intentional compact
 metadata needed for deterministic planning and routing.
+
+## Public patch-tree checkpoint fingerprint (`0.178.0`)
+
+Public serial and sparse-MPI checkpoint writes use schema 2 and place a
+structured compatibility fingerprint after the ordered species header. It
+records root mesh/domain, EB geometry parameters, hierarchy and refinement
+controls, numerical method names, chemistry/transport switches and tolerances,
+StateRedist controls, and dynamic tagging/regrid controls. Restart compares
+integer and character fields exactly and round-trip real fields within a small
+machine-precision bound before reading geometry or numerical payloads.
+
+Evolved topology, fields, clock, and lifecycle counters remain checkpoint
+state. Final time, maximum steps, output paths, checkpoint cadence, MPI rank
+count, and MPI work exponent remain restart-mutable controls. Thus the existing
+two-to-four/eight-rank redistribution remains valid, while changing a physics
+control such as CFL rejects the file transactionally. Low-level verification
+callers without a fingerprint retain the isolated schema-1 compatibility API.
