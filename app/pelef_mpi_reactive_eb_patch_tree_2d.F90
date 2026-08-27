@@ -75,7 +75,7 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   real(dp) :: step_theta, time, time_tolerance
   character(len=1024) :: input_path, message, output_path
   character(len=160) :: physics_context
-  integer :: argument_count, ierr, last_checkpoint_step, nranks, rank
+  integer :: argument_count, ierr, last_checkpoint_step, level, nranks, rank
   integer :: local_root_initializers, root_initializer_ranks
   integer :: cumulative_tagged_cells, regrid_evaluations
   integer :: regrids, steps, tagged_cells, transferred_cells
@@ -375,6 +375,11 @@ program pelef_mpi_reactive_eb_patch_tree_2d
     write(*, '(a,i0)') "MPI ranks: ", nranks
     write(*, '(a,i0)') "Levels: ", sparse%level_count()
     write(*, '(a,i0)') "Patches: ", sum(distribution%rank_patch_counts)
+    do level = 1, sparse%level_count()
+      write(*, '(a,i0,a,i0)') &
+        "Level ", level - 1, " patches: ", &
+        sparse%levels(level)%patch_count()
+    end do
     write(*, '(a,i0)') "Completed root steps: ", steps
     write(*, '(a,i0)') "Completed regrids: ", regrids
     write(*, '(a,i0)') "Regrid evaluations: ", regrid_evaluations

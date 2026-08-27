@@ -8,7 +8,7 @@
   y_upper = 0.012
   final_time = 3.0e-9
   cfl = 0.004
-  problem = "reactive_hotspot"
+  problem = "reactive_double_hotspot"
   reconstruction = "pcm"
   riemann_solver = "hllc"
   limiter = "mc"
@@ -33,8 +33,11 @@
   initial_velocity_y = 0.0
   hotspot_temperature_rise = 300.0
   hotspot_center_x = 0.012
-  hotspot_center_y = 0.006
-  hotspot_width = 0.0008
+  hotspot_center_y = 0.0015
+  hotspot_width = 0.0004
+  second_hotspot_temperature_rise = 250.0
+  second_hotspot_center_x = 0.0095
+  second_hotspot_center_y = 0.0105
   x_h2 = 0.29570
   x_h = 1.0e-5
   x_o = 1.0e-5

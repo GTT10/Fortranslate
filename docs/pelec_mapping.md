@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.199.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.200.0 |
 |---|---|
 | outflow-boundary recursive transport | four-level viscosity, Fourier conduction, mixture-averaged species diffusion, barodiffusion, correction velocity, and species enthalpy flux with physical-side register omission, serial/sparse rank parity, and cross-rank restart |
 | outflow-boundary reacting full physics | owner-local elementary chemistry composed transactionally with recursive transport and hydro across fresh 1/2/4/8-rank runs and 2-to-4/8-rank restart |
@@ -109,6 +109,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | arbitrary-depth composite output | one deterministic finest-available-cell CSV, with selected-root direct sparse gather and root-only file access |
 | public serial arbitrary-depth application | dedicated namelist-driven root initialization/restart, recursive tag/regrid schedule, committed `R-T-H-T-R` clock, checkpoint calls, and composite output |
 | public application restart parity | separate uninterrupted, checkpoint-stop, and restart processes with identity-keyed composite topology and field comparison |
+| public branching application lifecycle | separated boundary-touching and interior tag features, multiple ordered patches on one level, four-level full physics, and serial/changed-rank restart parity |
 | public sparse MPI arbitrary-depth application | namelist-driven sparse ownership, owner-local lifecycle, selected-root I/O, and 1/2/4/8-rank composite parity |
 | public sparse MPI cross-rank restart | two-rank checkpoint-stop followed by independent four- and eight-rank restarts with ownership-weight changes and identity-keyed parity against an uninterrupted one-rank process |
 | public sparse MPI fresh initialization | geometry-only topology and ownership first, reactive fields allocated on the sole root-node owner, then zero-copy allocatable transfer into sparse storage with no non-owner numerical root field |

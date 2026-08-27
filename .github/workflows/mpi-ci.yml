@@ -73,7 +73,7 @@ jobs:
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_boundary_2d/hotspot.nml mpi_eb_tree_boundary_np2.csv
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_boundary_2d/hotspot.nml mpi_eb_tree_boundary_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_boundary_2d/hotspot.nml mpi_eb_tree_boundary_np8.csv
-          python3 tools/check_reactive_eb_patch_tree_2d.py --output mpi_eb_tree_boundary_np1.csv --require-x-upper-boundary
+          python3 tools/check_reactive_eb_patch_tree_2d.py --output mpi_eb_tree_boundary_np1.csv --require-x-upper-boundary --require-branching
           python3 tools/compare_mpi_reactive_eb_patch_tree_2d.py mpi_eb_tree_boundary_np1.csv mpi_eb_tree_boundary_np2.csv mpi_eb_tree_boundary_np4.csv mpi_eb_tree_boundary_np8.csv
       - name: Public sparse MPI EB application cross-rank restart parity
         run: |

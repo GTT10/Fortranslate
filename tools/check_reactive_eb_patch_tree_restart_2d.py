@@ -147,6 +147,20 @@ def check_x_upper_boundary(
         )
 
 
+def check_branching(
+    label: str,
+    rows: dict[tuple[int, int, int, int], dict[str, str]],
+) -> None:
+    patches_by_level: dict[int, set[int]] = {}
+    for level, patch, _, _ in rows:
+        patches_by_level.setdefault(level, set()).add(patch)
+    if not any(len(patches) >= 2 for patches in patches_by_level.values()):
+        counts = {
+            level: len(patches) for level, patches in patches_by_level.items()
+        }
+        raise AssertionError(f"{label}: patch tree did not branch: {counts}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -179,6 +193,7 @@ def main() -> None:
         if levels != {0, 1, 2, 3}:
             raise AssertionError(f"{label}: expected four levels, found {levels}")
         check_x_upper_boundary(label, rows)
+        check_branching(label, rows)
     stopped_time = unique_time(stopped)
     if not 0.0 < stopped_time < FINAL_TIME:
         raise AssertionError("checkpoint run did not stop before final time")

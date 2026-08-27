@@ -3590,3 +3590,18 @@ coarsening and later level recreation retain earlier counts.
 The public adaptation diagnostics now cover the complete logical run rather
 than only the current process suffix. A successful evaluation that leaves the
 topology unchanged is still counted; a failed transaction is not.
+
+## Public branching patch-tree lifecycle (`0.200.0`)
+
+- [x] separated boundary and interior temperature-tag features
+- [x] at least two leaf-visible patch identities on one populated level
+- [x] four populated levels with x-upper contact on every level
+- [x] complete reacting `R-T-H-T-R` physics on both branches
+- [x] serial and sparse-MPI 1/2/4/8-rank fresh field parity
+- [x] independent serial checkpoint/restart field parity
+- [x] two-rank checkpoint continuation at four and eight ranks
+- [x] retained schema-8 fingerprint and cumulative diagnostics
+
+The public application lifecycle now qualifies a branching numerical tree,
+not only a single parent-child chain. The second branch remains independent of
+the physical boundary branch across regridding, ownership changes, and restart.

@@ -3161,3 +3161,15 @@ rejection of rank disagreement, and neutral scalar outputs after failed reads.
 Capture both public diagnostics in the existing serial and sparse restart
 logs. Require the independent serial continuation and two-rank checkpoint to
 four-/eight-rank continuations to match their uninterrupted reference exactly.
+
+## 0.200.0 public branching patch-tree gates
+
+Use separated boundary-touching and interior hotspots to create multiple
+ordered patches on at least one populated level. Inspect composite identities
+to reject a degenerate one-patch chain while retaining four populated levels,
+x-upper contact at every level, finite positive fields, and species closure.
+
+Run the same reacting full-transport case in serial and sparse MPI at 1/2/4/8
+ranks. Reuse the serial and two-to-four/eight-rank restart chains and require
+identity-keyed topology and every numeric field to match the uninterrupted
+branching reference. The schema remains 8.
