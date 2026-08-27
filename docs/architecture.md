@@ -1892,3 +1892,25 @@ The two Euler stages, final blend, hierarchy synchronization, limiter minimum,
 per-level advances, and grouped direct-transfer counts publish only after the
 complete sparse candidate validates. Full-physics composition and the public
 sparse clock remain separate transactions.
+
+## MPI owner-local arbitrary-depth EB full physics (`0.166.0`)
+
+The sparse `R-T-H-T-R` entrypoint owns one private numerical-tree candidate.
+It applies an optional chemistry half-step, an SSPRK2 transport half-step, the
+complete recursive hydro interval, a second transport half-step, and a final
+optional chemistry half-step. Every stage calls the qualified owner-local
+operator directly; no complete tree is materialized between stages.
+
+An outer communicator preflight makes the timestep, tolerances, redistribution
+controls, physics flags, and species/mechanism/transport extents identical
+before any rank branches on optional physics. Inner stage consensus continues
+to validate boundary data and hydro scheme strings. A rejected later stage
+therefore discards earlier valid prefixes with the accepted sparse tree and
+all public diagnostics unchanged.
+
+Per-level chemistry, transport-Euler, and hydro advances accumulate separately.
+Restriction, transport-route, and hydro-route transfers likewise remain
+separate so the topology/owner map predicts each category exactly. Both
+transport limiter minima reduce to one public value. Fields and every counter
+commit only after final sparse validation. Target-time clock ownership remains
+separate.
