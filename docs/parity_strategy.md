@@ -2770,3 +2770,20 @@ first two species exchanged. Both operations must reject with an empty tree
 and neutral metadata. Supply inconsistent time/step metadata to the writer and
 require rejection before the valid checkpoint is replaced. Retain all 208
 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.171.0 sparse MPI arbitrary-depth EB checkpoint gates
+
+Write the qualified physical four-level branching tree through a selected I/O
+root. Require the global sender count to equal the number of numerical nodes
+not owned by that root. Read on the root, request a different work exponent,
+recompute ownership, scatter directly, and require the sender count to equal
+the number of nodes newly owned away from the root.
+
+Materialize only after restart and require topology, state, recovered
+temperature, time, minimum timestep, step count, and regrid count parity with
+the serial source. Give one rank a different maximum depth on multiple ranks;
+on one rank, request less depth than stored. Also exchange species only on rank
+zero. Require both cases to reject with empty distribution/tree, zero metadata,
+and zero transfers. Run at one, two, four, and eight ranks in GNU Fortran
+Release and bounds/FPE-checked Debug, then retain all MPI gates and all 208
+serial tests.

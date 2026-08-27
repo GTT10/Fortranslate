@@ -3062,3 +3062,23 @@ composite output remain separate lifecycle work.
 This milestone provides the serial storage format required by later root-only
 sparse MPI checkpoint I/O. Rank-neutral MPI redistribution and composite output
 remain separate lifecycle work.
+
+## Sparse MPI arbitrary-depth EB checkpoint/restart (`0.171.0`)
+
+- [x] selected-root direct gather from numerical-node owners
+- [x] serial self-describing checkpoint write only on the I/O root
+- [x] checkpoint read only on the I/O root
+- [x] compact arbitrary-depth topology and EB geometry broadcast
+- [x] deterministic owner-map reconstruction for the current communicator
+- [x] caller-selected hyperbolic or parabolic work exponent on restart
+- [x] direct root-to-new-owner numerical field scatter
+- [x] no stored rank count or owner map
+- [x] exact topology-derived gather and scatter transfer accounting
+- [x] field, temperature, and lifecycle metadata restart parity
+- [x] collective root/depth/exponent/metadata/species consensus
+- [x] neutral outputs after collective or file incompatibility
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone closes rank-neutral checkpoint/restart for the sparse
+arbitrary-depth numerical EB tree. Composite hierarchy output remains separate
+lifecycle work.

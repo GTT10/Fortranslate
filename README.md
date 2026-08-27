@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.170.0` milestone contains the serial verification suite, nine optional
+The `0.171.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -522,8 +522,10 @@ recomputes deterministic ownership, and migrates retained overlap directly
 between old and new owners without materializing a complete numerical tree.
 The serial arbitrary-depth tree now writes and reads a self-describing
 formatted checkpoint containing its complete topology, EB metrics, fields,
-and lifecycle metadata. Sparse MPI checkpoint redistribution is the next
-lifecycle boundary.
+and lifecycle metadata. Sparse MPI writes now gather numerical nodes only to a
+selected root, while restart broadcasts geometry, recomputes ownership for the
+current rank count, and scatters fields directly to their new owners. Composite
+arbitrary-depth output is the next lifecycle boundary.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

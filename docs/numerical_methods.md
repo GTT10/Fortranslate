@@ -2417,3 +2417,23 @@ general-EOS temperature is authoritative. A candidate is published only when
 all cell states are finite, every inversion succeeds, the complete topology is
 valid, dimensions match their geometry, lifecycle metadata is nonnegative and
 consistent, and the terminal marker is present.
+
+### Sparse MPI checkpoint routing
+
+For I/O root `q` and numerical-node owner `o(p)`, the write traffic is
+
+```text
+N_write = sum_p [o(p) /= q].
+```
+
+After the root reads topology, a new owner function `o'(p)` is computed from
+the current rank count and selected work exponent. Restart traffic is
+
+```text
+N_read = sum_p [o'(p) /= q].
+```
+
+Each counted entity is one packed conserved-state message plus one temperature
+message, grouped as one public transfer. Geometry is compact replicated
+metadata and is broadcast independently. No numerical field is broadcast to
+all ranks, and the checkpoint contains neither `o`, `o'`, nor a rank count.
