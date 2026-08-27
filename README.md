@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.162.0` milestone contains the serial verification suite, nine optional
+The `0.163.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -497,7 +497,11 @@ selection now evaluates only owner-local active nodes, converts every result
 to the root interval, and reduces the global minimum without materialization.
 Chemistry also advances only owner-local nodes, then synchronizes the hierarchy
 deepest-first by sending child state directly to a distinct parent owner before
-average-down. Owner-local recursive hydro and transport are the next boundaries.
+average-down. Whole-tree and selected-subtree composite conserved integrals
+now recurse over the replicated topology, exclude refined parent cells, sum
+only owner-local node contributions, and reduce one conserved vector without
+materializing nonowned fields. Owner-local recursive hydro and transport are
+the next boundaries.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

@@ -83,6 +83,8 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
+  public :: composite_sparse_amr_eb_patch_tree_integral_2d
+  public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
 contains
 
@@ -983,6 +985,148 @@ contains
       local_restriction_transfers = transfers
   end subroutine &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
+
+  subroutine composite_sparse_amr_eb_patch_tree_integral_2d( &
+      distribution, sparse, integral, ok, local_nodes)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    real(dp), intent(out) :: integral(:)
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_nodes
+
+    call composite_sparse_amr_eb_patch_subtree_integral_2d( &
+      distribution, sparse, 1, 1, integral, ok, local_nodes)
+  end subroutine &
+    composite_sparse_amr_eb_patch_tree_integral_2d
+
+  subroutine &
+      composite_sparse_amr_eb_patch_subtree_integral_2d( &
+      distribution, sparse, level, patch, integral, ok, local_nodes)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    integer, intent(in) :: level, patch
+    real(dp), intent(out) :: integral(:)
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_nodes
+
+    real(dp), allocatable :: local_integral(:)
+    integer :: global_node_count, ierr, integer_maximum(3)
+    integer :: integer_minimum(3), integer_values(3), local_node_count
+    logical :: accepted, global_ok, local_ok, matches
+
+    integral = 0.0_dp
+    ok = .false.
+    local_node_count = 0
+    if (present(local_nodes)) local_nodes = 0
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    local_ok = matches .and. sparse%is_valid(distribution) .and. &
+      size(integral) == sparse%nvar
+    if (local_ok) local_ok = &
+      level >= 1 .and. level <= sparse%level_count()
+    if (local_ok) local_ok = &
+      patch >= 1 .and. patch <= sparse%levels(level)%patch_count()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    integer_values = [level, patch, size(integral)]
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    allocate(local_integral(sparse%nvar), source=0.0_dp)
+    call accumulate_sparse_subtree_integral_local_2d( &
+      distribution, sparse, level, patch, local_integral, &
+      local_node_count, local_ok)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      local_integral, integral, sparse%nvar, MPI_DOUBLE_PRECISION, MPI_SUM, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      integral = 0.0_dp
+      return
+    end if
+    call MPI_Allreduce( &
+      local_node_count, global_node_count, 1, MPI_INTEGER, MPI_SUM, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. global_node_count < 1 .or. &
+        any(.not. ieee_is_finite(integral))) then
+      integral = 0.0_dp
+      return
+    end if
+
+    ok = .true.
+    if (present(local_nodes)) local_nodes = local_node_count
+  end subroutine &
+    composite_sparse_amr_eb_patch_subtree_integral_2d
+
+  recursive subroutine accumulate_sparse_subtree_integral_local_2d( &
+      distribution, sparse, level, patch, integral, local_nodes, ok)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    integer, intent(in) :: level, patch
+    real(dp), intent(inout) :: integral(:)
+    integer, intent(inout) :: local_nodes
+    logical, intent(out) :: ok
+
+    type(eb_geometry_2d) :: geometry
+    logical, allocatable :: refined(:, :)
+    integer :: child, first_child, i, j, last_child
+    logical :: local_ok
+
+    ok = .false.
+    call topology_patch_geometry_2d( &
+      sparse%topology, level - 1, patch, geometry, local_ok)
+    if (.not. local_ok) return
+    allocate(refined(geometry%nx, geometry%ny), source=.false.)
+    first_child = 1
+    last_child = 0
+    if (level < sparse%level_count()) then
+      first_child = sparse%topology%relations(level)% &
+        child_offsets(patch) + 1
+      last_child = sparse%topology%relations(level)% &
+        child_offsets(patch + 1)
+      do child = first_child, last_child
+        refined( &
+          sparse%topology%relations(level)%children(child)%patch% &
+            coarse_i_lower: &
+          sparse%topology%relations(level)%children(child)%patch% &
+            coarse_i_upper, &
+          sparse%topology%relations(level)%children(child)%patch% &
+            coarse_j_lower: &
+          sparse%topology%relations(level)%children(child)%patch% &
+            coarse_j_upper) = .true.
+      end do
+    end if
+
+    if (distribution%is_local(level - 1, patch)) then
+      do j = 1, geometry%ny
+        do i = 1, geometry%nx
+          if (refined(i, j)) cycle
+          integral = integral + geometry%volume_fraction(i, j) * &
+            sparse%levels(level)%patches(patch)%state(:, i, j) * &
+            geometry%dx * geometry%dy
+        end do
+      end do
+      local_nodes = local_nodes + 1
+    end if
+    do child = first_child, last_child
+      call accumulate_sparse_subtree_integral_local_2d( &
+        distribution, sparse, level + 1, child, integral, local_nodes, &
+        local_ok)
+      if (.not. local_ok) return
+    end do
+    ok = all(ieee_is_finite(integral))
+  end subroutine accumulate_sparse_subtree_integral_local_2d
 
   subroutine allocate_sparse_tree_layout_2d( &
       distribution, nvar, topology, sparse, ok)

@@ -19,7 +19,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
     compute_reactive_amr_eb_patch_tree_timestep_2d, &
-    advance_reactive_amr_eb_patch_tree_chemistry_2d
+    advance_reactive_amr_eb_patch_tree_chemistry_2d, &
+    composite_integral_reactive_amr_eb_patch_tree_2d, &
+    composite_reactive_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -30,7 +32,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
     materialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
-    advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
+    advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
+    composite_sparse_amr_eb_patch_tree_integral_2d, &
+    composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
 
   type(MPI_Comm) :: comm
@@ -55,10 +59,12 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse, sparse_snapshot
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: physical_sparse
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
+  real(dp), allocatable :: serial_integral(:), sparse_integral(:)
   real(dp) :: base_density, expected_state, expected_temperature
   real(dp) :: hydro_cfl, mismatched_hydro_cfl, serial_dt, sparse_dt
   real(dp) :: transport_cfl
   real(dp) :: chemistry_interval, mismatched_interval
+  real(dp) :: integral_scale
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
@@ -68,6 +74,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: global_timestep_nodes, local_timestep_nodes
   integer :: child, expected_restriction_transfers, parent, relation
   integer :: global_restriction_transfers, local_restriction_transfers
+  integer :: expected_integral_nodes, global_integral_nodes
+  integer :: local_integral_nodes, selected_integral_patch
   integer, allocatable :: global_chemistry_advances(:)
   integer, allocatable :: local_chemistry_advances(:)
   integer(int64) :: unweighted_work, weighted_work
@@ -373,6 +381,56 @@ program pelef_mpi_amr_eb_patch_tree_2d
     tree_solutions_match(materialized, serial_chemistry), &
     "MPI EB patch-tree owner-local chemistry parity", comm)
 
+  allocate(serial_integral(serial_chemistry%nvar))
+  allocate(sparse_integral(serial_chemistry%nvar))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    serial_chemistry, serial_integral, ok)
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
+    migrated_distribution, physical_sparse, sparse_integral, local_ok, &
+    local_integral_nodes)
+  call MPI_Allreduce( &
+    local_integral_nodes, global_integral_nodes, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    global_integral_nodes == 5 .and. &
+    maxval(abs(sparse_integral - serial_integral)) <= &
+      256.0_dp * epsilon(1.0_dp) * integral_scale, &
+    "MPI EB patch-tree sparse composite integral", comm)
+  do level = 1, serial_chemistry%level_count()
+    do patch = 1, serial_chemistry%levels(level)%patch_count()
+      call composite_reactive_amr_eb_patch_subtree_integral_2d( &
+        serial_chemistry, level, patch, serial_integral, ok)
+      call &
+          composite_sparse_amr_eb_patch_subtree_integral_2d( &
+        migrated_distribution, physical_sparse, level, patch, &
+        sparse_integral, local_ok, local_integral_nodes)
+      call MPI_Allreduce( &
+        local_integral_nodes, global_integral_nodes, 1, MPI_INTEGER, MPI_SUM, &
+        comm, ierr)
+      expected_integral_nodes = subtree_node_count(topology, level, patch)
+      integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+      call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+        global_integral_nodes == expected_integral_nodes .and. &
+        maxval(abs(sparse_integral - serial_integral)) <= &
+          256.0_dp * epsilon(1.0_dp) * integral_scale, &
+        "MPI EB patch-tree sparse subtree integral", comm)
+    end do
+  end do
+
+  selected_integral_patch = 1
+  if (nranks > 1) then
+    if (rank == 0) selected_integral_patch = 2
+  else
+    selected_integral_patch = 0
+  end if
+  call composite_sparse_amr_eb_patch_subtree_integral_2d( &
+    migrated_distribution, physical_sparse, 3, selected_integral_patch, &
+    sparse_integral, ok, local_integral_nodes)
+  call assert_all(.not. ok .and. all(sparse_integral == 0.0_dp) .and. &
+    local_integral_nodes == 0, &
+    "MPI EB patch-tree subtree selector consensus", comm)
+
   sparse_snapshot = physical_sparse
   mismatched_interval = chemistry_interval
   if (nranks > 1) then
@@ -489,6 +547,25 @@ contains
       end do
     end do
   end function sparse_trees_match
+
+  recursive integer function subtree_node_count( &
+      tree_topology, tree_level, tree_patch) result(count)
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: tree_topology
+    integer, intent(in) :: tree_level, tree_patch
+
+    integer :: first_child, last_child, tree_child
+
+    count = 1
+    if (tree_level >= tree_topology%level_count()) return
+    first_child = tree_topology%relations(tree_level)% &
+      child_offsets(tree_patch) + 1
+    last_child = tree_topology%relations(tree_level)% &
+      child_offsets(tree_patch + 1)
+    do tree_child = first_child, last_child
+      count = count + subtree_node_count( &
+        tree_topology, tree_level + 1, tree_child)
+    end do
+  end function subtree_node_count
 
   subroutine assert_all(condition, message, communicator)
     logical, intent(in) :: condition

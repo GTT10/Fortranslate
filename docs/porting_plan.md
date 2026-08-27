@@ -1193,6 +1193,20 @@ one, two, four, and eight ranks. Run the complete existing MPI and serial
 Debug/Release suite before acceptance. Defer owner-local recursive hydro,
 transport, and public clock routing.
 
+## 0.163.0 MPI sparse arbitrary-depth EB composite-integral gates
+
+Expose whole-tree and selected-subtree conserved integrals directly on sparse
+owners. Traverse the replicated topology recursively, mask direct-child
+coverage before integrating a parent, and reduce only owner-local contributions
+without materializing fields.
+
+Require serial parity for the complete four-level branching tree and every
+subtree, exact topology-derived contributing-node counts, and collective
+selector-disagreement rejection with neutral outputs at one, two, four, and
+eight ranks. Run the complete existing MPI and serial Debug/Release suite
+before acceptance. Use this reduction as the conservation prerequisite for
+owner-local recursive hydro; defer transport and public clock routing.
+
 Each implementation PR should normally contain:
 
 1. implementation
