@@ -1249,6 +1249,21 @@ interval mismatch before mutation with zero public diagnostics at one, two,
 four, and eight ranks. Run the complete MPI and serial Debug/Release suite
 before acceptance. Defer the owner-local target-time clock.
 
+## 0.167.0 MPI owner-local arbitrary-depth EB clock gates
+
+Wrap the owner-local timestep selector and sparse `R-T-H-T-R` transaction in a
+public target-time loop. Establish clock/control consensus before the loop,
+recompute a stable interval before every attempted step, clip the final interval
+to the requested target, and publish time, step, minima, advances, and transfer
+counts only with each accepted sparse candidate. Preserve the committed prefix
+on a later failure or step ceiling.
+
+Require exact one-step target-time and minimum-dt parity, serial field/limiter/
+composite parity, exact timestep-node and physics/traffic accounting, clock-
+control mismatch rollback, and maximum-step rollback at one, two, four, and
+eight ranks. Run the complete MPI and serial Debug/Release suite before
+acceptance. Defer arbitrary-depth dynamic tagging and checkpoint I/O.
+
 Each implementation PR should normally contain:
 
 1. implementation

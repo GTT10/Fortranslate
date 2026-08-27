@@ -2328,3 +2328,27 @@ advances independently, along with their three transfer categories. Its
 minimum transport limiter is the minimum from both half-steps. The accepted
 tree is assigned from `U*` only after every stage and final sparse validation
 succeed; failures expose neither a partial split state nor partial accounting.
+
+## MPI owner-local arbitrary-depth EB target-time clock
+
+At accepted time `t`, compute the sparse owner-local stability interval
+
+```text
+dt_stable = min_owner,node R(level) min(dt_hydro, dt_transport),
+dt = min(dt_stable, t_target - t).
+```
+
+The node owner performs each local stability kernel, `MPI_MIN` selects the
+root interval, and a separate sum records exactly how many active nodes were
+evaluated. The clipped `dt` drives one private owner-local `R-T-H-T-R`
+candidate. After collective acceptance, commit
+
+```text
+(U, t, step, counters) <- (U_candidate, t + dt, step + 1, counters + delta).
+```
+
+Minimum accepted `dt` and transport limiter are monotone minima over committed
+steps. Per-level advances, timestep evaluations, and three transfer categories
+are monotone sums. Reaching the step ceiling or rejecting a later candidate
+returns failure while retaining the previously committed tuple. Successful
+termination publishes `t = t_target` exactly.
