@@ -2541,7 +2541,8 @@ A_N ... A_2 A_1(q_0) = A_N ... A_2 R(W(A_1(q_0)))
 within the output tolerance for every finest-available composite cell. `R`
 restores the time, global step, regrid count, minimum accepted timestep,
 minimum transport limiter theta, topology, EB geometry, conserved state, and
-temperature. Therefore the next
+temperature. It also restores the initial composite conserved vector `I_0`
+used by the final diagnostic. Therefore the next
 periodic regrid decision uses the same global step index as the uninterrupted
 run. Current input continues to supply final time and numerical controls.
 
@@ -2555,6 +2556,18 @@ theta_min <- min(theta_pre, theta_k).
 The selected sparse I/O root reads `theta_pre` and broadcasts it as restart
 metadata before ownership is recomputed. Failed reads publish the neutral
 value `1` and no numerical tree.
+
+For final composite integral `I_f`, both uninterrupted and restarted
+applications therefore report
+
+```text
+epsilon_cons = max_m |I_f,m - I_0,m| / max(1, |I_0,m|).
+```
+
+`I_0` has one entry per conserved component. The selected sparse I/O root
+reads the vector, broadcasts it before repartitioning fields, and retains the
+same denominator across a rank-count change. A failed read publishes no
+baseline vector.
 
 ## Interface-local multilevel EB residual closure
 

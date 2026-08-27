@@ -14,6 +14,8 @@ FINAL_TIME = 3.0e-9
 IDENTITY = ("level", "patch", "i", "j")
 X_UPPER = 0.012
 ROOT_DX = X_UPPER / 12.0
+CONSERVATION_PREFIX = "Maximum composite conservation error:"
+THETA_PREFIX = "Minimum transport limiter theta:"
 
 
 def load(path: Path) -> dict[tuple[int, int, int, int], dict[str, str]]:
@@ -58,11 +60,28 @@ def check_checkpoint(path: Path) -> None:
     if lines[-1] != "END_CHECKPOINT":
         raise AssertionError("incomplete patch-tree checkpoint")
     schema, species, nvar, levels = (int(value) for value in lines[1].split())
-    if schema != 5 or species != 7 or nvar <= species or levels != 4:
+    if schema != 6 or species != 7 or nvar <= species or levels != 4:
         raise AssertionError("invalid patch-tree checkpoint header")
     fingerprint = 2 + species
     if lines[fingerprint + 5] != "linear":
         raise AssertionError("checkpoint did not preserve linear prolongation")
+
+
+def load_diagnostic(path: Path, prefix: str) -> float:
+    values = [
+        float(line.split(":", maxsplit=1)[1])
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(values) != 1 or not math.isfinite(values[0]):
+        raise AssertionError(f"{path.name}: missing or invalid {prefix}")
+    return values[0]
+
+
+def compare_diagnostic(label: str, expected: float, actual: float) -> None:
+    tolerance = 5.0e-12 * max(1.0, abs(expected))
+    if abs(actual - expected) > tolerance:
+        raise AssertionError(f"{label}: {actual} != {expected}")
 
 
 def unique_time(rows: dict[tuple[int, int, int, int], dict[str, str]]) -> float:
@@ -97,7 +116,17 @@ def main() -> None:
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--stopped", required=True, type=Path)
     parser.add_argument("--restarted", required=True, nargs="+", type=Path)
+    parser.add_argument("--reference-log", type=Path)
+    parser.add_argument("--restarted-logs", nargs="+", type=Path)
     args = parser.parse_args()
+
+    if (args.reference_log is None) != (args.restarted_logs is None):
+        raise AssertionError("reference and restart logs must be supplied together")
+    if (
+        args.restarted_logs is not None
+        and len(args.restarted) != len(args.restarted_logs)
+    ):
+        raise AssertionError("restart output/log count mismatch")
 
     check_checkpoint(args.checkpoint)
     reference = load(args.reference)
@@ -122,6 +151,22 @@ def main() -> None:
         if abs(unique_time(restarted) - FINAL_TIME) > 2.0e-20:
             raise AssertionError(f"restart {index} did not reach final time")
         compare(reference, restarted)
+    if args.reference_log is not None:
+        reference_conservation = load_diagnostic(
+            args.reference_log, CONSERVATION_PREFIX
+        )
+        reference_theta = load_diagnostic(args.reference_log, THETA_PREFIX)
+        for index, log_path in enumerate(args.restarted_logs, start=1):
+            compare_diagnostic(
+                f"restart {index} conservation history",
+                reference_conservation,
+                load_diagnostic(log_path, CONSERVATION_PREFIX),
+            )
+            compare_diagnostic(
+                f"restart {index} transport limiter history",
+                reference_theta,
+                load_diagnostic(log_path, THETA_PREFIX),
+            )
     print("check_reactive_eb_patch_tree_restart_2d: PASS")
 
 
