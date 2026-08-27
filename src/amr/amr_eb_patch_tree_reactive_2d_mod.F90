@@ -47,8 +47,8 @@ module amr_eb_patch_tree_reactive_2d_mod
     5.0e4_dp * epsilon(1.0_dp)
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
-  integer, parameter :: patch_tree_checkpoint_schema = 1
-  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 4
+  integer, parameter :: patch_tree_checkpoint_schema = 2
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 5
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -629,7 +629,7 @@ contains
 
   subroutine write_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, solution, time, steps, regrids, minimum_dt, ok, &
-      fingerprint)
+      fingerprint, minimum_transport_theta)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
@@ -638,17 +638,23 @@ contains
     logical, intent(out) :: ok
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
+    real(dp), intent(in), optional :: minimum_transport_theta
 
     integer :: unit, status, species_index, relation, child, schema
     integer :: level, patch, i, j
+    real(dp) :: selected_minimum_transport_theta
 
     ok = .false.
+    selected_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) &
+      selected_minimum_transport_theta = minimum_transport_theta
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. solution%is_valid() .or. &
         solution%nvar /= reactive_nvar(size(species)) .or. &
         solution%level_count() > checkpoint_maximum_levels .or. &
         .not. patch_tree_checkpoint_metadata_is_valid( &
-          time, steps, regrids, minimum_dt)) return
+          time, steps, regrids, minimum_dt, &
+          selected_minimum_transport_theta)) return
     if (present(fingerprint)) then
       if (.not. fingerprint%is_valid()) return
     end if
@@ -703,8 +709,8 @@ contains
       end do
     end do
 
-    write(unit, '(2(es27.18e3,1x),2(i0,1x))', iostat=status) &
-      time, minimum_dt, steps, regrids
+    write(unit, '(3(es27.18e3,1x),2(i0,1x))', iostat=status) &
+      time, minimum_dt, selected_minimum_transport_theta, steps, regrids
     if (status /= 0) go to 900
     do level = 1, solution%level_count()
       do patch = 1, solution%levels(level)%patch_count()
@@ -735,7 +741,7 @@ contains
 
   subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, maximum_levels, solution, time, steps, regrids, &
-      minimum_dt, ok, fingerprint)
+      minimum_dt, ok, fingerprint, minimum_transport_theta)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: maximum_levels
@@ -745,6 +751,7 @@ contains
     logical, intent(out) :: ok
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -758,10 +765,13 @@ contains
     integer :: stored_levels, stored_relation, relation_patches
     integer :: species_index, relation, child, level, patch, i, j
     integer :: stored_level, stored_patch, stored_nx, stored_ny
+    real(dp) :: stored_minimum_transport_theta
 
     solution = reactive_amr_eb_patch_tree_2d()
     time = 0.0_dp
     minimum_dt = 0.0_dp
+    stored_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     steps = 0
     regrids = 0
     ok = .false.
@@ -827,9 +837,11 @@ contains
       root_geometry, plans, topology, local_ok)
     if (.not. local_ok) go to 900
 
-    read(unit, *, iostat=status) time, minimum_dt, steps, regrids
+    read(unit, *, iostat=status) time, minimum_dt, &
+      stored_minimum_transport_theta, steps, regrids
     if (status /= 0 .or. .not. patch_tree_checkpoint_metadata_is_valid( &
-        time, steps, regrids, minimum_dt)) go to 900
+        time, steps, regrids, minimum_dt, &
+        stored_minimum_transport_theta)) go to 900
 
     candidate%nvar = stored_nvar
     candidate%topology = topology
@@ -882,6 +894,8 @@ contains
     end if
 
     solution = candidate
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = stored_minimum_transport_theta
     ok = .true.
     return
 
@@ -890,6 +904,7 @@ contains
     solution = reactive_amr_eb_patch_tree_2d()
     time = 0.0_dp
     minimum_dt = 0.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     steps = 0
     regrids = 0
   end subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint
@@ -2892,18 +2907,22 @@ contains
   end function patch_tree_substep_time_alpha
 
   pure logical function patch_tree_checkpoint_metadata_is_valid( &
-      time, steps, regrids, minimum_dt) result(valid)
-    real(dp), intent(in) :: time, minimum_dt
+      time, steps, regrids, minimum_dt, minimum_transport_theta) result(valid)
+    real(dp), intent(in) :: time, minimum_dt, minimum_transport_theta
     integer, intent(in) :: steps, regrids
 
     real(dp) :: tolerance
 
     valid = ieee_is_finite(time) .and. ieee_is_finite(minimum_dt) .and. &
+      ieee_is_finite(minimum_transport_theta) .and. &
       time >= 0.0_dp .and. minimum_dt >= 0.0_dp .and. &
+      minimum_transport_theta >= 0.0_dp .and. &
+      minimum_transport_theta <= 1.0_dp .and. &
       steps >= 0 .and. regrids >= 0
     if (.not. valid) return
     if (steps == 0) then
       valid = time == 0.0_dp .and. minimum_dt == 0.0_dp .and. &
+        minimum_transport_theta == 1.0_dp .and. &
         regrids <= 1
       return
     end if

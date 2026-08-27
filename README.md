@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.195.0` milestone contains the serial verification suite, ten optional
+The `0.196.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -18,7 +18,7 @@ another weighting and reproduce an uninterrupted one-rank reference. The
 fresh sparse-MPI 2D EB path now constructs its numerical root state on the
 single owning rank and moves those arrays directly into sparse storage;
 non-owners never allocate a root state or temperature field. The public serial
-and sparse-MPI patch-tree checkpoints now store a schema-4
+and sparse-MPI patch-tree checkpoints now store a schema-5
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
@@ -85,7 +85,10 @@ rank count. In `0.194.0`, those lifecycles also enable Newtonian viscosity,
 mixture-averaged species diffusion, barodiffusion, correction velocity, and
 species enthalpy flux. In `0.195.0`, both chemistry half-steps are active too,
 so fresh and restarted boundary trees execute the complete transactional
-`R-T-H-T-R` schedule. The tree can also write one composite CSV containing
+`R-T-H-T-R` schedule. In `0.196.0`, schema-5 patch-tree checkpoints also retain
+the cumulative minimum transport limiter across serial and sparse-MPI restart,
+instead of resetting that diagnostic at the continuation boundary. The tree
+can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial
 `pelef_reactive_eb_patch_tree_2d` application now reads the established 2D

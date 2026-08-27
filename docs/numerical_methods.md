@@ -2540,9 +2540,21 @@ A_N ... A_2 A_1(q_0) = A_N ... A_2 R(W(A_1(q_0)))
 
 within the output tolerance for every finest-available composite cell. `R`
 restores the time, global step, regrid count, minimum accepted timestep,
-topology, EB geometry, conserved state, and temperature. Therefore the next
+minimum transport limiter theta, topology, EB geometry, conserved state, and
+temperature. Therefore the next
 periodic regrid decision uses the same global step index as the uninterrupted
 run. Current input continues to supply final time and numerical controls.
+
+If `theta_pre` is the checkpointed minimum and `theta_k` is the minimum from a
+new accepted step, continuation updates
+
+```text
+theta_min <- min(theta_pre, theta_k).
+```
+
+The selected sparse I/O root reads `theta_pre` and broadcasts it as restart
+metadata before ownership is recomputed. Failed reads publish the neutral
+value `1` and no numerical tree.
 
 ## Interface-local multilevel EB residual closure
 

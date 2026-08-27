@@ -3113,3 +3113,14 @@ Require schema 4 to retain the chemistry model and tolerances with the
 transport fingerprint. Compare independent serial continuation and two-rank
 to four-/eight-rank sparse continuation against uninterrupted reacting
 references under the changed ownership weight.
+
+## 0.196.0 checkpointed transport-limiter gates
+
+Write a nonneutral minimum transport theta through the direct serial and
+selected-root sparse checkpoint APIs. Require exact round-trip recovery,
+schema-5 public headers, communicator-wide agreement, and neutral value `1`
+on rejected reads.
+
+Run the public reacting x-upper checkpoint chain unchanged. Its serial and
+two-to-four/eight-rank continuations must retain uninterrupted fields while
+the application resumes its accumulated limiter minimum from checkpoint.

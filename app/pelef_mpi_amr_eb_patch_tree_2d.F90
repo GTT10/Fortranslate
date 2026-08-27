@@ -122,6 +122,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: sparse_clock_minimum_dt, sparse_clock_theta, sparse_clock_time
   real(dp) :: integral_scale
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
+  real(dp) :: checkpoint_minimum_transport_theta
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
@@ -470,7 +471,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
     checkpoint_path, species, migrated_distribution, physical_sparse, &
     checkpoint_root, 0.125_dp, 5, 2, 0.01_dp, ok, &
-    local_checkpoint_transfers)
+    local_checkpoint_transfers, minimum_transport_theta=0.625_dp)
   call MPI_Allreduce( &
     local_checkpoint_transfers, global_checkpoint_transfers, 1, &
     MPI_INTEGER, MPI_SUM, comm, ierr)
@@ -482,7 +483,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     checkpoint_path, species, comm, checkpoint_root, 4, 1, &
     checkpoint_distribution, checkpoint_sparse, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
-    local_checkpoint_transfers)
+    local_checkpoint_transfers, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta)
   expected_checkpoint_transfers = 0
   if (ok) then
     do level = 1, checkpoint_distribution%level_count()
@@ -507,7 +509,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     tree_solutions_close( &
       checkpoint_materialized, physical_solution, 8.0e-12_dp) .and. &
     checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
-    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp, &
+    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
+    checkpoint_minimum_transport_theta == 0.625_dp, &
     "MPI EB patch-tree rank-neutral checkpoint restart", comm)
 
   checkpoint_maximum_levels = 4
@@ -521,12 +524,14 @@ program pelef_mpi_amr_eb_patch_tree_2d
     checkpoint_maximum_levels, 1, checkpoint_distribution, &
     checkpoint_sparse, checkpoint_time, checkpoint_steps, &
     checkpoint_regrids, checkpoint_minimum_dt, ok, &
-    local_checkpoint_transfers)
+    local_checkpoint_transfers, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta)
   call assert_all(.not. ok .and. local_checkpoint_transfers == 0 .and. &
     checkpoint_distribution%level_count() == 0 .and. &
     checkpoint_sparse%level_count() == 0 .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
-    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp, &
+    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
+    checkpoint_minimum_transport_theta == 1.0_dp, &
     "MPI EB patch-tree checkpoint control rollback", comm)
 
   allocate(checkpoint_species, source=species)
@@ -539,7 +544,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     checkpoint_path, checkpoint_species, comm, checkpoint_root, 4, 1, &
     checkpoint_distribution, checkpoint_sparse, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
-    local_checkpoint_transfers)
+    local_checkpoint_transfers, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta)
   call assert_all(.not. ok .and. local_checkpoint_transfers == 0 .and. &
     checkpoint_distribution%level_count() == 0 .and. &
     checkpoint_sparse%level_count() == 0, &

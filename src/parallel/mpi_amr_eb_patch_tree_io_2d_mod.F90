@@ -75,7 +75,8 @@ contains
 
   subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, distribution, sparse, root, time, steps, regrids, &
-      minimum_dt, ok, local_entity_transfers, fingerprint)
+      minimum_dt, ok, local_entity_transfers, fingerprint, &
+      minimum_transport_theta)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -87,17 +88,22 @@ contains
     integer, intent(out), optional :: local_entity_transfers
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
+    real(dp), intent(in), optional :: minimum_transport_theta
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
     logical :: controls_ok, gathered_ok, write_ok
     integer :: ierr, transfers
+    real(dp) :: selected_minimum_transport_theta
 
     ok = .false.
     transfers = 0
+    selected_minimum_transport_theta = 1.0_dp
+    if (present(minimum_transport_theta)) &
+      selected_minimum_transport_theta = minimum_transport_theta
     if (present(local_entity_transfers)) local_entity_transfers = 0
     call checkpoint_write_controls_match_2d( &
-      distribution%comm, root, time, minimum_dt, steps, regrids, &
-      controls_ok)
+      distribution%comm, root, time, minimum_dt, &
+      selected_minimum_transport_theta, steps, regrids, controls_ok)
     if (.not. controls_ok) return
     call checkpoint_species_match_2d( &
       distribution%comm, distribution%rank, root, species, controls_ok)
@@ -111,10 +117,11 @@ contains
       if (present(fingerprint)) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, &
-          write_ok, fingerprint)
+          write_ok, fingerprint, selected_minimum_transport_theta)
       else
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-          path, species, gathered, time, steps, regrids, minimum_dt, write_ok)
+          path, species, gathered, time, steps, regrids, minimum_dt, write_ok, &
+          minimum_transport_theta=selected_minimum_transport_theta)
       end if
     end if
     call MPI_Bcast( &
@@ -128,7 +135,7 @@ contains
   subroutine read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, comm, root, maximum_levels, subcycle_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
-      local_entity_transfers, fingerprint)
+      local_entity_transfers, fingerprint, minimum_transport_theta)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -141,10 +148,11 @@ contains
     integer, intent(out), optional :: local_entity_transfers
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
+    real(dp), intent(out), optional :: minimum_transport_theta
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
-    real(dp) :: real_metadata(2)
+    real(dp) :: real_metadata(3)
     integer :: ierr, integer_metadata(2), rank, transfers
     logical :: controls_ok, distributed_ok, read_ok, topology_ok
 
@@ -152,11 +160,13 @@ contains
     sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
     time = 0.0_dp
     minimum_dt = 0.0_dp
+    if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     steps = 0
     regrids = 0
     ok = .false.
     transfers = 0
     real_metadata = 0.0_dp
+    real_metadata(3) = 1.0_dp
     integer_metadata = 0
     if (present(local_entity_transfers)) local_entity_transfers = 0
 
@@ -173,11 +183,12 @@ contains
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
           integer_metadata(1), integer_metadata(2), real_metadata(2), &
-          read_ok, fingerprint)
+          read_ok, fingerprint, real_metadata(3))
       else
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
-          integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok)
+          integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok, &
+          minimum_transport_theta=real_metadata(3))
       end if
     end if
     call MPI_Bcast(read_ok, 1, MPI_LOGICAL, root, comm, ierr)
@@ -211,6 +222,8 @@ contains
 
     time = real_metadata(1)
     minimum_dt = real_metadata(2)
+    if (present(minimum_transport_theta)) &
+      minimum_transport_theta = real_metadata(3)
     steps = integer_metadata(1)
     regrids = integer_metadata(2)
     ok = .true.
@@ -218,18 +231,19 @@ contains
   end subroutine read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint
 
   subroutine checkpoint_write_controls_match_2d( &
-      comm, root, time, minimum_dt, steps, regrids, ok)
+      comm, root, time, minimum_dt, minimum_transport_theta, &
+      steps, regrids, ok)
     type(MPI_Comm), intent(in) :: comm
     integer, intent(in) :: root, steps, regrids
-    real(dp), intent(in) :: time, minimum_dt
+    real(dp), intent(in) :: time, minimum_dt, minimum_transport_theta
     logical, intent(out) :: ok
 
-    real(dp) :: real_values(2), real_minimum(2), real_maximum(2)
+    real(dp) :: real_values(3), real_minimum(3), real_maximum(3)
     integer :: ierr, integer_values(3), integer_minimum(3), nranks
     integer :: integer_maximum(3)
     logical :: accepted, local_ok
 
-    real_values = [time, minimum_dt]
+    real_values = [time, minimum_dt, minimum_transport_theta]
     integer_values = [root, steps, regrids]
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) then
@@ -237,7 +251,10 @@ contains
       return
     end if
     local_ok = root >= 0 .and. root < nranks .and. &
-      ieee_is_finite(time) .and. ieee_is_finite(minimum_dt)
+      ieee_is_finite(time) .and. ieee_is_finite(minimum_dt) .and. &
+      ieee_is_finite(minimum_transport_theta) .and. &
+      minimum_transport_theta >= 0.0_dp .and. &
+      minimum_transport_theta <= 1.0_dp
     call MPI_Allreduce( &
       local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. accepted) then
