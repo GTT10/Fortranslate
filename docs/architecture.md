@@ -2369,3 +2369,16 @@ and reflux remain absent on the physical side while the other coarse/fine
 interfaces retain their normal conservative synchronization. Sparse ownership
 uses the same compact context and direct owner routes; no complete field is
 introduced on a nonowner rank.
+
+## Boundary-touching patch-tree restart (`0.192.0`)
+
+The arbitrary-depth checkpoint already stores domain-inclusive child bounds,
+so a physical-side topology needs no new schema field. The public split-run
+case now writes a four-level x-upper tree, stops after the selected-root
+checkpoint commit, and reconstructs the same topology in a separate process.
+
+Sparse restart recomputes owners for the new communicator and transfers each
+boundary-touching child directly from the I/O root to its selected owner. The
+stored geometry and bounds remain authoritative while rank count and ownership
+weight stay continuation controls. Every restarted level must still reach the
+exact physical side before field parity is accepted.

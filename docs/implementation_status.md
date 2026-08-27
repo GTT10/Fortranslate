@@ -3462,3 +3462,20 @@ The arbitrary-depth public lifecycle can now refine an outflow physical
 boundary in serial or sparse-MPI execution. Non-outflow refined boundaries,
 periodic-seam children, and physical-boundary checkpoint continuation remain
 outside this milestone.
+
+## Boundary-touching patch-tree checkpoint/restart (`0.192.0`)
+
+- [x] four-level outflow-boundary checkpoint topology
+- [x] selected-root checkpoint write and terminal marker
+- [x] independent serial process restart
+- [x] exact boundary reach retained at every populated level
+- [x] uninterrupted/restarted composite topology parity
+- [x] uninterrupted/restarted numeric field parity
+- [x] two-rank checkpoint with four- and eight-rank restart
+- [x] ownership-weight change across sparse restart
+- [x] retained incompatible-fingerprint rejection
+
+The qualified arbitrary-depth outflow-boundary tree can now cross a process
+and MPI ownership boundary without moving away from the physical side. The
+checkpoint schema remains version 4 because existing child bounds and geometry
+records already describe the topology completely.

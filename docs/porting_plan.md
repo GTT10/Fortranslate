@@ -1580,6 +1580,17 @@ positive reactive fields, species closure, and exact 1/2/4/8-rank composite
 output parity. Leave non-outflow physical boundaries and periodic-seam
 children explicit for later work.
 
+## 0.192.0 boundary-touching patch-tree restart
+
+Move the public arbitrary-depth checkpoint/restart hotspot to the qualified
+x-upper boundary. Require the uninterrupted, stopped, and restarted composite
+outputs to retain four levels and exact physical-side contact.
+
+Reuse checkpoint schema 4 because its stored child bounds and geometry already
+identify domain-inclusive patches. Qualify an independent serial restart and a
+two-rank checkpoint restarted at four and eight ranks with changed ownership
+weight, while retaining fingerprint mismatch rejection and full field parity.
+
 Each implementation PR should normally contain:
 
 1. implementation
