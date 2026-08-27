@@ -1486,12 +1486,17 @@ level advancement, ghost fill, prolongation, or regridding.
 ## Static two-level reactive EB hydrodynamic advance
 
 The configured coarse-to-fine method initializes child `f` from parent `c`.
-PCM uses `U_f=U_c`. Limited-linear mode adds component-wise MC slopes on a
-regular parent only when its complete child block is regular; zero-mean child
-offsets preserve the parent average. Cut/topology-mismatched parents use PCM,
-and an inadmissible linear parent is retried completely with PCM. Every active
-child is accepted only after conserved-to-primitive EOS recovery supplies a
-valid temperature.
+PCM uses `U_f=U_c`. Limited-linear mode adds component-wise MC slopes. A
+regular parent whose complete child block is regular uses Cartesian child
+offsets with zero arithmetic mean. A cut parent uses distances between active
+coarse fluid-volume centroids, MC slopes when both directional neighbors
+exist, and a one-sided derivative next to the embedded boundary. Its fine
+fluid-centroid offsets have their volume-fraction-weighted mean removed, so
+average-down returns the cut-parent state exactly. A component-wise factor
+then limits every active child to the active 3-by-3 coarse-neighbor envelope.
+Covered and other topology-mismatched parents use PCM. An inadmissible linear
+parent is retried completely with PCM. Every active child is accepted only
+after conserved-to-primitive EOS recovery supplies a valid temperature.
 
 One coarse interval uses the sequence
 

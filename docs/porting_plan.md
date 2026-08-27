@@ -1499,6 +1499,20 @@ Require collective method agreement and retain direct parent-owner to
 child-owner routing. Qualify public fixed-depth, four-level serial, 1/2/4/8
 rank, and cross-rank restart cases with linear prolongation.
 
+## 0.186.0 conservative limited-linear cut-parent prolongation
+
+Replace the cut-parent PCM-only branch with slopes measured between active
+coarse fluid centroids. Use MC slopes with two-sided support and one-sided
+derivatives at the embedded boundary. Reconstruct at fine fluid centroids,
+remove their volume-fraction-weighted mean offset, and limit every conserved
+component to the active coarse-neighbor envelope.
+
+Retain PCM for covered or other topology-mismatched parents and retain the
+existing parent-local PCM retry after failed EOS recovery. Qualify nonconstant
+cut-parent children, component bounds, regular-parent exactness, and EB
+prolongation/average-down conservation before using the shared dispatcher in
+all existing serial and sparse-MPI lifecycles.
+
 Each implementation PR should normally contain:
 
 1. implementation

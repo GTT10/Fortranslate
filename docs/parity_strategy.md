@@ -2983,3 +2983,17 @@ different ownership weighting; require identity-keyed topology and field
 parity against the uninterrupted one-rank reference. Change only the method in
 the incompatible input and require rejection before topology or fields are
 published. Retain all serial and MPI Debug/Release gates.
+
+## 0.186.0 conservative limited-linear cut-parent gates
+
+Use a diagonal-plane EB geometry and an EOS-consistent conserved field with
+variation in both Cartesian directions. Require at least one cut parent to
+produce nonconstant active fine children. Bound every active cut-parent child,
+component by component, by the active 3-by-3 coarse-neighbor envelope.
+
+Average the complete fine patch back with the established EB volume weights
+and require every covered parent state to recover within roundoff, including
+cut parents. Retain analytic regular-parent linear reproduction, temperature
+recovery, nonfinite-input neutral rejection, and the parent-local PCM retry.
+Run the complete serial and MPI Debug/Release chains before merging the
+versioned milestone.

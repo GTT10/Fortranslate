@@ -3354,3 +3354,21 @@ lifecycle milestone before linear arbitrary-depth or restart claims.
 PCM remains the public default. Limited-linear slopes are still restricted to
 topology-consistent regular parent/child blocks; EB-cut parents and
 inadmissible candidates keep the established PCM fallback.
+
+## Conservative limited-linear cut-parent prolongation (`0.186.0`)
+
+- [x] active-neighbor fluid-centroid slopes for EB-cut parents
+- [x] MC limiting with one-sided embedded-boundary derivatives
+- [x] fine-fluid-centroid reconstruction offsets
+- [x] fine-volume-fraction-weighted zero-mean correction
+- [x] component bounds from the active 3-by-3 coarse neighborhood
+- [x] exact EB average-down recovery of the cut-parent conserved state
+- [x] nonconstant active-child cut-parent regression
+- [x] retained EOS recovery and parent-local PCM retry
+- [x] retained PCM behavior for covered and topology-mismatched parents
+
+Configured limited-linear initialization now remains nonconstant next to a cut
+embedded boundary while preserving the cut-parent volume-weighted average.
+PCM remains the public default. Exact AMReX EB interpolation, least-squares
+multidimensional gradients, and higher-order cut-cell reconstruction are not
+claimed.
