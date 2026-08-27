@@ -16,6 +16,7 @@ program test_amr_eb_multilevel_2d
     eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, build_amr_eb_patch_2d
+  use amr_eb_regrid_2d_mod, only: amr_eb_tagging_criteria_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_child_plan_2d, &
     amr_eb_patch_tree_level_plan_2d, &
@@ -27,6 +28,8 @@ program test_amr_eb_multilevel_2d
     initialize_reactive_amr_eb_patch_tree_2d, &
     synchronize_reactive_amr_eb_patch_tree_2d, &
     rebuild_reactive_amr_eb_patch_tree_2d, &
+    plan_tagged_reactive_amr_eb_patch_tree_2d, &
+    regrid_tagged_reactive_amr_eb_patch_tree_2d, &
     compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
@@ -72,11 +75,17 @@ program test_amr_eb_multilevel_2d
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: shifted_tree_plans(:)
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: invalid_tree_plans(:)
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: chain_tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_tree_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: tagged_tree_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: tree_topology
   type(amr_eb_patch_tree_topology_2d) :: chain_tree_topology
+  type(amr_eb_patch_tree_topology_2d) :: root_only_tree_topology
   type(reactive_amr_eb_patch_tree_2d) :: reactive_tree
   type(reactive_amr_eb_patch_tree_2d) :: reactive_tree_snapshot
   type(reactive_amr_eb_patch_tree_2d) :: chain_tree
+  type(reactive_amr_eb_patch_tree_2d) :: tagged_tree
+  type(reactive_amr_eb_patch_tree_2d) :: tagged_tree_snapshot
+  type(amr_eb_tagging_criteria_2d) :: tree_tagging_criteria
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: root_level_set(0:root_nx, 0:root_ny)
@@ -88,8 +97,11 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: tree_integral_before(:), tree_integral_after(:)
+  real(dp), allocatable :: tagged_integral_before(:)
+  real(dp), allocatable :: tagged_integral_after(:)
   real(dp), allocatable :: tree_level_two_saved(:, :, :)
   real(dp), allocatable :: tree_deepest_saved(:, :, :)
+  real(dp), allocatable :: hot_state_cell(:)
   real(dp), allocatable :: reactive_root(:, :, :)
   real(dp), allocatable :: reactive_level_one(:, :, :)
   real(dp), allocatable :: reactive_level_two(:, :, :)
@@ -103,6 +115,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: level_one_temperature_sync(:, :)
   real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
+  real(dp) :: hot_temperature
   real(dp) :: scale, dt, species_integral_sum, species_change
   real(dp) :: tree_dt, reference_tree_dt, initial_tree_dt, node_dt
   logical :: ok, topology_changed, reference_ok, node_ok
@@ -111,6 +124,7 @@ program test_amr_eb_multilevel_2d
   integer, allocatable :: tree_chemistry_advances(:)
   integer, allocatable :: chain_chemistry_advances(:)
   integer :: i, j, k, level, patch, nvar
+  integer :: tagged_cells
 
   do j = 0, root_ny
     y = real(j, dp) / real(root_ny, dp)
@@ -302,6 +316,112 @@ program test_amr_eb_multilevel_2d
     spread(spread(state_cell, 2, level_one_nx), 3, level_one_ny)
   reactive_level_two = 0.99_dp * &
     spread(spread(state_cell, 2, level_two_nx), 3, level_two_ny)
+
+  allocate(empty_tree_plans(0))
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, empty_tree_plans, root_only_tree_topology, ok)
+  call require(ok, "root-only tagged patch-tree topology")
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, reactive_root, root_temperature, root_only_tree_topology, &
+    tagged_tree, ok)
+  call require(ok .and. tagged_tree%is_valid() .and. &
+    tagged_tree%level_count() == 1, &
+    "root-only tagged reactive patch-tree initialization")
+  allocate(hot_state_cell(nvar))
+  primitive(5) = 2.0_dp * primitive(5)
+  call reactive_primitive_to_conserved( &
+    species, primitive, hot_state_cell, hot_temperature, sound_speed, ok)
+  call require(ok .and. hot_temperature > temperature_cell, &
+    "tagged patch-tree hot state")
+  tagged_tree%levels(1)%patches(1)%state(:, 6, 6) = hot_state_cell
+  tagged_tree%levels(1)%patches(1)%temperature(6, 6) = hot_temperature
+  primitive(5) = 0.5_dp * primitive(5)
+
+  tree_tagging_criteria%relative_gradient_threshold = 0.05_dp
+  tree_tagging_criteria%absolute_gradient_threshold = 1.0_dp
+  tree_tagging_criteria%scale_floor = 1.0_dp
+  tree_tagging_criteria%buffer_cells = 0
+  tree_tagging_criteria%minimum_patch_cells_x = 4
+  tree_tagging_criteria%minimum_patch_cells_y = 4
+  tree_tagging_criteria%maximum_patch_gap_cells = 0
+  call plan_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_tree, tree_tagging_criteria, 3, ratio, &
+    build_tagged_tree_geometry, tagged_tree_plans, tagged_cells, ok, &
+    tree_failure_context)
+  call require(ok .and. tagged_cells > 0 .and. &
+    size(tagged_tree_plans) == 2, &
+    "tag-driven EB patch-tree plan reaches maximum depth: " // &
+      trim(tree_failure_context))
+  call require(all([tagged_tree_plans(1)%patch_count(), &
+      tagged_tree_plans(2)%patch_count()] == [1, 1]) .and. &
+    tagged_tree_plans(1)%children(1)%parent_patch == 1 .and. &
+    tagged_tree_plans(2)%children(1)%parent_patch == 1, &
+    "tag-driven EB patch-tree parent ownership")
+
+  allocate(tagged_integral_before(nvar), tagged_integral_after(nvar))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    tagged_tree, tagged_integral_before, ok)
+  call require(ok, "pre-tagged EB patch-tree integral")
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_tree, tree_tagging_criteria, 3, ratio, &
+    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    tree_failure_context)
+  call require(ok .and. topology_changed .and. tagged_cells > 0 .and. &
+    tagged_tree%is_valid() .and. tagged_tree%level_count() == 3 .and. &
+    tagged_tree%level_patch_count(1) == 1 .and. &
+    tagged_tree%level_patch_count(2) == 1, &
+    "tag-driven EB patch-tree rebuild: " // trim(tree_failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    tagged_tree, tagged_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tagged_integral_before)))
+  call require(ok .and. maxval(abs(tagged_integral_after - &
+    tagged_integral_before)) <= 8.0e-12_dp * scale, &
+    "tag-driven EB patch-tree rebuild conservation")
+
+  tagged_tree_snapshot = tagged_tree
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_tree, tree_tagging_criteria, 3, ratio, &
+    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    tree_failure_context)
+  call require(ok .and. .not. topology_changed .and. tagged_cells > 0 .and. &
+    reactive_tree_solutions_match(tagged_tree, tagged_tree_snapshot), &
+    "unchanged tag-driven EB patch-tree plan is a no-op")
+
+  tagged_tree_snapshot = tagged_tree
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_tree, tree_tagging_criteria, 3, ratio, &
+    reject_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    tree_failure_context)
+  call require(.not. ok .and. .not. topology_changed .and. &
+    tagged_cells > 0 .and. &
+    reactive_tree_solutions_match(tagged_tree, tagged_tree_snapshot), &
+    "rejected tag-driven EB patch-tree geometry rolls back")
+
+  do level = 1, tagged_tree%level_count()
+    do patch = 1, tagged_tree%levels(level)%patch_count()
+      tagged_tree%levels(level)%patches(patch)%state = spread(spread( &
+        state_cell, 2, &
+        size(tagged_tree%levels(level)%patches(patch)%state, 2)), 3, &
+        size(tagged_tree%levels(level)%patches(patch)%state, 3))
+      tagged_tree%levels(level)%patches(patch)%temperature = temperature_cell
+    end do
+  end do
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    tagged_tree, tagged_integral_before, ok)
+  call require(ok, "pre-collapse tagged EB patch-tree integral")
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_tree, tree_tagging_criteria, 3, ratio, &
+    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    tree_failure_context)
+  call require(ok .and. topology_changed .and. tagged_cells == 0 .and. &
+    tagged_tree%is_valid() .and. tagged_tree%level_count() == 1, &
+    "tag-free EB patch-tree collapse: " // trim(tree_failure_context))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    tagged_tree, tagged_integral_after, ok)
+  scale = max(1.0_dp, maxval(abs(tagged_integral_before)))
+  call require(ok .and. maxval(abs(tagged_integral_after - &
+    tagged_integral_before)) <= 8.0e-12_dp * scale, &
+    "tag-free EB patch-tree collapse conservation")
 
   call initialize_amr_eb_patch_tree_topology_2d( &
     root_geometry, tree_plans, tree_topology, ok)
@@ -989,6 +1109,37 @@ contains
       parent_geometry, child_geometry, i_lower, i_upper, j_lower, j_upper, &
       refinement_ratio, patch, valid)
   end subroutine build_patch_geometry
+
+  subroutine build_tagged_tree_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: valid
+
+    type(amr_eb_patch_2d) :: scratch_patch
+
+    call build_patch_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, scratch_patch, valid)
+  end subroutine build_tagged_tree_geometry
+
+  subroutine reject_tagged_tree_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: valid
+
+    child_geometry = eb_geometry_2d()
+    valid = parent_geometry%is_valid() .and. i_lower <= i_upper .and. &
+      j_lower <= j_upper .and. refinement_ratio >= 2
+    valid = .false.
+  end subroutine reject_tagged_tree_geometry
 
   logical function reactive_tree_solutions_match(first, second) &
       result(matches)
