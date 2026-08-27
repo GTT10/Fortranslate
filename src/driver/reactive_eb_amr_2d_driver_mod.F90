@@ -9,17 +9,16 @@ module reactive_eb_amr_2d_driver_mod
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_2d_mod, only: &
     initialize_reactive_2d, advance_reactive_chemistry_2d
-  use reactive_boundary_2d_mod, only: &
-    reactive_boundary_set_2d, build_reactive_boundary_set_2d
+  use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config
   use simulation_config_reactive_eb_2d_mod, only: &
-    reactive_eb_wall_configuration_is_valid, &
-    reactive_eb_wall_transport_is_active
+    reactive_eb_2d_config, reactive_eb_wall_configuration_is_valid
   use reactive_eb_2d_driver_mod, only: &
     build_configured_eb_geometry_2d, &
     build_configured_eb_geometry_region_2d, &
+    build_configured_reactive_boundary_set_2d, &
     compute_reactive_eb_cfl_timestep_2d, reactive_eb_integrals_2d, &
     advance_reactive_eb_strang_2d
   use eb_reactive_transport_2d_mod, only: reactive_eb_transport_timestep_2d
@@ -73,17 +72,17 @@ module reactive_eb_amr_2d_driver_mod
 
   character(len=*), parameter :: reactive_eb_amr_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_amr_checkpoint_schema = 1
+  integer, parameter :: reactive_eb_amr_checkpoint_schema = 2
   character(len=*), parameter :: reactive_eb_patch_set_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 1
+  integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 2
   character(len=*), parameter :: reactive_eb_three_level_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_three_level_checkpoint_schema = 1
+  integer, parameter :: reactive_eb_three_level_checkpoint_schema = 2
   character(len=*), parameter :: &
     reactive_eb_dynamic_three_level_checkpoint_magic = &
       "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 1
+  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 2
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_three_level_reactive_eb_cfl_timestep_2d
@@ -121,9 +120,6 @@ contains
       config%eb%flow%final_time > 0.0_dp .and. &
       ieee_is_finite(config%eb%flow%cfl) .and. &
       config%eb%flow%cfl > 0.0_dp .and. config%eb%flow%cfl <= 0.8_dp .and. &
-      (.not. config%eb%flow%transport_enabled .or. &
-       (len_trim(config%checkpoint_file) == 0 .and. &
-        len_trim(config%restart_file) == 0)) .and. &
       ieee_is_finite(config%eb%flow%chemistry_relative_tolerance) .and. &
       config%eb%flow%chemistry_relative_tolerance > 0.0_dp .and. &
       ieee_is_finite(config%eb%flow%chemistry_absolute_tolerance) .and. &
@@ -141,7 +137,6 @@ contains
       (config%eb%state_redist_max_order == 0 .or. &
        config%eb%state_redist_max_order == 2) .and. &
       reactive_eb_wall_configuration_is_valid(config%eb) .and. &
-      .not. reactive_eb_wall_transport_is_active(config%eb) .and. &
       config%coarse_i_lower >= 1 .and. &
       config%coarse_i_upper <= config%eb%flow%nx .and. &
       config%coarse_j_lower >= 1 .and. &
@@ -1411,6 +1406,43 @@ contains
       max(tiny(1.0_dp), abs(actual), abs(expected))
   end function checkpoint_real_matches
 
+  subroutine write_reactive_eb_wall_checkpoint_2d(unit, config, status)
+    integer, intent(in) :: unit
+    type(reactive_eb_2d_config), intent(in) :: config
+    integer, intent(out) :: status
+
+    write(unit, '(a)', iostat=status) trim(config%embedded_wall_kind)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(config%embedded_wall_thermal)
+    if (status /= 0) return
+    write(unit, '(*(es27.18e3,1x))', iostat=status) &
+      config%embedded_wall_temperature, config%embedded_wall_velocity
+  end subroutine write_reactive_eb_wall_checkpoint_2d
+
+  subroutine match_reactive_eb_wall_checkpoint_2d(unit, config, status)
+    integer, intent(in) :: unit
+    type(reactive_eb_2d_config), intent(in) :: config
+    integer, intent(out) :: status
+
+    character(len=24) :: stored_kind, stored_thermal
+    real(dp) :: stored_values(4)
+
+    stored_kind = ""
+    stored_thermal = ""
+    stored_values = 0.0_dp
+    read(unit, '(a)', iostat=status) stored_kind
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) stored_thermal
+    if (status /= 0) return
+    read(unit, *, iostat=status) stored_values
+    if (status /= 0) return
+    if (trim(stored_kind) /= trim(config%embedded_wall_kind) .or. &
+        trim(stored_thermal) /= trim(config%embedded_wall_thermal) .or. &
+        .not. all(checkpoint_real_matches(stored_values, [ &
+          config%embedded_wall_temperature, &
+          config%embedded_wall_velocity]))) status = 1
+  end subroutine match_reactive_eb_wall_checkpoint_2d
+
   subroutine recover_checkpoint_level_temperatures_2d( &
       species, state, temperature, geometry, ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -1578,6 +1610,8 @@ contains
     write(unit, '(i0)', iostat=status) &
       merge(1, 0, config%eb%circle_fluid_inside)
     if (status /= 0) go to 900
+    call write_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%chemistry_model)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%riemann_solver)
@@ -1588,6 +1622,11 @@ contains
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%eb%flow%transport_enabled), &
+      merge(1, 0, config%eb%flow%viscosity_enabled), &
+      merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+      merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+      merge(1, 0, config%eb%flow%barodiffusion_enabled), &
       merge(1, 0, config%dynamic_regridding), &
       merge(1, 0, config%regrid_at_initialization), &
       merge(1, 0, config%remove_fine_patch_when_untagged), &
@@ -1596,7 +1635,8 @@ contains
       config%regrid_minimum_patch_cells_y
     if (status /= 0) go to 900
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
-      config%eb%flow%cfl, config%eb%flow%chemistry_relative_tolerance, &
+      config%eb%flow%cfl, config%eb%flow%transport_cfl, &
+      config%eb%flow%chemistry_relative_tolerance, &
       config%eb%flow%chemistry_absolute_tolerance, &
       config%eb%state_redist_target_volume_fraction, &
       config%regrid_relative_temperature_gradient, &
@@ -1675,11 +1715,11 @@ contains
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
     real(dp) :: stored_domain(4), stored_geometry_values(6)
-    real(dp) :: stored_numerics(7), stored_time, stored_minimum_dt
+    real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_fine_flag, stored_nx, stored_ny, stored_ratio
-    integer :: stored_circle_inside, stored_flags(9), stored_patch(5)
+    integer :: stored_circle_inside, stored_flags(14), stored_patch(5)
     integer :: stored_coarse_nx, stored_coarse_ny
     integer :: stored_fine_nx, stored_fine_ny
     integer :: stored_steps, stored_regrids, i, j, species_index
@@ -1765,6 +1805,8 @@ contains
     read(unit, *, iostat=status) stored_circle_inside
     if (status /= 0 .or. stored_circle_inside /= &
         merge(1, 0, config%eb%circle_fluid_inside)) go to 900
+    call match_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     read(unit, '(a)', iostat=status) stored_chemistry_model
     if (status /= 0 .or. trim(stored_chemistry_model) /= &
         trim(config%eb%flow%chemistry_model)) go to 900
@@ -1780,6 +1822,11 @@ contains
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
+        merge(1, 0, config%eb%flow%transport_enabled), &
+        merge(1, 0, config%eb%flow%viscosity_enabled), &
+        merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+        merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+        merge(1, 0, config%eb%flow%barodiffusion_enabled), &
         merge(1, 0, config%dynamic_regridding), &
         merge(1, 0, config%regrid_at_initialization), &
         merge(1, 0, config%remove_fine_patch_when_untagged), &
@@ -1788,7 +1835,7 @@ contains
         config%regrid_minimum_patch_cells_y])) go to 900
     read(unit, *, iostat=status) stored_numerics
     if (status /= 0 .or. .not. all(checkpoint_real_matches( &
-        stored_numerics, [config%eb%flow%cfl, &
+        stored_numerics, [config%eb%flow%cfl, config%eb%flow%transport_cfl, &
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, &
         config%eb%state_redist_target_volume_fraction, &
@@ -1965,6 +2012,8 @@ contains
     write(unit, '(i0)', iostat=status) &
       merge(1, 0, config%eb%circle_fluid_inside)
     if (status /= 0) go to 900
+    call write_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%chemistry_model)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%riemann_solver)
@@ -1975,6 +2024,11 @@ contains
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%eb%flow%transport_enabled), &
+      merge(1, 0, config%eb%flow%viscosity_enabled), &
+      merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+      merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+      merge(1, 0, config%eb%flow%barodiffusion_enabled), &
       merge(1, 0, config%dynamic_regridding), &
       merge(1, 0, config%regrid_at_initialization), &
       merge(1, 0, config%remove_fine_patch_when_untagged), &
@@ -1985,7 +2039,8 @@ contains
       merge(1, 0, config%multipatch_enabled)
     if (status /= 0) go to 900
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
-      config%eb%flow%cfl, config%eb%flow%chemistry_relative_tolerance, &
+      config%eb%flow%cfl, config%eb%flow%transport_cfl, &
+      config%eb%flow%chemistry_relative_tolerance, &
       config%eb%flow%chemistry_absolute_tolerance, &
       config%eb%state_redist_target_volume_fraction, &
       config%regrid_relative_temperature_gradient, &
@@ -2059,11 +2114,11 @@ contains
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
     real(dp) :: stored_domain(4), stored_geometry_values(6)
-    real(dp) :: stored_numerics(7), stored_time, stored_minimum_dt
+    real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_patch_count, stored_nx, stored_ny, stored_ratio
-    integer :: stored_circle_inside, stored_flags(11), stored_patch(5)
+    integer :: stored_circle_inside, stored_flags(16), stored_patch(5)
     integer :: stored_coarse_nx, stored_coarse_ny
     integer :: stored_fine_nx, stored_fine_ny
     integer :: stored_steps, stored_regrids, child, i, j, species_index
@@ -2149,6 +2204,8 @@ contains
     read(unit, *, iostat=status) stored_circle_inside
     if (status /= 0 .or. stored_circle_inside /= &
         merge(1, 0, config%eb%circle_fluid_inside)) go to 900
+    call match_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     read(unit, '(a)', iostat=status) stored_chemistry_model
     if (status /= 0 .or. trim(stored_chemistry_model) /= &
         trim(config%eb%flow%chemistry_model)) go to 900
@@ -2164,6 +2221,11 @@ contains
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
+        merge(1, 0, config%eb%flow%transport_enabled), &
+        merge(1, 0, config%eb%flow%viscosity_enabled), &
+        merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+        merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+        merge(1, 0, config%eb%flow%barodiffusion_enabled), &
         merge(1, 0, config%dynamic_regridding), &
         merge(1, 0, config%regrid_at_initialization), &
         merge(1, 0, config%remove_fine_patch_when_untagged), &
@@ -2174,7 +2236,7 @@ contains
         merge(1, 0, config%multipatch_enabled)])) go to 900
     read(unit, *, iostat=status) stored_numerics
     if (status /= 0 .or. .not. all(checkpoint_real_matches( &
-        stored_numerics, [config%eb%flow%cfl, &
+        stored_numerics, [config%eb%flow%cfl, config%eb%flow%transport_cfl, &
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, &
         config%eb%state_redist_target_volume_fraction, &
@@ -2399,6 +2461,8 @@ contains
     write(unit, '(i0)', iostat=status) &
       merge(1, 0, config%eb%circle_fluid_inside)
     if (status /= 0) go to 900
+    call write_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%chemistry_model)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%eb%flow%riemann_solver)
@@ -2409,10 +2473,15 @@ contains
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%eb%flow%transport_enabled), &
+      merge(1, 0, config%eb%flow%viscosity_enabled), &
+      merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+      merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+      merge(1, 0, config%eb%flow%barodiffusion_enabled), &
       config%eb%state_redist_max_order
     if (status /= 0) go to 900
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
-      config%eb%flow%cfl, &
+      config%eb%flow%cfl, config%eb%flow%transport_cfl, &
       config%eb%flow%chemistry_relative_tolerance, &
       config%eb%flow%chemistry_absolute_tolerance, &
       config%eb%state_redist_target_volume_fraction
@@ -2509,12 +2578,12 @@ contains
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
     real(dp) :: stored_domain(4), stored_geometry_values(6)
-    real(dp) :: stored_numerics(4), stored_time, stored_minimum_dt
+    real(dp) :: stored_numerics(5), stored_time, stored_minimum_dt
     real(dp) :: stored_base_density, time_tolerance
     real(dp) :: stored_regrid_numerics(3)
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_nx, stored_ny, stored_ratio, stored_circle_inside
-    integer :: stored_flags(2), stored_root_patch(5), stored_level_one_patch(5)
+    integer :: stored_flags(7), stored_root_patch(5), stored_level_one_patch(5)
     integer :: stored_regrid_controls(6)
     integer :: stored_steps, stored_regrids, species_index
     logical :: local_ok, dynamic_checkpoint
@@ -2578,6 +2647,8 @@ contains
     read(unit, *, iostat=status) stored_circle_inside
     if (status /= 0 .or. stored_circle_inside /= &
         merge(1, 0, config%eb%circle_fluid_inside)) go to 900
+    call match_reactive_eb_wall_checkpoint_2d(unit, config%eb, status)
+    if (status /= 0) go to 900
     read(unit, '(a)', iostat=status) stored_chemistry_model
     if (status /= 0 .or. trim(stored_chemistry_model) /= &
         trim(config%eb%flow%chemistry_model)) go to 900
@@ -2593,10 +2664,15 @@ contains
     read(unit, *, iostat=status) stored_flags
     if (status /= 0 .or. any(stored_flags /= [ &
         merge(1, 0, config%eb%flow%chemistry_enabled), &
+        merge(1, 0, config%eb%flow%transport_enabled), &
+        merge(1, 0, config%eb%flow%viscosity_enabled), &
+        merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
+        merge(1, 0, config%eb%flow%species_diffusion_enabled), &
+        merge(1, 0, config%eb%flow%barodiffusion_enabled), &
         config%eb%state_redist_max_order])) go to 900
     read(unit, *, iostat=status) stored_numerics
     if (status /= 0 .or. .not. all(checkpoint_real_matches( &
-        stored_numerics, [config%eb%flow%cfl, &
+        stored_numerics, [config%eb%flow%cfl, config%eb%flow%transport_cfl, &
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, &
         config%eb%state_redist_target_volume_fraction]))) go to 900
@@ -2777,8 +2853,8 @@ contains
     if (config%multipatch_enabled .or. config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
-    call build_reactive_boundary_set_2d( &
-      species, config%eb%flow, boundaries, local_ok)
+    call build_configured_reactive_boundary_set_2d( &
+      species, config%eb, boundaries, local_ok)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       call read_reactive_eb_amr_2d_checkpoint( &
@@ -3070,8 +3146,8 @@ contains
     if (.not. supported_three_level_reactive_eb_amr_config(config)) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
-    call build_reactive_boundary_set_2d( &
-      species, config%eb%flow, boundaries, local_ok)
+    call build_configured_reactive_boundary_set_2d( &
+      species, config%eb, boundaries, local_ok)
     if (.not. local_ok) return
 
     if (len_trim(config%restart_file) > 0) then
@@ -3368,8 +3444,8 @@ contains
         config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
-    call build_reactive_boundary_set_2d( &
-      species, config%eb%flow, boundaries, local_ok)
+    call build_configured_reactive_boundary_set_2d( &
+      species, config%eb, boundaries, local_ok)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
@@ -3567,6 +3643,9 @@ contains
     fingerprint%riemann_solver = trim(config%eb%flow%riemann_solver)
     fingerprint%reconstruction = trim(config%eb%flow%reconstruction)
     fingerprint%limiter = trim(config%eb%flow%limiter)
+    fingerprint%embedded_wall_kind = trim(config%eb%embedded_wall_kind)
+    fingerprint%embedded_wall_thermal = &
+      trim(config%eb%embedded_wall_thermal)
     fingerprint%mesh_and_regrid = [ &
       config%eb%flow%nx, config%eb%flow%ny, &
       config%patch_tree_maximum_levels, config%refinement_ratio, &
@@ -3576,6 +3655,7 @@ contains
       config%regrid_maximum_patch_gap_cells]
     fingerprint%physics_and_regrid_flags = [ &
       merge(1, 0, config%eb%flow%chemistry_enabled), &
+      merge(1, 0, config%eb%flow%transport_enabled), &
       merge(1, 0, config%eb%flow%viscosity_enabled), &
       merge(1, 0, config%eb%flow%thermal_conduction_enabled), &
       merge(1, 0, config%eb%flow%species_diffusion_enabled), &
@@ -3597,6 +3677,9 @@ contains
       config%regrid_relative_temperature_gradient, &
       config%regrid_absolute_temperature_gradient, &
       config%regrid_temperature_scale_floor]
+    fingerprint%embedded_wall_values = [ &
+      config%eb%embedded_wall_temperature, &
+      config%eb%embedded_wall_velocity]
     ok = fingerprint%is_valid()
   end subroutine &
     build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
@@ -3653,8 +3736,8 @@ contains
     call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
       config, fingerprint, local_ok)
     if (.not. local_ok) return
-    call build_reactive_boundary_set_2d( &
-      species, config%eb%flow, boundaries, local_ok)
+    call build_configured_reactive_boundary_set_2d( &
+      species, config%eb, boundaries, local_ok)
     if (.not. local_ok) return
 
     criteria%relative_gradient_threshold = &
