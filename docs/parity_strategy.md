@@ -3088,3 +3088,15 @@ Require the schema-4 checkpoint to retain the active transport fingerprint.
 Compare independent serial continuation and two-rank to four-/eight-rank
 sparse continuation against their uninterrupted references, then retain the
 complete Debug/Release regression chains.
+
+## 0.194.0 boundary-touching mixture-transport gates
+
+Run the existing x-upper fresh and split-run trees with viscosity, Fourier
+conduction, mixture-averaged species diffusion, and barodiffusion all enabled.
+Retain four populated levels, exact physical-side contact, finite positive
+fields, species closure, and serial/sparse 1/2/4/8-rank composite parity.
+
+Require the same controls in the schema-4 checkpoint fingerprint. Compare the
+independent serial continuation and two-rank to four-/eight-rank sparse
+continuations against uninterrupted full-transport references, including the
+changed ownership weight.

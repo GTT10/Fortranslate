@@ -84,9 +84,9 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.193.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.194.0 |
 |---|---|
-| outflow-boundary recursive transport | four-level thermal conduction with physical-side register omission, serial/sparse rank parity, and cross-rank restart |
+| outflow-boundary recursive transport | four-level viscosity, Fourier conduction, mixture-averaged species diffusion, barodiffusion, correction velocity, and species enthalpy flux with physical-side register omission, serial/sparse rank parity, and cross-rank restart |
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
 | root hydro and transport physics | owner-tiled finite-halo Euler stages retaining start, end, corrected state/temperature, and interface fluxes only on tile owners with no post-compute root assembly |
