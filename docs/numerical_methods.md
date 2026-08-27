@@ -1274,6 +1274,18 @@ total energy. These terms use the same recursive subcycling, physical-side
 omission, diffusive registers, reflux, and checkpoint fingerprint as Fourier
 conduction.
 
+With chemistry enabled, the complete public boundary-tree interval is
+
+```text
+R(dt/2) T(dt/2) H(dt) T(dt/2) R(dt/2).
+```
+
+Both `R` stages advance every active cell on its numerical-node owner. Each
+accepted chemistry result is therefore the state consumed by the subsequent
+recursive transport or hydro stage, including physical-side fine exterior
+sampling and coarse-time child context. The entire five-stage composition is
+transactional; checkpoint and output observe only the committed candidate.
+
 Adjacent children of one parent remain separate owners. Before each fine
 substep, a child first receives its time-interpolated parent ghosts. Any ghost
 fine index covered by a sibling is then replaced exactly by that sibling's

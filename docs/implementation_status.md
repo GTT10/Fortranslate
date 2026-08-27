@@ -3513,3 +3513,20 @@ The public boundary topology now qualifies the complete currently implemented
 mixture-transport combination across recursive AMR, process ownership, and
 checkpoint boundaries. This remains the dilute mixture-averaged model; it is
 not Stefan--Maxwell, Soret, Dufour, or full PelePhysics transport parity.
+
+## Reacting boundary-touching arbitrary-depth full physics (`0.195.0`)
+
+- [x] elementary chemistry on both reaction half-steps at every populated level
+- [x] viscosity, Fourier conduction, species diffusion, and barodiffusion
+- [x] recursive hydro and transport subcycling between reaction half-steps
+- [x] one transactional `R-T-H-T-R` candidate per accepted root interval
+- [x] exact x-upper physical-side contact through fresh and restart lifecycles
+- [x] serial and sparse-MPI 1/2/4/8-rank fresh field parity
+- [x] independent serial reacting restart parity
+- [x] two-rank checkpoint to four-/eight-rank reacting restart
+- [x] schema-4 chemistry and transport fingerprint coverage
+
+The public boundary tree now qualifies the selected elementary chemistry,
+every currently implemented transport term, and hydro together across
+arbitrary depth, process ownership, and restart. This is not arbitrary
+mechanism parsing or CVODE parity.
