@@ -22,7 +22,8 @@ program test_amr_eb_multilevel_2d
     amr_eb_patch_tree_level_plan_2d, &
     amr_eb_patch_tree_topology_2d, &
     initialize_amr_eb_patch_tree_topology_2d, &
-    rebuild_amr_eb_patch_tree_topology_2d
+    rebuild_amr_eb_patch_tree_topology_2d, &
+    patch_tree_topologies_match_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
@@ -30,6 +31,8 @@ program test_amr_eb_multilevel_2d
     rebuild_reactive_amr_eb_patch_tree_2d, &
     plan_tagged_reactive_amr_eb_patch_tree_2d, &
     regrid_tagged_reactive_amr_eb_patch_tree_2d, &
+    write_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    read_reactive_amr_eb_patch_tree_2d_checkpoint, &
     compute_reactive_amr_eb_patch_tree_cfl_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
@@ -48,6 +51,8 @@ program test_amr_eb_multilevel_2d
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
+  character(len=*), parameter :: tree_checkpoint_path = &
+    "reactive_amr_eb_patch_tree.chk"
   integer, parameter :: root_i_lower = 2, root_i_upper = 7
   integer, parameter :: root_j_lower = 2, root_j_upper = 7
   integer, parameter :: level_one_nx = &
@@ -82,11 +87,14 @@ program test_amr_eb_multilevel_2d
   type(amr_eb_patch_tree_topology_2d) :: root_only_tree_topology
   type(reactive_amr_eb_patch_tree_2d) :: reactive_tree
   type(reactive_amr_eb_patch_tree_2d) :: reactive_tree_snapshot
+  type(reactive_amr_eb_patch_tree_2d) :: checkpoint_tree
   type(reactive_amr_eb_patch_tree_2d) :: chain_tree
   type(reactive_amr_eb_patch_tree_2d) :: tagged_tree
   type(reactive_amr_eb_patch_tree_2d) :: tagged_tree_snapshot
   type(amr_eb_tagging_criteria_2d) :: tree_tagging_criteria
   type(nasa7_species), allocatable :: species(:)
+  type(nasa7_species), allocatable :: checkpoint_species(:)
+  type(nasa7_species) :: species_scratch
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp) :: root_level_set(0:root_nx, 0:root_ny)
   real(dp), allocatable :: root_state(:, :, :)
@@ -118,6 +126,7 @@ program test_amr_eb_multilevel_2d
   real(dp) :: hot_temperature
   real(dp) :: scale, dt, species_integral_sum, species_change
   real(dp) :: tree_dt, reference_tree_dt, initial_tree_dt, node_dt
+  real(dp) :: checkpoint_time, checkpoint_minimum_dt
   logical :: ok, topology_changed, reference_ok, node_ok
   character(len=128) :: tree_failure_context
   integer, allocatable :: tree_level_advances(:), chain_level_advances(:)
@@ -125,6 +134,7 @@ program test_amr_eb_multilevel_2d
   integer, allocatable :: chain_chemistry_advances(:)
   integer :: i, j, k, level, patch, nvar
   integer :: tagged_cells
+  integer :: checkpoint_steps, checkpoint_regrids, checkpoint_unit, status
 
   do j = 0, root_ny
     y = real(j, dp) / real(root_ny, dp)
@@ -507,6 +517,54 @@ program test_amr_eb_multilevel_2d
     reactive_tree%levels(4)%patches(1)%state(:, 1, 1) - &
     tree_deepest_saved(:, 3, 1))) <= 8.0e-12_dp * scale, &
     "moving reactive patch-tree physical overlap retention")
+
+  reactive_tree_snapshot = reactive_tree
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok)
+  call require(ok, "arbitrary-depth EB patch-tree checkpoint write")
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 4, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok)
+  call require(ok .and. checkpoint_tree%is_valid() .and. &
+    patch_tree_topologies_match_2d( &
+      checkpoint_tree%topology, reactive_tree%topology) .and. &
+    reactive_tree_solutions_close( &
+      checkpoint_tree, reactive_tree, 8.0e-12_dp) .and. &
+    checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
+    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp, &
+    "arbitrary-depth EB patch-tree checkpoint round trip")
+
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 3, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid() .and. &
+    checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
+    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp, &
+    "EB patch-tree checkpoint maximum-depth rejection")
+
+  allocate(checkpoint_species, source=species)
+  species_scratch = checkpoint_species(1)
+  checkpoint_species(1) = checkpoint_species(2)
+  checkpoint_species(2) = species_scratch
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, checkpoint_species, 4, checkpoint_tree, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, ok)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
+    "EB patch-tree checkpoint species-order rejection")
+
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 0, 0, &
+    0.0_dp, ok)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "invalid EB patch-tree checkpoint metadata rejection")
+  open(newunit=checkpoint_unit, file=tree_checkpoint_path, status="old", &
+    action="readwrite", iostat=status)
+  call require(status == 0, "open EB patch-tree checkpoint for cleanup")
+  close(checkpoint_unit, status="delete", iostat=status)
+  call require(status == 0, "delete EB patch-tree checkpoint")
 
   reactive_tree_snapshot = reactive_tree
   call compute_reactive_amr_eb_patch_tree_cfl_timestep_2d( &
@@ -1164,6 +1222,41 @@ contains
       end do
     end do
   end function reactive_tree_solutions_match
+
+  logical function reactive_tree_solutions_close( &
+      first, second, tolerance) result(matches)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second
+    real(dp), intent(in) :: tolerance
+
+    real(dp) :: scale
+    integer :: level, patch
+
+    matches = first%is_valid() .and. second%is_valid() .and. &
+      first%nvar == second%nvar .and. &
+      patch_tree_topologies_match_2d(first%topology, second%topology)
+    if (.not. matches) return
+    do level = 1, first%level_count()
+      matches = first%levels(level)%patch_count() == &
+        second%levels(level)%patch_count()
+      if (.not. matches) return
+      do patch = 1, first%levels(level)%patch_count()
+        scale = max(1.0_dp, maxval(abs( &
+          second%levels(level)%patches(patch)%state)))
+        matches = maxval(abs( &
+            first%levels(level)%patches(patch)%state - &
+            second%levels(level)%patches(patch)%state)) <= &
+          tolerance * scale
+        if (.not. matches) return
+        scale = max(1.0_dp, maxval(abs( &
+          second%levels(level)%patches(patch)%temperature)))
+        matches = maxval(abs( &
+            first%levels(level)%patches(patch)%temperature - &
+            second%levels(level)%patches(patch)%temperature)) <= &
+          tolerance * scale
+        if (.not. matches) return
+      end do
+    end do
+  end function reactive_tree_solutions_close
 
   subroutine assert_close(actual, expected, tolerance, message)
     real(dp), intent(in) :: actual, expected, tolerance

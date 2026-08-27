@@ -42,6 +42,12 @@ module amr_eb_patch_tree_reactive_2d_mod
     5.0e3_dp * epsilon(1.0_dp)
   real(dp), parameter :: conservation_tolerance = &
     5.0e4_dp * epsilon(1.0_dp)
+  character(len=*), parameter :: patch_tree_checkpoint_magic = &
+    "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
+  integer, parameter :: patch_tree_checkpoint_schema = 1
+  integer, parameter :: checkpoint_maximum_levels = 64
+  integer, parameter :: checkpoint_maximum_patches = 1000000
+  integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
 
   type, public :: reactive_amr_eb_patch_tree_node_2d
     real(dp), allocatable :: state(:, :, :)
@@ -84,6 +90,8 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: rebuild_reactive_amr_eb_patch_tree_2d
   public :: plan_tagged_reactive_amr_eb_patch_tree_2d
   public :: regrid_tagged_reactive_amr_eb_patch_tree_2d
+  public :: write_reactive_amr_eb_patch_tree_2d_checkpoint
+  public :: read_reactive_amr_eb_patch_tree_2d_checkpoint
   public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
   public :: compute_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
@@ -414,6 +422,245 @@ contains
     end if
     if (present(failure_context)) failure_context = "none"
   end subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d
+
+  subroutine write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+      path, species, solution, time, steps, regrids, minimum_dt, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    real(dp), intent(in) :: time, minimum_dt
+    integer, intent(in) :: steps, regrids
+    logical, intent(out) :: ok
+
+    integer :: unit, status, species_index, relation, child
+    integer :: level, patch, i, j
+
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        .not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        solution%level_count() > checkpoint_maximum_levels .or. &
+        .not. patch_tree_checkpoint_metadata_is_valid( &
+          time, steps, regrids, minimum_dt)) return
+
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
+    if (status /= 0) go to 900
+    write(unit, '(*(i0,1x))', iostat=status) &
+      patch_tree_checkpoint_schema, size(species), solution%nvar, &
+      solution%level_count()
+    if (status /= 0) go to 900
+    do species_index = 1, size(species)
+      write(unit, '(a)', iostat=status) trim(species(species_index)%name)
+      if (status /= 0) go to 900
+    end do
+
+    call write_patch_tree_checkpoint_geometry_2d( &
+      unit, solution%topology%root_geometry, status)
+    if (status /= 0) go to 900
+    do relation = 1, size(solution%topology%relations)
+      write(unit, '(*(i0,1x))', iostat=status) relation, &
+        solution%topology%relations(relation)%refinement_ratio, &
+        solution%topology%relations(relation)%child_patch_count()
+      if (status /= 0) go to 900
+      do child = 1, &
+          solution%topology%relations(relation)%child_patch_count()
+        write(unit, '(*(i0,1x))', iostat=status) &
+          solution%topology%relations(relation)%children(child)% &
+            parent_patch, &
+          solution%topology%relations(relation)%children(child)%patch% &
+            coarse_i_lower, &
+          solution%topology%relations(relation)%children(child)%patch% &
+            coarse_i_upper, &
+          solution%topology%relations(relation)%children(child)%patch% &
+            coarse_j_lower, &
+          solution%topology%relations(relation)%children(child)%patch% &
+            coarse_j_upper
+        if (status /= 0) go to 900
+        call write_patch_tree_checkpoint_geometry_2d( &
+          unit, solution%topology%relations(relation)%children(child)% &
+            geometry, status)
+        if (status /= 0) go to 900
+      end do
+    end do
+
+    write(unit, '(2(es27.18e3,1x),2(i0,1x))', iostat=status) &
+      time, minimum_dt, steps, regrids
+    if (status /= 0) go to 900
+    do level = 1, solution%level_count()
+      do patch = 1, solution%levels(level)%patch_count()
+        write(unit, '(*(i0,1x))', iostat=status) &
+          level, patch, &
+          size(solution%levels(level)%patches(patch)%state, 2), &
+          size(solution%levels(level)%patches(patch)%state, 3)
+        if (status /= 0) go to 900
+        do j = 1, size(solution%levels(level)%patches(patch)%state, 3)
+          do i = 1, size(solution%levels(level)%patches(patch)%state, 2)
+            write(unit, '(*(es27.18e3,1x))', iostat=status) &
+              solution%levels(level)%patches(patch)%state(:, i, j), &
+              solution%levels(level)%patches(patch)%temperature(i, j)
+            if (status /= 0) go to 900
+          end do
+        end do
+      end do
+    end do
+    write(unit, '(a)', iostat=status) "END_CHECKPOINT"
+    if (status /= 0) go to 900
+    close(unit, iostat=status)
+    ok = status == 0
+    return
+
+900 continue
+    close(unit)
+  end subroutine write_reactive_amr_eb_patch_tree_2d_checkpoint
+
+  subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+      path, species, maximum_levels, solution, time, steps, regrids, &
+      minimum_dt, ok)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: maximum_levels
+    type(reactive_amr_eb_patch_tree_2d), intent(out) :: solution
+    real(dp), intent(out) :: time, minimum_dt
+    integer, intent(out) :: steps, regrids
+    logical, intent(out) :: ok
+
+    type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
+    type(amr_eb_patch_tree_topology_2d) :: topology
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    type(eb_geometry_2d) :: root_geometry, geometry
+    character(len=1024) :: magic, stored_name, end_marker
+    logical :: local_ok
+    integer :: unit, status, schema, stored_species, stored_nvar
+    integer :: stored_levels, stored_relation, relation_patches
+    integer :: species_index, relation, child, level, patch, i, j
+    integer :: stored_level, stored_patch, stored_nx, stored_ny
+
+    solution = reactive_amr_eb_patch_tree_2d()
+    time = 0.0_dp
+    minimum_dt = 0.0_dp
+    steps = 0
+    regrids = 0
+    ok = .false.
+    if (len_trim(path) == 0 .or. size(species) < 1 .or. &
+        maximum_levels < 1 .or. &
+        maximum_levels > checkpoint_maximum_levels) return
+
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      form="formatted", iostat=status)
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) magic
+    if (status /= 0 .or. trim(magic) /= patch_tree_checkpoint_magic) &
+      go to 900
+    read(unit, *, iostat=status) schema, stored_species, stored_nvar, &
+      stored_levels
+    if (status /= 0 .or. schema /= patch_tree_checkpoint_schema .or. &
+        stored_species /= size(species) .or. &
+        stored_nvar /= reactive_nvar(size(species)) .or. &
+        stored_levels < 1 .or. stored_levels > maximum_levels) go to 900
+    do species_index = 1, stored_species
+      read(unit, '(a)', iostat=status) stored_name
+      if (status /= 0 .or. &
+          trim(stored_name) /= trim(species(species_index)%name)) go to 900
+    end do
+
+    call read_patch_tree_checkpoint_geometry_2d( &
+      unit, root_geometry, status)
+    if (status /= 0) go to 900
+    allocate(plans(stored_levels - 1))
+    do relation = 1, size(plans)
+      read(unit, *, iostat=status) stored_relation, &
+        plans(relation)%refinement_ratio, relation_patches
+      if (status /= 0 .or. stored_relation /= relation .or. &
+          plans(relation)%refinement_ratio < 2 .or. &
+          relation_patches < 1 .or. &
+          relation_patches > checkpoint_maximum_patches) go to 900
+      allocate(plans(relation)%children(relation_patches))
+      do child = 1, relation_patches
+        read(unit, *, iostat=status) &
+          plans(relation)%children(child)%parent_patch, &
+          plans(relation)%children(child)%coarse_i_lower, &
+          plans(relation)%children(child)%coarse_i_upper, &
+          plans(relation)%children(child)%coarse_j_lower, &
+          plans(relation)%children(child)%coarse_j_upper
+        if (status /= 0) go to 900
+        call read_patch_tree_checkpoint_geometry_2d( &
+          unit, plans(relation)%children(child)%geometry, status)
+        if (status /= 0) go to 900
+      end do
+    end do
+    call initialize_amr_eb_patch_tree_topology_2d( &
+      root_geometry, plans, topology, local_ok)
+    if (.not. local_ok) go to 900
+
+    read(unit, *, iostat=status) time, minimum_dt, steps, regrids
+    if (status /= 0 .or. .not. patch_tree_checkpoint_metadata_is_valid( &
+        time, steps, regrids, minimum_dt)) go to 900
+
+    candidate%nvar = stored_nvar
+    candidate%topology = topology
+    allocate(candidate%levels(stored_levels))
+    do level = 1, stored_levels
+      allocate(candidate%levels(level)%patches( &
+        topology%level_patch_count(level - 1)))
+      do patch = 1, candidate%levels(level)%patch_count()
+        call patch_geometry_at( &
+          topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) go to 900
+        read(unit, *, iostat=status) stored_level, stored_patch, &
+          stored_nx, stored_ny
+        if (status /= 0 .or. stored_level /= level .or. &
+            stored_patch /= patch .or. stored_nx /= geometry%nx .or. &
+            stored_ny /= geometry%ny) go to 900
+        allocate(candidate%levels(level)%patches(patch)%state( &
+          stored_nvar, geometry%nx, geometry%ny))
+        allocate(candidate%levels(level)%patches(patch)%temperature( &
+          geometry%nx, geometry%ny))
+        do j = 1, geometry%ny
+          do i = 1, geometry%nx
+            read(unit, *, iostat=status) &
+              candidate%levels(level)%patches(patch)%state(:, i, j), &
+              candidate%levels(level)%patches(patch)%temperature(i, j)
+            if (status /= 0) go to 900
+          end do
+        end do
+        if (any(.not. ieee_is_finite( &
+              candidate%levels(level)%patches(patch)%state)) .or. &
+            any(.not. ieee_is_finite( &
+              candidate%levels(level)%patches(patch)%temperature)) .or. &
+            any(candidate%levels(level)%patches(patch)%temperature <= &
+              0.0_dp)) go to 900
+        call recover_patch_temperature( &
+          species, candidate%levels(level)%patches(patch), geometry, local_ok)
+        if (.not. local_ok) go to 900
+      end do
+    end do
+    read(unit, '(a)', iostat=status) end_marker
+    if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    close(unit, iostat=status)
+    if (status /= 0 .or. .not. candidate%is_valid()) then
+      solution = reactive_amr_eb_patch_tree_2d()
+      time = 0.0_dp
+      minimum_dt = 0.0_dp
+      steps = 0
+      regrids = 0
+      return
+    end if
+
+    solution = candidate
+    ok = .true.
+    return
+
+900 continue
+    close(unit)
+    solution = reactive_amr_eb_patch_tree_2d()
+    time = 0.0_dp
+    minimum_dt = 0.0_dp
+    steps = 0
+    regrids = 0
+  end subroutine read_reactive_amr_eb_patch_tree_2d_checkpoint
 
   subroutine rebuild_reactive_amr_eb_patch_tree_2d( &
       species, solution, plans, ok, changed, failure_context)
@@ -2311,6 +2558,216 @@ contains
       alpha = real(substep - 1, dp) / real(ratio, dp)
     end if
   end function patch_tree_substep_time_alpha
+
+  pure logical function patch_tree_checkpoint_metadata_is_valid( &
+      time, steps, regrids, minimum_dt) result(valid)
+    real(dp), intent(in) :: time, minimum_dt
+    integer, intent(in) :: steps, regrids
+
+    real(dp) :: tolerance
+
+    valid = ieee_is_finite(time) .and. ieee_is_finite(minimum_dt) .and. &
+      time >= 0.0_dp .and. minimum_dt >= 0.0_dp .and. &
+      steps >= 0 .and. regrids >= 0
+    if (.not. valid) return
+    if (steps == 0) then
+      valid = time == 0.0_dp .and. minimum_dt == 0.0_dp .and. &
+        regrids <= 1
+      return
+    end if
+    if (steps == huge(steps)) then
+      valid = .false.
+      return
+    end if
+    tolerance = 64.0_dp * epsilon(1.0_dp) * max(1.0_dp, abs(time))
+    valid = time > 0.0_dp .and. minimum_dt > 0.0_dp .and. &
+      minimum_dt <= time + tolerance .and. regrids <= steps + 1
+  end function patch_tree_checkpoint_metadata_is_valid
+
+  subroutine write_patch_tree_checkpoint_geometry_2d( &
+      unit, geometry, status)
+    integer, intent(in) :: unit
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(out) :: status
+
+    status = 1
+    if (.not. geometry%is_valid()) return
+    if (geometry%ny < 1) return
+    if (geometry%nx > checkpoint_maximum_geometry_cells / geometry%ny) return
+    write(unit, '(2(i0,1x),6(es27.18e3,1x))', iostat=status) &
+      geometry%nx, geometry%ny, geometry%x_lower, geometry%x_upper, &
+      geometry%y_lower, geometry%y_upper, geometry%dx, geometry%dy
+    if (status /= 0) return
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%volume_fraction, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%cell_centroid_x, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%cell_centroid_y, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%x_face_fraction, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%y_face_fraction, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%x_face_centroid_y, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%y_face_centroid_x, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_length, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_centroid_x, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_centroid_y, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_x, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_y, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_integral_x, status)
+    call write_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_integral_y, status)
+    call write_patch_tree_checkpoint_integer_field_2d( &
+      unit, geometry%cell_type, status)
+  end subroutine write_patch_tree_checkpoint_geometry_2d
+
+  subroutine read_patch_tree_checkpoint_geometry_2d( &
+      unit, geometry, status)
+    integer, intent(in) :: unit
+    type(eb_geometry_2d), intent(out) :: geometry
+    integer, intent(out) :: status
+
+    real(dp) :: bounds_and_spacing(6)
+    integer :: nx, ny
+
+    geometry = eb_geometry_2d()
+    read(unit, *, iostat=status) nx, ny, bounds_and_spacing
+    if (status /= 0) return
+    if (nx < 1 .or. ny < 1) then
+      status = 1
+      return
+    end if
+    if (nx > checkpoint_maximum_geometry_cells / ny .or. &
+        any(.not. ieee_is_finite(bounds_and_spacing))) then
+      status = 1
+      return
+    end if
+
+    geometry%nx = nx
+    geometry%ny = ny
+    geometry%x_lower = bounds_and_spacing(1)
+    geometry%x_upper = bounds_and_spacing(2)
+    geometry%y_lower = bounds_and_spacing(3)
+    geometry%y_upper = bounds_and_spacing(4)
+    geometry%dx = bounds_and_spacing(5)
+    geometry%dy = bounds_and_spacing(6)
+    allocate(geometry%volume_fraction(1:nx, 1:ny))
+    allocate(geometry%cell_centroid_x(1:nx, 1:ny))
+    allocate(geometry%cell_centroid_y(1:nx, 1:ny))
+    allocate(geometry%x_face_fraction(0:nx, 1:ny))
+    allocate(geometry%y_face_fraction(1:nx, 0:ny))
+    allocate(geometry%x_face_centroid_y(0:nx, 1:ny))
+    allocate(geometry%y_face_centroid_x(1:nx, 0:ny))
+    allocate(geometry%boundary_length(1:nx, 1:ny))
+    allocate(geometry%boundary_centroid_x(1:nx, 1:ny))
+    allocate(geometry%boundary_centroid_y(1:nx, 1:ny))
+    allocate(geometry%boundary_normal_x(1:nx, 1:ny))
+    allocate(geometry%boundary_normal_y(1:nx, 1:ny))
+    allocate(geometry%boundary_normal_integral_x(1:nx, 1:ny))
+    allocate(geometry%boundary_normal_integral_y(1:nx, 1:ny))
+    allocate(geometry%cell_type(1:nx, 1:ny))
+
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%volume_fraction, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%cell_centroid_x, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%cell_centroid_y, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%x_face_fraction, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%y_face_fraction, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%x_face_centroid_y, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%y_face_centroid_x, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_length, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_centroid_x, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_centroid_y, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_x, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_y, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_integral_x, status)
+    call read_patch_tree_checkpoint_real_field_2d( &
+      unit, geometry%boundary_normal_integral_y, status)
+    call read_patch_tree_checkpoint_integer_field_2d( &
+      unit, geometry%cell_type, status)
+    if (status /= 0 .or. .not. geometry%is_valid()) status = 1
+  end subroutine read_patch_tree_checkpoint_geometry_2d
+
+  subroutine write_patch_tree_checkpoint_real_field_2d( &
+      unit, field, status)
+    integer, intent(in) :: unit
+    real(dp), intent(in) :: field(:, :)
+    integer, intent(inout) :: status
+
+    integer :: j
+
+    if (status /= 0) return
+    do j = 1, size(field, 2)
+      write(unit, '(*(es27.18e3,1x))', iostat=status) field(:, j)
+      if (status /= 0) return
+    end do
+  end subroutine write_patch_tree_checkpoint_real_field_2d
+
+  subroutine read_patch_tree_checkpoint_real_field_2d( &
+      unit, field, status)
+    integer, intent(in) :: unit
+    real(dp), intent(out) :: field(:, :)
+    integer, intent(inout) :: status
+
+    integer :: j
+
+    if (status /= 0) return
+    do j = 1, size(field, 2)
+      read(unit, *, iostat=status) field(:, j)
+      if (status /= 0) return
+    end do
+  end subroutine read_patch_tree_checkpoint_real_field_2d
+
+  subroutine write_patch_tree_checkpoint_integer_field_2d( &
+      unit, field, status)
+    integer, intent(in) :: unit
+    integer, intent(in) :: field(:, :)
+    integer, intent(inout) :: status
+
+    integer :: j
+
+    if (status /= 0) return
+    do j = 1, size(field, 2)
+      write(unit, '(*(i0,1x))', iostat=status) field(:, j)
+      if (status /= 0) return
+    end do
+  end subroutine write_patch_tree_checkpoint_integer_field_2d
+
+  subroutine read_patch_tree_checkpoint_integer_field_2d( &
+      unit, field, status)
+    integer, intent(in) :: unit
+    integer, intent(out) :: field(:, :)
+    integer, intent(inout) :: status
+
+    integer :: j
+
+    if (status /= 0) return
+    do j = 1, size(field, 2)
+      read(unit, *, iostat=status) field(:, j)
+      if (status /= 0) return
+    end do
+  end subroutine read_patch_tree_checkpoint_integer_field_2d
 
   subroutine patch_geometry_at( &
       topology, level_index, patch_index, geometry, ok)
