@@ -1914,3 +1914,24 @@ separate so the topology/owner map predicts each category exactly. Both
 transport limiter minima reduce to one public value. Fields and every counter
 commit only after final sparse validation. Target-time clock ownership remains
 separate.
+
+## MPI owner-local arbitrary-depth EB target-time clock (`0.167.0`)
+
+The public sparse clock first establishes exact communicator agreement on the
+accepted time and step, target time, step ceiling, CFL values, solver controls,
+physics flags, and data extents. It then evaluates the qualified owner-local
+hydro/transport timestep before every attempted step and clips the result to
+the remaining target interval.
+
+Each step advances a private sparse candidate through the owner-local
+`R-T-H-T-R` transaction. Only after that candidate and all category counters
+validate does the clock commit fields, time, step count, minimum accepted dt,
+minimum transport limiter, timestep-node evaluations, per-level advances, and
+operator-specific transfer counts. Successful completion assigns the requested
+target time exactly.
+
+If the step ceiling is reached or a later timestep/physics operation fails,
+the already committed prefix remains authoritative with matching diagnostics;
+the uncommitted step is discarded. An initial rank-dependent clock control
+rejects before timestep evaluation with neutral outputs. Dynamic tagging,
+checkpoint/restart, and output for this arbitrary-depth tree remain separate.

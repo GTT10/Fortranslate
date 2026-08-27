@@ -2982,3 +2982,23 @@ separate work.
 
 This milestone removes materialization from arbitrary-depth sparse full-physics
 composition. The owner-local target-time clock remains separate work.
+
+## MPI owner-local arbitrary-depth EB target-time clock (`0.167.0`)
+
+- [x] communicator-consistent accepted/target time and step controls
+- [x] fresh owner-local hydro/transport stability reduction before every step
+- [x] exact final-interval clipping and target-time publication
+- [x] one private sparse full-physics candidate per attempted step
+- [x] committed-prefix semantics after a later step failure
+- [x] minimum accepted dt and transport limiter tracking
+- [x] cumulative timestep-node and per-level physics accounting
+- [x] cumulative chemistry, transport, and hydro transfer accounting
+- [x] count-overflow rejection before step commit
+- [x] collective clock-control mismatch rollback with neutral outputs
+- [x] maximum-step rejection without an uncommitted mutation
+- [x] serial clock field, limiter, dt, and conservation parity
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes public-clock ownership from the sparse arbitrary-depth
+MPI physics path. Dynamic tagging, checkpoint/restart, and output remain
+separate lifecycle work.

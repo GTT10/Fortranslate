@@ -2706,3 +2706,19 @@ reference within qualified accumulated roundoff. A rank-dependent or negative
 interval must reject before mutation with unit limiter and zero counters in
 every category. Retain all established MPI gates and all 208 serial tests in
 GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.167.0 MPI owner-local arbitrary-depth EB clock gates
+
+Start the qualified post-full-physics sparse and serial trees at time zero and
+request a target equal to half the preceding full-physics test interval. Require
+both clocks to take one exactly clipped step, publish the target time, report
+the same minimum dt, and evaluate exactly five global owner nodes for timestep
+selection.
+
+Require the full-physics advance/transfer schedules from `0.166.0`, field and
+temperature parity within `6e-9`, limiter parity within `1024 epsilon`, and
+composite-integral parity within `6e-9`. Give rank zero a different valid target
+time on multiple ranks and a negative target on one rank; require preflight
+rejection with unchanged state/clock and neutral diagnostics. Repeat with a
+zero step ceiling and require the same rollback. Retain all MPI gates and all
+208 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
