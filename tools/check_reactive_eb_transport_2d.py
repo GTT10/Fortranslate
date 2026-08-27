@@ -63,6 +63,21 @@ def main() -> None:
     )
     if changed <= 1.0e-8:
         raise AssertionError("thermal transport produced no measurable change")
+    cut_pairs = [
+        (reference_row, transport_row)
+        for reference_row, transport_row in zip(reference, transported)
+        if int(reference_row["cell_type"]) == 1
+    ]
+    wall_heating = max(
+        float(transport_row["temperature"])
+        - float(reference_row["temperature"])
+        for reference_row, transport_row in cut_pairs
+    )
+    if wall_heating <= 1.0e-8:
+        raise AssertionError("configured isothermal EB wall did not heat cut cells")
+    wall_speed = max(abs(float(row["v"])) for _, row in cut_pairs)
+    if wall_speed <= 1.0e-12:
+        raise AssertionError("configured moving no-slip EB wall transferred no momentum")
     print("check_reactive_eb_transport_2d: PASS")
 
 

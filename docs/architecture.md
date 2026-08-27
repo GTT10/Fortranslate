@@ -2180,3 +2180,19 @@ velocity, and allocated boundary vectors in addition to the four domain faces.
 The low-level boundary-set API is qualified across every current transport
 path. Namelist exposure and checkpoint fingerprinting of nondefault wall values
 remain a separate public-application lifecycle milestone.
+
+## Public single-level embedded-wall controls (`0.181.0`)
+
+The `&embedded_boundary` namelist now owns the wall kind, thermal mode,
+temperature, and three-component velocity used by the public single-level EB
+application. Configuration validation couples an isothermal selection to
+enabled thermal conduction, no-slip to enabled viscosity, and nonzero wall
+velocity to no-slip. The boundary builder applies these values transactionally
+only after its domain faces and embedded-wall storage are valid.
+
+The single-level application is checkpoint-free, so this exposes the wall
+physics without creating an untracked restart dependency. The AMR public
+driver explicitly rejects an active isothermal or no-slip embedded-wall config
+at preflight while its checkpoint/fingerprint formats remain unchanged. The
+low-level AMR and MPI boundary-set APIs qualified in `0.180.0` remain available
+to library callers.

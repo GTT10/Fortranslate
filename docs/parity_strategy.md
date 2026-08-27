@@ -2909,3 +2909,18 @@ nonzero energy and momentum changes there. Retain all single-level,
 fixed-depth, multipatch, arbitrary-depth, serial, and sparse-MPI transport,
 rollback, and field-parity gates in all 215 serial tests and the complete
 one-, two-, four-, and eight-rank MPI Debug/Release chain.
+
+## 0.181.0 public embedded-wall input gates
+
+Run the public single-level EB transport application from a namelist selecting
+an isothermal, tangentially moving no-slip wall. Require every active output
+state to remain finite with species closure, require at least one cut cell to
+heat relative to the no-transport reference, and require nonzero tangential
+velocity in the cut-cell band. Retain the existing bulk-conduction reduction
+of the temperature span.
+
+Through the direct driver API, select isothermal mode with transport disabled
+and require neutral clock/counter rejection. Keep active nondefault walls
+rejected by checkpoint-capable AMR application preflight. Retain all 215 serial
+tests and the complete one-, two-, four-, and eight-rank MPI Debug/Release
+chain.

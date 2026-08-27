@@ -230,6 +230,15 @@ program test_reactive_eb_2d_driver
     3.0e-12_dp * scale, "uniform EB transport conservation")
   config%flow%transport_enabled = .false.
 
+  config%embedded_wall_thermal = "isothermal"
+  config%embedded_wall_temperature = 1200.0_dp
+  call simulate_reactive_eb_2d( &
+    species, reactions, config, state, temperature, simulated_geometry, time, &
+    steps, initial_integrals, final_integrals, minimum_dt, base_density, ok)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "isothermal EB wall requires enabled thermal transport")
+  config%embedded_wall_thermal = "adiabatic"
+
   config%state_redist_max_order = 1
   call simulate_reactive_eb_2d( &
     species, reactions, config, state, temperature, simulated_geometry, time, &
