@@ -396,9 +396,20 @@ program test_reactive_eb_amr_2d_driver
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
     fine_active, time, steps, regrids, initial_integrals, final_integrals, &
     minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  call require(ok .and. steps >= 1 .and. &
+    time == config%eb%flow%final_time, &
+    "runnable two-level AMR isothermal-wall transport")
+  call require(final_integrals(iet) > initial_integrals(iet), &
+    "two-level AMR isothermal-wall heating")
+  config%eb%embedded_wall_thermal = "adiabatic"
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &
     max(1.0_dp, abs(initial_integrals)))
-  call require(ok, "runnable two-level AMR isothermal-wall transport")
+  call require(ok, "runnable two-level AMR transport")
   call require(steps >= 1 .and. &
     time == config%eb%flow%final_time .and. minimum_dt > 0.0_dp, &
     "two-level AMR transport time loop")
@@ -408,6 +419,7 @@ program test_reactive_eb_amr_2d_driver
   call require(conservation_error <= 8.0e-11_dp, &
     "two-level AMR transport conservation")
 
+  config%eb%embedded_wall_thermal = "isothermal"
   config%checkpoint_file = checkpoint_path
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
