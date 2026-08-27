@@ -3740,7 +3740,9 @@ contains
     real(dp) :: dx, dy, dt, remaining, step_theta, time_tolerance
     real(dp) :: local_minimum_transport_theta
     character(len=160) :: physics_context
-    logical :: changed, local_ok, stopped_after_checkpoint
+    logical :: barodiffusion_active, changed, local_ok
+    logical :: species_diffusion_active, stopped_after_checkpoint
+    logical :: thermal_conduction_active, viscosity_active
     integer :: last_checkpoint_step, nvar, tagged_cells
 
     solution = reactive_amr_eb_patch_tree_2d()
@@ -3762,6 +3764,14 @@ contains
         (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &
         (config%eb%flow%transport_enabled .and. &
          size(transport) /= size(species))) return
+    viscosity_active = config%eb%flow%transport_enabled .and. &
+      config%eb%flow%viscosity_enabled
+    thermal_conduction_active = config%eb%flow%transport_enabled .and. &
+      config%eb%flow%thermal_conduction_enabled
+    species_diffusion_active = config%eb%flow%transport_enabled .and. &
+      config%eb%flow%species_diffusion_enabled
+    barodiffusion_active = species_diffusion_active .and. &
+      config%eb%flow%barodiffusion_enabled
     call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
       config, fingerprint, local_ok)
     if (.not. local_ok) return
@@ -3844,9 +3854,8 @@ contains
       call compute_reactive_amr_eb_patch_tree_timestep_2d( &
         species, transport, solution, config%eb%flow%cfl, &
         config%eb%flow%transport_cfl, &
-        config%eb%flow%viscosity_enabled, &
-        config%eb%flow%thermal_conduction_enabled, &
-        config%eb%flow%species_diffusion_enabled, dt, local_ok)
+        viscosity_active, thermal_conduction_active, &
+        species_diffusion_active, dt, local_ok)
       if (.not. local_ok) return
       dt = min(dt, remaining)
       if (present(failure_context)) failure_context = "full physics"
@@ -3857,10 +3866,8 @@ contains
         config%eb%flow%chemistry_enabled, &
         config%eb%flow%chemistry_relative_tolerance, &
         config%eb%flow%chemistry_absolute_tolerance, &
-        config%eb%flow%viscosity_enabled, &
-        config%eb%flow%thermal_conduction_enabled, &
-        config%eb%flow%species_diffusion_enabled, &
-        config%eb%flow%barodiffusion_enabled, boundaries, &
+        viscosity_active, thermal_conduction_active, &
+        species_diffusion_active, barodiffusion_active, boundaries, &
         config%eb%state_redist_target_volume_fraction, step_theta, local_ok, &
         physics_context)
       if (.not. local_ok) then
