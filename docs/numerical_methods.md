@@ -2284,3 +2284,27 @@ Every refined node uses owner-local subtree reductions for its before/after
 composite integral and applies the same boundary-flux conservation residual to
 unrefined active parent cells. The public sparse operation commits only after
 the complete root recursion and candidate validation succeed.
+
+## MPI owner-local arbitrary-depth EB patch-tree transport
+
+Each recursive transport Euler stage uses the hydro ownership route with the
+transport flux/RHS and StateRedist kernels. A remote parent/child edge sends
+one time-interpolated exterior context, returns one fine diffusive-flux payload
+for each of the `r` child substeps, performs the two-message reflux round trip,
+and sends corrected child state once for average-down. Its grouped transfer
+count is therefore again `r + 4` per parent invocation.
+
+Let `U^0` be the accepted sparse tree and let `E(U)` denote one owner-local
+recursive Euler stage. The SSPRK2 transaction computes
+
+```text
+U^1 = E(U^0),
+U^2 = E(U^1),
+U^(n+1) = 1/2 (U^0 + U^2).
+```
+
+The final blend and EOS temperature recovery occur independently on every node
+owner. A deepest-first direct average-down follows the blend, adding one remote
+transfer for every distinct-owner relation. The public limiter is the
+communicator minimum over both stages. All fields and diagnostics commit only
+after final sparse validation.

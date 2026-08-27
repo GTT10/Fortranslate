@@ -9,14 +9,18 @@ module mpi_amr_eb_patch_tree_2d_mod
   use transport_database_mod, only: &
     gas_transport_species, compatible_transport_database
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_species_component
+    reactive_nvar, reactive_nprim, reactive_species_component
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, validate_reactive_boundary_set_2d
   use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
+  use eb_reactive_redistribution_2d_mod, only: &
+    advance_reactive_eb_state_redistributed_2d
   use eb_reactive_transport_2d_mod, only: &
-    reactive_eb_transport_timestep_2d
+    reactive_eb_transport_timestep_2d, reactive_eb_transport_fluxes_rhs_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
   use amr_eb_flux_register_2d_mod, only: &
@@ -102,6 +106,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d
+  public :: advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d
   public :: composite_sparse_amr_eb_patch_tree_integral_2d
   public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
@@ -1134,6 +1139,460 @@ contains
     if (present(local_entity_transfers)) local_entity_transfers = transfers
   end subroutine &
     advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d
+
+  subroutine advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, distribution, sparse, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, minimum_theta, ok, failure_context, &
+      local_level_advances, local_entity_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: max_order
+    real(dp), intent(out) :: minimum_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: local_level_advances(:)
+    integer, intent(out), optional :: local_entity_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate, start
+    type(eb_geometry_2d) :: geometry
+    real(dp), allocatable :: temperature_work(:, :)
+    real(dp) :: first_theta, numeric_maximum(2), numeric_minimum(2)
+    real(dp) :: numeric_values(2), second_theta
+    integer, allocatable :: first_advances(:), second_advances(:)
+    integer :: child, ierr, integer_maximum(6), integer_minimum(6)
+    integer :: integer_values(6), level, parent, patch, relation, transfers
+    character(len=160) :: context
+    logical :: accepted, boundaries_match, global_ok, local_ok, matches
+    logical :: transport_active
+
+    ok = .false.
+    minimum_theta = 1.0_dp
+    transfers = 0
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(local_level_advances)) local_level_advances = 0
+    if (present(local_entity_transfers)) local_entity_transfers = 0
+    transport_active = viscosity_enabled .or. &
+      thermal_conduction_enabled .or. species_diffusion_enabled
+    numeric_values = [interval, target_volume_fraction]
+    integer_values = [ &
+      max_order, size(species), merge(1, 0, viscosity_enabled), &
+      merge(1, 0, thermal_conduction_enabled), &
+      merge(1, 0, species_diffusion_enabled), &
+      merge(1, 0, barodiffusion_enabled)]
+
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    call replicated_reactive_boundaries_match_2d( &
+      boundaries, size(species), distribution%comm, boundaries_match)
+    local_ok = matches .and. boundaries_match .and. &
+      sparse%is_valid(distribution) .and. &
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      size(species) >= 1 .and. all(ieee_is_finite(numeric_values)) .and. &
+      interval >= 0.0_dp .and. target_volume_fraction > 0.0_dp .and. &
+      target_volume_fraction <= 1.0_dp .and. &
+      (max_order == 0 .or. max_order == 2)
+    if (transport_active) local_ok = local_ok .and. &
+      compatible_transport_database(species, transport)
+    if (present(local_level_advances)) local_ok = local_ok .and. &
+      size(local_level_advances) == sparse%level_count()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      numeric_values, numeric_minimum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_maximum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+    if (interval <= tiny(1.0_dp) .or. .not. transport_active) then
+      ok = .true.
+      if (present(failure_context)) failure_context = "none"
+      return
+    end if
+
+    start = sparse
+    candidate = sparse
+    allocate(first_advances(candidate%level_count()), source=0)
+    allocate(second_advances(candidate%level_count()), source=0)
+    call advance_sparse_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, distribution, candidate, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, first_theta, first_advances, &
+      transfers, context, local_ok)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    call advance_sparse_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, distribution, candidate, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, second_theta, second_advances, &
+      transfers, context, local_ok)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        context = "stage blend geometry"
+        call topology_patch_geometry_2d( &
+          candidate%topology, level - 1, patch, geometry, local_ok)
+        if (distribution%is_local(level - 1, patch) .and. local_ok) then
+          candidate%levels(level)%patches(patch)%state = 0.5_dp * ( &
+            start%levels(level)%patches(patch)%state + &
+            candidate%levels(level)%patches(patch)%state)
+          allocate(temperature_work(geometry%nx, geometry%ny))
+          context = "stage blend temperature recovery"
+          call recover_transport_temperature_2d( &
+            species, candidate%levels(level)%patches(patch)%state, &
+            0.5_dp * (start%levels(level)%patches(patch)%temperature + &
+              candidate%levels(level)%patches(patch)%temperature), geometry, &
+            temperature_work, local_ok)
+          if (local_ok) candidate%levels(level)%patches(patch)%temperature = &
+            temperature_work
+          deallocate(temperature_work)
+        end if
+        call all_ranks_accept_2d( &
+          distribution%comm, local_ok, accepted, global_ok)
+        if (.not. global_ok .or. .not. accepted) then
+          if (present(failure_context)) failure_context = context
+          return
+        end if
+      end do
+    end do
+
+    context = "final hierarchy synchronization"
+    do relation = size(candidate%topology%relations), 1, -1
+      do child = 1, candidate%topology%relations(relation)% &
+          child_patch_count()
+        parent = candidate%topology%relations(relation)% &
+          children(child)%parent_patch
+        call average_down_sparse_patch_tree_edge_2d( &
+          species, distribution, candidate, relation, parent, child, &
+          transfers, local_ok)
+        if (.not. local_ok) then
+          if (present(failure_context)) failure_context = context
+          return
+        end if
+      end do
+    end do
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    sparse = candidate
+    minimum_theta = min(first_theta, second_theta)
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+    if (present(local_level_advances)) &
+      local_level_advances = first_advances + second_advances
+    if (present(local_entity_transfers)) local_entity_transfers = transfers
+  end subroutine &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d
+
+  subroutine advance_sparse_amr_eb_patch_tree_transport_euler_2d( &
+      species, transport, distribution, sparse, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, minimum_theta, advances, transfers, &
+      failure_context, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: max_order
+    real(dp), intent(out) :: minimum_theta
+    integer, intent(out) :: advances(:)
+    integer, intent(inout) :: transfers
+    character(len=*), intent(inout) :: failure_context
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: x_flux(:, :, :), y_flux(:, :, :)
+    real(dp) :: local_theta
+    integer :: ierr
+    logical :: accepted, global_ok, local_ok
+
+    ok = .false.
+    minimum_theta = 1.0_dp
+    advances = 0
+    local_theta = 1.0_dp
+    call advance_sparse_amr_eb_patch_tree_transport_node_2d( &
+      species, transport, distribution, sparse, 1, 1, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, x_flux, y_flux, local_theta, &
+      advances, transfers, failure_context, local_ok)
+    if (.not. local_ok) return
+    call MPI_Allreduce( &
+      local_theta, minimum_theta, 1, MPI_DOUBLE_PRECISION, MPI_MIN, &
+      distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. ieee_is_finite(minimum_theta) .or. &
+        minimum_theta < 0.0_dp .or. minimum_theta > 1.0_dp) return
+    local_ok = sparse%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    ok = global_ok .and. accepted
+  end subroutine advance_sparse_amr_eb_patch_tree_transport_euler_2d
+
+  recursive subroutine advance_sparse_amr_eb_patch_tree_transport_node_2d( &
+      species, transport, distribution, sparse, level, patch, interval, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, x_flux, y_flux, minimum_theta, &
+      advances, transfers, failure_context, ok, exterior)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    integer, intent(in) :: level, patch, max_order
+    real(dp), intent(in) :: interval, target_volume_fraction
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), allocatable, intent(out) :: x_flux(:, :, :), y_flux(:, :, :)
+    real(dp), intent(inout) :: minimum_theta
+    integer, intent(inout) :: advances(:), transfers
+    character(len=*), intent(inout) :: failure_context
+    logical, intent(out) :: ok
+    type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
+
+    type(eb_geometry_2d) :: child_geometry, geometry
+    type(amr_eb_flux_register_2d), allocatable :: registers(:)
+    type(reactive_eb_patch_exterior_context_2d), allocatable :: contexts(:)
+    type(reactive_eb_exterior_state_2d) :: child_exterior
+    real(dp), allocatable :: child_x_flux(:, :, :), child_y_flux(:, :, :)
+    real(dp), allocatable :: integral_before(:), rhs(:, :, :)
+    real(dp), allocatable :: parent_fine_x_flux(:, :, :)
+    real(dp), allocatable :: parent_fine_y_flux(:, :, :)
+    real(dp), allocatable :: state_end(:, :, :), state_start(:, :, :)
+    real(dp), allocatable :: temperature_end(:, :), temperature_start(:, :)
+    real(dp) :: alpha, child_interval, node_theta
+    integer :: child, child_count, child_owner, first_child, global_child
+    integer :: owner, ratio, substep
+    logical :: accepted, entity_ok, global_ok, local_ok
+
+    ok = .false.
+    entity_ok = level >= 1 .and. level <= sparse%level_count() .and. &
+      patch >= 1 .and. patch <= sparse%levels(level)%patch_count() .and. &
+      size(advances) == sparse%level_count() .and. &
+      ieee_is_finite(interval) .and. interval > 0.0_dp
+    call all_ranks_accept_2d( &
+      distribution%comm, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call topology_patch_geometry_2d( &
+      sparse%topology, level - 1, patch, geometry, entity_ok)
+    owner = distribution%owner_of(level - 1, patch)
+    entity_ok = entity_ok .and. owner >= 0 .and. owner < distribution%nranks
+    call all_ranks_accept_2d( &
+      distribution%comm, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    child_count = 0
+    first_child = 1
+    if (level < sparse%level_count()) then
+      first_child = sparse%topology%relations(level)% &
+        child_offsets(patch) + 1
+      child_count = sparse%topology%relations(level)% &
+          child_offsets(patch + 1) - &
+        sparse%topology%relations(level)%child_offsets(patch)
+    end if
+    if (child_count > 0) then
+      allocate(integral_before(sparse%nvar))
+      call reduce_sparse_amr_eb_patch_subtree_integral_2d( &
+        distribution, sparse, level, patch, integral_before, local_ok)
+      if (.not. local_ok) return
+    end if
+
+    entity_ok = .true.
+    write(failure_context, '(a,i0,a,i0)') &
+      "transport level ", level - 1, " patch ", patch
+    if (distribution%rank == owner) then
+      allocate(state_start, source=sparse%levels(level)%patches(patch)%state)
+      allocate(temperature_start, &
+        source=sparse%levels(level)%patches(patch)%temperature)
+      allocate(state_end, mold=state_start)
+      allocate(temperature_end, mold=temperature_start)
+      allocate(rhs, mold=state_start)
+      allocate(x_flux(sparse%nvar, 0:geometry%nx, geometry%ny))
+      allocate(y_flux(sparse%nvar, geometry%nx, 0:geometry%ny))
+      if (present(exterior)) then
+        call reactive_eb_transport_fluxes_rhs_2d( &
+          species, transport, state_start, temperature_start, geometry, &
+          interval, viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+          x_flux, y_flux, node_theta, entity_ok, exterior)
+      else
+        call reactive_eb_transport_fluxes_rhs_2d( &
+          species, transport, state_start, temperature_start, geometry, &
+          interval, viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, rhs, &
+          x_flux, y_flux, node_theta, entity_ok)
+      end if
+      if (entity_ok) then
+        minimum_theta = min(minimum_theta, node_theta)
+        call advance_reactive_eb_state_redistributed_2d( &
+          species, state_start, temperature_start, geometry, rhs, interval, &
+          state_end, temperature_end, entity_ok, target_volume_fraction, &
+          max_order)
+      end if
+      if (entity_ok) then
+        sparse%levels(level)%patches(patch)%state = state_end
+        sparse%levels(level)%patches(patch)%temperature = temperature_end
+        advances(level) = advances(level) + 1
+      end if
+    end if
+    call all_ranks_accept_2d( &
+      distribution%comm, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    if (child_count == 0) then
+      ok = .true.
+      return
+    end if
+
+    ratio = sparse%topology%relations(level)%refinement_ratio
+    child_interval = interval / real(ratio, dp)
+    allocate(registers(child_count), contexts(child_count))
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      child_geometry = sparse%topology%relations(level)% &
+        children(global_child)%geometry
+      child_owner = distribution%owner_of(level, global_child)
+      write(failure_context, '(a,i0,a,i0)') &
+        "transport register level ", level, " child ", global_child
+      entity_ok = child_owner >= 0 .and. child_owner < distribution%nranks
+      if (distribution%rank == owner .and. entity_ok) then
+        call initialize_amr_eb_flux_register_2d( &
+          geometry, child_geometry, sparse%topology%relations(level)% &
+            children(global_child)%patch, sparse%nvar, registers(child), &
+          entity_ok)
+        if (entity_ok) call accumulate_coarse_eb_fluxes_2d( &
+          registers(child), geometry, child_geometry, &
+          sparse%topology%relations(level)%children(global_child)%patch, &
+          x_flux, y_flux, interval, entity_ok)
+      end if
+      call all_ranks_accept_2d( &
+        distribution%comm, entity_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) return
+      write(failure_context, '(a,i0,a,i0)') &
+        "transport context level ", level, " child ", global_child
+      call transfer_sparse_patch_tree_parent_context_2d( &
+        distribution, sparse%nvar, owner, child_owner, state_start, &
+        temperature_start, state_end, temperature_end, geometry, &
+        child_geometry, sparse%topology%relations(level)% &
+          children(global_child)%patch, contexts(child), transfers, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    do substep = 1, ratio
+      alpha = real(substep - 1, dp) / real(ratio, dp)
+      do child = 1, child_count
+        global_child = first_child + child - 1
+        child_geometry = sparse%topology%relations(level)% &
+          children(global_child)%geometry
+        child_owner = distribution%owner_of(level, global_child)
+        write(failure_context, '(a,i0,a,i0,a,i0)') &
+          "transport exterior level ", level, " child ", global_child, &
+          " substep ", substep
+        child_exterior = reactive_eb_exterior_state_2d()
+        entity_ok = .true.
+        if (distribution%rank == child_owner) then
+          call build_reactive_eb_patch_exterior_from_context_2d( &
+            species, contexts(child), geometry, child_geometry, &
+            sparse%topology%relations(level)%children(global_child)%patch, &
+            alpha, child_exterior, entity_ok, &
+            sparse%levels(level + 1)%patches(global_child)%state, &
+            sparse%levels(level + 1)%patches(global_child)%temperature)
+        end if
+        call all_ranks_accept_2d( &
+          distribution%comm, entity_ok, accepted, global_ok)
+        if (.not. global_ok .or. .not. accepted) return
+        call advance_sparse_amr_eb_patch_tree_transport_node_2d( &
+          species, transport, distribution, sparse, level + 1, global_child, &
+          child_interval, viscosity_enabled, thermal_conduction_enabled, &
+          species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+          target_volume_fraction, max_order, child_x_flux, child_y_flux, &
+          minimum_theta, advances, transfers, failure_context, local_ok, &
+          child_exterior)
+        if (.not. local_ok) return
+        write(failure_context, '(a,i0,a,i0,a,i0)') &
+          "transport fine flux level ", level, " child ", global_child, &
+          " substep ", substep
+        call transfer_sparse_patch_tree_flux_2d( &
+          distribution, sparse%nvar, child_owner, owner, child_geometry, &
+          child_x_flux, child_y_flux, parent_fine_x_flux, &
+          parent_fine_y_flux, transfers, local_ok)
+        if (.not. local_ok) return
+        entity_ok = .true.
+        if (distribution%rank == owner) call accumulate_fine_eb_fluxes_2d( &
+          registers(child), geometry, child_geometry, &
+          sparse%topology%relations(level)%children(global_child)%patch, &
+          parent_fine_x_flux, parent_fine_y_flux, child_interval, entity_ok)
+        call all_ranks_accept_2d( &
+          distribution%comm, entity_ok, accepted, global_ok)
+        if (.not. global_ok .or. .not. accepted) return
+      end do
+    end do
+
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      write(failure_context, '(a,i0,a,i0)') &
+        "transport reflux level ", level, " child ", global_child
+      call reflux_sparse_patch_tree_edge_2d( &
+        species, distribution, sparse, level, patch, global_child, &
+        registers(child), transfers, local_ok)
+      if (.not. local_ok) return
+    end do
+    do child = 1, child_count
+      global_child = first_child + child - 1
+      write(failure_context, '(a,i0,a,i0)') &
+        "transport average level ", level, " child ", global_child
+      call average_down_sparse_patch_tree_edge_2d( &
+        species, distribution, sparse, level, patch, global_child, &
+        transfers, local_ok)
+      if (.not. local_ok) return
+    end do
+
+    write(failure_context, '(a,i0,a,i0)') &
+      "transport closure level ", level - 1, " patch ", patch
+    call close_sparse_amr_eb_patch_subtree_conservation_2d( &
+      species, distribution, sparse, level, patch, integral_before, x_flux, &
+      y_flux, interval, local_ok)
+    if (.not. local_ok) return
+    ok = .true.
+  end subroutine advance_sparse_amr_eb_patch_tree_transport_node_2d
 
   recursive subroutine advance_sparse_amr_eb_patch_tree_hydro_node_2d( &
       species, distribution, sparse, level, patch, solver, reconstruction, &
@@ -2271,6 +2730,115 @@ contains
     end if
     ok = geometry%is_valid()
   end subroutine topology_patch_geometry_2d
+
+  subroutine replicated_reactive_boundaries_match_2d( &
+      boundaries, nspecies, comm, matches)
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    integer, intent(in) :: nspecies
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: matches
+
+    real(dp), allocatable :: numeric_maximum(:), numeric_minimum(:)
+    real(dp), allocatable :: numeric_values(:)
+    integer, allocatable :: integer_maximum(:), integer_minimum(:)
+    integer, allocatable :: integer_values(:)
+    integer :: character_index, ierr, index, maximum_species
+    integer :: minimum_species, nprimitive, side
+    logical :: accepted, global_ok, local_ok
+
+    matches = .false.
+    call all_ranks_accept_2d( &
+      comm, nspecies >= 1, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      nspecies, minimum_species, 1, MPI_INTEGER, MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      nspecies, maximum_species, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. minimum_species /= maximum_species) return
+    nprimitive = reactive_nprim(nspecies)
+
+    call validate_reactive_boundary_set_2d(boundaries, local_ok)
+    do side = 1, 4
+      local_ok = local_ok .and. &
+        allocated(boundaries%face(side)%inflow_primitive) .and. &
+        allocated(boundaries%face(side)%prescribed_species_flux)
+      if (.not. local_ok) cycle
+      local_ok = size(boundaries%face(side)%inflow_primitive) == &
+          nprimitive .and. &
+        size(boundaries%face(side)%prescribed_species_flux) == nspecies .and. &
+        all(ieee_is_finite(boundaries%face(side)%inflow_primitive)) .and. &
+        all(ieee_is_finite( &
+          boundaries%face(side)%prescribed_species_flux))
+    end do
+    call all_ranks_accept_2d( &
+      comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    allocate(integer_values(24 * 3 * 4))
+    allocate(integer_minimum(size(integer_values)))
+    allocate(integer_maximum(size(integer_values)))
+    integer_values = 0
+    index = 1
+    do side = 1, 4
+      do character_index = 1, 24
+        integer_values(index) = &
+          iachar(boundaries%face(side)%kind(character_index:character_index))
+        index = index + 1
+      end do
+      do character_index = 1, 24
+        integer_values(index) = iachar( &
+          boundaries%face(side)%thermal(character_index:character_index))
+        index = index + 1
+      end do
+      do character_index = 1, 24
+        integer_values(index) = iachar( &
+          boundaries%face(side)% &
+            wall_species(character_index:character_index))
+        index = index + 1
+      end do
+    end do
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    allocate(numeric_values(4 * (5 + nspecies + nprimitive)))
+    allocate(numeric_minimum(size(numeric_values)))
+    allocate(numeric_maximum(size(numeric_values)))
+    index = 1
+    do side = 1, 4
+      numeric_values(index:index + 4) = [ &
+        boundaries%face(side)%wall_temperature, &
+        boundaries%face(side)%wall_velocity, &
+        boundaries%face(side)%inflow_temperature]
+      index = index + 5
+      numeric_values(index:index + nspecies - 1) = &
+        boundaries%face(side)%prescribed_species_flux
+      index = index + nspecies
+      numeric_values(index:index + nprimitive - 1) = &
+        boundaries%face(side)%inflow_primitive
+      index = index + nprimitive
+    end do
+    local_ok = index == size(numeric_values) + 1 .and. &
+      all(ieee_is_finite(numeric_values))
+    call all_ranks_accept_2d(comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_minimum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_maximum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MAX, comm, ierr)
+    matches = ierr == MPI_SUCCESS .and. &
+      all(numeric_minimum == numeric_maximum)
+  end subroutine replicated_reactive_boundaries_match_2d
 
   subroutine replicated_distribution_matches_2d( &
       distribution, topology, matches)

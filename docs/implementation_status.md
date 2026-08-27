@@ -2945,3 +2945,22 @@ remain separate work.
 This milestone removes materialization from recursive hydrodynamics. Owner-
 local recursive transport and the sparse public full-physics clock remain
 separate work.
+
+## MPI owner-local arbitrary-depth EB patch-tree transport (`0.165.0`)
+
+- [x] owner-local recursive transport Euler stages on one sparse candidate
+- [x] compact parent start/end exterior-context transfer per remote edge
+- [x] direct fine diffusive-flux return per remote child substep
+- [x] parent-owner flux-register accumulation and consumption
+- [x] direct child-state reflux round trip and ordered average-down
+- [x] owner-local StateRedist, SSPRK2 blend, and EOS temperature recovery
+- [x] owner-local subtree conservation closure for both Euler stages
+- [x] final deepest-first restriction without materialization
+- [x] exact map/schedule-derived grouped-transfer accounting
+- [x] serial field, limiter, and composite-conservation parity
+- [x] collective boundary/control mismatch rollback with zero accounting
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes materialization from recursive molecular transport.
+Owner-local full-physics composition and the sparse public clock remain
+separate work.
