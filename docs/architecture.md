@@ -2158,3 +2158,25 @@ tile. Recipient fluid volume normalizes the correction; EOS recovery and the
 existing final composite-integral check remain transactional. This removes the
 former parent-wide perturbation but does not claim bitwise equivalence to
 AMReX's per-neighborhood `MLStateRedistribute` transfer bookkeeping.
+
+## Embedded-wall molecular heat and momentum transfer (`0.180.0`)
+
+`reactive_boundary_set_2d` owns one validated embedded-wall record in addition
+to its four Cartesian domain faces. Its default is a stationary adiabatic slip
+wall with zero species flux, preserving every earlier EB result. A caller may
+select an isothermal wall temperature, no-slip velocity, or both through that
+record without changing any transport stepping interface.
+
+For each cut cell, `eb_reactive_transport_2d_mod` recovers the cell primitive
+state and mixture transport coefficients, measures the centroid-to-wall
+distance along the solid-to-fluid normal, and forms one wall-normal flux. The
+wall length converts that flux to an extensive contribution and the cut-cell
+fluid volume converts it to the local right-hand side. Existing StateRedist,
+EOS recovery, AMR reflux, sparse ownership, collective validation, and rollback
+remain downstream of the same source.
+
+The MPI control-consensus paths compare the embedded-wall strings, temperature,
+velocity, and allocated boundary vectors in addition to the four domain faces.
+The low-level boundary-set API is qualified across every current transport
+path. Namelist exposure and checkpoint fingerprinting of nondefault wall values
+remain a separate public-application lifecycle milestone.

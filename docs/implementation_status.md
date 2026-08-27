@@ -3237,3 +3237,25 @@ This milestone removes parent-wide residual spreading from every qualified 2D
 EB AMR closure path. The correction remains a conservative interface-local
 closure rather than a claim of exact AMReX `MLStateRedistribute` transfer
 parity.
+
+## Embedded-wall thermal and viscous transport (`0.180.0`)
+
+- [x] validated embedded-wall record in the shared 2D boundary set
+- [x] backward-compatible adiabatic slip and impermeable defaults
+- [x] physical fluid-centroid to wall-centroid normal distance
+- [x] isothermal Fourier heat transfer on cut faces
+- [x] no-slip Newtonian normal and tangential momentum transfer
+- [x] moving-wall viscous work in total energy
+- [x] exact zero mass and species wall transport
+- [x] wall-length and cut-fluid-volume conservative source scaling
+- [x] single-level, fixed-depth, multipatch, arbitrary-depth path reuse
+- [x] serial and sparse-MPI boundary-control consensus
+- [x] focused heat, traction, work, slip, locality, and rejection gates
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
+
+This milestone adds the embedded diffusive flux to the established transport
+right-hand side without changing its AMR or MPI stepping interfaces. Embedded
+species conversion/catalytic kinetics, higher-order wall-normal gradients,
+public namelist controls, and checkpoint compatibility for nondefault wall
+values remain separate work.
