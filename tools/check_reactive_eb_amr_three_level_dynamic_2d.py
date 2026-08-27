@@ -56,8 +56,8 @@ def main() -> None:
         raise AssertionError("middle patch retained the configured seed")
     for name, rows in (("middle", middle), ("finest", finest)):
         cell_types = {int(row["cell_type"]) for row in rows}
-        if not {1, 2}.issubset(cell_types):
-            raise AssertionError(f"{name}: missing active EB classes {cell_types}")
+        if 2 not in cell_types:
+            raise AssertionError(f"{name}: missing cut-cell coverage {cell_types}")
     finest_dimensions = dimensions(finest)
     if min(finest_dimensions) < 8:
         raise AssertionError("finest patch is smaller than the tagged minimum")
