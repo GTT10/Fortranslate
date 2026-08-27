@@ -2482,3 +2482,19 @@ parent is tagged independently and the topology is rebuilt transactionally up
 to `patch_tree_maximum_levels`. The same configured plane or circle is sampled
 at each child resolution. Checkpoint cadence is evaluated after regridding, so
 the stored topology is exactly the topology published for the next step.
+
+## Public patch-tree restart composition
+
+Let `A_k` denote one committed root step followed by the scheduled topology
+decision at global step `k`, `W` the self-describing checkpoint write, and `R`
+its application restart. The public parity gate requires
+
+```text
+A_N ... A_2 A_1(q_0) = A_N ... A_2 R(W(A_1(q_0)))
+```
+
+within the output tolerance for every finest-available composite cell. `R`
+restores the time, global step, regrid count, minimum accepted timestep,
+topology, EB geometry, conserved state, and temperature. Therefore the next
+periodic regrid decision uses the same global step index as the uninterrupted
+run. Current input continues to supply final time and numerical controls.

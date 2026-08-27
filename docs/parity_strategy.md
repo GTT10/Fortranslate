@@ -2814,3 +2814,16 @@ valid volume fractions, positive density/pressure/temperature, all three EB
 cell classes, seven ordered species columns, and mass-fraction closure within
 `8e-12`. Retain the complete 210-test suite in GNU Fortran Release and bounds/
 FPE-checked Debug.
+
+## 0.174.0 public patch-tree restart gates
+
+Run the same four-level dynamically tagged case as an uninterrupted reference,
+a process stopped after its first scheduled checkpoint, and a separate restart
+process. Require the stopped composite time to be strictly inside the requested
+interval and both completed paths to reach the exact final time.
+
+Validate the checkpoint magic, schema, seven-species header, four-level count,
+and completion marker. Key both completed composite outputs by
+`(level, patch, i, j)`, require identical key and column sets, and compare every
+numeric field within `3e-10 * max(1, abs(reference))`. Retain all 214 tests in
+GNU Fortran Release and bounds/FPE-checked Debug.

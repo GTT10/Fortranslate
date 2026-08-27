@@ -1350,6 +1350,20 @@ thermodynamic, species-closure, spacing, identity, and time data. Run the full
 Defer application-level checkpoint/restart comparison and public sparse MPI
 application integration.
 
+## 0.174.0 public patch-tree application restart gates
+
+Exercise the installed serial arbitrary-depth EB executable through three
+separate processes: uninterrupted reference, checkpoint-stop after the first
+committed step, and continuation from that checkpoint. Keep recursive initial
+tagging and periodic regridding enabled so the file carries a four-level
+numerical hierarchy and the resumed clock retains its global cadence.
+
+Require a structurally complete checkpoint, an intermediate stopped output,
+exact final times, identical final composite identities and columns, and
+bounded numeric differences for every field. Run the complete 214-test suite
+in GNU Fortran Release and bounds/FPE-checked Debug. Defer public sparse-MPI
+application integration and explicit input/checkpoint compatibility hashes.
+
 Each implementation PR should normally contain:
 
 1. implementation

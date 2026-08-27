@@ -3572,6 +3572,7 @@ contains
     real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
     real(dp) :: dx, dy, dt, remaining, step_theta, time_tolerance
     real(dp) :: local_minimum_transport_theta
+    character(len=160) :: physics_context
     logical :: changed, local_ok, stopped_after_checkpoint
     integer :: last_checkpoint_step, nvar, tagged_cells
 
@@ -3688,8 +3689,13 @@ contains
         config%eb%flow%thermal_conduction_enabled, &
         config%eb%flow%species_diffusion_enabled, &
         config%eb%flow%barodiffusion_enabled, boundaries, &
-        config%eb%state_redist_target_volume_fraction, step_theta, local_ok)
-      if (.not. local_ok) return
+        config%eb%state_redist_target_volume_fraction, step_theta, local_ok, &
+        physics_context)
+      if (.not. local_ok) then
+        if (present(failure_context)) &
+          failure_context = "full physics: " // trim(physics_context)
+        return
+      end if
       time = time + dt
       minimum_dt = min(minimum_dt, dt)
       local_minimum_transport_theta = min( &

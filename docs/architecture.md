@@ -2057,3 +2057,19 @@ Numerical topology and fields remain owned by the patch-tree core; geometry
 construction is an internal callback using the configured plane or circle over
 each child region. Existing fixed-depth application modes do not call this
 path.
+
+## Public patch-tree checkpoint/restart lifecycle (`0.174.0`)
+
+The public serial application now has a process-boundary qualification. The
+checkpoint-stop process performs initial recursive tagging, commits one
+full-physics root step, applies its scheduled recursive regrid, writes the
+self-describing tree, and exits after publishing a composite CSV. A second
+process reconstructs the hierarchy and fields from that file and resumes the
+same global root-step cadence.
+
+The checkpoint owns numerical state: tree geometry and relations, every node
+field, time, committed root-step count, regrid count, and minimum accepted
+timestep. Continuation controls such as final time, CFL, physics switches, and
+tagging thresholds remain explicit in the restart input. The parity gate uses
+identical continuation controls and compares the restarted result with an
+uninterrupted reference by stable `(level, patch, i, j)` identity.
