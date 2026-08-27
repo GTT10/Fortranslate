@@ -16,10 +16,10 @@
   chemistry_enabled = .false.
   chemistry_model = "elementary"
   transport_enabled = .true.
-  viscosity_enabled = .false.
+  viscosity_enabled = .true.
   thermal_conduction_enabled = .true.
-  species_diffusion_enabled = .false.
-  barodiffusion_enabled = .false.
+  species_diffusion_enabled = .true.
+  barodiffusion_enabled = .true.
   transport_cfl = 0.35
   boundary_x_lower = "outflow"
   boundary_x_upper = "outflow"

@@ -1266,6 +1266,14 @@ physical side and refluxes only true coarse/fine interfaces. The checkpoint
 fingerprint fixes the active transport operators and transport CFL across
 restart while the stored topology keeps physical-side contact.
 
+The full qualified boundary case also enables Newtonian viscous stress and
+mixture-averaged species diffusion. Species face fluxes contain the established
+pressure-gradient barodiffusion contribution and are closed to zero total mass
+flux by the correction velocity; their species enthalpy flux contributes to
+total energy. These terms use the same recursive subcycling, physical-side
+omission, diffusive registers, reflux, and checkpoint fingerprint as Fourier
+conduction.
+
 Adjacent children of one parent remain separate owners. Before each fine
 substep, a child first receives its time-interpolated parent ghosts. Any ghost
 fine index covered by a sibling is then replaced exactly by that sibling's

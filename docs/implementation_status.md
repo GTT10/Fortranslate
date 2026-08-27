@@ -3496,3 +3496,20 @@ Thermal conduction is now qualified on the arbitrary-depth outflow-boundary
 topology, including process and sparse ownership changes. Viscosity, species
 diffusion, and barodiffusion remain disabled in this focused public case but
 retain their established interior-tree library gates.
+
+## Boundary-touching arbitrary-depth mixture transport (`0.194.0`)
+
+- [x] Newtonian viscosity on every populated boundary-tree level
+- [x] Fourier conduction retained with the full transport combination
+- [x] mixture-averaged species diffusion and correction velocity
+- [x] barodiffusion and species enthalpy flux
+- [x] physical-side diffusive register and reflux omission
+- [x] serial and sparse-MPI 1/2/4/8-rank fresh field parity
+- [x] independent serial full-transport restart parity
+- [x] two-rank checkpoint to four-/eight-rank full-transport restart
+- [x] schema-4 fingerprint coverage for every active transport control
+
+The public boundary topology now qualifies the complete currently implemented
+mixture-transport combination across recursive AMR, process ownership, and
+checkpoint boundaries. This remains the dilute mixture-averaged model; it is
+not Stefan--Maxwell, Soret, Dufour, or full PelePhysics transport parity.

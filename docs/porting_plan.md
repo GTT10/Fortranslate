@@ -1602,6 +1602,17 @@ Carry the active transport fingerprint through checkpoint-stop and independent
 restart. Retain exact 1/2/4/8-rank fresh-run parity and the two-rank checkpoint
 to four-/eight-rank continuation gate without adding duplicate regressions.
 
+## 0.194.0 boundary-touching mixture transport
+
+Enable viscosity, mixture-averaged species diffusion, and barodiffusion beside
+Fourier conduction in both public x-upper trees. Exercise correction velocity,
+species enthalpy flux, recursive diffusive registers, physical-side omission,
+reflux, and composite synchronization as one transport transaction.
+
+Reuse the existing fresh and restart regressions so the complete transport
+combination must preserve serial and 1/2/4/8-rank field identity, including a
+two-rank checkpoint continued at four and eight ranks under changed ownership.
+
 Each implementation PR should normally contain:
 
 1. implementation

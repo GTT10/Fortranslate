@@ -2395,3 +2395,18 @@ The sparse path executes the same transport stages on selected owners. The
 boundary-touching checkpoint fingerprint records the active transport switch,
 thermal conduction, and transport CFL, so continuation cannot silently change
 that physics while rank count and ownership weight remain free to change.
+
+## Boundary-touching mixture transport (`0.194.0`)
+
+The same public fresh and restarted trees now activate viscosity,
+mixture-averaged species diffusion, and barodiffusion in addition to Fourier
+conduction. The recursive transaction therefore carries momentum diffusion,
+zero-net-mass correction velocity, species enthalpy flux, and their
+time-integrated diffusive registers through every populated level.
+
+The x-upper physical side remains an outflow face: its exterior transport
+state comes from the current fine boundary cell and it contributes no
+coarse/fine register flux. Every other child side retains coarse-time context,
+reflux, and deepest-to-root average-down. Schema 4 already fingerprints all
+four transport controls, so this qualification does not require a checkpoint
+format change.
