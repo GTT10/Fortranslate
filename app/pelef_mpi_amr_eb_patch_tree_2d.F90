@@ -15,12 +15,15 @@ program pelef_mpi_amr_eb_patch_tree_2d
   use reactive_boundary_2d_mod, only: &
     reactive_boundary_set_2d, initialize_periodic_boundary_set_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  use amr_eb_regrid_2d_mod, only: amr_eb_tagging_criteria_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
     initialize_amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
+    plan_tagged_reactive_amr_eb_patch_tree_2d, &
+    regrid_tagged_reactive_amr_eb_patch_tree_2d, &
     compute_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
@@ -38,6 +41,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     materialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    regrid_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d, &
@@ -58,7 +64,11 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(eb_geometry_2d) :: branch_a_geometry, branch_b_geometry
   type(eb_geometry_2d) :: deep_geometry
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: tagged_plans(:)
+  type(amr_eb_patch_tree_level_plan_2d), allocatable :: serial_tagged_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: topology
+  type(amr_eb_patch_tree_topology_2d) :: root_only_topology
   type(reactive_amr_eb_patch_tree_2d) :: solution, accepted, failed
   type(reactive_amr_eb_patch_tree_2d) :: physical_solution
   type(reactive_amr_eb_patch_tree_2d) :: serial_chemistry
@@ -66,14 +76,23 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: serial_transport
   type(reactive_amr_eb_patch_tree_2d) :: serial_full_physics
   type(reactive_amr_eb_patch_tree_2d) :: serial_clock
+  type(reactive_amr_eb_patch_tree_2d) :: tagged_serial
+  type(reactive_amr_eb_patch_tree_2d) :: tagged_root
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: rejected_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: migrated_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: invalid_distribution
+  type(mpi_amr_eb_patch_tree_distribution_2d) :: tagged_distribution
+  type(mpi_amr_eb_patch_tree_distribution_2d) :: tagged_new_distribution
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse, sparse_snapshot
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: physical_sparse
+  type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: tagged_sparse
+  type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: tagged_sparse_snapshot
+  type(amr_eb_tagging_criteria_2d) :: tagged_criteria
+  type(amr_eb_tagging_criteria_2d) :: expanded_tagged_criteria
+  type(amr_eb_tagging_criteria_2d) :: rejected_tagged_criteria
   real(dp), allocatable :: root_state(:, :, :), root_temperature(:, :)
   real(dp), allocatable :: serial_integral(:), sparse_integral(:)
   real(dp) :: base_density, expected_state, expected_temperature
@@ -103,6 +122,14 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: local_hydro_transfers
   integer :: expected_transport_transfers, global_transport_transfers
   integer :: local_transport_transfers
+  integer :: expected_regrid_edge_transfers
+  integer :: global_candidate_transfers, local_candidate_transfers
+  integer :: global_overlap_transfers, local_overlap_transfers
+  integer :: global_prolongation_transfers, local_prolongation_transfers
+  integer :: global_regrid_restriction_transfers
+  integer :: local_regrid_restriction_transfers
+  integer :: global_tagging_evaluations, local_tagging_evaluations
+  integer :: serial_tagged_cells, tagged_cells, transferred_cells
   integer :: global_clock_timestep_evaluations
   integer :: local_clock_timestep_evaluations
   integer :: serial_clock_advanced_steps, serial_clock_steps
@@ -117,7 +144,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer, allocatable :: serial_clock_hydro_advances(:)
   integer, allocatable :: serial_clock_transport_advances(:)
   integer(int64) :: unweighted_work, weighted_work
-  logical :: ok, local_ok
+  logical :: ok, local_ok, topology_changed
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI initialization failed"
@@ -842,6 +869,208 @@ program pelef_mpi_amr_eb_patch_tree_2d
     sparse_trees_match(physical_sparse, sparse_snapshot), &
     "MPI EB patch-tree chemistry control rollback", comm)
 
+  allocate(empty_plans(0))
+  call initialize_amr_eb_patch_tree_topology_2d( &
+    root_geometry, empty_plans, root_only_topology, ok)
+  call assert_all(ok .and. root_only_topology%level_count() == 1, &
+    "MPI tagged EB root-only topology", comm)
+  call initialize_reactive_amr_eb_patch_tree_2d( &
+    species, root_state, root_temperature, root_only_topology, &
+    tagged_root, ok)
+  call assert_all(ok .and. tagged_root%is_valid(), &
+    "MPI tagged EB root-only fields", comm)
+  tagged_serial = tagged_root
+  call initialize_mpi_amr_eb_patch_tree_distribution_2d( &
+    root_only_topology, comm, tagged_distribution, ok, 2)
+  call assert_all(ok, "MPI tagged EB root-only ownership", comm)
+  call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    tagged_distribution, tagged_root, tagged_sparse, ok)
+  call assert_all(ok .and. tagged_sparse%is_valid(tagged_distribution), &
+    "MPI tagged EB root-only sparse state", comm)
+
+  tagged_criteria%relative_gradient_threshold = 0.01_dp
+  tagged_criteria%absolute_gradient_threshold = 1.0_dp
+  tagged_criteria%scale_floor = 1.0_dp
+  tagged_criteria%buffer_cells = 0
+  tagged_criteria%minimum_patch_cells_x = 4
+  tagged_criteria%minimum_patch_cells_y = 4
+  tagged_criteria%maximum_patch_gap_cells = 0
+  call plan_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_serial, tagged_criteria, 3, 2, &
+    build_tagged_regular_geometry, serial_tagged_plans, &
+    serial_tagged_cells, ok)
+  call assert_all(ok .and. size(serial_tagged_plans) == 2 .and. &
+    serial_tagged_cells > 0, "MPI tagged EB serial plan reference", comm)
+  call plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, tagged_criteria, 3, 2, &
+    build_tagged_regular_geometry, tagged_plans, tagged_cells, ok, &
+    local_tagging_evaluations, local_candidate_transfers, &
+    local_regrid_restriction_transfers)
+  call MPI_Allreduce( &
+    local_tagging_evaluations, global_tagging_evaluations, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_candidate_transfers, global_candidate_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. ok .and. &
+    tagged_cells == serial_tagged_cells .and. size(tagged_plans) == 2 .and. &
+    all([tagged_plans(1)%patch_count(), &
+      tagged_plans(2)%patch_count()] == [ &
+        serial_tagged_plans(1)%patch_count(), &
+        serial_tagged_plans(2)%patch_count()]) .and. &
+    global_tagging_evaluations == 1 + tagged_plans(1)%patch_count() .and. &
+    global_candidate_transfers >= 0 .and. &
+    local_regrid_restriction_transfers == 0, &
+    "MPI owner-local arbitrary-depth EB tag planning", comm)
+
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_serial, tagged_criteria, 3, 2, &
+    build_tagged_regular_geometry, ok, topology_changed, &
+    serial_tagged_cells)
+  call assert_all(ok .and. topology_changed .and. &
+    tagged_serial%level_count() == 3, &
+    "MPI tagged EB serial first rebuild", comm)
+  call regrid_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, tagged_plans, &
+    tagged_new_distribution, ok, topology_changed, transferred_cells, &
+    local_regrid_restriction_transfers, local_prolongation_transfers, &
+    local_overlap_transfers)
+  call MPI_Allreduce( &
+    local_regrid_restriction_transfers, &
+    global_regrid_restriction_transfers, 1, MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_prolongation_transfers, global_prolongation_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_overlap_transfers, global_overlap_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  expected_regrid_edge_transfers = expected_remote_tree_edges( &
+    tagged_sparse%topology, tagged_new_distribution)
+  call assert_all(ierr == MPI_SUCCESS .and. ok .and. topology_changed .and. &
+    transferred_cells == 0 .and. global_overlap_transfers == 0 .and. &
+    global_regrid_restriction_transfers == &
+      expected_regrid_edge_transfers .and. &
+    global_prolongation_transfers == expected_regrid_edge_transfers .and. &
+    tagged_sparse%is_valid(tagged_new_distribution), &
+    "MPI direct sparse EB tagged-tree creation traffic", comm)
+  tagged_distribution = tagged_new_distribution
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    tagged_distribution, tagged_sparse, materialized, ok)
+  call assert_all(ok .and. &
+    tree_solutions_close(materialized, tagged_serial, 2.0e-11_dp), &
+    "MPI direct sparse EB tagged-tree creation parity", comm)
+
+  expanded_tagged_criteria = tagged_criteria
+  expanded_tagged_criteria%buffer_cells = 1
+  expanded_tagged_criteria%minimum_patch_cells_x = 6
+  expanded_tagged_criteria%minimum_patch_cells_y = 6
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_serial, expanded_tagged_criteria, 3, 2, &
+    build_tagged_regular_geometry, ok, topology_changed, &
+    serial_tagged_cells)
+  call assert_all(ok .and. topology_changed, &
+    "MPI tagged EB serial expanded rebuild", comm)
+  call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
+    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    topology_changed, tagged_cells, transferred_cells, &
+    local_tagging_evaluations, local_candidate_transfers, &
+    local_regrid_restriction_transfers, local_prolongation_transfers, &
+    local_overlap_transfers)
+  call MPI_Allreduce( &
+    local_overlap_transfers, global_overlap_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. ok .and. topology_changed .and. &
+    tagged_cells == serial_tagged_cells .and. transferred_cells > 0 .and. &
+    global_overlap_transfers >= 0 .and. &
+    tagged_sparse%is_valid(tagged_new_distribution), &
+    "MPI owner-local EB tagged-tree overlap rebuild", comm)
+  tagged_distribution = tagged_new_distribution
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    tagged_distribution, tagged_sparse, materialized, ok)
+  call assert_all(ok .and. &
+    tree_solutions_close(materialized, tagged_serial, 3.0e-11_dp), &
+    "MPI owner-local EB tagged-tree overlap parity", comm)
+
+  tagged_sparse_snapshot = tagged_sparse
+  call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
+    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    topology_changed, tagged_cells, transferred_cells)
+  call assert_all(ok .and. .not. topology_changed .and. &
+    tagged_cells > 0 .and. transferred_cells == 0 .and. &
+    sparse_trees_match(tagged_sparse, tagged_sparse_snapshot) .and. &
+    mpi_amr_eb_patch_tree_distribution_matches_2d( &
+      tagged_new_distribution, tagged_sparse%topology), &
+    "MPI unchanged owner-local EB tagged-tree plan", comm)
+
+  rejected_tagged_criteria = expanded_tagged_criteria
+  if (nranks > 1) then
+    if (rank == 0) rejected_tagged_criteria%relative_gradient_threshold = &
+      2.0_dp * rejected_tagged_criteria%relative_gradient_threshold
+  else
+    rejected_tagged_criteria%relative_gradient_threshold = -1.0_dp
+  end if
+  tagged_sparse_snapshot = tagged_sparse
+  call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, rejected_tagged_criteria, &
+    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    topology_changed, tagged_cells, transferred_cells, &
+    local_tagging_evaluations, local_candidate_transfers, &
+    local_regrid_restriction_transfers, local_prolongation_transfers, &
+    local_overlap_transfers)
+  call assert_all(.not. ok .and. .not. topology_changed .and. &
+    tagged_cells == 0 .and. transferred_cells == 0 .and. &
+    local_tagging_evaluations == 0 .and. local_candidate_transfers == 0 .and. &
+    local_regrid_restriction_transfers == 0 .and. &
+    local_prolongation_transfers == 0 .and. &
+    local_overlap_transfers == 0 .and. &
+    sparse_trees_match(tagged_sparse, tagged_sparse_snapshot), &
+    "MPI owner-local EB tagged-tree control rollback", comm)
+
+  do level = 1, tagged_serial%level_count()
+    do patch = 1, tagged_serial%levels(level)%patch_count()
+      tagged_serial%levels(level)%patches(patch)%state = spread(spread( &
+        root_state(:, 1, 1), 2, &
+        size(tagged_serial%levels(level)%patches(patch)%state, 2)), 3, &
+        size(tagged_serial%levels(level)%patches(patch)%state, 3))
+      tagged_serial%levels(level)%patches(patch)%temperature = &
+        root_temperature(1, 1)
+    end do
+  end do
+  do level = 1, tagged_sparse%level_count()
+    do patch = 1, tagged_sparse%levels(level)%patch_count()
+      if (.not. tagged_distribution%is_local(level - 1, patch)) cycle
+      tagged_sparse%levels(level)%patches(patch)%state = spread(spread( &
+        root_state(:, 1, 1), 2, &
+        size(tagged_sparse%levels(level)%patches(patch)%state, 2)), 3, &
+        size(tagged_sparse%levels(level)%patches(patch)%state, 3))
+      tagged_sparse%levels(level)%patches(patch)%temperature = &
+        root_temperature(1, 1)
+    end do
+  end do
+  call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_serial, expanded_tagged_criteria, 3, 2, &
+    build_tagged_regular_geometry, ok, topology_changed, &
+    serial_tagged_cells)
+  call assert_all(ok .and. topology_changed .and. &
+    serial_tagged_cells == 0 .and. tagged_serial%level_count() == 1, &
+    "MPI tagged EB serial collapse", comm)
+  call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
+    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    topology_changed, tagged_cells, transferred_cells)
+  call assert_all(ok .and. topology_changed .and. tagged_cells == 0 .and. &
+    tagged_sparse%level_count() == 1 .and. &
+    tagged_sparse%is_valid(tagged_new_distribution), &
+    "MPI owner-local EB tagged-tree collapse", comm)
+  tagged_distribution = tagged_new_distribution
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    tagged_distribution, tagged_sparse, materialized, ok)
+  call assert_all(ok .and. &
+    tree_solutions_close(materialized, tagged_serial, 3.0e-11_dp), &
+    "MPI owner-local EB tagged-tree collapse parity", comm)
+
   if (rank == 0) solution%levels(1)%patches(1)%temperature(1, 1) = -1.0_dp
   failed = solution
   call synchronize_owned_reactive_amr_eb_patch_tree_2d( &
@@ -882,6 +1111,55 @@ contains
     call build_eb_geometry_2d( &
       level_set, x_lower, x_upper, y_lower, y_upper, geometry, geometry_ok)
   end subroutine build_regular_geometry
+
+  subroutine build_tagged_regular_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, geometry_ok)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: geometry_ok
+
+    real(dp) :: x_lower, x_upper, y_lower, y_upper
+    integer :: nx, ny
+
+    nx = (i_upper - i_lower + 1) * refinement_ratio
+    ny = (j_upper - j_lower + 1) * refinement_ratio
+    x_lower = parent_geometry%x_lower + &
+      real(i_lower - 1, dp) * parent_geometry%dx
+    x_upper = parent_geometry%x_lower + &
+      real(i_upper, dp) * parent_geometry%dx
+    y_lower = parent_geometry%y_lower + &
+      real(j_lower - 1, dp) * parent_geometry%dy
+    y_upper = parent_geometry%y_lower + &
+      real(j_upper, dp) * parent_geometry%dy
+    call build_regular_geometry( &
+      nx, ny, x_lower, x_upper, y_lower, y_upper, child_geometry, &
+      geometry_ok)
+  end subroutine build_tagged_regular_geometry
+
+  integer function expected_remote_tree_edges( &
+      tree_topology, tree_distribution) result(count)
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: tree_topology
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
+      tree_distribution
+
+    integer :: child_index, parent_index, relation_index
+
+    count = 0
+    do relation_index = 1, size(tree_topology%relations)
+      do child_index = 1, tree_topology%relations(relation_index)% &
+          child_patch_count()
+        parent_index = tree_topology%relations(relation_index)% &
+          children(child_index)%parent_patch
+        if (tree_distribution%owner_of( &
+              relation_index - 1, parent_index) /= &
+            tree_distribution%owner_of(relation_index, child_index)) &
+          count = count + 1
+      end do
+    end do
+  end function expected_remote_tree_edges
 
   logical function tree_solutions_match(first, second) result(matches)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: first, second

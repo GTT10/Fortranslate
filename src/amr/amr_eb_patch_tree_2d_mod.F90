@@ -53,6 +53,8 @@ module amr_eb_patch_tree_2d_mod
 
   public :: initialize_amr_eb_patch_tree_topology_2d
   public :: rebuild_amr_eb_patch_tree_topology_2d
+  public :: patch_tree_topologies_match_2d
+  public :: eb_geometries_match_2d
 
 contains
 

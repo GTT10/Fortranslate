@@ -2737,3 +2737,23 @@ accepted tree to remain exact. Finally make every node uniform, require zero
 tags and a transactional collapse to one root level, and recheck the composite
 integral. Retain all 208 serial tests in GNU Fortran Release and bounds/FPE-
 checked Debug.
+
+## 0.169.0 MPI owner-local arbitrary-depth EB tagged-rebuild gates
+
+Start from the same eight-by-eight root-only hot-cell tree used by the serial
+gate. Require the serial and owner-local planners to produce the same two
+relations, parent indices, rectangles, and EB geometry while exactly one owner
+evaluates every prospective parent.
+
+Apply the public sparse regrid and require a valid `1/1/1` tree, exact
+topology-derived remote prolongation/restriction counts, serial field and
+temperature parity, and roundoff-level composite conservation at one, two,
+four, and eight ranks. Expand the tag criteria to change retained overlap and
+repeat every parity check. The unchanged plan must then be a field-exact no-op.
+
+Give one rank different valid criteria on multiple ranks and invalid criteria
+on one rank; require preflight rejection with exact sparse rollback and neutral
+outputs. Finally make the hierarchy uniform, require a tag-free collapse to
+the root, and recheck serial parity and conservation. Retain every established
+MPI gate and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
+Debug.

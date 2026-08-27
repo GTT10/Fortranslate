@@ -1957,3 +1957,24 @@ same-resolution overlap and conservatively initialize the remainder. Any tag,
 geometry, EOS, topology, or conservation failure leaves the accepted tree
 unchanged. MPI owner-local planning and topology-changing migration remain a
 separate transaction.
+
+## MPI owner-local arbitrary-depth EB temperature-tagged rebuild (`0.169.0`)
+
+The sparse planner copies topology and geometry but leaves every numerical
+field on its current owner. For each prospective parent, only that owner runs
+the temperature tagger. Integer reductions expose compact tag counts and
+bounds so every rank reconstructs the same deterministic parent-major plan and
+invokes the caller's geometry builder in the same order.
+
+The candidate topology receives a new deterministic work-weighted owner map.
+PCM initialization sends parent state directly to each new child owner.
+Geometrically identical old/new rectangles retain same-resolution cells by
+direct old-owner to new-owner transfers; no complete field tree is gathered.
+A deepest-first direct restriction then closes every parent/child relation.
+
+Topology, distribution, state, temperature, tagged/transferred-cell counts,
+and restriction traffic commit together only after topology/geometry checks,
+EOS recovery, sparse validation, and a composite-integral test succeed on all
+ranks. An unchanged topology is a field-exact no-op. Empty tag plans collapse
+the tree to its synchronized root. Arbitrary-depth checkpoint/restart and
+composite output remain separate lifecycle work.

@@ -3021,3 +3021,24 @@ separate lifecycle work.
 This milestone closes serial dynamic topology planning for the arbitrary-depth
 2D EB numerical tree. Owner-local MPI planning/migration, checkpoint/restart,
 and composite output remain separate lifecycle work.
+
+## MPI owner-local arbitrary-depth EB temperature-tagged rebuild (`0.169.0`)
+
+- [x] tag evaluation only on each prospective parent owner
+- [x] compact integer tag-plan reduction without numerical-tree gathering
+- [x] caller-defined EB geometry rebuilt consistently on every rank
+- [x] deterministic candidate owner-map recomputation
+- [x] direct parent-to-new-child PCM initialization
+- [x] direct old-owner to new-owner retained-overlap migration
+- [x] deepest-first owner-local average-down after topology change
+- [x] composite-conserved-state acceptance before atomic commit
+- [x] root-only creation through three levels and changed-plan rebuild
+- [x] exact unchanged-plan no-op and tag-free collapse
+- [x] rank/control/geometry rejection with exact sparse rollback
+- [x] exact topology-derived prolongation and restriction traffic checks
+- [x] serial field and temperature parity after every accepted rebuild
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone removes complete numerical-tree materialization from dynamic
+arbitrary-depth MPI topology planning and migration. Checkpoint/restart and
+composite output remain separate lifecycle work.
