@@ -9,7 +9,7 @@ program test_amr_eb_reactive_2d
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: &
-    eb_geometry_2d, eb_covered_cell, build_eb_geometry_2d
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
   use amr_eb_hierarchy_2d_mod, only: &
@@ -17,7 +17,7 @@ program test_amr_eb_reactive_2d
     average_down_reactive_eb_state_patch_2d, composite_eb_integral_2d
   use amr_eb_reactive_2d_mod, only: &
     reactive_eb_patch_exterior_context_2d, &
-    prolong_reactive_eb_patch_pcm_2d, &
+    prolong_reactive_eb_patch_pcm_2d, prolong_reactive_eb_patch_linear_2d, &
     extract_reactive_eb_patch_exterior_context_support_2d, &
     extract_reactive_eb_patch_exterior_context_2d, &
     build_reactive_eb_patch_exterior_from_context_2d, &
@@ -48,11 +48,17 @@ program test_amr_eb_reactive_2d
   real(dp) :: fine_level_set(0:fine_nx, 0:fine_ny)
   real(dp), allocatable :: primitive(:), state_cell(:), mass_fractions(:)
   real(dp), allocatable :: coarse_state(:, :, :), coarse_end(:, :, :)
+  real(dp), allocatable :: linear_coarse_state(:, :, :)
+  real(dp), allocatable :: linear_fine_state(:, :, :)
+  real(dp), allocatable :: linear_restricted_state(:, :, :)
   real(dp), allocatable :: coarse_start_support(:, :, :)
   real(dp), allocatable :: coarse_end_support(:, :, :)
   real(dp), allocatable :: fine_state(:, :, :), restricted_state(:, :, :)
   real(dp), allocatable :: new_coarse_state(:, :, :), new_fine_state(:, :, :)
   real(dp), allocatable :: coarse_temperature(:, :), coarse_end_temperature(:, :)
+  real(dp), allocatable :: linear_coarse_temperature(:, :)
+  real(dp), allocatable :: linear_fine_temperature(:, :)
+  real(dp), allocatable :: linear_restricted_temperature(:, :)
   real(dp), allocatable :: coarse_start_temperature_support(:, :)
   real(dp), allocatable :: coarse_end_temperature_support(:, :)
   real(dp), allocatable :: fine_temperature(:, :), restricted_temperature(:, :)
@@ -62,8 +68,9 @@ program test_amr_eb_reactive_2d
   real(dp) :: mole_fractions(7), x, y, fine_x_lower, fine_x_upper
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale, dt, expected_scale
-  logical :: ok, found_open_boundary
-  integer :: i, j, k, nvar, component
+  real(dp) :: linear_factor, linear_expected
+  logical :: ok, found_cut_parent, found_open_boundary
+  integer :: i, j, k, linear_fine_i, linear_fine_j, nvar, component
 
   do j = 0, coarse_ny
     y = real(j, dp) / real(coarse_ny, dp)
@@ -119,12 +126,18 @@ program test_amr_eb_reactive_2d
 
   allocate(coarse_state(nvar, coarse_nx, coarse_ny))
   allocate(coarse_end(nvar, coarse_nx, coarse_ny))
+  allocate(linear_coarse_state(nvar, coarse_nx, coarse_ny))
+  allocate(linear_fine_state(nvar, fine_nx, fine_ny))
+  allocate(linear_restricted_state(nvar, coarse_nx, coarse_ny))
   allocate(fine_state(nvar, fine_nx, fine_ny))
   allocate(restricted_state(nvar, coarse_nx, coarse_ny))
   allocate(new_coarse_state(nvar, coarse_nx, coarse_ny))
   allocate(new_fine_state(nvar, fine_nx, fine_ny))
   allocate(coarse_temperature(coarse_nx, coarse_ny))
   allocate(coarse_end_temperature(coarse_nx, coarse_ny))
+  allocate(linear_coarse_temperature(coarse_nx, coarse_ny))
+  allocate(linear_fine_temperature(fine_nx, fine_ny))
+  allocate(linear_restricted_temperature(coarse_nx, coarse_ny))
   allocate(fine_temperature(fine_nx, fine_ny))
   allocate(restricted_temperature(coarse_nx, coarse_ny))
   allocate(new_coarse_temperature(coarse_nx, coarse_ny))
@@ -152,6 +165,62 @@ program test_amr_eb_reactive_2d
     fine_geometry, patch, restricted_state, restricted_temperature, ok)
   call require(ok .and. maxval(abs(restricted_state - coarse_state)) <= &
     5.0e-14_dp * state_scale, "prolong/restrict constant preservation")
+
+  do j = 1, coarse_ny
+    do i = 1, coarse_nx
+      linear_factor = 1.0_dp + 0.01_dp * real(i, dp) + &
+        0.015_dp * real(j, dp)
+      linear_coarse_state(:, i, j) = linear_factor * state_cell
+      linear_coarse_temperature(i, j) = temperature_cell
+    end do
+  end do
+  call prolong_reactive_eb_patch_linear_2d( &
+    species, linear_coarse_state, linear_coarse_temperature, &
+    coarse_geometry, fine_geometry, patch, linear_fine_state, &
+    linear_fine_temperature, ok)
+  call require(ok, "reactive limited-linear prolongation")
+  call average_down_reactive_eb_state_patch_2d( &
+    species, linear_coarse_state, linear_coarse_temperature, &
+    coarse_geometry, linear_fine_state, fine_geometry, patch, &
+    linear_restricted_state, linear_restricted_temperature, ok)
+  call require(ok .and. maxval(abs(linear_restricted_state - &
+    linear_coarse_state)) <= 2.0e-13_dp * state_scale, &
+    "limited-linear prolong/restrict conservation")
+  linear_fine_i = (5 - coarse_i_lower) * ratio + 1
+  linear_fine_j = (5 - coarse_j_lower) * ratio + 1
+  linear_expected = 1.0_dp + 0.01_dp * 5.0_dp + 0.015_dp * 5.0_dp - &
+    0.25_dp * (0.01_dp + 0.015_dp)
+  call require(maxval(abs(linear_fine_state( &
+    :, linear_fine_i, linear_fine_j) - &
+    linear_expected * state_cell)) <= 2.0e-13_dp * state_scale, &
+    "limited-linear interior child value")
+  call require(maxval(abs(linear_fine_temperature - temperature_cell)) <= &
+    3.0e-8_dp, "limited-linear child temperature recovery")
+  found_cut_parent = .false.
+  do j = coarse_j_lower, coarse_j_upper
+    do i = coarse_i_lower, coarse_i_upper
+      if (coarse_geometry%cell_type(i, j) /= eb_cut_cell) cycle
+      linear_fine_i = (i - coarse_i_lower) * ratio + 1
+      linear_fine_j = (j - coarse_j_lower) * ratio + 1
+      call require(maxval(abs(linear_fine_state( &
+        :, linear_fine_i:linear_fine_i + ratio - 1, &
+        linear_fine_j:linear_fine_j + ratio - 1) - &
+        spread(spread(linear_coarse_state(:, i, j), 2, ratio), 3, ratio))) <= &
+        2.0e-13_dp * state_scale, "cut-parent PCM fallback")
+      found_cut_parent = .true.
+    end do
+  end do
+  call require(found_cut_parent, "limited-linear cut-parent coverage")
+  linear_coarse_state(1, 5, 5) = ieee_value(0.0_dp, ieee_quiet_nan)
+  call prolong_reactive_eb_patch_linear_2d( &
+    species, linear_coarse_state, linear_coarse_temperature, &
+    coarse_geometry, fine_geometry, patch, linear_fine_state, &
+    linear_fine_temperature, ok)
+  call require(.not. ok .and. maxval(abs(linear_fine_state)) == 0.0_dp .and. &
+    maxval(abs(linear_fine_temperature)) == 0.0_dp, &
+    "limited-linear nonfinite rollback")
+  linear_factor = 1.0_dp + 0.01_dp * 5.0_dp + 0.015_dp * 5.0_dp
+  linear_coarse_state(1, 5, 5) = linear_factor * state_cell(1)
 
   coarse_end = 1.02_dp * coarse_state
   coarse_end_temperature = coarse_temperature
