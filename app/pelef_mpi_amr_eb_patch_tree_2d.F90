@@ -26,6 +26,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
     advance_reactive_amr_eb_patch_tree_transport_2d, &
     advance_reactive_amr_eb_patch_tree_full_physics_2d, &
+    advance_reactive_amr_eb_patch_tree_to_time_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d, &
     composite_reactive_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
@@ -42,6 +43,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d, &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d, &
     composite_sparse_amr_eb_patch_tree_integral_2d, &
     composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
@@ -63,6 +65,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: serial_hydro
   type(reactive_amr_eb_patch_tree_2d) :: serial_transport
   type(reactive_amr_eb_patch_tree_2d) :: serial_full_physics
+  type(reactive_amr_eb_patch_tree_2d) :: serial_clock
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -81,6 +84,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: sparse_transport_theta, transport_interval
   real(dp) :: full_physics_interval, serial_full_physics_theta
   real(dp) :: sparse_full_physics_theta
+  real(dp) :: clock_final_time, serial_clock_minimum_dt
+  real(dp) :: serial_clock_theta, serial_clock_time
+  real(dp) :: sparse_clock_minimum_dt, sparse_clock_theta, sparse_clock_time
   real(dp) :: integral_scale
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
@@ -97,12 +103,19 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: local_hydro_transfers
   integer :: expected_transport_transfers, global_transport_transfers
   integer :: local_transport_transfers
+  integer :: global_clock_timestep_evaluations
+  integer :: local_clock_timestep_evaluations
+  integer :: serial_clock_advanced_steps, serial_clock_steps
+  integer :: sparse_clock_advanced_steps, sparse_clock_steps
   integer, allocatable :: global_chemistry_advances(:)
   integer, allocatable :: local_chemistry_advances(:)
   integer, allocatable :: global_hydro_advances(:)
   integer, allocatable :: local_hydro_advances(:)
   integer, allocatable :: global_transport_advances(:)
   integer, allocatable :: local_transport_advances(:)
+  integer, allocatable :: serial_clock_chemistry_advances(:)
+  integer, allocatable :: serial_clock_hydro_advances(:)
+  integer, allocatable :: serial_clock_transport_advances(:)
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -662,6 +675,156 @@ program pelef_mpi_amr_eb_patch_tree_2d
     local_transport_transfers == 0 .and. local_hydro_transfers == 0 .and. &
     sparse_trees_match(physical_sparse, sparse_snapshot), &
     "MPI EB patch-tree full-physics control rollback", comm)
+
+  clock_final_time = 0.5_dp * full_physics_interval
+  serial_clock = serial_full_physics
+  serial_clock_time = 0.0_dp
+  serial_clock_steps = 0
+  allocate(serial_clock_chemistry_advances(topology%level_count()))
+  allocate(serial_clock_transport_advances(topology%level_count()))
+  allocate(serial_clock_hydro_advances(topology%level_count()))
+  call advance_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, serial_clock, "hllc", "pcm", "mc", 2, &
+    serial_clock_time, clock_final_time, serial_clock_steps, 2, hydro_cfl, &
+    transport_cfl, .true., 1.0e-7_dp, 1.0e-13_dp, .true., .true., .true., &
+    .true., boundaries, 0.5_dp, serial_clock_minimum_dt, &
+    serial_clock_theta, ok, advanced_steps=serial_clock_advanced_steps, &
+    chemistry_level_advances=serial_clock_chemistry_advances, &
+    transport_level_advances=serial_clock_transport_advances, &
+    hydro_level_advances=serial_clock_hydro_advances)
+  call assert_all(ok .and. serial_clock_time == clock_final_time .and. &
+    serial_clock_steps == 1 .and. serial_clock_advanced_steps == 1, &
+    "MPI EB patch-tree serial public-clock reference", comm)
+
+  sparse_clock_time = 0.0_dp
+  sparse_clock_steps = 0
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, migrated_distribution, physical_sparse, &
+    "hllc", "pcm", "mc", 2, sparse_clock_time, clock_final_time, &
+    sparse_clock_steps, 2, hydro_cfl, transport_cfl, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .true., .true., .true., .true., boundaries, 0.5_dp, &
+    sparse_clock_minimum_dt, sparse_clock_theta, ok, &
+    advanced_steps=sparse_clock_advanced_steps, &
+    local_timestep_evaluations=local_clock_timestep_evaluations, &
+    local_chemistry_level_advances=local_chemistry_advances, &
+    local_transport_level_advances=local_transport_advances, &
+    local_hydro_level_advances=local_hydro_advances, &
+    local_chemistry_transfers=local_restriction_transfers, &
+    local_transport_transfers=local_transport_transfers, &
+    local_hydro_transfers=local_hydro_transfers)
+  call MPI_Allreduce( &
+    local_clock_timestep_evaluations, global_clock_timestep_evaluations, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, &
+    size(local_chemistry_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, &
+    size(local_transport_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, &
+    size(local_hydro_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_restriction_transfers, global_restriction_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_transport_transfers, global_transport_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_hydro_transfers, global_hydro_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_sparse, materialized, local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    sparse_clock_time == clock_final_time .and. sparse_clock_steps == 1 .and. &
+    sparse_clock_advanced_steps == 1 .and. &
+    sparse_clock_minimum_dt == serial_clock_minimum_dt .and. &
+    global_clock_timestep_evaluations == 5 .and. &
+    all(global_chemistry_advances == serial_clock_chemistry_advances) .and. &
+    all(global_transport_advances == serial_clock_transport_advances) .and. &
+    all(global_hydro_advances == serial_clock_hydro_advances) .and. &
+    global_restriction_transfers == 2 * expected_restriction_transfers .and. &
+    global_transport_transfers == 2 * expected_transport_transfers .and. &
+    global_hydro_transfers == expected_hydro_transfers .and. &
+    abs(sparse_clock_theta - serial_clock_theta) <= &
+      1024.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(serial_clock_theta)) .and. &
+    tree_solutions_close(materialized, serial_clock, 6.0e-9_dp), &
+    "MPI EB patch-tree owner-local public-clock parity", comm)
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    serial_clock, serial_integral, ok)
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
+    migrated_distribution, physical_sparse, sparse_integral, local_ok)
+  integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+  call assert_all(ok .and. local_ok .and. &
+    maxval(abs(sparse_integral - serial_integral)) <= &
+      6.0e-9_dp * integral_scale, &
+    "MPI EB patch-tree owner-local public-clock conservation", comm)
+
+  sparse_snapshot = physical_sparse
+  sparse_clock_time = 0.0_dp
+  sparse_clock_steps = 0
+  mismatched_interval = clock_final_time
+  if (nranks > 1) then
+    if (rank == 0) mismatched_interval = 0.5_dp * clock_final_time
+  else
+    mismatched_interval = -clock_final_time
+  end if
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, migrated_distribution, physical_sparse, &
+    "hllc", "pcm", "mc", 2, sparse_clock_time, mismatched_interval, &
+    sparse_clock_steps, 2, hydro_cfl, transport_cfl, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .true., .true., .true., .true., boundaries, 0.5_dp, &
+    sparse_clock_minimum_dt, sparse_clock_theta, ok, &
+    advanced_steps=sparse_clock_advanced_steps, &
+    local_timestep_evaluations=local_clock_timestep_evaluations, &
+    local_chemistry_level_advances=local_chemistry_advances, &
+    local_transport_level_advances=local_transport_advances, &
+    local_hydro_level_advances=local_hydro_advances, &
+    local_chemistry_transfers=local_restriction_transfers, &
+    local_transport_transfers=local_transport_transfers, &
+    local_hydro_transfers=local_hydro_transfers)
+  call assert_all(.not. ok .and. sparse_clock_time == 0.0_dp .and. &
+    sparse_clock_steps == 0 .and. sparse_clock_advanced_steps == 0 .and. &
+    sparse_clock_minimum_dt == 0.0_dp .and. &
+    sparse_clock_theta == 1.0_dp .and. &
+    local_clock_timestep_evaluations == 0 .and. &
+    all(local_chemistry_advances == 0) .and. &
+    all(local_transport_advances == 0) .and. &
+    all(local_hydro_advances == 0) .and. &
+    local_restriction_transfers == 0 .and. &
+    local_transport_transfers == 0 .and. local_hydro_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree public-clock control rollback", comm)
+
+  sparse_clock_time = 0.0_dp
+  sparse_clock_steps = 0
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d( &
+    species, reactions, transport, migrated_distribution, physical_sparse, &
+    "hllc", "pcm", "mc", 2, sparse_clock_time, clock_final_time, &
+    sparse_clock_steps, 0, hydro_cfl, transport_cfl, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .true., .true., .true., .true., boundaries, 0.5_dp, &
+    sparse_clock_minimum_dt, sparse_clock_theta, ok, &
+    advanced_steps=sparse_clock_advanced_steps, &
+    local_timestep_evaluations=local_clock_timestep_evaluations, &
+    local_chemistry_level_advances=local_chemistry_advances, &
+    local_transport_level_advances=local_transport_advances, &
+    local_hydro_level_advances=local_hydro_advances, &
+    local_chemistry_transfers=local_restriction_transfers, &
+    local_transport_transfers=local_transport_transfers, &
+    local_hydro_transfers=local_hydro_transfers)
+  call assert_all(.not. ok .and. sparse_clock_time == 0.0_dp .and. &
+    sparse_clock_steps == 0 .and. sparse_clock_advanced_steps == 0 .and. &
+    sparse_clock_minimum_dt == 0.0_dp .and. &
+    sparse_clock_theta == 1.0_dp .and. &
+    local_clock_timestep_evaluations == 0 .and. &
+    all(local_chemistry_advances == 0) .and. &
+    all(local_transport_advances == 0) .and. &
+    all(local_hydro_advances == 0) .and. &
+    local_restriction_transfers == 0 .and. &
+    local_transport_transfers == 0 .and. local_hydro_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree public-clock step-limit rollback", comm)
 
   sparse_snapshot = physical_sparse
   mismatched_interval = chemistry_interval

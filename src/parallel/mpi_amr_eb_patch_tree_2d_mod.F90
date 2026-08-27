@@ -108,6 +108,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d
+  public :: advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d
   public :: composite_sparse_amr_eb_patch_tree_integral_2d
   public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
@@ -1539,6 +1540,261 @@ contains
       hydro_transfers
   end subroutine &
     advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d
+
+  subroutine advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d( &
+      species, reactions, transport, distribution, sparse, solver, &
+      reconstruction, limiter, max_order, time, final_time, steps, &
+      maximum_steps, hydro_cfl, transport_cfl, chemistry_enabled, rtol, atol, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, minimum_dt, minimum_transport_theta, ok, &
+      failure_context, advanced_steps, local_timestep_evaluations, &
+      local_chemistry_level_advances, local_transport_level_advances, &
+      local_hydro_level_advances, local_chemistry_transfers, &
+      local_transport_transfers, local_hydro_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: max_order
+    real(dp), intent(inout) :: time
+    real(dp), intent(in) :: final_time
+    integer, intent(inout) :: steps
+    integer, intent(in) :: maximum_steps
+    real(dp), intent(in) :: hydro_cfl, transport_cfl, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(in) :: target_volume_fraction
+    real(dp), intent(out) :: minimum_dt, minimum_transport_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: advanced_steps
+    integer, intent(out), optional :: local_timestep_evaluations
+    integer, intent(out), optional :: local_chemistry_level_advances(:)
+    integer, intent(out), optional :: local_transport_level_advances(:)
+    integer, intent(out), optional :: local_hydro_level_advances(:)
+    integer, intent(out), optional :: local_chemistry_transfers
+    integer, intent(out), optional :: local_transport_transfers
+    integer, intent(out), optional :: local_hydro_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    real(dp) :: dt, numeric_maximum(7), numeric_minimum(7)
+    real(dp) :: numeric_values(7), remaining, step_theta, time_tolerance
+    integer, allocatable :: accumulated_chemistry(:)
+    integer, allocatable :: accumulated_hydro(:)
+    integer, allocatable :: accumulated_transport(:)
+    integer, allocatable :: step_chemistry(:), step_hydro(:)
+    integer, allocatable :: step_transport(:)
+    integer :: accumulated_chemistry_transfers
+    integer :: accumulated_hydro_transfers
+    integer :: accumulated_timestep_evaluations
+    integer :: accumulated_transport_transfers, completed_steps
+    integer :: ierr, integer_maximum(11), integer_minimum(11)
+    integer :: integer_values(11), step_chemistry_transfers
+    integer :: step_hydro_transfers, step_timestep_evaluations
+    integer :: step_transport_transfers
+    character(len=160) :: context
+    logical :: accepted, global_ok, local_ok, matches, transport_active
+
+    ok = .false.
+    minimum_dt = 0.0_dp
+    minimum_transport_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(advanced_steps)) advanced_steps = 0
+    if (present(local_timestep_evaluations)) local_timestep_evaluations = 0
+    if (present(local_chemistry_level_advances)) &
+      local_chemistry_level_advances = 0
+    if (present(local_transport_level_advances)) &
+      local_transport_level_advances = 0
+    if (present(local_hydro_level_advances)) local_hydro_level_advances = 0
+    if (present(local_chemistry_transfers)) local_chemistry_transfers = 0
+    if (present(local_transport_transfers)) local_transport_transfers = 0
+    if (present(local_hydro_transfers)) local_hydro_transfers = 0
+    accumulated_timestep_evaluations = 0
+    accumulated_chemistry_transfers = 0
+    accumulated_transport_transfers = 0
+    accumulated_hydro_transfers = 0
+    completed_steps = 0
+    transport_active = viscosity_enabled .or. &
+      thermal_conduction_enabled .or. species_diffusion_enabled
+    numeric_values = [ &
+      time, final_time, hydro_cfl, transport_cfl, rtol, atol, &
+      target_volume_fraction]
+    integer_values = [ &
+      steps, maximum_steps, max_order, size(species), size(reactions), &
+      size(transport), merge(1, 0, chemistry_enabled), &
+      merge(1, 0, viscosity_enabled), &
+      merge(1, 0, thermal_conduction_enabled), &
+      merge(1, 0, species_diffusion_enabled), &
+      merge(1, 0, barodiffusion_enabled)]
+    time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
+      max(tiny(1.0_dp), abs(final_time))
+
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    local_ok = matches .and. sparse%is_valid(distribution) .and. &
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      size(species) >= 1 .and. all(ieee_is_finite(numeric_values)) .and. &
+      time >= 0.0_dp .and. final_time >= time - time_tolerance .and. &
+      steps >= 0 .and. maximum_steps >= steps .and. &
+      hydro_cfl > 0.0_dp .and. hydro_cfl <= 1.0_dp .and. &
+      transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
+      rtol > 0.0_dp .and. atol > 0.0_dp .and. &
+      target_volume_fraction > 0.0_dp .and. &
+      target_volume_fraction <= 1.0_dp .and. &
+      (max_order == 0 .or. max_order == 2)
+    if (chemistry_enabled) local_ok = local_ok .and. size(reactions) >= 1
+    if (transport_active) local_ok = local_ok .and. &
+      compatible_transport_database(species, transport)
+    if (present(local_chemistry_level_advances)) local_ok = local_ok .and. &
+      size(local_chemistry_level_advances) == sparse%level_count()
+    if (present(local_transport_level_advances)) local_ok = local_ok .and. &
+      size(local_transport_level_advances) == sparse%level_count()
+    if (present(local_hydro_level_advances)) local_ok = local_ok .and. &
+      size(local_hydro_level_advances) == sparse%level_count()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      numeric_values, numeric_minimum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_maximum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    allocate(accumulated_chemistry(sparse%level_count()), source=0)
+    allocate(accumulated_transport(sparse%level_count()), source=0)
+    allocate(accumulated_hydro(sparse%level_count()), source=0)
+    allocate(step_chemistry(sparse%level_count()), source=0)
+    allocate(step_transport(sparse%level_count()), source=0)
+    allocate(step_hydro(sparse%level_count()), source=0)
+
+    do
+      remaining = final_time - time
+      if (remaining <= time_tolerance) exit
+      if (steps >= maximum_steps) then
+        if (present(failure_context)) failure_context = "maximum steps"
+        return
+      end if
+
+      context = "timestep"
+      call compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
+        species, transport, distribution, sparse, hydro_cfl, transport_cfl, &
+        viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, dt, local_ok, &
+        step_timestep_evaluations)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+      dt = min(dt, remaining)
+      if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+
+      candidate = sparse
+      step_chemistry = 0
+      step_transport = 0
+      step_hydro = 0
+      step_chemistry_transfers = 0
+      step_transport_transfers = 0
+      step_hydro_transfers = 0
+      context = "full physics"
+      call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
+        species, reactions, transport, distribution, candidate, solver, &
+        reconstruction, limiter, max_order, dt, chemistry_enabled, rtol, &
+        atol, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+        target_volume_fraction, step_theta, local_ok, context, &
+        step_chemistry, step_transport, step_hydro, &
+        step_chemistry_transfers, step_transport_transfers, &
+        step_hydro_transfers)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+
+      context = "advance count overflow"
+      local_ok = &
+        all(step_chemistry <= huge(1) - accumulated_chemistry) .and. &
+        all(step_transport <= huge(1) - accumulated_transport) .and. &
+        all(step_hydro <= huge(1) - accumulated_hydro) .and. &
+        step_timestep_evaluations <= &
+          huge(1) - accumulated_timestep_evaluations .and. &
+        step_chemistry_transfers <= &
+          huge(1) - accumulated_chemistry_transfers .and. &
+        step_transport_transfers <= &
+          huge(1) - accumulated_transport_transfers .and. &
+        step_hydro_transfers <= huge(1) - accumulated_hydro_transfers
+      call all_ranks_accept_2d( &
+        distribution%comm, local_ok, accepted, global_ok)
+      if (.not. global_ok .or. .not. accepted) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+
+      sparse = candidate
+      time = time + dt
+      steps = steps + 1
+      completed_steps = completed_steps + 1
+      accumulated_timestep_evaluations = &
+        accumulated_timestep_evaluations + step_timestep_evaluations
+      accumulated_chemistry = accumulated_chemistry + step_chemistry
+      accumulated_transport = accumulated_transport + step_transport
+      accumulated_hydro = accumulated_hydro + step_hydro
+      accumulated_chemistry_transfers = &
+        accumulated_chemistry_transfers + step_chemistry_transfers
+      accumulated_transport_transfers = &
+        accumulated_transport_transfers + step_transport_transfers
+      accumulated_hydro_transfers = &
+        accumulated_hydro_transfers + step_hydro_transfers
+      if (minimum_dt == 0.0_dp) then
+        minimum_dt = dt
+      else
+        minimum_dt = min(minimum_dt, dt)
+      end if
+      minimum_transport_theta = min(minimum_transport_theta, step_theta)
+      if (present(advanced_steps)) advanced_steps = completed_steps
+      if (present(local_timestep_evaluations)) &
+        local_timestep_evaluations = accumulated_timestep_evaluations
+      if (present(local_chemistry_level_advances)) &
+        local_chemistry_level_advances = accumulated_chemistry
+      if (present(local_transport_level_advances)) &
+        local_transport_level_advances = accumulated_transport
+      if (present(local_hydro_level_advances)) &
+        local_hydro_level_advances = accumulated_hydro
+      if (present(local_chemistry_transfers)) local_chemistry_transfers = &
+        accumulated_chemistry_transfers
+      if (present(local_transport_transfers)) local_transport_transfers = &
+        accumulated_transport_transfers
+      if (present(local_hydro_transfers)) local_hydro_transfers = &
+        accumulated_hydro_transfers
+    end do
+
+    time = final_time
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d
 
   subroutine advance_sparse_amr_eb_patch_tree_transport_euler_2d( &
       species, transport, distribution, sparse, interval, &
