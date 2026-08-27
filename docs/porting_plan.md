@@ -1296,6 +1296,20 @@ and collective rollback on rank-dependent or invalid criteria. Run the complete
 MPI and serial Debug/Release suite before acceptance. Defer arbitrary-depth
 checkpoint/restart and composite output.
 
+## 0.170.0 serial arbitrary-depth EB checkpoint gates
+
+Store the complete ordered branching topology, every root/child EB metric,
+conserved state, temperature, species order, and lifecycle counter in a
+distinct versioned formatted stream. Reconstruct a private candidate and
+recover general-EOS temperature before publication.
+
+Require a four-level branching round trip with topology, field, temperature,
+and metadata parity. Reject an insufficient configured depth, exchanged species
+order, invalid lifecycle metadata, malformed topology, invalid EOS state, or a
+missing terminal marker without publishing partial state. Run the complete
+serial Debug/Release suite before acceptance. Defer sparse MPI root-only I/O,
+rank-neutral restart, and composite output.
+
 Each implementation PR should normally contain:
 
 1. implementation

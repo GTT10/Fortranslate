@@ -2757,3 +2757,16 @@ outputs. Finally make the hierarchy uniform, require a tag-free collapse to
 the root, and recheck serial parity and conservation. Retain every established
 MPI gate and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
 Debug.
+
+## 0.170.0 serial arbitrary-depth EB checkpoint gates
+
+Write the qualified four-level branching tree after changed-topology overlap
+retention. Read it into an empty candidate and require the same ordered
+topology, lifecycle metadata, conserved fields, and recovered temperatures
+within formatted roundoff.
+
+Read the same file with a level ceiling below its stored depth and with the
+first two species exchanged. Both operations must reject with an empty tree
+and neutral metadata. Supply inconsistent time/step metadata to the writer and
+require rejection before the valid checkpoint is replaced. Retain all 208
+serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
