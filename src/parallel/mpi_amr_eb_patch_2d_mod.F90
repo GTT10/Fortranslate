@@ -6714,6 +6714,9 @@ contains
           size(boundaries%face(face)%inflow_primitive) == nprim .and. &
           size(boundaries%face(face)%prescribed_species_flux) == nsp
       end do
+      local_ok = local_ok .and. &
+        size(boundaries%embedded_wall%inflow_primitive) == nprim .and. &
+        size(boundaries%embedded_wall%prescribed_species_flux) == nsp
     end if
     call MPI_Allreduce( &
       local_ok, ok, 1, MPI_LOGICAL, MPI_LAND, distribution%comm, ierr)
@@ -6722,10 +6725,10 @@ contains
       return
     end if
 
-    allocate(numeric_controls(2 + 5 * nsp + 4 * (5 + nprim + nsp)))
+    allocate(numeric_controls(2 + 5 * nsp + 5 * (5 + nprim + nsp)))
     allocate(numeric_minimum(size(numeric_controls)))
     allocate(numeric_maximum(size(numeric_controls)))
-    allocate(integer_controls(6 + nsp + 24 * nsp + 4 * 3 * 24))
+    allocate(integer_controls(6 + nsp + 24 * nsp + 5 * 3 * 24))
     allocate(integer_minimum(size(integer_controls)))
     allocate(integer_maximum(size(integer_controls)))
     numeric_controls = 0.0_dp
@@ -6753,6 +6756,17 @@ contains
         boundaries%face(face)%prescribed_species_flux
       numeric_index = numeric_index + nsp
     end do
+    numeric_controls(numeric_index + 1:numeric_index + 5) = [ &
+      boundaries%embedded_wall%wall_temperature, &
+      boundaries%embedded_wall%wall_velocity, &
+      boundaries%embedded_wall%inflow_temperature]
+    numeric_index = numeric_index + 5
+    numeric_controls(numeric_index + 1:numeric_index + nprim) = &
+      boundaries%embedded_wall%inflow_primitive
+    numeric_index = numeric_index + nprim
+    numeric_controls(numeric_index + 1:numeric_index + nsp) = &
+      boundaries%embedded_wall%prescribed_species_flux
+    numeric_index = numeric_index + nsp
     integer_controls(1:6) = [ &
       state_redist_max_order, nsp, nprim, &
       merge(1, 0, viscosity_enabled), &
@@ -6787,6 +6801,22 @@ contains
         integer_controls(integer_index) = iachar( &
           boundaries%face(face)%wall_species(character_index:character_index))
       end do
+    end do
+    do character_index = 1, 24
+      integer_index = integer_index + 1
+      integer_controls(integer_index) = iachar( &
+        boundaries%embedded_wall%kind(character_index:character_index))
+    end do
+    do character_index = 1, 24
+      integer_index = integer_index + 1
+      integer_controls(integer_index) = iachar( &
+        boundaries%embedded_wall%thermal(character_index:character_index))
+    end do
+    do character_index = 1, 24
+      integer_index = integer_index + 1
+      integer_controls(integer_index) = iachar( &
+        boundaries%embedded_wall%wall_species( &
+          character_index:character_index))
     end do
     call MPI_Allreduce( &
       numeric_controls, numeric_minimum, size(numeric_controls), &

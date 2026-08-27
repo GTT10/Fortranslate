@@ -29,6 +29,10 @@ module reactive_boundary_2d_mod
 
   type, public :: reactive_boundary_set_2d
     type(reactive_boundary_face_2d) :: face(4)
+    ! A single-valued embedded boundary is a wall, not a fifth Cartesian
+    ! domain face.  Keeping its transport data with the existing boundary
+    ! set lets serial, AMR, and MPI paths share the same validated control.
+    type(reactive_boundary_face_2d) :: embedded_wall
   end type reactive_boundary_set_2d
 
   public :: build_reactive_boundary_set_2d
@@ -123,6 +127,32 @@ contains
       end if
       if (.not. ok) return
     end do
+    ok = reactive_boundary_is_wall(boundaries%embedded_wall) .and. &
+      valid_thermal_kind(boundaries%embedded_wall%thermal) .and. &
+      boundaries%embedded_wall%wall_temperature > 0.0_dp .and. &
+      all(ieee_is_finite([boundaries%embedded_wall%wall_temperature, &
+        boundaries%embedded_wall%wall_velocity])) .and. &
+      allocated(boundaries%embedded_wall%inflow_primitive) .and. &
+      allocated(boundaries%embedded_wall%prescribed_species_flux) .and. &
+      valid_wall_species_kind(boundaries%embedded_wall%wall_species)
+    if (.not. ok) return
+    ok = size(boundaries%embedded_wall%inflow_primitive) >= 6 .and. &
+      size(boundaries%embedded_wall%prescribed_species_flux) == &
+        size(boundaries%embedded_wall%inflow_primitive) - 5 .and. &
+      all(ieee_is_finite( &
+        boundaries%embedded_wall%prescribed_species_flux))
+    if (.not. ok) return
+    scale = max(1.0_dp, maxval(abs( &
+      boundaries%embedded_wall%prescribed_species_flux)))
+    tolerance = 2.0e3_dp * epsilon(1.0_dp) * scale
+    if (trim(boundaries%embedded_wall%wall_species) == "impermeable") then
+      ok = maxval(abs( &
+        boundaries%embedded_wall%prescribed_species_flux)) <= tolerance
+    else
+      ok = abs(sum(boundaries%embedded_wall%prescribed_species_flux)) <= &
+        tolerance
+    end if
+    if (.not. ok) return
     ok = ok .and. (reactive_boundary_is_periodic(boundaries%face(boundary_x_lower)) .eqv. &
       reactive_boundary_is_periodic(boundaries%face(boundary_x_upper)))
     ok = ok .and. (reactive_boundary_is_periodic(boundaries%face(boundary_y_lower)) .eqv. &
@@ -148,6 +178,16 @@ contains
       allocate(boundaries%face(side)%inflow_primitive(nprimitive))
       boundaries%face(side)%inflow_primitive = 0.0_dp
     end do
+    boundaries%embedded_wall%kind = "slip_wall"
+    boundaries%embedded_wall%thermal = "adiabatic"
+    boundaries%embedded_wall%wall_temperature = 300.0_dp
+    boundaries%embedded_wall%wall_velocity = 0.0_dp
+    boundaries%embedded_wall%wall_species = "impermeable"
+    allocate(boundaries%embedded_wall%prescribed_species_flux(nspecies))
+    boundaries%embedded_wall%prescribed_species_flux = 0.0_dp
+    boundaries%embedded_wall%inflow_temperature = 300.0_dp
+    allocate(boundaries%embedded_wall%inflow_primitive(nprimitive))
+    boundaries%embedded_wall%inflow_primitive = 0.0_dp
   end subroutine initialize_periodic_boundary_set_2d
 
   subroutine build_reactive_boundary_set_2d(species, config, boundaries, ok)
@@ -212,6 +252,16 @@ contains
       allocate(boundaries%face(side)%prescribed_species_flux(size(species)))
       boundaries%face(side)%prescribed_species_flux = 0.0_dp
     end do
+    boundaries%embedded_wall%kind = "slip_wall"
+    boundaries%embedded_wall%thermal = "adiabatic"
+    boundaries%embedded_wall%wall_temperature = 300.0_dp
+    boundaries%embedded_wall%wall_velocity = 0.0_dp
+    boundaries%embedded_wall%wall_species = "impermeable"
+    boundaries%embedded_wall%inflow_temperature = config%initial_temperature
+    allocate(boundaries%embedded_wall%inflow_primitive(size(primitive)))
+    boundaries%embedded_wall%inflow_primitive = primitive
+    allocate(boundaries%embedded_wall%prescribed_species_flux(size(species)))
+    boundaries%embedded_wall%prescribed_species_flux = 0.0_dp
     boundaries%face(boundary_x_lower)%prescribed_species_flux = &
       config%prescribed_species_flux_x_lower(1:size(species))
     boundaries%face(boundary_x_upper)%prescribed_species_flux = &

@@ -1,16 +1,20 @@
 module eb_reactive_transport_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use transport_database_mod, only: gas_transport_species
+  use mixture_transport_mod, only: mixture_transport_coefficients
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
-    reactive_conserved_to_primitive
-  use reactive_boundary_2d_mod, only: reactive_boundary_set_2d
+    reactive_mass_fraction_component, reactive_conserved_to_primitive
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_face_2d, reactive_boundary_set_2d
   use reactive_transport_2d_mod, only: &
     reactive_transport_exterior_2d, reactive_transport_fluxes_2d_faces, &
     reactive_transport_timestep_2d
-  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d, &
     interpolate_reactive_eb_face_centroid_fluxes_2d
@@ -22,12 +26,107 @@ module eb_reactive_transport_2d_mod
   real(dp), parameter :: eb_species_safety = 0.90_dp
 
   public :: reactive_eb_transport_timestep_2d
+  public :: reactive_eb_wall_transport_flux_2d
   public :: reactive_eb_transport_fluxes_rhs_2d
   public :: reactive_eb_transport_rhs_2d
   public :: reactive_eb_transport_euler_update_2d
   public :: advance_reactive_eb_transport_2d
 
 contains
+
+  subroutine reactive_eb_wall_transport_flux_2d( &
+      species, transport, conserved, temperature_guess, fluid_normal, &
+      normal_distance, wall, viscosity_enabled, &
+      thermal_conduction_enabled, flux, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: conserved(:), temperature_guess
+    real(dp), intent(in) :: fluid_normal(2), normal_distance
+    type(reactive_boundary_face_2d), intent(in) :: wall
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: primitive(:), mass_fractions(:), diffusion(:)
+    real(dp) :: recovered_temperature, sound_speed, normal_magnitude
+    real(dp) :: viscosity, conductivity, normal_velocity_difference
+    real(dp) :: velocity_difference(3), momentum_flux(3)
+    logical :: local_ok
+    integer :: k, nspecies
+
+    flux = 0.0_dp
+    ok = .false.
+    nspecies = size(species)
+    if (nspecies < 1 .or. size(transport) /= nspecies .or. &
+        size(conserved) /= reactive_nvar(nspecies) .or. &
+        size(flux) /= size(conserved) .or. &
+        .not. ieee_is_finite(temperature_guess) .or. &
+        .not. all(ieee_is_finite(fluid_normal)) .or. &
+        .not. ieee_is_finite(normal_distance) .or. &
+        normal_distance <= tiny(1.0_dp) .or. &
+        .not. all(ieee_is_finite(wall%wall_velocity)) .or. &
+        .not. ieee_is_finite(wall%wall_temperature) .or. &
+        wall%wall_temperature <= 0.0_dp) return
+    if (trim(wall%kind) /= "slip_wall" .and. &
+        trim(wall%kind) /= "no_slip_wall") return
+    if (trim(wall%thermal) /= "adiabatic" .and. &
+        trim(wall%thermal) /= "isothermal") return
+    if (trim(wall%wall_species) /= "impermeable") return
+    normal_magnitude = sqrt(sum(fluid_normal**2))
+    if (.not. ieee_is_finite(normal_magnitude) .or. &
+        abs(normal_magnitude - 1.0_dp) > &
+          128.0_dp * epsilon(1.0_dp)) return
+    if ((.not. viscosity_enabled .or. trim(wall%kind) == "slip_wall") .and. &
+        (.not. thermal_conduction_enabled .or. &
+         trim(wall%thermal) == "adiabatic")) then
+      ok = .true.
+      return
+    end if
+
+    allocate(primitive(reactive_nprim(nspecies)))
+    allocate(mass_fractions(nspecies), diffusion(nspecies))
+    call reactive_conserved_to_primitive( &
+      species, conserved, temperature_guess, primitive, &
+      recovered_temperature, sound_speed, local_ok)
+    if (.not. local_ok) return
+    do k = 1, nspecies
+      mass_fractions(k) = &
+        primitive(reactive_mass_fraction_component(k))
+    end do
+    call mixture_transport_coefficients( &
+      species, transport, mass_fractions, recovered_temperature, &
+      primitive(5), viscosity, conductivity, diffusion, local_ok)
+    if (.not. local_ok) return
+
+    if (viscosity_enabled .and. trim(wall%kind) == "no_slip_wall") then
+      velocity_difference = primitive(2:4) - wall%wall_velocity
+      normal_velocity_difference = &
+        velocity_difference(1) * fluid_normal(1) + &
+        velocity_difference(2) * fluid_normal(2)
+      momentum_flux(1) = -viscosity * ( &
+        velocity_difference(1) + &
+        normal_velocity_difference * fluid_normal(1) / 3.0_dp) / &
+        normal_distance
+      momentum_flux(2) = -viscosity * ( &
+        velocity_difference(2) + &
+        normal_velocity_difference * fluid_normal(2) / 3.0_dp) / &
+        normal_distance
+      momentum_flux(3) = &
+        -viscosity * velocity_difference(3) / normal_distance
+      flux(imx:imz) = momentum_flux
+      flux(iet) = dot_product(momentum_flux, wall%wall_velocity)
+    end if
+    if (thermal_conduction_enabled .and. &
+        trim(wall%thermal) == "isothermal") then
+      flux(iet) = flux(iet) - conductivity * &
+        (recovered_temperature - wall%wall_temperature) / normal_distance
+    end if
+    flux(irho) = 0.0_dp
+    do k = 1, nspecies
+      flux(reactive_species_component(k)) = 0.0_dp
+    end do
+    ok = all(ieee_is_finite(flux))
+  end subroutine reactive_eb_wall_transport_flux_2d
 
   subroutine recover_transport_exterior_cell( &
       species, exterior_state, exterior_temperature, fallback_state, &
@@ -253,8 +352,11 @@ contains
     type(reactive_eb_exterior_state_2d), intent(in), optional :: exterior
 
     real(dp), allocatable :: center_x(:, :, :), center_y(:, :, :)
+    real(dp), allocatable :: wall_flux(:)
     type(reactive_transport_exterior_2d) :: transport_exterior
-    real(dp) :: regular_theta, fluid_volume
+    real(dp) :: regular_theta, fluid_volume, normal_distance
+    real(dp) :: cell_centroid_x, cell_centroid_y
+    real(dp) :: fluid_normal(2)
     logical :: local_ok
     integer :: i, j, nvar
 
@@ -274,6 +376,7 @@ contains
         size(y_flux, 3) /= geometry%ny + 1) return
     allocate(center_x(nvar, 0:geometry%nx, geometry%ny))
     allocate(center_y(nvar, geometry%nx, 0:geometry%ny))
+    allocate(wall_flux(nvar))
     if (present(exterior)) then
       call build_reactive_transport_exterior_2d( &
         species, state, temperature, geometry, exterior, &
@@ -318,6 +421,33 @@ contains
             geometry%y_face_fraction(i, j) * y_flux(:, i, j) - &
             geometry%y_face_fraction(i, j - 1) * &
               y_flux(:, i, j - 1))) / fluid_volume
+        if (geometry%cell_type(i, j) == eb_cut_cell .and. &
+            (viscosity_enabled .or. thermal_conduction_enabled)) then
+          cell_centroid_x = geometry%x_lower + &
+            (real(i, dp) - 0.5_dp + geometry%cell_centroid_x(i, j)) * &
+            geometry%dx
+          cell_centroid_y = geometry%y_lower + &
+            (real(j, dp) - 0.5_dp + geometry%cell_centroid_y(i, j)) * &
+            geometry%dy
+          fluid_normal = [geometry%boundary_normal_x(i, j), &
+            geometry%boundary_normal_y(i, j)]
+          normal_distance = &
+            (cell_centroid_x - geometry%boundary_centroid_x(i, j)) * &
+              fluid_normal(1) + &
+            (cell_centroid_y - geometry%boundary_centroid_y(i, j)) * &
+              fluid_normal(2)
+          call reactive_eb_wall_transport_flux_2d( &
+            species, transport, state(:, i, j), temperature(i, j), &
+            fluid_normal, normal_distance, boundaries%embedded_wall, &
+            viscosity_enabled, thermal_conduction_enabled, wall_flux, &
+            local_ok)
+          if (.not. local_ok) then
+            rhs = 0.0_dp
+            return
+          end if
+          rhs(:, i, j) = rhs(:, i, j) + &
+            geometry%boundary_length(i, j) * wall_flux / fluid_volume
+        end if
       end do
     end do
     ok = all(ieee_is_finite(rhs))
