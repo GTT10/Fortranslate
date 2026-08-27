@@ -785,6 +785,19 @@ program test_reactive_eb_amr_2d_driver
       level_two_patch, time, steps, regrids, initial_integrals, &
       final_integrals, minimum_dt, base_density, ok, transport=transport, &
       minimum_transport_theta=minimum_transport_theta)
+  if (.not. ok .or. steps <= 0 .or. regrids <= 0 .or. &
+      .not. level_two_patch%is_valid(fine_geometry, level_two_geometry) .or. &
+      level_two_patch%coarse_i_lower < 3 .or. &
+      level_two_patch%coarse_i_upper > fine_geometry%nx - 2 .or. &
+      level_two_patch%coarse_j_lower < 3 .or. &
+      level_two_patch%coarse_j_upper > fine_geometry%ny - 2 .or. &
+      (level_two_patch%coarse_i_upper == 6 .and. &
+       level_two_patch%coarse_j_upper == 6)) then
+    write(*, *) "Dynamic three-level regrid diagnostics:", &
+      ok, steps, regrids, &
+      level_two_patch%coarse_i_lower, level_two_patch%coarse_i_upper, &
+      level_two_patch%coarse_j_lower, level_two_patch%coarse_j_upper
+  end if
   call require(ok .and. steps > 0 .and. regrids > 0 .and. &
     level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
     level_two_patch%coarse_i_lower >= 3 .and. &
