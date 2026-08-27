@@ -1846,3 +1846,27 @@ materialized on a nonowner. Invalid selectors, rank-dependent selectors,
 nonfinite results, or an empty contributing set publish a zero integral and
 zero optional local-node count. The same subtree boundary can therefore be
 used before and after owner-local reflux and cut-interface closure.
+
+## MPI owner-local arbitrary-depth EB patch-tree hydro (`0.164.0`)
+
+Every rank follows the serial depth-first subcycle schedule while only the
+selected node owner executes its EB level update. Before an owner boundary is
+crossed, the parent owner extracts the compact start/end four-edge exterior
+context and sends it once to the child owner. Each fine substep returns its
+x/y flux vector directly to the parent owner, which retains and consumes that
+edge's coarse/fine flux register.
+
+Reflux keeps the parent field on its owner: a distinct child owner sends its
+current node, the parent applies the serial reactive reflux kernel, and the
+corrected child returns. Average-down then sends the corrected child once more
+to the parent in deterministic child order. Shared-owner edges execute every
+operation locally. Each refined node measures its subtree integral before and
+after the operation and applies the established unrefined-parent conservation
+closure on the parent owner. These internal reductions reuse the already
+validated topology and avoid repeating public metadata consensus at every
+subcycle.
+
+All fields, per-level advance counts, and grouped direct-transfer counts remain
+inside one private sparse candidate until the complete recursive root operation
+validates collectively. A control mismatch or later owner failure therefore
+publishes zero accounting and preserves the accepted sparse tree exactly.
