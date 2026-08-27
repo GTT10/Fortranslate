@@ -11,6 +11,8 @@ program test_reactive_eb_amr_2d_driver
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_cut_cell
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, composite_eb_integral_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    composite_three_level_eb_integral_2d
   use amr_eb_regrid_2d_mod, only: reactive_eb_patch_set_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
@@ -28,6 +30,7 @@ program test_reactive_eb_amr_2d_driver
     compute_reactive_eb_patch_set_cfl_timestep_2d, &
     simulate_reactive_eb_amr_patch_set_2d, &
     compute_three_level_reactive_eb_cfl_timestep_2d, &
+    regrid_three_level_reactive_eb_amr_parent_2d, &
     simulate_three_level_reactive_eb_amr_2d, &
     build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
@@ -59,6 +62,12 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: rollback_coarse_temperature(:, :)
   real(dp), allocatable :: rollback_fine_state(:, :, :)
   real(dp), allocatable :: rollback_fine_temperature(:, :)
+  real(dp), allocatable :: parent_rollback_root_state(:, :, :)
+  real(dp), allocatable :: parent_rollback_root_temperature(:, :)
+  real(dp), allocatable :: parent_rollback_level_one_state(:, :, :)
+  real(dp), allocatable :: parent_rollback_level_one_temperature(:, :)
+  real(dp), allocatable :: parent_rollback_level_two_state(:, :, :)
+  real(dp), allocatable :: parent_rollback_level_two_temperature(:, :)
   real(dp), allocatable :: reference_state(:)
   real(dp), allocatable :: checkpoint_coarse_state(:, :, :)
   real(dp), allocatable :: checkpoint_coarse_temperature(:, :)
@@ -71,6 +80,8 @@ program test_reactive_eb_amr_2d_driver
   logical :: changed, fine_active, checkpoint_fine_active, ok
   integer :: initial_i_lower, initial_i_upper
   integer :: initial_j_lower, initial_j_upper, regrids, steps
+  integer :: parent_level_two_i_lower, parent_level_two_i_upper
+  integer :: parent_level_two_j_lower, parent_level_two_j_upper
   integer :: checkpoint_regrids, checkpoint_steps, child
   character(len=*), parameter :: checkpoint_path = &
     "reactive_eb_amr_2d_driver.chk"
@@ -810,6 +821,95 @@ program test_reactive_eb_amr_2d_driver
     "public dynamic three-level finest regrid")
   call require(minimum_transport_theta > 0.999999999_dp, &
     "public dynamic three-level transport limiter")
+
+  config%eb%flow%chemistry_enabled = .false.
+  config%eb%flow%transport_enabled = .false.
+  config%eb%flow%hotspot_center_x = 0.72_dp
+  config%eb%flow%hotspot_center_y = 0.68_dp
+  config%dynamic_regridding = .false.
+  config%regrid_at_initialization = .false.
+  config%regrid_buffer_cells = 1
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, regrids, initial_integrals, &
+    final_integrals, minimum_dt, base_density, ok)
+  call require(ok .and. steps > 0 .and. regrids == 0, &
+    "static three-level parent-regrid seed")
+  initial_i_lower = patch%coarse_i_lower
+  initial_i_upper = patch%coarse_i_upper
+  initial_j_lower = patch%coarse_j_lower
+  initial_j_upper = patch%coarse_j_upper
+  call composite_three_level_eb_integral_2d( &
+    coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+    level_two_state, level_two_geometry, level_two_patch, &
+    initial_integrals, ok)
+  call require(ok, "three-level parent-regrid initial integral")
+  config%dynamic_regridding = .true.
+  call regrid_three_level_reactive_eb_amr_parent_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, level_two_state, &
+    level_two_temperature, level_two_geometry, level_two_patch, changed, ok)
+  call require(ok .and. changed .and. &
+    patch%is_valid(coarse_geometry, fine_geometry) .and. &
+    level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
+    (patch%coarse_i_lower /= initial_i_lower .or. &
+     patch%coarse_i_upper /= initial_i_upper .or. &
+     patch%coarse_j_lower /= initial_j_lower .or. &
+     patch%coarse_j_upper /= initial_j_upper) .and. &
+    patch%coarse_i_upper == coarse_geometry%nx .and. &
+    patch%coarse_j_upper == coarse_geometry%ny .and. &
+    level_two_patch%coarse_i_lower >= 3 .and. &
+    level_two_patch%coarse_i_upper <= fine_geometry%nx - 2 .and. &
+    level_two_patch%coarse_j_lower >= 3 .and. &
+    level_two_patch%coarse_j_upper <= fine_geometry%ny - 2, &
+    "transactional three-level parent regrid")
+  call composite_three_level_eb_integral_2d( &
+    coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+    level_two_state, level_two_geometry, level_two_patch, &
+    final_integrals, ok)
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(ok .and. maxval(abs(final_integrals - &
+    initial_integrals)) <= 1.0e-10_dp * scale, &
+    "three-level parent-regrid conservation")
+
+  allocate(parent_rollback_root_state, source=coarse_state)
+  allocate(parent_rollback_root_temperature, source=coarse_temperature)
+  allocate(parent_rollback_level_one_state, source=fine_state)
+  allocate(parent_rollback_level_one_temperature, source=fine_temperature)
+  allocate(parent_rollback_level_two_state, source=level_two_state)
+  allocate(parent_rollback_level_two_temperature, &
+    source=level_two_temperature)
+  initial_i_lower = patch%coarse_i_lower
+  initial_i_upper = patch%coarse_i_upper
+  initial_j_lower = patch%coarse_j_lower
+  initial_j_upper = patch%coarse_j_upper
+  parent_level_two_i_lower = level_two_patch%coarse_i_lower
+  parent_level_two_i_upper = level_two_patch%coarse_i_upper
+  parent_level_two_j_lower = level_two_patch%coarse_j_lower
+  parent_level_two_j_upper = level_two_patch%coarse_j_upper
+  config%prolongation_method = "invalid"
+  call regrid_three_level_reactive_eb_amr_parent_2d( &
+    species, config, coarse_state, coarse_temperature, coarse_geometry, &
+    fine_state, fine_temperature, fine_geometry, patch, level_two_state, &
+    level_two_temperature, level_two_geometry, level_two_patch, changed, ok)
+  call require(.not. ok .and. .not. changed .and. &
+    all(coarse_state == parent_rollback_root_state) .and. &
+    all(coarse_temperature == parent_rollback_root_temperature) .and. &
+    all(fine_state == parent_rollback_level_one_state) .and. &
+    all(fine_temperature == parent_rollback_level_one_temperature) .and. &
+    all(level_two_state == parent_rollback_level_two_state) .and. &
+    all(level_two_temperature == parent_rollback_level_two_temperature) .and. &
+    patch%coarse_i_lower == initial_i_lower .and. &
+    patch%coarse_i_upper == initial_i_upper .and. &
+    patch%coarse_j_lower == initial_j_lower .and. &
+    patch%coarse_j_upper == initial_j_upper .and. &
+    level_two_patch%coarse_i_lower == parent_level_two_i_lower .and. &
+    level_two_patch%coarse_i_upper == parent_level_two_i_upper .and. &
+    level_two_patch%coarse_j_lower == parent_level_two_j_lower .and. &
+    level_two_patch%coarse_j_upper == parent_level_two_j_upper, &
+    "three-level parent-regrid rollback")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 

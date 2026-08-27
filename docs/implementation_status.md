@@ -3412,3 +3412,20 @@ grows once, remains topology connected, and falls back to a minimum-norm
 rank-one fit only when the larger neighborhood is also deficient. Exact AMReX
 interpolation, quadratic reconstruction, and geometry coarsening are not
 claimed.
+
+## Transactional fixed three-level parent regrid (`0.189.0`)
+
+- [x] root-temperature plan for a replacement root-to-middle patch
+- [x] deepest-first restriction of the accepted finest contribution
+- [x] same-resolution middle overlap retained by the two-level regrid kernel
+- [x] replacement finest plan constrained to a two-cell middle margin
+- [x] configured PCM or limited-linear prolongation at both rebuilt interfaces
+- [x] before/after three-level composite conservation acceptance gate
+- [x] atomic publication of all fields, geometries, and patch descriptors
+- [x] invalid-control rollback regression
+
+The fixed-depth library can now relocate or resize its parent refined patch
+without publishing an incomplete hierarchy. Old finest information is first
+restricted into the middle level; a replacement finest patch is then
+prolonged from the rebuilt middle. Public scheduling and checkpoint storage of
+the moving parent topology remain the next fixed-depth lifecycle boundary.
