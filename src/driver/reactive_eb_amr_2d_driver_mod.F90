@@ -26,7 +26,7 @@ module reactive_eb_amr_2d_driver_mod
     amr_eb_patch_2d, build_amr_eb_patch_2d, composite_eb_integral_2d, &
     average_down_reactive_eb_state_patch_2d
   use amr_eb_reactive_2d_mod, only: &
-    prolong_reactive_eb_patch_pcm_2d, &
+    prolong_reactive_eb_patch_2d, &
     advance_two_level_reactive_eb_hydro_2d
   use amr_eb_transport_2d_mod, only: &
     advance_two_level_reactive_eb_transport_2d
@@ -143,7 +143,13 @@ contains
       config%coarse_j_upper <= config%eb%flow%ny .and. &
       config%coarse_i_upper >= config%coarse_i_lower .and. &
       config%coarse_j_upper >= config%coarse_j_lower .and. &
-      config%refinement_ratio >= 2 .and. config%regrid_interval >= 1 .and. &
+      config%refinement_ratio >= 2 .and. &
+      (trim(config%prolongation_method) == "pcm" .or. &
+       trim(config%prolongation_method) == "linear") .and. &
+      (trim(config%prolongation_method) == "pcm" .or. &
+       (len_trim(config%checkpoint_file) == 0 .and. &
+        len_trim(config%restart_file) == 0)) .and. &
+      config%regrid_interval >= 1 .and. &
       (.not. config%remove_fine_patch_when_untagged .or. &
        config%dynamic_regridding) .and. &
       ieee_is_finite(config%regrid_relative_temperature_gradient) .and. &
@@ -1149,7 +1155,7 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, patch_set, &
       fine_geometries, collection, config%refinement_ratio, &
       candidate_coarse, candidate_coarse_temperature, candidate_set, &
-      local_ok)
+      local_ok, config%prolongation_method)
     if (.not. local_ok) return
     call move_alloc(candidate_coarse, coarse_state)
     call move_alloc(candidate_coarse_temperature, coarse_temperature)
@@ -1255,13 +1261,14 @@ contains
         fine_state, fine_temperature, fine_geometry, patch, &
         candidate_fine_geometry, candidate_patch, candidate_coarse_state, &
         candidate_coarse_temperature, candidate_fine_state, &
-        candidate_fine_temperature, local_ok)
+        candidate_fine_temperature, local_ok, config%prolongation_method)
     else
       candidate_coarse_state = coarse_state
       candidate_coarse_temperature = coarse_temperature
-      call prolong_reactive_eb_patch_pcm_2d( &
+      call prolong_reactive_eb_patch_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
-        candidate_fine_geometry, candidate_patch, candidate_fine_state, &
+        candidate_fine_geometry, candidate_patch, &
+        config%prolongation_method, candidate_fine_state, &
         candidate_fine_temperature, local_ok)
     end if
     if (.not. local_ok) return
@@ -1380,7 +1387,8 @@ contains
       level_one_patch, candidate_level_two_geometry, &
       candidate_level_one_patch, candidate_level_one_state, &
       candidate_level_one_temperature, candidate_level_two_state, &
-      candidate_level_two_temperature, local_ok)
+      candidate_level_two_temperature, local_ok, &
+      config%prolongation_method)
     if (.not. local_ok) return
 
     call move_alloc(candidate_level_one_state, level_one_state)
@@ -1548,6 +1556,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
@@ -1767,6 +1776,7 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         config%multipatch_enabled .or. config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
@@ -1964,6 +1974,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         .not. config%multipatch_enabled .or. config%three_level_enabled .or. &
         .not. coarse_geometry%is_valid() .or. &
         size(coarse_state, 1) /= nvar .or. &
@@ -2164,6 +2175,7 @@ contains
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         .not. config%multipatch_enabled .or. &
         config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -2373,6 +2385,7 @@ contains
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_three_level_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         .not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
         .not. level_one_patch%is_valid( &
           level_one_geometry, level_two_geometry) .or. &
@@ -2601,7 +2614,8 @@ contains
     if (present(regrids)) regrids = 0
     ok = .false.
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
-        .not. supported_three_level_reactive_eb_amr_config(config)) return
+        .not. supported_three_level_reactive_eb_amr_config(config) .or. &
+        trim(config%prolongation_method) /= "pcm") return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return
@@ -2887,9 +2901,10 @@ contains
       nvar = size(coarse_state, 1)
       allocate(fine_state(nvar, fine_nx, fine_ny))
       allocate(fine_temperature(fine_nx, fine_ny))
-      call prolong_reactive_eb_patch_pcm_2d( &
+      call prolong_reactive_eb_patch_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
-        fine_geometry, patch, fine_state, fine_temperature, local_ok)
+        fine_geometry, patch, config%prolongation_method, fine_state, &
+        fine_temperature, local_ok)
       if (.not. local_ok) return
       fine_active = .true.
       if (config%dynamic_regridding .and. config%regrid_at_initialization) then
@@ -3192,9 +3207,10 @@ contains
     allocate(level_one_temperature( &
       level_one_geometry%nx, level_one_geometry%ny))
     if (present(failure_context)) failure_context = "middle prolongation"
-    call prolong_reactive_eb_patch_pcm_2d( &
+    call prolong_reactive_eb_patch_2d( &
       species, root_state, root_temperature, root_geometry, &
-      level_one_geometry, root_patch, level_one_state, &
+      level_one_geometry, root_patch, config%prolongation_method, &
+      level_one_state, &
       level_one_temperature, local_ok)
     if (.not. local_ok) return
     allocate(level_two_state( &
@@ -3202,9 +3218,10 @@ contains
     allocate(level_two_temperature( &
       level_two_geometry%nx, level_two_geometry%ny))
     if (present(failure_context)) failure_context = "finest prolongation"
-    call prolong_reactive_eb_patch_pcm_2d( &
+    call prolong_reactive_eb_patch_2d( &
       species, level_one_state, level_one_temperature, level_one_geometry, &
-      level_two_geometry, level_one_patch, level_two_state, &
+      level_two_geometry, level_one_patch, config%prolongation_method, &
+      level_two_state, &
       level_two_temperature, local_ok)
     if (.not. local_ok) return
       if (config%dynamic_regridding .and. &
@@ -3483,7 +3500,7 @@ contains
       call initialize_reactive_eb_patch_set_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
         fine_geometries, initial_collection, config%refinement_ratio, &
-        patch_set, local_ok)
+        patch_set, local_ok, config%prolongation_method)
       if (.not. local_ok) return
       if (config%regrid_at_initialization) then
         if (present(failure_context)) failure_context = "initial regrid"
@@ -3638,6 +3655,8 @@ contains
     logical, intent(out) :: ok
 
     fingerprint = reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d()
+    ok = .false.
+    if (trim(config%prolongation_method) /= "pcm") return
     fingerprint%geometry = trim(config%eb%geometry)
     fingerprint%chemistry_model = trim(config%eb%flow%chemistry_model)
     fingerprint%riemann_solver = trim(config%eb%flow%riemann_solver)
@@ -3728,6 +3747,7 @@ contains
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     if (.not. supported_reactive_eb_amr_config(config) .or. &
         config%three_level_enabled .or. config%multipatch_enabled .or. &
+        trim(config%prolongation_method) /= "pcm" .or. &
         config%patch_tree_maximum_levels < 1 .or. &
         config%patch_tree_maximum_levels > 64 .or. &
         (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &

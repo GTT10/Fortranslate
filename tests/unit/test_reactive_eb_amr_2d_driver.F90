@@ -391,6 +391,11 @@ program test_reactive_eb_amr_2d_driver
   changed_wall_fingerprint%embedded_wall_values(1) = 1510.0_dp
   call require(.not. wall_fingerprint%matches(changed_wall_fingerprint), &
     "patch-tree wall-temperature fingerprint mismatch")
+  config%prolongation_method = "linear"
+  call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
+    config, changed_wall_fingerprint, ok)
+  call require(.not. ok, &
+    "untracked patch-tree prolongation fingerprint rejection")
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
@@ -421,6 +426,14 @@ program test_reactive_eb_amr_2d_driver
 
   config%eb%embedded_wall_thermal = "isothermal"
   config%checkpoint_file = checkpoint_path
+  call simulate_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    fine_active, time, steps, regrids, initial_integrals, final_integrals, &
+    minimum_dt, base_density, ok, transport, minimum_transport_theta)
+  call require(.not. ok .and. steps == 0 .and. time == 0.0_dp, &
+    "linear-prolongation checkpoint preflight rejection")
+  config%prolongation_method = "pcm"
   call simulate_reactive_eb_amr_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
     coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &

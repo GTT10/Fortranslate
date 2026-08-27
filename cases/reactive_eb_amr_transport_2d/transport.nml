@@ -62,5 +62,6 @@
   coarse_j_lower = 2
   coarse_j_upper = 11
   refinement_ratio = 2
+  prolongation_method = "linear"
   fine_output_file = "reactive_eb_amr_transport_fine.csv"
 /
