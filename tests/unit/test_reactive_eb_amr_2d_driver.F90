@@ -858,6 +858,8 @@ program test_reactive_eb_amr_2d_driver
      patch%coarse_i_upper /= initial_i_upper .or. &
      patch%coarse_j_lower /= initial_j_lower .or. &
      patch%coarse_j_upper /= initial_j_upper) .and. &
+    patch%coarse_i_upper == coarse_geometry%nx .and. &
+    patch%coarse_j_upper == coarse_geometry%ny .and. &
     level_two_patch%coarse_i_lower >= 3 .and. &
     level_two_patch%coarse_i_upper <= fine_geometry%nx - 2 .and. &
     level_two_patch%coarse_j_lower >= 3 .and. &

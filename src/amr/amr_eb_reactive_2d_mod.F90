@@ -462,17 +462,20 @@ contains
           do component = 1, nvar
             delta_minus = 0.0_dp
             delta_plus = 0.0_dp
-            if (coarse_i > 1 .and. &
-                coarse_geometry%cell_type(coarse_i - 1, coarse_j) == &
+            if (coarse_i > 1) then
+              if (coarse_geometry%cell_type(coarse_i - 1, coarse_j) == &
                   eb_regular_cell) then
-              delta_minus = coarse_state(component, coarse_i, coarse_j) - &
-                coarse_state(component, coarse_i - 1, coarse_j)
+                delta_minus = coarse_state(component, coarse_i, coarse_j) - &
+                  coarse_state(component, coarse_i - 1, coarse_j)
+              end if
             end if
-            if (coarse_i < coarse_geometry%nx .and. &
-                coarse_geometry%cell_type(coarse_i + 1, coarse_j) == &
+            if (coarse_i < coarse_geometry%nx) then
+              if (coarse_geometry%cell_type(coarse_i + 1, coarse_j) == &
                   eb_regular_cell) then
-              delta_plus = coarse_state(component, coarse_i + 1, coarse_j) - &
-                coarse_state(component, coarse_i, coarse_j)
+                delta_plus = &
+                  coarse_state(component, coarse_i + 1, coarse_j) - &
+                  coarse_state(component, coarse_i, coarse_j)
+              end if
             end if
             call limited_slope( &
               delta_minus, delta_plus, "mc", slope_x(component), local_ok)
@@ -480,17 +483,20 @@ contains
 
             delta_minus = 0.0_dp
             delta_plus = 0.0_dp
-            if (coarse_j > 1 .and. &
-                coarse_geometry%cell_type(coarse_i, coarse_j - 1) == &
+            if (coarse_j > 1) then
+              if (coarse_geometry%cell_type(coarse_i, coarse_j - 1) == &
                   eb_regular_cell) then
-              delta_minus = coarse_state(component, coarse_i, coarse_j) - &
-                coarse_state(component, coarse_i, coarse_j - 1)
+                delta_minus = coarse_state(component, coarse_i, coarse_j) - &
+                  coarse_state(component, coarse_i, coarse_j - 1)
+              end if
             end if
-            if (coarse_j < coarse_geometry%ny .and. &
-                coarse_geometry%cell_type(coarse_i, coarse_j + 1) == &
+            if (coarse_j < coarse_geometry%ny) then
+              if (coarse_geometry%cell_type(coarse_i, coarse_j + 1) == &
                   eb_regular_cell) then
-              delta_plus = coarse_state(component, coarse_i, coarse_j + 1) - &
-                coarse_state(component, coarse_i, coarse_j)
+                delta_plus = &
+                  coarse_state(component, coarse_i, coarse_j + 1) - &
+                  coarse_state(component, coarse_i, coarse_j)
+              end if
             end if
             call limited_slope( &
               delta_minus, delta_plus, "mc", slope_y(component), local_ok)
