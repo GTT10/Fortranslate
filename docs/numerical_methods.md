@@ -2352,3 +2352,26 @@ steps. Per-level advances, timestep evaluations, and three transfer categories
 are monotone sums. Reaching the step ceiling or rejecting a later candidate
 returns failure while retaining the previously committed tuple. Successful
 termination publishes `t = t_target` exactly.
+
+## Arbitrary-depth EB temperature-tagged planning and rebuild
+
+Begin from a deepest-first synchronized serial tree so refined values are
+restricted into every prospective parent. For each active parent cell, tag
+when the largest valid face-neighbor temperature jump exceeds both the
+absolute threshold and the normalized relative threshold. Connected tagged
+components are buffered, grown to the configured minimum rectangle, and
+coalesced by the established deterministic 2D clustering rules.
+
+For relation `l`, every clustered rectangle retains its parent-patch index and
+is mapped to a refined EB geometry by the caller. A temporary topology is
+prolongated from the synchronized root so relation `l+1` is planned from the
+field that the new hierarchy would actually contain. Parents below the
+tagger's minimum stencil extent terminate their branch instead of rejecting an
+otherwise valid shallower plan.
+
+Planning is read-only. Rebuilding uses the existing synchronized-root PCM
+initialization, same-resolution physical-overlap retention, EOS temperature
+recovery, deepest-first average-down, and composite-integral acceptance test.
+The resulting operation can create a tree from root-only state, retain an
+unchanged tree exactly, replace its branching topology, or collapse it back to
+the root with one atomic commit.

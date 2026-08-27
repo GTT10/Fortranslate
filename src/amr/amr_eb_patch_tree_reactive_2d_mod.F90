@@ -28,8 +28,12 @@ module amr_eb_patch_tree_reactive_2d_mod
     prolong_reactive_eb_patch_pcm_2d, &
     build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
+  use amr_eb_regrid_2d_mod, only: &
+    amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
+    plan_reactive_eb_temperature_regrid_collection_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
+    initialize_amr_eb_patch_tree_topology_2d, &
     rebuild_amr_eb_patch_tree_topology_2d
   implicit none
   private
@@ -61,9 +65,25 @@ module amr_eb_patch_tree_reactive_2d_mod
     procedure :: is_valid => reactive_amr_eb_patch_tree_is_valid
   end type reactive_amr_eb_patch_tree_2d
 
+  abstract interface
+    subroutine reactive_amr_eb_tree_geometry_builder_2d( &
+        parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+        coarse_j_upper, refinement_ratio, child_geometry, ok)
+      import :: eb_geometry_2d
+      type(eb_geometry_2d), intent(in) :: parent_geometry
+      integer, intent(in) :: coarse_i_lower, coarse_i_upper
+      integer, intent(in) :: coarse_j_lower, coarse_j_upper
+      integer, intent(in) :: refinement_ratio
+      type(eb_geometry_2d), intent(out) :: child_geometry
+      logical, intent(out) :: ok
+    end subroutine reactive_amr_eb_tree_geometry_builder_2d
+  end interface
+
   public :: initialize_reactive_amr_eb_patch_tree_2d
   public :: synchronize_reactive_amr_eb_patch_tree_2d
   public :: rebuild_reactive_amr_eb_patch_tree_2d
+  public :: plan_tagged_reactive_amr_eb_patch_tree_2d
+  public :: regrid_tagged_reactive_amr_eb_patch_tree_2d
   public :: compute_reactive_amr_eb_patch_tree_cfl_timestep_2d
   public :: compute_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_reactive_amr_eb_patch_tree_chemistry_2d
@@ -232,6 +252,168 @@ contains
     end if
     solution = candidate
   end subroutine synchronize_reactive_amr_eb_patch_tree_2d
+
+  subroutine plan_tagged_reactive_amr_eb_patch_tree_2d( &
+      species, solution, criteria, maximum_levels, refinement_ratio, &
+      geometry_builder, plans, tagged_cells, ok, failure_context)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+    type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
+    integer, intent(in) :: maximum_levels, refinement_ratio
+    procedure(reactive_amr_eb_tree_geometry_builder_2d) :: geometry_builder
+    type(amr_eb_patch_tree_level_plan_2d), allocatable, intent(out) :: plans(:)
+    integer, intent(out) :: tagged_cells
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate, next_candidate
+    type(amr_eb_patch_tree_topology_2d) :: candidate_topology
+    type(amr_eb_patch_tree_level_plan_2d), allocatable :: workspace(:)
+    type(amr_eb_regrid_plan_collection_2d), allocatable :: collections(:)
+    type(eb_geometry_2d) :: parent_geometry
+    logical, allocatable :: tags(:, :)
+    integer :: child, child_count, entry, parent, parent_count
+    integer :: relation, relation_count
+    logical :: local_ok
+
+    ok = .false.
+    tagged_cells = 0
+    if (present(failure_context)) failure_context = "input validation"
+    if (.not. solution%is_valid() .or. &
+        solution%nvar /= reactive_nvar(size(species)) .or. &
+        maximum_levels < 1 .or. refinement_ratio < 2 .or. &
+        .not. criteria%is_valid( &
+          solution%topology%root_geometry%nx, &
+          solution%topology%root_geometry%ny)) return
+
+    candidate = solution
+    if (present(failure_context)) failure_context = "source synchronization"
+    call synchronize_candidate(species, candidate, local_ok)
+    if (.not. local_ok .or. .not. candidate%is_valid()) return
+
+    allocate(workspace(maximum_levels - 1))
+    relation_count = 0
+    do relation = 1, maximum_levels - 1
+      parent_count = candidate%levels(relation)%patch_count()
+      if (parent_count < 1) return
+      allocate(collections(parent_count))
+      child_count = 0
+      do parent = 1, parent_count
+        if (present(failure_context)) &
+          write(failure_context, '(a,i0,a,i0)') &
+            "tagging level ", relation - 1, " patch ", parent
+        call patch_geometry_at( &
+          candidate%topology, relation, parent, parent_geometry, local_ok)
+        if (.not. local_ok) return
+        if (.not. criteria%is_valid( &
+            parent_geometry%nx, parent_geometry%ny)) cycle
+        allocate(tags(parent_geometry%nx, parent_geometry%ny))
+        call plan_reactive_eb_temperature_regrid_collection_2d( &
+          candidate%levels(relation)%patches(parent)%temperature, &
+          parent_geometry, criteria, tags, collections(parent), local_ok)
+        deallocate(tags)
+        if (.not. local_ok) return
+        tagged_cells = tagged_cells + collections(parent)%tagged_cell_count
+        child_count = child_count + collections(parent)%patch_count()
+      end do
+      if (child_count == 0) then
+        deallocate(collections)
+        exit
+      end if
+
+      workspace(relation)%refinement_ratio = refinement_ratio
+      allocate(workspace(relation)%children(child_count))
+      entry = 0
+      do parent = 1, parent_count
+        call patch_geometry_at( &
+          candidate%topology, relation, parent, parent_geometry, local_ok)
+        if (.not. local_ok) return
+        do child = 1, collections(parent)%patch_count()
+          entry = entry + 1
+          workspace(relation)%children(entry)%parent_patch = parent
+          workspace(relation)%children(entry)%coarse_i_lower = &
+            collections(parent)%plans(child)%coarse_i_lower
+          workspace(relation)%children(entry)%coarse_i_upper = &
+            collections(parent)%plans(child)%coarse_i_upper
+          workspace(relation)%children(entry)%coarse_j_lower = &
+            collections(parent)%plans(child)%coarse_j_lower
+          workspace(relation)%children(entry)%coarse_j_upper = &
+            collections(parent)%plans(child)%coarse_j_upper
+          if (present(failure_context)) &
+            write(failure_context, '(a,i0,a,i0)') &
+              "geometry level ", relation, " patch ", entry
+          call geometry_builder( &
+            parent_geometry, &
+            workspace(relation)%children(entry)%coarse_i_lower, &
+            workspace(relation)%children(entry)%coarse_i_upper, &
+            workspace(relation)%children(entry)%coarse_j_lower, &
+            workspace(relation)%children(entry)%coarse_j_upper, &
+            refinement_ratio, &
+            workspace(relation)%children(entry)%geometry, local_ok)
+          if (.not. local_ok) return
+        end do
+      end do
+      deallocate(collections)
+      relation_count = relation
+
+      if (present(failure_context)) failure_context = "candidate topology"
+      call initialize_amr_eb_patch_tree_topology_2d( &
+        solution%topology%root_geometry, workspace(1:relation_count), &
+        candidate_topology, local_ok)
+      if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "candidate fields"
+      call initialize_reactive_amr_eb_patch_tree_2d( &
+        species, candidate%levels(1)%patches(1)%state, &
+        candidate%levels(1)%patches(1)%temperature, candidate_topology, &
+        next_candidate, local_ok)
+      if (.not. local_ok) return
+      candidate = next_candidate
+    end do
+
+    allocate(plans(relation_count))
+    if (relation_count > 0) plans = workspace(1:relation_count)
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+  end subroutine plan_tagged_reactive_amr_eb_patch_tree_2d
+
+  subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d( &
+      species, solution, criteria, maximum_levels, refinement_ratio, &
+      geometry_builder, ok, changed, tagged_cells, failure_context)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
+    type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
+    integer, intent(in) :: maximum_levels, refinement_ratio
+    procedure(reactive_amr_eb_tree_geometry_builder_2d) :: geometry_builder
+    logical, intent(out) :: ok, changed
+    integer, intent(out) :: tagged_cells
+    character(len=*), intent(out), optional :: failure_context
+
+    type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
+    character(len=160) :: context
+
+    ok = .false.
+    changed = .false.
+    tagged_cells = 0
+    context = "tag planning"
+    if (present(failure_context)) failure_context = context
+    call plan_tagged_reactive_amr_eb_patch_tree_2d( &
+      species, solution, criteria, maximum_levels, refinement_ratio, &
+      geometry_builder, plans, tagged_cells, ok, context)
+    if (.not. ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "tree rebuild"
+    call rebuild_reactive_amr_eb_patch_tree_2d( &
+      species, solution, plans, ok, changed, context)
+    if (.not. ok) then
+      changed = .false.
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+    if (present(failure_context)) failure_context = "none"
+  end subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d
 
   subroutine rebuild_reactive_amr_eb_patch_tree_2d( &
       species, solution, plans, ok, changed, failure_context)
