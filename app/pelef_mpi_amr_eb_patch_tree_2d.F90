@@ -3,6 +3,9 @@ program pelef_mpi_amr_eb_patch_tree_2d
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: &
+    load_h2o2_elementary_mechanism
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
@@ -15,7 +18,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
-    compute_reactive_amr_eb_patch_tree_timestep_2d
+    compute_reactive_amr_eb_patch_tree_timestep_2d, &
+    advance_reactive_amr_eb_patch_tree_chemistry_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -25,11 +29,13 @@ program pelef_mpi_amr_eb_patch_tree_2d
     initialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     materialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
-    compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
+    compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
   implicit none
 
   type(MPI_Comm) :: comm
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_2d_config) :: config
   type(eb_geometry_2d) :: root_geometry, level_one_geometry
@@ -39,6 +45,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(amr_eb_patch_tree_topology_2d) :: topology
   type(reactive_amr_eb_patch_tree_2d) :: solution, accepted, failed
   type(reactive_amr_eb_patch_tree_2d) :: physical_solution
+  type(reactive_amr_eb_patch_tree_2d) :: serial_chemistry
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -51,6 +58,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: base_density, expected_state, expected_temperature
   real(dp) :: hydro_cfl, mismatched_hydro_cfl, serial_dt, sparse_dt
   real(dp) :: transport_cfl
+  real(dp) :: chemistry_interval, mismatched_interval
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
@@ -58,6 +66,10 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: expected_transfers, global_transfers, local_allocated_cells
   integer :: local_nodes, local_transfers, new_owner, old_owner
   integer :: global_timestep_nodes, local_timestep_nodes
+  integer :: child, expected_restriction_transfers, parent, relation
+  integer :: global_restriction_transfers, local_restriction_transfers
+  integer, allocatable :: global_chemistry_advances(:)
+  integer, allocatable :: local_chemistry_advances(:)
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -71,6 +83,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
 
   call load_h2o2_elementary_thermo(species, ok)
   call assert_all(ok, "MPI EB patch-tree thermodynamic database", comm)
+  call load_h2o2_elementary_mechanism(reactions, ok)
+  call assert_all(ok, "MPI EB patch-tree chemistry mechanism", comm)
   call load_h2o2_elementary_transport(transport, ok)
   call assert_all(ok, "MPI EB patch-tree transport database", comm)
   call build_regular_geometry(8, 8, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -323,6 +337,57 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call assert_all(.not. ok .and. sparse_dt == 0.0_dp .and. &
     local_timestep_nodes == 0, &
     "MPI EB patch-tree timestep control consensus", comm)
+
+  chemistry_interval = 5.0e-9_dp
+  serial_chemistry = physical_solution
+  call advance_reactive_amr_eb_patch_tree_chemistry_2d( &
+    species, reactions, serial_chemistry, chemistry_interval, 1.0e-7_dp, &
+    1.0e-13_dp, ok)
+  call assert_all(ok, "MPI EB patch-tree serial chemistry reference", comm)
+  expected_restriction_transfers = 0
+  do relation = 1, size(topology%relations)
+    do child = 1, topology%relations(relation)%child_patch_count()
+      parent = topology%relations(relation)%children(child)%parent_patch
+      if (migrated_distribution%owner_of(relation - 1, parent) /= &
+          migrated_distribution%owner_of(relation, child)) &
+        expected_restriction_transfers = expected_restriction_transfers + 1
+    end do
+  end do
+  allocate(local_chemistry_advances(topology%level_count()))
+  allocate(global_chemistry_advances(topology%level_count()))
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
+    species, reactions, migrated_distribution, physical_sparse, &
+    chemistry_interval, 1.0e-7_dp, 1.0e-13_dp, ok, &
+    local_chemistry_advances, local_restriction_transfers)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, &
+    size(local_chemistry_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_restriction_transfers, global_restriction_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_sparse, materialized, local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    all(global_chemistry_advances == [1, 1, 2, 1]) .and. &
+    global_restriction_transfers == expected_restriction_transfers .and. &
+    tree_solutions_match(materialized, serial_chemistry), &
+    "MPI EB patch-tree owner-local chemistry parity", comm)
+
+  sparse_snapshot = physical_sparse
+  mismatched_interval = chemistry_interval
+  if (nranks > 1) then
+    if (rank == 0) mismatched_interval = 0.5_dp * chemistry_interval
+  else
+    mismatched_interval = -chemistry_interval
+  end if
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
+    species, reactions, migrated_distribution, physical_sparse, &
+    mismatched_interval, 1.0e-7_dp, 1.0e-13_dp, ok, &
+    local_chemistry_advances, local_restriction_transfers)
+  call assert_all(.not. ok .and. all(local_chemistry_advances == 0) .and. &
+    local_restriction_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree chemistry control rollback", comm)
 
   if (rank == 0) solution%levels(1)%patches(1)%temperature(1, 1) = -1.0_dp
   failed = solution

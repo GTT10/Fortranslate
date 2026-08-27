@@ -2221,3 +2221,19 @@ active-node sum rejects an entirely covered tree. Collective preflight requires
 identical CFL values, transport-enable flags, and species count, plus valid
 owner-only fields and a replicated distribution descriptor. Thus timestep
 selection neither broadcasts nor materializes numerical fields.
+
+## MPI owner-local arbitrary-depth EB patch-tree chemistry
+
+Each sparse owner applies the established cell-local constant-volume reactor to
+its node with the EB active mask, then reconstructs active temperatures from
+the conserved state. All ranks visit nodes in the same deterministic order and
+collectively accept after each owner operation. Chemistry counts therefore
+publish only for the final committed sparse candidate.
+
+After all nodes react, relation `L` is synchronized from deepest to shallowest.
+For child `c` and parent `p`, the child state is already authoritative after
+all deeper descendants have restricted into it. If `owner(c) != owner(p)`, the
+child state is sent directly once to `owner(p)`; otherwise no communication is
+needed. The parent owner applies the serial EB average-down operation in child
+order and retains the updated parent state and temperature. No child
+temperature or complete tree is transmitted.

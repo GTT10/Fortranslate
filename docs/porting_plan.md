@@ -1180,6 +1180,19 @@ rejection of rank-local CFL disagreement at one, two, four, and eight ranks.
 Run the complete existing MPI and serial Debug/Release suite before acceptance.
 Defer owner-local recursive hydro, transport, chemistry, and clock routing.
 
+## 0.162.0 MPI owner-local arbitrary-depth EB chemistry gates
+
+Advance chemistry only on each sparse node owner. Recover local temperatures,
+then synchronize relations deepest-first. Copy shared-owner children locally
+and send conserved state once from a distinct child owner to the parent owner
+before applying the serial EB average-down kernel.
+
+Require exact serial state/temperature parity, per-level chemistry counts,
+map-derived direct-transfer counts, and collective control-mismatch rollback at
+one, two, four, and eight ranks. Run the complete existing MPI and serial
+Debug/Release suite before acceptance. Defer owner-local recursive hydro,
+transport, and public clock routing.
+
 Each implementation PR should normally contain:
 
 1. implementation

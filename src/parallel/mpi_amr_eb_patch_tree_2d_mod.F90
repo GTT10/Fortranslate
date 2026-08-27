@@ -4,13 +4,18 @@ module mpi_amr_eb_patch_tree_2d_mod
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: &
     gas_transport_species, compatible_transport_database
   use reactive_1d_mod, only: reactive_nvar
+  use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_eb_cfl_2d_mod, only: compute_reactive_eb_cfl_timestep_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use eb_reactive_transport_2d_mod, only: &
     reactive_eb_transport_timestep_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    average_down_reactive_eb_state_patch_2d
+  use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_patch_tree_2d_mod, only: amr_eb_patch_tree_topology_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d
@@ -19,6 +24,7 @@ module mpi_amr_eb_patch_tree_2d_mod
 
   integer, parameter :: sparse_tree_state_tag = 27101
   integer, parameter :: sparse_tree_temperature_tag = 27102
+  integer, parameter :: sparse_tree_restriction_tag = 27103
 
   type, public :: mpi_amr_eb_patch_tree_level_ownership_2d
     integer, allocatable :: owners(:)
@@ -76,6 +82,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
+  public :: advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
 
 contains
 
@@ -787,6 +794,195 @@ contains
     ok = .true.
     if (present(local_active_nodes)) local_active_nodes = local_nodes
   end subroutine compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
+
+  subroutine advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
+      species, reactions, distribution, sparse, interval, rtol, atol, ok, &
+      local_level_advances, local_restriction_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    real(dp), intent(in) :: interval, rtol, atol
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_level_advances(:)
+    integer, intent(out), optional :: local_restriction_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    type(eb_geometry_2d) :: geometry, parent_geometry
+    type(MPI_Status) :: status
+    real(dp), allocatable :: child_state(:, :, :)
+    real(dp), allocatable :: state_work(:, :, :), temperature_work(:, :)
+    real(dp) :: control_maximum(3), control_minimum(3), controls(3)
+    logical, allocatable :: active_mask(:, :)
+    integer, allocatable :: advances(:)
+    integer :: child, child_owner, ierr, integer_maximum(2)
+    integer :: integer_minimum(2), integer_values(2), level, parent
+    integer :: parent_owner, patch, relation, transfers
+    logical :: accepted, entity_ok, global_ok, local_ok, matches
+
+    ok = .false.
+    transfers = 0
+    if (present(local_level_advances)) local_level_advances = 0
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = 0
+    controls = [interval, rtol, atol]
+    integer_values = [size(species), size(reactions)]
+
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    local_ok = matches .and. sparse%is_valid(distribution) .and. &
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      size(species) >= 1 .and. size(reactions) >= 1 .and. &
+      all(ieee_is_finite(controls)) .and. interval >= 0.0_dp .and. &
+      rtol > 0.0_dp .and. atol > 0.0_dp
+    if (present(local_level_advances)) local_ok = local_ok .and. &
+      size(local_level_advances) == sparse%level_count()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      controls, control_minimum, size(controls), MPI_DOUBLE_PRECISION, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      controls, control_maximum, size(controls), MPI_DOUBLE_PRECISION, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(control_minimum /= control_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    candidate = sparse
+    allocate(advances(candidate%level_count()), source=0)
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        entity_ok = .true.
+        if (distribution%is_local(level - 1, patch)) then
+          call topology_patch_geometry_2d( &
+            candidate%topology, level - 1, patch, geometry, entity_ok)
+          if (entity_ok) then
+            allocate(active_mask(geometry%nx, geometry%ny))
+            active_mask = geometry%cell_type /= eb_covered_cell
+            call advance_reactive_chemistry_2d( &
+              species, reactions, &
+              candidate%levels(level)%patches(patch)%state, &
+              candidate%levels(level)%patches(patch)%temperature, &
+              geometry%nx, geometry%ny, interval, rtol, atol, entity_ok, &
+              active_mask)
+            deallocate(active_mask)
+          end if
+          if (entity_ok) then
+            allocate(temperature_work(geometry%nx, geometry%ny))
+            call recover_transport_temperature_2d( &
+              species, candidate%levels(level)%patches(patch)%state, &
+              candidate%levels(level)%patches(patch)%temperature, geometry, &
+              temperature_work, entity_ok)
+            if (entity_ok) &
+              candidate%levels(level)%patches(patch)%temperature = &
+                temperature_work
+            deallocate(temperature_work)
+          end if
+          if (entity_ok) advances(level) = advances(level) + 1
+        end if
+        call all_ranks_accept_2d( &
+          distribution%comm, entity_ok, accepted, global_ok)
+        if (.not. global_ok .or. .not. accepted) return
+      end do
+    end do
+
+    do relation = size(candidate%topology%relations), 1, -1
+      do child = 1, candidate%topology%relations(relation)% &
+          child_patch_count()
+        parent = candidate%topology%relations(relation)% &
+          children(child)%parent_patch
+        parent_owner = distribution%owner_of(relation - 1, parent)
+        child_owner = distribution%owner_of(relation, child)
+        entity_ok = parent_owner >= 0 .and. child_owner >= 0
+        if (parent_owner /= child_owner) then
+          if (distribution%rank == child_owner) then
+            call MPI_Send( &
+              candidate%levels(relation + 1)%patches(child)%state, &
+              size(candidate%levels(relation + 1)%patches(child)%state), &
+              MPI_DOUBLE_PRECISION, parent_owner, &
+              sparse_tree_restriction_tag, distribution%comm, ierr)
+            entity_ok = ierr == MPI_SUCCESS
+            if (entity_ok) transfers = transfers + 1
+          else if (distribution%rank == parent_owner) then
+            geometry = candidate%topology%relations(relation)% &
+              children(child)%geometry
+            allocate(child_state(candidate%nvar, geometry%nx, geometry%ny))
+            call MPI_Recv( &
+              child_state, size(child_state), MPI_DOUBLE_PRECISION, &
+              child_owner, sparse_tree_restriction_tag, distribution%comm, &
+              status, ierr)
+            entity_ok = ierr == MPI_SUCCESS
+          end if
+        end if
+        if (distribution%rank == parent_owner .and. entity_ok) then
+          call topology_patch_geometry_2d( &
+            candidate%topology, relation - 1, parent, parent_geometry, &
+            entity_ok)
+          if (entity_ok) then
+            allocate(state_work, mold= &
+              candidate%levels(relation)%patches(parent)%state)
+            allocate(temperature_work, mold= &
+              candidate%levels(relation)%patches(parent)%temperature)
+            if (parent_owner == child_owner) then
+              call average_down_reactive_eb_state_patch_2d( &
+                species, &
+                candidate%levels(relation)%patches(parent)%state, &
+                candidate%levels(relation)%patches(parent)%temperature, &
+                parent_geometry, &
+                candidate%levels(relation + 1)%patches(child)%state, &
+                candidate%topology%relations(relation)% &
+                  children(child)%geometry, &
+                candidate%topology%relations(relation)%children(child)% &
+                  patch, state_work, temperature_work, entity_ok)
+            else
+              call average_down_reactive_eb_state_patch_2d( &
+                species, &
+                candidate%levels(relation)%patches(parent)%state, &
+                candidate%levels(relation)%patches(parent)%temperature, &
+                parent_geometry, child_state, &
+                candidate%topology%relations(relation)% &
+                  children(child)%geometry, &
+                candidate%topology%relations(relation)%children(child)% &
+                  patch, state_work, temperature_work, entity_ok)
+            end if
+            if (entity_ok) then
+              candidate%levels(relation)%patches(parent)%state = state_work
+              candidate%levels(relation)%patches(parent)%temperature = &
+                temperature_work
+            end if
+            deallocate(state_work, temperature_work)
+          end if
+        end if
+        if (allocated(child_state)) deallocate(child_state)
+        call all_ranks_accept_2d( &
+          distribution%comm, entity_ok, accepted, global_ok)
+        if (.not. global_ok .or. .not. accepted) return
+      end do
+    end do
+
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    sparse = candidate
+    ok = .true.
+    if (present(local_level_advances)) local_level_advances = advances
+    if (present(local_restriction_transfers)) &
+      local_restriction_transfers = transfers
+  end subroutine &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
 
   subroutine allocate_sparse_tree_layout_2d( &
       distribution, nvar, topology, sparse, ok)

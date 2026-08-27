@@ -2626,3 +2626,18 @@ an invalid negative CFL for the same rejection path. In both cases require zero
 timestep and zero local evaluation accounting. Retain the full established MPI
 gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-checked
 Debug.
+
+## 0.162.0 MPI owner-local arbitrary-depth EB chemistry gates
+
+Advance the physical four-level branching tree for one chemistry interval
+after rotating ownership. Require the global per-level owner advances to equal
+`[1, 1, 2, 1]`, every parent/child owner difference to produce exactly one
+direct child-state transfer, and shared-owner restriction to produce none.
+Materialize only after the operation and require exact state and temperature
+parity with the complete serial chemistry transaction.
+
+On multiple ranks, supply a different but valid interval on rank zero and
+require collective preflight rejection. On one rank, use a negative interval.
+In both cases require exact sparse rollback, zero level advances, and zero
+restriction transfers. Retain the full established MPI gates and all 208
+serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
