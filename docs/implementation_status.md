@@ -3302,3 +3302,21 @@ The public AMR applications no longer reject transport checkpointing solely
 because transport is enabled. Restart remains strict: older checkpoint schemas
 and any changed wall or transport controls are rejected. Catalytic species wall
 transfer and higher-order wall-normal stencils remain outside this milestone.
+
+## EB-safe limited-linear AMR prolongation (`0.183.0`)
+
+- [x] public reactive EB limited-linear prolongation API
+- [x] component-wise MC slopes from regular coarse neighbors
+- [x] exact zero-mean Cartesian child offsets per regular parent
+- [x] conserved-state interpolation with EOS temperature recovery
+- [x] PCM fallback for cut and topology-mismatched parents
+- [x] parent-local PCM retry after an inadmissible linear candidate
+- [x] exact neutral outputs after nonfinite-input rejection
+- [x] linear-field child-value regression
+- [x] prolongation/average-down conservation regression
+- [x] explicit cut-parent fallback regression
+
+The kernel is qualified as a low-level alternative to the existing PCM
+initializer. Namelist selection, restart fingerprinting of that selection, and
+replacement of the established public regrid default remain later lifecycle
+work.

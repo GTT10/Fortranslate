@@ -4,7 +4,9 @@ module amr_eb_reactive_2d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
-  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
+  use slope_limiter_mod, only: limited_slope
+  use eb_geometry_2d_mod, only: &
+    eb_geometry_2d, eb_covered_cell, eb_regular_cell
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d, &
     build_reactive_eb_face_center_fluxes_2d, &
@@ -29,6 +31,7 @@ module amr_eb_reactive_2d_mod
   end type reactive_eb_patch_exterior_context_2d
 
   public :: prolong_reactive_eb_patch_pcm_2d
+  public :: prolong_reactive_eb_patch_linear_2d
   public :: extract_reactive_eb_patch_exterior_context_support_2d
   public :: extract_reactive_eb_patch_exterior_context_2d
   public :: build_reactive_eb_patch_exterior_from_context_2d
@@ -109,6 +112,165 @@ contains
     fine_temperature = candidate_temperature
     ok = .true.
   end subroutine prolong_reactive_eb_patch_pcm_2d
+
+  subroutine prolong_reactive_eb_patch_linear_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_geometry, patch, fine_state, fine_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    real(dp), intent(out) :: fine_state(:, :, :), fine_temperature(:, :)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: candidate_state(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :), primitive(:)
+    real(dp), allocatable :: slope_x(:), slope_y(:)
+    real(dp) :: delta_minus, delta_plus, offset_x, offset_y
+    real(dp) :: recovered_temperature, sound_speed
+    logical :: local_ok, parent_ok, use_linear
+    integer :: child_i, child_j, coarse_i, coarse_j, component
+    integer :: fine_i, fine_i_lower, fine_i_upper
+    integer :: fine_j, fine_j_lower, fine_j_upper, nvar, ratio
+
+    fine_state = 0.0_dp
+    fine_temperature = 0.0_dp
+    ok = .false.
+    nvar = reactive_nvar(size(species))
+    if (nvar < 1 .or. size(coarse_state, 1) /= nvar .or. &
+        size(coarse_state, 2) /= coarse_geometry%nx .or. &
+        size(coarse_state, 3) /= coarse_geometry%ny .or. &
+        any(shape(coarse_temperature) /= &
+          [coarse_geometry%nx, coarse_geometry%ny]) .or. &
+        any(shape(fine_state) /= &
+          [nvar, fine_geometry%nx, fine_geometry%ny]) .or. &
+        any(shape(fine_temperature) /= &
+          [fine_geometry%nx, fine_geometry%ny]) .or. &
+        .not. patch%is_valid(coarse_geometry, fine_geometry) .or. &
+        any(.not. ieee_is_finite(coarse_state)) .or. &
+        any(.not. ieee_is_finite(coarse_temperature))) return
+
+    allocate(candidate_state, mold=fine_state)
+    allocate(candidate_temperature, mold=fine_temperature)
+    allocate(primitive(reactive_nprim(size(species))))
+    allocate(slope_x(nvar), slope_y(nvar))
+    candidate_state = 0.0_dp
+    candidate_temperature = 0.0_dp
+    ratio = patch%refinement_ratio
+    do coarse_j = patch%coarse_j_lower, patch%coarse_j_upper
+      fine_j_lower = (coarse_j - patch%coarse_j_lower) * ratio + 1
+      fine_j_upper = fine_j_lower + ratio - 1
+      do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
+        fine_i_lower = (coarse_i - patch%coarse_i_lower) * ratio + 1
+        fine_i_upper = fine_i_lower + ratio - 1
+        ! Keep EB-cut parents piecewise constant. Cartesian child offsets then
+        ! sum to zero exactly on every parent that accepts linear slopes.
+        use_linear = &
+          coarse_geometry%cell_type(coarse_i, coarse_j) == &
+            eb_regular_cell .and. &
+          all(fine_geometry%cell_type( &
+            fine_i_lower:fine_i_upper, fine_j_lower:fine_j_upper) == &
+            eb_regular_cell)
+        slope_x = 0.0_dp
+        slope_y = 0.0_dp
+        if (use_linear) then
+          do component = 1, nvar
+            delta_minus = 0.0_dp
+            delta_plus = 0.0_dp
+            if (coarse_i > 1 .and. &
+                coarse_geometry%cell_type(coarse_i - 1, coarse_j) == &
+                  eb_regular_cell) then
+              delta_minus = coarse_state(component, coarse_i, coarse_j) - &
+                coarse_state(component, coarse_i - 1, coarse_j)
+            end if
+            if (coarse_i < coarse_geometry%nx .and. &
+                coarse_geometry%cell_type(coarse_i + 1, coarse_j) == &
+                  eb_regular_cell) then
+              delta_plus = coarse_state(component, coarse_i + 1, coarse_j) - &
+                coarse_state(component, coarse_i, coarse_j)
+            end if
+            call limited_slope( &
+              delta_minus, delta_plus, "mc", slope_x(component), local_ok)
+            if (.not. local_ok) return
+
+            delta_minus = 0.0_dp
+            delta_plus = 0.0_dp
+            if (coarse_j > 1 .and. &
+                coarse_geometry%cell_type(coarse_i, coarse_j - 1) == &
+                  eb_regular_cell) then
+              delta_minus = coarse_state(component, coarse_i, coarse_j) - &
+                coarse_state(component, coarse_i, coarse_j - 1)
+            end if
+            if (coarse_j < coarse_geometry%ny .and. &
+                coarse_geometry%cell_type(coarse_i, coarse_j + 1) == &
+                  eb_regular_cell) then
+              delta_plus = coarse_state(component, coarse_i, coarse_j + 1) - &
+                coarse_state(component, coarse_i, coarse_j)
+            end if
+            call limited_slope( &
+              delta_minus, delta_plus, "mc", slope_y(component), local_ok)
+            if (.not. local_ok) return
+          end do
+        end if
+
+        parent_ok = .true.
+        do child_j = 1, ratio
+          fine_j = fine_j_lower + child_j - 1
+          offset_y = (real(child_j, dp) - 0.5_dp) / &
+            real(ratio, dp) - 0.5_dp
+          do child_i = 1, ratio
+            fine_i = fine_i_lower + child_i - 1
+            offset_x = (real(child_i, dp) - 0.5_dp) / &
+              real(ratio, dp) - 0.5_dp
+            candidate_state(:, fine_i, fine_j) = &
+              coarse_state(:, coarse_i, coarse_j) + &
+              offset_x * slope_x + offset_y * slope_y
+            candidate_temperature(fine_i, fine_j) = &
+              coarse_temperature(coarse_i, coarse_j)
+            if (fine_geometry%cell_type(fine_i, fine_j) == &
+                eb_covered_cell) cycle
+            if (candidate_temperature(fine_i, fine_j) <= 0.0_dp) then
+              parent_ok = .false.
+              exit
+            end if
+            call reactive_conserved_to_primitive( &
+              species, candidate_state(:, fine_i, fine_j), &
+              candidate_temperature(fine_i, fine_j), primitive, &
+              recovered_temperature, sound_speed, local_ok)
+            if (.not. local_ok) then
+              parent_ok = .false.
+              exit
+            end if
+            candidate_temperature(fine_i, fine_j) = recovered_temperature
+          end do
+          if (.not. parent_ok) exit
+        end do
+        if (.not. parent_ok .and. use_linear) then
+          ! A component-wise conservative slope may still leave the EOS
+          ! admissible set; retry this parent with the qualified PCM state.
+          do fine_j = fine_j_lower, fine_j_upper
+            do fine_i = fine_i_lower, fine_i_upper
+              candidate_state(:, fine_i, fine_j) = &
+                coarse_state(:, coarse_i, coarse_j)
+              candidate_temperature(fine_i, fine_j) = &
+                coarse_temperature(coarse_i, coarse_j)
+              call reactive_conserved_to_primitive( &
+                species, candidate_state(:, fine_i, fine_j), &
+                candidate_temperature(fine_i, fine_j), primitive, &
+                recovered_temperature, sound_speed, local_ok)
+              if (.not. local_ok) return
+              candidate_temperature(fine_i, fine_j) = recovered_temperature
+            end do
+          end do
+          parent_ok = .true.
+        end if
+        if (.not. parent_ok) return
+      end do
+    end do
+    fine_state = candidate_state
+    fine_temperature = candidate_temperature
+    ok = .true.
+  end subroutine prolong_reactive_eb_patch_linear_2d
 
   subroutine recover_exterior_cell( &
       species, start_state, end_state, start_temperature, end_temperature, &

@@ -2212,3 +2212,19 @@ The serial/sparse arbitrary-depth fingerprint advances to schema 3 and compares
 the same controls. A restart mismatch returns transactionally with a neutral
 clock and no candidate solution. Earlier schemas are rejected rather than
 silently assuming the new defaults.
+
+## EB-safe limited-linear AMR prolongation (`0.183.0`)
+
+`prolong_reactive_eb_patch_linear_2d` computes component-wise monotonized-
+central slopes from active regular coarse neighbors. Cartesian fine-child
+offsets have zero parent mean, so every accepted regular-parent interpolation
+restricts to its source conserved state without a correction pass. Conserved
+states, rather than temperatures or primitive variables, are interpolated;
+temperature is recovered independently through the configured EOS.
+
+A parent receives linear slopes only when it and all of its fine children are
+regular. Cut, covered, or topology-mismatched parents use the established PCM
+state. If any linearly reconstructed child is outside the EOS-admissible set,
+the complete parent is retried with PCM before publication. Invalid inputs
+leave both output arrays neutral. Public regrid orchestration continues to use
+PCM until a later input/checkpoint milestone selects this new library kernel.

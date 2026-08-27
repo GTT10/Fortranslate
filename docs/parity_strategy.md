@@ -2939,3 +2939,17 @@ reads a moving no-slip wall from its namelist and must produce cut-cell heating
 and tangential momentum in the established two-level transport regression.
 Exact PeleC checkpoint-file compatibility is not claimed; the contract is
 PeleF-internal and intentionally rejects older schemas.
+
+## 0.183.0 EB-safe limited-linear prolongation gates
+
+Populate the coarse level with an EOS-consistent conserved state multiplied by
+a nonconstant linear function of both Cartesian indices. Require an interior
+regular child to reproduce the analytic MC-limited value and require
+average-down of the complete fine patch to recover every parent state within
+roundoff.
+
+For every cut parent in the same geometry, require all children to retain the
+qualified PCM value. Supply a nonfinite coarse component and require failure
+with exactly zero state and temperature outputs. Run the complete serial suite
+in GNU Fortran Release and bounds/FPE-checked Debug before qualifying the
+kernel; retain the MPI chain before merging the versioned milestone.
