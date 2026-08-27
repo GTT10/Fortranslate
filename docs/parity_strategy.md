@@ -2880,3 +2880,16 @@ Continue to permit the established rank-count and work-exponent changes across
 the MPI checkpoint boundary. Retain the schema-1 low-level checkpoint tests,
 the complete MPI gate chain, and all 215 serial tests in GNU Fortran Release
 and bounds/FPE-checked Debug.
+
+## 0.179.0 interface-local multilevel EB closure gates
+
+Construct the recipient mask independently from child rectangles and parent EB
+geometry. Require every selected cell to be active, unrefined, and within the
+clipped three-by-three support of a direct coarse/fine interface; require no
+selected cell inside any sibling rectangle.
+
+Run the existing cut-interface fixed-depth, multipatch, branching patch-tree,
+transport, chemistry, and public application gates. Require unchanged
+composite mass, total energy, species closure, positive recovered temperature,
+rollback behavior, and serial/MPI field parity in all 215 serial tests and the
+complete one-, two-, four-, and eight-rank MPI Debug/Release chain.

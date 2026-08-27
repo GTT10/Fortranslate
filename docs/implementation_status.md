@@ -3216,3 +3216,24 @@ compatibility fingerprints remain later lifecycle work.
 
 This milestone closes explicit public application/checkpoint input
 compatibility for the arbitrary-depth EB tree.
+
+## Interface-local multilevel EB conservation closure (`0.179.0`)
+
+- [x] topology-derived coarse/fine interface support for every direct child
+- [x] clipped three-by-three parent recipient neighborhoods
+- [x] exclusion of refined and EB-covered parent cells
+- [x] union support for sibling child rectangles
+- [x] fixed three-level hydro and transport integration
+- [x] serial and sparse-MPI multipatch integration
+- [x] serial and sparse-MPI arbitrary-depth tree integration
+- [x] fluid-volume normalization and EOS recovery
+- [x] post-correction composite conservation validation
+- [x] transactional rejection when no physical recipient exists
+- [x] focused locality, conservation, and rollback coverage
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
+
+This milestone removes parent-wide residual spreading from every qualified 2D
+EB AMR closure path. The correction remains a conservative interface-local
+closure rather than a claim of exact AMReX `MLStateRedistribute` transfer
+parity.

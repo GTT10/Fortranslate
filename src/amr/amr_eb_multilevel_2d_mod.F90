@@ -3,7 +3,7 @@ module amr_eb_multilevel_2d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
-  use eb_geometry_2d_mod, only: eb_geometry_2d
+  use eb_geometry_2d_mod, only: eb_geometry_2d, eb_covered_cell
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_eb_state_patch_2d, &
     average_down_reactive_eb_state_patch_2d
@@ -13,8 +13,93 @@ module amr_eb_multilevel_2d_mod
   public :: average_down_three_level_eb_state_2d
   public :: average_down_three_level_reactive_eb_state_2d
   public :: composite_three_level_eb_integral_2d
+  public :: mark_local_coarse_fine_interface_recipients_2d
 
 contains
+
+  subroutine mark_local_coarse_fine_interface_recipients_2d( &
+      parent_geometry, child_geometry, patch, refined, recipients, ok)
+    type(eb_geometry_2d), intent(in) :: parent_geometry, child_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    logical, intent(in) :: refined(:, :)
+    logical, intent(inout) :: recipients(:, :)
+    logical, intent(out) :: ok
+
+    logical, allocatable :: candidate(:, :)
+    real(dp), parameter :: alignment_tolerance = 64.0_dp * epsilon(1.0_dp)
+    real(dp) :: ratio_x_real, ratio_y_real, spacing_scale
+    integer :: coarse_i, coarse_j, ratio_x, ratio_y
+
+    ok = .false.
+    if (.not. parent_geometry%is_valid() .or. &
+        .not. child_geometry%is_valid() .or. &
+        .not. patch%is_valid(parent_geometry, child_geometry) .or. &
+        any(shape(refined) /= [parent_geometry%nx, parent_geometry%ny]) .or. &
+        any(shape(recipients) /= &
+          [parent_geometry%nx, parent_geometry%ny])) return
+    ratio_x_real = parent_geometry%dx / child_geometry%dx
+    ratio_y_real = parent_geometry%dy / child_geometry%dy
+    ratio_x = nint(ratio_x_real)
+    ratio_y = nint(ratio_y_real)
+    spacing_scale = max(1.0_dp, abs(ratio_x_real), abs(ratio_y_real))
+    if (ratio_x < 1 .or. ratio_y < 1 .or. &
+        abs(ratio_x_real - real(ratio_x, dp)) > &
+          alignment_tolerance * spacing_scale .or. &
+        abs(ratio_y_real - real(ratio_y, dp)) > &
+          alignment_tolerance * spacing_scale) return
+
+    allocate(candidate, source=recipients)
+
+    if (patch%coarse_i_lower > 1) then
+      coarse_i = patch%coarse_i_lower - 1
+      do coarse_j = patch%coarse_j_lower, patch%coarse_j_upper
+        call mark_local_recipient_neighborhood( &
+          parent_geometry, refined, coarse_i, coarse_j, candidate)
+      end do
+    end if
+    if (patch%coarse_i_upper < parent_geometry%nx) then
+      coarse_i = patch%coarse_i_upper + 1
+      do coarse_j = patch%coarse_j_lower, patch%coarse_j_upper
+        call mark_local_recipient_neighborhood( &
+          parent_geometry, refined, coarse_i, coarse_j, candidate)
+      end do
+    end if
+    if (patch%coarse_j_lower > 1) then
+      coarse_j = patch%coarse_j_lower - 1
+      do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
+        call mark_local_recipient_neighborhood( &
+          parent_geometry, refined, coarse_i, coarse_j, candidate)
+      end do
+    end if
+    if (patch%coarse_j_upper < parent_geometry%ny) then
+      coarse_j = patch%coarse_j_upper + 1
+      do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
+        call mark_local_recipient_neighborhood( &
+          parent_geometry, refined, coarse_i, coarse_j, candidate)
+      end do
+    end if
+
+    recipients = candidate
+    ok = .true.
+  end subroutine mark_local_coarse_fine_interface_recipients_2d
+
+  subroutine mark_local_recipient_neighborhood( &
+      geometry, refined, seed_i, seed_j, recipients)
+    type(eb_geometry_2d), intent(in) :: geometry
+    logical, intent(in) :: refined(:, :)
+    integer, intent(in) :: seed_i, seed_j
+    logical, intent(inout) :: recipients(:, :)
+
+    integer :: i, j
+
+    do j = max(1, seed_j - 1), min(geometry%ny, seed_j + 1)
+      do i = max(1, seed_i - 1), min(geometry%nx, seed_i + 1)
+        if (refined(i, j) .or. &
+            geometry%cell_type(i, j) == eb_covered_cell) cycle
+        recipients(i, j) = .true.
+      end do
+    end do
+  end subroutine mark_local_recipient_neighborhood
 
   subroutine average_down_three_level_eb_state_2d( &
       root_state, root_geometry, level_one_state, level_one_geometry, &

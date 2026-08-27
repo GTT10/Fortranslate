@@ -24,6 +24,8 @@ module amr_eb_multipatch_transport_2d_mod
     reactive_eb_patch_set_2d, average_down_reactive_eb_patch_set_2d, &
     composite_reactive_eb_patch_set_integral_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     level_two_interface_is_regular
   implicit none
@@ -376,10 +378,11 @@ contains
 
     real(dp), allocatable :: current_integral(:), boundary_change(:)
     real(dp), allocatable :: residual(:), correction(:), primitive(:)
+    logical, allocatable :: refined(:, :), recipients(:, :)
     real(dp) :: recipient_volume, recovered_temperature, sound_speed
     real(dp) :: scale, closure_tolerance, species_residual
     logical :: local_ok
-    integer :: i, j, k, nvar, component
+    integer :: child, i, j, k, nvar, component
 
     closed_state = coarse_state
     closed_temperature = coarse_temperature
@@ -423,11 +426,28 @@ contains
     correction(component) = correction(component) + &
       residual(irho) - species_residual
 
+    allocate(refined(coarse_geometry%nx, coarse_geometry%ny), &
+      recipients(coarse_geometry%nx, coarse_geometry%ny))
+    refined = .false.
+    do child = 1, patch_set%patch_count()
+      refined( &
+        patch_set%children(child)%patch%coarse_i_lower: &
+          patch_set%children(child)%patch%coarse_i_upper, &
+        patch_set%children(child)%patch%coarse_j_lower: &
+          patch_set%children(child)%patch%coarse_j_upper) = .true.
+    end do
+    recipients = .false.
+    do child = 1, patch_set%patch_count()
+      call mark_local_coarse_fine_interface_recipients_2d( &
+        coarse_geometry, patch_set%children(child)%geometry, &
+        patch_set%children(child)%patch, refined, recipients, local_ok)
+      if (.not. local_ok) return
+    end do
+
     recipient_volume = 0.0_dp
     do j = 1, coarse_geometry%ny
       do i = 1, coarse_geometry%nx
-        if (cell_is_inside_any_patch(patch_set, i, j) .or. &
-            coarse_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         recipient_volume = recipient_volume + &
           coarse_geometry%volume_fraction(i, j) * &
           coarse_geometry%dx * coarse_geometry%dy
@@ -441,8 +461,7 @@ contains
     allocate(primitive(reactive_nprim(size(species))))
     do j = 1, coarse_geometry%ny
       do i = 1, coarse_geometry%nx
-        if (cell_is_inside_any_patch(patch_set, i, j) .or. &
-            coarse_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         closed_state(:, i, j) = closed_state(:, i, j) + correction
         call reactive_conserved_to_primitive( &
           species, closed_state(:, i, j), closed_temperature(i, j), &
@@ -457,22 +476,5 @@ contains
     end do
     ok = .true.
   end subroutine close_cut_patch_set_conservation_2d
-
-  pure logical function cell_is_inside_any_patch(patch_set, i, j) &
-      result(inside)
-    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
-    integer, intent(in) :: i, j
-    integer :: child
-
-    inside = .false.
-    do child = 1, patch_set%patch_count()
-      inside = &
-        i >= patch_set%children(child)%patch%coarse_i_lower .and. &
-        i <= patch_set%children(child)%patch%coarse_i_upper .and. &
-        j >= patch_set%children(child)%patch%coarse_j_lower .and. &
-        j <= patch_set%children(child)%patch%coarse_j_upper
-      if (inside) return
-    end do
-  end function cell_is_inside_any_patch
 
 end module amr_eb_multipatch_transport_2d_mod

@@ -2498,3 +2498,28 @@ restores the time, global step, regrid count, minimum accepted timestep,
 topology, EB geometry, conserved state, and temperature. Therefore the next
 periodic regrid decision uses the same global step index as the uninterrupted
 run. Current input continues to supply final time and numerical controls.
+
+## Interface-local multilevel EB residual closure
+
+Let `P_c` be a direct child's rectangle in parent-cell indices. For each side
+of `P_c` that has a parent cell outside the child, take those adjacent coarse
+cells as interface seeds. The recipient mask is the sibling-union
+
+```text
+R = union_c union_(s in interface(P_c))
+      { q : ||q-s||_infinity <= 1, q is active, q is not refined }.
+```
+
+If the conservative residual after reflux and average-down is `Delta U`, the
+same per-fluid-volume correction is applied to every `q` in `R`:
+
+```text
+delta U = Delta U / sum_(q in R) (vfrac_q dx dy).
+```
+
+Density, total energy, and every species participate; the final species sum is
+adjusted at roundoff to match density. Temperature is recovered through the
+EOS only after a private candidate has been corrected. Empty support,
+nonfinite correction, failed EOS recovery, or failed post-correction composite
+closure rejects the whole transaction. This is local coarse/fine support, not
+an exact reproduction of AMReX's `MLStateRedistribute` movement ledger.

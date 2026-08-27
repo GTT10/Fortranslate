@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.178.0` milestone contains the serial verification suite, ten optional
+The `0.179.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -21,7 +21,10 @@ non-owners never allocate a root state or temperature field. The
 public serial and sparse-MPI patch-tree checkpoints now store a schema-2
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
-MPI rank count, and ownership weighting. The
+MPI rank count, and ownership weighting. Multilevel EB conservation closure
+now distributes residuals only to active, unrefined parent cells in a local
+three-by-three support band around each direct coarse/fine interface; it no
+longer perturbs every unrefined cell of the parent patch. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial

@@ -45,6 +45,8 @@ module mpi_amr_eb_patch_2d_mod
     composite_reactive_eb_patch_set_integral_2d, &
     plan_reactive_eb_temperature_regrid_collection_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     level_two_interface_is_regular
   use amr_eb_multipatch_transport_2d_mod, only: &
@@ -3548,10 +3550,11 @@ contains
 
     real(dp), allocatable :: correction(:)
     real(dp), allocatable :: current_integral(:), primitive(:), residual(:)
+    logical, allocatable :: refined(:, :), recipients(:, :)
     real(dp) :: closure_tolerance, recipient_volume, recovered_temperature
     real(dp) :: scale, sound_speed, species_residual
     logical :: accepted, entity_ok, global_ok, local_ok
-    integer :: component, global_j, i, j, k, local_j, nvar, tile
+    integer :: child, component, global_j, i, j, k, local_j, nvar, tile
 
     ok = .false.
     nvar = reactive_nvar(size(species))
@@ -3584,11 +3587,33 @@ contains
     correction(component) = correction(component) + &
       residual(irho) - species_residual
 
+    allocate(refined(coarse_geometry%nx, coarse_geometry%ny), &
+      recipients(coarse_geometry%nx, coarse_geometry%ny))
+    refined = .false.
+    do child = 1, patch_set_template%patch_count()
+      refined( &
+        patch_set_template%children(child)%patch%coarse_i_lower: &
+          patch_set_template%children(child)%patch%coarse_i_upper, &
+        patch_set_template%children(child)%patch%coarse_j_lower: &
+          patch_set_template%children(child)%patch%coarse_j_upper) = .true.
+    end do
+    recipients = .false.
+    local_ok = .true.
+    do child = 1, patch_set_template%patch_count()
+      call mark_local_coarse_fine_interface_recipients_2d( &
+        coarse_geometry, patch_set_template%children(child)%geometry, &
+        patch_set_template%children(child)%patch, refined, recipients, &
+        entity_ok)
+      local_ok = local_ok .and. entity_ok
+    end do
+    call all_ranks_accept_eb_2d( &
+      distribution, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
     recipient_volume = 0.0_dp
     do j = 1, coarse_geometry%ny
       do i = 1, coarse_geometry%nx
-        if (coarse_cell_is_refined_2d(patch_set_template, i, j) .or. &
-            coarse_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         recipient_volume = recipient_volume + &
           coarse_geometry%volume_fraction(i, j) * &
           coarse_geometry%dx * coarse_geometry%dy
@@ -3607,10 +3632,7 @@ contains
       do local_j = 1, size(sparse_patch_set%root_tiles(tile)%state, 3)
         global_j = distribution%root_tiles(tile)%j_lower + local_j - 1
         do i = 1, coarse_geometry%nx
-          if (coarse_cell_is_refined_2d( &
-              patch_set_template, i, global_j) .or. &
-              coarse_geometry%cell_type(i, global_j) == &
-                eb_covered_cell) cycle
+          if (.not. recipients(i, global_j)) cycle
           sparse_patch_set%root_tiles(tile)%state(:, i, local_j) = &
             sparse_patch_set%root_tiles(tile)%state(:, i, local_j) + &
             correction
