@@ -1374,6 +1374,21 @@ non-owners. Compare 1/2/4/8-rank composite fields and retain all serial and MPI
 Debug/Release gates. Defer cross-rank application restart composition and
 elimination of the temporary replicated root startup field.
 
+## 0.176.0 public sparse-MPI cross-rank restart gates
+
+Exercise the installed sparse-MPI arbitrary-depth EB executable through four
+separate processes: an uninterrupted one-rank reference, a two-rank
+checkpoint-stop run, and independent four- and eight-rank continuations from
+that file. Change the MPI work exponent across the checkpoint boundary so the
+test covers ownership-policy recomputation in addition to communicator-size
+redistribution.
+
+Require a structurally complete four-level checkpoint, an intermediate stop,
+exact final times, identical final composite identities and columns, and
+bounded differences for every numeric field. Run the complete MPI gate chain
+and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
+Defer elimination of the temporary replicated root startup field.
+
 Each implementation PR should normally contain:
 
 1. implementation
