@@ -231,6 +231,7 @@ program test_eb_reactive_redistribution_2d
   call require(ok .and. .not. used_order_zero_fallback, &
     "admissible second-order StateRedist avoids fallback")
 
+  conservative_rhs(:, cut_i, 1) = -2.0_dp * state_cell
   call advance_reactive_eb_state_redistributed_2d( &
     species, state, temperature, geometry, conservative_rhs, 1.0_dp, &
     new_state, new_temperature, ok, kappa)
