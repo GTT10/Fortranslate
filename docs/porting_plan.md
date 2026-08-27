@@ -1280,6 +1280,22 @@ must collapse the tree to its root while preserving the composite integral.
 Run the complete serial Debug and Release suite before acceptance. Defer
 owner-local MPI tag planning/migration and arbitrary-depth checkpoint I/O.
 
+## 0.169.0 MPI owner-local arbitrary-depth EB tagged-rebuild gates
+
+Evaluate each prospective parent only on its owner, reduce compact tag-plan
+metadata, rebuild caller-defined EB geometry collectively, and assign the
+candidate topology with the deterministic work model. Initialize and migrate
+candidate fields through direct parent/child and old-owner/new-owner traffic;
+never materialize a complete numerical tree.
+
+Require root-only creation through three levels, changed-plan retained overlap,
+an unchanged-plan exact no-op, and a tag-free collapse. Compare plan metadata,
+fields, temperatures, and composite integrals with the serial reference at one,
+two, four, and eight ranks. Require exact topology-derived transfer accounting
+and collective rollback on rank-dependent or invalid criteria. Run the complete
+MPI and serial Debug/Release suite before acceptance. Defer arbitrary-depth
+checkpoint/restart and composite output.
+
 Each implementation PR should normally contain:
 
 1. implementation

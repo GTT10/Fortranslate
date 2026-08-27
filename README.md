@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.168.0` milestone contains the serial verification suite, nine optional
+The `0.169.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -516,8 +516,11 @@ chemistry half-steps, SSPRK2 transport half-steps, and recursive hydro as
 after every stage succeeds. A public sparse clock now recomputes the owner-
 local stable interval before every step, clips the last step exactly to the
 requested target time, and commits fields, time, step count, minima, advances,
-and transfers together. Owner-local MPI arbitrary-depth dynamic tagging and
-checkpoint I/O are the next lifecycle boundaries.
+and transfers together. Owner-local MPI arbitrary-depth temperature tagging
+now reduces compact per-parent rectangles, rebuilds EB geometry on every rank,
+recomputes deterministic ownership, and migrates retained overlap directly
+between old and new owners without materializing a complete numerical tree.
+Arbitrary-depth checkpoint I/O is the next lifecycle boundary.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

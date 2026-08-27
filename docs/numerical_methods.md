@@ -2375,3 +2375,28 @@ recovery, deepest-first average-down, and composite-integral acceptance test.
 The resulting operation can create a tree from root-only state, retain an
 unchanged tree exactly, replace its branching topology, or collapse it back to
 the root with one atomic commit.
+
+### Sparse MPI owner-local form
+
+For every prospective parent `p`, only `owner(p)` evaluates temperature tags.
+Communicator sums reduce the number of tagged cells and the integer component
+bounds. The replicated metadata is sufficient to recover the serial
+parent-major plan while conserved state and temperature remain sparse.
+
+For an accepted candidate topology, initialize each new child from its parent
+by PCM. If the owners differ, one packed parent payload crosses that edge.
+For every old/new patch pair at equal resolution, copy the intersection only
+when cell centers, spacings, volume fractions, and boundary apertures agree
+within their geometry tolerances. A cross-owner intersection sends one packed
+rectangle. Finish with deepest-first direct average-down.
+
+Let `I(U)` denote the EB composite conserved integral excluding covered parent
+cells. The candidate commits only when
+
+```text
+abs(I(U_new) - I(U_old)) <= 8e-12 max(1, abs(I(U_old)))
+```
+
+componentwise, all ranks accept the candidate, and every published integer
+count is representable. Otherwise the accepted topology, distribution, sparse
+fields, and diagnostics remain unchanged.
