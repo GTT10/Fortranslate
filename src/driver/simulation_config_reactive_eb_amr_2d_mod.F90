@@ -13,6 +13,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: coarse_j_lower = 2
     integer :: coarse_j_upper = 3
     integer :: refinement_ratio = 2
+    integer :: patch_tree_maximum_levels = 4
     logical :: three_level_enabled = .false.
     integer :: level_two_i_lower = 3
     integer :: level_two_i_upper = 4
@@ -52,6 +53,7 @@ contains
 
     integer :: coarse_i_lower, coarse_i_upper
     integer :: coarse_j_lower, coarse_j_upper, refinement_ratio
+    integer :: patch_tree_maximum_levels
     integer :: level_two_i_lower, level_two_i_upper
     integer :: level_two_j_lower, level_two_j_upper
     integer :: level_one_nx, level_one_ny
@@ -72,6 +74,7 @@ contains
     character(len=1024) :: level_two_output_file
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, refinement_ratio, &
+      patch_tree_maximum_levels, &
       three_level_enabled, level_two_i_lower, level_two_i_upper, &
       level_two_j_lower, level_two_j_upper, &
       multipatch_enabled, dynamic_regridding, regrid_at_initialization, &
@@ -94,6 +97,7 @@ contains
     coarse_j_lower = config%coarse_j_lower
     coarse_j_upper = config%coarse_j_upper
     refinement_ratio = config%refinement_ratio
+    patch_tree_maximum_levels = config%patch_tree_maximum_levels
     three_level_enabled = config%three_level_enabled
     level_two_i_lower = config%level_two_i_lower
     level_two_i_upper = config%level_two_i_upper
@@ -150,6 +154,12 @@ contains
     if (refinement_ratio < 2) then
       ok = .false.
       message = "EB AMR refinement ratio must be at least two"
+      return
+    end if
+    if (patch_tree_maximum_levels < 1 .or. &
+        patch_tree_maximum_levels > 64) then
+      ok = .false.
+      message = "EB AMR patch-tree maximum levels must be between 1 and 64"
       return
     end if
     level_one_nx = (coarse_i_upper - coarse_i_lower + 1) * &
@@ -247,6 +257,7 @@ contains
     config%coarse_j_lower = coarse_j_lower
     config%coarse_j_upper = coarse_j_upper
     config%refinement_ratio = refinement_ratio
+    config%patch_tree_maximum_levels = patch_tree_maximum_levels
     config%three_level_enabled = three_level_enabled
     config%level_two_i_lower = level_two_i_lower
     config%level_two_i_upper = level_two_i_upper

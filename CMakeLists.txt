@@ -179,6 +179,12 @@ target_link_libraries(pelef_reactive_eb_2d PRIVATE pelef_core)
 add_executable(pelef_reactive_eb_amr_2d app/pelef_reactive_eb_amr_2d.F90)
 target_link_libraries(pelef_reactive_eb_amr_2d PRIVATE pelef_core)
 
+add_executable(
+  pelef_reactive_eb_patch_tree_2d
+  app/pelef_reactive_eb_patch_tree_2d.F90
+)
+target_link_libraries(pelef_reactive_eb_patch_tree_2d PRIVATE pelef_core)
+
 add_executable(pelef_transport_probe app/pelef_transport_probe.F90)
 target_link_libraries(pelef_transport_probe PRIVATE pelef_core)
 
@@ -187,6 +193,7 @@ install(
     pelef_amr_reactive_1d
     pelef0d_h2o2_full pelef_reactive_2d pelef_reactive_eb_2d
     pelef_reactive_eb_amr_2d
+    pelef_reactive_eb_patch_tree_2d
     pelef_transport_probe
   RUNTIME DESTINATION bin
 )
