@@ -14,7 +14,7 @@ module amr_eb_regrid_2d_mod
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_reactive_eb_state_patch_2d
-  use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_pcm_2d
+  use amr_eb_reactive_2d_mod, only: prolong_reactive_eb_patch_2d
   use amr_eb_reactive_2d_mod, only: &
     build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
   implicit none
@@ -697,7 +697,8 @@ contains
 
   subroutine initialize_reactive_eb_patch_set_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
-      fine_geometries, collection, refinement_ratio, patch_set, ok)
+      fine_geometries, collection, refinement_ratio, patch_set, ok, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
@@ -706,13 +707,18 @@ contains
     integer, intent(in) :: refinement_ratio
     type(reactive_eb_patch_set_2d), intent(out) :: patch_set
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(reactive_eb_patch_set_2d) :: candidate
+    character(len=32) :: method
     logical :: local_ok
     integer :: child, nvar
 
     patch_set = reactive_eb_patch_set_2d()
     ok = .false.
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
+    if (trim(method) /= "pcm" .and. trim(method) /= "linear") return
     nvar = reactive_nvar(size(species))
     if (nvar < 1 .or. refinement_ratio < 2 .or. &
         .not. coarse_geometry%is_valid() .or. &
@@ -742,10 +748,10 @@ contains
         nvar, fine_geometries(child)%nx, fine_geometries(child)%ny))
       allocate(candidate%children(child)%temperature( &
         fine_geometries(child)%nx, fine_geometries(child)%ny))
-      call prolong_reactive_eb_patch_pcm_2d( &
+      call prolong_reactive_eb_patch_2d( &
         species, coarse_state, coarse_temperature, coarse_geometry, &
         candidate%children(child)%geometry, &
-        candidate%children(child)%patch, &
+        candidate%children(child)%patch, method, &
         candidate%children(child)%state, &
         candidate%children(child)%temperature, local_ok)
       if (.not. local_ok) return
@@ -1076,7 +1082,7 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, &
       old_patch_set, new_fine_geometries, new_collection, &
       refinement_ratio, new_coarse_state, new_coarse_temperature, &
-      new_patch_set, ok)
+      new_patch_set, ok, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
@@ -1088,6 +1094,7 @@ contains
     real(dp), intent(out) :: new_coarse_temperature(:, :)
     type(reactive_eb_patch_set_2d), intent(out) :: new_patch_set
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(reactive_eb_patch_set_2d) :: candidate_set
     real(dp), allocatable :: candidate_coarse(:, :, :)
@@ -1120,7 +1127,7 @@ contains
     call initialize_reactive_eb_patch_set_2d( &
       species, candidate_coarse, candidate_coarse_temperature, &
       coarse_geometry, new_fine_geometries, new_collection, &
-      refinement_ratio, candidate_set, local_ok)
+      refinement_ratio, candidate_set, local_ok, prolongation_method)
     if (.not. local_ok) return
 
     geometry_tolerance = 5.0e3_dp * epsilon(1.0_dp)
@@ -1193,7 +1200,8 @@ contains
       species, coarse_state, coarse_temperature, coarse_geometry, &
       old_fine_state, old_fine_temperature, old_fine_geometry, old_patch, &
       new_fine_geometry, new_patch, new_coarse_state, &
-      new_coarse_temperature, new_fine_state, new_fine_temperature, ok)
+      new_coarse_temperature, new_fine_state, new_fine_temperature, ok, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: coarse_geometry
@@ -1208,6 +1216,7 @@ contains
     real(dp), intent(out) :: new_fine_state(:, :, :)
     real(dp), intent(out) :: new_fine_temperature(:, :)
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: prolongation_method
 
     real(dp), allocatable :: candidate_coarse(:, :, :)
     real(dp), allocatable :: candidate_coarse_temperature(:, :)
@@ -1215,6 +1224,7 @@ contains
     real(dp), allocatable :: candidate_fine_temperature(:, :)
     real(dp), allocatable :: primitive(:)
     real(dp) :: geometry_tolerance, recovered_temperature, sound_speed
+    character(len=32) :: method
     logical :: local_ok
     integer :: global_i, global_j, i, j, old_i, old_j, nvar, ratio
 
@@ -1230,6 +1240,9 @@ contains
     new_coarse_temperature = coarse_temperature
     new_fine_state = 0.0_dp
     new_fine_temperature = 0.0_dp
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
+    if (trim(method) /= "pcm" .and. trim(method) /= "linear") return
     if (nvar < 1 .or. &
         any(shape(coarse_state) /= &
           [nvar, coarse_geometry%nx, coarse_geometry%ny]) .or. &
@@ -1253,9 +1266,9 @@ contains
     if (.not. local_ok) return
     allocate(candidate_fine, mold=new_fine_state)
     allocate(candidate_fine_temperature, mold=new_fine_temperature)
-    call prolong_reactive_eb_patch_pcm_2d( &
+    call prolong_reactive_eb_patch_2d( &
       species, candidate_coarse, candidate_coarse_temperature, &
-      coarse_geometry, new_fine_geometry, new_patch, candidate_fine, &
+      coarse_geometry, new_fine_geometry, new_patch, method, candidate_fine, &
       candidate_fine_temperature, local_ok)
     if (.not. local_ok) return
 

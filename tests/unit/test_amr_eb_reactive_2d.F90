@@ -16,7 +16,7 @@ program test_amr_eb_reactive_2d
     amr_eb_patch_2d, build_amr_eb_patch_2d, &
     average_down_reactive_eb_state_patch_2d, composite_eb_integral_2d
   use amr_eb_reactive_2d_mod, only: &
-    reactive_eb_patch_exterior_context_2d, &
+    reactive_eb_patch_exterior_context_2d, prolong_reactive_eb_patch_2d, &
     prolong_reactive_eb_patch_pcm_2d, prolong_reactive_eb_patch_linear_2d, &
     extract_reactive_eb_patch_exterior_context_support_2d, &
     extract_reactive_eb_patch_exterior_context_2d, &
@@ -221,6 +221,13 @@ program test_amr_eb_reactive_2d
     "limited-linear nonfinite rollback")
   linear_factor = 1.0_dp + 0.01_dp * 5.0_dp + 0.015_dp * 5.0_dp
   linear_coarse_state(1, 5, 5) = linear_factor * state_cell(1)
+  call prolong_reactive_eb_patch_2d( &
+    species, linear_coarse_state, linear_coarse_temperature, &
+    coarse_geometry, fine_geometry, patch, "unknown", linear_fine_state, &
+    linear_fine_temperature, ok)
+  call require(.not. ok .and. maxval(abs(linear_fine_state)) == 0.0_dp .and. &
+    maxval(abs(linear_fine_temperature)) == 0.0_dp, &
+    "unknown prolongation method rejection")
 
   coarse_end = 1.02_dp * coarse_state
   coarse_end_temperature = coarse_temperature

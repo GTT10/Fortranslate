@@ -1474,6 +1474,18 @@ through the EOS, and retry a parent with PCM if a linear child is inadmissible.
 Qualify analytic linear reproduction, prolong/restrict conservation, cut-parent
 fallback, and neutral-output rejection before exposing runtime selection.
 
+## 0.184.0 fixed-depth public prolongation selection
+
+Expose `pcm` and `linear` in `&eb_amr`, keep PCM as the compatibility default,
+and route the selection through static and dynamic two-level, sibling-patch,
+and three-level initialization. Qualify the installed hot-wall transport case
+with linear prolongation and retain explicit rollback for an unknown method.
+
+Until the selection participates in every restart identity, reject linear
+fixed-depth checkpoint/restart requests and keep arbitrary-depth serial and
+sparse-MPI patch trees PCM-only. Track the method in those schemas before
+lifting either restriction.
+
 Each implementation PR should normally contain:
 
 1. implementation

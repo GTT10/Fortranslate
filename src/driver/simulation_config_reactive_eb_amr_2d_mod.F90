@@ -13,6 +13,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: coarse_j_lower = 2
     integer :: coarse_j_upper = 3
     integer :: refinement_ratio = 2
+    character(len=32) :: prolongation_method = "pcm"
     integer :: patch_tree_maximum_levels = 4
     integer :: patch_tree_mpi_work_exponent = 2
     logical :: three_level_enabled = .false.
@@ -73,8 +74,10 @@ contains
     logical :: checkpoint_stop_after_write
     character(len=1024) :: checkpoint_file, restart_file, fine_output_file
     character(len=1024) :: level_two_output_file
+    character(len=32) :: prolongation_method
     namelist /eb_amr/ coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, refinement_ratio, &
+      prolongation_method, &
       patch_tree_maximum_levels, patch_tree_mpi_work_exponent, &
       three_level_enabled, level_two_i_lower, level_two_i_upper, &
       level_two_j_lower, level_two_j_upper, &
@@ -98,6 +101,7 @@ contains
     coarse_j_lower = config%coarse_j_lower
     coarse_j_upper = config%coarse_j_upper
     refinement_ratio = config%refinement_ratio
+    prolongation_method = config%prolongation_method
     patch_tree_maximum_levels = config%patch_tree_maximum_levels
     patch_tree_mpi_work_exponent = config%patch_tree_mpi_work_exponent
     three_level_enabled = config%three_level_enabled
@@ -156,6 +160,12 @@ contains
     if (refinement_ratio < 2) then
       ok = .false.
       message = "EB AMR refinement ratio must be at least two"
+      return
+    end if
+    if (trim(prolongation_method) /= "pcm" .and. &
+        trim(prolongation_method) /= "linear") then
+      ok = .false.
+      message = "EB AMR prolongation method must be pcm or linear"
       return
     end if
     if (patch_tree_maximum_levels < 1 .or. &
@@ -258,6 +268,7 @@ contains
     config%coarse_j_lower = coarse_j_lower
     config%coarse_j_upper = coarse_j_upper
     config%refinement_ratio = refinement_ratio
+    config%prolongation_method = trim(prolongation_method)
     config%patch_tree_maximum_levels = patch_tree_maximum_levels
     config%patch_tree_mpi_work_exponent = patch_tree_mpi_work_exponent
     config%three_level_enabled = three_level_enabled

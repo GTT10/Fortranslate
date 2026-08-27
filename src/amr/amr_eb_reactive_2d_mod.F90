@@ -32,6 +32,7 @@ module amr_eb_reactive_2d_mod
 
   public :: prolong_reactive_eb_patch_pcm_2d
   public :: prolong_reactive_eb_patch_linear_2d
+  public :: prolong_reactive_eb_patch_2d
   public :: extract_reactive_eb_patch_exterior_context_support_2d
   public :: extract_reactive_eb_patch_exterior_context_2d
   public :: build_reactive_eb_patch_exterior_from_context_2d
@@ -40,6 +41,33 @@ module amr_eb_reactive_2d_mod
   public :: advance_two_level_reactive_eb_hydro_2d
 
 contains
+
+  subroutine prolong_reactive_eb_patch_2d( &
+      species, coarse_state, coarse_temperature, coarse_geometry, &
+      fine_geometry, patch, method, fine_state, fine_temperature, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: coarse_geometry, fine_geometry
+    type(amr_eb_patch_2d), intent(in) :: patch
+    character(len=*), intent(in) :: method
+    real(dp), intent(out) :: fine_state(:, :, :), fine_temperature(:, :)
+    logical, intent(out) :: ok
+
+    select case (trim(method))
+    case ("pcm")
+      call prolong_reactive_eb_patch_pcm_2d( &
+        species, coarse_state, coarse_temperature, coarse_geometry, &
+        fine_geometry, patch, fine_state, fine_temperature, ok)
+    case ("linear")
+      call prolong_reactive_eb_patch_linear_2d( &
+        species, coarse_state, coarse_temperature, coarse_geometry, &
+        fine_geometry, patch, fine_state, fine_temperature, ok)
+    case default
+      fine_state = 0.0_dp
+      fine_temperature = 0.0_dp
+      ok = .false.
+    end select
+  end subroutine prolong_reactive_eb_patch_2d
 
   pure logical function reactive_eb_patch_exterior_context_is_valid( &
       self, fine_geometry, component_count) result(valid)

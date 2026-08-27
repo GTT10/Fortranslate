@@ -2226,5 +2226,23 @@ A parent receives linear slopes only when it and all of its fine children are
 regular. Cut, covered, or topology-mismatched parents use the established PCM
 state. If any linearly reconstructed child is outside the EOS-admissible set,
 the complete parent is retried with PCM before publication. Invalid inputs
-leave both output arrays neutral. Public regrid orchestration continues to use
-PCM until a later input/checkpoint milestone selects this new library kernel.
+leave both output arrays neutral. At the `0.183.0` boundary, public regrid
+orchestration continued to use PCM pending a separate input lifecycle.
+
+## Fixed-depth public prolongation selection (`0.184.0`)
+
+`reactive_eb_amr_2d_config` now carries `prolongation_method`, read from the
+public `&eb_amr` namelist and restricted to `pcm` or `linear`. One dispatcher
+owns that method boundary, while the existing low-level PCM and limited-linear
+kernels retain their separate numerical contracts. Static initialization and
+dynamic replacement of a two-level fine patch, sibling-patch set construction
+and replacement, and both three-level coarse-to-middle and middle-to-finest
+initializations all pass the selected method explicitly.
+
+The default remains PCM for backward compatibility. The public hot-wall AMR
+transport regression selects linear and therefore exercises the installed
+application path rather than only a library call. Fixed-depth checkpoint
+formats and the arbitrary-depth checkpoint fingerprint do not yet store the
+method. Configuration preflight consequently rejects linear whenever a
+fixed-depth checkpoint or restart path is active, and arbitrary-depth serial
+and sparse-MPI orchestration rejects non-PCM before allocating a candidate.

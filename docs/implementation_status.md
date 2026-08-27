@@ -3316,7 +3316,24 @@ transfer and higher-order wall-normal stencils remain outside this milestone.
 - [x] prolongation/average-down conservation regression
 - [x] explicit cut-parent fallback regression
 
-The kernel is qualified as a low-level alternative to the existing PCM
-initializer. Namelist selection, restart fingerprinting of that selection, and
-replacement of the established public regrid default remain later lifecycle
+At the `0.183.0` boundary, the kernel was qualified as a low-level alternative
+to the existing PCM initializer. Namelist selection, restart fingerprinting of
+that selection, and public regrid integration were deferred to later lifecycle
 work.
+
+## Fixed-depth public prolongation selection (`0.184.0`)
+
+- [x] `pcm`/`linear` `&eb_amr` namelist selection with PCM default
+- [x] one validating dispatcher for both prolongation kernels
+- [x] static and dynamically regridded two-level propagation
+- [x] separated sibling-patch initialization and regrid propagation
+- [x] three-level coarse-to-middle and middle-to-finest propagation
+- [x] public hot-wall transport case using limited-linear prolongation
+- [x] invalid-method transactional rejection
+- [x] linear fixed-depth checkpoint/restart preflight rejection
+- [x] arbitrary-depth serial and sparse-MPI PCM-only guard
+
+Checkpoint files do not yet identify the selected method, so linear mode is
+deliberately limited to fresh fixed-depth runs. Adding the method to every
+fixed-depth schema and the shared patch-tree fingerprint remains the next
+lifecycle milestone before linear arbitrary-depth or restart claims.
