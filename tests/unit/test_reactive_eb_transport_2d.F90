@@ -189,8 +189,8 @@ program test_reactive_eb_transport_2d
   call require(any(abs(wall_rhs(imx, :, :) - default_rhs(imx, :, :)) > &
     0.0_dp .and. geometry%cell_type == eb_cut_cell), &
     "embedded viscous flux enters cut-cell RHS")
-  call require(all(wall_rhs(:, :, :) == default_rhs(:, :, :), &
-    mask=spread(geometry%cell_type /= eb_cut_cell, 1, size(state, 1))), &
+  call require(all(pack(wall_rhs == default_rhs, &
+    spread(geometry%cell_type /= eb_cut_cell, 1, size(state, 1)))), &
     "embedded wall transport is confined to cut cells")
 
   write(*, '(a)') "test_reactive_eb_transport_2d: PASS"
