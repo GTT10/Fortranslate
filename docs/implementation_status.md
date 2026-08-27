@@ -3157,3 +3157,23 @@ Fresh startup still constructs one replicated root field before sparse
 conversion; arbitrary-depth child fields are never replicated. Removing the
 root startup copy and qualifying public cross-rank application restart remain
 later lifecycle work.
+
+## Public sparse-MPI application cross-rank restart (`0.176.0`)
+
+- [x] uninterrupted one-rank four-level reference process
+- [x] two-rank checkpoint-stop process after one committed root step
+- [x] separate four- and eight-rank restart processes
+- [x] checkpoint rank count omitted from authoritative restart state
+- [x] ownership map recomputed for each restart communicator
+- [x] checkpoint written with uniform node weighting
+- [x] reference and restarts run with depth-squared weighting
+- [x] direct root-to-owner sparse field scatter after root-only read
+- [x] exact four-level identity and column agreement after restart
+- [x] complete numeric-field parity with the uninterrupted reference
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 214 serial regressions retained in MPI and non-MPI builds
+
+This milestone closes the public cross-rank application restart composition.
+Fresh initialization still constructs one temporary replicated root field
+before converting it to owner-tiled sparse storage; removing that startup copy
+is the next public sparse-lifecycle boundary.

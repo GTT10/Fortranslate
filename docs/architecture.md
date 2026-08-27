@@ -2087,3 +2087,22 @@ tagging owner-locally. Thereafter numerical node fields remain allocated only
 on their owners. Checkpoint and output gather only to selected root zero;
 restart reads there and scatters directly under the current rank count. The
 temporary replicated root initialization remains an explicit startup boundary.
+
+## Public sparse-MPI cross-rank restart (`0.176.0`)
+
+The installed sparse-MPI application now has a process- and ownership-boundary
+qualification. An uninterrupted one-rank process constructs and advances the
+four-level hierarchy with depth-weighted ownership. A separate two-rank
+process uses uniform node weighting, writes the self-describing checkpoint
+after one committed root step, publishes its intermediate composite, and
+stops. Independent four- and eight-rank processes read that checkpoint,
+recompute depth-weighted ownership for their communicator, scatter fields
+directly to those owners, and resume the global root-step cadence.
+
+No checkpoint owner map is authoritative across the boundary. Geometry,
+relations, fields, time, committed-step count, regrid count, and minimum
+accepted timestep come from the checkpoint; communicator size and the MPI
+work exponent come from the restart process. Final composite comparison by
+stable `(level, patch, i, j)` identity therefore covers both rank-count and
+ownership-policy redistribution without permitting a replicated numerical
+child tree.

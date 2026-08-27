@@ -72,15 +72,19 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--stopped", required=True, type=Path)
-    parser.add_argument("--restarted", required=True, type=Path)
+    parser.add_argument("--restarted", required=True, nargs="+", type=Path)
     args = parser.parse_args()
 
     check_checkpoint(args.checkpoint)
     reference = load(args.reference)
     stopped = load(args.stopped)
-    restarted = load(args.restarted)
-    for label, rows in (("reference", reference), ("stopped", stopped),
-                        ("restarted", restarted)):
+    restarted_outputs = [load(path) for path in args.restarted]
+    labeled_outputs = [("reference", reference), ("stopped", stopped)]
+    labeled_outputs.extend(
+        (f"restarted[{index}]", rows)
+        for index, rows in enumerate(restarted_outputs, start=1)
+    )
+    for label, rows in labeled_outputs:
         levels = {key[0] for key in rows}
         if levels != {0, 1, 2, 3}:
             raise AssertionError(f"{label}: expected four levels, found {levels}")
@@ -89,9 +93,10 @@ def main() -> None:
         raise AssertionError("checkpoint run did not stop before final time")
     if abs(unique_time(reference) - FINAL_TIME) > 2.0e-20:
         raise AssertionError("reference did not reach final time")
-    if abs(unique_time(restarted) - FINAL_TIME) > 2.0e-20:
-        raise AssertionError("restart did not reach final time")
-    compare(reference, restarted)
+    for index, restarted in enumerate(restarted_outputs, start=1):
+        if abs(unique_time(restarted) - FINAL_TIME) > 2.0e-20:
+            raise AssertionError(f"restart {index} did not reach final time")
+        compare(reference, restarted)
     print("check_reactive_eb_patch_tree_restart_2d: PASS")
 
 

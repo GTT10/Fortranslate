@@ -2836,3 +2836,19 @@ topology and columns, finite positive thermodynamics, seven-species closure,
 the exact final time, and every numeric field within
 `3e-10 * max(1, abs(one-rank reference))`. Retain the complete MPI gate chain
 and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.176.0 public sparse-MPI cross-rank restart gates
+
+Run an uninterrupted one-rank four-level application as the reference. In a
+separate process, run the same physical case on two ranks with uniform node
+weighting, stop after its first scheduled checkpoint, and require its
+composite time to lie strictly inside the requested interval. Restart that
+single checkpoint independently on four and eight ranks with depth-squared
+weighting and require both continuations to reach the exact final time.
+
+Validate the checkpoint magic, schema, seven-species header, four-level count,
+and completion marker. Key the reference and both restarted composites by
+`(level, patch, i, j)`, require identical key and column sets, and compare
+every numeric field within `3e-10 * max(1, abs(one-rank reference))`. Retain
+the complete MPI gate chain and all 214 serial tests in GNU Fortran Release
+and bounds/FPE-checked Debug.
