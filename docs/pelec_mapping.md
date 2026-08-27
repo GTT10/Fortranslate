@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.197.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.198.0 |
 |---|---|
 | outflow-boundary recursive transport | four-level viscosity, Fourier conduction, mixture-averaged species diffusion, barodiffusion, correction velocity, and species enthalpy flux with physical-side register omission, serial/sparse rank parity, and cross-rank restart |
 | outflow-boundary reacting full physics | owner-local elementary chemistry composed transactionally with recursive transport and hydro across fresh 1/2/4/8-rank runs and 2-to-4/8-rank restart |
@@ -112,7 +112,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | public sparse MPI arbitrary-depth application | namelist-driven sparse ownership, owner-local lifecycle, selected-root I/O, and 1/2/4/8-rank composite parity |
 | public sparse MPI cross-rank restart | two-rank checkpoint-stop followed by independent four- and eight-rank restarts with ownership-weight changes and identity-keyed parity against an uninterrupted one-rank process |
 | public sparse MPI fresh initialization | geometry-only topology and ownership first, reactive fields allocated on the sole root-node owner, then zero-copy allocatable transfer into sparse storage with no non-owner numerical root field |
-| public checkpoint compatibility | schema-6 structured mesh, EB wall, transport physics, StateRedist, prolongation method, hierarchy, regrid fingerprint, cumulative transport-limiter diagnostic, and original composite-integral baseline shared by serial and sparse-MPI applications with continuation and ownership controls explicitly excluded; fixed-depth formats store the same method in schema 3 |
+| public checkpoint compatibility | schema-7 structured mesh, EB wall, transport physics, StateRedist, prolongation method, hierarchy, regrid fingerprint, cumulative transport-limiter diagnostic, original composite-integral baseline, and fixed-capacity per-level chemistry/transport/hydro advance counters shared by serial and sparse-MPI applications with continuation and ownership controls explicitly excluded; fixed-depth formats store the same method in schema 3 |
 | AMReX multilevel EB re-redistribution responsibility | topology-derived union of clipped three-by-three coarse/fine interface supports, excluding refined and covered parent cells, shared by fixed-depth, multipatch, arbitrary-depth, serial, and sparse-MPI conservation closures; exact AMReX transfer bookkeeping is not claimed |
 | PeleC embedded diffusive wall flux | first-order centroid-normal isothermal Fourier flux and no-slip Newtonian traction/work in `eb_reactive_transport_2d_mod`, scaled by EB wall length and cut-cell fluid volume; exact quadratic-stencil parity is not claimed |
 | public embedded-wall controls | shared single-level, fixed-depth AMR, arbitrary-depth AMR, and sparse-MPI `&embedded_boundary` kind, thermal mode, temperature, and velocity with explicit transport-dependency validation and restart fingerprinting |

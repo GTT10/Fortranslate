@@ -25,6 +25,9 @@ program pelef_reactive_eb_patch_tree_2d
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
+  integer, allocatable :: chemistry_level_advances(:)
+  integer, allocatable :: transport_level_advances(:)
+  integer, allocatable :: hydro_level_advances(:)
   real(dp) :: base_density, conservation_error, minimum_dt
   real(dp) :: minimum_transport_theta, time
   character(len=1024) :: input_path, message
@@ -67,7 +70,8 @@ program pelef_reactive_eb_patch_tree_2d
   call simulate_reactive_amr_eb_patch_tree_2d( &
     species, reactions, transport, config, solution, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok, &
-    message, minimum_transport_theta)
+    message, minimum_transport_theta, chemistry_level_advances, &
+    transport_level_advances, hydro_level_advances)
   if (.not. ok) then
     write(*, '(a,1x,a)') "Patch-tree failure stage:", trim(message)
     error stop "Reactive EB patch-tree 2D simulation failed"
@@ -96,6 +100,11 @@ program pelef_reactive_eb_patch_tree_2d
     minimum_transport_theta
   write(*, '(a,es24.16)') "Maximum composite conservation error: ", &
     conservation_error
+  write(*, '(a,*(1x,i0))') "Chemistry level advances:", &
+    chemistry_level_advances
+  write(*, '(a,*(1x,i0))') "Transport level advances:", &
+    transport_level_advances
+  write(*, '(a,*(1x,i0))') "Hydro level advances:", hydro_level_advances
   write(*, '(a,1x,a)') "Composite output:", &
     trim(config%eb%flow%output_file)
   if (len_trim(config%checkpoint_file) > 0) &

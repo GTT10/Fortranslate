@@ -2569,6 +2569,21 @@ reads the vector, broadcasts it before repartitioning fields, and retains the
 same denominator across a rank-count change. A failed read publishes no
 baseline vector.
 
+For operator `q` in `{chemistry, transport, hydro}`, let `a_q,l^n` be the
+number of patch advances committed on level `l` during accepted root step
+`n`. The public drivers maintain
+
+```text
+C_q,l <- C_q,l + a_q,l^n.
+```
+
+The vectors have the configured maximum AMR depth, while only the currently
+populated prefix receives a step delta. Sparse ranks count only their owned
+patches and use a communicator sum to form `a_q,l^n`; the resulting global
+vector is checkpointed identically on every rank. Restart restores all slots,
+including counters for levels absent from the stored topology but still
+within the configured maximum depth.
+
 ## Interface-local multilevel EB residual closure
 
 Let `P_c` be a direct child's rectangle in parent-cell indices. For each side

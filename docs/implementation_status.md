@@ -3558,5 +3558,20 @@ unchanged.
 
 Serial and sparse-MPI patch-tree applications now measure their final
 composite change from the beginning of the complete logical run. Checkpoint
-compatibility remains strict, and internal per-level operator counters remain
-continuation-local.
+compatibility remains strict.
+
+## Restart-persistent AMR operator counters (`0.198.0`)
+
+- [x] schema-4 base and schema-7 fingerprinted checkpoint envelopes
+- [x] common nonnegative chemistry/transport/hydro counter capacity
+- [x] capacity larger than the currently populated tree depth
+- [x] serial exact round trip and unallocated failure rollback
+- [x] sparse owner-local delta reduction into global counters
+- [x] selected-root sparse write and communicator-wide restart broadcast
+- [x] collective rejection of rank-disagreed counter vectors
+- [x] uninterrupted/restarted public counter comparison
+
+Public serial and sparse-MPI patch-tree applications now report cumulative
+per-level operator work over the complete logical run. Counter storage follows
+configured maximum depth rather than current topology depth, so dynamic
+coarsening and later level recreation retain earlier counts.

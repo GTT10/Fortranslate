@@ -2457,3 +2457,20 @@ drivers always pass the original run baseline. An invalid size, nonfinite
 component, or MPI rank disagreement rejects the write before file replacement;
 a failed read leaves the optional baseline unallocated with the existing
 empty-tree rollback state.
+
+## Restart-persistent AMR operator counters (`0.198.0`)
+
+Public patch-tree drivers now accumulate chemistry, transport, and hydro
+patch advances in three vectors sized to `patch_tree_maximum_levels`. A
+regrid updates only the populated prefix, so removing a deep level does not
+erase its earlier work and recreating that level resumes the same cumulative
+slot.
+
+The checkpoint envelope advances to base schema 4 and fingerprinted schema 7.
+Each file records the common vector capacity followed by the three
+nonnegative vectors. The capacity must cover every stored topology level and
+fit within the restart configuration. Sparse physics produces owner-local
+deltas; the application sums them across the communicator before accumulation
+and requires every rank to present identical global vectors to the selected
+I/O root. Restart broadcasts all counters before repartitioning numerical
+fields. Failed reads publish no optional counter arrays.

@@ -78,7 +78,9 @@ contains
   subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, distribution, sparse, root, time, steps, regrids, &
       minimum_dt, ok, local_entity_transfers, fingerprint, &
-      minimum_transport_theta, initial_integrals)
+      minimum_transport_theta, initial_integrals, &
+      chemistry_level_advances, transport_level_advances, &
+      hydro_level_advances)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -92,10 +94,16 @@ contains
       intent(in), optional :: fingerprint
     real(dp), intent(in), optional :: minimum_transport_theta
     real(dp), intent(in), optional :: initial_integrals(:)
+    integer, intent(in), optional :: chemistry_level_advances(:)
+    integer, intent(in), optional :: transport_level_advances(:)
+    integer, intent(in), optional :: hydro_level_advances(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
     logical :: controls_ok, gathered_ok, write_ok
     integer :: ierr, transfers
+    integer, allocatable :: selected_chemistry_advances(:)
+    integer, allocatable :: selected_transport_advances(:)
+    integer, allocatable :: selected_hydro_advances(:)
     real(dp), allocatable :: selected_initial_integrals(:)
     real(dp) :: selected_minimum_transport_theta
 
@@ -109,6 +117,10 @@ contains
       distribution%comm, root, time, minimum_dt, &
       selected_minimum_transport_theta, steps, regrids, sparse%nvar, &
       controls_ok, initial_integrals)
+    if (.not. controls_ok) return
+    call checkpoint_operator_counters_match_2d( &
+      distribution%comm, sparse%level_count(), chemistry_level_advances, &
+      transport_level_advances, hydro_level_advances, controls_ok)
     if (.not. controls_ok) return
     call checkpoint_species_match_2d( &
       distribution%comm, distribution%rank, root, species, controls_ok)
@@ -126,16 +138,31 @@ contains
         call composite_integral_reactive_amr_eb_patch_tree_2d( &
           gathered, selected_initial_integrals, write_ok)
       end if
+      if (present(chemistry_level_advances)) then
+        allocate(selected_chemistry_advances, source= &
+          chemistry_level_advances)
+        allocate(selected_transport_advances, source= &
+          transport_level_advances)
+        allocate(selected_hydro_advances, source=hydro_level_advances)
+      else
+        allocate(selected_chemistry_advances(gathered%level_count()), source=0)
+        allocate(selected_transport_advances(gathered%level_count()), source=0)
+        allocate(selected_hydro_advances(gathered%level_count()), source=0)
+      end if
       if (write_ok .and. present(fingerprint)) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, &
           write_ok, fingerprint, selected_minimum_transport_theta, &
-          selected_initial_integrals)
+          selected_initial_integrals, selected_chemistry_advances, &
+          selected_transport_advances, selected_hydro_advances)
       else if (write_ok) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, write_ok, &
           minimum_transport_theta=selected_minimum_transport_theta, &
-          initial_integrals=selected_initial_integrals)
+          initial_integrals=selected_initial_integrals, &
+          chemistry_level_advances=selected_chemistry_advances, &
+          transport_level_advances=selected_transport_advances, &
+          hydro_level_advances=selected_hydro_advances)
       end if
     end if
     call MPI_Bcast( &
@@ -150,7 +177,8 @@ contains
       path, species, comm, root, maximum_levels, subcycle_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
       local_entity_transfers, fingerprint, minimum_transport_theta, &
-      initial_integrals)
+      initial_integrals, chemistry_level_advances, &
+      transport_level_advances, hydro_level_advances)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -165,12 +193,18 @@ contains
       intent(in), optional :: fingerprint
     real(dp), intent(out), optional :: minimum_transport_theta
     real(dp), allocatable, intent(out), optional :: initial_integrals(:)
+    integer, allocatable, intent(out), optional :: chemistry_level_advances(:)
+    integer, allocatable, intent(out), optional :: transport_level_advances(:)
+    integer, allocatable, intent(out), optional :: hydro_level_advances(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
     real(dp), allocatable :: restored_initial_integrals(:)
+    integer, allocatable :: restored_chemistry_advances(:)
+    integer, allocatable :: restored_transport_advances(:)
+    integer, allocatable :: restored_hydro_advances(:)
     real(dp) :: real_metadata(3)
-    integer :: ierr, integer_metadata(2), rank, transfers
+    integer :: counter_levels, ierr, integer_metadata(2), rank, transfers
     logical :: controls_ok, distributed_ok, read_ok, topology_ok
 
     distribution = mpi_amr_eb_patch_tree_distribution_2d()
@@ -200,13 +234,18 @@ contains
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
           integer_metadata(1), integer_metadata(2), real_metadata(2), &
-          read_ok, fingerprint, real_metadata(3), restored_initial_integrals)
+          read_ok, fingerprint, real_metadata(3), restored_initial_integrals, &
+          restored_chemistry_advances, restored_transport_advances, &
+          restored_hydro_advances)
       else
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
           integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok, &
           minimum_transport_theta=real_metadata(3), &
-          initial_integrals=restored_initial_integrals)
+          initial_integrals=restored_initial_integrals, &
+          chemistry_level_advances=restored_chemistry_advances, &
+          transport_level_advances=restored_transport_advances, &
+          hydro_level_advances=restored_hydro_advances)
       end if
     end if
     call MPI_Bcast(read_ok, 1, MPI_LOGICAL, root, comm, ierr)
@@ -216,6 +255,27 @@ contains
     call MPI_Bcast( &
       restored_initial_integrals, size(restored_initial_integrals), &
       MPI_DOUBLE_PRECISION, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    counter_levels = 0
+    if (rank == root) counter_levels = size(restored_chemistry_advances)
+    call MPI_Bcast(counter_levels, 1, MPI_INTEGER, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. counter_levels < 1 .or. &
+        counter_levels > maximum_levels) return
+    if (rank /= root) then
+      allocate(restored_chemistry_advances(counter_levels))
+      allocate(restored_transport_advances(counter_levels))
+      allocate(restored_hydro_advances(counter_levels))
+    end if
+    call MPI_Bcast( &
+      restored_chemistry_advances, counter_levels, MPI_INTEGER, root, &
+      comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      restored_transport_advances, counter_levels, MPI_INTEGER, root, &
+      comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      restored_hydro_advances, counter_levels, MPI_INTEGER, root, comm, ierr)
     if (ierr /= MPI_SUCCESS) return
     call MPI_Bcast( &
       real_metadata, size(real_metadata), MPI_DOUBLE_PRECISION, root, &
@@ -250,6 +310,12 @@ contains
       minimum_transport_theta = real_metadata(3)
     if (present(initial_integrals)) &
       allocate(initial_integrals, source=restored_initial_integrals)
+    if (present(chemistry_level_advances)) &
+      allocate(chemistry_level_advances, source=restored_chemistry_advances)
+    if (present(transport_level_advances)) &
+      allocate(transport_level_advances, source=restored_transport_advances)
+    if (present(hydro_level_advances)) &
+      allocate(hydro_level_advances, source=restored_hydro_advances)
     steps = integer_metadata(1)
     regrids = integer_metadata(2)
     ok = .true.
@@ -340,6 +406,76 @@ contains
     ok = ierr == MPI_SUCCESS .and. &
       all(integral_minimum == integral_maximum)
   end subroutine checkpoint_write_controls_match_2d
+
+  subroutine checkpoint_operator_counters_match_2d( &
+      comm, populated_levels, chemistry_advances, transport_advances, &
+      hydro_advances, ok)
+    type(MPI_Comm), intent(in) :: comm
+    integer, intent(in) :: populated_levels
+    integer, intent(in), optional :: chemistry_advances(:)
+    integer, intent(in), optional :: transport_advances(:)
+    integer, intent(in), optional :: hydro_advances(:)
+    logical, intent(out) :: ok
+
+    integer :: controls(7), controls_minimum(7), controls_maximum(7)
+    integer, allocatable :: counter_maximum(:), counter_minimum(:)
+    integer, allocatable :: counter_values(:)
+    integer :: counter_levels, ierr
+    logical :: accepted, local_ok
+
+    ok = .false.
+    controls = 0
+    controls(1:4) = [ &
+      merge(1, 0, present(chemistry_advances)), &
+      merge(1, 0, present(transport_advances)), &
+      merge(1, 0, present(hydro_advances)), populated_levels]
+    if (present(chemistry_advances)) controls(5) = size(chemistry_advances)
+    if (present(transport_advances)) controls(6) = size(transport_advances)
+    if (present(hydro_advances)) controls(7) = size(hydro_advances)
+    call MPI_Allreduce( &
+      controls, controls_minimum, size(controls), MPI_INTEGER, MPI_MIN, &
+      comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      controls, controls_maximum, size(controls), MPI_INTEGER, MPI_MAX, &
+      comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(controls_minimum /= controls_maximum)) return
+    if (all(controls(1:3) == 0)) then
+      ok = .true.
+      return
+    end if
+    if (any(controls(1:3) /= 1)) return
+
+    counter_levels = size(chemistry_advances)
+    local_ok = populated_levels >= 1 .and. &
+      counter_levels >= populated_levels .and. &
+      counter_levels <= maximum_checkpoint_levels .and. &
+      size(transport_advances) == counter_levels .and. &
+      size(hydro_advances) == counter_levels .and. &
+      all(chemistry_advances >= 0) .and. &
+      all(transport_advances >= 0) .and. all(hydro_advances >= 0)
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. accepted) return
+
+    allocate(counter_values(3 * counter_levels))
+    allocate(counter_minimum(3 * counter_levels))
+    allocate(counter_maximum(3 * counter_levels))
+    counter_values(1:counter_levels) = chemistry_advances
+    counter_values(counter_levels + 1:2 * counter_levels) = &
+      transport_advances
+    counter_values(2 * counter_levels + 1:) = hydro_advances
+    call MPI_Allreduce( &
+      counter_values, counter_minimum, size(counter_values), MPI_INTEGER, &
+      MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      counter_values, counter_maximum, size(counter_values), MPI_INTEGER, &
+      MPI_MAX, comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. &
+      all(counter_minimum == counter_maximum)
+  end subroutine checkpoint_operator_counters_match_2d
 
   subroutine output_write_controls_match_2d(comm, root, time, ok)
     type(MPI_Comm), intent(in) :: comm

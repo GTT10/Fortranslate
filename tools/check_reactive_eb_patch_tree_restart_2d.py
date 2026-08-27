@@ -16,6 +16,11 @@ X_UPPER = 0.012
 ROOT_DX = X_UPPER / 12.0
 CONSERVATION_PREFIX = "Maximum composite conservation error:"
 THETA_PREFIX = "Minimum transport limiter theta:"
+COUNTER_PREFIXES = (
+    "Chemistry level advances:",
+    "Transport level advances:",
+    "Hydro level advances:",
+)
 
 
 def load(path: Path) -> dict[tuple[int, int, int, int], dict[str, str]]:
@@ -60,7 +65,7 @@ def check_checkpoint(path: Path) -> None:
     if lines[-1] != "END_CHECKPOINT":
         raise AssertionError("incomplete patch-tree checkpoint")
     schema, species, nvar, levels = (int(value) for value in lines[1].split())
-    if schema != 6 or species != 7 or nvar <= species or levels != 4:
+    if schema != 7 or species != 7 or nvar <= species or levels != 4:
         raise AssertionError("invalid patch-tree checkpoint header")
     fingerprint = 2 + species
     if lines[fingerprint + 5] != "linear":
@@ -82,6 +87,20 @@ def compare_diagnostic(label: str, expected: float, actual: float) -> None:
     tolerance = 5.0e-12 * max(1.0, abs(expected))
     if abs(actual - expected) > tolerance:
         raise AssertionError(f"{label}: {actual} != {expected}")
+
+
+def load_level_counters(path: Path, prefix: str) -> tuple[int, ...]:
+    matches = [
+        line.removeprefix(prefix).split()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(matches) != 1 or not matches[0]:
+        raise AssertionError(f"{path.name}: missing or invalid {prefix}")
+    values = tuple(int(value) for value in matches[0])
+    if any(value < 0 for value in values):
+        raise AssertionError(f"{path.name}: negative {prefix}")
+    return values
 
 
 def unique_time(rows: dict[tuple[int, int, int, int], dict[str, str]]) -> float:
@@ -156,6 +175,10 @@ def main() -> None:
             args.reference_log, CONSERVATION_PREFIX
         )
         reference_theta = load_diagnostic(args.reference_log, THETA_PREFIX)
+        reference_counters = {
+            prefix: load_level_counters(args.reference_log, prefix)
+            for prefix in COUNTER_PREFIXES
+        }
         for index, log_path in enumerate(args.restarted_logs, start=1):
             compare_diagnostic(
                 f"restart {index} conservation history",
@@ -167,6 +190,13 @@ def main() -> None:
                 reference_theta,
                 load_diagnostic(log_path, THETA_PREFIX),
             )
+            for prefix in COUNTER_PREFIXES:
+                actual = load_level_counters(log_path, prefix)
+                if actual != reference_counters[prefix]:
+                    raise AssertionError(
+                        f"restart {index} {prefix} {actual} != "
+                        f"{reference_counters[prefix]}"
+                    )
     print("check_reactive_eb_patch_tree_restart_2d: PASS")
 
 
