@@ -3122,3 +3122,21 @@ This milestone connects the serial arbitrary-depth EB numerical tree to a
 public input-driven application without changing the established fixed-depth
 driver. Application-level checkpoint/restart round-trip comparison and a
 sparse MPI public counterpart remain separate qualification work.
+
+## Public patch-tree application restart parity (`0.174.0`)
+
+- [x] uninterrupted four-level dynamic reference application run
+- [x] checkpoint write after one committed step and scheduled regrid
+- [x] clean application stop immediately after the scheduled write
+- [x] separate-process restart through the public executable and namelists
+- [x] restored arbitrary-depth geometry, fields, time, and lifecycle counters
+- [x] checkpoint magic, schema, species count, level count, and end marker
+- [x] stopped output strictly before the requested final time
+- [x] reference and restarted outputs at the exact requested final time
+- [x] identity-keyed final topology and complete numeric-column parity
+- [x] detailed nested full-physics failure context in the public driver
+- [x] GNU Fortran Debug and Release coverage in the complete 214-test suite
+
+This milestone closes application-level checkpoint/restart parity for the
+serial arbitrary-depth EB tree. Cross-rank public MPI application restart and
+input/checkpoint compatibility fingerprints remain later lifecycle work.

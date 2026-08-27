@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.173.0` milestone contains the serial verification suite, nine optional
+The `0.174.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -545,6 +545,13 @@ The application starts from a root-only EB field or the self-describing tree
 checkpoint, optionally regrids at initialization and at the configured step
 cadence, advances one stable root interval transactionally, and publishes one
 composite CSV at completion or checkpoint stop.
+
+The public patch-tree lifecycle is also qualified across a real application
+checkpoint boundary. A four-level dynamic reference run is compared with a
+run stopped after its first scheduled checkpoint and a continuation loaded by
+a separate process. The restart restores the arbitrary-depth geometry, state,
+time, root-step and regrid counters, and minimum accepted timestep; its final
+composite topology and numerical fields match the uninterrupted result.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,
