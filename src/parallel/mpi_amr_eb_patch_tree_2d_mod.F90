@@ -83,9 +83,8 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
-  public :: composite_sparse_owned_reactive_amr_eb_patch_tree_integral_2d
-  public :: &
-    composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d
+  public :: composite_sparse_amr_eb_patch_tree_integral_2d
+  public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
 contains
 
@@ -987,7 +986,7 @@ contains
   end subroutine &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
 
-  subroutine composite_sparse_owned_reactive_amr_eb_patch_tree_integral_2d( &
+  subroutine composite_sparse_amr_eb_patch_tree_integral_2d( &
       distribution, sparse, integral, ok, local_nodes)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
@@ -995,13 +994,13 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_nodes
 
-    call composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d( &
+    call composite_sparse_amr_eb_patch_subtree_integral_2d( &
       distribution, sparse, 1, 1, integral, ok, local_nodes)
   end subroutine &
-    composite_sparse_owned_reactive_amr_eb_patch_tree_integral_2d
+    composite_sparse_amr_eb_patch_tree_integral_2d
 
   subroutine &
-      composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d( &
+      composite_sparse_amr_eb_patch_subtree_integral_2d( &
       distribution, sparse, level, patch, integral, ok, local_nodes)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
@@ -1068,7 +1067,7 @@ contains
     ok = .true.
     if (present(local_nodes)) local_nodes = local_node_count
   end subroutine &
-    composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d
+    composite_sparse_amr_eb_patch_subtree_integral_2d
 
   recursive subroutine accumulate_sparse_subtree_integral_local_2d( &
       distribution, sparse, level, patch, integral, local_nodes, ok)

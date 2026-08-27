@@ -33,8 +33,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     migrate_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
-    composite_sparse_owned_reactive_amr_eb_patch_tree_integral_2d, &
-    composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d
+    composite_sparse_amr_eb_patch_tree_integral_2d, &
+    composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
 
   type(MPI_Comm) :: comm
@@ -385,7 +385,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   allocate(sparse_integral(serial_chemistry%nvar))
   call composite_integral_reactive_amr_eb_patch_tree_2d( &
     serial_chemistry, serial_integral, ok)
-  call composite_sparse_owned_reactive_amr_eb_patch_tree_integral_2d( &
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
     migrated_distribution, physical_sparse, sparse_integral, local_ok, &
     local_integral_nodes)
   call MPI_Allreduce( &
@@ -402,7 +402,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
       call composite_reactive_amr_eb_patch_subtree_integral_2d( &
         serial_chemistry, level, patch, serial_integral, ok)
       call &
-          composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d( &
+          composite_sparse_amr_eb_patch_subtree_integral_2d( &
         migrated_distribution, physical_sparse, level, patch, &
         sparse_integral, local_ok, local_integral_nodes)
       call MPI_Allreduce( &
@@ -424,7 +424,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   else
     selected_integral_patch = 0
   end if
-  call composite_sparse_owned_reactive_amr_eb_patch_subtree_integral_2d( &
+  call composite_sparse_amr_eb_patch_subtree_integral_2d( &
     migrated_distribution, physical_sparse, 3, selected_integral_patch, &
     sparse_integral, ok, local_integral_nodes)
   call assert_all(.not. ok .and. all(sparse_integral == 0.0_dp) .and. &
