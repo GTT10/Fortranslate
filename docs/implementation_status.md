@@ -3394,3 +3394,21 @@ only through an active face-connected path, so the fit does not cross a
 covered corner. Rank-deficient stencils retain variation only in their
 resolved tangent direction. Exact AMReX interpolation, quadratic cut-parent
 reconstruction, and geometry coarsening are not claimed.
+
+## Rank-recovering cut-parent stencil (`0.188.0`)
+
+- [x] compact connected 3-by-3 stencil retained as the first choice
+- [x] rank-deficiency detection before accepting a tangent-only gradient
+- [x] bounded face-connected 5-by-5 stencil growth
+- [x] disconnected and covered coarse cells excluded from the grown fit
+- [x] full-rank two-dimensional recovery after a local rank-one stencil
+- [x] selected-stencil component envelope limiting
+- [x] exact affine reproduction through a turning fluid path
+- [x] retained fine-volume-weighted conservation and EOS/PCM transaction
+
+A cut parent no longer discards a smooth gradient component merely because
+its immediate fluid neighborhood is locally one-dimensional. The stencil
+grows once, remains topology connected, and falls back to a minimum-norm
+rank-one fit only when the larger neighborhood is also deficient. Exact AMReX
+interpolation, quadratic reconstruction, and geometry coarsening are not
+claimed.

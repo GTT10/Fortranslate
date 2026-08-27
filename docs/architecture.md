@@ -2305,3 +2305,18 @@ predictions remain inside that envelope, including the qualified
 interface-tangential field. The existing fine-volume-fraction-weighted
 zero-mean offset, EOS recovery, parent-local PCM retry, and shared lifecycle
 dispatcher remain unchanged.
+
+## Rank-recovering cut-parent prolongation stencil (`0.188.0`)
+
+The cut-parent fit first retains the compact connected 3-by-3 stencil. When
+that normal matrix is rank deficient, the kernel rebuilds the complete system
+over the parent-centered 5-by-5 box. A bounded face-connectivity flood fill
+admits only active cells reachable from the parent through open Cartesian
+faces inside that box; covered cells and disconnected fluid components cannot
+enter the fit.
+
+The selected stencil supplies both the normal equations and the component
+envelope. A full-rank grown system restores both affine-gradient components;
+only a still-rank-deficient grown system uses the minimum-norm rank-one
+fallback. The fine-volume-weighted zero-mean correction, fine-child limiter,
+EOS recovery, PCM retry, and shared lifecycle dispatcher remain unchanged.
