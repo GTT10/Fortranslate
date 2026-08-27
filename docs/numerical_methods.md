@@ -2437,3 +2437,28 @@ Each counted entity is one packed conserved-state message plus one temperature
 message, grouped as one public transfer. Geometry is compact replicated
 metadata and is broadcast independently. No numerical field is broadcast to
 all ranks, and the checkpoint contains neither `o`, `o'`, nor a rank count.
+
+## Arbitrary-depth EB composite CSV selection
+
+For a node `p`, let `C(p)` be the union of its direct children's coarse-cell
+rectangles. The output cell set is
+
+```text
+Omega_out = union_p { (p,i,j) : (i,j) not in C(p) }.
+```
+
+Valid topology guarantees separated siblings, so this rule excludes every
+covered parent cell and includes every composite leaf cell exactly once at its
+finest represented resolution. EB-covered cells remain present with their
+zero volume fraction and cell classification, matching the established EB CSV
+diagnostic convention; AMR coverage, not EB activity, determines omission.
+
+Sparse MPI first gathers each numerical node to writer root `q`, with
+
+```text
+N_output = sum_p [owner(p) /= q].
+```
+
+Only `q` converts conserved state to primitive variables and writes the file.
+This is an explicit output materialization boundary, not part of the owner-
+local physics path.

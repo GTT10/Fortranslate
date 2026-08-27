@@ -3082,3 +3082,22 @@ remain separate lifecycle work.
 This milestone closes rank-neutral checkpoint/restart for the sparse
 arbitrary-depth numerical EB tree. Composite hierarchy output remains separate
 lifecycle work.
+
+## Arbitrary-depth EB composite CSV output (`0.172.0`)
+
+- [x] one deterministic CSV for a branching tree of arbitrary depth
+- [x] direct-child masks excluding every refined parent cell
+- [x] one row per composite leaf cell
+- [x] level, patch, index, spacing, coordinate, and time columns
+- [x] EB volume, classification, boundary length, and normal columns
+- [x] conserved and general-EOS primitive/reactive field columns
+- [x] selected-root sparse MPI numerical-node gather
+- [x] file access and complete tree allocation only on the writer root
+- [x] collective root, time, and ordered-species agreement
+- [x] exact topology-derived output transfer accounting
+- [x] four-level branching serial leaf-count regression
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone closes the composite diagnostic-output boundary for the serial
+and sparse MPI arbitrary-depth numerical EB tree. A runnable arbitrary-depth
+2D EB application lifecycle remains separate integration work.

@@ -2787,3 +2787,16 @@ zero. Require both cases to reject with empty distribution/tree, zero metadata,
 and zero transfers. Run at one, two, four, and eight ranks in GNU Fortran
 Release and bounds/FPE-checked Debug, then retain all MPI gates and all 208
 serial tests.
+
+## 0.172.0 arbitrary-depth EB composite output gates
+
+Write the qualified four-level branching serial tree to one CSV. Derive the
+expected composite size from all node cell counts minus every child coarse-
+rectangle area. Require the header to expose EB metrics and ordered species,
+and require exactly one data row per expected leaf cell.
+
+Repeat from sparse owner-local fields with the last rank as writer root.
+Require the global sender count to equal the number of nodes not owned by that
+root, and let only that root inspect and delete the file. Run this gate at one,
+two, four, and eight ranks in GNU Fortran Release and bounds/FPE-checked Debug,
+then retain all established MPI gates and all 208 serial tests.

@@ -2019,3 +2019,20 @@ order rejects before file I/O or field traffic. Read, topology broadcast,
 distribution construction, sparse scatter, and final validation must all
 succeed before any public output becomes nonneutral. Composite output remains
 separate lifecycle work.
+
+## Arbitrary-depth EB composite output (`0.172.0`)
+
+The serial writer traverses every level and patch in deterministic order and
+constructs a coarse-cell mask from that patch's direct children. It writes only
+unmasked cells, so a parent cell replaced by any finer child is omitted while
+every finest available cell is emitted once. Each row identifies its level,
+patch, local indices, spacing, physical center, EB volume fraction and boundary
+metrics, conserved density and total energy, recovered primitive state,
+temperature, and ordered species mass fractions.
+
+The sparse MPI adapter validates collective agreement on writer root, time,
+and species order, then uses the existing direct node gather. Only the selected
+root materializes the complete numerical tree and opens the CSV. Every remote
+node contributes one entity transfer; non-root ranks retain only their owned
+fields. The root broadcasts the final write status, and transfer counts remain
+neutral when control, gather, thermodynamic conversion, or file output fails.
