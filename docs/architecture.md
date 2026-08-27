@@ -2106,3 +2106,21 @@ work exponent come from the restart process. Final composite comparison by
 stable `(level, patch, i, j)` identity therefore covers both rank-count and
 ownership-policy redistribution without permitting a replicated numerical
 child tree.
+
+## Owner-local public sparse-MPI startup (`0.177.0`)
+
+Fresh application startup now constructs the geometry-only root topology and
+its deterministic distribution before allocating numerical fields. Exactly
+the owner of root node `(level=0, patch=1)` calls the established reactive 2D
+initializer. Non-owners retain unallocated root state and temperature
+variables throughout startup.
+
+The root-only sparse initializer collectively verifies a one-level, one-node
+topology, communicator-consistent state width, owner-only input allocation,
+exact field shapes, finite values, and positive temperature. It then transfers
+the owner's allocatable state and temperature directly into the sparse node
+with `move_alloc`; no field copy or numerical broadcast occurs. The public
+driver requires exactly one initializer rank and requires both source arrays
+to be unallocated after the transfer before recursive owner-local tagging can
+begin. Replicated EB geometry and tree relations remain intentional compact
+metadata needed for deterministic planning and routing.

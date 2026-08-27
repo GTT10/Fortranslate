@@ -3177,3 +3177,24 @@ This milestone closes the public cross-rank application restart composition.
 Fresh initialization still constructs one temporary replicated root field
 before converting it to owner-tiled sparse storage; removing that startup copy
 is the next public sparse-lifecycle boundary.
+
+## Owner-local public sparse-MPI startup (`0.177.0`)
+
+- [x] root geometry and topology built before numerical initialization
+- [x] deterministic root-node ownership selected before field allocation
+- [x] reactive root state initialized on exactly one owning rank
+- [x] root state and temperature remain unallocated on every non-owner
+- [x] collective state-width, shape, finiteness, and temperature validation
+- [x] allocatable field ownership moved directly into the sparse root node
+- [x] no numerical root broadcast or replicated tree construction
+- [x] source state and temperature deallocated by ownership transfer
+- [x] existing recursive initial tagging begins from the sparse root
+- [x] unchanged four-level 1/2/4/8-rank composite parity
+- [x] unchanged cross-rank checkpoint/restart parity
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 214 serial regressions retained in MPI and non-MPI builds
+
+This milestone removes the last intentionally replicated numerical field from
+fresh public sparse-MPI application startup. Geometry and relation metadata
+remain replicated for deterministic planning; application/checkpoint input
+compatibility fingerprints remain later lifecycle work.

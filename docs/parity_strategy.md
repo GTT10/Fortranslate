@@ -2852,3 +2852,18 @@ and completion marker. Key the reference and both restarted composites by
 every numeric field within `3e-10 * max(1, abs(one-rank reference))`. Retain
 the complete MPI gate chain and all 214 serial tests in GNU Fortran Release
 and bounds/FPE-checked Debug.
+
+## 0.177.0 owner-local public sparse-MPI startup gates
+
+For every fresh public application process, require the distribution to exist
+before numerical initialization and require exactly one rank to execute the
+root reactive initializer. The sparse root initializer must reject numerical
+input allocated on any non-owner, validate the complete owner field, transfer
+both allocatable arrays into the sparse node without a copy, and leave both
+source arrays unallocated on every rank.
+
+Exercise that path through the established one-, two-, four-, and eight-rank
+four-level application parity gate. Retain the independent two-rank
+checkpoint-stop and four-/eight-rank restart gate, the complete MPI gate
+chain, and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked
+Debug.

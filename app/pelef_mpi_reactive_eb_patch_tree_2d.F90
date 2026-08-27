@@ -13,6 +13,7 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
+  use reactive_1d_mod, only: reactive_nvar
   use simulation_config_reactive_eb_amr_2d_mod, only: &
     reactive_eb_amr_2d_config, read_reactive_eb_amr_2d_configuration
   use reactive_2d_mod, only: initialize_reactive_2d
@@ -25,14 +26,11 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
     initialize_amr_eb_patch_tree_topology_2d
-  use amr_eb_patch_tree_reactive_2d_mod, only: &
-    reactive_amr_eb_patch_tree_2d, &
-    initialize_reactive_amr_eb_patch_tree_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
     initialize_mpi_amr_eb_patch_tree_distribution_2d, &
-    initialize_sparse_owned_reactive_amr_eb_patch_tree_2d, &
+    initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d, &
     regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d, &
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d, &
@@ -52,7 +50,6 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   type(eb_geometry_2d) :: root_geometry
   type(amr_eb_patch_tree_level_plan_2d), allocatable :: empty_plans(:)
   type(amr_eb_patch_tree_topology_2d) :: topology
-  type(reactive_amr_eb_patch_tree_2d) :: replicated
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: new_distribution
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse
@@ -65,6 +62,7 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   character(len=1024) :: input_path, message, output_path
   character(len=160) :: physics_context
   integer :: argument_count, ierr, last_checkpoint_step, nranks, rank
+  integer :: local_root_initializers, root_initializer_ranks
   integer :: regrids, steps, tagged_cells, transferred_cells
   logical :: changed, ok, restart_run, stopped_after_checkpoint
 
@@ -134,25 +132,35 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   else
     call build_configured_eb_geometry_2d(config%eb, root_geometry, ok)
     if (.not. ok) call abort_run("Root EB geometry failed", 4)
-    call initialize_reactive_2d( &
-      species, config%eb%flow, root_state, root_temperature, dx, dy, &
-      base_density, ok)
-    if (.not. ok) call abort_run("Root reactive state failed", 4)
     allocate(empty_plans(0))
     call initialize_amr_eb_patch_tree_topology_2d( &
       root_geometry, empty_plans, topology, ok)
     if (.not. ok) call abort_run("Root patch-tree topology failed", 4)
-    call initialize_reactive_amr_eb_patch_tree_2d( &
-      species, root_state, root_temperature, topology, replicated, ok)
-    if (.not. ok) call abort_run("Root patch-tree state failed", 4)
     call initialize_mpi_amr_eb_patch_tree_distribution_2d( &
       topology, MPI_COMM_WORLD, distribution, ok, &
       config%patch_tree_mpi_work_exponent)
     if (.not. ok) call abort_run("Sparse patch-tree ownership failed", 4)
-    call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
-      distribution, replicated, sparse, ok)
+    local_root_initializers = 0
+    if (distribution%is_local(0, 1)) then
+      call initialize_reactive_2d( &
+        species, config%eb%flow, root_state, root_temperature, dx, dy, &
+        base_density, ok)
+      if (.not. ok) call abort_run("Root reactive state failed", 4)
+      local_root_initializers = 1
+    end if
+    call MPI_Allreduce( &
+      local_root_initializers, root_initializer_ranks, 1, MPI_INTEGER, &
+      MPI_SUM, MPI_COMM_WORLD, ierr)
+    if (ierr /= MPI_SUCCESS) &
+      call abort_run("Root reactive state ownership reduction failed", 4)
+    if (root_initializer_ranks /= 1) &
+      call abort_run("Root reactive state ownership failed", 4)
+    call initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d( &
+      distribution, topology, reactive_nvar(size(species)), root_state, &
+      root_temperature, sparse, ok)
     if (.not. ok) call abort_run("Sparse patch-tree initialization failed", 4)
-    replicated = reactive_amr_eb_patch_tree_2d()
+    if (allocated(root_state) .or. allocated(root_temperature)) &
+      call abort_run("Root reactive state transfer failed", 4)
     if (config%dynamic_regridding .and. &
         config%regrid_at_initialization) then
       call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
@@ -260,6 +268,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
     write(*, '(a,i0)') "Completed regrids: ", regrids
     write(*, '(a,i0)') "MPI work exponent: ", &
       config%patch_tree_mpi_work_exponent
+    if (.not. restart_run) write(*, '(a,i0)') &
+      "Fresh root initializer ranks: ", root_initializer_ranks
     write(*, '(a,l2)') "Restarted: ", restart_run
     write(*, '(a,l2)') "Stopped after checkpoint: ", &
       stopped_after_checkpoint
