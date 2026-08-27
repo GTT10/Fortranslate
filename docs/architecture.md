@@ -2287,3 +2287,21 @@ EOS recovery, the provisional state is redistributed again with order zero.
 Both candidates use the same neighborhood partition, so the retry retains the
 componentwise volume-conservation contract and the transaction commits only an
 EOS-admissible whole-level state.
+
+## Multidimensional cut-parent prolongation (`0.187.0`)
+
+The cut-parent gradient now comes from one least-squares system over active
+fluid-volume centroids in the coarse 3-by-3 neighborhood. Axial neighbors must
+share an open face. A diagonal neighbor must have at least one two-face path
+through an active intermediate cell, which prevents the fit from crossing a
+covered corner. A full-rank normal matrix supplies both gradient components;
+a rank-one matrix uses the minimum-norm gradient along its only resolved
+direction, and an empty stencil remains constant.
+
+The coarse active-neighbor envelope limits predictions at connected coarse
+centroids, then the existing fine-child envelope limits the actual
+reconstruction. Both limiters preserve an exact affine field when its child
+predictions remain inside that envelope, including the qualified
+interface-tangential field. The existing fine-volume-fraction-weighted
+zero-mean offset, EOS recovery, parent-local PCM retry, and shared lifecycle
+dispatcher remain unchanged.

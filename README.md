@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.186.0` milestone contains the serial verification suite, ten optional
+The `0.187.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -58,7 +58,10 @@ and restart are therefore active in the public two-level, multipatch,
 three-level, serial arbitrary-depth, and sparse-MPI arbitrary-depth cases. In
 `0.186.0`, the same configured linear path therefore preserves each cut
 parent's volume-weighted conserved average while retaining nonconstant
-active-child states next to the embedded boundary. The arbitrary-depth 2D EB
+active-child states next to the embedded boundary. In `0.187.0`, cut-parent
+slopes use a connected multidimensional least-squares fit of the active coarse
+fluid centroids, including a minimum-norm rank-one fit where the EB leaves only
+one resolved direction. The arbitrary-depth 2D EB
 tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial

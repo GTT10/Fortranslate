@@ -2997,3 +2997,16 @@ cut parents. Retain analytic regular-parent linear reproduction, temperature
 recovery, nonfinite-input neutral rejection, and the parent-local PCM retry.
 Run the complete serial and MPI Debug/Release chains before merging the
 versioned milestone.
+
+## 0.187.0 multidimensional cut-parent prolongation gates
+
+Populate every active coarse state with one conserved vector multiplied by an
+interface-tangential affine function evaluated at its fluid-volume centroid.
+Prolong through the diagonal-plane EB patch and require every active child of
+every cut parent to match the same analytic function at its fine fluid
+centroid within roundoff.
+
+Retain the nonconstant cut-parent, active component-envelope, complete-patch
+average-down, regular-parent analytic value, EOS recovery, nonfinite rollback,
+and parent-local PCM retry gates. Run the complete serial and one-, two-,
+four-, and eight-rank MPI Debug/Release chains before merging.

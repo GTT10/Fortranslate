@@ -68,9 +68,10 @@ program test_amr_eb_reactive_2d
   real(dp) :: mole_fractions(7), x, y, fine_x_lower, fine_x_upper
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale, dt, expected_scale
-  real(dp) :: cut_difference, linear_factor, linear_expected
+  real(dp) :: affine_error, cut_difference, linear_factor, linear_expected
   real(dp) :: neighbor_maximum, neighbor_minimum
-  logical :: ok, found_cut_linear, found_cut_parent, found_open_boundary
+  logical :: found_cut_affine, found_cut_linear, found_cut_parent
+  logical :: found_open_boundary, ok
   integer :: child_i, child_j, i, j, k, linear_fine_i, linear_fine_j
   integer :: neighbor_i, neighbor_j, nvar, component
 
@@ -248,6 +249,52 @@ program test_amr_eb_reactive_2d
   end do
   call require(found_cut_parent, "limited-linear cut-parent coverage")
   call require(found_cut_linear, "limited-linear cut-parent variation")
+
+  do j = 1, coarse_ny
+    do i = 1, coarse_nx
+      linear_factor = 1.0_dp + 0.01_dp * &
+        (real(i, dp) - 0.5_dp + coarse_geometry%cell_centroid_x(i, j)) - &
+        0.01_dp * &
+        (real(j, dp) - 0.5_dp + coarse_geometry%cell_centroid_y(i, j))
+      linear_coarse_state(:, i, j) = linear_factor * state_cell
+    end do
+  end do
+  call prolong_reactive_eb_patch_linear_2d( &
+    species, linear_coarse_state, linear_coarse_temperature, &
+    coarse_geometry, fine_geometry, patch, linear_fine_state, &
+    linear_fine_temperature, ok)
+  call require(ok, "fluid-centroid affine cut-parent prolongation")
+  affine_error = 0.0_dp
+  found_cut_affine = .false.
+  do j = coarse_j_lower, coarse_j_upper
+    do i = coarse_i_lower, coarse_i_upper
+      if (coarse_geometry%cell_type(i, j) /= eb_cut_cell) cycle
+      linear_fine_i = (i - coarse_i_lower) * ratio + 1
+      linear_fine_j = (j - coarse_j_lower) * ratio + 1
+      do child_j = linear_fine_j, linear_fine_j + ratio - 1
+        do child_i = linear_fine_i, linear_fine_i + ratio - 1
+          if (fine_geometry%cell_type(child_i, child_j) == &
+              eb_covered_cell) cycle
+          linear_expected = 1.0_dp + 0.01_dp * ( &
+            real(coarse_i_lower - 1, dp) + &
+            (real(child_i, dp) - 0.5_dp + &
+             fine_geometry%cell_centroid_x(child_i, child_j)) / &
+            real(ratio, dp)) - 0.01_dp * ( &
+            real(coarse_j_lower - 1, dp) + &
+            (real(child_j, dp) - 0.5_dp + &
+             fine_geometry%cell_centroid_y(child_i, child_j)) / &
+            real(ratio, dp))
+          affine_error = max(affine_error, maxval(abs( &
+            linear_fine_state(:, child_i, child_j) - &
+            linear_expected * state_cell)))
+          found_cut_affine = .true.
+        end do
+      end do
+    end do
+  end do
+  call require(found_cut_affine .and. affine_error <= &
+    5.0e-12_dp * state_scale, &
+    "least-squares cut-parent affine reproduction")
   linear_coarse_state(1, 5, 5) = ieee_value(0.0_dp, ieee_quiet_nan)
   call prolong_reactive_eb_patch_linear_2d( &
     species, linear_coarse_state, linear_coarse_temperature, &
@@ -256,7 +303,9 @@ program test_amr_eb_reactive_2d
   call require(.not. ok .and. maxval(abs(linear_fine_state)) == 0.0_dp .and. &
     maxval(abs(linear_fine_temperature)) == 0.0_dp, &
     "limited-linear nonfinite rollback")
-  linear_factor = 1.0_dp + 0.01_dp * 5.0_dp + 0.015_dp * 5.0_dp
+  linear_factor = 1.0_dp + 0.01_dp * &
+    (4.5_dp + coarse_geometry%cell_centroid_x(5, 5)) - &
+    0.01_dp * (4.5_dp + coarse_geometry%cell_centroid_y(5, 5))
   linear_coarse_state(1, 5, 5) = linear_factor * state_cell(1)
   call prolong_reactive_eb_patch_2d( &
     species, linear_coarse_state, linear_coarse_temperature, &

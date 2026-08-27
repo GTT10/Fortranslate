@@ -141,6 +141,161 @@ contains
     ok = .true.
   end subroutine prolong_reactive_eb_patch_pcm_2d
 
+  pure logical function cut_parent_neighbor_connected_2d( &
+      geometry, parent_i, parent_j, neighbor_i, neighbor_j) result(connected)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: parent_i, parent_j, neighbor_i, neighbor_j
+
+    integer :: delta_i, delta_j, x_face_i, y_face_j
+    logical :: horizontal_path, vertical_path
+
+    connected = .false.
+    if (parent_i < 1 .or. parent_i > geometry%nx .or. &
+        parent_j < 1 .or. parent_j > geometry%ny .or. &
+        neighbor_i < 1 .or. neighbor_i > geometry%nx .or. &
+        neighbor_j < 1 .or. neighbor_j > geometry%ny .or. &
+        geometry%cell_type(parent_i, parent_j) == eb_covered_cell .or. &
+        geometry%cell_type(neighbor_i, neighbor_j) == eb_covered_cell) return
+    delta_i = neighbor_i - parent_i
+    delta_j = neighbor_j - parent_j
+    if (abs(delta_i) > 1 .or. abs(delta_j) > 1 .or. &
+        (delta_i == 0 .and. delta_j == 0)) return
+    x_face_i = min(parent_i, neighbor_i)
+    y_face_j = min(parent_j, neighbor_j)
+    if (delta_j == 0) then
+      connected = geometry%x_face_fraction(x_face_i, parent_j) > 0.0_dp
+      return
+    end if
+    if (delta_i == 0) then
+      connected = geometry%y_face_fraction(parent_i, y_face_j) > 0.0_dp
+      return
+    end if
+
+    horizontal_path = &
+      geometry%cell_type(neighbor_i, parent_j) /= eb_covered_cell .and. &
+      geometry%x_face_fraction(x_face_i, parent_j) > 0.0_dp .and. &
+      geometry%y_face_fraction(neighbor_i, y_face_j) > 0.0_dp
+    vertical_path = &
+      geometry%cell_type(parent_i, neighbor_j) /= eb_covered_cell .and. &
+      geometry%y_face_fraction(parent_i, y_face_j) > 0.0_dp .and. &
+      geometry%x_face_fraction(x_face_i, neighbor_j) > 0.0_dp
+    connected = horizontal_path .or. vertical_path
+  end function cut_parent_neighbor_connected_2d
+
+  subroutine build_cut_parent_limited_slopes_2d( &
+      geometry, state, parent_i, parent_j, slope_x, slope_y, &
+      minimum_state, maximum_state, ok)
+    type(eb_geometry_2d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:, :, :)
+    integer, intent(in) :: parent_i, parent_j
+    real(dp), intent(out) :: slope_x(:), slope_y(:)
+    real(dp), intent(out) :: minimum_state(:), maximum_state(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: normal_rhs_x(:), normal_rhs_y(:), limiter(:)
+    real(dp) :: delta_x, delta_y, determinant, determinant_scale
+    real(dp) :: normal_xx, normal_xy, normal_yy, normal_trace
+    real(dp) :: predicted_delta, rank_tolerance
+    integer :: component, neighbor_i, neighbor_j, ncomp
+
+    slope_x = 0.0_dp
+    slope_y = 0.0_dp
+    minimum_state = 0.0_dp
+    maximum_state = 0.0_dp
+    ok = .false.
+    ncomp = size(state, 1)
+    if (ncomp < 1 .or. size(state, 2) /= geometry%nx .or. &
+        size(state, 3) /= geometry%ny .or. &
+        size(slope_x) /= ncomp .or. size(slope_y) /= ncomp .or. &
+        size(minimum_state) /= ncomp .or. &
+        size(maximum_state) /= ncomp .or. &
+        parent_i < 1 .or. parent_i > geometry%nx .or. &
+        parent_j < 1 .or. parent_j > geometry%ny .or. &
+        geometry%cell_type(parent_i, parent_j) /= eb_cut_cell) return
+
+    allocate(normal_rhs_x(ncomp), normal_rhs_y(ncomp), limiter(ncomp))
+    normal_rhs_x = 0.0_dp
+    normal_rhs_y = 0.0_dp
+    normal_xx = 0.0_dp
+    normal_xy = 0.0_dp
+    normal_yy = 0.0_dp
+    minimum_state = state(:, parent_i, parent_j)
+    maximum_state = minimum_state
+    do neighbor_j = max(1, parent_j - 1), min(geometry%ny, parent_j + 1)
+      do neighbor_i = max(1, parent_i - 1), &
+          min(geometry%nx, parent_i + 1)
+        if (geometry%cell_type(neighbor_i, neighbor_j) == &
+            eb_covered_cell) cycle
+        minimum_state = min(minimum_state, state(:, neighbor_i, neighbor_j))
+        maximum_state = max(maximum_state, state(:, neighbor_i, neighbor_j))
+        if (.not. cut_parent_neighbor_connected_2d( &
+            geometry, parent_i, parent_j, neighbor_i, neighbor_j)) cycle
+        delta_x = real(neighbor_i - parent_i, dp) + &
+          geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
+          geometry%cell_centroid_x(parent_i, parent_j)
+        delta_y = real(neighbor_j - parent_j, dp) + &
+          geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
+          geometry%cell_centroid_y(parent_i, parent_j)
+        normal_xx = normal_xx + delta_x * delta_x
+        normal_xy = normal_xy + delta_x * delta_y
+        normal_yy = normal_yy + delta_y * delta_y
+        normal_rhs_x = normal_rhs_x + delta_x * &
+          (state(:, neighbor_i, neighbor_j) - state(:, parent_i, parent_j))
+        normal_rhs_y = normal_rhs_y + delta_y * &
+          (state(:, neighbor_i, neighbor_j) - state(:, parent_i, parent_j))
+      end do
+    end do
+
+    rank_tolerance = 4096.0_dp * epsilon(1.0_dp)
+    determinant = normal_xx * normal_yy - normal_xy * normal_xy
+    determinant_scale = max(1.0_dp, normal_xx * normal_yy)
+    normal_trace = normal_xx + normal_yy
+    if (abs(determinant) > rank_tolerance * determinant_scale) then
+      slope_x = (normal_rhs_x * normal_yy - &
+        normal_xy * normal_rhs_y) / determinant
+      slope_y = (normal_xx * normal_rhs_y - &
+        normal_xy * normal_rhs_x) / determinant
+    else if (normal_trace > rank_tolerance) then
+      ! The minimum-norm rank-one fit retains variation along the only
+      ! connected fluid-centroid direction without inventing a normal slope.
+      slope_x = normal_rhs_x / normal_trace
+      slope_y = normal_rhs_y / normal_trace
+    end if
+
+    limiter = 1.0_dp
+    do neighbor_j = max(1, parent_j - 1), min(geometry%ny, parent_j + 1)
+      do neighbor_i = max(1, parent_i - 1), &
+          min(geometry%nx, parent_i + 1)
+        if (.not. cut_parent_neighbor_connected_2d( &
+            geometry, parent_i, parent_j, neighbor_i, neighbor_j)) cycle
+        delta_x = real(neighbor_i - parent_i, dp) + &
+          geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
+          geometry%cell_centroid_x(parent_i, parent_j)
+        delta_y = real(neighbor_j - parent_j, dp) + &
+          geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
+          geometry%cell_centroid_y(parent_i, parent_j)
+        do component = 1, ncomp
+          predicted_delta = delta_x * slope_x(component) + &
+            delta_y * slope_y(component)
+          if (predicted_delta > 0.0_dp) then
+            limiter(component) = min(limiter(component), &
+              (maximum_state(component) - &
+               state(component, parent_i, parent_j)) / predicted_delta)
+          else if (predicted_delta < 0.0_dp) then
+            limiter(component) = min(limiter(component), &
+              (minimum_state(component) - &
+               state(component, parent_i, parent_j)) / predicted_delta)
+          end if
+        end do
+      end do
+    end do
+    limiter = max(0.0_dp, min(1.0_dp, limiter))
+    slope_x = limiter * slope_x
+    slope_y = limiter * slope_y
+    ok = all(ieee_is_finite(slope_x)) .and. &
+      all(ieee_is_finite(slope_y))
+  end subroutine build_cut_parent_limited_slopes_2d
+
   subroutine prolong_reactive_eb_patch_linear_2d( &
       species, coarse_state, coarse_temperature, coarse_geometry, &
       fine_geometry, patch, fine_state, fine_temperature, ok)
@@ -156,16 +311,13 @@ contains
     real(dp), allocatable :: maximum_state(:), minimum_state(:)
     real(dp), allocatable :: slope_x(:), slope_y(:), theta(:)
     real(dp) :: delta, delta_minus, delta_plus
-    real(dp) :: distance_minus, distance_plus
     real(dp) :: mean_offset_x, mean_offset_y, offset_x, offset_y
     real(dp) :: raw_offset_x, raw_offset_y, total_weight, weight
     real(dp) :: recovered_temperature, sound_speed
-    logical :: has_minus, has_plus, is_cut_parent
-    logical :: local_ok, parent_ok, use_linear
+    logical :: is_cut_parent, local_ok, parent_ok, use_linear
     integer :: child_i, child_j, coarse_i, coarse_j, component
     integer :: fine_i, fine_i_lower, fine_i_upper
     integer :: fine_j, fine_j_lower, fine_j_upper, nvar, ratio
-    integer :: neighbor_i, neighbor_j
 
     fine_state = 0.0_dp
     fine_temperature = 0.0_dp
@@ -249,110 +401,15 @@ contains
             if (.not. local_ok) return
           end do
         else if (is_cut_parent) then
-          ! Use active coarse neighbors at their fluid-volume centroids. A
-          ! one-sided derivative is retained next to the embedded boundary;
-          ! the child-envelope limiter below prevents a new component bound.
+          ! Fit one multidimensional gradient to the connected active coarse
+          ! fluid centroids. Rank-one support retains its resolved tangent;
+          ! the coarse and child envelope limiters prevent new component
+          ! bounds without perturbing an exactly affine fit.
           use_linear = .true.
-          minimum_state = coarse_state(:, coarse_i, coarse_j)
-          maximum_state = coarse_state(:, coarse_i, coarse_j)
-          do neighbor_j = max(1, coarse_j - 1), &
-              min(coarse_geometry%ny, coarse_j + 1)
-            do neighbor_i = max(1, coarse_i - 1), &
-                min(coarse_geometry%nx, coarse_i + 1)
-              if (coarse_geometry%cell_type(neighbor_i, neighbor_j) == &
-                  eb_covered_cell) cycle
-              minimum_state = min( &
-                minimum_state, coarse_state(:, neighbor_i, neighbor_j))
-              maximum_state = max( &
-                maximum_state, coarse_state(:, neighbor_i, neighbor_j))
-            end do
-          end do
-
-          do component = 1, nvar
-            has_minus = .false.
-            has_plus = .false.
-            delta_minus = 0.0_dp
-            delta_plus = 0.0_dp
-            if (coarse_i > 1) then
-              has_minus = coarse_geometry%cell_type(coarse_i - 1, coarse_j) &
-                /= eb_covered_cell
-              if (has_minus) then
-                distance_minus = 1.0_dp + &
-                  coarse_geometry%cell_centroid_x(coarse_i, coarse_j) - &
-                  coarse_geometry%cell_centroid_x(coarse_i - 1, coarse_j)
-                if (distance_minus > 0.0_dp) &
-                  delta_minus = ( &
-                    coarse_state(component, coarse_i, coarse_j) - &
-                    coarse_state(component, coarse_i - 1, coarse_j)) / &
-                    distance_minus
-              end if
-            end if
-            if (coarse_i < coarse_geometry%nx) then
-              has_plus = coarse_geometry%cell_type(coarse_i + 1, coarse_j) &
-                /= eb_covered_cell
-              if (has_plus) then
-                distance_plus = 1.0_dp + &
-                  coarse_geometry%cell_centroid_x(coarse_i + 1, coarse_j) - &
-                  coarse_geometry%cell_centroid_x(coarse_i, coarse_j)
-                if (distance_plus > 0.0_dp) &
-                  delta_plus = ( &
-                    coarse_state(component, coarse_i + 1, coarse_j) - &
-                    coarse_state(component, coarse_i, coarse_j)) / &
-                    distance_plus
-              end if
-            end if
-            if (has_minus .and. has_plus) then
-              call limited_slope( &
-                delta_minus, delta_plus, "mc", slope_x(component), local_ok)
-              if (.not. local_ok) return
-            else if (has_minus) then
-              slope_x(component) = delta_minus
-            else if (has_plus) then
-              slope_x(component) = delta_plus
-            end if
-
-            has_minus = .false.
-            has_plus = .false.
-            delta_minus = 0.0_dp
-            delta_plus = 0.0_dp
-            if (coarse_j > 1) then
-              has_minus = coarse_geometry%cell_type(coarse_i, coarse_j - 1) &
-                /= eb_covered_cell
-              if (has_minus) then
-                distance_minus = 1.0_dp + &
-                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j) - &
-                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j - 1)
-                if (distance_minus > 0.0_dp) &
-                  delta_minus = ( &
-                    coarse_state(component, coarse_i, coarse_j) - &
-                    coarse_state(component, coarse_i, coarse_j - 1)) / &
-                    distance_minus
-              end if
-            end if
-            if (coarse_j < coarse_geometry%ny) then
-              has_plus = coarse_geometry%cell_type(coarse_i, coarse_j + 1) &
-                /= eb_covered_cell
-              if (has_plus) then
-                distance_plus = 1.0_dp + &
-                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j + 1) - &
-                  coarse_geometry%cell_centroid_y(coarse_i, coarse_j)
-                if (distance_plus > 0.0_dp) &
-                  delta_plus = ( &
-                    coarse_state(component, coarse_i, coarse_j + 1) - &
-                    coarse_state(component, coarse_i, coarse_j)) / &
-                    distance_plus
-              end if
-            end if
-            if (has_minus .and. has_plus) then
-              call limited_slope( &
-                delta_minus, delta_plus, "mc", slope_y(component), local_ok)
-              if (.not. local_ok) return
-            else if (has_minus) then
-              slope_y(component) = delta_minus
-            else if (has_plus) then
-              slope_y(component) = delta_plus
-            end if
-          end do
+          call build_cut_parent_limited_slopes_2d( &
+            coarse_geometry, coarse_state, coarse_i, coarse_j, slope_x, &
+            slope_y, minimum_state, maximum_state, local_ok)
+          if (.not. local_ok) return
 
           ! Fine fluid-centroid offsets need not have zero mean in a cut
           ! parent. Remove their volume-weighted mean before reconstruction so
