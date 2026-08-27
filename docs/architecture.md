@@ -2280,3 +2280,10 @@ blocks retain PCM. EOS recovery and the existing parent-local PCM retry remain
 the final transactional acceptance boundary. Because fixed-depth, patch-tree,
 serial, and sparse-MPI lifecycles already share this dispatcher, they inherit
 the cut-parent behavior without a new checkpoint identity field.
+
+The end-to-end reactive qualification also closes the interaction with
+second-order weighted StateRedist. If its reconstructed conserved state fails
+EOS recovery, the provisional state is redistributed again with order zero.
+Both candidates use the same neighborhood partition, so the retry retains the
+componentwise volume-conservation contract and the transaction commits only an
+EOS-admissible whole-level state.

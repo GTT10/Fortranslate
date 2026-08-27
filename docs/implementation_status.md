@@ -3366,9 +3366,13 @@ inadmissible candidates keep the established PCM fallback.
 - [x] nonconstant active-child cut-parent regression
 - [x] retained EOS recovery and parent-local PCM retry
 - [x] retained PCM behavior for covered and topology-mismatched parents
+- [x] EOS-validated order-2 StateRedist with conservative order-0 retry
+- [x] dynamic three-level reactive transport/regrid qualification
 
 Configured limited-linear initialization now remains nonconstant next to a cut
 embedded boundary while preserving the cut-parent volume-weighted average.
-PCM remains the public default. Exact AMReX EB interpolation, least-squares
-multidimensional gradients, and higher-order cut-cell reconstruction are not
-claimed.
+If its sharper gradients expose an inadmissible second-order StateRedist
+candidate, the whole provisional state is redistributed again with the
+conservative zeroth-order kernel before commit. PCM remains the public default.
+Exact AMReX EB interpolation, least-squares multidimensional gradients, and
+higher-order cut-cell reconstruction are not claimed.
