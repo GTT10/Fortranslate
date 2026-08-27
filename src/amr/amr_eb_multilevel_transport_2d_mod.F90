@@ -108,6 +108,7 @@ contains
     logical :: local_ok
     integer :: nvar, level_one_ratio, level_two_ratio
     integer :: level_one_substep, level_two_substep
+    character(len=64) :: redistribution_failure
 
     new_root_state = root_state
     new_root_temperature = root_temperature
@@ -161,8 +162,12 @@ contains
     call advance_reactive_eb_state_redistributed_2d( &
       species, root_state, root_temperature, root_geometry, root_rhs, dt, &
       root_candidate, root_temperature_work, local_ok, &
-      target_volume_fraction, max_order)
-    if (.not. local_ok) return
+      target_volume_fraction, max_order, redistribution_failure)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = &
+        "root " // trim(redistribution_failure)
+      return
+    end if
     if (present(failure_context)) failure_context = "root register initialization"
     call initialize_amr_eb_flux_register_2d( &
       root_geometry, level_one_geometry, root_patch, nvar, root_register, &
@@ -240,8 +245,12 @@ contains
         species, level_one_candidate, level_one_candidate_temperature, &
         level_one_geometry, level_one_rhs, level_one_dt, &
         level_one_uncorrected, level_one_uncorrected_temperature, local_ok, &
-        target_volume_fraction, max_order)
-      if (.not. local_ok) return
+        target_volume_fraction, max_order, redistribution_failure)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = &
+          "level-one " // trim(redistribution_failure)
+        return
+      end if
       if (present(failure_context)) &
         failure_context = "root fine flux accumulation"
       call accumulate_fine_eb_fluxes_2d( &
@@ -290,8 +299,12 @@ contains
           species, level_two_candidate, level_two_candidate_temperature, &
           level_two_geometry, level_two_rhs, level_two_dt, level_two_work, &
           level_two_work_temperature, local_ok, target_volume_fraction, &
-          max_order)
-        if (.not. local_ok) return
+          max_order, redistribution_failure)
+        if (.not. local_ok) then
+          if (present(failure_context)) failure_context = &
+            "level-two " // trim(redistribution_failure)
+          return
+        end if
         level_two_candidate = level_two_work
         level_two_candidate_temperature = level_two_work_temperature
         if (present(failure_context)) &
@@ -432,6 +445,7 @@ contains
     real(dp), allocatable :: candidate_two_temperature(:, :)
     real(dp) :: theta_one, theta_two
     logical :: local_ok
+    character(len=64) :: euler_failure
 
     new_root_state = root_state
     new_root_temperature = root_temperature
@@ -464,8 +478,12 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
       stage_root, stage_root_temperature, stage_one, stage_one_temperature, &
-      stage_two, stage_two_temperature, theta_one, local_ok, failure_context)
-    if (.not. local_ok) return
+      stage_two, stage_two_temperature, theta_one, local_ok, euler_failure)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = &
+        "first Euler: " // trim(euler_failure)
+      return
+    end if
 
     allocate(euler_root, mold=root_state)
     allocate(euler_root_temperature, mold=root_temperature)
@@ -482,8 +500,12 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, boundaries, &
       target_volume_fraction, max_order, euler_root, euler_root_temperature, &
       euler_one, euler_one_temperature, euler_two, euler_two_temperature, &
-      theta_two, local_ok, failure_context)
-    if (.not. local_ok) return
+      theta_two, local_ok, euler_failure)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = &
+        "second Euler: " // trim(euler_failure)
+      return
+    end if
 
     allocate(candidate_root, source=0.5_dp * (root_state + euler_root))
     allocate(candidate_one, source=0.5_dp * (level_one_state + euler_one))

@@ -930,7 +930,8 @@ contains
 
   subroutine advance_reactive_eb_state_redistributed_2d( &
       species, state, temperature, geometry, conservative_rhs, dt, &
-      new_state, new_temperature, ok, target_volume_fraction, max_order)
+      new_state, new_temperature, ok, target_volume_fraction, max_order, &
+      failure_context)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
     type(eb_geometry_2d), intent(in) :: geometry
@@ -939,6 +940,7 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     integer, intent(in), optional :: max_order
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp), allocatable :: provisional_state(:, :, :)
     real(dp), allocatable :: redistributed_state(:, :, :)
@@ -952,6 +954,7 @@ contains
     new_state = 0.0_dp
     new_temperature = 0.0_dp
     ok = .false.
+    if (present(failure_context)) failure_context = "input validation"
     nvar = reactive_nvar(size(species))
     if (nvar <= 0 .or. .not. geometry%is_valid()) return
     if (size(state, 1) /= nvar .or. &
@@ -982,6 +985,7 @@ contains
     if (present(target_volume_fraction)) selected_target = target_volume_fraction
     selected_max_order = 0
     if (present(max_order)) selected_max_order = max_order
+    if (present(failure_context)) failure_context = "weighted redistribution"
     call reactive_eb_weighted_state_redistribute_2d( &
       geometry, provisional_state, redistributed_state, local_ok, &
       selected_target, selected_max_order)
@@ -997,6 +1001,8 @@ contains
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
         if (temperature(i, j) <= 0.0_dp) return
         candidate_state(:, i, j) = redistributed_state(:, i, j)
+        if (present(failure_context)) write(failure_context, &
+          '(a,i0,a,i0,a)') "EOS recovery (", i, ",", j, ")"
         call reactive_conserved_to_primitive( &
           species, candidate_state(:, i, j), temperature(i, j), primitive, &
           recovered_temperature, sound_speed, local_ok)
@@ -1008,6 +1014,7 @@ contains
     new_state = candidate_state
     new_temperature = candidate_temperature
     ok = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine advance_reactive_eb_state_redistributed_2d
 
 end module eb_reactive_redistribution_2d_mod
