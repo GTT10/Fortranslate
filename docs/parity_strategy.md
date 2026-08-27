@@ -3037,3 +3037,18 @@ and after the transaction. Supply an invalid prolongation control and require
 neutral rejection with all three state/temperature fields and both patch
 descriptors unchanged. Retain the complete serial and one-, two-, four-, and
 eight-rank MPI Debug/Release chains before merging.
+
+## 0.190.0 public dynamic-parent lifecycle gates
+
+Enable the opt-in parent policy in a public offset-hotspot run and require the
+accepted root-to-middle descriptor to differ from its configured seed. Require
+a valid nested finest descriptor, a positive regrid count, complete EB cell
+coverage, active thermodynamic validity, species closure, and composite
+conservation.
+
+Write a schema-4 dynamic checkpoint after a moved parent. Require the stored
+policy bit, actual parent and finest descriptors, cadence counter, and terminal
+marker. Restart in a separate process, derive expected output sizes from the
+stored descriptors, and compare every root, middle, and finest field against
+an uninterrupted run. Retain legacy fixed-parent inputs and the complete
+serial and MPI Debug/Release chains.

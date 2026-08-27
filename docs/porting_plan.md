@@ -1555,6 +1555,19 @@ composite conservation check. Qualify changed parent bounds, valid nested
 topology, conservation, and invalid-control rollback. Keep public scheduling
 and fixed-depth checkpoint topology for the following lifecycle milestone.
 
+## 0.190.0 public fixed three-level parent lifecycle
+
+Add an explicit fixed-depth parent-regridding control without changing legacy
+dynamic-finest inputs. Route both initialization and periodic regrid events
+through a parent-first dispatcher and count one committed hierarchy change.
+Reject configurations whose minimum root-tagged patch cannot support the
+finest two-cell margin.
+
+Advance the dynamic three-level checkpoint schema, persist the policy and both
+actual patch descriptors, and reconstruct the stored parent before validating
+the finest descriptor. Qualify a public moved-parent hotspot plus uninterrupted
+versus checkpoint/restart field parity with topology-derived output sizes.
+
 Each implementation PR should normally contain:
 
 1. implementation

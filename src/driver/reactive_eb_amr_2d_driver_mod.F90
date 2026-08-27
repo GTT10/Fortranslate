@@ -82,7 +82,7 @@ module reactive_eb_amr_2d_driver_mod
   character(len=*), parameter :: &
     reactive_eb_dynamic_three_level_checkpoint_magic = &
       "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
-  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 3
+  integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 4
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_three_level_reactive_eb_cfl_timestep_2d
@@ -163,6 +163,8 @@ contains
       config%regrid_minimum_patch_cells_y <= config%eb%flow%ny .and. &
       config%regrid_maximum_patch_gap_cells >= 0 .and. &
       (.not. config%multipatch_enabled .or. config%dynamic_regridding) .and. &
+      (.not. config%dynamic_parent_regridding .or. &
+       (config%three_level_enabled .and. config%dynamic_regridding)) .and. &
       config%checkpoint_interval >= 0 .and. &
       (config%checkpoint_interval == 0 .or. &
        len_trim(config%checkpoint_file) > 0) .and. &
@@ -199,7 +201,12 @@ contains
        (.not. config%remove_fine_patch_when_untagged .and. &
         level_one_nx >= 8 .and. level_one_ny >= 8 .and. &
         config%regrid_minimum_patch_cells_x <= level_one_nx - 4 .and. &
-        config%regrid_minimum_patch_cells_y <= level_one_ny - 4))
+        config%regrid_minimum_patch_cells_y <= level_one_ny - 4)) .and. &
+      (.not. config%dynamic_parent_regridding .or. &
+       (config%regrid_minimum_patch_cells_x * config%refinement_ratio >= &
+          max(8, config%regrid_minimum_patch_cells_x + 4) .and. &
+        config%regrid_minimum_patch_cells_y * config%refinement_ratio >= &
+          max(8, config%regrid_minimum_patch_cells_y + 4)))
   end function supported_three_level_reactive_eb_amr_config
 
   subroutine compute_reactive_eb_amr_cfl_timestep_2d( &
@@ -1614,6 +1621,48 @@ contains
     ok = .true.
   end subroutine regrid_three_level_reactive_eb_amr_parent_2d
 
+  subroutine regrid_scheduled_three_level_reactive_eb_amr_2d( &
+      species, config, root_state, root_temperature, root_geometry, &
+      level_one_state, level_one_temperature, level_one_geometry, &
+      root_patch, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, changed, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(inout) :: root_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: root_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    real(dp), allocatable, intent(inout) :: level_one_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: level_one_geometry
+    type(amr_eb_patch_2d), intent(inout) :: root_patch
+    real(dp), allocatable, intent(inout) :: level_two_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(inout) :: level_one_patch
+    logical, intent(out) :: changed, ok
+
+    logical :: parent_changed
+
+    changed = .false.
+    ok = .false.
+    if (config%dynamic_parent_regridding) then
+      call regrid_three_level_reactive_eb_amr_parent_2d( &
+        species, config, root_state, root_temperature, root_geometry, &
+        level_one_state, level_one_temperature, level_one_geometry, &
+        root_patch, level_two_state, level_two_temperature, &
+        level_two_geometry, level_one_patch, parent_changed, ok)
+      if (.not. ok) return
+      if (parent_changed) then
+        changed = .true.
+        return
+      end if
+    end if
+    call regrid_three_level_reactive_eb_amr_finest_2d( &
+      species, config, level_one_state, level_one_temperature, &
+      level_one_geometry, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, changed, ok)
+  end subroutine regrid_scheduled_three_level_reactive_eb_amr_2d
+
   pure elemental logical function checkpoint_real_matches(actual, expected) &
       result(matches)
     real(dp), intent(in) :: actual, expected
@@ -2608,10 +2657,6 @@ contains
         .not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
         .not. level_one_patch%is_valid( &
           level_one_geometry, level_two_geometry) .or. &
-        root_patch%coarse_i_lower /= config%coarse_i_lower .or. &
-        root_patch%coarse_i_upper /= config%coarse_i_upper .or. &
-        root_patch%coarse_j_lower /= config%coarse_j_lower .or. &
-        root_patch%coarse_j_upper /= config%coarse_j_upper .or. &
         size(root_state, 1) /= nvar .or. &
         size(root_state, 2) /= root_geometry%nx .or. &
         size(root_state, 3) /= root_geometry%ny .or. &
@@ -2639,6 +2684,11 @@ contains
         .not. ieee_is_finite(minimum_dt) .or. minimum_dt <= 0.0_dp .or. &
         minimum_dt > time + time_tolerance .or. &
         .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
+    if (.not. config%dynamic_parent_regridding .and. &
+        (root_patch%coarse_i_lower /= config%coarse_i_lower .or. &
+         root_patch%coarse_i_upper /= config%coarse_i_upper .or. &
+         root_patch%coarse_j_lower /= config%coarse_j_lower .or. &
+         root_patch%coarse_j_upper /= config%coarse_j_upper)) return
     if (config%dynamic_regridding) then
       if (.not. present(regrids) .or. checkpoint_regrids < 0 .or. &
           checkpoint_regrids > steps + 1 .or. &
@@ -2723,6 +2773,7 @@ contains
     if (config%dynamic_regridding) then
       write(unit, '(*(i0,1x))', iostat=status) &
         merge(1, 0, config%regrid_at_initialization), &
+        merge(1, 0, config%dynamic_parent_regridding), &
         config%regrid_interval, config%regrid_buffer_cells, &
         config%regrid_minimum_patch_cells_x, &
         config%regrid_minimum_patch_cells_y, &
@@ -2819,8 +2870,9 @@ contains
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_nx, stored_ny, stored_ratio, stored_circle_inside
     integer :: stored_flags(7), stored_root_patch(5), stored_level_one_patch(5)
-    integer :: stored_regrid_controls(6)
+    integer :: stored_regrid_controls(7)
     integer :: stored_steps, stored_regrids, species_index
+    integer :: stored_level_one_nx, stored_level_one_ny
     logical :: local_ok, dynamic_checkpoint
 
     root_geometry = eb_geometry_2d()
@@ -2918,6 +2970,7 @@ contains
       read(unit, *, iostat=status) stored_regrid_controls
       if (status /= 0 .or. any(stored_regrid_controls /= [ &
           merge(1, 0, config%regrid_at_initialization), &
+          merge(1, 0, config%dynamic_parent_regridding), &
           config%regrid_interval, config%regrid_buffer_cells, &
           config%regrid_minimum_patch_cells_x, &
           config%regrid_minimum_patch_cells_y, &
@@ -2930,21 +2983,36 @@ contains
           config%regrid_temperature_scale_floor]))) go to 900
     end if
     read(unit, *, iostat=status) stored_root_patch
-    if (status /= 0 .or. any(stored_root_patch /= [ &
-        config%coarse_i_lower, config%coarse_i_upper, &
-        config%coarse_j_lower, config%coarse_j_upper, &
-        config%refinement_ratio])) go to 900
+    if (status /= 0) go to 900
+    if (dynamic_checkpoint .and. config%dynamic_parent_regridding) then
+      if (stored_root_patch(1) < 1 .or. &
+          stored_root_patch(2) > config%eb%flow%nx .or. &
+          stored_root_patch(3) < 1 .or. &
+          stored_root_patch(4) > config%eb%flow%ny .or. &
+          stored_root_patch(2) < stored_root_patch(1) .or. &
+          stored_root_patch(4) < stored_root_patch(3) .or. &
+          stored_root_patch(5) /= config%refinement_ratio) go to 900
+    else
+      if (any(stored_root_patch /= [ &
+          config%coarse_i_lower, config%coarse_i_upper, &
+          config%coarse_j_lower, config%coarse_j_upper, &
+          config%refinement_ratio])) go to 900
+    end if
+    stored_level_one_nx = &
+      (stored_root_patch(2) - stored_root_patch(1) + 1) * &
+        stored_root_patch(5)
+    stored_level_one_ny = &
+      (stored_root_patch(4) - stored_root_patch(3) + 1) * &
+        stored_root_patch(5)
+    if (dynamic_checkpoint .and. config%dynamic_parent_regridding .and. &
+        (stored_level_one_nx < 8 .or. stored_level_one_ny < 8)) go to 900
     read(unit, *, iostat=status) stored_level_one_patch
     if (status /= 0) go to 900
     if (dynamic_checkpoint) then
       if (stored_level_one_patch(1) < 3 .or. &
-          stored_level_one_patch(2) > &
-            (config%coarse_i_upper - config%coarse_i_lower + 1) * &
-              config%refinement_ratio - 2 .or. &
+          stored_level_one_patch(2) > stored_level_one_nx - 2 .or. &
           stored_level_one_patch(3) < 3 .or. &
-          stored_level_one_patch(4) > &
-            (config%coarse_j_upper - config%coarse_j_lower + 1) * &
-              config%refinement_ratio - 2 .or. &
+          stored_level_one_patch(4) > stored_level_one_ny - 2 .or. &
           stored_level_one_patch(2) < stored_level_one_patch(1) .or. &
           stored_level_one_patch(4) < stored_level_one_patch(3) .or. &
           stored_level_one_patch(5) /= config%refinement_ratio) go to 900
@@ -2976,9 +3044,9 @@ contains
       config%eb, candidate_root_geometry, local_ok)
     if (.not. local_ok) go to 900
     call build_reactive_eb_amr_patch_geometry_2d( &
-      config, candidate_root_geometry, config%coarse_i_lower, &
-      config%coarse_i_upper, config%coarse_j_lower, &
-      config%coarse_j_upper, candidate_level_one_geometry, &
+      config, candidate_root_geometry, stored_root_patch(1), &
+      stored_root_patch(2), stored_root_patch(3), &
+      stored_root_patch(4), candidate_level_one_geometry, &
       candidate_root_patch, local_ok)
     if (.not. local_ok) go to 900
     call build_reactive_eb_amr_patch_geometry_2d( &
@@ -3450,10 +3518,12 @@ contains
     if (.not. local_ok) return
       if (config%dynamic_regridding .and. &
           config%regrid_at_initialization) then
-        if (present(failure_context)) failure_context = "initial finest regrid"
-        call regrid_three_level_reactive_eb_amr_finest_2d( &
-          species, config, level_one_state, level_one_temperature, &
-          level_one_geometry, level_two_state, level_two_temperature, &
+        if (present(failure_context)) &
+          failure_context = "initial three-level regrid"
+        call regrid_scheduled_three_level_reactive_eb_amr_2d( &
+          species, config, root_state, root_temperature, root_geometry, &
+          level_one_state, level_one_temperature, level_one_geometry, &
+          root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, changed, local_ok)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
@@ -3583,10 +3653,12 @@ contains
       steps = steps + 1
       if (config%dynamic_regridding .and. &
           modulo(steps, config%regrid_interval) == 0) then
-        if (present(failure_context)) failure_context = "scheduled finest regrid"
-        call regrid_three_level_reactive_eb_amr_finest_2d( &
-          species, config, level_one_state, level_one_temperature, &
-          level_one_geometry, level_two_state, level_two_temperature, &
+        if (present(failure_context)) &
+          failure_context = "scheduled three-level regrid"
+        call regrid_scheduled_three_level_reactive_eb_amr_2d( &
+          species, config, root_state, root_temperature, root_geometry, &
+          level_one_state, level_one_temperature, level_one_geometry, &
+          root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, changed, local_ok)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1

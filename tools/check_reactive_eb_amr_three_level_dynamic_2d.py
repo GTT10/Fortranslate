@@ -9,11 +9,11 @@ import math
 from pathlib import Path
 
 
-def load(path: Path, expected: int) -> list[dict[str, str]]:
+def load(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
-    if len(rows) != expected:
-        raise AssertionError(f"{path.name}: expected {expected} rows, got {len(rows)}")
+    if not rows:
+        raise AssertionError(f"{path.name}: empty output")
     species = [name for name in rows[0] if name.startswith("Y_")]
     cell_types: set[int] = set()
     for row in rows:
@@ -33,6 +33,14 @@ def load(path: Path, expected: int) -> list[dict[str, str]]:
     return rows
 
 
+def dimensions(rows: list[dict[str, str]]) -> tuple[int, int]:
+    x_coordinates = {float(row["x"]) for row in rows}
+    y_coordinates = {float(row["y"]) for row in rows}
+    if len(rows) != len(x_coordinates) * len(y_coordinates):
+        raise AssertionError("output is not one complete rectangular level")
+    return len(x_coordinates), len(y_coordinates)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
@@ -40,13 +48,18 @@ def main() -> None:
     parser.add_argument("--finest", required=True, type=Path)
     args = parser.parse_args()
 
-    load(args.root, 12 * 12)
-    load(args.middle, 20 * 20)
-    finest = load(args.finest, 22 * 28)
+    root = load(args.root)
+    middle = load(args.middle)
+    finest = load(args.finest)
+    if dimensions(root) != (12, 12):
+        raise AssertionError("incorrect root dimensions")
+    if dimensions(middle) == (20, 20):
+        raise AssertionError("middle patch retained the configured seed")
+    finest_dimensions = dimensions(finest)
+    if min(finest_dimensions) < 8:
+        raise AssertionError("finest patch is smaller than the tagged minimum")
     x_coordinates = sorted({float(row["x"]) for row in finest})
     y_coordinates = sorted({float(row["y"]) for row in finest})
-    if len(x_coordinates) != 22 or len(y_coordinates) != 28:
-        raise AssertionError("finest patch did not regrid to the tagged rectangle")
     if not (x_coordinates[0] < 0.00437 < x_coordinates[-1]):
         raise AssertionError("finest patch does not cross the embedded boundary")
     print("check_reactive_eb_amr_three_level_dynamic_2d: PASS")

@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.189.0` milestone contains the serial verification suite, ten optional
+The `0.190.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -69,7 +69,10 @@ transactionally relocate or resize its root-to-middle patch from root
 temperature tags. It first restricts the old finest state into the middle,
 regrids the middle while retaining same-resolution overlap, rebuilds a valid
 interior finest patch, and publishes all three levels only after a composite
-conservation check. The arbitrary-depth 2D EB
+conservation check. In `0.190.0`, `dynamic_parent_regridding` connects that
+transaction to the public three-level initialization and periodic schedule.
+Dynamic checkpoint schema 4 stores both actual refined patch descriptors and
+rejects a restart whose parent-regridding policy differs. The arbitrary-depth 2D EB
 tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial
@@ -519,18 +522,21 @@ deepest-first synchronization. Successful completion writes distinct root,
 middle, and finest CSV files. Scheduled and final three-level checkpoints use
 a dedicated schema and may stop and resume the same hierarchy without changing
 the established single-patch or patch-set formats. Three-level mode remains
-mutually exclusive with multipatch siblings. Its dynamic path keeps
-the middle patch fixed, retains the finest patch, ignores tags outside its
-two-cell-safe planning region, and uses a distinct checkpoint schema to
-restart the dynamic finest topology and regrid cadence transactionally.
+mutually exclusive with multipatch siblings. Its dynamic path always retains
+the finest patch and ignores finest-level tags outside the two-cell-safe
+planning region. By default the middle patch remains fixed. Setting
+`dynamic_parent_regridding = .true.` also replans that patch from root tags,
+rebuilds the complete nested hierarchy atomically, and uses dynamic checkpoint
+schema 4 to restart both actual patch descriptors and the regrid cadence.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
 periodic/ghost-cell neighborhoods, catalytic embedded-wall species transfer,
 higher-order wall-normal gradients, public selection of limited-linear
-coarse-to-fine initialization, and dynamic middle/root topology are not yet
-connected. The fixed-depth public EB
+coarse-to-fine initialization, and multiple dynamic parents at one fixed-depth
+level are not yet connected. The fixed-depth public EB
 AMR application remains serial and owns either restartable sibling rectangles
-or an explicit three-level hierarchy with an optionally dynamic finest patch;
+or an explicit three-level hierarchy with optionally dynamic parent and finest
+patches;
 the separate arbitrary-depth application provides the qualified sparse-MPI
 lifecycle.
 
@@ -1210,7 +1216,7 @@ python3 tools/check_reactive_eb_amr_three_level_restart_2d.py \
     three_level_restart_restarted_finest.csv
 ```
 
-Tag-driven dynamic finest patch inside a fixed middle level:
+Tag-driven dynamic parent and finest patches:
 
 ```bash
 ./build/pelef_reactive_eb_amr_2d \

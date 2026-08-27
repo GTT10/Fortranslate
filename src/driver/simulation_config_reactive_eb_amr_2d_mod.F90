@@ -23,6 +23,7 @@ module simulation_config_reactive_eb_amr_2d_mod
     integer :: level_two_j_upper = 4
     logical :: multipatch_enabled = .false.
     logical :: dynamic_regridding = .false.
+    logical :: dynamic_parent_regridding = .false.
     logical :: regrid_at_initialization = .true.
     logical :: remove_fine_patch_when_untagged = .false.
     integer :: regrid_interval = 1
@@ -69,6 +70,7 @@ contains
     real(dp) :: regrid_absolute_temperature_gradient
     real(dp) :: regrid_temperature_scale_floor
     logical :: three_level_enabled, multipatch_enabled, dynamic_regridding
+    logical :: dynamic_parent_regridding
     logical :: regrid_at_initialization
     logical :: remove_fine_patch_when_untagged
     logical :: checkpoint_stop_after_write
@@ -81,7 +83,8 @@ contains
       patch_tree_maximum_levels, patch_tree_mpi_work_exponent, &
       three_level_enabled, level_two_i_lower, level_two_i_upper, &
       level_two_j_lower, level_two_j_upper, &
-      multipatch_enabled, dynamic_regridding, regrid_at_initialization, &
+      multipatch_enabled, dynamic_regridding, dynamic_parent_regridding, &
+      regrid_at_initialization, &
       remove_fine_patch_when_untagged, regrid_interval, &
       regrid_relative_temperature_gradient, &
       regrid_absolute_temperature_gradient, &
@@ -111,6 +114,7 @@ contains
     level_two_j_upper = config%level_two_j_upper
     multipatch_enabled = config%multipatch_enabled
     dynamic_regridding = config%dynamic_regridding
+    dynamic_parent_regridding = config%dynamic_parent_regridding
     regrid_at_initialization = config%regrid_at_initialization
     remove_fine_patch_when_untagged = &
       config%remove_fine_patch_when_untagged
@@ -233,6 +237,22 @@ contains
       message = "Dynamic three-level EB AMR keeps the finest patch active"
       return
     end if
+    if (dynamic_parent_regridding .and. &
+        (.not. three_level_enabled .or. .not. dynamic_regridding)) then
+      ok = .false.
+      message = &
+        "Dynamic parent regridding requires dynamic three-level EB AMR"
+      return
+    end if
+    if (dynamic_parent_regridding .and. &
+        (regrid_minimum_patch_cells_x * refinement_ratio < &
+           max(8, regrid_minimum_patch_cells_x + 4) .or. &
+         regrid_minimum_patch_cells_y * refinement_ratio < &
+           max(8, regrid_minimum_patch_cells_y + 4))) then
+      ok = .false.
+      message = "Dynamic parent patches must support an interior finest patch"
+      return
+    end if
     if (three_level_enabled .and. dynamic_regridding .and. &
         (level_one_nx < 8 .or. level_one_ny < 8 .or. &
          regrid_minimum_patch_cells_x > level_one_nx - 4 .or. &
@@ -278,6 +298,7 @@ contains
     config%level_two_j_upper = level_two_j_upper
     config%multipatch_enabled = multipatch_enabled
     config%dynamic_regridding = dynamic_regridding
+    config%dynamic_parent_regridding = dynamic_parent_regridding
     config%regrid_at_initialization = regrid_at_initialization
     config%remove_fine_patch_when_untagged = &
       remove_fine_patch_when_untagged

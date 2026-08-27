@@ -2337,3 +2337,20 @@ composite conserved integrals agree. A missing valid interior finest plan is a
 transaction failure because the fixed three-level representation cannot
 publish a temporarily inactive finest level. The public schedule and
 fixed-depth checkpoint schema do not yet activate this parent transaction.
+
+## Public fixed three-level parent lifecycle (`0.190.0`)
+
+`dynamic_parent_regridding` opts the fixed three-level application into a
+parent-first topology schedule. Initialization and each accepted regrid
+interval first call the complete parent transaction. A changed parent already
+contains a rebuilt finest patch and increments the counter once. An unchanged
+parent falls through to the established finest-only transaction, preserving
+the old behavior for a stationary root plan.
+
+Dynamic three-level checkpoint schema 4 records the policy flag and both
+actual patch descriptors. Restart validates the stored parent against the root
+domain, derives the middle dimensions from that descriptor, validates the
+finest two-cell margin in those derived dimensions, and reconstructs both EB
+geometries in private candidates. State, temperature, geometry, counters, and
+patch descriptors publish together only after EOS recovery and the terminal
+marker succeed. Inputs that omit the flag retain a fixed configured parent.
