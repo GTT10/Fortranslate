@@ -182,6 +182,81 @@ contains
     connected = horizontal_path .or. vertical_path
   end function cut_parent_neighbor_connected_2d
 
+  pure logical function cut_parent_neighbor_connected_within_radius_2d( &
+      geometry, parent_i, parent_j, neighbor_i, neighbor_j, radius) &
+      result(connected)
+    type(eb_geometry_2d), intent(in) :: geometry
+    integer, intent(in) :: parent_i, parent_j, neighbor_i, neighbor_j, radius
+
+    integer, parameter :: maximum_radius = 2
+    integer, parameter :: maximum_cells = &
+      (2 * maximum_radius + 1) * (2 * maximum_radius + 1)
+    integer, parameter :: direction_i(4) = [-1, 1, 0, 0]
+    integer, parameter :: direction_j(4) = [0, 0, -1, 1]
+    integer :: current_i, current_j, direction, head, next_i, next_j, tail
+    integer :: offset_i, offset_j, queue_i(maximum_cells)
+    integer :: queue_j(maximum_cells)
+    logical :: face_open
+    logical :: visited(-maximum_radius:maximum_radius, &
+      -maximum_radius:maximum_radius)
+
+    connected = .false.
+    if (radius == 1) then
+      connected = cut_parent_neighbor_connected_2d( &
+        geometry, parent_i, parent_j, neighbor_i, neighbor_j)
+      return
+    end if
+    if (radius < 1 .or. radius > maximum_radius) return
+    if (parent_i < 1 .or. parent_i > geometry%nx .or. &
+        parent_j < 1 .or. parent_j > geometry%ny .or. &
+        neighbor_i < 1 .or. neighbor_i > geometry%nx .or. &
+        neighbor_j < 1 .or. neighbor_j > geometry%ny) return
+    if (geometry%cell_type(parent_i, parent_j) == eb_covered_cell .or. &
+        geometry%cell_type(neighbor_i, neighbor_j) == eb_covered_cell .or. &
+        (parent_i == neighbor_i .and. parent_j == neighbor_j) .or. &
+        abs(neighbor_i - parent_i) > radius .or. &
+        abs(neighbor_j - parent_j) > radius) return
+
+    visited = .false.
+    visited(0, 0) = .true.
+    head = 1
+    tail = 1
+    queue_i(1) = parent_i
+    queue_j(1) = parent_j
+    do while (head <= tail)
+      current_i = queue_i(head)
+      current_j = queue_j(head)
+      head = head + 1
+      do direction = 1, size(direction_i)
+        next_i = current_i + direction_i(direction)
+        next_j = current_j + direction_j(direction)
+        offset_i = next_i - parent_i
+        offset_j = next_j - parent_j
+        if (abs(offset_i) > radius .or. abs(offset_j) > radius) cycle
+        if (next_i < 1 .or. next_i > geometry%nx .or. &
+            next_j < 1 .or. next_j > geometry%ny) cycle
+        if (visited(offset_i, offset_j)) cycle
+        if (geometry%cell_type(next_i, next_j) == eb_covered_cell) cycle
+        if (direction_i(direction) /= 0) then
+          face_open = geometry%x_face_fraction( &
+            min(current_i, next_i), current_j) > 0.0_dp
+        else
+          face_open = geometry%y_face_fraction( &
+            current_i, min(current_j, next_j)) > 0.0_dp
+        end if
+        if (.not. face_open) cycle
+        if (next_i == neighbor_i .and. next_j == neighbor_j) then
+          connected = .true.
+          return
+        end if
+        visited(offset_i, offset_j) = .true.
+        tail = tail + 1
+        queue_i(tail) = next_i
+        queue_j(tail) = next_j
+      end do
+    end do
+  end function cut_parent_neighbor_connected_within_radius_2d
+
   subroutine build_cut_parent_limited_slopes_2d( &
       geometry, state, parent_i, parent_j, slope_x, slope_y, &
       minimum_state, maximum_state, ok)
@@ -196,7 +271,7 @@ contains
     real(dp) :: delta_x, delta_y, determinant, determinant_scale
     real(dp) :: normal_xx, normal_xy, normal_yy, normal_trace
     real(dp) :: predicted_delta, rank_tolerance
-    integer :: component, neighbor_i, neighbor_j, ncomp
+    integer :: component, neighbor_i, neighbor_j, ncomp, stencil_radius
 
     slope_x = 0.0_dp
     slope_y = 0.0_dp
@@ -214,41 +289,17 @@ contains
         geometry%cell_type(parent_i, parent_j) /= eb_cut_cell) return
 
     allocate(normal_rhs_x(ncomp), normal_rhs_y(ncomp), limiter(ncomp))
-    normal_rhs_x = 0.0_dp
-    normal_rhs_y = 0.0_dp
-    normal_xx = 0.0_dp
-    normal_xy = 0.0_dp
-    normal_yy = 0.0_dp
-    minimum_state = state(:, parent_i, parent_j)
-    maximum_state = minimum_state
-    do neighbor_j = max(1, parent_j - 1), min(geometry%ny, parent_j + 1)
-      do neighbor_i = max(1, parent_i - 1), &
-          min(geometry%nx, parent_i + 1)
-        if (geometry%cell_type(neighbor_i, neighbor_j) == &
-            eb_covered_cell) cycle
-        minimum_state = min(minimum_state, state(:, neighbor_i, neighbor_j))
-        maximum_state = max(maximum_state, state(:, neighbor_i, neighbor_j))
-        if (.not. cut_parent_neighbor_connected_2d( &
-            geometry, parent_i, parent_j, neighbor_i, neighbor_j)) cycle
-        delta_x = real(neighbor_i - parent_i, dp) + &
-          geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
-          geometry%cell_centroid_x(parent_i, parent_j)
-        delta_y = real(neighbor_j - parent_j, dp) + &
-          geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
-          geometry%cell_centroid_y(parent_i, parent_j)
-        normal_xx = normal_xx + delta_x * delta_x
-        normal_xy = normal_xy + delta_x * delta_y
-        normal_yy = normal_yy + delta_y * delta_y
-        normal_rhs_x = normal_rhs_x + delta_x * &
-          (state(:, neighbor_i, neighbor_j) - state(:, parent_i, parent_j))
-        normal_rhs_y = normal_rhs_y + delta_y * &
-          (state(:, neighbor_i, neighbor_j) - state(:, parent_i, parent_j))
-      end do
-    end do
-
     rank_tolerance = 4096.0_dp * epsilon(1.0_dp)
+    stencil_radius = 1
+    call build_normal_system(stencil_radius)
     determinant = normal_xx * normal_yy - normal_xy * normal_xy
     determinant_scale = max(1.0_dp, normal_xx * normal_yy)
+    if (abs(determinant) <= rank_tolerance * determinant_scale) then
+      stencil_radius = 2
+      call build_normal_system(stencil_radius)
+      determinant = normal_xx * normal_yy - normal_xy * normal_xy
+      determinant_scale = max(1.0_dp, normal_xx * normal_yy)
+    end if
     normal_trace = normal_xx + normal_yy
     if (abs(determinant) > rank_tolerance * determinant_scale) then
       slope_x = (normal_rhs_x * normal_yy - &
@@ -263,11 +314,13 @@ contains
     end if
 
     limiter = 1.0_dp
-    do neighbor_j = max(1, parent_j - 1), min(geometry%ny, parent_j + 1)
-      do neighbor_i = max(1, parent_i - 1), &
-          min(geometry%nx, parent_i + 1)
-        if (.not. cut_parent_neighbor_connected_2d( &
-            geometry, parent_i, parent_j, neighbor_i, neighbor_j)) cycle
+    do neighbor_j = max(1, parent_j - stencil_radius), &
+        min(geometry%ny, parent_j + stencil_radius)
+      do neighbor_i = max(1, parent_i - stencil_radius), &
+          min(geometry%nx, parent_i + stencil_radius)
+        if (.not. cut_parent_neighbor_connected_within_radius_2d( &
+            geometry, parent_i, parent_j, neighbor_i, neighbor_j, &
+            stencil_radius)) cycle
         delta_x = real(neighbor_i - parent_i, dp) + &
           geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
           geometry%cell_centroid_x(parent_i, parent_j)
@@ -294,6 +347,49 @@ contains
     slope_y = limiter * slope_y
     ok = all(ieee_is_finite(slope_x)) .and. &
       all(ieee_is_finite(slope_y))
+
+  contains
+
+    subroutine build_normal_system(radius)
+      integer, intent(in) :: radius
+
+      normal_rhs_x = 0.0_dp
+      normal_rhs_y = 0.0_dp
+      normal_xx = 0.0_dp
+      normal_xy = 0.0_dp
+      normal_yy = 0.0_dp
+      minimum_state = state(:, parent_i, parent_j)
+      maximum_state = minimum_state
+      do neighbor_j = max(1, parent_j - radius), &
+          min(geometry%ny, parent_j + radius)
+        do neighbor_i = max(1, parent_i - radius), &
+            min(geometry%nx, parent_i + radius)
+          if (.not. cut_parent_neighbor_connected_within_radius_2d( &
+              geometry, parent_i, parent_j, neighbor_i, neighbor_j, &
+              radius)) cycle
+          minimum_state = min( &
+            minimum_state, state(:, neighbor_i, neighbor_j))
+          maximum_state = max( &
+            maximum_state, state(:, neighbor_i, neighbor_j))
+          delta_x = real(neighbor_i - parent_i, dp) + &
+            geometry%cell_centroid_x(neighbor_i, neighbor_j) - &
+            geometry%cell_centroid_x(parent_i, parent_j)
+          delta_y = real(neighbor_j - parent_j, dp) + &
+            geometry%cell_centroid_y(neighbor_i, neighbor_j) - &
+            geometry%cell_centroid_y(parent_i, parent_j)
+          normal_xx = normal_xx + delta_x * delta_x
+          normal_xy = normal_xy + delta_x * delta_y
+          normal_yy = normal_yy + delta_y * delta_y
+          normal_rhs_x = normal_rhs_x + delta_x * &
+            (state(:, neighbor_i, neighbor_j) - &
+             state(:, parent_i, parent_j))
+          normal_rhs_y = normal_rhs_y + delta_y * &
+            (state(:, neighbor_i, neighbor_j) - &
+             state(:, parent_i, parent_j))
+        end do
+      end do
+    end subroutine build_normal_system
+
   end subroutine build_cut_parent_limited_slopes_2d
 
   subroutine prolong_reactive_eb_patch_linear_2d( &

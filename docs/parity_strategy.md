@@ -3010,3 +3010,17 @@ Retain the nonconstant cut-parent, active component-envelope, complete-patch
 average-down, regular-parent analytic value, EOS recovery, nonfinite rollback,
 and parent-local PCM retry gates. Run the complete serial and one-, two-,
 four-, and eight-rank MPI Debug/Release chains before merging.
+
+## 0.188.0 rank-recovering cut-parent stencil gates
+
+Construct a valid coarse/fine EB pair whose cut parent has only a straight
+face-connected fluid path in its 3-by-3 neighborhood. Turn that path inside
+the surrounding 5-by-5 box and populate every coarse cell with an EOS-valid
+two-dimensional affine conserved field. The compact fit is rank one, while
+the grown connected fit is full rank.
+
+Require every active fine child to reproduce the analytic affine value,
+including a nonzero difference in the direction unresolved by the compact
+stencil. Average the child block down and require exact recovery of the parent
+state. Retain the diagonal-plane, envelope, EOS/PCM retry, nonfinite rollback,
+serial, and one-, two-, four-, and eight-rank MPI Debug/Release gates.

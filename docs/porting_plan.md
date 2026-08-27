@@ -1528,6 +1528,19 @@ Qualify an interface-tangential affine field defined at fluid centroids before
 retaining every fixed-depth, arbitrary-depth, serial, and sparse-MPI lifecycle
 gate.
 
+## 0.188.0 rank-recovering cut-parent stencil
+
+Keep the connected 3-by-3 least-squares fit as the compact path. Before
+accepting a rank-one or empty result, rebuild the normal system over a 5-by-5
+box using a bounded open-face flood fill from the cut parent. Solve the grown
+system in two dimensions when it becomes full rank and use its connected
+component envelope for limiting.
+
+Qualify a turning fluid path whose compact neighborhood resolves only one
+direction but whose grown neighborhood resolves both components of an affine
+field. Retain exact fine-volume-weighted average-down, EOS recovery, PCM retry,
+and all shared fixed-depth, arbitrary-depth, serial, and sparse-MPI gates.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -9,7 +9,8 @@ program test_amr_eb_reactive_2d
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_primitive_to_conserved
   use eb_geometry_2d_mod, only: &
-    eb_geometry_2d, eb_covered_cell, eb_cut_cell, build_eb_geometry_2d
+    eb_geometry_2d, eb_covered_cell, eb_cut_cell, eb_regular_cell, &
+    build_eb_geometry_2d
   use eb_reactive_reconstruction_2d_mod, only: &
     reactive_eb_exterior_state_2d
   use amr_eb_hierarchy_2d_mod, only: &
@@ -38,7 +39,8 @@ program test_amr_eb_reactive_2d
   integer, parameter :: support_j_lower = max(1, coarse_j_lower - 1)
   integer, parameter :: support_j_upper = min(coarse_ny, coarse_j_upper + 1)
   type(eb_geometry_2d) :: coarse_geometry, fine_geometry
-  type(amr_eb_patch_2d) :: patch
+  type(eb_geometry_2d) :: grown_coarse_geometry, grown_fine_geometry
+  type(amr_eb_patch_2d) :: patch, grown_patch
   type(reactive_eb_exterior_state_2d) :: exterior, context_exterior
   type(reactive_eb_exterior_state_2d) :: support_exterior
   type(reactive_eb_patch_exterior_context_2d) :: exterior_context
@@ -59,6 +61,12 @@ program test_amr_eb_reactive_2d
   real(dp), allocatable :: linear_coarse_temperature(:, :)
   real(dp), allocatable :: linear_fine_temperature(:, :)
   real(dp), allocatable :: linear_restricted_temperature(:, :)
+  real(dp), allocatable :: grown_coarse_state(:, :, :)
+  real(dp), allocatable :: grown_fine_state(:, :, :)
+  real(dp), allocatable :: grown_restricted_state(:, :, :)
+  real(dp), allocatable :: grown_coarse_temperature(:, :)
+  real(dp), allocatable :: grown_fine_temperature(:, :)
+  real(dp), allocatable :: grown_restricted_temperature(:, :)
   real(dp), allocatable :: coarse_start_temperature_support(:, :)
   real(dp), allocatable :: coarse_end_temperature_support(:, :)
   real(dp), allocatable :: fine_temperature(:, :), restricted_temperature(:, :)
@@ -69,6 +77,7 @@ program test_amr_eb_reactive_2d
   real(dp) :: fine_y_lower, fine_y_upper, temperature_cell, sound_speed
   real(dp) :: state_scale, integral_scale, dt, expected_scale
   real(dp) :: affine_error, cut_difference, linear_factor, linear_expected
+  real(dp) :: grown_affine_error
   real(dp) :: neighbor_maximum, neighbor_minimum
   logical :: found_cut_affine, found_cut_linear, found_cut_parent
   logical :: found_open_boundary, ok
@@ -295,6 +304,54 @@ program test_amr_eb_reactive_2d
   call require(found_cut_affine .and. affine_error <= &
     5.0e-12_dp * state_scale, &
     "least-squares cut-parent affine reproduction")
+
+  call build_grown_stencil_case( &
+    grown_coarse_geometry, grown_fine_geometry, grown_patch, ok)
+  call require(ok, "grown-stencil EB AMR geometry")
+  allocate(grown_coarse_state(nvar, 7, 7))
+  allocate(grown_fine_state(nvar, 2, 2))
+  allocate(grown_restricted_state(nvar, 7, 7))
+  allocate(grown_coarse_temperature(7, 7))
+  allocate(grown_fine_temperature(2, 2))
+  allocate(grown_restricted_temperature(7, 7))
+  do j = 1, 7
+    do i = 1, 7
+      linear_factor = 1.0_dp + 0.04_dp * real(i - 4, dp) + &
+        0.02_dp * real(j - 4, dp)
+      grown_coarse_state(:, i, j) = linear_factor * state_cell
+      grown_coarse_temperature(i, j) = temperature_cell
+    end do
+  end do
+  call prolong_reactive_eb_patch_linear_2d( &
+    species, grown_coarse_state, grown_coarse_temperature, &
+    grown_coarse_geometry, grown_fine_geometry, grown_patch, &
+    grown_fine_state, grown_fine_temperature, ok)
+  call require(ok, "grown-stencil cut-parent prolongation")
+  grown_affine_error = 0.0_dp
+  do child_j = 1, 2
+    do child_i = 1, 2
+      linear_expected = 1.0_dp + 0.04_dp * &
+        ((real(child_i, dp) - 0.5_dp) / 2.0_dp - 0.5_dp) + &
+        0.02_dp * &
+        ((real(child_j, dp) - 0.5_dp) / 2.0_dp - 0.5_dp)
+      grown_affine_error = max(grown_affine_error, maxval(abs( &
+        grown_fine_state(:, child_i, child_j) - &
+        linear_expected * state_cell)))
+    end do
+  end do
+  call require(grown_affine_error <= 5.0e-12_dp * state_scale, &
+    "grown 5-by-5 stencil restores two-dimensional affine gradient")
+  call require(maxval(abs(grown_fine_state(:, 1, 2) - &
+      grown_fine_state(:, 1, 1))) > 1.0e-4_dp, &
+    "grown stencil retains the previously unresolved gradient")
+  call average_down_reactive_eb_state_patch_2d( &
+    species, grown_coarse_state, grown_coarse_temperature, &
+    grown_coarse_geometry, grown_fine_state, grown_fine_geometry, &
+    grown_patch, grown_restricted_state, grown_restricted_temperature, ok)
+  call require(ok .and. maxval(abs(grown_restricted_state - &
+    grown_coarse_state)) <= 2.0e-13_dp * state_scale, &
+    "grown-stencil prolong/restrict conservation")
+
   linear_coarse_state(1, 5, 5) = ieee_value(0.0_dp, ieee_quiet_nan)
   call prolong_reactive_eb_patch_linear_2d( &
     species, linear_coarse_state, linear_coarse_temperature, &
@@ -544,6 +601,82 @@ program test_amr_eb_reactive_2d
   write(*, '(a)') "test_amr_eb_reactive_2d: PASS"
 
 contains
+
+  subroutine build_grown_stencil_case( &
+      output_coarse_geometry, output_fine_geometry, local_patch, local_ok)
+    type(eb_geometry_2d), intent(out) :: output_coarse_geometry
+    type(eb_geometry_2d), intent(out) :: output_fine_geometry
+    type(amr_eb_patch_2d), intent(out) :: local_patch
+    logical, intent(out) :: local_ok
+
+    real(dp) :: source_coarse_level_set(0:7, 0:7)
+    real(dp) :: source_fine_level_set(0:2, 0:2)
+    real(dp) :: x_lower, x_upper, y_lower, y_upper
+    integer :: cell_i, cell_j
+
+    local_ok = .false.
+    source_coarse_level_set = -1.0_dp
+    call build_eb_geometry_2d( &
+      source_coarse_level_set, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
+      output_coarse_geometry, local_ok)
+    if (.not. local_ok) return
+
+    output_coarse_geometry%cell_type(2:6, 4) = eb_regular_cell
+    output_coarse_geometry%volume_fraction(2:6, 4) = 1.0_dp
+    output_coarse_geometry%cell_type(6, 5) = eb_regular_cell
+    output_coarse_geometry%volume_fraction(6, 5) = 1.0_dp
+    output_coarse_geometry%cell_type(4, 4) = eb_cut_cell
+    output_coarse_geometry%volume_fraction(4, 4) = 0.5_dp
+    output_coarse_geometry%x_face_fraction(2:5, 4) = 1.0_dp
+    output_coarse_geometry%y_face_fraction(6, 4) = 1.0_dp
+    output_coarse_geometry%boundary_length(4, 4) = &
+      output_coarse_geometry%dx
+    output_coarse_geometry%boundary_centroid_x(4, 4) = 3.5_dp / 7.0_dp
+    output_coarse_geometry%boundary_centroid_y(4, 4) = 3.5_dp / 7.0_dp
+    output_coarse_geometry%boundary_normal_y(4, 4) = 1.0_dp
+    output_coarse_geometry%boundary_normal_integral_y(4, 4) = &
+      output_coarse_geometry%dx
+    if (.not. output_coarse_geometry%is_valid()) then
+      local_ok = .false.
+      return
+    end if
+
+    x_lower = 3.0_dp / 7.0_dp
+    x_upper = 4.0_dp / 7.0_dp
+    y_lower = 3.0_dp / 7.0_dp
+    y_upper = 4.0_dp / 7.0_dp
+    source_fine_level_set = -1.0_dp
+    call build_eb_geometry_2d( &
+      source_fine_level_set, x_lower, x_upper, y_lower, y_upper, &
+      output_fine_geometry, local_ok)
+    if (.not. local_ok) return
+    output_fine_geometry%cell_type = eb_cut_cell
+    output_fine_geometry%volume_fraction = 0.5_dp
+    output_fine_geometry%x_face_fraction = 1.0_dp
+    output_fine_geometry%y_face_fraction = 0.0_dp
+    do cell_j = 1, 2
+      do cell_i = 1, 2
+        output_fine_geometry%boundary_length(cell_i, cell_j) = &
+          output_fine_geometry%dx
+        output_fine_geometry%boundary_centroid_x(cell_i, cell_j) = &
+          x_lower + (real(cell_i, dp) - 0.5_dp) * &
+          output_fine_geometry%dx
+        output_fine_geometry%boundary_centroid_y(cell_i, cell_j) = &
+          y_lower + (real(cell_j, dp) - 0.5_dp) * &
+          output_fine_geometry%dy
+        output_fine_geometry%boundary_normal_y(cell_i, cell_j) = 1.0_dp
+        output_fine_geometry%boundary_normal_integral_y(cell_i, cell_j) = &
+          output_fine_geometry%dx
+      end do
+    end do
+    if (.not. output_fine_geometry%is_valid()) then
+      local_ok = .false.
+      return
+    end if
+    call build_amr_eb_patch_2d( &
+      output_coarse_geometry, output_fine_geometry, &
+      4, 4, 4, 4, 2, local_patch, local_ok)
+  end subroutine build_grown_stencil_case
 
   subroutine assert_covered_unchanged( &
       original, candidate, geometry, message)
