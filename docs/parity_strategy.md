@@ -2827,3 +2827,12 @@ and completion marker. Key both completed composite outputs by
 `(level, patch, i, j)`, require identical key and column sets, and compare every
 numeric field within `3e-10 * max(1, abs(reference))`. Retain all 214 tests in
 GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.175.0 public sparse-MPI application gates
+
+Run the public arbitrary-depth EB input case at one, two, four, and eight MPI
+ranks. Require four populated levels, identical identity-keyed composite
+topology and columns, finite positive thermodynamics, seven-species closure,
+the exact final time, and every numeric field within
+`3e-10 * max(1, abs(one-rank reference))`. Retain the complete MPI gate chain
+and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.

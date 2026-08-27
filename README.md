@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.174.0` milestone contains the serial verification suite, nine optional
+The `0.175.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -552,6 +552,13 @@ run stopped after its first scheduled checkpoint and a continuation loaded by
 a separate process. The restart restores the arbitrary-depth geometry, state,
 time, root-step and regrid counters, and minimum accepted timestep; its final
 composite topology and numerical fields match the uninterrupted result.
+
+The installed `pelef_mpi_reactive_eb_patch_tree_2d` executable exposes the
+same input-driven lifecycle through sparse MPI ownership. Recursive tagging,
+timestep selection, full physics, regridding, checkpoint/restart, integrals,
+and composite output operate on owner-local node fields. The workload exponent
+is configurable from `&eb_amr`, and 1, 2, 4, and 8 ranks produce the same
+four-level composite result.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

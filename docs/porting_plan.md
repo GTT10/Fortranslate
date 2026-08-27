@@ -1364,6 +1364,16 @@ bounded numeric differences for every field. Run the complete 214-test suite
 in GNU Fortran Release and bounds/FPE-checked Debug. Defer public sparse-MPI
 application integration and explicit input/checkpoint compatibility hashes.
 
+## 0.175.0 public sparse-MPI application gates
+
+Connect the existing sparse arbitrary-depth EB APIs to an installed executable
+that reuses the serial application inputs. Cover fresh initialization,
+recursive regridding, full physics, checkpoint/restart calls, collective
+integrals, and selected-root output without materializing child fields on
+non-owners. Compare 1/2/4/8-rank composite fields and retain all serial and MPI
+Debug/Release gates. Defer cross-rank application restart composition and
+elimination of the temporary replicated root startup field.
+
 Each implementation PR should normally contain:
 
 1. implementation

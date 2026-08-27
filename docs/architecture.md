@@ -2073,3 +2073,17 @@ timestep. Continuation controls such as final time, CFL, physics switches, and
 tagging thresholds remain explicit in the restart input. The parity gate uses
 identical continuation controls and compares the restarted result with an
 uninterrupted reference by stable `(level, patch, i, j)` identity.
+
+## Public sparse-MPI patch-tree application (`0.175.0`)
+
+`pelef_mpi_reactive_eb_patch_tree_2d` composes the qualified sparse ownership,
+tagging, timestep, full-physics, regrid, integral, checkpoint/restart, and CSV
+APIs behind the established reactive 2D/EB/AMR namelists. A configurable work
+exponent weights deeper nodes during deterministic owner assignment.
+
+A fresh run constructs only the replicated root field, converts it to sparse
+ownership, releases the replicated state, and performs recursive initial
+tagging owner-locally. Thereafter numerical node fields remain allocated only
+on their owners. Checkpoint and output gather only to selected root zero;
+restart reads there and scatters directly under the current rank count. The
+temporary replicated root initialization remains an explicit startup boundary.
