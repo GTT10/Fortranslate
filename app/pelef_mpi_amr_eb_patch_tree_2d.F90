@@ -10,7 +10,10 @@ program pelef_mpi_amr_eb_patch_tree_2d
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
   use simulation_config_reactive_2d_mod, only: reactive_2d_config
+  use reactive_1d_mod, only: reactive_nprim
   use reactive_2d_mod, only: initialize_reactive_2d
+  use reactive_boundary_2d_mod, only: &
+    reactive_boundary_set_2d, initialize_periodic_boundary_set_2d
   use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
@@ -21,6 +24,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     compute_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
+    advance_reactive_amr_eb_patch_tree_transport_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d, &
     composite_reactive_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
@@ -35,6 +39,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d, &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d, &
     composite_sparse_amr_eb_patch_tree_integral_2d, &
     composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
@@ -43,6 +48,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
+  type(reactive_boundary_set_2d) :: boundaries
   type(reactive_2d_config) :: config
   type(eb_geometry_2d) :: root_geometry, level_one_geometry
   type(eb_geometry_2d) :: branch_a_geometry, branch_b_geometry
@@ -53,6 +59,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: physical_solution
   type(reactive_amr_eb_patch_tree_2d) :: serial_chemistry
   type(reactive_amr_eb_patch_tree_2d) :: serial_hydro
+  type(reactive_amr_eb_patch_tree_2d) :: serial_transport
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -67,6 +74,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: hydro_cfl, mismatched_hydro_cfl, serial_dt, sparse_dt
   real(dp) :: transport_cfl
   real(dp) :: chemistry_interval, hydro_interval, mismatched_interval
+  real(dp) :: mismatched_transport_interval, serial_transport_theta
+  real(dp) :: sparse_transport_theta, transport_interval
   real(dp) :: integral_scale
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
@@ -81,10 +90,14 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: local_integral_nodes, selected_integral_patch
   integer :: expected_hydro_transfers, global_hydro_transfers
   integer :: local_hydro_transfers
+  integer :: expected_transport_transfers, global_transport_transfers
+  integer :: local_transport_transfers
   integer, allocatable :: global_chemistry_advances(:)
   integer, allocatable :: local_chemistry_advances(:)
   integer, allocatable :: global_hydro_advances(:)
   integer, allocatable :: local_hydro_advances(:)
+  integer, allocatable :: global_transport_advances(:)
+  integer, allocatable :: local_transport_advances(:)
   integer(int64) :: unweighted_work, weighted_work
   logical :: ok, local_ok
 
@@ -102,6 +115,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call assert_all(ok, "MPI EB patch-tree chemistry mechanism", comm)
   call load_h2o2_elementary_transport(transport, ok)
   call assert_all(ok, "MPI EB patch-tree transport database", comm)
+  call initialize_periodic_boundary_set_2d( &
+    reactive_nprim(size(species)), boundaries)
   call build_regular_geometry(8, 8, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
     root_geometry, ok)
   call assert_all(ok, "MPI EB patch-tree root geometry", comm)
@@ -491,6 +506,69 @@ program pelef_mpi_amr_eb_patch_tree_2d
     local_hydro_transfers == 0 .and. &
     sparse_trees_match(physical_sparse, sparse_snapshot), &
     "MPI EB patch-tree hydro control rollback", comm)
+
+  transport_interval = 0.02_dp * serial_dt
+  serial_transport = serial_hydro
+  call advance_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, serial_transport, transport_interval, .true., &
+    .true., .true., .true., boundaries, 0.5_dp, 2, &
+    serial_transport_theta, ok)
+  call assert_all(ok, "MPI EB patch-tree serial transport reference", comm)
+  allocate(local_transport_advances(topology%level_count()))
+  allocate(global_transport_advances(topology%level_count()))
+  expected_transport_transfers = &
+    2 * expected_hydro_transfers + expected_restriction_transfers
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, migrated_distribution, physical_sparse, &
+    transport_interval, .true., .true., .true., .true., boundaries, &
+    0.5_dp, 2, sparse_transport_theta, ok, &
+    local_level_advances=local_transport_advances, &
+    local_entity_transfers=local_transport_transfers)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, &
+    size(local_transport_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_transport_transfers, global_transport_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_sparse, materialized, local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    all(global_transport_advances == [2, 4, 16, 16]) .and. &
+    global_transport_transfers == expected_transport_transfers .and. &
+    abs(sparse_transport_theta - serial_transport_theta) <= &
+      256.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(serial_transport_theta)) .and. &
+    tree_solutions_close(materialized, serial_transport, 1.0e-9_dp), &
+    "MPI EB patch-tree owner-local transport parity", comm)
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    serial_transport, serial_integral, ok)
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
+    migrated_distribution, physical_sparse, sparse_integral, local_ok)
+  integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+  call assert_all(ok .and. local_ok .and. &
+    maxval(abs(sparse_integral - serial_integral)) <= &
+      1.0e-9_dp * integral_scale, &
+    "MPI EB patch-tree owner-local transport conservation", comm)
+
+  sparse_snapshot = physical_sparse
+  mismatched_transport_interval = transport_interval
+  if (nranks > 1) then
+    if (rank == 0) &
+      mismatched_transport_interval = 0.5_dp * transport_interval
+  else
+    mismatched_transport_interval = -transport_interval
+  end if
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d( &
+    species, transport, migrated_distribution, physical_sparse, &
+    mismatched_transport_interval, .true., .true., .true., .true., &
+    boundaries, 0.5_dp, 2, sparse_transport_theta, ok, &
+    local_level_advances=local_transport_advances, &
+    local_entity_transfers=local_transport_transfers)
+  call assert_all(.not. ok .and. sparse_transport_theta == 1.0_dp .and. &
+    all(local_transport_advances == 0) .and. &
+    local_transport_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree transport control rollback", comm)
 
   sparse_snapshot = physical_sparse
   mismatched_interval = chemistry_interval
