@@ -1998,3 +1998,24 @@ Level, patch, and geometry-cell limits are checked before allocation. Schema,
 species-order, depth, topology, dimension, finite-value, EOS, or end-marker
 failure returns an empty tree and zero metadata. Sparse MPI checkpoint I/O and
 rank-neutral restart remain separate lifecycle work.
+
+## Sparse MPI arbitrary-depth EB checkpoint/restart (`0.171.0`)
+
+The write boundary validates communicator-wide root, clock metadata, counters,
+and species order. Every node already owned by the selected I/O root is copied
+locally; each remaining owner sends its state and temperature once directly to
+that root. Only the root constructs the complete serial tree and writes the
+qualified `0.170.0` format.
+
+On restart, only the selected root reads and validates the file. It broadcasts
+level/relation rectangles and complete EB geometry, not numerical fields. Each
+rank reconstructs the same topology and computes a fresh work-weighted owner
+map for the current communicator and requested subcycle exponent. The root then
+sends each non-root-owned node directly to its new owner.
+
+One sender-side entity transfer is counted per root/owner difference in either
+direction. A rank-dependent root, depth, exponent, lifecycle value, or species
+order rejects before file I/O or field traffic. Read, topology broadcast,
+distribution construction, sparse scatter, and final validation must all
+succeed before any public output becomes nonneutral. Composite output remains
+separate lifecycle work.

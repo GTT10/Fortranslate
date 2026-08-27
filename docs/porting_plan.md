@@ -1310,6 +1310,20 @@ missing terminal marker without publishing partial state. Run the complete
 serial Debug/Release suite before acceptance. Defer sparse MPI root-only I/O,
 rank-neutral restart, and composite output.
 
+## 0.171.0 sparse MPI arbitrary-depth EB checkpoint gates
+
+Gather each numerical node only to a selected I/O root, write the qualified
+serial tree format there, and store no owner map. On restart, read only on the
+root, broadcast compact topology/geometry, recompute the current deterministic
+distribution, and scatter fields directly to new owners.
+
+Require exact topology-derived gather/scatter traffic and serial field,
+temperature, and lifecycle metadata parity at one, two, four, and eight ranks.
+Change the work exponent across restart to prove redistribution. Reject
+rank-dependent controls and species identity before traffic with neutral public
+outputs. Run the complete MPI and serial Debug/Release suite before acceptance.
+Defer arbitrary-depth composite output.
+
 Each implementation PR should normally contain:
 
 1. implementation
