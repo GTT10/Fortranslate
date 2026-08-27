@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.163.0` milestone contains the serial verification suite, nine optional
+The `0.164.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -500,8 +500,11 @@ deepest-first by sending child state directly to a distinct parent owner before
 average-down. Whole-tree and selected-subtree composite conserved integrals
 now recurse over the replicated topology, exclude refined parent cells, sum
 only owner-local node contributions, and reduce one conserved vector without
-materializing nonowned fields. Owner-local recursive hydro and transport are
-the next boundaries.
+materializing nonowned fields. Recursive hydro now advances that same sparse
+tree on owners, routes compact parent-time context and fine fluxes across
+distinct-owner edges, applies ordered reflux/average-down, and closes each
+refined subtree before one atomic commit. Owner-local recursive transport is
+the next boundary.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

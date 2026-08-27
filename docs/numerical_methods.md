@@ -2257,3 +2257,30 @@ The complete-tree operation selects the root. A subtree selection is accepted
 only when level, patch, and vector extent agree on every rank. This makes the
 reduction suitable for recursive conservation closure without introducing a
 replicated numerical-tree boundary.
+
+## MPI owner-local arbitrary-depth EB patch-tree hydro
+
+For each node invocation, only `owner(level,patch)` advances the conserved
+state and temperature and retains the node's Cartesian EB fluxes. For every
+child edge, the parent start/end boundary context is transferred once when
+ownership differs. The child then performs `r` recursive substeps using the
+same time interpolation as the serial tree. After each substep its fine fluxes
+move directly to the parent owner for accumulation into that edge's register.
+
+After all child substeps, each register is consumed in child order. Across an
+owner boundary, current child state moves child-to-parent, the parent applies
+reflux to its own current state, and corrected child state returns. One later
+child-to-parent transfer supplies ordered average-down. Thus a remote edge
+executed by one parent invocation produces
+
+```text
+r + 4
+```
+
+grouped direct transfers: one context, `r` fine-flux payloads, two reflux
+payloads, and one average-down payload. Shared-owner edges produce none.
+
+Every refined node uses owner-local subtree reductions for its before/after
+composite integral and applies the same boundary-flux conservation residual to
+unrefined active parent cells. The public sparse operation commits only after
+the complete root recursion and candidate validation succeed.
