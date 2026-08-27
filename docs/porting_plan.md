@@ -1568,6 +1568,18 @@ actual patch descriptors, and reconstruct the stored parent before validating
 the finest descriptor. Qualify a public moved-parent hotspot plus uninterrupted
 versus checkpoint/restart field parity with topology-derived output sizes.
 
+## 0.191.0 arbitrary-depth outflow-boundary children
+
+Qualify the shared domain-inclusive temperature planner in the public serial
+and sparse-MPI arbitrary-depth applications. Drive a hotspot against one
+outflow side through four populated levels, copy the current fine boundary
+state on that physical side, and retain coarse-time interpolation elsewhere.
+
+Require physical-side flux-register omission, complete composite EB classes,
+positive reactive fields, species closure, and exact 1/2/4/8-rank composite
+output parity. Leave non-outflow physical boundaries and periodic-seam
+children explicit for later work.
+
 Each implementation PR should normally contain:
 
 1. implementation

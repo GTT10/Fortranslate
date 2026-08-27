@@ -3052,3 +3052,15 @@ marker. Restart in a separate process, derive expected output sizes from the
 stored descriptors, and compare every root, middle, and finest field against
 an uninterrupted run. Retain legacy fixed-parent inputs and the complete
 serial and MPI Debug/Release chains.
+
+## 0.191.0 arbitrary-depth outflow-boundary child gates
+
+Run a public four-level x-upper hotspot in the serial patch-tree application.
+The composite checker requires every populated level to reach the exact
+physical boundary, refinement-ratio-consistent cell spacing, all EB classes,
+finite positive thermodynamics, and species closure.
+
+Run the same input through the sparse-MPI application at one, two, four, and
+eight ranks. Check the one-rank topology contract and require every ordered
+composite identity and numeric field to match across rank counts before the
+ordinary Debug/Release and complete MPI regression chains are accepted.
