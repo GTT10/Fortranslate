@@ -74,6 +74,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   public :: advance_reactive_amr_eb_patch_tree_transport_euler_2d
   public :: advance_reactive_amr_eb_patch_tree_transport_2d
   public :: composite_integral_reactive_amr_eb_patch_tree_2d
+  public :: composite_reactive_amr_eb_patch_subtree_integral_2d
 
 contains
 
