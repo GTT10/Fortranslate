@@ -1634,6 +1634,19 @@ selected-root broadcast and changed-rank ownership rebuild. Extend serial and
 MPI round-trip gates with a nonneutral synthetic value and keep failed-read
 rollback at neutral theta `1`.
 
+## 0.197.0 restart-persistent conservation baseline
+
+Advance the arbitrary-depth checkpoint envelope to base schema 3 and public
+fingerprinted schema 6. Store the original `nvar`-component composite integral
+after the clock metadata, validate finite values, and restore it before any
+continuation output or final diagnostic.
+
+Require exact direct serial and selected-root sparse round trips, collective
+rejection of rank-disagreed baselines, and an unallocated optional output on
+failed reads. Extend the public two-to-four/eight-rank restart checker to
+compare the cumulative conservation error and limiter minimum with the
+uninterrupted reference.
+
 Each implementation PR should normally contain:
 
 1. implementation

@@ -148,7 +148,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       config%patch_tree_maximum_levels, config%patch_tree_mpi_work_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
       fingerprint=fingerprint, &
-      minimum_transport_theta=minimum_transport_theta)
+      minimum_transport_theta=minimum_transport_theta, &
+      initial_integrals=initial_integrals)
     if (.not. ok) call abort_run("Sparse patch-tree restart failed", 4)
   else
     call build_configured_eb_geometry_2d(config%eb, root_geometry, ok)
@@ -195,16 +196,17 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       if (changed) regrids = regrids + 1
     end if
     minimum_dt = huge(1.0_dp)
+    allocate(initial_integrals(sparse%nvar))
+    call composite_sparse_amr_eb_patch_tree_integral_2d( &
+      distribution, sparse, initial_integrals, ok)
+    if (.not. ok) call abort_run("Initial sparse integral failed", 4)
   end if
 
   time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
     max(tiny(1.0_dp), abs(config%eb%flow%final_time))
   if (time > config%eb%flow%final_time + time_tolerance) &
     call abort_run("Restart time exceeds configured final time", 4)
-  allocate(initial_integrals(sparse%nvar), final_integrals(sparse%nvar))
-  call composite_sparse_amr_eb_patch_tree_integral_2d( &
-    distribution, sparse, initial_integrals, ok)
-  if (.not. ok) call abort_run("Initial sparse integral failed", 4)
+  allocate(final_integrals(sparse%nvar))
 
   stopped_after_checkpoint = .false.
   last_checkpoint_step = -1
@@ -345,7 +347,8 @@ contains
     call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       config%checkpoint_file, species, distribution, sparse, io_root, time, &
       steps, regrids, minimum_dt, checkpoint_ok, fingerprint=fingerprint, &
-      minimum_transport_theta=minimum_transport_theta)
+      minimum_transport_theta=minimum_transport_theta, &
+      initial_integrals=initial_integrals)
   end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)

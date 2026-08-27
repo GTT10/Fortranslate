@@ -3124,3 +3124,15 @@ on rejected reads.
 Run the public reacting x-upper checkpoint chain unchanged. Its serial and
 two-to-four/eight-rank continuations must retain uninterrupted fields while
 the application resumes its accumulated limiter minimum from checkpoint.
+
+## 0.197.0 checkpointed conservation-baseline gates
+
+Write a synthetic finite `nvar`-component baseline through the direct serial
+and selected-root sparse APIs. Require exact schema-6 round-trip recovery,
+collective rejection when ranks supply different values, and no allocated
+baseline after a rejected read.
+
+Capture the uninterrupted and changed-rank restart application diagnostics.
+In addition to identity-keyed field parity, require the restarted final
+conservation error and minimum transport limiter to match the uninterrupted
+logical run.

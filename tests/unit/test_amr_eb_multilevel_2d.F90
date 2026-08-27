@@ -109,6 +109,8 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: integral_before(:), integral_after(:)
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: tree_integral_before(:), tree_integral_after(:)
+  real(dp), allocatable :: checkpoint_initial_integrals(:)
+  real(dp), allocatable :: restored_checkpoint_initial_integrals(:)
   real(dp), allocatable :: tagged_integral_before(:)
   real(dp), allocatable :: tagged_integral_after(:)
   real(dp), allocatable :: tree_level_two_saved(:, :, :)
@@ -552,14 +554,20 @@ program test_amr_eb_multilevel_2d
     "moving reactive patch-tree physical overlap retention")
 
   reactive_tree_snapshot = reactive_tree
+  allocate(checkpoint_initial_integrals(nvar))
+  checkpoint_initial_integrals = tree_integral_before + 0.125_dp
   call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
-    0.01_dp, ok, minimum_transport_theta=0.625_dp)
+    0.01_dp, ok, minimum_transport_theta=0.625_dp, &
+    initial_integrals=checkpoint_initial_integrals)
   call require(ok, "arbitrary-depth EB patch-tree checkpoint write")
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 4, checkpoint_tree, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
-    minimum_transport_theta=checkpoint_minimum_transport_theta)
+    minimum_transport_theta=checkpoint_minimum_transport_theta, &
+    initial_integrals=restored_checkpoint_initial_integrals)
+  call require(allocated(restored_checkpoint_initial_integrals), &
+    "arbitrary-depth EB checkpoint conservation baseline allocation")
   call require(ok .and. checkpoint_tree%is_valid() .and. &
     patch_tree_topologies_match_2d( &
       checkpoint_tree%topology, reactive_tree%topology) .and. &
@@ -567,17 +575,21 @@ program test_amr_eb_multilevel_2d
       checkpoint_tree, reactive_tree, 8.0e-12_dp) .and. &
     checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
     checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
-    checkpoint_minimum_transport_theta == 0.625_dp, &
+    checkpoint_minimum_transport_theta == 0.625_dp .and. &
+    all(restored_checkpoint_initial_integrals == &
+      checkpoint_initial_integrals), &
     "arbitrary-depth EB patch-tree checkpoint round trip")
 
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 3, checkpoint_tree, checkpoint_time, &
     checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
-    minimum_transport_theta=checkpoint_minimum_transport_theta)
+    minimum_transport_theta=checkpoint_minimum_transport_theta, &
+    initial_integrals=restored_checkpoint_initial_integrals)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid() .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
     checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
-    checkpoint_minimum_transport_theta == 1.0_dp, &
+    checkpoint_minimum_transport_theta == 1.0_dp .and. &
+    .not. allocated(restored_checkpoint_initial_integrals), &
     "EB patch-tree checkpoint maximum-depth rejection")
 
   allocate(checkpoint_species, source=species)
@@ -603,6 +615,20 @@ program test_amr_eb_multilevel_2d
   call require(.not. ok .and. &
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "invalid EB patch-tree transport limiter metadata rejection")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, initial_integrals=[1.0_dp])
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "invalid EB patch-tree conservation baseline rejection")
+  checkpoint_initial_integrals(1) = &
+    ieee_value(0.0_dp, ieee_quiet_nan)
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, initial_integrals=checkpoint_initial_integrals)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "nonfinite EB patch-tree conservation baseline rejection")
   open(newunit=checkpoint_unit, file=tree_checkpoint_path, status="old", &
     action="readwrite", iostat=status)
   call require(status == 0, "open EB patch-tree checkpoint for cleanup")

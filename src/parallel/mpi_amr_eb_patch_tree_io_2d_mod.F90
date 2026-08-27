@@ -3,6 +3,7 @@ module mpi_amr_eb_patch_tree_io_2d_mod
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_2d_mod, only: eb_geometry_2d
   use amr_eb_patch_tree_2d_mod, only: &
     amr_eb_patch_tree_level_plan_2d, amr_eb_patch_tree_topology_2d, &
@@ -12,7 +13,8 @@ module mpi_amr_eb_patch_tree_io_2d_mod
     reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d, &
     write_reactive_amr_eb_patch_tree_2d_checkpoint, &
     read_reactive_amr_eb_patch_tree_2d_checkpoint, &
-    write_reactive_amr_eb_patch_tree_2d_csv
+    write_reactive_amr_eb_patch_tree_2d_csv, &
+    composite_integral_reactive_amr_eb_patch_tree_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
@@ -76,7 +78,7 @@ contains
   subroutine write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, distribution, sparse, root, time, steps, regrids, &
       minimum_dt, ok, local_entity_transfers, fingerprint, &
-      minimum_transport_theta)
+      minimum_transport_theta, initial_integrals)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -89,10 +91,12 @@ contains
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
     real(dp), intent(in), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: initial_integrals(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
     logical :: controls_ok, gathered_ok, write_ok
     integer :: ierr, transfers
+    real(dp), allocatable :: selected_initial_integrals(:)
     real(dp) :: selected_minimum_transport_theta
 
     ok = .false.
@@ -103,7 +107,8 @@ contains
     if (present(local_entity_transfers)) local_entity_transfers = 0
     call checkpoint_write_controls_match_2d( &
       distribution%comm, root, time, minimum_dt, &
-      selected_minimum_transport_theta, steps, regrids, controls_ok)
+      selected_minimum_transport_theta, steps, regrids, sparse%nvar, &
+      controls_ok, initial_integrals)
     if (.not. controls_ok) return
     call checkpoint_species_match_2d( &
       distribution%comm, distribution%rank, root, species, controls_ok)
@@ -114,14 +119,23 @@ contains
     if (.not. gathered_ok) return
     write_ok = .true.
     if (distribution%rank == root) then
-      if (present(fingerprint)) then
+      allocate(selected_initial_integrals(gathered%nvar))
+      if (present(initial_integrals)) then
+        selected_initial_integrals = initial_integrals
+      else
+        call composite_integral_reactive_amr_eb_patch_tree_2d( &
+          gathered, selected_initial_integrals, write_ok)
+      end if
+      if (write_ok .and. present(fingerprint)) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, &
-          write_ok, fingerprint, selected_minimum_transport_theta)
-      else
+          write_ok, fingerprint, selected_minimum_transport_theta, &
+          selected_initial_integrals)
+      else if (write_ok) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, write_ok, &
-          minimum_transport_theta=selected_minimum_transport_theta)
+          minimum_transport_theta=selected_minimum_transport_theta, &
+          initial_integrals=selected_initial_integrals)
       end if
     end if
     call MPI_Bcast( &
@@ -135,7 +149,8 @@ contains
   subroutine read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       path, species, comm, root, maximum_levels, subcycle_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
-      local_entity_transfers, fingerprint, minimum_transport_theta)
+      local_entity_transfers, fingerprint, minimum_transport_theta, &
+      initial_integrals)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -149,9 +164,11 @@ contains
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d), &
       intent(in), optional :: fingerprint
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), allocatable, intent(out), optional :: initial_integrals(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
+    real(dp), allocatable :: restored_initial_integrals(:)
     real(dp) :: real_metadata(3)
     integer :: ierr, integer_metadata(2), rank, transfers
     logical :: controls_ok, distributed_ok, read_ok, topology_ok
@@ -183,16 +200,23 @@ contains
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
           integer_metadata(1), integer_metadata(2), real_metadata(2), &
-          read_ok, fingerprint, real_metadata(3))
+          read_ok, fingerprint, real_metadata(3), restored_initial_integrals)
       else
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
           integer_metadata(1), integer_metadata(2), real_metadata(2), read_ok, &
-          minimum_transport_theta=real_metadata(3))
+          minimum_transport_theta=real_metadata(3), &
+          initial_integrals=restored_initial_integrals)
       end if
     end if
     call MPI_Bcast(read_ok, 1, MPI_LOGICAL, root, comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. read_ok) return
+    if (rank /= root) allocate(restored_initial_integrals( &
+      reactive_nvar(size(species))))
+    call MPI_Bcast( &
+      restored_initial_integrals, size(restored_initial_integrals), &
+      MPI_DOUBLE_PRECISION, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
     call MPI_Bcast( &
       real_metadata, size(real_metadata), MPI_DOUBLE_PRECISION, root, &
       comm, ierr)
@@ -224,6 +248,8 @@ contains
     minimum_dt = real_metadata(2)
     if (present(minimum_transport_theta)) &
       minimum_transport_theta = real_metadata(3)
+    if (present(initial_integrals)) &
+      allocate(initial_integrals, source=restored_initial_integrals)
     steps = integer_metadata(1)
     regrids = integer_metadata(2)
     ok = .true.
@@ -232,19 +258,22 @@ contains
 
   subroutine checkpoint_write_controls_match_2d( &
       comm, root, time, minimum_dt, minimum_transport_theta, &
-      steps, regrids, ok)
+      steps, regrids, nvar, ok, initial_integrals)
     type(MPI_Comm), intent(in) :: comm
-    integer, intent(in) :: root, steps, regrids
+    integer, intent(in) :: root, steps, regrids, nvar
     real(dp), intent(in) :: time, minimum_dt, minimum_transport_theta
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: initial_integrals(:)
 
     real(dp) :: real_values(3), real_minimum(3), real_maximum(3)
-    integer :: ierr, integer_values(3), integer_minimum(3), nranks
-    integer :: integer_maximum(3)
+    real(dp), allocatable :: integral_minimum(:), integral_maximum(:)
+    integer :: ierr, integer_values(5), integer_minimum(5), nranks
+    integer :: integer_maximum(5), integral_presence
     logical :: accepted, local_ok
 
     real_values = [time, minimum_dt, minimum_transport_theta]
-    integer_values = [root, steps, regrids]
+    integral_presence = merge(1, 0, present(initial_integrals))
+    integer_values = [root, steps, regrids, integral_presence, nvar]
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) then
       ok = .false.
@@ -288,6 +317,28 @@ contains
     ok = ierr == MPI_SUCCESS .and. &
       all(real_minimum == real_maximum) .and. &
       all(integer_minimum == integer_maximum)
+    if (.not. ok .or. integral_presence == 0) return
+    local_ok = size(initial_integrals) == nvar
+    if (local_ok) local_ok = all(ieee_is_finite(initial_integrals))
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. accepted) then
+      ok = .false.
+      return
+    end if
+    allocate(integral_minimum(nvar), integral_maximum(nvar))
+    call MPI_Allreduce( &
+      initial_integrals, integral_minimum, nvar, MPI_DOUBLE_PRECISION, &
+      MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) then
+      ok = .false.
+      return
+    end if
+    call MPI_Allreduce( &
+      initial_integrals, integral_maximum, nvar, MPI_DOUBLE_PRECISION, &
+      MPI_MAX, comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. &
+      all(integral_minimum == integral_maximum)
   end subroutine checkpoint_write_controls_match_2d
 
   subroutine output_write_controls_match_2d(comm, root, time, ok)

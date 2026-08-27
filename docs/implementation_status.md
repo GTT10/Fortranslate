@@ -3545,3 +3545,18 @@ Serial and sparse-MPI patch-tree applications now report the minimum limiter
 over the complete logical run, not only the post-restart suffix. This is a
 diagnostic schema change; numerical state and fingerprint contents are
 unchanged.
+
+## Restart-persistent conservation diagnostic (`0.197.0`)
+
+- [x] schema-3 base and schema-6 fingerprinted checkpoint envelopes
+- [x] finite `nvar`-component initial composite-integral record
+- [x] serial exact round trip and unallocated failure rollback
+- [x] selected-root sparse write and communicator-wide restart broadcast
+- [x] rank consensus for an explicitly supplied baseline
+- [x] changed-rank continuation from the pre-checkpoint run baseline
+- [x] uninterrupted/restarted conservation and limiter diagnostic comparison
+
+Serial and sparse-MPI patch-tree applications now measure their final
+composite change from the beginning of the complete logical run. Checkpoint
+compatibility remains strict, and internal per-level operator counters remain
+continuation-local.

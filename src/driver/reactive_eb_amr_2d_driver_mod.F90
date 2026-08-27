@@ -4081,7 +4081,7 @@ contains
       call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%restart_file, species, config%patch_tree_maximum_levels, &
         solution, time, steps, regrids, minimum_dt, local_ok, fingerprint, &
-        local_minimum_transport_theta)
+        local_minimum_transport_theta, initial_integrals)
       if (.not. local_ok) return
       nvar = solution%nvar
       base_density = solution%levels(1)%patches(1)%state(irho, 1, 1)
@@ -4121,13 +4121,14 @@ contains
         if (changed) regrids = regrids + 1
       end if
       minimum_dt = huge(1.0_dp)
+      allocate(initial_integrals(nvar))
+      if (present(failure_context)) failure_context = "initial integral"
+      call composite_integral_reactive_amr_eb_patch_tree_2d( &
+        solution, initial_integrals, local_ok)
+      if (.not. local_ok) return
     end if
 
-    allocate(initial_integrals(nvar), final_integrals(nvar))
-    if (present(failure_context)) failure_context = "initial integral"
-    call composite_integral_reactive_amr_eb_patch_tree_2d( &
-      solution, initial_integrals, local_ok)
-    if (.not. local_ok) return
+    allocate(final_integrals(nvar))
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
 
@@ -4186,7 +4187,7 @@ contains
           call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
             config%checkpoint_file, species, solution, time, steps, regrids, &
             minimum_dt, local_ok, fingerprint, &
-            local_minimum_transport_theta)
+            local_minimum_transport_theta, initial_integrals)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -4203,7 +4204,8 @@ contains
       if (present(failure_context)) failure_context = "final checkpoint write"
       call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%checkpoint_file, species, solution, time, steps, regrids, &
-        minimum_dt, local_ok, fingerprint, local_minimum_transport_theta)
+        minimum_dt, local_ok, fingerprint, local_minimum_transport_theta, &
+        initial_integrals)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final integral"

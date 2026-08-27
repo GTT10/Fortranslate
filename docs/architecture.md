@@ -2440,3 +2440,20 @@ the public fingerprinted format advances from schema 4 to 5. Writers validate
 that theta is finite and lies in `[0,1]`; a zero-step checkpoint must retain
 the neutral value `1`. A failed or incompatible read publishes the same
 neutral value with the existing empty-tree rollback state.
+
+## Restart-persistent conservation baseline (`0.197.0`)
+
+Every patch-tree checkpoint now stores one finite conserved-component vector
+representing the composite integral at the beginning of the logical run. The
+serial driver restores this vector instead of recomputing it from the restart
+state. The sparse driver reads it only on the selected I/O root, broadcasts it
+before ownership reconstruction, and uses it for the final run-wide
+conservation diagnostic after a changed-rank continuation.
+
+The base envelope advances from schema 2 to 3 and the fingerprinted public
+format from schema 5 to 6. A caller that does not supply an explicit baseline
+receives a checkpoint-local composite baseline for API compatibility. Public
+drivers always pass the original run baseline. An invalid size, nonfinite
+component, or MPI rank disagreement rejects the write before file replacement;
+a failed read leaves the optional baseline unallocated with the existing
+empty-tree rollback state.

@@ -77,15 +77,15 @@ jobs:
           python3 tools/compare_mpi_reactive_eb_patch_tree_2d.py mpi_eb_tree_boundary_np1.csv mpi_eb_tree_boundary_np2.csv mpi_eb_tree_boundary_np4.csv mpi_eb_tree_boundary_np8.csv
       - name: Public sparse MPI EB application cross-rank restart parity
         run: |
-          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/reference.nml mpi_eb_tree_restart_reference.csv
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/reference.nml mpi_eb_tree_restart_reference.csv | tee mpi_eb_tree_restart_reference.log
           mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/checkpoint_stop.nml mpi_eb_tree_restart_stopped.csv
           if mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/incompatible_restart.nml mpi_eb_tree_restart_incompatible.csv; then
             echo "incompatible checkpoint fingerprint was accepted"
             exit 1
           fi
-          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np4.csv
-          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np8.csv
-          python3 tools/check_reactive_eb_patch_tree_restart_2d.py --checkpoint patch_tree_restart.chk --reference mpi_eb_tree_restart_reference.csv --stopped mpi_eb_tree_restart_stopped.csv --restarted mpi_eb_tree_restarted_np4.csv mpi_eb_tree_restarted_np8.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np4.csv | tee mpi_eb_tree_restarted_np4.log
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_eb_patch_tree_2d cases/reactive_eb_patch_tree_restart_2d/restart.nml mpi_eb_tree_restarted_np8.csv | tee mpi_eb_tree_restarted_np8.log
+          python3 tools/check_reactive_eb_patch_tree_restart_2d.py --checkpoint patch_tree_restart.chk --reference mpi_eb_tree_restart_reference.csv --stopped mpi_eb_tree_restart_stopped.csv --restarted mpi_eb_tree_restarted_np4.csv mpi_eb_tree_restarted_np8.csv --reference-log mpi_eb_tree_restart_reference.log --restarted-logs mpi_eb_tree_restarted_np4.log mpi_eb_tree_restarted_np8.log
       - name: Euler rank-count field parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d mpi_np1.csv
