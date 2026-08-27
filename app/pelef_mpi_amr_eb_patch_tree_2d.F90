@@ -25,6 +25,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     advance_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_reactive_amr_eb_patch_tree_hydro_2d, &
     advance_reactive_amr_eb_patch_tree_transport_2d, &
+    advance_reactive_amr_eb_patch_tree_full_physics_2d, &
     composite_integral_reactive_amr_eb_patch_tree_2d, &
     composite_reactive_amr_eb_patch_subtree_integral_2d
   use mpi_amr_eb_patch_tree_2d_mod, only: &
@@ -40,6 +41,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
     advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d, &
     advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d, &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d, &
     composite_sparse_amr_eb_patch_tree_integral_2d, &
     composite_sparse_amr_eb_patch_subtree_integral_2d
   implicit none
@@ -60,6 +62,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: serial_chemistry
   type(reactive_amr_eb_patch_tree_2d) :: serial_hydro
   type(reactive_amr_eb_patch_tree_2d) :: serial_transport
+  type(reactive_amr_eb_patch_tree_2d) :: serial_full_physics
   type(reactive_amr_eb_patch_tree_2d) :: materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
@@ -76,6 +79,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: chemistry_interval, hydro_interval, mismatched_interval
   real(dp) :: mismatched_transport_interval, serial_transport_theta
   real(dp) :: sparse_transport_theta, transport_interval
+  real(dp) :: full_physics_interval, serial_full_physics_theta
+  real(dp) :: sparse_full_physics_theta
   real(dp) :: integral_scale
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
@@ -569,6 +574,94 @@ program pelef_mpi_amr_eb_patch_tree_2d
     local_transport_transfers == 0 .and. &
     sparse_trees_match(physical_sparse, sparse_snapshot), &
     "MPI EB patch-tree transport control rollback", comm)
+
+  full_physics_interval = chemistry_interval
+  serial_full_physics = serial_transport
+  call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, serial_full_physics, "hllc", "pcm", &
+    "mc", 2, full_physics_interval, .true., 1.0e-7_dp, 1.0e-13_dp, &
+    .true., .true., .true., .true., boundaries, 0.5_dp, &
+    serial_full_physics_theta, ok)
+  call assert_all(ok, "MPI EB patch-tree serial full-physics reference", comm)
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, migrated_distribution, physical_sparse, &
+    "hllc", "pcm", "mc", 2, full_physics_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .true., .true., .true., .true., boundaries, 0.5_dp, &
+    sparse_full_physics_theta, ok, &
+    local_chemistry_level_advances=local_chemistry_advances, &
+    local_transport_level_advances=local_transport_advances, &
+    local_hydro_level_advances=local_hydro_advances, &
+    local_chemistry_transfers=local_restriction_transfers, &
+    local_transport_transfers=local_transport_transfers, &
+    local_hydro_transfers=local_hydro_transfers)
+  call MPI_Allreduce( &
+    local_chemistry_advances, global_chemistry_advances, &
+    size(local_chemistry_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_transport_advances, global_transport_advances, &
+    size(local_transport_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_hydro_advances, global_hydro_advances, &
+    size(local_hydro_advances), MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_restriction_transfers, global_restriction_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_transport_transfers, global_transport_transfers, 1, MPI_INTEGER, &
+    MPI_SUM, comm, ierr)
+  call MPI_Allreduce( &
+    local_hydro_transfers, global_hydro_transfers, 1, MPI_INTEGER, MPI_SUM, &
+    comm, ierr)
+  call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    migrated_distribution, physical_sparse, materialized, local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    all(global_chemistry_advances == [2, 2, 4, 2]) .and. &
+    all(global_transport_advances == [4, 8, 32, 32]) .and. &
+    all(global_hydro_advances == [1, 2, 8, 8]) .and. &
+    global_restriction_transfers == 2 * expected_restriction_transfers .and. &
+    global_transport_transfers == 2 * expected_transport_transfers .and. &
+    global_hydro_transfers == expected_hydro_transfers .and. &
+    abs(sparse_full_physics_theta - serial_full_physics_theta) <= &
+      512.0_dp * epsilon(1.0_dp) * &
+        max(1.0_dp, abs(serial_full_physics_theta)) .and. &
+    tree_solutions_close(materialized, serial_full_physics, 3.0e-9_dp), &
+    "MPI EB patch-tree owner-local full-physics parity", comm)
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    serial_full_physics, serial_integral, ok)
+  call composite_sparse_amr_eb_patch_tree_integral_2d( &
+    migrated_distribution, physical_sparse, sparse_integral, local_ok)
+  integral_scale = max(1.0_dp, maxval(abs(serial_integral)))
+  call assert_all(ok .and. local_ok .and. &
+    maxval(abs(sparse_integral - serial_integral)) <= &
+      3.0e-9_dp * integral_scale, &
+    "MPI EB patch-tree owner-local full-physics conservation", comm)
+
+  sparse_snapshot = physical_sparse
+  mismatched_interval = full_physics_interval
+  if (nranks > 1) then
+    if (rank == 0) mismatched_interval = 0.5_dp * full_physics_interval
+  else
+    mismatched_interval = -full_physics_interval
+  end if
+  call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
+    species, reactions, transport, migrated_distribution, physical_sparse, &
+    "hllc", "pcm", "mc", 2, mismatched_interval, .true., 1.0e-7_dp, &
+    1.0e-13_dp, .true., .true., .true., .true., boundaries, 0.5_dp, &
+    sparse_full_physics_theta, ok, &
+    local_chemistry_level_advances=local_chemistry_advances, &
+    local_transport_level_advances=local_transport_advances, &
+    local_hydro_level_advances=local_hydro_advances, &
+    local_chemistry_transfers=local_restriction_transfers, &
+    local_transport_transfers=local_transport_transfers, &
+    local_hydro_transfers=local_hydro_transfers)
+  call assert_all(.not. ok .and. sparse_full_physics_theta == 1.0_dp .and. &
+    all(local_chemistry_advances == 0) .and. &
+    all(local_transport_advances == 0) .and. &
+    all(local_hydro_advances == 0) .and. &
+    local_restriction_transfers == 0 .and. &
+    local_transport_transfers == 0 .and. local_hydro_transfers == 0 .and. &
+    sparse_trees_match(physical_sparse, sparse_snapshot), &
+    "MPI EB patch-tree full-physics control rollback", comm)
 
   sparse_snapshot = physical_sparse
   mismatched_interval = chemistry_interval

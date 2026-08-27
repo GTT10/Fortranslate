@@ -107,6 +107,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d
   public :: advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d
+  public :: advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d
   public :: composite_sparse_amr_eb_patch_tree_integral_2d
   public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
@@ -1318,6 +1319,226 @@ contains
     if (present(local_entity_transfers)) local_entity_transfers = transfers
   end subroutine &
     advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d
+
+  subroutine advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
+      species, reactions, transport, distribution, sparse, solver, &
+      reconstruction, limiter, max_order, dt, chemistry_enabled, rtol, atol, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, minimum_transport_theta, ok, failure_context, &
+      local_chemistry_level_advances, local_transport_level_advances, &
+      local_hydro_level_advances, local_chemistry_transfers, &
+      local_transport_transfers, local_hydro_transfers)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
+    character(len=*), intent(in) :: solver, reconstruction, limiter
+    integer, intent(in) :: max_order
+    real(dp), intent(in) :: dt, rtol, atol
+    logical, intent(in) :: chemistry_enabled
+    logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
+    logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
+    type(reactive_boundary_set_2d), intent(in) :: boundaries
+    real(dp), intent(in) :: target_volume_fraction
+    real(dp), intent(out) :: minimum_transport_theta
+    logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
+    integer, intent(out), optional :: local_chemistry_level_advances(:)
+    integer, intent(out), optional :: local_transport_level_advances(:)
+    integer, intent(out), optional :: local_hydro_level_advances(:)
+    integer, intent(out), optional :: local_chemistry_transfers
+    integer, intent(out), optional :: local_transport_transfers
+    integer, intent(out), optional :: local_hydro_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    real(dp) :: first_transport_theta, second_transport_theta
+    real(dp) :: numeric_maximum(4), numeric_minimum(4), numeric_values(4)
+    integer, allocatable :: first_chemistry(:), second_chemistry(:)
+    integer, allocatable :: first_transport(:), second_transport(:)
+    integer, allocatable :: hydro_advances(:)
+    integer :: first_chemistry_transfers, first_transport_transfers
+    integer :: hydro_transfers, ierr, integer_maximum(9)
+    integer :: integer_minimum(9), integer_values(9)
+    integer :: second_chemistry_transfers, second_transport_transfers
+    character(len=160) :: context
+    logical :: accepted, global_ok, local_ok, matches, transport_active
+
+    ok = .false.
+    minimum_transport_theta = 1.0_dp
+    context = "input validation"
+    if (present(failure_context)) failure_context = context
+    if (present(local_chemistry_level_advances)) &
+      local_chemistry_level_advances = 0
+    if (present(local_transport_level_advances)) &
+      local_transport_level_advances = 0
+    if (present(local_hydro_level_advances)) local_hydro_level_advances = 0
+    if (present(local_chemistry_transfers)) local_chemistry_transfers = 0
+    if (present(local_transport_transfers)) local_transport_transfers = 0
+    if (present(local_hydro_transfers)) local_hydro_transfers = 0
+    first_transport_theta = 1.0_dp
+    second_transport_theta = 1.0_dp
+    first_chemistry_transfers = 0
+    second_chemistry_transfers = 0
+    first_transport_transfers = 0
+    second_transport_transfers = 0
+    hydro_transfers = 0
+    transport_active = viscosity_enabled .or. &
+      thermal_conduction_enabled .or. species_diffusion_enabled
+    numeric_values = [dt, rtol, atol, target_volume_fraction]
+    integer_values = [ &
+      size(species), size(reactions), size(transport), max_order, &
+      merge(1, 0, chemistry_enabled), merge(1, 0, viscosity_enabled), &
+      merge(1, 0, thermal_conduction_enabled), &
+      merge(1, 0, species_diffusion_enabled), &
+      merge(1, 0, barodiffusion_enabled)]
+
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, matches)
+    local_ok = matches .and. sparse%is_valid(distribution) .and. &
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      size(species) >= 1 .and. all(ieee_is_finite(numeric_values)) .and. &
+      dt > 0.0_dp .and. rtol > 0.0_dp .and. atol > 0.0_dp .and. &
+      target_volume_fraction > 0.0_dp .and. &
+      target_volume_fraction <= 1.0_dp .and. &
+      (max_order == 0 .or. max_order == 2)
+    if (chemistry_enabled) local_ok = local_ok .and. size(reactions) >= 1
+    if (transport_active) local_ok = local_ok .and. &
+      compatible_transport_database(species, transport)
+    if (present(local_chemistry_level_advances)) local_ok = local_ok .and. &
+      size(local_chemistry_level_advances) == sparse%level_count()
+    if (present(local_transport_level_advances)) local_ok = local_ok .and. &
+      size(local_transport_level_advances) == sparse%level_count()
+    if (present(local_hydro_level_advances)) local_ok = local_ok .and. &
+      size(local_hydro_level_advances) == sparse%level_count()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      numeric_values, numeric_minimum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      numeric_values, numeric_maximum, size(numeric_values), &
+      MPI_DOUBLE_PRECISION, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_minimum, size(integer_values), MPI_INTEGER, &
+      MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      integer_values, integer_maximum, size(integer_values), MPI_INTEGER, &
+      MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(numeric_minimum /= numeric_maximum) .or. &
+        any(integer_minimum /= integer_maximum)) return
+
+    candidate = sparse
+    allocate(first_chemistry(candidate%level_count()), source=0)
+    allocate(second_chemistry(candidate%level_count()), source=0)
+    allocate(first_transport(candidate%level_count()), source=0)
+    allocate(second_transport(candidate%level_count()), source=0)
+    allocate(hydro_advances(candidate%level_count()), source=0)
+
+    if (chemistry_enabled) then
+      context = "first chemistry"
+      call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
+        species, reactions, distribution, candidate, 0.5_dp * dt, rtol, &
+        atol, local_ok, first_chemistry, first_chemistry_transfers)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+
+    context = "first transport"
+    call advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, distribution, candidate, 0.5_dp * dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, first_transport_theta, local_ok, &
+      context, first_transport, first_transport_transfers)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "hydro"
+    call advance_sparse_owned_reactive_amr_eb_patch_tree_hydro_2d( &
+      species, distribution, candidate, solver, reconstruction, limiter, &
+      max_order, dt, local_ok, target_volume_fraction, context, &
+      hydro_advances, hydro_transfers)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "second transport"
+    call advance_sparse_owned_reactive_amr_eb_patch_tree_transport_2d( &
+      species, transport, distribution, candidate, 0.5_dp * dt, &
+      viscosity_enabled, thermal_conduction_enabled, &
+      species_diffusion_enabled, barodiffusion_enabled, boundaries, &
+      target_volume_fraction, max_order, second_transport_theta, local_ok, &
+      context, second_transport, second_transport_transfers)
+    if (.not. local_ok) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    if (chemistry_enabled) then
+      context = "second chemistry"
+      call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
+        species, reactions, distribution, candidate, 0.5_dp * dt, rtol, &
+        atol, local_ok, second_chemistry, second_chemistry_transfers)
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = context
+        return
+      end if
+    end if
+
+    context = "advance count overflow"
+    local_ok = &
+      all(first_chemistry <= huge(1) - second_chemistry) .and. &
+      all(first_transport <= huge(1) - second_transport) .and. &
+      first_chemistry_transfers <= huge(1) - second_chemistry_transfers .and. &
+      first_transport_transfers <= huge(1) - second_transport_transfers
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    context = "final sparse validation"
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      if (present(failure_context)) failure_context = context
+      return
+    end if
+
+    sparse = candidate
+    minimum_transport_theta = min( &
+      first_transport_theta, second_transport_theta)
+    ok = .true.
+    if (present(failure_context)) failure_context = "none"
+    if (present(local_chemistry_level_advances)) &
+      local_chemistry_level_advances = first_chemistry + second_chemistry
+    if (present(local_transport_level_advances)) &
+      local_transport_level_advances = first_transport + second_transport
+    if (present(local_hydro_level_advances)) &
+      local_hydro_level_advances = hydro_advances
+    if (present(local_chemistry_transfers)) local_chemistry_transfers = &
+      first_chemistry_transfers + second_chemistry_transfers
+    if (present(local_transport_transfers)) local_transport_transfers = &
+      first_transport_transfers + second_transport_transfers
+    if (present(local_hydro_transfers)) local_hydro_transfers = &
+      hydro_transfers
+  end subroutine &
+    advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d
 
   subroutine advance_sparse_amr_eb_patch_tree_transport_euler_2d( &
       species, transport, distribution, sparse, interval, &
