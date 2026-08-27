@@ -1541,6 +1541,20 @@ direction but whose grown neighborhood resolves both components of an affine
 field. Retain exact fine-volume-weighted average-down, EOS recovery, PCM retry,
 and all shared fixed-depth, arbitrary-depth, serial, and sparse-MPI gates.
 
+## 0.189.0 transactional fixed three-level parent regrid
+
+Plan a replacement root-to-middle rectangle from root temperature tags. Before
+moving it, restrict the accepted finest contribution into the old middle, then
+reuse the two-level regrid transaction to conserve into the root and retain
+same-resolution middle overlap. Plan and prolong a replacement finest patch
+inside the rebuilt middle's two-cell safety margin.
+
+Publish all three state/temperature fields, both refined geometries, and both
+patch descriptors only after EOS validation and a before/after three-level
+composite conservation check. Qualify changed parent bounds, valid nested
+topology, conservation, and invalid-control rollback. Keep public scheduling
+and fixed-depth checkpoint topology for the following lifecycle milestone.
+
 Each implementation PR should normally contain:
 
 1. implementation

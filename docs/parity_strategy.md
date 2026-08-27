@@ -3024,3 +3024,16 @@ including a nonzero difference in the direction unresolved by the compact
 stencil. Average the child block down and require exact recovery of the parent
 state. Retain the diagonal-plane, envelope, EOS/PCM retry, nonfinite rollback,
 serial, and one-, two-, four-, and eight-rank MPI Debug/Release gates.
+
+## 0.189.0 transactional fixed three-level parent-regrid gates
+
+Initialize an offset reactive hotspot on a fixed three-level EB hierarchy, then
+plan a different root-to-middle rectangle from the root temperature field.
+Require deepest-first restriction, changed parent bounds, valid nested patch
+descriptors, and the established two-cell finest safety margin after rebuild.
+
+Compare every component of the three-level composite conserved integral before
+and after the transaction. Supply an invalid prolongation control and require
+neutral rejection with all three state/temperature fields and both patch
+descriptors unchanged. Retain the complete serial and one-, two-, four-, and
+eight-rank MPI Debug/Release chains before merging.

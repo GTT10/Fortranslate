@@ -2320,3 +2320,20 @@ envelope. A full-rank grown system restores both affine-gradient components;
 only a still-rank-deficient grown system uses the minimum-norm rank-one
 fallback. The fine-volume-weighted zero-mean correction, fine-child limiter,
 EOS recovery, PCM retry, and shared lifecycle dispatcher remain unchanged.
+
+## Transactional fixed three-level parent regrid (`0.189.0`)
+
+Moving the root-to-middle rectangle changes the coordinate system that owns
+the finest patch. The fixed-depth library therefore treats the complete
+replacement as one candidate. It restricts the old finest state into the old
+middle, regrids the synchronized middle against the root, and retains any
+same-resolution middle overlap. It then tags the rebuilt middle only inside
+the established two-cell safety margin and prolongs a replacement finest
+patch.
+
+The original root, middle, finest, geometries, and patch descriptors remain
+untouched until both transfers validate and the before/after three-level
+composite conserved integrals agree. A missing valid interior finest plan is a
+transaction failure because the fixed three-level representation cannot
+publish a temporarily inactive finest level. The public schedule and
+fixed-depth checkpoint schema do not yet activate this parent transaction.

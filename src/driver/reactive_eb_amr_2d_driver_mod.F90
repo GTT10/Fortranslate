@@ -92,6 +92,7 @@ module reactive_eb_amr_2d_driver_mod
   public :: advance_reactive_eb_patch_set_strang_2d
   public :: regrid_reactive_eb_amr_hierarchy_2d
   public :: regrid_three_level_reactive_eb_amr_finest_2d
+  public :: regrid_three_level_reactive_eb_amr_parent_2d
   public :: regrid_reactive_eb_amr_patch_set_2d
   public :: write_reactive_eb_amr_2d_checkpoint
   public :: read_reactive_eb_amr_2d_checkpoint
@@ -1293,44 +1294,21 @@ contains
     ok = .true.
   end subroutine regrid_reactive_eb_amr_hierarchy_2d
 
-  subroutine regrid_three_level_reactive_eb_amr_finest_2d( &
-      species, config, level_one_state, level_one_temperature, &
-      level_one_geometry, level_two_state, level_two_temperature, &
-      level_two_geometry, level_one_patch, changed, ok)
-    type(nasa7_species), intent(in) :: species(:)
+  subroutine plan_three_level_reactive_eb_amr_finest_2d( &
+      config, level_one_temperature, level_one_geometry, plan, ok)
     type(reactive_eb_amr_2d_config), intent(in) :: config
-    real(dp), allocatable, intent(inout) :: level_one_state(:, :, :)
-    real(dp), allocatable, intent(inout) :: level_one_temperature(:, :)
+    real(dp), intent(in) :: level_one_temperature(:, :)
     type(eb_geometry_2d), intent(in) :: level_one_geometry
-    real(dp), allocatable, intent(inout) :: level_two_state(:, :, :)
-    real(dp), allocatable, intent(inout) :: level_two_temperature(:, :)
-    type(eb_geometry_2d), intent(inout) :: level_two_geometry
-    type(amr_eb_patch_2d), intent(inout) :: level_one_patch
-    logical, intent(out) :: changed, ok
+    type(amr_eb_regrid_plan_2d), intent(out) :: plan
+    logical, intent(out) :: ok
 
     type(amr_eb_tagging_criteria_2d) :: criteria
-    type(amr_eb_regrid_plan_2d) :: plan
-    type(eb_geometry_2d) :: candidate_level_two_geometry
-    type(amr_eb_patch_2d) :: candidate_level_one_patch
-    real(dp), allocatable :: candidate_level_one_state(:, :, :)
-    real(dp), allocatable :: candidate_level_one_temperature(:, :)
-    real(dp), allocatable :: candidate_level_two_state(:, :, :)
-    real(dp), allocatable :: candidate_level_two_temperature(:, :)
     logical, allocatable :: tags(:, :), interior_tags(:, :)
     logical :: local_ok
-    integer :: nvar
 
-    changed = .false.
+    plan = amr_eb_regrid_plan_2d()
     ok = .false.
-    if (.not. supported_three_level_reactive_eb_amr_config(config) .or. &
-        .not. config%dynamic_regridding .or. &
-        .not. allocated(level_one_state) .or. &
-        .not. allocated(level_one_temperature) .or. &
-        .not. allocated(level_two_state) .or. &
-        .not. allocated(level_two_temperature) .or. &
-        .not. level_one_patch%is_valid( &
-          level_one_geometry, level_two_geometry)) return
-
+    if (level_one_geometry%nx < 8 .or. level_one_geometry%ny < 8) return
     criteria%relative_gradient_threshold = &
       config%regrid_relative_temperature_gradient
     criteria%absolute_gradient_threshold = &
@@ -1365,11 +1343,56 @@ contains
     plan%coarse_i_upper = plan%coarse_i_upper + 2
     plan%coarse_j_lower = plan%coarse_j_lower + 2
     plan%coarse_j_upper = plan%coarse_j_upper + 2
-    if (.not. plan%is_valid() .or. &
-        plan%coarse_i_lower < 3 .or. &
-        plan%coarse_i_upper > level_one_geometry%nx - 2 .or. &
-        plan%coarse_j_lower < 3 .or. &
-        plan%coarse_j_upper > level_one_geometry%ny - 2) return
+    ok = plan%is_valid() .and. &
+      plan%coarse_i_lower >= 3 .and. &
+      plan%coarse_i_upper <= level_one_geometry%nx - 2 .and. &
+      plan%coarse_j_lower >= 3 .and. &
+      plan%coarse_j_upper <= level_one_geometry%ny - 2
+  end subroutine plan_three_level_reactive_eb_amr_finest_2d
+
+  subroutine regrid_three_level_reactive_eb_amr_finest_2d( &
+      species, config, level_one_state, level_one_temperature, &
+      level_one_geometry, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, changed, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(inout) :: level_one_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: level_one_geometry
+    real(dp), allocatable, intent(inout) :: level_two_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(inout) :: level_one_patch
+    logical, intent(out) :: changed, ok
+
+    type(amr_eb_regrid_plan_2d) :: plan
+    type(eb_geometry_2d) :: candidate_level_two_geometry
+    type(amr_eb_patch_2d) :: candidate_level_one_patch
+    real(dp), allocatable :: candidate_level_one_state(:, :, :)
+    real(dp), allocatable :: candidate_level_one_temperature(:, :)
+    real(dp), allocatable :: candidate_level_two_state(:, :, :)
+    real(dp), allocatable :: candidate_level_two_temperature(:, :)
+    logical :: local_ok
+    integer :: nvar
+
+    changed = .false.
+    ok = .false.
+    if (.not. supported_three_level_reactive_eb_amr_config(config) .or. &
+        .not. config%dynamic_regridding .or. &
+        .not. allocated(level_one_state) .or. &
+        .not. allocated(level_one_temperature) .or. &
+        .not. allocated(level_two_state) .or. &
+        .not. allocated(level_two_temperature) .or. &
+        .not. level_one_patch%is_valid( &
+          level_one_geometry, level_two_geometry)) return
+
+    call plan_three_level_reactive_eb_amr_finest_2d( &
+      config, level_one_temperature, level_one_geometry, plan, local_ok)
+    if (.not. local_ok) return
+    if (.not. plan%active) then
+      ok = .true.
+      return
+    end if
     if (plan%coarse_i_lower == level_one_patch%coarse_i_lower .and. &
         plan%coarse_i_upper == level_one_patch%coarse_i_upper .and. &
         plan%coarse_j_lower == level_one_patch%coarse_j_lower .and. &
@@ -1412,6 +1435,184 @@ contains
     changed = .true.
     ok = .true.
   end subroutine regrid_three_level_reactive_eb_amr_finest_2d
+
+  subroutine regrid_three_level_reactive_eb_amr_parent_2d( &
+      species, config, root_state, root_temperature, root_geometry, &
+      level_one_state, level_one_temperature, level_one_geometry, &
+      root_patch, level_two_state, level_two_temperature, &
+      level_two_geometry, level_one_patch, changed, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_eb_amr_2d_config), intent(in) :: config
+    real(dp), allocatable, intent(inout) :: root_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: root_temperature(:, :)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    real(dp), allocatable, intent(inout) :: level_one_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_one_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: level_one_geometry
+    type(amr_eb_patch_2d), intent(inout) :: root_patch
+    real(dp), allocatable, intent(inout) :: level_two_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: level_two_temperature(:, :)
+    type(eb_geometry_2d), intent(inout) :: level_two_geometry
+    type(amr_eb_patch_2d), intent(inout) :: level_one_patch
+    logical, intent(out) :: changed, ok
+
+    type(amr_eb_tagging_criteria_2d) :: criteria
+    type(amr_eb_regrid_plan_2d) :: root_plan, level_two_plan
+    type(eb_geometry_2d) :: candidate_level_one_geometry
+    type(eb_geometry_2d) :: candidate_level_two_geometry
+    type(amr_eb_patch_2d) :: candidate_root_patch
+    type(amr_eb_patch_2d) :: candidate_level_one_patch
+    real(dp), allocatable :: synchronized_level_one_state(:, :, :)
+    real(dp), allocatable :: synchronized_level_one_temperature(:, :)
+    real(dp), allocatable :: candidate_root_state(:, :, :)
+    real(dp), allocatable :: candidate_root_temperature(:, :)
+    real(dp), allocatable :: candidate_level_one_state(:, :, :)
+    real(dp), allocatable :: candidate_level_one_temperature(:, :)
+    real(dp), allocatable :: candidate_level_two_state(:, :, :)
+    real(dp), allocatable :: candidate_level_two_temperature(:, :)
+    real(dp), allocatable :: before_integral(:), after_integral(:)
+    logical, allocatable :: root_tags(:, :)
+    logical :: local_ok
+    integer :: nvar
+
+    changed = .false.
+    ok = .false.
+    if (.not. allocated(root_state) .or. &
+        .not. allocated(root_temperature) .or. &
+        .not. allocated(level_one_state) .or. &
+        .not. allocated(level_one_temperature) .or. &
+        .not. allocated(level_two_state) .or. &
+        .not. allocated(level_two_temperature)) return
+    nvar = reactive_nvar(size(species))
+    if (.not. supported_reactive_eb_amr_config(config) .or. &
+        .not. config%three_level_enabled .or. config%multipatch_enabled .or. &
+        .not. config%dynamic_regridding .or. &
+        config%remove_fine_patch_when_untagged .or. nvar < 1 .or. &
+        root_patch%refinement_ratio /= config%refinement_ratio .or. &
+        level_one_patch%refinement_ratio /= config%refinement_ratio .or. &
+        .not. root_patch%is_valid(root_geometry, level_one_geometry) .or. &
+        .not. level_one_patch%is_valid( &
+          level_one_geometry, level_two_geometry)) return
+    if (any(shape(root_state) /= &
+          [nvar, root_geometry%nx, root_geometry%ny]) .or. &
+        any(shape(root_temperature) /= &
+          [root_geometry%nx, root_geometry%ny]) .or. &
+        any(shape(level_one_state) /= &
+          [nvar, level_one_geometry%nx, level_one_geometry%ny]) .or. &
+        any(shape(level_one_temperature) /= &
+          [level_one_geometry%nx, level_one_geometry%ny]) .or. &
+        any(shape(level_two_state) /= &
+          [nvar, level_two_geometry%nx, level_two_geometry%ny]) .or. &
+        any(shape(level_two_temperature) /= &
+          [level_two_geometry%nx, level_two_geometry%ny])) return
+
+    allocate(before_integral(nvar), after_integral(nvar))
+    call composite_three_level_eb_integral_2d( &
+      root_state, root_geometry, level_one_state, level_one_geometry, &
+      root_patch, level_two_state, level_two_geometry, level_one_patch, &
+      before_integral, local_ok)
+    if (.not. local_ok) return
+    criteria%relative_gradient_threshold = &
+      config%regrid_relative_temperature_gradient
+    criteria%absolute_gradient_threshold = &
+      config%regrid_absolute_temperature_gradient
+    criteria%scale_floor = config%regrid_temperature_scale_floor
+    criteria%buffer_cells = config%regrid_buffer_cells
+    criteria%minimum_patch_cells_x = config%regrid_minimum_patch_cells_x
+    criteria%minimum_patch_cells_y = config%regrid_minimum_patch_cells_y
+    allocate(root_tags(root_geometry%nx, root_geometry%ny))
+    call plan_reactive_eb_temperature_regrid_2d( &
+      root_temperature, root_geometry, criteria, root_tags, root_plan, &
+      local_ok)
+    if (.not. local_ok) return
+    if (.not. root_plan%active) then
+      ok = .true.
+      return
+    end if
+    if (root_plan%coarse_i_lower == root_patch%coarse_i_lower .and. &
+        root_plan%coarse_i_upper == root_patch%coarse_i_upper .and. &
+        root_plan%coarse_j_lower == root_patch%coarse_j_lower .and. &
+        root_plan%coarse_j_upper == root_patch%coarse_j_upper) then
+      ok = .true.
+      return
+    end if
+
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, root_geometry, root_plan%coarse_i_lower, &
+      root_plan%coarse_i_upper, root_plan%coarse_j_lower, &
+      root_plan%coarse_j_upper, candidate_level_one_geometry, &
+      candidate_root_patch, local_ok)
+    if (.not. local_ok) return
+    allocate(synchronized_level_one_state, mold=level_one_state)
+    allocate(synchronized_level_one_temperature, &
+      mold=level_one_temperature)
+    call average_down_reactive_eb_state_patch_2d( &
+      species, level_one_state, level_one_temperature, level_one_geometry, &
+      level_two_state, level_two_geometry, level_one_patch, &
+      synchronized_level_one_state, synchronized_level_one_temperature, &
+      local_ok)
+    if (.not. local_ok) return
+    allocate(candidate_root_state, mold=root_state)
+    allocate(candidate_root_temperature, mold=root_temperature)
+    allocate(candidate_level_one_state( &
+      nvar, candidate_level_one_geometry%nx, &
+      candidate_level_one_geometry%ny))
+    allocate(candidate_level_one_temperature( &
+      candidate_level_one_geometry%nx, candidate_level_one_geometry%ny))
+    call regrid_two_level_reactive_eb_patch_2d( &
+      species, root_state, root_temperature, root_geometry, &
+      synchronized_level_one_state, synchronized_level_one_temperature, &
+      level_one_geometry, root_patch, candidate_level_one_geometry, &
+      candidate_root_patch, candidate_root_state, &
+      candidate_root_temperature, candidate_level_one_state, &
+      candidate_level_one_temperature, local_ok, &
+      config%prolongation_method)
+    if (.not. local_ok) return
+
+    call plan_three_level_reactive_eb_amr_finest_2d( &
+      config, candidate_level_one_temperature, &
+      candidate_level_one_geometry, level_two_plan, local_ok)
+    if (.not. local_ok .or. .not. level_two_plan%active) return
+    call build_reactive_eb_amr_patch_geometry_2d( &
+      config, candidate_level_one_geometry, &
+      level_two_plan%coarse_i_lower, level_two_plan%coarse_i_upper, &
+      level_two_plan%coarse_j_lower, level_two_plan%coarse_j_upper, &
+      candidate_level_two_geometry, candidate_level_one_patch, local_ok)
+    if (.not. local_ok) return
+    allocate(candidate_level_two_state( &
+      nvar, candidate_level_two_geometry%nx, &
+      candidate_level_two_geometry%ny))
+    allocate(candidate_level_two_temperature( &
+      candidate_level_two_geometry%nx, candidate_level_two_geometry%ny))
+    call prolong_reactive_eb_patch_2d( &
+      species, candidate_level_one_state, &
+      candidate_level_one_temperature, candidate_level_one_geometry, &
+      candidate_level_two_geometry, candidate_level_one_patch, &
+      config%prolongation_method, candidate_level_two_state, &
+      candidate_level_two_temperature, local_ok)
+    if (.not. local_ok) return
+    call composite_three_level_eb_integral_2d( &
+      candidate_root_state, root_geometry, candidate_level_one_state, &
+      candidate_level_one_geometry, candidate_root_patch, &
+      candidate_level_two_state, candidate_level_two_geometry, &
+      candidate_level_one_patch, after_integral, local_ok)
+    if (.not. local_ok) return
+    if (any(abs(after_integral - before_integral) > &
+        1.0e-10_dp * max(1.0_dp, abs(before_integral)))) return
+
+    call move_alloc(candidate_root_state, root_state)
+    call move_alloc(candidate_root_temperature, root_temperature)
+    call move_alloc(candidate_level_one_state, level_one_state)
+    call move_alloc(candidate_level_one_temperature, level_one_temperature)
+    call move_alloc(candidate_level_two_state, level_two_state)
+    call move_alloc(candidate_level_two_temperature, level_two_temperature)
+    level_one_geometry = candidate_level_one_geometry
+    level_two_geometry = candidate_level_two_geometry
+    root_patch = candidate_root_patch
+    level_one_patch = candidate_level_one_patch
+    changed = .true.
+    ok = .true.
+  end subroutine regrid_three_level_reactive_eb_amr_parent_2d
 
   pure elemental logical function checkpoint_real_matches(actual, expected) &
       result(matches)

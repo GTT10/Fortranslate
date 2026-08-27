@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.188.0` milestone contains the serial verification suite, ten optional
+The `0.189.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -64,7 +64,12 @@ fluid centroids, including a minimum-norm rank-one fit where the EB leaves only
 one resolved direction. In `0.188.0`, a rank-deficient 3-by-3 fit grows to a
 face-connected 5-by-5 stencil before accepting a rank-one fallback, recovering
 smooth two-dimensional variation around narrow or turning fluid paths without
-crossing covered geometry. The arbitrary-depth 2D EB
+crossing covered geometry. In `0.189.0`, the fixed three-level library can
+transactionally relocate or resize its root-to-middle patch from root
+temperature tags. It first restricts the old finest state into the middle,
+regrids the middle while retaining same-resolution overlap, rebuilds a valid
+interior finest patch, and publishes all three levels only after a composite
+conservation check. The arbitrary-depth 2D EB
 tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial
