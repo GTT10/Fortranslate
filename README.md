@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.183.0` milestone contains the serial verification suite, ten optional
+The `0.184.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -43,9 +43,15 @@ EB AMR library also exposes conservative MC-limited linear prolongation for
 topology-consistent regular parents. Fine-child offsets sum to zero within
 each such parent; cut or topology-mismatched parents retain PCM, and an
 inadmissible linear candidate retries transactionally with PCM. The
-arbitrary-depth 2D EB tree can also write one composite CSV containing every
-leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
-writer root and reports completion collectively. A dedicated serial
+fixed-depth public AMR configuration now selects `pcm` or `linear` through
+`prolongation_method` in `&eb_amr`; the selection is used by two-level,
+dynamic-regrid, separated sibling-patch, and three-level initialization. The
+public hot-wall transport case selects `linear`. Because the selection is not
+yet stored in checkpoint identity, fixed-depth checkpoint/restart and the
+serial or sparse-MPI arbitrary-depth patch tree explicitly remain PCM-only.
+The arbitrary-depth 2D EB tree can also write one composite CSV containing
+every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
+selected writer root and reports completion collectively. A dedicated serial
 `pelef_reactive_eb_patch_tree_2d` application now reads the established 2D
 reactive/EB/AMR namelists, builds up to a configured depth from temperature
 tags, advances the complete `R-T-H-T-R` physics clock, regrids periodically,

@@ -2953,3 +2953,17 @@ qualified PCM value. Supply a nonfinite coarse component and require failure
 with exactly zero state and temperature outputs. Run the complete serial suite
 in GNU Fortran Release and bounds/FPE-checked Debug before qualifying the
 kernel; retain the MPI chain before merging the versioned milestone.
+
+## 0.184.0 fixed-depth public prolongation-selection gates
+
+Set `prolongation_method = "linear"` in the installed hot-wall AMR transport
+case and require its existing active-cell, thermal-span, moving-wall momentum,
+and conservation checks to pass. Through the direct public driver, run linear
+initialization and regridding in two-level, separated sibling-patch, and
+three-level lifecycles.
+
+Supply an unknown method to the shared dispatcher and require neutral outputs.
+Attempt linear fixed-depth checkpointing and a linear arbitrary-depth
+fingerprint and require rejection before time, counters, topology, or fields
+are published. Retain all 215 serial regressions and the complete one-, two-,
+four-, and eight-rank MPI Debug/Release chain.

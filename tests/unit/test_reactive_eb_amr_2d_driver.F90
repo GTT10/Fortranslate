@@ -495,6 +495,7 @@ program test_reactive_eb_amr_2d_driver
   config%coarse_i_upper = 6
   config%coarse_j_lower = 2
   config%coarse_j_upper = 6
+  config%prolongation_method = "linear"
   config%multipatch_enabled = .true.
   config%dynamic_regridding = .true.
   config%regrid_at_initialization = .true.
@@ -540,6 +541,14 @@ program test_reactive_eb_amr_2d_driver
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public multipatch CFL selection")
 
+  config%prolongation_method = "pcm"
+  call simulate_reactive_eb_amr_patch_set_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, multipatch_set, time, steps, regrids, &
+    initial_integrals, final_integrals, minimum_dt, base_density, ok, &
+    multipatch_failure_context)
+  call require(ok .and. multipatch_set%patch_count() == 2, &
+    "public multipatch PCM checkpoint baseline")
   call write_reactive_eb_amr_patch_set_2d_checkpoint( &
     patch_set_checkpoint_path, species, config, coarse_state, &
     coarse_temperature, coarse_geometry, multipatch_set, time, steps, &
@@ -652,6 +661,7 @@ program test_reactive_eb_amr_2d_driver
   config%coarse_j_lower = 2
   config%coarse_j_upper = 7
   config%refinement_ratio = 2
+  config%prolongation_method = "linear"
   config%three_level_enabled = .true.
   config%level_two_i_lower = 3
   config%level_two_i_upper = 10
