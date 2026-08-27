@@ -1613,6 +1613,16 @@ Reuse the existing fresh and restart regressions so the complete transport
 combination must preserve serial and 1/2/4/8-rank field identity, including a
 two-rank checkpoint continued at four and eight ranks under changed ownership.
 
+## 0.195.0 reacting boundary-touching full physics
+
+Enable elementary chemistry in both public x-upper cases while retaining the
+complete transport combination. Qualify the full transactional `R-T-H-T-R`
+sequence on four populated levels with periodic recursive regridding.
+
+Reuse the fresh and split-run gates so reaction-modified states must retain
+serial and 1/2/4/8-rank field identity, plus two-rank checkpoint continuation
+at four and eight ranks under a changed ownership weight.
+
 Each implementation PR should normally contain:
 
 1. implementation

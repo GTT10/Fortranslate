@@ -2410,3 +2410,18 @@ coarse/fine register flux. Every other child side retains coarse-time context,
 reflux, and deepest-to-root average-down. Schema 4 already fingerprints all
 four transport controls, so this qualification does not require a checkpoint
 format change.
+
+## Reacting boundary-touching full physics (`0.195.0`)
+
+The public x-upper trees now enable elementary chemistry together with every
+qualified transport term. Each accepted root interval owns one private
+candidate across reaction half-step, transport half-step, recursively
+subcycled hydro, the second transport half-step, and the second reaction
+half-step. No prefix publishes if a later node or stage rejects.
+
+Chemistry is cell-local on the owner of each sparse node, so the physical-side
+topology adds no chemistry communication. It does add chemistry state changes
+to the coarse/fine transport and hydro contexts and to every average-down. The
+schema-4 fingerprint already records chemistry activation, model, and solver
+tolerances beside transport controls; rank count and ownership weight remain
+continuation-only controls.

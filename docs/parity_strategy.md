@@ -3100,3 +3100,16 @@ Require the same controls in the schema-4 checkpoint fingerprint. Compare the
 independent serial continuation and two-rank to four-/eight-rank sparse
 continuations against uninterrupted full-transport references, including the
 changed ownership weight.
+
+## 0.195.0 reacting boundary-tree full-physics gates
+
+Enable elementary chemistry beside all four transport controls in the public
+x-upper fresh and split-run inputs. Require the complete transactional
+`R-T-H-T-R` clock to retain four populated levels, exact boundary contact,
+finite positive thermodynamic fields, species closure, and serial/sparse
+1/2/4/8-rank composite parity.
+
+Require schema 4 to retain the chemistry model and tolerances with the
+transport fingerprint. Compare independent serial continuation and two-rank
+to four-/eight-rank sparse continuation against uninterrupted reacting
+references under the changed ownership weight.

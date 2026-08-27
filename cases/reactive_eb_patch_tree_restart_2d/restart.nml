@@ -13,7 +13,7 @@
   riemann_solver = "hllc"
   limiter = "mc"
   use_transverse_correction = .false.
-  chemistry_enabled = .false.
+  chemistry_enabled = .true.
   chemistry_model = "elementary"
   transport_enabled = .true.
   viscosity_enabled = .true.
