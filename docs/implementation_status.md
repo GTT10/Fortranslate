@@ -3101,3 +3101,24 @@ lifecycle work.
 This milestone closes the composite diagnostic-output boundary for the serial
 and sparse MPI arbitrary-depth numerical EB tree. A runnable arbitrary-depth
 2D EB application lifecycle remains separate integration work.
+
+## Runnable serial arbitrary-depth EB application (`0.173.0`)
+
+- [x] dedicated installed `pelef_reactive_eb_patch_tree_2d` executable
+- [x] existing reactive-flow, EB-geometry, and AMR namelist reuse
+- [x] validated `patch_tree_maximum_levels` control
+- [x] root-only initialization with optional initial recursive tagged rebuild
+- [x] all-node hydro/transport timestep selection and exact final-time clipping
+- [x] transactional `R-T-H-T-R` advance on the public clock
+- [x] scheduled arbitrary-depth topology rebuild after committed steps
+- [x] scheduled/final self-describing patch-tree checkpoint calls
+- [x] self-describing checkpoint restart entrypoint
+- [x] final or checkpoint-stop single composite CSV publication
+- [x] four populated dynamic levels in the runnable regression case
+- [x] CSV topology, spacing, time, EB class, thermodynamic, and species checks
+- [x] GNU Fortran Debug and Release coverage in the complete 210-test suite
+
+This milestone connects the serial arbitrary-depth EB numerical tree to a
+public input-driven application without changing the established fixed-depth
+driver. Application-level checkpoint/restart round-trip comparison and a
+sparse MPI public counterpart remain separate qualification work.
