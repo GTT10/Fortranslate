@@ -133,6 +133,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: mpi_amr_eb_patch_tree_distribution_matches_2d
   public :: synchronize_owned_reactive_amr_eb_patch_tree_2d
   public :: initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+  public :: initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d
   public :: materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d
   public :: scatter_root_reactive_amr_eb_patch_tree_to_sparse_2d
@@ -559,6 +560,100 @@ contains
       local_allocated_cells = &
         distribution%rank_cell_counts(distribution%rank + 1)
   end subroutine initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d( &
+      distribution, topology, nvar, root_state, root_temperature, sparse, &
+      ok, local_allocated_cells)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
+    integer, intent(in) :: nvar
+    real(dp), allocatable, intent(inout) :: root_state(:, :, :)
+    real(dp), allocatable, intent(inout) :: root_temperature(:, :)
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(out) :: sparse
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_allocated_cells
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    integer :: ierr, nvar_maximum, nvar_minimum, root_owner
+    logical :: accepted, global_ok, local, local_ok
+
+    sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
+    ok = .false.
+    if (present(local_allocated_cells)) local_allocated_cells = 0
+    call replicated_distribution_matches_2d( &
+      distribution, topology, local_ok)
+    if (local_ok) local_ok = nvar >= 1
+    if (local_ok) local_ok = topology%level_count() == 1
+    if (local_ok) local_ok = topology%level_patch_count(0) == 1
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    call MPI_Allreduce( &
+      nvar, nvar_minimum, 1, MPI_INTEGER, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      nvar, nvar_maximum, 1, MPI_INTEGER, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    if (nvar_minimum /= nvar_maximum) return
+
+    root_owner = distribution%owner_of(0, 1)
+    local = distribution%rank == root_owner
+    if (local) then
+      local_ok = allocated(root_state) .and. allocated(root_temperature)
+      if (local_ok) then
+        local_ok = all(shape(root_state) == [ &
+            nvar, topology%root_geometry%nx, topology%root_geometry%ny]) &
+          .and. all(shape(root_temperature) == [ &
+            topology%root_geometry%nx, topology%root_geometry%ny])
+      end if
+      if (local_ok) then
+        local_ok = all(ieee_is_finite(root_state)) .and. &
+          all(ieee_is_finite(root_temperature)) .and. &
+          all(root_temperature > 0.0_dp)
+      end if
+    else
+      local_ok = .not. allocated(root_state) .and. &
+        .not. allocated(root_temperature)
+    end if
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    candidate%nvar = nvar
+    candidate%topology = topology
+    allocate(candidate%levels(1))
+    allocate(candidate%levels(1)%patches(1))
+    if (local) then
+      call move_alloc( &
+        root_state, candidate%levels(1)%patches(1)%state)
+      call move_alloc( &
+        root_temperature, candidate%levels(1)%patches(1)%temperature)
+    end if
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) then
+      if (local) then
+        if (allocated(candidate%levels(1)%patches(1)%state)) &
+          call move_alloc( &
+            candidate%levels(1)%patches(1)%state, root_state)
+        if (allocated(candidate%levels(1)%patches(1)%temperature)) &
+          call move_alloc( &
+            candidate%levels(1)%patches(1)%temperature, root_temperature)
+      end if
+      return
+    end if
+
+    sparse%nvar = candidate%nvar
+    sparse%topology = candidate%topology
+    call move_alloc(candidate%levels, sparse%levels)
+    ok = .true.
+    if (present(local_allocated_cells)) &
+      local_allocated_cells = &
+        distribution%rank_cell_counts(distribution%rank + 1)
+  end subroutine &
+    initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d
 
   subroutine materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       distribution, sparse, replicated, ok, local_entity_publications)
