@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.181.0` milestone contains the serial verification suite, ten optional
+The `0.182.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -18,7 +18,7 @@ another weighting and reproduce an uninterrupted one-rank reference. The
 fresh sparse-MPI 2D EB path now constructs its numerical root state on the
 single owning rank and moves those arrays directly into sparse storage;
 non-owners never allocate a root state or temperature field. The
-public serial and sparse-MPI patch-tree checkpoints now store a schema-2
+  public serial and sparse-MPI patch-tree checkpoints now store a schema-3
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
@@ -35,9 +35,10 @@ single-level public EB application now reads `embedded_wall_kind`,
 `embedded_wall_thermal`, `embedded_wall_temperature`, and the three-component
 `embedded_wall_velocity` from `&embedded_boundary`. It rejects isothermal or
 no-slip selections unless the matching thermal or viscous transport operator
-is enabled. Checkpoint-capable AMR applications continue to reject active
-nondefault embedded-wall inputs until those values enter their compatibility
-formats. The
+is enabled. Fixed-depth and arbitrary-depth AMR applications now apply the
+same configured wall. Their checkpoint contracts record the wall kind,
+thermal mode, temperature, velocity, transport switches, and transport CFL,
+and reject incompatible restarts transactionally. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial
@@ -489,17 +490,17 @@ a dedicated schema and may stop and resume the same hierarchy without changing
 the established single-patch or patch-set formats. Three-level mode remains
 mutually exclusive with multipatch siblings. Its dynamic path keeps
 the middle patch fixed, retains the finest patch, ignores tags outside its
-two-cell-safe planning region, and does not yet support checkpoint/restart.
+two-cell-safe planning region, and uses a distinct checkpoint schema to
+restart the dynamic finest topology and regrid cadence transactionally.
 
 Unsplit transverse prediction, fourth-order StateRedist slopes,
-periodic/ghost-cell neighborhoods, thermal/catalytic wall physics,
-coarse-to-fine spatial slopes, multipatch EB AMR molecular
-transport, dynamic middle/root topology, arbitrary-depth EB application
-lifecycle, transport-enabled checkpoint/restart, and MPI
-distribution are not yet
-connected. The public EB AMR application now owns
-either restartable sibling rectangles or an
-explicit three-level hierarchy with an optionally dynamic finest patch.
+periodic/ghost-cell neighborhoods, catalytic embedded-wall species transfer,
+higher-order wall-normal gradients, coarse-to-fine spatial slopes, and
+dynamic middle/root topology are not yet connected. The fixed-depth public EB
+AMR application remains serial and owns either restartable sibling rectangles
+or an explicit three-level hierarchy with an optionally dynamic finest patch;
+the separate arbitrary-depth application provides the qualified sparse-MPI
+lifecycle.
 
 The separate EB patch-tree core now owns reactive conserved state and
 temperature on arbitrary-depth, branching topology. It initializes children

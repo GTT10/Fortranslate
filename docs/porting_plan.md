@@ -1457,6 +1457,14 @@ preflight until they join every restart compatibility record. Retain all 215
 serial tests and the full MPI Debug/Release chain. Defer AMR namelist/checkpoint
 exposure, catalytic fluxes, and higher-order wall stencils.
 
+## 0.182.0 restart-safe AMR embedded-wall controls
+
+Reuse the configured boundary builder in fixed-depth, arbitrary-depth, and
+sparse-MPI public AMR paths. Advance the fixed-depth checkpoint schemas and the
+arbitrary-depth serial/MPI fingerprint with every wall and molecular-transport
+compatibility control. Qualify active isothermal-wall checkpoint/restart and
+mismatch rollback while preserving the established low-level stepping APIs.
+
 Each implementation PR should normally contain:
 
 1. implementation

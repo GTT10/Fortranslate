@@ -3281,3 +3281,24 @@ Checkpoint-capable AMR application exposure remains deferred until every
 nondefault embedded-wall value participates in restart compatibility. The
 underlying AMR and sparse-MPI transport kernels already consume an explicitly
 configured boundary set.
+
+## Restart-safe AMR embedded-wall configuration (`0.182.0`)
+
+- [x] one configured boundary builder shared by public EB drivers
+- [x] two-level, multipatch, three-level, and arbitrary-depth wall activation
+- [x] sparse-MPI public wall activation
+- [x] fixed-depth checkpoint schema-2 wall records
+- [x] transport enable/process/CFL restart compatibility
+- [x] arbitrary-depth checkpoint fingerprint schema 3
+- [x] exact wall string and tolerance-aware real-value restart matching
+- [x] active isothermal-wall two-level checkpoint/restart regression
+- [x] public moving no-slip/isothermal two-level AMR transport regression
+- [x] wall-temperature mismatch transactional rejection
+- [x] arbitrary-depth wall-fingerprint mismatch regression
+- [x] GNU Fortran Debug and Release MPI qualification
+- [x] all 215 serial regressions retained in MPI and non-MPI builds
+
+The public AMR applications no longer reject transport checkpointing solely
+because transport is enabled. Restart remains strict: older checkpoint schemas
+and any changed wall or transport controls are rejected. Catalytic species wall
+transfer and higher-order wall-normal stencils remain outside this milestone.

@@ -37,7 +37,7 @@ def main() -> None:
     if checkpoint_lines[0] != "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT":
         raise AssertionError("checkpoint magic mismatch")
     header = [int(value) for value in checkpoint_lines[1].split()]
-    if len(header) != 4 or header[0] != 1 or header[3] != 0:
+    if len(header) != 4 or header[0] != 2 or header[3] != 0:
         raise AssertionError(f"checkpoint did not preserve root-only state: {header}")
     if checkpoint_lines[-1] != "END_CHECKPOINT":
         raise AssertionError("checkpoint end marker mismatch")

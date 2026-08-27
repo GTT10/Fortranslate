@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check public two-level reactive EB AMR thermal conduction."""
+"""Check public two-level reactive EB AMR configured-wall transport."""
 
 from __future__ import annotations
 
@@ -75,6 +75,32 @@ def main() -> None:
     )
     if changed <= 1.0e-8:
         raise AssertionError("AMR thermal transport produced no measurable change")
+    cut_pairs = [
+        (reference_row, transport_row)
+        for reference_rows, transport_rows in (
+            (reference_coarse, transport_coarse),
+            (reference_fine, transport_fine),
+        )
+        for reference_row, transport_row in zip(reference_rows, transport_rows)
+        if int(reference_row["cell_type"]) == 1
+    ]
+    if not cut_pairs:
+        raise AssertionError("AMR wall regression contains no cut cells")
+    wall_heating = max(
+        float(transport_row["temperature"])
+        - float(reference_row["temperature"])
+        for reference_row, transport_row in cut_pairs
+    )
+    if wall_heating <= 1.0e-8:
+        raise AssertionError("configured AMR isothermal wall did not heat cut cells")
+    wall_velocity_response = max(
+        abs(float(transport_row["v"]) - float(reference_row["v"]))
+        for reference_row, transport_row in cut_pairs
+    )
+    if wall_velocity_response <= 1.0e-12:
+        raise AssertionError(
+            "configured moving no-slip AMR wall transferred no momentum"
+        )
     print("check_reactive_eb_amr_transport_2d: PASS")
 
 
