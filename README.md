@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.167.0` milestone contains the serial verification suite, nine optional
+The `0.168.0` milestone contains the serial verification suite, nine optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -484,7 +484,11 @@ the recursive hydro interval on the same private tree candidate. A public
 target-time loop recomputes the all-node hydro/transport stability limit before
 every step, clips exactly to the requested stop time, and commits the tree,
 clock, step count, limiter minimum, and per-level physics counts together.
-Dynamic tagging and checkpoint I/O remain separate.
+The same serial tree now synchronizes accepted fields, tags temperature
+gradients independently on every prospective parent, clusters disconnected
+features, constructs caller-defined EB child geometry, and transactionally
+rebuilds or collapses the arbitrary-depth topology. Checkpoint I/O remains
+separate.
 
 An MPI ownership descriptor maps every arbitrary-depth tree node to a
 deterministic rank using allocated cells and optional subcycle-weighted work.
@@ -512,8 +516,8 @@ chemistry half-steps, SSPRK2 transport half-steps, and recursive hydro as
 after every stage succeeds. A public sparse clock now recomputes the owner-
 local stable interval before every step, clips the last step exactly to the
 requested target time, and commits fields, time, step count, minima, advances,
-and transfers together. Arbitrary-depth dynamic tagging and checkpoint I/O are
-the next lifecycle boundaries.
+and transfers together. Owner-local MPI arbitrary-depth dynamic tagging and
+checkpoint I/O are the next lifecycle boundaries.
 
 The replicated MPI-owner EB AMR hydro path now decomposes the root update over
 its distributed y-tiles. Each tile owner advances a bounded six-row halo band,

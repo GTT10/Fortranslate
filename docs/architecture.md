@@ -1935,3 +1935,25 @@ the already committed prefix remains authoritative with matching diagnostics;
 the uncommitted step is discarded. An initial rank-dependent clock control
 rejects before timestep evaluation with neutral outputs. Dynamic tagging,
 checkpoint/restart, and output for this arbitrary-depth tree remain separate.
+
+## Serial arbitrary-depth EB temperature-tagged rebuild (`0.168.0`)
+
+The serial planner first copies and deepest-first synchronizes the accepted EB
+tree. It then visits every parent at one prospective relation, applies the
+existing normalized temperature-gradient tagger and disconnected-component
+clusterer, and records children in parent-major deterministic order. Each
+rectangle is converted to EB geometry by a caller-supplied builder so the
+planner remains independent of a particular level-set representation.
+
+After one relation is accepted, a temporary topology and PCM-prolongated field
+tree provide the prospective parent temperatures for the next relation. This
+continues until the level ceiling, no tags, or no taggable parent remains. The
+accepted solution is never modified during planning.
+
+The public regrid wrapper passes the complete plan to the established
+overlap-preserving transactional rebuild. Identical topology is a no-op;
+empty plans collapse to the root; changed plans retain geometrically matching
+same-resolution overlap and conservatively initialize the remainder. Any tag,
+geometry, EOS, topology, or conservation failure leaves the accepted tree
+unchanged. MPI owner-local planning and topology-changing migration remain a
+separate transaction.

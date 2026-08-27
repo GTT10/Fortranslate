@@ -2722,3 +2722,18 @@ time on multiple ranks and a negative target on one rank; require preflight
 rejection with unchanged state/clock and neutral diagnostics. Repeat with a
 zero step ceiling and require the same rollback. Retain all MPI gates and all
 208 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.168.0 serial arbitrary-depth EB tagged-rebuild gates
+
+Start from an eight-by-eight root-only EB tree containing one thermodynamically
+consistent hot cell. Require normalized temperature tags to produce one
+deterministic child at each of two relations, with both children attached to
+their actual parent and the plan stopping at the requested three-level ceiling.
+
+Apply the public tagged-regrid transaction and require a valid `1/1/1` tree,
+roundoff-level composite-integral conservation, and a field-exact no-op when
+the same plan is requested again. Reject the geometry builder and require the
+accepted tree to remain exact. Finally make every node uniform, require zero
+tags and a transactional collapse to one root level, and recheck the composite
+integral. Retain all 208 serial tests in GNU Fortran Release and bounds/FPE-
+checked Debug.

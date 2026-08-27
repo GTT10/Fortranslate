@@ -3002,3 +3002,22 @@ composition. The owner-local target-time clock remains separate work.
 This milestone removes public-clock ownership from the sparse arbitrary-depth
 MPI physics path. Dynamic tagging, checkpoint/restart, and output remain
 separate lifecycle work.
+
+## Serial arbitrary-depth EB temperature-tagged rebuild (`0.168.0`)
+
+- [x] deepest-first synchronization before tag evaluation
+- [x] per-parent active-cell temperature-gradient tagging
+- [x] deterministic disconnected-component clustering at every level
+- [x] caller-defined EB geometry construction for every planned child
+- [x] recursive planning from synchronized root fields to a level ceiling
+- [x] graceful branch termination when a parent is too small to tag
+- [x] transactional composition with the overlap-preserving tree rebuild
+- [x] root-only creation and maximum-depth refinement
+- [x] unchanged-plan no-op and tag-free collapse
+- [x] composite-conserved-state preservation across topology changes
+- [x] geometry-builder rejection with exact accepted-tree rollback
+- [x] GNU Fortran Debug and Release coverage in the complete serial suite
+
+This milestone closes serial dynamic topology planning for the arbitrary-depth
+2D EB numerical tree. Owner-local MPI planning/migration, checkpoint/restart,
+and composite output remain separate lifecycle work.

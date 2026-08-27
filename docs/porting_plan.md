@@ -1264,6 +1264,22 @@ control mismatch rollback, and maximum-step rollback at one, two, four, and
 eight ranks. Run the complete MPI and serial Debug/Release suite before
 acceptance. Defer arbitrary-depth dynamic tagging and checkpoint I/O.
 
+## 0.168.0 serial arbitrary-depth EB tagged-rebuild gates
+
+Synchronize the accepted numerical tree deepest-first, plan temperature tags
+for every prospective parent independently, and build deterministic
+parent-major child plans through the configured maximum depth. Keep EB geometry
+construction behind a caller callback, and treat parents below the tagger's
+minimum stencil extent as terminal branches.
+
+Require a root-only hot-cell case to reach three levels, preserve the complete
+composite conserved vector, and retain exact parent ownership. Repeating the
+same plan must be a field-exact no-op. A rejecting geometry callback must leave
+the complete accepted tree unchanged, and removing every temperature gradient
+must collapse the tree to its root while preserving the composite integral.
+Run the complete serial Debug and Release suite before acceptance. Defer
+owner-local MPI tag planning/migration and arbitrary-depth checkpoint I/O.
+
 Each implementation PR should normally contain:
 
 1. implementation
