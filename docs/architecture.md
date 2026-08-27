@@ -1978,3 +1978,23 @@ EOS recovery, sparse validation, and a composite-integral test succeed on all
 ranks. An unchanged topology is a field-exact no-op. Empty tag plans collapse
 the tree to its synchronized root. Arbitrary-depth checkpoint/restart and
 composite output remain separate lifecycle work.
+
+## Serial arbitrary-depth EB patch-tree checkpoint (`0.170.0`)
+
+The checkpoint is a distinct versioned formatted stream. Its header fixes the
+species order, conserved-state extent, and level count. It then stores the root
+EB geometry and every ordered relation: refinement ratio, parent index,
+coarse-cell rectangle, and complete child EB geometry. Geometry records include
+cell volumes and centroids, face apertures and centroids, embedded-boundary
+lengths, centroids, normals, normal integrals, and cell classifications.
+
+Lifecycle time, minimum accepted timestep, step count, and regrid count precede
+the level-major, patch-major numerical fields. A terminal marker detects
+truncation. Reading constructs topology and fields in a private candidate,
+recovers temperature from conserved state with the selected species database,
+and publishes only after complete structural and thermodynamic validation.
+
+Level, patch, and geometry-cell limits are checked before allocation. Schema,
+species-order, depth, topology, dimension, finite-value, EOS, or end-marker
+failure returns an empty tree and zero metadata. Sparse MPI checkpoint I/O and
+rank-neutral restart remain separate lifecycle work.

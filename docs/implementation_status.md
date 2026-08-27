@@ -3042,3 +3042,23 @@ and composite output remain separate lifecycle work.
 This milestone removes complete numerical-tree materialization from dynamic
 arbitrary-depth MPI topology planning and migration. Checkpoint/restart and
 composite output remain separate lifecycle work.
+
+## Serial arbitrary-depth EB patch-tree checkpoint (`0.170.0`)
+
+- [x] distinct versioned formatted schema and terminal marker
+- [x] ordered species names and lifecycle metadata
+- [x] arbitrary-depth parent/child topology records
+- [x] complete root and child EB geometry metric storage
+- [x] level-major, patch-major conserved state and temperature storage
+- [x] bounded levels, patch counts, and geometry allocation sizes
+- [x] private candidate reconstruction before publication
+- [x] general-EOS temperature recovery from conserved state
+- [x] exact branching topology and roundoff-level field round trip
+- [x] maximum-depth rejection with neutral outputs
+- [x] species-order rejection with neutral outputs
+- [x] invalid lifecycle metadata rejection before file replacement
+- [x] GNU Fortran Debug and Release coverage in the complete serial suite
+
+This milestone provides the serial storage format required by later root-only
+sparse MPI checkpoint I/O. Rank-neutral MPI redistribution and composite output
+remain separate lifecycle work.

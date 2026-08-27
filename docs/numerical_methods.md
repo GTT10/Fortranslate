@@ -2400,3 +2400,20 @@ abs(I(U_new) - I(U_old)) <= 8e-12 max(1, abs(I(U_old)))
 componentwise, all ranks accept the candidate, and every published integer
 count is representable. Otherwise the accepted topology, distribution, sparse
 fields, and diagnostics remain unchanged.
+
+## Arbitrary-depth EB patch-tree checkpoint recovery
+
+The serial checkpoint preserves every EB metric rather than regenerating the
+geometry from a level-set callback. After rebuilding the ordered topology and
+reading each node field, recover temperature cellwise from
+
+```text
+rho e = rho E - 1/2 rho (u^2 + v^2 + w^2),
+e(Y,T) = e_target.
+```
+
+The stored positive temperature is a format-integrity value; the recovered
+general-EOS temperature is authoritative. A candidate is published only when
+all cell states are finite, every inversion succeeds, the complete topology is
+valid, dimensions match their geometry, lifecycle metadata is nonnegative and
+consistent, and the terminal marker is present.
