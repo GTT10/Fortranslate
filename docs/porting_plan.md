@@ -1389,6 +1389,20 @@ bounded differences for every numeric field. Run the complete MPI gate chain
 and all 214 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
 Defer elimination of the temporary replicated root startup field.
 
+## 0.177.0 owner-local public sparse-MPI startup gates
+
+Construct the fresh root topology and distribution before numerical state.
+Run the established reactive initializer only on the root-node owner and add a
+collective root-only sparse initializer that rejects any non-owner numerical
+allocation. Move the owner arrays into the sparse node and require the source
+arrays to be unallocated before initial recursive regridding.
+
+Exercise the resulting startup path at one, two, four, and eight ranks and
+retain its complete-field parity, cross-rank checkpoint/restart parity, the
+complete MPI gate chain, and all 214 serial tests in GNU Fortran Release and
+bounds/FPE-checked Debug. Defer explicit application/checkpoint compatibility
+fingerprints.
+
 Each implementation PR should normally contain:
 
 1. implementation

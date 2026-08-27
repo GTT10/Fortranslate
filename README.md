@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.176.0` milestone contains the serial verification suite, ten optional
+The `0.177.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -15,6 +15,9 @@ public sparse-MPI arbitrary-depth 2D EB application now qualifies that same
 process boundary: a two-rank run writes a four-level checkpoint using one
 ownership weighting, then four- and eight-rank processes restart it using
 another weighting and reproduce an uninterrupted one-rank reference. The
+fresh sparse-MPI 2D EB path now constructs its numerical root state on the
+single owning rank and moves those arrays directly into sparse storage;
+non-owners never allocate a root state or temperature field. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial
