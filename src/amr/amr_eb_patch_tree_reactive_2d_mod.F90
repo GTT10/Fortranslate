@@ -2807,29 +2807,6 @@ contains
     ok = .true.
   end subroutine close_reactive_amr_eb_patch_subtree_conservation_2d
 
-  pure logical function patch_tree_parent_cell_is_refined( &
-      solution, level, patch_index, i, j) result(refined)
-    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
-    integer, intent(in) :: level, patch_index, i, j
-
-    type(amr_eb_patch_2d) :: patch
-    integer :: child, first_child, last_child
-
-    refined = .false.
-    if (level >= solution%level_count()) return
-    first_child = solution%topology%relations(level)% &
-      child_offsets(patch_index) + 1
-    last_child = solution%topology%relations(level)% &
-      child_offsets(patch_index + 1)
-    do child = first_child, last_child
-      patch = solution%topology%relations(level)%children(child)%patch
-      refined = i >= patch%coarse_i_lower .and. &
-        i <= patch%coarse_i_upper .and. j >= patch%coarse_j_lower .and. &
-        j <= patch%coarse_j_upper
-      if (refined) return
-    end do
-  end function patch_tree_parent_cell_is_refined
-
   pure real(dp) function patch_tree_substep_time_alpha( &
       reconstruction, substep, ratio) result(alpha)
     character(len=*), intent(in) :: reconstruction

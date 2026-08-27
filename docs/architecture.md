@@ -2141,3 +2141,20 @@ count, and MPI work exponent remain restart-mutable controls. Thus the existing
 two-to-four/eight-rank redistribution remains valid, while changing a physics
 control such as CFL rejects the file transactionally. Low-level verification
 callers without a fingerprint retain the isolated schema-1 compatibility API.
+
+## Interface-local multilevel EB conservation closure (`0.179.0`)
+
+Every direct child rectangle contributes a coarse-side interface support. For
+each coarse cell immediately outside that rectangle, the closure marks the
+active, unrefined cells in its clipped three-by-three neighborhood. The union
+over siblings is the only admissible recipient set for density, total-energy,
+and species residuals after reflux and average-down. Physical-boundary sides
+without a coarse neighbor contribute no support.
+
+The recipient set is derived from replicated geometry and topology, so serial,
+fixed-depth, multipatch, arbitrary-depth, and sparse-MPI paths select the same
+cells. Sparse MPI applies the correction only on the owning parent node or root
+tile. Recipient fluid volume normalizes the correction; EOS recovery and the
+existing final composite-integral check remain transactional. This removes the
+former parent-wide perturbation but does not claim bitwise equivalence to
+AMReX's per-neighborhood `MLStateRedistribute` transfer bookkeeping.

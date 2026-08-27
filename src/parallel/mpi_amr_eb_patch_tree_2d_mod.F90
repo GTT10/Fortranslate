@@ -4213,28 +4213,6 @@ contains
     ok = global_ok .and. accepted
   end subroutine close_sparse_amr_eb_patch_subtree_conservation_2d
 
-  pure logical function sparse_patch_tree_parent_cell_is_refined( &
-      topology, level, patch, i, j) result(refined)
-    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
-    integer, intent(in) :: level, patch, i, j
-
-    type(amr_eb_patch_2d) :: child_patch
-    integer :: child, first_child, last_child
-
-    refined = .false.
-    if (level >= topology%level_count()) return
-    first_child = topology%relations(level)%child_offsets(patch) + 1
-    last_child = topology%relations(level)%child_offsets(patch + 1)
-    do child = first_child, last_child
-      child_patch = topology%relations(level)%children(child)%patch
-      refined = i >= child_patch%coarse_i_lower .and. &
-        i <= child_patch%coarse_i_upper .and. &
-        j >= child_patch%coarse_j_lower .and. &
-        j <= child_patch%coarse_j_upper
-      if (refined) return
-    end do
-  end function sparse_patch_tree_parent_cell_is_refined
-
   pure real(dp) function sparse_patch_tree_substep_alpha( &
       reconstruction, substep, ratio) result(alpha)
     character(len=*), intent(in) :: reconstruction

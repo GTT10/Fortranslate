@@ -1415,6 +1415,19 @@ parity. Require a CFL-mismatched restart to fail transactionally in serial and
 MPI, while retaining low-level schema-1 compatibility and all 215 serial and
 MPI Debug/Release gates.
 
+## 0.179.0 interface-local multilevel EB closure gates
+
+Replace parent-wide residual spreading after EB reflux and average-down with a
+topology-derived local support. For every direct child, mark active unrefined
+parent cells in clipped three-by-three neighborhoods of the coarse/fine
+interface and normalize the conserved correction by their fluid volume.
+
+Require fixed-depth, multipatch, arbitrary-depth, serial, and sparse-MPI paths
+to use the same support rule. Retain density, total-energy, species, EOS,
+rollback, and complete-field parity gates in all 215 serial tests and the full
+one-, two-, four-, and eight-rank MPI Debug/Release chain. Do not claim exact
+AMReX per-neighborhood transfer parity.
+
 Each implementation PR should normally contain:
 
 1. implementation

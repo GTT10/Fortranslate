@@ -477,21 +477,4 @@ contains
     ok = .true.
   end subroutine close_cut_patch_set_conservation_2d
 
-  pure logical function cell_is_inside_any_patch(patch_set, i, j) &
-      result(inside)
-    type(reactive_eb_patch_set_2d), intent(in) :: patch_set
-    integer, intent(in) :: i, j
-    integer :: child
-
-    inside = .false.
-    do child = 1, patch_set%patch_count()
-      inside = &
-        i >= patch_set%children(child)%patch%coarse_i_lower .and. &
-        i <= patch_set%children(child)%patch%coarse_i_upper .and. &
-        j >= patch_set%children(child)%patch%coarse_j_lower .and. &
-        j <= patch_set%children(child)%patch%coarse_j_upper
-      if (inside) return
-    end do
-  end function cell_is_inside_any_patch
-
 end module amr_eb_multipatch_transport_2d_mod

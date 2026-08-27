@@ -479,13 +479,4 @@ contains
     ok = .true.
   end subroutine close_cut_interface_conservation_2d
 
-  pure logical function cell_is_inside_patch(patch, i, j) result(inside)
-    type(amr_eb_patch_2d), intent(in) :: patch
-    integer, intent(in) :: i, j
-
-    inside = i >= patch%coarse_i_lower .and. &
-      i <= patch%coarse_i_upper .and. &
-      j >= patch%coarse_j_lower .and. j <= patch%coarse_j_upper
-  end function cell_is_inside_patch
-
 end module amr_eb_multilevel_reactive_2d_mod
