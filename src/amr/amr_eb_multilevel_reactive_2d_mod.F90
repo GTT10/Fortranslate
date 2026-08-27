@@ -13,7 +13,8 @@ module amr_eb_multilevel_reactive_2d_mod
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d, &
     composite_eb_integral_2d
   use amr_eb_multilevel_2d_mod, only: &
-    average_down_three_level_reactive_eb_state_2d
+    average_down_three_level_reactive_eb_state_2d, &
+    mark_local_cut_interface_recipients_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -371,6 +372,7 @@ contains
 
     real(dp), allocatable :: current_integral(:), boundary_change(:)
     real(dp), allocatable :: residual(:), correction(:), primitive(:)
+    logical, allocatable :: refined(:, :), recipients(:, :)
     real(dp) :: recipient_volume, recovered_temperature, sound_speed
     real(dp) :: scale, closure_tolerance, species_residual
     logical :: local_ok
@@ -434,11 +436,20 @@ contains
     correction(component) = correction(component) + &
       residual(irho) - species_residual
 
+    allocate(refined(parent_geometry%nx, parent_geometry%ny), &
+      recipients(parent_geometry%nx, parent_geometry%ny))
+    refined = .false.
+    refined(patch%coarse_i_lower:patch%coarse_i_upper, &
+      patch%coarse_j_lower:patch%coarse_j_upper) = .true.
+    recipients = .false.
+    call mark_local_cut_interface_recipients_2d( &
+      parent_geometry, child_geometry, patch, refined, recipients, local_ok)
+    if (.not. local_ok) return
+
     recipient_volume = 0.0_dp
     do j = 1, parent_geometry%ny
       do i = 1, parent_geometry%nx
-        if (cell_is_inside_patch(patch, i, j) .or. &
-            parent_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         recipient_volume = recipient_volume + &
           parent_geometry%volume_fraction(i, j) * &
           parent_geometry%dx * parent_geometry%dy
@@ -452,8 +463,7 @@ contains
     allocate(primitive(reactive_nprim(size(species))))
     do j = 1, parent_geometry%ny
       do i = 1, parent_geometry%nx
-        if (cell_is_inside_patch(patch, i, j) .or. &
-            parent_geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         closed_state(:, i, j) = closed_state(:, i, j) + correction
         call reactive_conserved_to_primitive( &
           species, closed_state(:, i, j), closed_temperature(i, j), &

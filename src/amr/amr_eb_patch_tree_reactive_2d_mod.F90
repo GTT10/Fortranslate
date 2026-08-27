@@ -21,6 +21,8 @@ module amr_eb_patch_tree_reactive_2d_mod
     reactive_eb_transport_timestep_2d, reactive_eb_transport_fluxes_rhs_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    mark_local_cut_interface_recipients_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -2681,12 +2683,14 @@ contains
     real(dp), intent(in) :: interval
     logical, intent(out) :: ok
 
-    type(eb_geometry_2d) :: geometry
+    type(eb_geometry_2d) :: geometry, child_geometry
+    type(amr_eb_patch_2d) :: child_patch
     real(dp), allocatable :: current_integral(:), boundary_change(:)
     real(dp), allocatable :: residual(:), correction(:)
+    logical, allocatable :: refined(:, :), recipients(:, :)
     real(dp) :: recipient_volume, scale, closure_tolerance, species_residual
     logical :: local_ok
-    integer :: component, i, j, k
+    integer :: child, component, first_child, i, j, k, last_child
 
     ok = .false.
     if (size(integral_before) /= solution%nvar .or. &
@@ -2744,12 +2748,32 @@ contains
       return
     end if
 
+    allocate(refined(geometry%nx, geometry%ny), &
+      recipients(geometry%nx, geometry%ny))
+    refined = .false.
+    first_child = solution%topology%relations(level)% &
+      child_offsets(patch_index) + 1
+    last_child = solution%topology%relations(level)% &
+      child_offsets(patch_index + 1)
+    do child = first_child, last_child
+      child_patch = solution%topology%relations(level)%children(child)%patch
+      refined(child_patch%coarse_i_lower:child_patch%coarse_i_upper, &
+        child_patch%coarse_j_lower:child_patch%coarse_j_upper) = .true.
+    end do
+    recipients = .false.
+    do child = first_child, last_child
+      child_geometry = &
+        solution%topology%relations(level)%children(child)%geometry
+      child_patch = solution%topology%relations(level)%children(child)%patch
+      call mark_local_cut_interface_recipients_2d( &
+        geometry, child_geometry, child_patch, refined, recipients, local_ok)
+      if (.not. local_ok) return
+    end do
+
     recipient_volume = 0.0_dp
     do j = 1, geometry%ny
       do i = 1, geometry%nx
-        if (patch_tree_parent_cell_is_refined( &
-              solution, level, patch_index, i, j) .or. &
-            geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         recipient_volume = recipient_volume + &
           geometry%volume_fraction(i, j) * geometry%dx * geometry%dy
       end do
@@ -2760,9 +2784,7 @@ contains
     if (any(.not. ieee_is_finite(correction))) return
     do j = 1, geometry%ny
       do i = 1, geometry%nx
-        if (patch_tree_parent_cell_is_refined( &
-              solution, level, patch_index, i, j) .or. &
-            geometry%cell_type(i, j) == eb_covered_cell) cycle
+        if (.not. recipients(i, j)) cycle
         solution%levels(level)%patches(patch_index)%state(:, i, j) = &
           solution%levels(level)%patches(patch_index)%state(:, i, j) + &
             correction

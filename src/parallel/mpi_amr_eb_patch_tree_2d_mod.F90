@@ -23,6 +23,8 @@ module mpi_amr_eb_patch_tree_2d_mod
     reactive_eb_transport_timestep_2d, reactive_eb_transport_fluxes_rhs_2d
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
+  use amr_eb_multilevel_2d_mod, only: &
+    mark_local_cut_interface_recipients_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -4040,13 +4042,15 @@ contains
     real(dp), intent(in) :: interval
     logical, intent(out) :: ok
 
-    type(eb_geometry_2d) :: geometry
+    type(eb_geometry_2d) :: geometry, child_geometry
+    type(amr_eb_patch_2d) :: child_patch
     real(dp), allocatable :: boundary_change(:), correction(:)
     real(dp), allocatable :: current_integral(:), residual(:)
     real(dp), allocatable :: temperature_work(:, :)
+    logical, allocatable :: refined(:, :), recipients(:, :)
     real(dp) :: closure_tolerance, recipient_volume, scale
     real(dp) :: species_residual
-    integer :: component, i, ierr, j, k, owner
+    integer :: child, component, first_child, i, ierr, j, k, last_child, owner
     logical :: accepted, entity_ok, global_ok, local_ok
     logical :: needs_correction
 
@@ -4127,14 +4131,38 @@ contains
       return
     end if
 
+    allocate(refined(geometry%nx, geometry%ny), &
+      recipients(geometry%nx, geometry%ny))
+    refined = .false.
+    first_child = sparse%topology%relations(level)% &
+      child_offsets(patch) + 1
+    last_child = sparse%topology%relations(level)% &
+      child_offsets(patch + 1)
+    do child = first_child, last_child
+      child_patch = sparse%topology%relations(level)%children(child)%patch
+      refined(child_patch%coarse_i_lower:child_patch%coarse_i_upper, &
+        child_patch%coarse_j_lower:child_patch%coarse_j_upper) = .true.
+    end do
+    recipients = .false.
+    entity_ok = .true.
+    do child = first_child, last_child
+      child_geometry = &
+        sparse%topology%relations(level)%children(child)%geometry
+      child_patch = sparse%topology%relations(level)%children(child)%patch
+      call mark_local_cut_interface_recipients_2d( &
+        geometry, child_geometry, child_patch, refined, recipients, local_ok)
+      entity_ok = entity_ok .and. local_ok
+    end do
+    call all_ranks_accept_2d( &
+      distribution%comm, entity_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
     entity_ok = .true.
     if (distribution%rank == owner) then
       recipient_volume = 0.0_dp
       do j = 1, geometry%ny
         do i = 1, geometry%nx
-          if (sparse_patch_tree_parent_cell_is_refined( &
-                sparse%topology, level, patch, i, j) .or. &
-              geometry%cell_type(i, j) == eb_covered_cell) cycle
+          if (.not. recipients(i, j)) cycle
           recipient_volume = recipient_volume + &
             geometry%volume_fraction(i, j) * geometry%dx * geometry%dy
         end do
@@ -4148,9 +4176,7 @@ contains
       if (entity_ok) then
         do j = 1, geometry%ny
           do i = 1, geometry%nx
-            if (sparse_patch_tree_parent_cell_is_refined( &
-                  sparse%topology, level, patch, i, j) .or. &
-                geometry%cell_type(i, j) == eb_covered_cell) cycle
+            if (.not. recipients(i, j)) cycle
             sparse%levels(level)%patches(patch)%state(:, i, j) = &
               sparse%levels(level)%patches(patch)%state(:, i, j) + correction
           end do

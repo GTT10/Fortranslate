@@ -42,7 +42,8 @@ program test_amr_eb_multilevel_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_eb_state_2d, &
     average_down_three_level_reactive_eb_state_2d, &
-    composite_three_level_eb_integral_2d
+    composite_three_level_eb_integral_2d, &
+    mark_local_cut_interface_recipients_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     advance_three_level_reactive_eb_hydro_2d
   use reactive_eb_amr_2d_driver_mod, only: &
@@ -128,6 +129,7 @@ program test_amr_eb_multilevel_2d
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
   real(dp) :: hot_temperature
   real(dp) :: scale, dt, species_integral_sum, species_change
+  logical, allocatable :: local_refined(:, :), local_recipients(:, :)
   real(dp) :: tree_dt, reference_tree_dt, initial_tree_dt, node_dt
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
   logical :: ok, topology_changed, reference_ok, node_ok
@@ -251,6 +253,35 @@ program test_amr_eb_multilevel_2d
     any(level_two_geometry%y_face_fraction(:, 0) < 1.0_dp) .or. &
     any(level_two_geometry%y_face_fraction(:, level_two_geometry%ny) < &
       1.0_dp), "cut finest coarse/fine interface")
+
+  allocate(local_refined(level_one_nx, level_one_ny), &
+    local_recipients(level_one_nx, level_one_ny))
+  local_refined = .false.
+  local_refined( &
+    level_one_i_lower:level_one_i_upper, &
+    level_one_j_lower:level_one_j_upper) = .true.
+  local_recipients = .false.
+  call mark_local_cut_interface_recipients_2d( &
+    level_one_geometry, level_two_geometry, level_one_patch, &
+    local_refined, local_recipients, ok)
+  call require(ok .and. any(local_recipients) .and. &
+    .not. any(local_recipients .and. local_refined), &
+    "local cut-interface recipient construction")
+  call require(count(local_recipients) < count( &
+    (.not. local_refined) .and. &
+    level_one_geometry%cell_type /= eb_covered_cell), &
+    "cut-interface redistribution is not global")
+  ok = .true.
+  do j = 1, level_one_ny
+    do i = 1, level_one_nx
+      if (.not. local_recipients(i, j)) cycle
+      ok = ok .and. i >= level_one_i_lower - 2 .and. &
+        i <= level_one_i_upper + 2 .and. &
+        j >= level_one_j_lower - 2 .and. &
+        j <= level_one_j_upper + 2
+    end do
+  end do
+  call require(ok, "cut-interface recipients stay in local three-by-three support")
 
   allocate(root_state(1, root_nx, root_ny), source=1.0_dp)
   allocate(level_one_state(1, level_one_nx, level_one_ny), source=2.0_dp)
