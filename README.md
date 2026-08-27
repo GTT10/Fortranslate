@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.181.0` milestone contains the serial verification suite, ten optional
+The `0.182.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -18,7 +18,7 @@ another weighting and reproduce an uninterrupted one-rank reference. The
 fresh sparse-MPI 2D EB path now constructs its numerical root state on the
 single owning rank and moves those arrays directly into sparse storage;
 non-owners never allocate a root state or temperature field. The
-public serial and sparse-MPI patch-tree checkpoints now store a schema-2
+  public serial and sparse-MPI patch-tree checkpoints now store a schema-3
 physics, mesh, EB, and regridding fingerprint and reject incompatible restart
 inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
@@ -35,9 +35,10 @@ single-level public EB application now reads `embedded_wall_kind`,
 `embedded_wall_thermal`, `embedded_wall_temperature`, and the three-component
 `embedded_wall_velocity` from `&embedded_boundary`. It rejects isothermal or
 no-slip selections unless the matching thermal or viscous transport operator
-is enabled. Checkpoint-capable AMR applications continue to reject active
-nondefault embedded-wall inputs until those values enter their compatibility
-formats. The
+is enabled. Fixed-depth and arbitrary-depth AMR applications now apply the
+same configured wall. Their checkpoint contracts record the wall kind,
+thermal mode, temperature, velocity, transport switches, and transport CFL,
+and reject incompatible restarts transactionally. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial

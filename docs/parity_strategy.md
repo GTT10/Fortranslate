@@ -2924,3 +2924,16 @@ and require neutral clock/counter rejection. Keep active nondefault walls
 rejected by checkpoint-capable AMR application preflight. Retain all 215 serial
 tests and the complete one-, two-, four-, and eight-rank MPI Debug/Release
 chain.
+
+## 0.182.0 AMR wall-control restart gates
+
+The fixed-depth restart formats compare the wall kind, thermal mode,
+temperature, velocity, transport enable flag, each molecular-transport process
+flag, and transport CFL before accepting state. The arbitrary-depth serial and
+sparse-MPI applications carry the same values in their shared fingerprint.
+
+Parity evidence requires an active isothermal wall to advance through a public
+two-level AMR lifecycle, write and restart its checkpoint, and reject a changed
+wall temperature without advancing the clock. Exact PeleC checkpoint-file
+compatibility is not claimed; the contract is PeleF-internal and intentionally
+rejects older schemas.

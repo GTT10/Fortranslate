@@ -2196,3 +2196,19 @@ driver explicitly rejects an active isothermal or no-slip embedded-wall config
 at preflight while its checkpoint/fingerprint formats remain unchanged. The
 low-level AMR and MPI boundary-set APIs qualified in `0.180.0` remain available
 to library callers.
+
+## Restart-safe AMR embedded-wall controls (`0.182.0`)
+
+All public AMR drivers now construct their domain and embedded-wall boundary
+records through the same configured builder as the single-level driver. The
+two-level, sibling-patch, three-level, arbitrary-depth, and sparse-MPI paths
+therefore receive identical wall kind, thermal mode, temperature, and velocity
+values before any state allocation or advancement.
+
+The fixed-depth formatted checkpoint schemas advance to version 2 and store
+those wall values together with the transport enable flag, individual
+viscosity, conduction, diffusion, and barodiffusion flags, and transport CFL.
+The serial/sparse arbitrary-depth fingerprint advances to schema 3 and compares
+the same controls. A restart mismatch returns transactionally with a neutral
+clock and no candidate solution. Earlier schemas are rejected rather than
+silently assuming the new defaults.
