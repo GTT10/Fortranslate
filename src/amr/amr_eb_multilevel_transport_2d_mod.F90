@@ -42,7 +42,7 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, boundaries, &
       target_volume_fraction, max_order, new_root_state, new_root_temperature, &
       new_level_one_state, new_level_one_temperature, new_level_two_state, &
-      new_level_two_temperature, minimum_theta, ok)
+      new_level_two_temperature, minimum_theta, ok, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
@@ -68,6 +68,7 @@ contains
     real(dp), intent(out) :: new_level_two_temperature(:, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
 
     type(amr_eb_flux_register_2d) :: root_register, level_one_register
     type(reactive_eb_exterior_state_2d) :: level_one_exterior
@@ -116,6 +117,7 @@ contains
     new_level_two_temperature = level_two_temperature
     minimum_theta = 1.0_dp
     ok = .false.
+    if (present(failure_context)) failure_context = "input validation"
     nvar = reactive_nvar(size(species))
     if (nvar < 1 .or. size(transport) /= size(species) .or. &
         .not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
@@ -136,6 +138,7 @@ contains
           shape(level_two_temperature))) return
 
     allocate(root_integral_before(nvar))
+    if (present(failure_context)) failure_context = "initial composite integral"
     call composite_three_level_eb_integral_2d( &
       root_state, root_geometry, level_one_state, level_one_geometry, &
       root_patch, level_two_state, level_two_geometry, level_one_patch, &
@@ -147,21 +150,26 @@ contains
     allocate(root_rhs, mold=root_state)
     allocate(root_x_flux(nvar, 0:root_geometry%nx, root_geometry%ny))
     allocate(root_y_flux(nvar, root_geometry%nx, 0:root_geometry%ny))
+    if (present(failure_context)) failure_context = "root transport flux"
     call reactive_eb_transport_fluxes_rhs_2d( &
       species, transport, root_state, root_temperature, root_geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, boundaries, root_rhs, &
       root_x_flux, root_y_flux, root_theta, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "root redistribution"
     call advance_reactive_eb_state_redistributed_2d( &
       species, root_state, root_temperature, root_geometry, root_rhs, dt, &
       root_candidate, root_temperature_work, local_ok, &
       target_volume_fraction, max_order)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "root register initialization"
     call initialize_amr_eb_flux_register_2d( &
       root_geometry, level_one_geometry, root_patch, nvar, root_register, &
       local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) &
+      failure_context = "root coarse flux accumulation"
     call accumulate_coarse_eb_fluxes_2d( &
       root_register, root_geometry, level_one_geometry, root_patch, &
       root_x_flux, root_y_flux, dt, local_ok)
@@ -200,6 +208,8 @@ contains
     level_one_dt = dt / real(level_one_ratio, dp)
     level_two_dt = level_one_dt / real(level_two_ratio, dp)
     do level_one_substep = 1, level_one_ratio
+      if (present(failure_context)) &
+        failure_context = "level-one composite integral"
       call composite_eb_integral_2d( &
         level_one_candidate, level_one_geometry, level_two_candidate, &
         level_two_geometry, level_one_patch, level_one_integral_before, &
@@ -208,12 +218,14 @@ contains
       level_one_start = level_one_candidate
       level_one_start_temperature = level_one_candidate_temperature
       alpha = real(level_one_substep - 1, dp) / real(level_one_ratio, dp)
+      if (present(failure_context)) failure_context = "level-one exterior"
       call build_reactive_eb_patch_exterior_2d( &
         species, root_state, root_temperature, root_candidate, &
         root_temperature_work, root_geometry, level_one_geometry, root_patch, &
         alpha, level_one_exterior, local_ok, level_one_candidate, &
         level_one_candidate_temperature)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "level-one transport flux"
       call reactive_eb_transport_fluxes_rhs_2d( &
         species, transport, level_one_candidate, &
         level_one_candidate_temperature, level_one_geometry, level_one_dt, &
@@ -223,21 +235,28 @@ contains
         local_ok, level_one_exterior)
       if (.not. local_ok) return
       minimum_theta = min(minimum_theta, level_one_theta)
+      if (present(failure_context)) failure_context = "level-one redistribution"
       call advance_reactive_eb_state_redistributed_2d( &
         species, level_one_candidate, level_one_candidate_temperature, &
         level_one_geometry, level_one_rhs, level_one_dt, &
         level_one_uncorrected, level_one_uncorrected_temperature, local_ok, &
         target_volume_fraction, max_order)
       if (.not. local_ok) return
+      if (present(failure_context)) &
+        failure_context = "root fine flux accumulation"
       call accumulate_fine_eb_fluxes_2d( &
         root_register, root_geometry, level_one_geometry, root_patch, &
         level_one_x_flux, level_one_y_flux, level_one_dt, local_ok)
       if (.not. local_ok) return
 
+      if (present(failure_context)) &
+        failure_context = "level-two register initialization"
       call initialize_amr_eb_flux_register_2d( &
         level_one_geometry, level_two_geometry, level_one_patch, nvar, &
         level_one_register, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) &
+        failure_context = "level-two coarse flux accumulation"
       call accumulate_coarse_eb_fluxes_2d( &
         level_one_register, level_one_geometry, level_two_geometry, &
         level_one_patch, level_one_x_flux, level_one_y_flux, level_one_dt, &
@@ -246,6 +265,7 @@ contains
 
       do level_two_substep = 1, level_two_ratio
         alpha = real(level_two_substep - 1, dp) / real(level_two_ratio, dp)
+        if (present(failure_context)) failure_context = "level-two exterior"
         call build_reactive_eb_patch_exterior_2d( &
           species, level_one_start, level_one_start_temperature, &
           level_one_uncorrected, level_one_uncorrected_temperature, &
@@ -253,6 +273,8 @@ contains
           level_two_exterior, local_ok, level_two_candidate, &
           level_two_candidate_temperature)
         if (.not. local_ok) return
+        if (present(failure_context)) &
+          failure_context = "level-two transport flux"
         call reactive_eb_transport_fluxes_rhs_2d( &
           species, transport, level_two_candidate, &
           level_two_candidate_temperature, level_two_geometry, level_two_dt, &
@@ -262,6 +284,8 @@ contains
           local_ok, level_two_exterior)
         if (.not. local_ok) return
         minimum_theta = min(minimum_theta, level_two_theta)
+        if (present(failure_context)) &
+          failure_context = "level-two redistribution"
         call advance_reactive_eb_state_redistributed_2d( &
           species, level_two_candidate, level_two_candidate_temperature, &
           level_two_geometry, level_two_rhs, level_two_dt, level_two_work, &
@@ -270,6 +294,8 @@ contains
         if (.not. local_ok) return
         level_two_candidate = level_two_work
         level_two_candidate_temperature = level_two_work_temperature
+        if (present(failure_context)) &
+          failure_context = "level-two fine flux accumulation"
         call accumulate_fine_eb_fluxes_2d( &
           level_one_register, level_one_geometry, level_two_geometry, &
           level_one_patch, level_two_x_flux, level_two_y_flux, level_two_dt, &
@@ -277,6 +303,7 @@ contains
         if (.not. local_ok) return
       end do
 
+      if (present(failure_context)) failure_context = "level-two reflux"
       call reflux_reactive_eb_state_patch_2d( &
         species, level_one_uncorrected, &
         level_one_uncorrected_temperature, level_one_geometry, &
@@ -285,6 +312,7 @@ contains
         level_one_refluxed, level_one_refluxed_temperature, &
         level_two_refluxed, level_two_refluxed_temperature, local_ok)
       if (.not. local_ok) return
+      if (present(failure_context)) failure_context = "level-two average-down"
       call average_down_reactive_eb_state_patch_2d( &
         species, level_one_refluxed, level_one_refluxed_temperature, &
         level_one_geometry, level_two_refluxed, level_two_geometry, &
@@ -294,6 +322,8 @@ contains
       level_two_candidate = level_two_refluxed
       level_two_candidate_temperature = level_two_refluxed_temperature
       if (.not. level_two_interface_is_regular(level_two_geometry)) then
+        if (present(failure_context)) &
+          failure_context = "level-two conservation closure"
         call close_cut_interface_conservation_2d( &
           species, level_one_integral_before, level_one_candidate, &
           level_one_candidate_temperature, level_one_geometry, &
@@ -309,6 +339,7 @@ contains
     minimum_theta = min(minimum_theta, root_theta)
     allocate(root_refluxed, mold=root_state)
     allocate(root_refluxed_temperature, mold=root_temperature)
+    if (present(failure_context)) failure_context = "root reflux"
     call reflux_reactive_eb_state_patch_2d( &
       species, root_candidate, root_temperature_work, root_geometry, &
       level_one_candidate, level_one_candidate_temperature, &
@@ -316,6 +347,7 @@ contains
       root_refluxed_temperature, level_one_refluxed, &
       level_one_refluxed_temperature, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "root average-down"
     call average_down_three_level_reactive_eb_state_2d( &
       species, root_refluxed, root_refluxed_temperature, root_geometry, &
       level_one_refluxed, level_one_refluxed_temperature, &
@@ -327,6 +359,8 @@ contains
     if (.not. level_two_interface_is_regular(level_one_geometry)) then
       allocate(root_closed, mold=root_state)
       allocate(root_closed_temperature, mold=root_temperature)
+      if (present(failure_context)) &
+        failure_context = "root conservation closure"
       call close_cut_interface_conservation_2d( &
         species, root_integral_before, root_candidate, &
         root_temperature_work, root_geometry, level_one_candidate, &
@@ -344,6 +378,7 @@ contains
     new_level_two_state = level_two_candidate
     new_level_two_temperature = level_two_candidate_temperature
     ok = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine advance_three_level_reactive_eb_transport_euler_2d
 
   subroutine advance_three_level_reactive_eb_transport_2d( &
@@ -355,7 +390,7 @@ contains
       barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
       new_root_state, new_root_temperature, new_level_one_state, &
       new_level_one_temperature, new_level_two_state, &
-      new_level_two_temperature, minimum_theta, ok)
+      new_level_two_temperature, minimum_theta, ok, failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
@@ -381,6 +416,7 @@ contains
     real(dp), intent(out) :: new_level_two_temperature(:, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp), allocatable :: stage_root(:, :, :), stage_root_temperature(:, :)
     real(dp), allocatable :: stage_one(:, :, :), stage_one_temperature(:, :)
@@ -405,6 +441,7 @@ contains
     new_level_two_temperature = level_two_temperature
     minimum_theta = 1.0_dp
     ok = .false.
+    if (present(failure_context)) failure_context = "input validation"
     if (.not. ieee_is_finite(interval) .or. interval < 0.0_dp) return
     if (interval <= tiny(1.0_dp) .or. .not. (viscosity_enabled .or. &
         thermal_conduction_enabled .or. species_diffusion_enabled)) then
@@ -418,6 +455,7 @@ contains
     allocate(stage_one_temperature, mold=level_one_temperature)
     allocate(stage_two, mold=level_two_state)
     allocate(stage_two_temperature, mold=level_two_temperature)
+    if (present(failure_context)) failure_context = "first Euler stage"
     call advance_three_level_reactive_eb_transport_euler_2d( &
       species, transport, root_state, root_temperature, root_geometry, &
       level_one_state, level_one_temperature, level_one_geometry, root_patch, &
@@ -426,7 +464,7 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, boundaries, target_volume_fraction, max_order, &
       stage_root, stage_root_temperature, stage_one, stage_one_temperature, &
-      stage_two, stage_two_temperature, theta_one, local_ok)
+      stage_two, stage_two_temperature, theta_one, local_ok, failure_context)
     if (.not. local_ok) return
 
     allocate(euler_root, mold=root_state)
@@ -435,6 +473,7 @@ contains
     allocate(euler_one_temperature, mold=level_one_temperature)
     allocate(euler_two, mold=level_two_state)
     allocate(euler_two_temperature, mold=level_two_temperature)
+    if (present(failure_context)) failure_context = "second Euler stage"
     call advance_three_level_reactive_eb_transport_euler_2d( &
       species, transport, stage_root, stage_root_temperature, root_geometry, &
       stage_one, stage_one_temperature, level_one_geometry, root_patch, &
@@ -443,7 +482,7 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, boundaries, &
       target_volume_fraction, max_order, euler_root, euler_root_temperature, &
       euler_one, euler_one_temperature, euler_two, euler_two_temperature, &
-      theta_two, local_ok)
+      theta_two, local_ok, failure_context)
     if (.not. local_ok) return
 
     allocate(candidate_root, source=0.5_dp * (root_state + euler_root))
@@ -452,21 +491,25 @@ contains
     allocate(candidate_root_temperature, mold=root_temperature)
     allocate(candidate_one_temperature, mold=level_one_temperature)
     allocate(candidate_two_temperature, mold=level_two_temperature)
+    if (present(failure_context)) failure_context = "root blend recovery"
     call recover_transport_temperature_2d( &
       species, candidate_root, &
       0.5_dp * (root_temperature + euler_root_temperature), root_geometry, &
       candidate_root_temperature, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "level-one blend recovery"
     call recover_transport_temperature_2d( &
       species, candidate_one, &
       0.5_dp * (level_one_temperature + euler_one_temperature), &
       level_one_geometry, candidate_one_temperature, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "level-two blend recovery"
     call recover_transport_temperature_2d( &
       species, candidate_two, &
       0.5_dp * (level_two_temperature + euler_two_temperature), &
       level_two_geometry, candidate_two_temperature, local_ok)
     if (.not. local_ok) return
+    if (present(failure_context)) failure_context = "final average-down"
     call average_down_three_level_reactive_eb_state_2d( &
       species, candidate_root, candidate_root_temperature, root_geometry, &
       candidate_one, candidate_one_temperature, level_one_geometry, &
@@ -479,6 +522,7 @@ contains
     new_level_two_temperature = candidate_two_temperature
     minimum_theta = min(theta_one, theta_two)
     ok = .true.
+    if (present(failure_context)) failure_context = "none"
   end subroutine advance_three_level_reactive_eb_transport_2d
 
 end module amr_eb_multilevel_transport_2d_mod

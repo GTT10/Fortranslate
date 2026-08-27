@@ -657,7 +657,7 @@ contains
         state_redist_max_order, transport_root, transport_root_temperature, &
         transport_level_one, transport_level_one_temperature, &
         transport_level_two, transport_level_two_temperature, &
-        stage_transport_theta, local_ok)
+        stage_transport_theta, local_ok, failure_context)
       if (.not. local_ok) return
       root_candidate = transport_root
       root_candidate_temperature = transport_root_temperature
@@ -704,7 +704,7 @@ contains
         state_redist_max_order, transport_root, transport_root_temperature, &
         transport_level_one, transport_level_one_temperature, &
         transport_level_two, transport_level_two_temperature, &
-        stage_transport_theta, local_ok)
+        stage_transport_theta, local_ok, failure_context)
       if (.not. local_ok) return
       root_candidate = transport_root
       root_candidate_temperature = transport_root_temperature
