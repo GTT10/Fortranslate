@@ -2354,3 +2354,18 @@ finest two-cell margin in those derived dimensions, and reconstructs both EB
 geometries in private candidates. State, temperature, geometry, counters, and
 patch descriptors publish together only after EOS recovery and the terminal
 marker succeed. Inputs that omit the flag retain a fixed configured parent.
+
+## Arbitrary-depth outflow-boundary children (`0.191.0`)
+
+The serial and sparse-MPI public patch-tree applications now qualify the
+domain-inclusive rectangles already produced by the shared temperature-tag
+planner. A recursively tagged x-upper hotspot builds four populated levels
+whose child rectangles all meet the same physical boundary.
+
+Each physical child side obtains its exterior state by copying the current
+fine boundary cell, matching the established outflow contract. Coarse-time
+interpolation remains active on the other sides. Flux-register accumulation
+and reflux remain absent on the physical side while the other coarse/fine
+interfaces retain their normal conservative synchronization. Sparse ownership
+uses the same compact context and direct owner routes; no complete field is
+introduced on a nonowner rank.

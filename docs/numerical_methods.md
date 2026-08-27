@@ -1250,8 +1250,10 @@ absolute thresholds. Its disconnected tag groups are buffered, expanded to a
 minimum width, and assigned that parent's flattened index. Children are
 conservatively prolonged before the same operation repeats at the next
 relation. Recursion stops independently on untagged branches and globally when
-no children remain or `amr_max_levels` is reached. Physical-boundary children
-remain a future integration.
+no children remain or `amr_max_levels` is reached. Domain clipping permits an
+outflow-boundary child. On its physical side, the fine boundary state supplies
+the exterior value and no coarse/fine flux-register contribution is formed;
+the remaining sides retain coarse-time interpolation and reflux.
 
 Adjacent children of one parent remain separate owners. Before each fine
 substep, a child first receives its time-interpolated parent ghosts. Any ghost

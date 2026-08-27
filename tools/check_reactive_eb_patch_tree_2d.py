@@ -12,6 +12,7 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--require-x-upper-boundary", action="store_true")
     args = parser.parse_args()
 
     with args.output.open(newline="", encoding="utf-8") as stream:
@@ -41,6 +42,7 @@ def main() -> None:
 
     identities: set[tuple[int, int, int, int]] = set()
     levels: set[int] = set()
+    x_upper_levels: set[int] = set()
     cell_types: set[int] = set()
     root_dx = 0.012 / 12.0
     for row in rows:
@@ -59,6 +61,10 @@ def main() -> None:
             raise AssertionError("incorrect level x spacing")
         if abs(float(row["cell_dy"]) - expected_spacing) > 2.0e-14 * root_dx:
             raise AssertionError("incorrect level y spacing")
+        if abs(float(row["x"]) + 0.5 * float(row["cell_dx"]) - 0.012) <= (
+            2.0e-14 * root_dx
+        ):
+            x_upper_levels.add(level)
         if abs(float(row["time"]) - 1.0e-9) > 2.0e-22:
             raise AssertionError("incorrect patch-tree final time")
         if not 0.0 <= float(row["volume_fraction"]) <= 1.0:
@@ -75,6 +81,11 @@ def main() -> None:
         raise AssertionError(f"expected four populated levels, found {levels}")
     if cell_types != {0, 1, 2}:
         raise AssertionError(f"incomplete EB cell classes {cell_types}")
+    if args.require_x_upper_boundary and x_upper_levels != levels:
+        raise AssertionError(
+            "not every populated AMR level reaches the x-upper physical boundary: "
+            f"{x_upper_levels}"
+        )
     print("check_reactive_eb_patch_tree_2d: PASS")
 
 

@@ -3446,3 +3446,19 @@ The public fixed-depth application can now move both refined rectangles while
 retaining the existing fixed-parent behavior as the default. Restart rebuilds
 the middle geometry from the stored parent descriptor and validates the stored
 finest descriptor against that actual geometry before publishing any field.
+
+## Arbitrary-depth outflow-boundary AMR children (`0.191.0`)
+
+- [x] one-sided root and descendant temperature-gradient tagging
+- [x] domain-inclusive recursive child planning through four levels
+- [x] current-fine-state outflow exterior fill on the physical side
+- [x] coarse-time interpolation on every remaining coarse/fine side
+- [x] physical-side flux-register and reflux omission
+- [x] serial public application topology and field gate
+- [x] sparse-MPI 1/2/4/8-rank topology and field parity
+- [x] retained composite EB classes, positivity, and species closure
+
+The arbitrary-depth public lifecycle can now refine an outflow physical
+boundary in serial or sparse-MPI execution. Non-outflow refined boundaries,
+periodic-seam children, and physical-boundary checkpoint continuation remain
+outside this milestone.

@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.190.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.191.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
@@ -102,7 +102,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | stable coarse timestep | owner-local EB hydro/transport limits, refinement scaling, and communicator minimum |
 | public full-physics clock | repeated sparse stable-step selection, exact target clipping, and committed `R-T-H-T-R` accounting |
 | explicit topology change | direct child-to-root restriction, distinct-new-owner PCM root assembly, overlap owner migration, and atomic one-copy commit |
-| arbitrary-depth dynamic topology | per-parent owner-local temperature tags, compact plan reduction, caller EB geometry rebuild, deterministic redistribution, direct retained-overlap migration, and atomic commit |
+| arbitrary-depth dynamic topology | per-parent owner-local temperature tags, domain-inclusive outflow-boundary children, compact plan reduction, caller EB geometry rebuild, deterministic redistribution, direct retained-overlap migration, and atomic commit |
 | arbitrary-depth checkpoint/restart | selected-root gather/write, root-only read, compact geometry broadcast, owner-map recomputation, and direct rank-neutral scatter |
 | arbitrary-depth composite output | one deterministic finest-available-cell CSV, with selected-root direct sparse gather and root-only file access |
 | public serial arbitrary-depth application | dedicated namelist-driven root initialization/restart, recursive tag/regrid schedule, committed `R-T-H-T-R` clock, checkpoint calls, and composite output |
