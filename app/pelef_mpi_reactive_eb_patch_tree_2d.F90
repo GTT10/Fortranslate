@@ -69,7 +69,9 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   integer :: argument_count, ierr, last_checkpoint_step, nranks, rank
   integer :: local_root_initializers, root_initializer_ranks
   integer :: regrids, steps, tagged_cells, transferred_cells
-  logical :: changed, ok, restart_run, stopped_after_checkpoint
+  logical :: barodiffusion_active, changed, ok, restart_run
+  logical :: species_diffusion_active, stopped_after_checkpoint
+  logical :: thermal_conduction_active, viscosity_active
 
   call MPI_Init(ierr)
   if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
@@ -85,10 +87,16 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   call read_reactive_eb_amr_2d_configuration( &
     trim(input_path), config, ok, message)
   if (.not. ok) call abort_run(trim(message), 2)
+  viscosity_active = config%eb%flow%transport_enabled .and. &
+    config%eb%flow%viscosity_enabled
+  thermal_conduction_active = config%eb%flow%transport_enabled .and. &
+    config%eb%flow%thermal_conduction_enabled
+  species_diffusion_active = config%eb%flow%transport_enabled .and. &
+    config%eb%flow%species_diffusion_enabled
+  barodiffusion_active = species_diffusion_active .and. &
+    config%eb%flow%barodiffusion_enabled
   if (config%three_level_enabled .or. config%multipatch_enabled) &
     call abort_run("Sparse MPI patch tree excludes fixed-depth modes", 2)
-  if (trim(config%prolongation_method) /= "pcm") &
-    call abort_run("Sparse MPI patch tree currently requires PCM", 2)
   call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
     config, fingerprint, ok)
   if (.not. ok) call abort_run("Checkpoint fingerprint failed", 2)
@@ -178,7 +186,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, new_distribution, ok, changed, &
-        tagged_cells, transferred_cells)
+        tagged_cells, transferred_cells, &
+        prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Initial sparse regrid failed", 4)
       distribution = new_distribution
       if (changed) regrids = regrids + 1
@@ -205,9 +214,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       call abort_run("Sparse patch-tree step limit reached", 5)
     call compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
       species, transport, distribution, sparse, config%eb%flow%cfl, &
-      config%eb%flow%transport_cfl, config%eb%flow%viscosity_enabled, &
-      config%eb%flow%thermal_conduction_enabled, &
-      config%eb%flow%species_diffusion_enabled, dt, ok)
+      config%eb%flow%transport_cfl, viscosity_active, &
+      thermal_conduction_active, species_diffusion_active, dt, ok)
     if (.not. ok) call abort_run("Sparse patch-tree timestep failed", 5)
     dt = min(dt, remaining)
     call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
@@ -217,10 +225,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
       config%eb%flow%chemistry_enabled, &
       config%eb%flow%chemistry_relative_tolerance, &
       config%eb%flow%chemistry_absolute_tolerance, &
-      config%eb%flow%viscosity_enabled, &
-      config%eb%flow%thermal_conduction_enabled, &
-      config%eb%flow%species_diffusion_enabled, &
-      config%eb%flow%barodiffusion_enabled, boundaries, &
+      viscosity_active, thermal_conduction_active, &
+      species_diffusion_active, barodiffusion_active, boundaries, &
       config%eb%state_redist_target_volume_fraction, step_theta, ok, &
       physics_context)
     if (.not. ok) call abort_run( &
@@ -236,7 +242,8 @@ program pelef_mpi_reactive_eb_patch_tree_2d
         species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, new_distribution, ok, changed, &
-        tagged_cells, transferred_cells)
+        tagged_cells, transferred_cells, &
+        prolongation_method=config%prolongation_method)
       if (.not. ok) call abort_run("Periodic sparse regrid failed", 5)
       distribution = new_distribution
       if (changed) regrids = regrids + 1

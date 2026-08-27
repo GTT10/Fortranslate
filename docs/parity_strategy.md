@@ -2967,3 +2967,19 @@ Attempt linear fixed-depth checkpointing and a linear arbitrary-depth
 fingerprint and require rejection before time, counters, topology, or fields
 are published. Retain all 215 serial regressions and the complete one-, two-,
 four-, and eight-rank MPI Debug/Release chain.
+
+## 0.185.0 restart-safe arbitrary-depth prolongation gates
+
+Run every public fixed-depth checkpoint family with linear prolongation:
+root/single-patch, separated sibling patches, static three levels, and dynamic
+three levels. Require uninterrupted and checkpoint/restart outputs to retain
+their existing field parity. Change only the method when reading a direct
+two-level checkpoint and require neutral rejection.
+
+Run the four-level public patch-tree case with linear prolongation in serial
+and with one, two, four, and eight MPI ranks. Write a schema-4 checkpoint with
+two ranks and restart it independently with four and eight ranks under a
+different ownership weighting; require identity-keyed topology and field
+parity against the uninterrupted one-rank reference. Change only the method in
+the incompatible input and require rejection before topology or fields are
+published. Retain all serial and MPI Debug/Release gates.

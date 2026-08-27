@@ -28,7 +28,7 @@ module amr_eb_patch_tree_reactive_2d_mod
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
     reflux_reactive_eb_state_patch_2d
   use amr_eb_reactive_2d_mod, only: &
-    prolong_reactive_eb_patch_pcm_2d, &
+    prolong_reactive_eb_patch_2d, &
     build_reactive_eb_patch_exterior_2d, advance_reactive_eb_level_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_regrid_2d_mod, only: &
@@ -48,7 +48,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   character(len=*), parameter :: patch_tree_checkpoint_magic = &
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
   integer, parameter :: patch_tree_checkpoint_schema = 1
-  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 3
+  integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 4
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -81,6 +81,7 @@ module amr_eb_patch_tree_reactive_2d_mod
     character(len=32) :: riemann_solver = ""
     character(len=32) :: reconstruction = ""
     character(len=32) :: limiter = ""
+    character(len=32) :: prolongation_method = ""
     character(len=24) :: embedded_wall_kind = ""
     character(len=24) :: embedded_wall_thermal = ""
     integer :: mesh_and_regrid(10) = 0
@@ -140,6 +141,8 @@ contains
       len_trim(self%riemann_solver) > 0 .and. &
       len_trim(self%reconstruction) > 0 .and. &
       len_trim(self%limiter) > 0 .and. &
+      (trim(self%prolongation_method) == "pcm" .or. &
+       trim(self%prolongation_method) == "linear") .and. &
       (trim(self%embedded_wall_kind) == "slip_wall" .or. &
        trim(self%embedded_wall_kind) == "no_slip_wall") .and. &
       (trim(self%embedded_wall_thermal) == "adiabatic" .or. &
@@ -180,6 +183,8 @@ contains
       trim(self%riemann_solver) == trim(other%riemann_solver) .and. &
       trim(self%reconstruction) == trim(other%reconstruction) .and. &
       trim(self%limiter) == trim(other%limiter) .and. &
+      trim(self%prolongation_method) == &
+        trim(other%prolongation_method) .and. &
       trim(self%embedded_wall_kind) == &
         trim(other%embedded_wall_kind) .and. &
       trim(self%embedded_wall_thermal) == &
@@ -273,20 +278,26 @@ contains
   end function reactive_amr_eb_patch_tree_is_valid
 
   subroutine initialize_reactive_amr_eb_patch_tree_2d( &
-      species, root_state, root_temperature, topology, solution, ok)
+      species, root_state, root_temperature, topology, solution, ok, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
     type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
     type(reactive_amr_eb_patch_tree_2d), intent(out) :: solution
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(reactive_amr_eb_patch_tree_2d) :: candidate
     type(eb_geometry_2d) :: parent_geometry
+    character(len=32) :: method
     logical :: local_ok
     integer :: child, nvar, parent, relation
 
     solution = reactive_amr_eb_patch_tree_2d()
     ok = .false.
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
+    if (trim(method) /= "pcm" .and. trim(method) /= "linear") return
     nvar = reactive_nvar(size(species))
     if (nvar < 1 .or. .not. topology%is_valid()) return
     if (any(shape(root_state) /= &
@@ -323,12 +334,12 @@ contains
         allocate(candidate%levels(relation + 1)%patches(child)%temperature( &
           topology%relations(relation)%children(child)%geometry%nx, &
           topology%relations(relation)%children(child)%geometry%ny))
-        call prolong_reactive_eb_patch_pcm_2d( &
+        call prolong_reactive_eb_patch_2d( &
           species, candidate%levels(relation)%patches(parent)%state, &
           candidate%levels(relation)%patches(parent)%temperature, &
           parent_geometry, &
           topology%relations(relation)%children(child)%geometry, &
-          topology%relations(relation)%children(child)%patch, &
+          topology%relations(relation)%children(child)%patch, method, &
           candidate%levels(relation + 1)%patches(child)%state, &
           candidate%levels(relation + 1)%patches(child)%temperature, &
           local_ok)
@@ -364,7 +375,8 @@ contains
 
   subroutine plan_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, plans, tagged_cells, ok, failure_context)
+      geometry_builder, plans, tagged_cells, ok, failure_context, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
     type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
@@ -374,12 +386,14 @@ contains
     integer, intent(out) :: tagged_cells
     logical, intent(out) :: ok
     character(len=*), intent(out), optional :: failure_context
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(reactive_amr_eb_patch_tree_2d) :: candidate, next_candidate
     type(amr_eb_patch_tree_topology_2d) :: candidate_topology
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: workspace(:)
     type(amr_eb_regrid_plan_collection_2d), allocatable :: collections(:)
     type(eb_geometry_2d) :: parent_geometry
+    character(len=32) :: method
     logical, allocatable :: tags(:, :)
     integer :: child, child_count, entry, parent, parent_count
     integer :: relation, relation_count
@@ -387,8 +401,11 @@ contains
 
     ok = .false.
     tagged_cells = 0
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
     if (present(failure_context)) failure_context = "input validation"
-    if (.not. solution%is_valid() .or. &
+    if ((trim(method) /= "pcm" .and. trim(method) /= "linear") .or. &
+        .not. solution%is_valid() .or. &
         solution%nvar /= reactive_nvar(size(species)) .or. &
         maximum_levels < 1 .or. refinement_ratio < 2 .or. &
         .not. criteria%is_valid( &
@@ -474,7 +491,7 @@ contains
       call initialize_reactive_amr_eb_patch_tree_2d( &
         species, candidate%levels(1)%patches(1)%state, &
         candidate%levels(1)%patches(1)%temperature, candidate_topology, &
-        next_candidate, local_ok)
+        next_candidate, local_ok, method)
       if (.not. local_ok) return
       candidate = next_candidate
     end do
@@ -487,7 +504,8 @@ contains
 
   subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, ok, changed, tagged_cells, failure_context)
+      geometry_builder, ok, changed, tagged_cells, failure_context, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
     type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
@@ -496,18 +514,22 @@ contains
     logical, intent(out) :: ok, changed
     integer, intent(out) :: tagged_cells
     character(len=*), intent(out), optional :: failure_context
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     character(len=160) :: context
+    character(len=32) :: method
 
     ok = .false.
     changed = .false.
     tagged_cells = 0
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
     context = "tag planning"
     if (present(failure_context)) failure_context = context
     call plan_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, plans, tagged_cells, ok, context)
+      geometry_builder, plans, tagged_cells, ok, context, method)
     if (.not. ok) then
       if (present(failure_context)) failure_context = context
       return
@@ -515,7 +537,7 @@ contains
 
     context = "tree rebuild"
     call rebuild_reactive_amr_eb_patch_tree_2d( &
-      species, solution, plans, ok, changed, context)
+      species, solution, plans, ok, changed, context, method)
     if (.not. ok) then
       changed = .false.
       if (present(failure_context)) failure_context = context
@@ -541,6 +563,8 @@ contains
     write(unit, '(a)', iostat=status) trim(fingerprint%reconstruction)
     if (status /= 0) return
     write(unit, '(a)', iostat=status) trim(fingerprint%limiter)
+    if (status /= 0) return
+    write(unit, '(a)', iostat=status) trim(fingerprint%prolongation_method)
     if (status /= 0) return
     write(unit, '(a)', iostat=status) trim(fingerprint%embedded_wall_kind)
     if (status /= 0) return
@@ -581,6 +605,8 @@ contains
     read(unit, '(a)', iostat=status) fingerprint%reconstruction
     if (status /= 0) return
     read(unit, '(a)', iostat=status) fingerprint%limiter
+    if (status /= 0) return
+    read(unit, '(a)', iostat=status) fingerprint%prolongation_method
     if (status /= 0) return
     read(unit, '(a)', iostat=status) fingerprint%embedded_wall_kind
     if (status /= 0) return
@@ -965,16 +991,19 @@ contains
   end subroutine write_reactive_amr_eb_patch_tree_2d_csv
 
   subroutine rebuild_reactive_amr_eb_patch_tree_2d( &
-      species, solution, plans, ok, changed, failure_context)
+      species, solution, plans, ok, changed, failure_context, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
     type(amr_eb_patch_tree_level_plan_2d), intent(in) :: plans(:)
     logical, intent(out) :: ok, changed
     character(len=*), intent(out), optional :: failure_context
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(reactive_amr_eb_patch_tree_2d) :: collapsed, candidate
     type(amr_eb_patch_tree_topology_2d) :: new_topology
     type(eb_geometry_2d) :: parent_geometry
+    character(len=32) :: method
     real(dp), allocatable :: old_integral(:), new_integral(:)
     real(dp) :: integral_scale
     logical :: local_ok, topology_changed
@@ -983,7 +1012,10 @@ contains
 
     ok = .false.
     changed = .false.
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
     if (present(failure_context)) failure_context = "source validation"
+    if (trim(method) /= "pcm" .and. trim(method) /= "linear") return
     if (.not. solution%is_valid()) return
     if (solution%nvar /= reactive_nvar(size(species))) return
 
@@ -1011,7 +1043,7 @@ contains
     call initialize_reactive_amr_eb_patch_tree_2d( &
       species, collapsed%levels(1)%patches(1)%state, &
       collapsed%levels(1)%patches(1)%temperature, new_topology, &
-      candidate, local_ok)
+      candidate, local_ok, method)
     if (.not. local_ok) return
 
     do level = 2, candidate%level_count()
@@ -1024,13 +1056,14 @@ contains
         if (.not. local_ok) return
         if (present(failure_context)) &
           write(failure_context, '(a,i0,a,i0)') &
-            "PCM initialization level ", level - 1, " patch ", child
-        call prolong_reactive_eb_patch_pcm_2d( &
+            "prolongation level ", level - 1, " patch ", child
+        call prolong_reactive_eb_patch_2d( &
           species, candidate%levels(level - 1)%patches(parent)%state, &
           candidate%levels(level - 1)%patches(parent)%temperature, &
           parent_geometry, &
           candidate%topology%relations(relation)%children(child)%geometry, &
           candidate%topology%relations(relation)%children(child)%patch, &
+          method, &
           candidate%levels(level)%patches(child)%state, &
           candidate%levels(level)%patches(child)%temperature, local_ok)
         if (.not. local_ok) return

@@ -47,8 +47,15 @@ def main() -> None:
     args = parser.parse_args()
 
     text = args.checkpoint.read_text(encoding="utf-8")
+    lines = text.splitlines()
     if not text.startswith("PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"):
         raise AssertionError("incorrect three-level checkpoint magic")
+    schema, species_count, _ = (int(value) for value in lines[1].split())
+    if schema != 3 or species_count < 1:
+        raise AssertionError("invalid three-level checkpoint schema header")
+    metadata = 2 + species_count
+    if lines[metadata + 12] != "linear":
+        raise AssertionError("checkpoint did not preserve linear prolongation")
     if not text.rstrip().endswith("END_CHECKPOINT"):
         raise AssertionError("incomplete three-level checkpoint")
 

@@ -33,7 +33,7 @@ module mpi_amr_eb_patch_tree_2d_mod
     reactive_eb_patch_exterior_context_2d, &
     extract_reactive_eb_patch_exterior_context_2d, &
     build_reactive_eb_patch_exterior_from_context_2d, &
-    advance_reactive_eb_level_2d, prolong_reactive_eb_patch_pcm_2d
+    advance_reactive_eb_level_2d, prolong_reactive_eb_patch_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_regrid_2d_mod, only: &
     amr_eb_tagging_criteria_2d, amr_eb_regrid_plan_collection_2d, &
@@ -153,6 +153,20 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
 contains
+
+  pure integer function sparse_prolongation_method_code_2d(method) &
+      result(code)
+    character(len=*), intent(in) :: method
+
+    select case (trim(method))
+    case ("pcm")
+      code = 0
+    case ("linear")
+      code = 1
+    case default
+      code = -1
+    end select
+  end function sparse_prolongation_method_code_2d
 
   pure integer function mpi_amr_eb_tree_level_patch_count(self) result(count)
     class(mpi_amr_eb_patch_tree_level_ownership_2d), intent(in) :: self
@@ -1021,7 +1035,8 @@ contains
       refinement_ratio, geometry_builder, new_distribution, ok, changed, &
       tagged_cells, transferred_cells, local_tagging_evaluations, &
       local_candidate_transfers, local_restriction_transfers, &
-      local_prolongation_transfers, local_overlap_transfers)
+      local_prolongation_transfers, local_overlap_transfers, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
       old_distribution
@@ -1039,6 +1054,7 @@ contains
     integer, intent(out), optional :: local_restriction_transfers
     integer, intent(out), optional :: local_prolongation_transfers
     integer, intent(out), optional :: local_overlap_transfers
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: backup
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
@@ -1047,6 +1063,7 @@ contains
     integer :: restriction_transfers
     integer :: tagging_evaluations
     logical :: local_ok
+    character(len=32) :: method
 
     ok = .false.
     changed = .false.
@@ -1058,6 +1075,8 @@ contains
     regrid_restriction_transfers = 0
     prolongation_transfers = 0
     overlap_transfers = 0
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
     new_distribution = old_distribution
     if (present(local_tagging_evaluations)) local_tagging_evaluations = 0
     if (present(local_candidate_transfers)) local_candidate_transfers = 0
@@ -1071,12 +1090,12 @@ contains
     call plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, criteria, maximum_levels, &
       refinement_ratio, geometry_builder, plans, tagged_cells, local_ok, &
-      tagging_evaluations, candidate_transfers, restriction_transfers)
+      tagging_evaluations, candidate_transfers, restriction_transfers, method)
     if (.not. local_ok) go to 900
     call regrid_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, plans, new_distribution, local_ok, &
       changed, transferred_cells, regrid_restriction_transfers, &
-      prolongation_transfers, overlap_transfers)
+      prolongation_transfers, overlap_transfers, method)
     if (.not. local_ok) go to 900
     restriction_transfers = &
       restriction_transfers + regrid_restriction_transfers
@@ -1114,7 +1133,7 @@ contains
       species, distribution, sparse, criteria, maximum_levels, &
       refinement_ratio, geometry_builder, plans, tagged_cells, ok, &
       local_tagging_evaluations, local_candidate_transfers, &
-      local_restriction_transfers)
+      local_restriction_transfers, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
@@ -1128,6 +1147,7 @@ contains
     integer, intent(out), optional :: local_tagging_evaluations
     integer, intent(out), optional :: local_candidate_transfers
     integer, intent(out), optional :: local_restriction_transfers
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: source, candidate
     type(mpi_amr_eb_patch_tree_distribution_2d) :: candidate_distribution
@@ -1139,19 +1159,22 @@ contains
     real(dp) :: numeric_maximum(3), numeric_minimum(3), numeric_values(3)
     integer, allocatable :: global_bounds(:), local_bounds(:)
     integer :: child, child_count, entry, global_header(2), ierr
-    integer :: integer_maximum(7), integer_minimum(7), integer_values(7)
+    integer :: integer_maximum(8), integer_minimum(8), integer_values(8)
     integer :: local_header(2), parent, parent_count, parent_owner
     integer :: relation, relation_count, step_transfers
     integer :: candidate_transfers, restriction_transfers
     integer :: tagging_evaluations
     logical, allocatable :: tags(:, :)
     logical :: accepted, entity_ok, global_ok, local_ok, matches
+    character(len=32) :: method
 
     ok = .false.
     tagged_cells = 0
     tagging_evaluations = 0
     candidate_transfers = 0
     restriction_transfers = 0
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
     if (present(local_tagging_evaluations)) local_tagging_evaluations = 0
     if (present(local_candidate_transfers)) local_candidate_transfers = 0
     if (present(local_restriction_transfers)) &
@@ -1162,13 +1185,15 @@ contains
     integer_values = [ &
       size(species), maximum_levels, refinement_ratio, &
       criteria%buffer_cells, criteria%minimum_patch_cells_x, &
-      criteria%minimum_patch_cells_y, criteria%maximum_patch_gap_cells]
+      criteria%minimum_patch_cells_y, criteria%maximum_patch_gap_cells, &
+      sparse_prolongation_method_code_2d(method)]
     call replicated_distribution_matches_2d( &
       distribution, sparse%topology, matches)
     local_ok = matches .and. sparse%is_valid(distribution) .and. &
       sparse%nvar == reactive_nvar(size(species)) .and. &
       size(species) >= 1 .and. maximum_levels >= 1 .and. &
       refinement_ratio >= 2 .and. &
+      sparse_prolongation_method_code_2d(method) >= 0 .and. &
       criteria%is_valid( &
         sparse%topology%root_geometry%nx, sparse%topology%root_geometry%ny)
     call all_ranks_accept_2d( &
@@ -1292,7 +1317,7 @@ contains
       if (.not. local_ok) return
       call initialize_direct_sparse_regrid_tree_2d( &
         species, distribution, candidate_distribution, source, &
-        candidate_topology, candidate, step_transfers, local_ok)
+        candidate_topology, candidate, step_transfers, local_ok, method)
       if (.not. local_ok) return
       candidate_transfers = candidate_transfers + step_transfers
     end do
@@ -1312,7 +1337,8 @@ contains
   subroutine regrid_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, plans, new_distribution, ok, &
       changed, transferred_cells, local_restriction_transfers, &
-      local_prolongation_transfers, local_overlap_transfers)
+      local_prolongation_transfers, local_overlap_transfers, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
       old_distribution
@@ -1325,14 +1351,17 @@ contains
     integer, intent(out), optional :: local_restriction_transfers
     integer, intent(out), optional :: local_prolongation_transfers
     integer, intent(out), optional :: local_overlap_transfers
+    character(len=*), intent(in), optional :: prolongation_method
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: source, rebuilt
     type(amr_eb_patch_tree_topology_2d) :: new_topology
     real(dp), allocatable :: new_integral(:), old_integral(:)
     real(dp) :: integral_scale
+    integer :: ierr, method_maximum, method_minimum, method_value
     integer :: overlap_transfers, prolongation_transfers
     integer :: restriction_transfers, step_transfers
     logical :: accepted, global_ok, local_ok, matches
+    character(len=32) :: method
 
     ok = .false.
     changed = .false.
@@ -1340,6 +1369,9 @@ contains
     restriction_transfers = 0
     prolongation_transfers = 0
     overlap_transfers = 0
+    method = "pcm"
+    if (present(prolongation_method)) method = trim(prolongation_method)
+    method_value = sparse_prolongation_method_code_2d(method)
     new_distribution = old_distribution
     if (present(local_restriction_transfers)) &
       local_restriction_transfers = 0
@@ -1350,10 +1382,19 @@ contains
     call replicated_distribution_matches_2d( &
       old_distribution, sparse%topology, matches)
     local_ok = matches .and. sparse%is_valid(old_distribution) .and. &
-      sparse%nvar == reactive_nvar(size(species)) .and. size(species) >= 1
+      sparse%nvar == reactive_nvar(size(species)) .and. &
+      size(species) >= 1 .and. method_value >= 0
     call all_ranks_accept_2d( &
       old_distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      method_value, method_minimum, 1, MPI_INTEGER, MPI_MIN, &
+      old_distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      method_value, method_maximum, 1, MPI_INTEGER, MPI_MAX, &
+      old_distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. method_minimum /= method_maximum) return
     call initialize_amr_eb_patch_tree_topology_2d( &
       sparse%topology%root_geometry, plans, new_topology, local_ok)
     call all_ranks_accept_2d( &
@@ -1384,7 +1425,7 @@ contains
     if (.not. local_ok) go to 900
     call initialize_direct_sparse_regrid_tree_2d( &
       species, old_distribution, new_distribution, source, new_topology, &
-      rebuilt, prolongation_transfers, local_ok)
+      rebuilt, prolongation_transfers, local_ok, method)
     if (.not. local_ok) go to 900
     call transfer_direct_sparse_regrid_tree_overlaps_2d( &
       old_distribution, new_distribution, source, rebuilt, &
@@ -1492,7 +1533,7 @@ contains
 
   subroutine initialize_direct_sparse_regrid_tree_2d( &
       species, old_distribution, new_distribution, old_sparse, topology, &
-      rebuilt, local_transfers, ok)
+      rebuilt, local_transfers, ok, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
       old_distribution, new_distribution
@@ -1501,6 +1542,7 @@ contains
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(out) :: rebuilt
     integer, intent(out) :: local_transfers
     logical, intent(out) :: ok
+    character(len=*), intent(in) :: prolongation_method
 
     type(eb_geometry_2d) :: root_geometry
     type(MPI_Status) :: status
@@ -1573,7 +1615,7 @@ contains
       do parent = 1, topology%relations(relation)%parent_patch_count()
         call prolong_direct_sparse_regrid_parent_2d( &
           species, new_distribution, rebuilt, relation, parent, &
-          local_transfers, local_ok)
+          local_transfers, local_ok, prolongation_method)
         if (.not. local_ok) return
       end do
     end do
@@ -1584,13 +1626,15 @@ contains
   end subroutine initialize_direct_sparse_regrid_tree_2d
 
   subroutine prolong_direct_sparse_regrid_parent_2d( &
-      species, distribution, sparse, relation, parent, local_transfers, ok)
+      species, distribution, sparse, relation, parent, local_transfers, ok, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
     integer, intent(in) :: relation, parent
     integer, intent(inout) :: local_transfers
     logical, intent(out) :: ok
+    character(len=*), intent(in) :: prolongation_method
 
     type(eb_geometry_2d) :: child_geometry, parent_geometry
     type(MPI_Status) :: status
@@ -1622,12 +1666,12 @@ contains
         allocate(child_state( &
           sparse%nvar, child_geometry%nx, child_geometry%ny))
         allocate(child_temperature(child_geometry%nx, child_geometry%ny))
-        call prolong_reactive_eb_patch_pcm_2d( &
+        call prolong_reactive_eb_patch_2d( &
           species, sparse%levels(relation)%patches(parent)%state, &
           sparse%levels(relation)%patches(parent)%temperature, &
           parent_geometry, child_geometry, &
           sparse%topology%relations(relation)%children(child)%patch, &
-          child_state, child_temperature, entity_ok)
+          prolongation_method, child_state, child_temperature, entity_ok)
       end if
       call all_ranks_accept_2d( &
         distribution%comm, entity_ok, accepted, global_ok)

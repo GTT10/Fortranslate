@@ -7,7 +7,7 @@
   y_lower = 0.0
   y_upper = 0.012
   final_time = 3.0e-9
-  cfl = 0.005
+  cfl = 0.004
   problem = "reactive_hotspot"
   reconstruction = "pcm"
   riemann_solver = "hllc"
@@ -51,6 +51,7 @@
 
 &eb_amr
   refinement_ratio = 2
+  prolongation_method = "pcm"
   patch_tree_maximum_levels = 4
   patch_tree_mpi_work_exponent = 2
   three_level_enabled = .false.

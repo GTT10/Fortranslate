@@ -1485,10 +1485,13 @@ level advancement, ghost fill, prolongation, or regridding.
 
 ## Static two-level reactive EB hydrodynamic advance
 
-Piecewise-constant prolongation initializes child `f` from its parent `c` as
-`U_f=U_c`. Covered child data is retained as injected; every active child is
-accepted only after conserved-to-primitive EOS recovery supplies a valid
-temperature.
+The configured coarse-to-fine method initializes child `f` from parent `c`.
+PCM uses `U_f=U_c`. Limited-linear mode adds component-wise MC slopes on a
+regular parent only when its complete child block is regular; zero-mean child
+offsets preserve the parent average. Cut/topology-mismatched parents use PCM,
+and an inadmissible linear parent is retried completely with PCM. Every active
+child is accepted only after conserved-to-primitive EOS recovery supplies a
+valid temperature.
 
 One coarse interval uses the sequence
 
@@ -1535,7 +1538,7 @@ The input defines one strictly internal rectangle with inclusive one-based
 coarse indices. Its physical bounds follow exactly from the root spacing. The
 same analytic plane or circle level set is sampled on the root nodes and the
 refined patch nodes before the existing geometry-measure compatibility gate is
-applied. Initial PCM prolongation, every time interval, and final composite
+applied. Configured prolongation, every time interval, and final composite
 diagnostics reuse the qualified two-level transactions. Separate CSV files
 retain the complete synchronized parent and child layouts for inspection.
 
@@ -1599,14 +1602,15 @@ coarse exterior-state fill.
 
 Replacing old patch `P_old` by `P_new` uses
 
-`average-down(P_old) -> PCM(P_new) -> retain(P_old intersect P_new)`.
+`average-down(P_old) -> prolong(P_new) -> retain(P_old intersect P_new)`.
 
-The first operation transfers regions that lose refinement into the root. PCM
-therefore preserves the root integral in newly refined cells. Exact copying by
-global fine index restores all same-resolution overlap after PCM, avoiding
-unnecessary diffusion. State and temperature arrays on both levels commit only
-after the new patch geometry is valid, every candidate is finite, and EOS
-recovery succeeds on every active new fine cell.
+The first operation transfers regions that lose refinement into the root. The
+configured conservative method therefore preserves the root integral in newly
+refined cells. Exact copying by global fine index restores all same-resolution
+overlap after prolongation, avoiding unnecessary diffusion. State and
+temperature arrays on both levels commit only after the new patch geometry is
+valid, every candidate is finite, and EOS recovery succeeds on every active
+new fine cell.
 
 Fine-patch removal is optional. On an empty plan, the lifecycle transaction
 average-downs the complete child into a candidate root, recovers all affected
@@ -1614,10 +1618,11 @@ active temperatures, and only then commits the root and releases the fine state,
 temperature, geometry, and patch metadata. While no fine patch exists, the
 coarse timestep is the root active-cell CFL limit and the existing single-level
 reactive EB hydro operator advances the state. If tags later return, the driver
-builds a new aligned geometry and uses PCM prolongation from the synchronized
-root before publishing the child. Conserved diagnostics likewise select either
-the two-level composite integral or the root volume-weighted integral. The
-default policy continues to retain an untagged patch for backward compatibility.
+builds a new aligned geometry and uses configured prolongation from the
+synchronized root before publishing the child. Conserved diagnostics likewise
+select either the two-level composite integral or the root volume-weighted
+integral. The default policy continues to retain an untagged patch for backward
+compatibility.
 
 ## Reactive chemistry on the EB AMR lifecycle
 
@@ -1887,8 +1892,9 @@ root interval is
 The ratio factors convert each child's substep limit to the equivalent root
 interval. A successful interval advances through the complete three-level
 Strang transaction before time, step count, and minimum accepted timestep are
-updated. Initialization uses PCM prolongation first from root to middle and
-then from middle to finest, so all levels begin EOS-consistent and synchronized.
+updated. Initialization uses the configured prolongation first from root to
+middle and then from middle to finest, so all levels begin EOS-consistent and
+synchronized.
 
 Namelist validation always rejects multipatch ownership and colliding output
 paths when `three_level_enabled` is selected. Static and dynamic three-level

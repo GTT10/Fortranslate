@@ -84,7 +84,7 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | ordered output | root `MPI_Gatherv` reconstruction |
 | distributed reactive advance | `mpi_reactive_1d_mod` transactional Strang composition |
 
-| Sparse MPI EB AMR responsibility | PeleF 0.184.0 |
+| Sparse MPI EB AMR responsibility | PeleF 0.185.0 |
 |---|---|
 | rank-local persistent state | root row tiles and exclusive fine-child payloads |
 | coarse/fine restriction | targeted child-to-intersecting-root-owner buffers |
@@ -110,11 +110,11 @@ hydrocarbon chemistry, CVODE parity, or full transport parity.
 | public sparse MPI arbitrary-depth application | namelist-driven sparse ownership, owner-local lifecycle, selected-root I/O, and 1/2/4/8-rank composite parity |
 | public sparse MPI cross-rank restart | two-rank checkpoint-stop followed by independent four- and eight-rank restarts with ownership-weight changes and identity-keyed parity against an uninterrupted one-rank process |
 | public sparse MPI fresh initialization | geometry-only topology and ownership first, reactive fields allocated on the sole root-node owner, then zero-copy allocatable transfer into sparse storage with no non-owner numerical root field |
-| public checkpoint compatibility | schema-3 structured mesh, EB wall, transport physics, StateRedist, hierarchy, and regrid fingerprint shared by serial and sparse-MPI applications with continuation and ownership controls explicitly excluded |
+| public checkpoint compatibility | schema-4 structured mesh, EB wall, transport physics, StateRedist, prolongation method, hierarchy, and regrid fingerprint shared by serial and sparse-MPI applications with continuation and ownership controls explicitly excluded; fixed-depth formats store the same method in schema 3 |
 | AMReX multilevel EB re-redistribution responsibility | topology-derived union of clipped three-by-three coarse/fine interface supports, excluding refined and covered parent cells, shared by fixed-depth, multipatch, arbitrary-depth, serial, and sparse-MPI conservation closures; exact AMReX transfer bookkeeping is not claimed |
 | PeleC embedded diffusive wall flux | first-order centroid-normal isothermal Fourier flux and no-slip Newtonian traction/work in `eb_reactive_transport_2d_mod`, scaled by EB wall length and cut-cell fluid volume; exact quadratic-stencil parity is not claimed |
 | public embedded-wall controls | shared single-level, fixed-depth AMR, arbitrary-depth AMR, and sparse-MPI `&embedded_boundary` kind, thermal mode, temperature, and velocity with explicit transport-dependency validation and restart fingerprinting |
-| reactive EB AMR coarse-to-fine initialization | `pcm` or conservative MC-limited `linear` selected by fixed-depth public input for two-level, sibling-patch, and three-level fresh runs, with cut-parent and EOS-admissibility PCM fallback; checkpoint/restart and arbitrary-depth paths remain PCM-only until selection fingerprinting |
+| reactive EB AMR coarse-to-fine initialization | `pcm` or conservative MC-limited `linear` selected by public input for fixed-depth and arbitrary-depth serial/sparse-MPI initialization, regrid, checkpoint, and restart, with cut-parent and EOS-admissibility PCM fallback |
 | checkpoint/output boundary | one packed payload per remote root tile or child gathered only to a selected root; non-root complete fields stay unallocated |
 | formatted checkpoint and CSV output | selected root alone invokes the serial-compatible checkpoint writer and deterministic root/child CSV writers; completion status is collective |
 | formatted checkpoint restart | selected root alone reads complete fields, then sends each root tile or child directly to its current sparse owner from a replicated geometry-only descriptor with no field broadcast or non-root child-field template |
