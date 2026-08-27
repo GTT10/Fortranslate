@@ -3706,17 +3706,18 @@ contains
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
       end if
-      if (config%checkpoint_interval > 0 .and. &
-          modulo(steps, config%checkpoint_interval) == 0) then
-        if (present(failure_context)) failure_context = "checkpoint write"
-        call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-          config%checkpoint_file, species, solution, time, steps, regrids, &
-          minimum_dt, local_ok)
-        if (.not. local_ok) return
-        last_checkpoint_step = steps
-        if (config%checkpoint_stop_after_write) then
-          stopped_after_checkpoint = .true.
-          exit
+      if (config%checkpoint_interval > 0) then
+        if (modulo(steps, config%checkpoint_interval) == 0) then
+          if (present(failure_context)) failure_context = "checkpoint write"
+          call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            config%checkpoint_file, species, solution, time, steps, regrids, &
+            minimum_dt, local_ok)
+          if (.not. local_ok) return
+          last_checkpoint_step = steps
+          if (config%checkpoint_stop_after_write) then
+            stopped_after_checkpoint = .true.
+            exit
+          end if
         end if
       end if
     end do
