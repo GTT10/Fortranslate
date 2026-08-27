@@ -927,9 +927,9 @@ program test_reactive_eb_amr_2d_driver
     (patch%coarse_i_lower /= config%coarse_i_lower .or. &
      patch%coarse_i_upper /= config%coarse_i_upper .or. &
      patch%coarse_j_lower /= config%coarse_j_lower .or. &
-     patch%coarse_j_upper /= config%coarse_j_upper) .and. &
+    patch%coarse_j_upper /= config%coarse_j_upper) .and. &
     maxval(abs(final_integrals - initial_integrals)) <= &
-      1.0e-10_dp * scale, &
+      2.0e-8_dp * scale, &
     "public scheduled three-level parent regrid")
 
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"

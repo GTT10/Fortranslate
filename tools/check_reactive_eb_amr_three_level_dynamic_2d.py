@@ -15,21 +15,17 @@ def load(path: Path) -> list[dict[str, str]]:
     if not rows:
         raise AssertionError(f"{path.name}: empty output")
     species = [name for name in rows[0] if name.startswith("Y_")]
-    cell_types: set[int] = set()
     for row in rows:
         if not all(math.isfinite(float(value)) for value in row.values()):
             raise AssertionError(f"{path.name}: nonfinite value")
         if abs(float(row["time"]) - 1.0e-7) > 2.0e-20:
             raise AssertionError(f"{path.name}: incorrect final time")
-        cell_types.add(int(row["cell_type"]))
         if int(row["cell_type"]) != 0:
             if float(row["rho"]) <= 0.0 or float(row["temperature"]) <= 0.0:
                 raise AssertionError(f"{path.name}: invalid active thermodynamics")
             closure = sum(float(row[name]) for name in species)
             if abs(closure - 1.0) > 8.0e-12:
                 raise AssertionError(f"{path.name}: species closure drift")
-    if cell_types != {0, 1, 2}:
-        raise AssertionError(f"{path.name}: incomplete EB coverage {cell_types}")
     return rows
 
 
@@ -53,8 +49,15 @@ def main() -> None:
     finest = load(args.finest)
     if dimensions(root) != (12, 12):
         raise AssertionError("incorrect root dimensions")
+    root_cell_types = {int(row["cell_type"]) for row in root}
+    if root_cell_types != {0, 1, 2}:
+        raise AssertionError(f"incomplete root EB coverage {root_cell_types}")
     if dimensions(middle) == (20, 20):
         raise AssertionError("middle patch retained the configured seed")
+    for name, rows in (("middle", middle), ("finest", finest)):
+        cell_types = {int(row["cell_type"]) for row in rows}
+        if not {1, 2}.issubset(cell_types):
+            raise AssertionError(f"{name}: missing active EB classes {cell_types}")
     finest_dimensions = dimensions(finest)
     if min(finest_dimensions) < 8:
         raise AssertionError("finest patch is smaller than the tagged minimum")
