@@ -1830,3 +1830,19 @@ sends conserved state directly to the parent owner, which applies the same EB
 restriction kernel as the serial tree. Every child has a collective accept
 boundary, and the sparse candidate commits only after final all-rank
 validation. Recursive hydro and transport remain separate owner-local work.
+
+## MPI sparse arbitrary-depth EB composite integrals (`0.163.0`)
+
+The full-tree integral is a root-subtree wrapper. The subtree operation first
+establishes communicator agreement on the replicated ownership/topology,
+sparse layout, selected level and patch, and conserved-component extent. A
+recursive local walk builds each node's direct-child refined mask, integrates
+only unrefined cells when that node is owned locally, and always descends
+through the replicated relation graph.
+
+One `MPI_SUM` combines the rank-local conserved vectors and a second sum checks
+the number of contributing owner nodes. No numerical node is allocated or
+materialized on a nonowner. Invalid selectors, rank-dependent selectors,
+nonfinite results, or an empty contributing set publish a zero integral and
+zero optional local-node count. The same subtree boundary can therefore be
+used before and after owner-local reflux and cut-interface closure.

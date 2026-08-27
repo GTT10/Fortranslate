@@ -2911,3 +2911,19 @@ remain separate work.
 This milestone removes materialization from chemistry and average-down.
 Owner-local recursive hydro, transport, and public clock execution remain
 separate work.
+
+## MPI sparse arbitrary-depth EB composite integrals (`0.163.0`)
+
+- [x] whole-tree owner-local composite conserved integral
+- [x] arbitrary selected-subtree owner-local composite integral
+- [x] direct-child refined masks excluding covered parent cells
+- [x] one recursive topology walk without field materialization
+- [x] communicator conserved-vector and contributing-node reductions
+- [x] exact global subtree-node accounting
+- [x] serial integral parity for the whole tree and all five subtrees
+- [x] collective valid-selector disagreement rejection with neutral outputs
+- [x] one-, two-, four-, and eight-rank Debug and Release coverage
+
+This milestone supplies the before/after conservation reduction needed by
+owner-local recursive hydro. Hydro, transport, and public clock execution
+remain separate work.

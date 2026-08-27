@@ -2641,3 +2641,18 @@ require collective preflight rejection. On one rank, use a negative interval.
 In both cases require exact sparse rollback, zero level advances, and zero
 restriction transfers. Retain the full established MPI gates and all 208
 serial tests in GNU Fortran Release and bounds/FPE-checked Debug.
+
+## 0.163.0 MPI sparse arbitrary-depth EB composite-integral gates
+
+Evaluate the complete physical four-level branching tree directly from sparse
+owner fields after owner-local chemistry. Require roundoff-level parity with
+the complete serial composite integral and require the global contributing-node
+count to equal five.
+
+Repeat for every valid level/patch selector and require parity with the serial
+recursive subtree reference plus the exact topology-derived descendant count.
+On multiple ranks, give rank zero a different but valid sibling selector; on
+one rank, use an invalid selector. Require collective rejection, a zero
+integral, and zero public local-node accounting. Retain the full established
+MPI gates and all 208 serial tests in GNU Fortran Release and bounds/FPE-
+checked Debug.
