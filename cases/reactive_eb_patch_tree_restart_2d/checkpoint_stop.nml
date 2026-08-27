@@ -52,6 +52,7 @@
 &eb_amr
   refinement_ratio = 2
   patch_tree_maximum_levels = 4
+  patch_tree_mpi_work_exponent = 0
   three_level_enabled = .false.
   multipatch_enabled = .false.
   dynamic_regridding = .true.
