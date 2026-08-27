@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.179.0` milestone contains the serial verification suite, ten optional
+The `0.180.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -24,7 +24,13 @@ inputs while still permitting changed final time, output/checkpoint schedule,
 MPI rank count, and ownership weighting. Multilevel EB conservation closure
 now distributes residuals only to active, unrefined parent cells in a local
 three-by-three support band around each direct coarse/fine interface; it no
-longer perturbs every unrefined cell of the parent patch. The
+longer perturbs every unrefined cell of the parent patch. Cut-cell molecular
+transport now adds first-order normal Fourier heat transfer for isothermal
+embedded walls and Newtonian momentum transfer plus wall work for no-slip
+embedded walls. The validated embedded-wall control travels with the existing
+boundary set, so the same kernel is used by single-level, fixed-depth,
+multipatch, arbitrary-depth, serial, and sparse-MPI transport paths; the
+default remains adiabatic, free slip, and species impermeable. The
 arbitrary-depth 2D EB tree can also write one composite CSV containing every
 leaf cell exactly once; sparse MPI gathers numerical nodes only to a selected
 writer root and reports completion collectively. A dedicated serial
@@ -344,7 +350,12 @@ uses the integrated interface-normal vector rather than multiplying total
 length by an averaged unit normal. The conservative divergence combines this
 wall contribution with shared Cartesian fluxes weighted by open-face fraction,
 and preserves a uniform stationary pressure field for planar and circular
-embedded boundaries. Small-cell time integration now has a conservative
+embedded boundaries. Molecular transport uses the physical distance from the
+fluid-volume centroid to the embedded-wall centroid along the solid-to-fluid
+normal. Isothermal walls contribute Fourier heat flux; no-slip walls contribute
+the corresponding normal Newtonian traction and viscous work at the configured
+wall velocity. Slip, adiabatic, and every species-impermeable default remains
+exactly zero. Small-cell time integration now has a conservative
 first-order FluxRedist path: it blends a cut-cell update with its
 volume-weighted face-connected neighborhood, redistributes the removed
 extensive update, and commits a forward update only after every active reactive

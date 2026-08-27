@@ -2523,3 +2523,46 @@ EOS only after a private candidate has been corrected. Empty support,
 nonfinite correction, failed EOS recovery, or failed post-correction composite
 closure rejects the whole transaction. This is local coarse/fine support, not
 an exact reproduction of AMReX's `MLStateRedistribute` movement ledger.
+
+## Embedded-wall thermal and viscous flux
+
+Let `n` be the unit normal from solid to fluid, `x_c` the physical EB
+fluid-volume centroid, `x_w` the embedded-face centroid, and
+
+```text
+d_n = (x_c - x_w) dot n > 0.
+```
+
+The wall and recovered cell values define first-order normal differences. For
+an isothermal wall,
+
+```text
+F_E,w = -lambda (T_c - T_w) / d_n.
+```
+
+For a no-slip wall, let `du = u_c - u_w`, including the out-of-plane velocity,
+and use the normal-only velocity gradient. The wall-normal conservative
+momentum flux is
+
+```text
+F_m,w = -mu / d_n [du + (du dot n) n / 3],
+```
+
+with the third component `-mu du_z/d_n`. Viscous wall work is
+
+```text
+F_E,visc,w = F_m,w dot u_w.
+```
+
+For cut cell `(i,j)`, wall length `L_w`, and fluid volume `V_f`, the transport
+right-hand side receives
+
+```text
+R_w = L_w F_w / V_f.
+```
+
+Mass and every species component are exactly zero. Slip suppresses viscous
+transfer and adiabatic suppresses heat transfer. Invalid geometry, wall data,
+transport evaluation, or EOS recovery rejects the candidate before state
+publication. This is a first-order wall-normal model, not PeleC's quadratic EB
+boundary-gradient stencil.

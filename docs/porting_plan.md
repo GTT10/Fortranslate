@@ -726,7 +726,8 @@ Required capabilities:
   correction round trips (`0.142.0`)
 - locally resolved multilevel EB redistribution and arbitrary-depth physics
   recursion
-- thermal, viscous, and catalytic wall boundary conditions
+- [x] first-order isothermal and no-slip embedded-wall transport (`0.180.0`)
+- catalytic embedded-wall boundary conditions
 
 Primary PeleC regression references include:
 
@@ -1427,6 +1428,21 @@ to use the same support rule. Retain density, total-energy, species, EOS,
 rollback, and complete-field parity gates in all 215 serial tests and the full
 one-, two-, four-, and eight-rank MPI Debug/Release chain. Do not claim exact
 AMReX per-neighborhood transfer parity.
+
+## 0.180.0 embedded-wall thermal and viscous gates
+
+Add one validated embedded-wall record to the shared 2D boundary set and keep
+its default adiabatic, free slip, and species impermeable. Evaluate first-order
+normal Fourier heat transfer for isothermal walls and Newtonian traction plus
+moving-wall work for no-slip walls. Insert only the wall-length-weighted flux
+into EB cut-cell transport divergence so every existing AMR and sparse-MPI
+transport route reuses it without a new stepping interface.
+
+Require direct heat/traction/work signs, exact slip and impermeability zeros,
+invalid-distance rejection, cut-cell-only right-hand-side changes, cross-rank
+boundary consensus, all 215 serial tests, and the full MPI Debug/Release chain.
+Defer catalytic species fluxes, higher-order wall stencils, namelist exposure,
+and nondefault-wall checkpoint fingerprints.
 
 Each implementation PR should normally contain:
 

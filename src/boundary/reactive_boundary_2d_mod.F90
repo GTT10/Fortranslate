@@ -132,9 +132,10 @@ contains
       boundaries%embedded_wall%wall_temperature > 0.0_dp .and. &
       all(ieee_is_finite([boundaries%embedded_wall%wall_temperature, &
         boundaries%embedded_wall%wall_velocity])) .and. &
+      boundaries%embedded_wall%inflow_temperature > 0.0_dp .and. &
       allocated(boundaries%embedded_wall%inflow_primitive) .and. &
       allocated(boundaries%embedded_wall%prescribed_species_flux) .and. &
-      valid_wall_species_kind(boundaries%embedded_wall%wall_species)
+      trim(boundaries%embedded_wall%wall_species) == "impermeable"
     if (.not. ok) return
     ok = size(boundaries%embedded_wall%inflow_primitive) >= 6 .and. &
       size(boundaries%embedded_wall%prescribed_species_flux) == &
@@ -145,13 +146,8 @@ contains
     scale = max(1.0_dp, maxval(abs( &
       boundaries%embedded_wall%prescribed_species_flux)))
     tolerance = 2.0e3_dp * epsilon(1.0_dp) * scale
-    if (trim(boundaries%embedded_wall%wall_species) == "impermeable") then
-      ok = maxval(abs( &
-        boundaries%embedded_wall%prescribed_species_flux)) <= tolerance
-    else
-      ok = abs(sum(boundaries%embedded_wall%prescribed_species_flux)) <= &
-        tolerance
-    end if
+    ok = maxval(abs( &
+      boundaries%embedded_wall%prescribed_species_flux)) <= tolerance
     if (.not. ok) return
     ok = ok .and. (reactive_boundary_is_periodic(boundaries%face(boundary_x_lower)) .eqv. &
       reactive_boundary_is_periodic(boundaries%face(boundary_x_upper)))

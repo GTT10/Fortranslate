@@ -2893,3 +2893,19 @@ transport, chemistry, and public application gates. Require unchanged
 composite mass, total energy, species closure, positive recovered temperature,
 rollback behavior, and serial/MPI field parity in all 215 serial tests and the
 complete one-, two-, four-, and eight-rank MPI Debug/Release chain.
+
+## 0.180.0 embedded-wall transport gates
+
+Recover one general-EOS H2/O2 state beside a unit-normal wall. Require a hotter
+isothermal wall to add positive energy with exactly zero mass, momentum, and
+species transfer. Require a moving no-slip wall to apply signed normal,
+tangential, and out-of-plane momentum transfer plus positive wall work. Switch
+the same wall to slip and require an exact zero viscous flux; supply a negative
+centroid distance and require transactional rejection.
+
+Compare the complete EB transport right-hand side with adiabatic-slip and
+isothermal-no-slip wall records. Require differences only in EB cut cells and
+nonzero energy and momentum changes there. Retain all single-level,
+fixed-depth, multipatch, arbitrary-depth, serial, and sparse-MPI transport,
+rollback, and field-parity gates in all 215 serial tests and the complete
+one-, two-, four-, and eight-rank MPI Debug/Release chain.
