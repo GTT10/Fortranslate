@@ -1641,7 +1641,7 @@ contains
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(inout) :: sparse
     integer, intent(in) :: level, parent, child
-    type(amr_eb_flux_register_2d), intent(in) :: flux_register
+    type(amr_eb_flux_register_2d), intent(inout) :: flux_register
     integer, intent(inout) :: transfers
     logical, intent(out) :: ok
 
