@@ -1260,6 +1260,12 @@ checkpoint. Restart rebuilds the geometry from those stored bounds before it
 recomputes sparse owners, so a child at a physical side remains there across a
 rank-count or ownership-weight change without adding a boundary flag.
 
+With thermal conduction enabled, each boundary child advances the established
+recursive SSPRK2 transport transaction. Diffusive flux accumulation omits the
+physical side and refluxes only true coarse/fine interfaces. The checkpoint
+fingerprint fixes the active transport operators and transport CFL across
+restart while the stored topology keeps physical-side contact.
+
 Adjacent children of one parent remain separate owners. Before each fine
 substep, a child first receives its time-interpolated parent ghosts. Any ghost
 fine index covered by a sibling is then replaced exactly by that sibling's

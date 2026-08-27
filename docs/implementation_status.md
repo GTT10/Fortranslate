@@ -3479,3 +3479,20 @@ The qualified arbitrary-depth outflow-boundary tree can now cross a process
 and MPI ownership boundary without moving away from the physical side. The
 checkpoint schema remains version 4 because existing child bounds and geometry
 records already describe the topology completely.
+
+## Boundary-touching arbitrary-depth thermal transport (`0.193.0`)
+
+- [x] public fresh boundary tree with thermal conduction enabled
+- [x] recursive transport execution through four populated levels
+- [x] current-fine physical-side diffusive exterior state
+- [x] `r^2` child transport subcycling
+- [x] physical-side diffusive register and reflux omission
+- [x] serial and sparse-MPI 1/2/4/8-rank field parity
+- [x] transport-active checkpoint fingerprint
+- [x] independent serial transport restart parity
+- [x] two-rank checkpoint to four-/eight-rank transport restart
+
+Thermal conduction is now qualified on the arbitrary-depth outflow-boundary
+topology, including process and sparse ownership changes. Viscosity, species
+diffusion, and barodiffusion remain disabled in this focused public case but
+retain their established interior-tree library gates.

@@ -3076,3 +3076,15 @@ and every numeric field. Repeat with a two-rank checkpoint and four- and
 eight-rank restarts under a different ownership weight. Retain terminal-marker,
 fingerprint-mismatch, topology, time, and field-parity gates in the complete
 Debug/Release chains.
+
+## 0.193.0 boundary-touching recursive transport gates
+
+Enable Fourier conduction in the public fresh and split-run x-upper trees.
+Require four populated levels, exact boundary contact, finite positive fields,
+species closure, and serial/sparse 1/2/4/8-rank composite parity after the
+recursive transport/hydro transaction.
+
+Require the schema-4 checkpoint to retain the active transport fingerprint.
+Compare independent serial continuation and two-rank to four-/eight-rank
+sparse continuation against their uninterrupted references, then retain the
+complete Debug/Release regression chains.

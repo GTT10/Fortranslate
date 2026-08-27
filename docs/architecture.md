@@ -2382,3 +2382,16 @@ boundary-touching child directly from the I/O root to its selected owner. The
 stored geometry and bounds remain authoritative while rank count and ownership
 weight stay continuation controls. Every restarted level must still reach the
 exact physical side before field parity is accepted.
+
+## Boundary-touching recursive transport (`0.193.0`)
+
+The public fresh and split-run boundary trees now enable Fourier conduction.
+Each recursive transport node uses its current fine boundary state on the
+x-upper physical side, coarse-time transport context on the remaining sides,
+`r^2` child subcycling, time-integrated diffusive registers, physical-side
+register omission, reflux, and deepest-to-root average-down.
+
+The sparse path executes the same transport stages on selected owners. The
+boundary-touching checkpoint fingerprint records the active transport switch,
+thermal conduction, and transport CFL, so continuation cannot silently change
+that physics while rank count and ownership weight remain free to change.

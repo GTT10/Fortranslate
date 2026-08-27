@@ -6,7 +6,7 @@ Reference implementation: `Pele-Suite/PeleC:development`.
 
 ## Current capability
 
-The `0.192.0` milestone contains the serial verification suite, ten optional
+The `0.193.0` milestone contains the serial verification suite, ten optional
 MPI executables, and runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
 molecular transport. The sparse MPI driver can write an intermediate
@@ -78,7 +78,10 @@ children in both public applications. Every populated level reaches the same
 physical side, physical-side reflux is omitted, and sparse 1/2/4/8-rank output
 retains serial field identity. In `0.192.0`, that boundary-touching topology
 also survives a selected-root checkpoint, independent restart, and a 2-to-4/8
-rank ownership change with uninterrupted field parity. The tree can also write one composite CSV containing
+rank ownership change with uninterrupted field parity. In `0.193.0`, the same
+fresh and restarted boundary trees execute thermal conduction through the
+recursive `R-T-H-T-R` schedule in serial and at every qualified sparse-MPI
+rank count. The tree can also write one composite CSV containing
 every leaf cell exactly once; sparse MPI gathers numerical nodes only to a
 selected writer root and reports completion collectively. A dedicated serial
 `pelef_reactive_eb_patch_tree_2d` application now reads the established 2D
