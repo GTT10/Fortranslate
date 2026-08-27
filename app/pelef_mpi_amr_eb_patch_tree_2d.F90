@@ -52,10 +52,18 @@ program pelef_mpi_amr_eb_patch_tree_2d
     advance_sparse_owned_reactive_amr_eb_patch_tree_to_time_2d, &
     composite_sparse_amr_eb_patch_tree_integral_2d, &
     composite_sparse_amr_eb_patch_subtree_integral_2d
+  use mpi_amr_eb_patch_tree_io_2d_mod, only: &
+    write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint, &
+    read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint
   implicit none
+
+  character(len=*), parameter :: checkpoint_path = &
+    "mpi_amr_eb_patch_tree.chk"
 
   type(MPI_Comm) :: comm
   type(nasa7_species), allocatable :: species(:)
+  type(nasa7_species), allocatable :: checkpoint_species(:)
+  type(nasa7_species) :: checkpoint_species_scratch
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_boundary_set_2d) :: boundaries
@@ -79,6 +87,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(reactive_amr_eb_patch_tree_2d) :: tagged_serial
   type(reactive_amr_eb_patch_tree_2d) :: tagged_root
   type(reactive_amr_eb_patch_tree_2d) :: materialized
+  type(reactive_amr_eb_patch_tree_2d) :: checkpoint_materialized
   type(mpi_amr_eb_patch_tree_distribution_2d) :: distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: unweighted_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: rejected_distribution
@@ -86,10 +95,12 @@ program pelef_mpi_amr_eb_patch_tree_2d
   type(mpi_amr_eb_patch_tree_distribution_2d) :: invalid_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: tagged_distribution
   type(mpi_amr_eb_patch_tree_distribution_2d) :: tagged_new_distribution
+  type(mpi_amr_eb_patch_tree_distribution_2d) :: checkpoint_distribution
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: sparse, sparse_snapshot
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: physical_sparse
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: tagged_sparse
   type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: tagged_sparse_snapshot
+  type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: checkpoint_sparse
   type(amr_eb_tagging_criteria_2d) :: tagged_criteria
   type(amr_eb_tagging_criteria_2d) :: expanded_tagged_criteria
   type(amr_eb_tagging_criteria_2d) :: rejected_tagged_criteria
@@ -107,6 +118,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   real(dp) :: serial_clock_theta, serial_clock_time
   real(dp) :: sparse_clock_minimum_dt, sparse_clock_theta, sparse_clock_time
   real(dp) :: integral_scale
+  real(dp) :: checkpoint_time, checkpoint_minimum_dt
   real(dp) :: level_one_dx, level_one_dy
   integer :: ierr, rank, nranks, level, patch
   integer :: rejected_exponent
@@ -130,6 +142,10 @@ program pelef_mpi_amr_eb_patch_tree_2d
   integer :: local_regrid_restriction_transfers
   integer :: global_tagging_evaluations, local_tagging_evaluations
   integer :: serial_tagged_cells, tagged_cells, transferred_cells
+  integer :: checkpoint_root, checkpoint_steps, checkpoint_regrids
+  integer :: checkpoint_maximum_levels, checkpoint_unit, checkpoint_status
+  integer :: expected_checkpoint_transfers
+  integer :: local_checkpoint_transfers, global_checkpoint_transfers
   integer :: global_clock_timestep_evaluations
   integer :: local_clock_timestep_evaluations
   integer :: serial_clock_advanced_steps, serial_clock_steps
@@ -384,6 +400,107 @@ program pelef_mpi_amr_eb_patch_tree_2d
   call initialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     migrated_distribution, physical_solution, physical_sparse, ok)
   call assert_all(ok, "MPI EB patch-tree physical sparse state", comm)
+
+  checkpoint_root = nranks - 1
+  expected_checkpoint_transfers = 0
+  do level = 1, migrated_distribution%level_count()
+    do patch = 1, migrated_distribution%levels(level)%patch_count()
+      if (migrated_distribution%owner_of(level - 1, patch) /= &
+          checkpoint_root) expected_checkpoint_transfers = &
+        expected_checkpoint_transfers + 1
+    end do
+  end do
+  call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    checkpoint_path, species, migrated_distribution, physical_sparse, &
+    checkpoint_root, 0.125_dp, 5, 2, 0.01_dp, ok, &
+    local_checkpoint_transfers)
+  call MPI_Allreduce( &
+    local_checkpoint_transfers, global_checkpoint_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  call assert_all(ok .and. ierr == MPI_SUCCESS .and. &
+    global_checkpoint_transfers == expected_checkpoint_transfers, &
+    "MPI EB patch-tree root-only checkpoint write", comm)
+
+  call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    checkpoint_path, species, comm, checkpoint_root, 4, 1, &
+    checkpoint_distribution, checkpoint_sparse, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    local_checkpoint_transfers)
+  expected_checkpoint_transfers = 0
+  if (ok) then
+    do level = 1, checkpoint_distribution%level_count()
+      do patch = 1, checkpoint_distribution%levels(level)%patch_count()
+        if (checkpoint_distribution%owner_of(level - 1, patch) /= &
+            checkpoint_root) expected_checkpoint_transfers = &
+          expected_checkpoint_transfers + 1
+      end do
+    end do
+  end if
+  call MPI_Allreduce( &
+    local_checkpoint_transfers, global_checkpoint_transfers, 1, &
+    MPI_INTEGER, MPI_SUM, comm, ierr)
+  local_ok = .false.
+  if (ok) call materialize_sparse_owned_reactive_amr_eb_patch_tree_2d( &
+    checkpoint_distribution, checkpoint_sparse, checkpoint_materialized, &
+    local_ok)
+  call assert_all(ok .and. local_ok .and. ierr == MPI_SUCCESS .and. &
+    checkpoint_distribution%subcycle_exponent == 1 .and. &
+    checkpoint_sparse%is_valid(checkpoint_distribution) .and. &
+    global_checkpoint_transfers == expected_checkpoint_transfers .and. &
+    tree_solutions_close( &
+      checkpoint_materialized, physical_solution, 8.0e-12_dp) .and. &
+    checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
+    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp, &
+    "MPI EB patch-tree rank-neutral checkpoint restart", comm)
+
+  checkpoint_maximum_levels = 4
+  if (nranks > 1) then
+    if (rank == 0) checkpoint_maximum_levels = 3
+  else
+    checkpoint_maximum_levels = 3
+  end if
+  call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    checkpoint_path, species, comm, checkpoint_root, &
+    checkpoint_maximum_levels, 1, checkpoint_distribution, &
+    checkpoint_sparse, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    local_checkpoint_transfers)
+  call assert_all(.not. ok .and. local_checkpoint_transfers == 0 .and. &
+    checkpoint_distribution%level_count() == 0 .and. &
+    checkpoint_sparse%level_count() == 0 .and. &
+    checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
+    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp, &
+    "MPI EB patch-tree checkpoint control rollback", comm)
+
+  allocate(checkpoint_species, source=species)
+  if (rank == 0) then
+    checkpoint_species_scratch = checkpoint_species(1)
+    checkpoint_species(1) = checkpoint_species(2)
+    checkpoint_species(2) = checkpoint_species_scratch
+  end if
+  call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    checkpoint_path, checkpoint_species, comm, checkpoint_root, 4, 1, &
+    checkpoint_distribution, checkpoint_sparse, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    local_checkpoint_transfers)
+  call assert_all(.not. ok .and. local_checkpoint_transfers == 0 .and. &
+    checkpoint_distribution%level_count() == 0 .and. &
+    checkpoint_sparse%level_count() == 0, &
+    "MPI EB patch-tree checkpoint species consensus", comm)
+
+  call MPI_Barrier(comm, ierr)
+  checkpoint_status = 0
+  if (rank == checkpoint_root) then
+    open(newunit=checkpoint_unit, file=checkpoint_path, status="old", &
+      action="readwrite", iostat=checkpoint_status)
+    if (checkpoint_status == 0) &
+      close(checkpoint_unit, status="delete", iostat=checkpoint_status)
+  end if
+  call MPI_Bcast( &
+    checkpoint_status, 1, MPI_INTEGER, checkpoint_root, comm, ierr)
+  call assert_all(ierr == MPI_SUCCESS .and. checkpoint_status == 0, &
+    "MPI EB patch-tree checkpoint cleanup", comm)
+
   call compute_reactive_amr_eb_patch_tree_timestep_2d( &
     species, transport, physical_solution, hydro_cfl, transport_cfl, &
     .true., .true., .true., serial_dt, ok)

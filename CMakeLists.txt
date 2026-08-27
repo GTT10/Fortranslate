@@ -206,6 +206,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_amr_patch_1d_mod.F90
     src/parallel/mpi_amr_sparse_patch_1d_mod.F90
     src/parallel/mpi_amr_eb_patch_tree_2d_mod.F90
+    src/parallel/mpi_amr_eb_patch_tree_io_2d_mod.F90
     src/parallel/mpi_amr_eb_patch_2d_mod.F90
     src/parallel/mpi_amr_eb_io_2d_mod.F90
     src/parallel/mpi_reactive_transport_1d_mod.F90

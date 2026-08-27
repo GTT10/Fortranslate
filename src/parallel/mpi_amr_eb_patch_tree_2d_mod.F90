@@ -57,6 +57,10 @@ module mpi_amr_eb_patch_tree_2d_mod
   integer, parameter :: sparse_tree_regrid_root_tag = 27109
   integer, parameter :: sparse_tree_regrid_prolongation_tag = 27110
   integer, parameter :: sparse_tree_regrid_overlap_tag = 27111
+  integer, parameter :: sparse_tree_gather_state_tag = 27112
+  integer, parameter :: sparse_tree_gather_temperature_tag = 27113
+  integer, parameter :: sparse_tree_scatter_state_tag = 27114
+  integer, parameter :: sparse_tree_scatter_temperature_tag = 27115
   real(dp), parameter :: sparse_regrid_geometry_tolerance = &
     5.0e3_dp * epsilon(1.0_dp)
   real(dp), parameter :: sparse_regrid_conservation_tolerance = &
@@ -130,6 +134,8 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: synchronize_owned_reactive_amr_eb_patch_tree_2d
   public :: initialize_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+  public :: gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d
+  public :: scatter_root_reactive_amr_eb_patch_tree_to_sparse_2d
   public :: migrate_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d
   public :: regrid_sparse_owned_reactive_amr_eb_patch_tree_2d
@@ -622,6 +628,206 @@ contains
     if (present(local_entity_publications)) &
       local_entity_publications = publications
   end subroutine materialize_sparse_owned_reactive_amr_eb_patch_tree_2d
+
+  subroutine gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d( &
+      distribution, sparse, root, replicated, ok, local_entity_transfers)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    integer, intent(in) :: root
+    type(reactive_amr_eb_patch_tree_2d), intent(out) :: replicated
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_transfers
+
+    type(reactive_amr_eb_patch_tree_2d) :: candidate
+    type(eb_geometry_2d) :: geometry
+    type(MPI_Status) :: status
+    logical :: accepted, geometry_ok, global_ok, local_ok
+    integer :: ierr, level, owner, patch, root_maximum, root_minimum
+    integer :: transfers
+
+    replicated = reactive_amr_eb_patch_tree_2d()
+    ok = .false.
+    transfers = 0
+    if (present(local_entity_transfers)) local_entity_transfers = 0
+    call replicated_distribution_matches_2d( &
+      distribution, sparse%topology, local_ok)
+    local_ok = local_ok .and. sparse%is_valid(distribution) .and. &
+      root >= 0 .and. root < distribution%nranks
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      root, root_minimum, 1, MPI_INTEGER, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      root, root_maximum, 1, MPI_INTEGER, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. root_minimum /= root_maximum) return
+
+    if (distribution%rank == root) then
+      candidate%nvar = sparse%nvar
+      candidate%topology = sparse%topology
+      allocate(candidate%levels(sparse%level_count()))
+    end if
+    do level = 1, sparse%level_count()
+      if (distribution%rank == root) allocate( &
+        candidate%levels(level)%patches( &
+          sparse%levels(level)%patch_count()))
+      do patch = 1, sparse%levels(level)%patch_count()
+        call topology_patch_geometry_2d( &
+          sparse%topology, level - 1, patch, geometry, geometry_ok)
+        if (.not. geometry_ok) return
+        if (distribution%rank == root) then
+          allocate(candidate%levels(level)%patches(patch)%state( &
+            sparse%nvar, geometry%nx, geometry%ny))
+          allocate(candidate%levels(level)%patches(patch)%temperature( &
+            geometry%nx, geometry%ny))
+        end if
+        owner = distribution%owner_of(level - 1, patch)
+        if (owner == root) then
+          if (distribution%rank == root) then
+            candidate%levels(level)%patches(patch)%state = &
+              sparse%levels(level)%patches(patch)%state
+            candidate%levels(level)%patches(patch)%temperature = &
+              sparse%levels(level)%patches(patch)%temperature
+          end if
+        else if (distribution%rank == owner) then
+          call MPI_Send( &
+            sparse%levels(level)%patches(patch)%state, &
+            size(sparse%levels(level)%patches(patch)%state), &
+            MPI_DOUBLE_PRECISION, root, sparse_tree_gather_state_tag, &
+            distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          call MPI_Send( &
+            sparse%levels(level)%patches(patch)%temperature, &
+            size(sparse%levels(level)%patches(patch)%temperature), &
+            MPI_DOUBLE_PRECISION, root, &
+            sparse_tree_gather_temperature_tag, distribution%comm, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          transfers = transfers + 1
+        else if (distribution%rank == root) then
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%state, &
+            size(candidate%levels(level)%patches(patch)%state), &
+            MPI_DOUBLE_PRECISION, owner, sparse_tree_gather_state_tag, &
+            distribution%comm, status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%temperature, &
+            size(candidate%levels(level)%patches(patch)%temperature), &
+            MPI_DOUBLE_PRECISION, owner, &
+            sparse_tree_gather_temperature_tag, distribution%comm, &
+            status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+        end if
+      end do
+    end do
+    local_ok = .true.
+    if (distribution%rank == root) local_ok = candidate%is_valid()
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    if (distribution%rank == root) replicated = candidate
+    ok = .true.
+    if (present(local_entity_transfers)) local_entity_transfers = transfers
+  end subroutine gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d
+
+  subroutine scatter_root_reactive_amr_eb_patch_tree_to_sparse_2d( &
+      distribution, topology, replicated, root, sparse, ok, &
+      local_entity_transfers)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(amr_eb_patch_tree_topology_2d), intent(in) :: topology
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: replicated
+    integer, intent(in) :: root
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(out) :: sparse
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_entity_transfers
+
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
+    type(MPI_Status) :: status
+    logical :: accepted, global_ok, local_ok
+    integer :: ierr, level, nvar, owner, patch
+    integer :: root_maximum, root_minimum, transfers
+
+    sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
+    ok = .false.
+    transfers = 0
+    nvar = 0
+    if (present(local_entity_transfers)) local_entity_transfers = 0
+    local_ok = distribution%is_valid() .and. topology%is_valid() .and. &
+      mpi_amr_eb_patch_tree_distribution_matches_2d( &
+        distribution, topology) .and. root >= 0 .and. &
+      root < distribution%nranks
+    if (distribution%rank == root) local_ok = local_ok .and. &
+      replicated%is_valid() .and. &
+      patch_tree_topologies_match_2d(replicated%topology, topology)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+    call MPI_Allreduce( &
+      root, root_minimum, 1, MPI_INTEGER, MPI_MIN, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      root, root_maximum, 1, MPI_INTEGER, MPI_MAX, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. root_minimum /= root_maximum) return
+    if (distribution%rank == root) nvar = replicated%nvar
+    call MPI_Bcast( &
+      nvar, 1, MPI_INTEGER, root, distribution%comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. nvar < 1) return
+
+    call allocate_sparse_tree_layout_2d( &
+      distribution, nvar, topology, candidate, local_ok)
+    if (.not. local_ok) return
+    do level = 1, candidate%level_count()
+      do patch = 1, candidate%levels(level)%patch_count()
+        owner = distribution%owner_of(level - 1, patch)
+        if (distribution%rank == root) then
+          if (owner == root) then
+            candidate%levels(level)%patches(patch)%state = &
+              replicated%levels(level)%patches(patch)%state
+            candidate%levels(level)%patches(patch)%temperature = &
+              replicated%levels(level)%patches(patch)%temperature
+          else
+            call MPI_Send( &
+              replicated%levels(level)%patches(patch)%state, &
+              size(replicated%levels(level)%patches(patch)%state), &
+              MPI_DOUBLE_PRECISION, owner, sparse_tree_scatter_state_tag, &
+              distribution%comm, ierr)
+            if (ierr /= MPI_SUCCESS) return
+            call MPI_Send( &
+              replicated%levels(level)%patches(patch)%temperature, &
+              size(replicated%levels(level)%patches(patch)%temperature), &
+              MPI_DOUBLE_PRECISION, owner, &
+              sparse_tree_scatter_temperature_tag, distribution%comm, ierr)
+            if (ierr /= MPI_SUCCESS) return
+            transfers = transfers + 1
+          end if
+        else if (distribution%rank == owner) then
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%state, &
+            size(candidate%levels(level)%patches(patch)%state), &
+            MPI_DOUBLE_PRECISION, root, sparse_tree_scatter_state_tag, &
+            distribution%comm, status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+          call MPI_Recv( &
+            candidate%levels(level)%patches(patch)%temperature, &
+            size(candidate%levels(level)%patches(patch)%temperature), &
+            MPI_DOUBLE_PRECISION, root, &
+            sparse_tree_scatter_temperature_tag, distribution%comm, &
+            status, ierr)
+          if (ierr /= MPI_SUCCESS) return
+        end if
+      end do
+    end do
+    local_ok = candidate%is_valid(distribution)
+    call all_ranks_accept_2d( &
+      distribution%comm, local_ok, accepted, global_ok)
+    if (.not. global_ok .or. .not. accepted) return
+
+    sparse = candidate
+    ok = .true.
+    if (present(local_entity_transfers)) local_entity_transfers = transfers
+  end subroutine scatter_root_reactive_amr_eb_patch_tree_to_sparse_2d
 
   subroutine migrate_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       old_distribution, new_distribution, sparse, ok, &
