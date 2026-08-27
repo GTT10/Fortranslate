@@ -6,8 +6,8 @@
   x_upper = 0.012
   y_lower = 0.0
   y_upper = 0.012
-  final_time = 1.0e-7
-  cfl = 0.05
+  final_time = 3.0e-9
+  cfl = 0.004
   problem = "reactive_hotspot"
   reconstruction = "pcm"
   riemann_solver = "hllc"

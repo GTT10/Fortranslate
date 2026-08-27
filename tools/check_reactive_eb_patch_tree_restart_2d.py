@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 MAGIC = "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
-FINAL_TIME = 1.0e-7
+FINAL_TIME = 3.0e-9
 IDENTITY = ("level", "patch", "i", "j")
 
 
