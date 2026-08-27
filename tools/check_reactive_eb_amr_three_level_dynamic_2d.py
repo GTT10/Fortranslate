@@ -63,7 +63,12 @@ def main() -> None:
         raise AssertionError("finest patch is smaller than the tagged minimum")
     x_coordinates = sorted({float(row["x"]) for row in finest})
     y_coordinates = sorted({float(row["y"]) for row in finest})
-    if not (x_coordinates[0] < 0.00437 < x_coordinates[-1]):
+    dx = min(b - a for a, b in zip(x_coordinates, x_coordinates[1:]))
+    if not (
+        x_coordinates[0] - 0.5 * dx
+        < 0.00437
+        < x_coordinates[-1] + 0.5 * dx
+    ):
         raise AssertionError("finest patch does not cross the embedded boundary")
     print("check_reactive_eb_amr_three_level_dynamic_2d: PASS")
 
