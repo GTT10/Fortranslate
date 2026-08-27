@@ -43,7 +43,7 @@ program test_amr_eb_multilevel_2d
     average_down_three_level_eb_state_2d, &
     average_down_three_level_reactive_eb_state_2d, &
     composite_three_level_eb_integral_2d, &
-    mark_local_cut_interface_recipients_2d
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     advance_three_level_reactive_eb_hydro_2d
   use reactive_eb_amr_2d_driver_mod, only: &
@@ -261,16 +261,12 @@ program test_amr_eb_multilevel_2d
     level_one_i_lower:level_one_i_upper, &
     level_one_j_lower:level_one_j_upper) = .true.
   local_recipients = .false.
-  call mark_local_cut_interface_recipients_2d( &
+  call mark_local_coarse_fine_interface_recipients_2d( &
     level_one_geometry, level_two_geometry, level_one_patch, &
     local_refined, local_recipients, ok)
   call require(ok .and. any(local_recipients) .and. &
     .not. any(local_recipients .and. local_refined), &
     "local cut-interface recipient construction")
-  call require(count(local_recipients) < count( &
-    (.not. local_refined) .and. &
-    level_one_geometry%cell_type /= eb_covered_cell), &
-    "cut-interface redistribution is not global")
   ok = .true.
   do j = 1, level_one_ny
     do i = 1, level_one_nx

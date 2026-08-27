@@ -25,7 +25,7 @@ module amr_eb_multipatch_transport_2d_mod
     composite_reactive_eb_patch_set_integral_2d
   use amr_eb_transport_2d_mod, only: recover_transport_temperature_2d
   use amr_eb_multilevel_2d_mod, only: &
-    mark_local_cut_interface_recipients_2d
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_multilevel_reactive_2d_mod, only: &
     level_two_interface_is_regular
   implicit none
@@ -438,7 +438,7 @@ contains
     end do
     recipients = .false.
     do child = 1, patch_set%patch_count()
-      call mark_local_cut_interface_recipients_2d( &
+      call mark_local_coarse_fine_interface_recipients_2d( &
         coarse_geometry, patch_set%children(child)%geometry, &
         patch_set%children(child)%patch, refined, recipients, local_ok)
       if (.not. local_ok) return

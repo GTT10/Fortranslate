@@ -14,7 +14,7 @@ module amr_eb_multilevel_reactive_2d_mod
     composite_eb_integral_2d
   use amr_eb_multilevel_2d_mod, only: &
     average_down_three_level_reactive_eb_state_2d, &
-    mark_local_cut_interface_recipients_2d
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -442,7 +442,7 @@ contains
     refined(patch%coarse_i_lower:patch%coarse_i_upper, &
       patch%coarse_j_lower:patch%coarse_j_upper) = .true.
     recipients = .false.
-    call mark_local_cut_interface_recipients_2d( &
+    call mark_local_coarse_fine_interface_recipients_2d( &
       parent_geometry, child_geometry, patch, refined, recipients, local_ok)
     if (.not. local_ok) return
 

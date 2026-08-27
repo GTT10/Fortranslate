@@ -13,11 +13,11 @@ module amr_eb_multilevel_2d_mod
   public :: average_down_three_level_eb_state_2d
   public :: average_down_three_level_reactive_eb_state_2d
   public :: composite_three_level_eb_integral_2d
-  public :: mark_local_cut_interface_recipients_2d
+  public :: mark_local_coarse_fine_interface_recipients_2d
 
 contains
 
-  subroutine mark_local_cut_interface_recipients_2d( &
+  subroutine mark_local_coarse_fine_interface_recipients_2d( &
       parent_geometry, child_geometry, patch, refined, recipients, ok)
     type(eb_geometry_2d), intent(in) :: parent_geometry, child_geometry
     type(amr_eb_patch_2d), intent(in) :: patch
@@ -26,9 +26,9 @@ contains
     logical, intent(out) :: ok
 
     logical, allocatable :: candidate(:, :)
-    real(dp), parameter :: face_tolerance = 64.0_dp * epsilon(1.0_dp)
+    real(dp), parameter :: alignment_tolerance = 64.0_dp * epsilon(1.0_dp)
     real(dp) :: ratio_x_real, ratio_y_real, spacing_scale
-    integer :: coarse_i, coarse_j, fine_i, fine_j, ratio_x, ratio_y
+    integer :: coarse_i, coarse_j, ratio_x, ratio_y
 
     ok = .false.
     if (.not. parent_geometry%is_valid() .or. &
@@ -44,50 +44,36 @@ contains
     spacing_scale = max(1.0_dp, abs(ratio_x_real), abs(ratio_y_real))
     if (ratio_x < 1 .or. ratio_y < 1 .or. &
         abs(ratio_x_real - real(ratio_x, dp)) > &
-          face_tolerance * spacing_scale .or. &
+          alignment_tolerance * spacing_scale .or. &
         abs(ratio_y_real - real(ratio_y, dp)) > &
-          face_tolerance * spacing_scale) return
+          alignment_tolerance * spacing_scale) return
 
     allocate(candidate, source=recipients)
 
     if (patch%coarse_i_lower > 1) then
       coarse_i = patch%coarse_i_lower - 1
-      do fine_j = 1, child_geometry%ny
-        if (abs(child_geometry%x_face_fraction(0, fine_j) - 1.0_dp) <= &
-            face_tolerance) cycle
-        coarse_j = patch%coarse_j_lower + (fine_j - 1) / ratio_y
+      do coarse_j = patch%coarse_j_lower, patch%coarse_j_upper
         call mark_local_recipient_neighborhood( &
           parent_geometry, refined, coarse_i, coarse_j, candidate)
       end do
     end if
     if (patch%coarse_i_upper < parent_geometry%nx) then
       coarse_i = patch%coarse_i_upper + 1
-      do fine_j = 1, child_geometry%ny
-        if (abs(child_geometry%x_face_fraction( &
-              child_geometry%nx, fine_j) - 1.0_dp) <= &
-            face_tolerance) cycle
-        coarse_j = patch%coarse_j_lower + (fine_j - 1) / ratio_y
+      do coarse_j = patch%coarse_j_lower, patch%coarse_j_upper
         call mark_local_recipient_neighborhood( &
           parent_geometry, refined, coarse_i, coarse_j, candidate)
       end do
     end if
     if (patch%coarse_j_lower > 1) then
       coarse_j = patch%coarse_j_lower - 1
-      do fine_i = 1, child_geometry%nx
-        if (abs(child_geometry%y_face_fraction(fine_i, 0) - 1.0_dp) <= &
-            face_tolerance) cycle
-        coarse_i = patch%coarse_i_lower + (fine_i - 1) / ratio_x
+      do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
         call mark_local_recipient_neighborhood( &
           parent_geometry, refined, coarse_i, coarse_j, candidate)
       end do
     end if
     if (patch%coarse_j_upper < parent_geometry%ny) then
       coarse_j = patch%coarse_j_upper + 1
-      do fine_i = 1, child_geometry%nx
-        if (abs(child_geometry%y_face_fraction( &
-              fine_i, child_geometry%ny) - 1.0_dp) <= &
-            face_tolerance) cycle
-        coarse_i = patch%coarse_i_lower + (fine_i - 1) / ratio_x
+      do coarse_i = patch%coarse_i_lower, patch%coarse_i_upper
         call mark_local_recipient_neighborhood( &
           parent_geometry, refined, coarse_i, coarse_j, candidate)
       end do
@@ -95,7 +81,7 @@ contains
 
     recipients = candidate
     ok = .true.
-  end subroutine mark_local_cut_interface_recipients_2d
+  end subroutine mark_local_coarse_fine_interface_recipients_2d
 
   subroutine mark_local_recipient_neighborhood( &
       geometry, refined, seed_i, seed_j, recipients)

@@ -24,7 +24,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   use amr_eb_hierarchy_2d_mod, only: &
     amr_eb_patch_2d, average_down_reactive_eb_state_patch_2d
   use amr_eb_multilevel_2d_mod, only: &
-    mark_local_cut_interface_recipients_2d
+    mark_local_coarse_fine_interface_recipients_2d
   use amr_eb_flux_register_2d_mod, only: &
     amr_eb_flux_register_2d, initialize_amr_eb_flux_register_2d, &
     accumulate_coarse_eb_fluxes_2d, accumulate_fine_eb_fluxes_2d, &
@@ -4149,7 +4149,7 @@ contains
       child_geometry = &
         sparse%topology%relations(level)%children(child)%geometry
       child_patch = sparse%topology%relations(level)%children(child)%patch
-      call mark_local_cut_interface_recipients_2d( &
+      call mark_local_coarse_fine_interface_recipients_2d( &
         geometry, child_geometry, child_patch, refined, recipients, local_ok)
       entity_ok = entity_ok .and. local_ok
     end do
