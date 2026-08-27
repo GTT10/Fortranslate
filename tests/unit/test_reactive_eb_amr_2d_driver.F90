@@ -911,6 +911,27 @@ program test_reactive_eb_amr_2d_driver
     level_two_patch%coarse_j_upper == parent_level_two_j_upper, &
     "three-level parent-regrid rollback")
 
+  config%prolongation_method = "linear"
+  config%dynamic_parent_regridding = .true.
+  config%regrid_at_initialization = .true.
+  call simulate_three_level_reactive_eb_amr_2d( &
+    species, reactions, config, coarse_state, coarse_temperature, &
+    coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
+    level_two_state, level_two_temperature, level_two_geometry, &
+    level_two_patch, time, steps, regrids, initial_integrals, &
+    final_integrals, minimum_dt, base_density, ok)
+  scale = max(1.0_dp, maxval(abs(initial_integrals)))
+  call require(ok .and. steps > 0 .and. regrids > 0 .and. &
+    patch%is_valid(coarse_geometry, fine_geometry) .and. &
+    level_two_patch%is_valid(fine_geometry, level_two_geometry) .and. &
+    (patch%coarse_i_lower /= config%coarse_i_lower .or. &
+     patch%coarse_i_upper /= config%coarse_i_upper .or. &
+     patch%coarse_j_lower /= config%coarse_j_lower .or. &
+    patch%coarse_j_upper /= config%coarse_j_upper) .and. &
+    maxval(abs(final_integrals - initial_integrals)) <= &
+      2.0e-8_dp * scale, &
+    "public scheduled three-level parent regrid")
+
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
 contains

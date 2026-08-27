@@ -3429,3 +3429,20 @@ without publishing an incomplete hierarchy. Old finest information is first
 restricted into the middle level; a replacement finest patch is then
 prolonged from the rebuilt middle. Public scheduling and checkpoint storage of
 the moving parent topology remain the next fixed-depth lifecycle boundary.
+
+## Public dynamic three-level parent lifecycle (`0.190.0`)
+
+- [x] opt-in `dynamic_parent_regridding` namelist control
+- [x] minimum parent-size validation for a safe nested finest plan
+- [x] parent-first initialization and accepted-step regrid schedule
+- [x] finest-only fallback when the scheduled parent is unchanged
+- [x] one committed regrid count per parent-or-finest topology event
+- [x] dynamic three-level checkpoint schema 4
+- [x] stored parent-policy compatibility check
+- [x] actual parent and finest descriptor reconstruction on restart
+- [x] uninterrupted/checkpoint-stop/restart field parity gate
+
+The public fixed-depth application can now move both refined rectangles while
+retaining the existing fixed-parent behavior as the default. Restart rebuilds
+the middle geometry from the stored parent descriptor and validates the stored
+finest descriptor against that actual geometry before publishing any field.

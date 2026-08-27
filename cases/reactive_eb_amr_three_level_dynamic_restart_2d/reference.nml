@@ -63,6 +63,7 @@
   level_two_j_upper = 9
   multipatch_enabled = .false.
   dynamic_regridding = .true.
+  dynamic_parent_regridding = .true.
   regrid_at_initialization = .true.
   remove_fine_patch_when_untagged = .false.
   regrid_interval = 1
