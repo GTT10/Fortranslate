@@ -1194,7 +1194,7 @@ contains
     requires_closure = child_count > 0
     if (requires_closure) then
       allocate(integral_before(sparse%nvar))
-      call composite_sparse_amr_eb_patch_subtree_integral_2d( &
+      call reduce_sparse_amr_eb_patch_subtree_integral_2d( &
         distribution, sparse, level, patch, integral_before, local_ok)
       if (.not. local_ok) return
     end if
@@ -1904,7 +1904,7 @@ contains
 
     allocate(current_integral(sparse%nvar), boundary_change(sparse%nvar))
     allocate(residual(sparse%nvar), correction(sparse%nvar))
-    call composite_sparse_amr_eb_patch_subtree_integral_2d( &
+    call reduce_sparse_amr_eb_patch_subtree_integral_2d( &
       distribution, sparse, level, patch, current_integral, local_ok)
     if (.not. local_ok) return
     boundary_change = 0.0_dp
@@ -1998,7 +1998,7 @@ contains
       distribution%comm, entity_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
 
-    call composite_sparse_amr_eb_patch_subtree_integral_2d( &
+    call reduce_sparse_amr_eb_patch_subtree_integral_2d( &
       distribution, sparse, level, patch, current_integral, local_ok)
     if (.not. local_ok) return
     entity_ok = .true.
@@ -2074,14 +2074,12 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_nodes
 
-    real(dp), allocatable :: local_integral(:)
-    integer :: global_node_count, ierr, integer_maximum(3)
-    integer :: integer_minimum(3), integer_values(3), local_node_count
+    integer :: ierr, integer_maximum(3)
+    integer :: integer_minimum(3), integer_values(3)
     logical :: accepted, global_ok, local_ok, matches
 
     integral = 0.0_dp
     ok = .false.
-    local_node_count = 0
     if (present(local_nodes)) local_nodes = 0
     call replicated_distribution_matches_2d( &
       distribution, sparse%topology, matches)
@@ -2106,6 +2104,28 @@ contains
     if (ierr /= MPI_SUCCESS .or. &
         any(integer_minimum /= integer_maximum)) return
 
+    call reduce_sparse_amr_eb_patch_subtree_integral_2d( &
+      distribution, sparse, level, patch, integral, ok, local_nodes)
+  end subroutine &
+    composite_sparse_amr_eb_patch_subtree_integral_2d
+
+  subroutine reduce_sparse_amr_eb_patch_subtree_integral_2d( &
+      distribution, sparse, level, patch, integral, ok, local_nodes)
+    type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
+    type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
+    integer, intent(in) :: level, patch
+    real(dp), intent(out) :: integral(:)
+    logical, intent(out) :: ok
+    integer, intent(out), optional :: local_nodes
+
+    real(dp), allocatable :: local_integral(:)
+    integer :: global_node_count, ierr, local_node_count
+    logical :: accepted, global_ok, local_ok
+
+    integral = 0.0_dp
+    ok = .false.
+    local_node_count = 0
+    if (present(local_nodes)) local_nodes = 0
     allocate(local_integral(sparse%nvar), source=0.0_dp)
     call accumulate_sparse_subtree_integral_local_2d( &
       distribution, sparse, level, patch, local_integral, &
@@ -2132,7 +2152,7 @@ contains
     ok = .true.
     if (present(local_nodes)) local_nodes = local_node_count
   end subroutine &
-    composite_sparse_amr_eb_patch_subtree_integral_2d
+    reduce_sparse_amr_eb_patch_subtree_integral_2d
 
   recursive subroutine accumulate_sparse_subtree_integral_local_2d( &
       distribution, sparse, level, patch, integral, local_nodes, ok)
