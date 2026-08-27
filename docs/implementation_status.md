@@ -3530,3 +3530,18 @@ The public boundary tree now qualifies the selected elementary chemistry,
 every currently implemented transport term, and hydro together across
 arbitrary depth, process ownership, and restart. This is not arbitrary
 mechanism parsing or CVODE parity.
+
+## Restart-persistent patch-tree limiter diagnostic (`0.196.0`)
+
+- [x] schema-2 base and schema-5 fingerprinted checkpoint envelopes
+- [x] finite `[0,1]` minimum transport theta metadata validation
+- [x] serial checkpoint round trip and failure rollback
+- [x] selected-root sparse checkpoint write
+- [x] communicator-wide restart metadata broadcast
+- [x] changed-rank continuation of the pre-checkpoint minimum
+- [x] retained topology, fingerprint, and field transaction boundaries
+
+Serial and sparse-MPI patch-tree applications now report the minimum limiter
+over the complete logical run, not only the post-restart suffix. This is a
+diagnostic schema change; numerical state and fingerprint contents are
+unchanged.

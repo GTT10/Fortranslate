@@ -140,13 +140,15 @@ program pelef_mpi_reactive_eb_patch_tree_2d
   steps = 0
   regrids = 0
   minimum_dt = 0.0_dp
+  minimum_transport_theta = 1.0_dp
   restart_run = len_trim(config%restart_file) > 0
   if (restart_run) then
     call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       config%restart_file, species, MPI_COMM_WORLD, io_root, &
       config%patch_tree_maximum_levels, config%patch_tree_mpi_work_exponent, &
       distribution, sparse, time, steps, regrids, minimum_dt, ok, &
-      fingerprint=fingerprint)
+      fingerprint=fingerprint, &
+      minimum_transport_theta=minimum_transport_theta)
     if (.not. ok) call abort_run("Sparse patch-tree restart failed", 4)
   else
     call build_configured_eb_geometry_2d(config%eb, root_geometry, ok)
@@ -206,7 +208,6 @@ program pelef_mpi_reactive_eb_patch_tree_2d
 
   stopped_after_checkpoint = .false.
   last_checkpoint_step = -1
-  minimum_transport_theta = 1.0_dp
   do
     remaining = config%eb%flow%final_time - time
     if (remaining <= time_tolerance) exit
@@ -343,7 +344,8 @@ contains
 
     call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
       config%checkpoint_file, species, distribution, sparse, io_root, time, &
-      steps, regrids, minimum_dt, checkpoint_ok, fingerprint=fingerprint)
+      steps, regrids, minimum_dt, checkpoint_ok, fingerprint=fingerprint, &
+      minimum_transport_theta=minimum_transport_theta)
   end subroutine write_sparse_checkpoint
 
   subroutine abort_run(reason, code)

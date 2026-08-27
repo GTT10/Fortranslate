@@ -2425,3 +2425,18 @@ to the coarse/fine transport and hydro contexts and to every average-down. The
 schema-4 fingerprint already records chemistry activation, model, and solver
 tolerances beside transport controls; rank count and ownership weight remain
 continuation-only controls.
+
+## Restart-persistent transport limiter history (`0.196.0`)
+
+Patch-tree checkpoint metadata now stores the minimum accepted transport
+limiter theta beside time and minimum root timestep. Serial restart reads it
+directly into the accumulated diagnostic before advancing another interval.
+Sparse restart reads it only on the selected I/O root, broadcasts it with the
+other real metadata, and resumes the communicator-wide minimum from that
+value.
+
+The formatted envelope advances from schema 1 to 2 without a fingerprint and
+the public fingerprinted format advances from schema 4 to 5. Writers validate
+that theta is finite and lies in `[0,1]`; a zero-step checkpoint must retain
+the neutral value `1`. A failed or incompatible read publishes the same
+neutral value with the existing empty-tree rollback state.

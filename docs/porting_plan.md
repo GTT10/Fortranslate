@@ -1623,6 +1623,17 @@ Reuse the fresh and split-run gates so reaction-modified states must retain
 serial and 1/2/4/8-rank field identity, plus two-rank checkpoint continuation
 at four and eight ranks under a changed ownership weight.
 
+## 0.196.0 restart-persistent transport limiter history
+
+Advance the arbitrary-depth checkpoint envelope to base schema 2 and public
+fingerprinted schema 5. Store the cumulative minimum transport limiter theta
+with time, step, regrid, and minimum-timestep metadata.
+
+Restore that value before serial or sparse-MPI continuation, including the
+selected-root broadcast and changed-rank ownership rebuild. Extend serial and
+MPI round-trip gates with a nonneutral synthetic value and keep failed-read
+rollback at neutral theta `1`.
+
 Each implementation PR should normally contain:
 
 1. implementation

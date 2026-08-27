@@ -4080,7 +4080,8 @@ contains
       if (present(failure_context)) failure_context = "checkpoint restart"
       call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%restart_file, species, config%patch_tree_maximum_levels, &
-        solution, time, steps, regrids, minimum_dt, local_ok, fingerprint)
+        solution, time, steps, regrids, minimum_dt, local_ok, fingerprint, &
+        local_minimum_transport_theta)
       if (.not. local_ok) return
       nvar = solution%nvar
       base_density = solution%levels(1)%patches(1)%state(irho, 1, 1)
@@ -4184,7 +4185,8 @@ contains
           if (present(failure_context)) failure_context = "checkpoint write"
           call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
             config%checkpoint_file, species, solution, time, steps, regrids, &
-            minimum_dt, local_ok, fingerprint)
+            minimum_dt, local_ok, fingerprint, &
+            local_minimum_transport_theta)
           if (.not. local_ok) return
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
@@ -4201,7 +4203,7 @@ contains
       if (present(failure_context)) failure_context = "final checkpoint write"
       call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
         config%checkpoint_file, species, solution, time, steps, regrids, &
-        minimum_dt, local_ok, fingerprint)
+        minimum_dt, local_ok, fingerprint, local_minimum_transport_theta)
       if (.not. local_ok) return
     end if
     if (present(failure_context)) failure_context = "final integral"

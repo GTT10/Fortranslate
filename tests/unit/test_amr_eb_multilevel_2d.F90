@@ -132,6 +132,7 @@ program test_amr_eb_multilevel_2d
   logical, allocatable :: local_refined(:, :), local_recipients(:, :)
   real(dp) :: tree_dt, reference_tree_dt, initial_tree_dt, node_dt
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
+  real(dp) :: checkpoint_minimum_transport_theta
   logical :: ok, topology_changed, reference_ok, node_ok
   character(len=128) :: tree_failure_context
   character(len=4096) :: csv_line
@@ -553,26 +554,30 @@ program test_amr_eb_multilevel_2d
   reactive_tree_snapshot = reactive_tree
   call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
-    0.01_dp, ok)
+    0.01_dp, ok, minimum_transport_theta=0.625_dp)
   call require(ok, "arbitrary-depth EB patch-tree checkpoint write")
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 4, checkpoint_tree, checkpoint_time, &
-    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok)
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta)
   call require(ok .and. checkpoint_tree%is_valid() .and. &
     patch_tree_topologies_match_2d( &
       checkpoint_tree%topology, reactive_tree%topology) .and. &
     reactive_tree_solutions_close( &
       checkpoint_tree, reactive_tree, 8.0e-12_dp) .and. &
     checkpoint_time == 0.125_dp .and. checkpoint_steps == 5 .and. &
-    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp, &
+    checkpoint_regrids == 2 .and. checkpoint_minimum_dt == 0.01_dp .and. &
+    checkpoint_minimum_transport_theta == 0.625_dp, &
     "arbitrary-depth EB patch-tree checkpoint round trip")
 
   call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, 3, checkpoint_tree, checkpoint_time, &
-    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok)
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid() .and. &
     checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
-    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp, &
+    checkpoint_regrids == 0 .and. checkpoint_minimum_dt == 0.0_dp .and. &
+    checkpoint_minimum_transport_theta == 1.0_dp, &
     "EB patch-tree checkpoint maximum-depth rejection")
 
   allocate(checkpoint_species, source=species)
@@ -592,6 +597,12 @@ program test_amr_eb_multilevel_2d
   call require(.not. ok .and. &
     reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
     "invalid EB patch-tree checkpoint metadata rejection")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, minimum_transport_theta=1.01_dp)
+  call require(.not. ok .and. &
+    reactive_tree_solutions_match(reactive_tree, reactive_tree_snapshot), &
+    "invalid EB patch-tree transport limiter metadata rejection")
   open(newunit=checkpoint_unit, file=tree_checkpoint_path, status="old", &
     action="readwrite", iostat=status)
   call require(status == 0, "open EB patch-tree checkpoint for cleanup")
