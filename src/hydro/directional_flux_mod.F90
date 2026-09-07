@@ -9,11 +9,18 @@ module directional_flux_mod
 
   public :: rotate_conserved_y_to_x
   public :: rotate_conserved_x_to_y
+  public :: rotate_conserved_z_to_x
+  public :: rotate_conserved_x_to_z
   public :: rotate_primitive_y_to_x
   public :: rotate_primitive_x_to_y
+  public :: rotate_primitive_z_to_x
+  public :: rotate_primitive_x_to_z
   public :: rotate_flux_x_to_y
+  public :: rotate_flux_x_to_z
   public :: euler_physical_flux_y
+  public :: euler_physical_flux_z
   public :: compute_riemann_flux_y
+  public :: compute_riemann_flux_z
 
 contains
 
@@ -35,6 +42,24 @@ contains
     call rotate_conserved_y_to_x(state_x, state_y)
   end subroutine rotate_conserved_x_to_y
 
+  pure subroutine rotate_conserved_z_to_x(state_z, state_x)
+    real(dp), intent(in) :: state_z(ncons)
+    real(dp), intent(out) :: state_x(ncons)
+
+    state_x(irho) = state_z(irho)
+    state_x(imx) = state_z(imz)
+    state_x(imy) = state_z(imy)
+    state_x(imz) = state_z(imx)
+    state_x(iet) = state_z(iet)
+  end subroutine rotate_conserved_z_to_x
+
+  pure subroutine rotate_conserved_x_to_z(state_x, state_z)
+    real(dp), intent(in) :: state_x(ncons)
+    real(dp), intent(out) :: state_z(ncons)
+
+    call rotate_conserved_z_to_x(state_x, state_z)
+  end subroutine rotate_conserved_x_to_z
+
   pure subroutine rotate_primitive_y_to_x(primitive_y, primitive_x)
     real(dp), intent(in) :: primitive_y(nprim)
     real(dp), intent(out) :: primitive_x(nprim)
@@ -53,6 +78,24 @@ contains
     call rotate_primitive_y_to_x(primitive_x, primitive_y)
   end subroutine rotate_primitive_x_to_y
 
+  pure subroutine rotate_primitive_z_to_x(primitive_z, primitive_x)
+    real(dp), intent(in) :: primitive_z(nprim)
+    real(dp), intent(out) :: primitive_x(nprim)
+
+    primitive_x(qrho) = primitive_z(qrho)
+    primitive_x(qu) = primitive_z(qw)
+    primitive_x(qv) = primitive_z(qv)
+    primitive_x(qw) = primitive_z(qu)
+    primitive_x(qp) = primitive_z(qp)
+  end subroutine rotate_primitive_z_to_x
+
+  pure subroutine rotate_primitive_x_to_z(primitive_x, primitive_z)
+    real(dp), intent(in) :: primitive_x(nprim)
+    real(dp), intent(out) :: primitive_z(nprim)
+
+    call rotate_primitive_z_to_x(primitive_x, primitive_z)
+  end subroutine rotate_primitive_x_to_z
+
   pure subroutine rotate_flux_x_to_y(flux_x, flux_y)
     real(dp), intent(in) :: flux_x(ncons)
     real(dp), intent(out) :: flux_y(ncons)
@@ -63,6 +106,13 @@ contains
     flux_y(imz) = flux_x(imz)
     flux_y(iet) = flux_x(iet)
   end subroutine rotate_flux_x_to_y
+
+  pure subroutine rotate_flux_x_to_z(flux_x, flux_z)
+    real(dp), intent(in) :: flux_x(ncons)
+    real(dp), intent(out) :: flux_z(ncons)
+
+    call rotate_conserved_z_to_x(flux_x, flux_z)
+  end subroutine rotate_flux_x_to_z
 
   pure subroutine euler_physical_flux_y(conserved, gamma, flux, ok)
     real(dp), intent(in) :: conserved(ncons)
@@ -80,6 +130,23 @@ contains
     end if
     call rotate_flux_x_to_y(rotated_flux, flux)
   end subroutine euler_physical_flux_y
+
+  pure subroutine euler_physical_flux_z(conserved, gamma, flux, ok)
+    real(dp), intent(in) :: conserved(ncons)
+    real(dp), intent(in) :: gamma
+    real(dp), intent(out) :: flux(ncons)
+    logical, intent(out) :: ok
+
+    real(dp) :: rotated_state(ncons), rotated_flux(ncons)
+
+    call rotate_conserved_z_to_x(conserved, rotated_state)
+    call euler_physical_flux_x(rotated_state, gamma, rotated_flux, ok)
+    if (.not. ok) then
+      flux = 0.0_dp
+      return
+    end if
+    call rotate_flux_x_to_z(rotated_flux, flux)
+  end subroutine euler_physical_flux_z
 
   pure subroutine compute_riemann_flux_y( &
       lower_state, upper_state, gamma, solver, flux, ok)
@@ -102,5 +169,27 @@ contains
     end if
     call rotate_flux_x_to_y(rotated_flux, flux)
   end subroutine compute_riemann_flux_y
+
+  pure subroutine compute_riemann_flux_z( &
+      lower_state, upper_state, gamma, solver, flux, ok)
+    real(dp), intent(in) :: lower_state(ncons), upper_state(ncons)
+    real(dp), intent(in) :: gamma
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: flux(ncons)
+    logical, intent(out) :: ok
+
+    real(dp) :: lower_rotated(ncons), upper_rotated(ncons)
+    real(dp) :: rotated_flux(ncons)
+
+    call rotate_conserved_z_to_x(lower_state, lower_rotated)
+    call rotate_conserved_z_to_x(upper_state, upper_rotated)
+    call compute_riemann_flux_x( &
+      lower_rotated, upper_rotated, gamma, solver, rotated_flux, ok)
+    if (.not. ok) then
+      flux = 0.0_dp
+      return
+    end if
+    call rotate_flux_x_to_z(rotated_flux, flux)
+  end subroutine compute_riemann_flux_z
 
 end module directional_flux_mod

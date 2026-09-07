@@ -1,0 +1,17 @@
+&reactive_1d
+  nx = 16
+  x_lower = 0.0
+  x_upper = 0.008
+  final_time = 1.0e-7
+  problem = "entropy_wave"
+  chemistry_model = "selected"
+  initial_temperature = 3000.0
+  initial_pressure = 101325.0
+  density_wave_amplitude = 0.2
+  composition_count = 2
+  composition_species = "H2", "H"
+  composition_mole_fractions = 0.8, 0.2
+  amr_enabled = .true.
+  amr_minimum_patch_cells = 4
+  output_file = "invalid_selected_amr_entropy_temperature.csv"
+/

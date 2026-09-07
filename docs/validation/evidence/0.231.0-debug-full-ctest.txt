@@ -1,0 +1,14 @@
+PeleF 0.231.0 Debug full CTest evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Command:
+  ctest --test-dir build/debug --output-on-failure \
+    --output-log build/debug/ctest-0.231-full.log -j 2
+
+Result:
+  100% tests passed, 0 tests failed out of 449
+  Total Test time (real) = 526.73 sec
+
+Generated log:
+  build/debug/ctest-0.231-full.log
+  sha256=5b9b8faa3e0cc3317a6bf0e57ae49139c04eb6858c5ce1d22fdd66e353bc1733

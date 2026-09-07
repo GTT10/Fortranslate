@@ -1,0 +1,40 @@
+&reactive_1d
+  nx = 48
+  x_lower = 0.0
+  x_upper = 0.012
+  final_time = 1.0e-10
+  cfl = 0.20
+  maximum_steps = 20
+  problem = "entropy_wave"
+  reconstruction = "characteristic_plm"
+  riemann_solver = "rusanov"
+  limiter = "mc"
+  boundary_condition = "periodic"
+  chemistry_enabled = .false.
+  chemistry_model = "selected"
+  transport_enabled = .true.
+  transport_cfl = 0.30
+  initial_temperature = 1200.0
+  initial_pressure = 101325.0
+  initial_velocity = 50.0
+  density_wave_amplitude = 0.10
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  amr_enabled = .true.
+  amr_multipatch_enabled = .true.
+  amr_reconstruction = "plm"
+  amr_refinement_ratio = 2
+  amr_max_levels = 2
+  amr_regrid_interval = 1
+  amr_tag_component = 1
+  amr_buffer_cells = 1
+  amr_minimum_patch_cells = 4
+  amr_maximum_patch_gap_cells = 0
+  amr_relative_gradient_threshold = 0.008
+  amr_absolute_gradient_threshold = 0.0
+  amr_scale_floor = 1.0e-12
+  output_file = "selected_full_h2o2_amr_multipatch.csv"
+/

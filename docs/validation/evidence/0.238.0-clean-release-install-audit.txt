@@ -1,0 +1,46 @@
+PeleF 0.238.0 clean tests-disabled Release install audit
+Date: 2026-08-31 Asia/Tokyo
+
+Build tree:
+  build/selected-mpi-eb2d-0238-final-audit-release
+Install prefix:
+  build/selected-mpi-eb2d-0238-final-audit-install
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Build/install result:
+  clean configure: PASS
+  627/627 build steps: PASS
+  install manifest entries=40
+  CMakeCache.txt sha256=341b497ec5a65c57730e9184ed4d3c000289c9d0b74f143ee31848b4ced8281e
+  install_manifest.txt sha256=7f4c64acb96516226c2896e0f9648dfff08942f17e8595c2cf323475cbc1efc9
+
+Audit command:
+  python3 tools/audit_installed_release.py \
+    --build-dir build/selected-mpi-eb2d-0238-final-audit-release \
+    --install-prefix build/selected-mpi-eb2d-0238-final-audit-install \
+    --expected-elf-count 40
+
+Audit result:
+  install_manifest_entries=40
+  installed_elf_count=40
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=40
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS

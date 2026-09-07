@@ -1,0 +1,129 @@
+program pelef_amr_reactive_1d_selected
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use simulation_config_reactive_1d_mod, only: &
+    reactive_1d_config, read_reactive_1d_configuration, &
+    resolve_reactive_1d_selected_composition
+  use simulation_config_selected_reactor_mod, only: &
+    selected_reactor_paths_alias_lexically
+  use amr_reactive_1d_application_mod, only: &
+    run_amr_reactive_1d_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => &
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(reactive_1d_config) :: config
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  real(dp) :: requested_temperature_minimum, requested_temperature_maximum
+  character(len=1024) :: input_path, message
+  logical :: ok
+
+  if (command_argument_count() /= 1) then
+    write(*, '(a)') "Usage: pelef_amr_reactive_1d_selected <input.nml>"
+    error stop 2
+  end if
+  call get_command_argument(1, input_path)
+  call read_reactive_1d_configuration( &
+    trim(input_path), config, ok, message, allow_selected=.true.)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  if (trim(config%chemistry_model) /= "selected") then
+    error stop "Selected AMR reactive 1D requires chemistry_model='selected'"
+  end if
+  if (.not. config%amr_enabled) then
+    error stop "Selected AMR reactive 1D requires amr_enabled"
+  end if
+  if (config%checkpoint_interval > 0 .or. &
+      len_trim(config%checkpoint_file) > 0 .or. &
+      len_trim(config%restart_file) > 0) then
+    error stop "Selected AMR reactive 1D does not implement checkpoint or restart"
+  end if
+  if (selected_reactor_paths_alias_lexically( &
+      config%output_file, input_path)) then
+    error stop "Selected AMR reactive 1D input and output paths must differ"
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected AMR reactive 1D thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected AMR reactive 1D reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected AMR reactive 1D transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected AMR reactive 1D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  requested_temperature_minimum = config%initial_temperature
+  requested_temperature_maximum = config%initial_temperature
+  if (trim(config%problem) == "reactive_hotspot") then
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+  else if (trim(config%problem) == "entropy_wave") then
+    requested_temperature_minimum = config%initial_temperature / &
+      (1.0_dp + config%density_wave_amplitude)
+    requested_temperature_maximum = config%initial_temperature / &
+      (1.0_dp - config%density_wave_amplitude)
+  end if
+  call validate_selected_temperature_range( &
+    "Selected AMR reactive 1D", requested_temperature_minimum, &
+    requested_temperature_maximum, common_temperature_minimum, &
+    common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  call resolve_reactive_1d_selected_composition( &
+    config, species, mole_fractions, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  call run_amr_reactive_1d_application( &
+    trim(input_path), "selected mechanism AMR reactive 1D", &
+    pelef_selected_bundle_sha256, config, species, reactions, transport, &
+    mole_fractions, pelef_selected_chemistry_integrator)
+
+end program pelef_amr_reactive_1d_selected

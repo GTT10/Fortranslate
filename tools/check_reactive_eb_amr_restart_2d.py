@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import math
 from pathlib import Path
 
@@ -27,13 +28,22 @@ def close(actual: float, expected: float, tolerance: float = 3.0e-10) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--expected-checkpoint-sha256", required=True)
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--stopped", required=True, type=Path)
+    parser.add_argument("--expected-stopped-sha256", required=True)
     parser.add_argument("--restarted", required=True, type=Path)
     parser.add_argument("--fine", required=True, nargs="+", type=Path)
     args = parser.parse_args()
 
-    checkpoint_lines = args.checkpoint.read_text(encoding="utf-8").splitlines()
+    checkpoint_data = args.checkpoint.read_bytes()
+    checkpoint_digest = hashlib.sha256(checkpoint_data).hexdigest()
+    if checkpoint_digest != args.expected_checkpoint_sha256:
+        raise AssertionError(
+            f"checkpoint SHA-256 {checkpoint_digest} "
+            f"!= {args.expected_checkpoint_sha256}"
+        )
+    checkpoint_lines = checkpoint_data.decode("utf-8").splitlines()
     if checkpoint_lines[0] != "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT":
         raise AssertionError("checkpoint magic mismatch")
     header = [int(value) for value in checkpoint_lines[1].split()]
@@ -47,6 +57,12 @@ def main() -> None:
 
     reference = load_rows(args.reference)
     stopped = load_rows(args.stopped)
+    stopped_digest = hashlib.sha256(args.stopped.read_bytes()).hexdigest()
+    if stopped_digest != args.expected_stopped_sha256:
+        raise AssertionError(
+            f"stopped CSV SHA-256 {stopped_digest} "
+            f"!= {args.expected_stopped_sha256}"
+        )
     restarted = load_rows(args.restarted)
     if abs(float(reference[0]["time"]) - 2.0e-7) > 4.0e-20:
         raise AssertionError("reference final time mismatch")
@@ -76,6 +92,8 @@ def main() -> None:
     for row in active:
         if abs(sum(float(row[name]) for name in species) - 1.0) > 5.0e-13:
             raise AssertionError("restart species closure drift")
+    print(f"checkpoint_sha256={checkpoint_digest}")
+    print(f"stopped_sha256={stopped_digest}")
     print("check_reactive_eb_amr_restart_2d: PASS")
 
 

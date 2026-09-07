@@ -1,0 +1,27 @@
+&reactive_3d
+  nx = 4
+  ny = 4
+  nz = 4
+  final_time = 1.0e-7
+  problem = "uniform_reactor"
+  thermo_model = "selected"
+  boundary_condition = "periodic"
+  chemistry_enabled = .true.
+  transport_enabled = .false.
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  composition_count = 2
+  composition_species = "H", "H2"
+  composition_mole_fractions = 0.2, 0.8
+/
+&amr_reactive_3d
+  refinement_ratio = 2
+  coarse_i_lower = 2
+  coarse_i_upper = 3
+  coarse_j_lower = 2
+  coarse_j_upper = 3
+  coarse_k_lower = 2
+  coarse_k_upper = 3
+  coarse_output_file = "invalid_path_alias.nml"
+  fine_output_file = "invalid_selected_amr_alias_fine.csv"
+/

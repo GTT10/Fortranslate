@@ -1,0 +1,46 @@
+PeleF 0.231.0 installed full-bundle selected EB 3D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executable:
+  build/selected-eb3d-0231-audit-install/bin/pelef_reactive_eb_3d_selected
+  sha256=064abbcaf6619b90e01dbc53bca7c9afc58039d04ae388c247d133345f0192e4
+
+Fixed inputs:
+  cases/selected_reactive_eb_3d_restart_full/reference.nml
+  cases/selected_reactive_eb_3d_restart_full/checkpoint_stop.nml
+  cases/selected_reactive_eb_3d_restart_full/restart.nml
+
+Execution commands:
+  cd build/selected-eb3d-0231-audit-install-smoke
+  python3 ../../tools/run_and_capture.py --output installed_selected_reference.log -- \
+    ../selected-eb3d-0231-audit-install/bin/pelef_reactive_eb_3d_selected \
+    ../../cases/selected_reactive_eb_3d_restart_full/reference.nml
+  python3 ../../tools/run_and_capture.py --output installed_selected_stop.log -- \
+    ../selected-eb3d-0231-audit-install/bin/pelef_reactive_eb_3d_selected \
+    ../../cases/selected_reactive_eb_3d_restart_full/checkpoint_stop.nml
+  python3 ../../tools/run_and_capture.py --output installed_selected_resume.log -- \
+    ../selected-eb3d-0231-audit-install/bin/pelef_reactive_eb_3d_selected \
+    ../../cases/selected_reactive_eb_3d_restart_full/restart.nml
+
+Validation command:
+  python3 tools/check_installed_full_selected_reactive_eb_3d_restart.py \
+    --reference build/selected-eb3d-0231-audit-install-smoke/installed_full_selected_restart_reference.csv \
+    --stopped build/selected-eb3d-0231-audit-install-smoke/installed_full_selected_restart_stopped.csv \
+    --restarted build/selected-eb3d-0231-audit-install-smoke/installed_full_selected_restart_resumed.csv \
+    --checkpoint build/selected-eb3d-0231-audit-install-smoke/installed_full_selected_restart.chk \
+    --reference-log build/selected-eb3d-0231-audit-install-smoke/installed_selected_reference.log \
+    --stopped-log build/selected-eb3d-0231-audit-install-smoke/installed_selected_stop.log \
+    --restarted-log build/selected-eb3d-0231-audit-install-smoke/installed_selected_resume.log \
+    --expected-reference-sha256 a019574fc4350619283b55b2729a6cc90b2284adf42811ba9b01e56343ab166d \
+    --expected-stopped-sha256 60a4d1bd30c0d79250ed10b26aa93684a2e6413076ff69d48e4a358fb38b4d45 \
+    --expected-checkpoint-sha256 7fa8b0a906c7c3d599ed0baa1bbc198dd869bf8572835efed52bd67496ed82df
+
+Result:
+  rows=480
+  checkpoint_time=2.7268814571340862e-09
+  final_time=1.0000000000000000e-08
+  completed_steps=4
+  reference_csv_sha256=a019574fc4350619283b55b2729a6cc90b2284adf42811ba9b01e56343ab166d
+  stopped_csv_sha256=60a4d1bd30c0d79250ed10b26aa93684a2e6413076ff69d48e4a358fb38b4d45
+  checkpoint_sha256=7fa8b0a906c7c3d599ed0baa1bbc198dd869bf8572835efed52bd67496ed82df
+  installed_full_selected_reactive_eb_3d_restart=PASS

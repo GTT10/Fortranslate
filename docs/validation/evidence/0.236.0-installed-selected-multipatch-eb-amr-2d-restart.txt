@@ -1,0 +1,69 @@
+PeleF 0.236.0 installed selected multipatch EB AMR 2D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-ebamr2d-multipatch-0236-final-audit-install/bin/pelef_reactive_eb_amr_2d
+  sha256=86f5cb340016c5dd79d64547b1f91df3d5bcb4fb03ad660303b9cb257729061c
+  build/selected-ebamr2d-multipatch-0236-final-audit-install/bin/pelef_reactive_eb_amr_2d_selected
+  sha256=d1007c9671204a2c1d7ad7f20715491c08e841607b0c5b21a051418add0665a0
+
+Selected inputs:
+  cases/selected_reactive_eb_amr_2d_multipatch_restart/fixed_reference.nml
+  cases/selected_reactive_eb_amr_2d_multipatch_restart/reference.nml
+  cases/selected_reactive_eb_amr_2d_multipatch_restart/checkpoint_stop.nml
+  cases/selected_reactive_eb_amr_2d_multipatch_restart/restart.nml
+  cases/selected_reactive_eb_amr_2d_multipatch_restart/mismatched_composition.nml
+
+Frozen fixed-schema inputs:
+  cases/reactive_eb_amr_multipatch_restart_2d/reference.nml
+  cases/reactive_eb_amr_multipatch_restart_2d/checkpoint_stop.nml
+  cases/reactive_eb_amr_multipatch_restart_2d/restart.nml
+
+Execution directory:
+  build/selected-ebamr2d-multipatch-0236-final-audit-smoke
+
+Selected execution result:
+  fixed full-H2/O2 reference: PASS, coarse step 3, final time 1.0e-8 s
+  selected reference: PASS, coarse step 3, final time 1.0e-8 s
+  selected checkpoint-stop: PASS, coarse step 1,
+    time 4.5125253966820509e-9 s, completed regrids=1
+  independent selected restart: PASS, coarse step 3, final time 1.0e-8 s
+  changed composition rejection before output: PASS
+  root/patch1/patch2 dimensions: 14 by 14, 10 by 10, 10 by 10
+  fixed/selected and uninterrupted/restarted root/patch1/patch2: byte exact
+  uninterrupted/restarted maximum composite conservation error:
+    6.6171787141064326e-9 (exact textual identity)
+
+Selected validation result:
+  root_rows=196
+  patch1_rows=100
+  patch2_rows=100
+  checkpoint_time=4.5125253966820509e-09
+  final_time=1.0000000000000000e-08
+  maximum_closure_error=2.2204460492503131e-16
+  active_ho2_or_h2o2=1.9622254844460221e-08
+  reference_root_sha256=1a2c70bf88bb36466937e0839294ca6363dad34752742e2322a9e49a90507f80
+  reference_patch1_sha256=e6a2d52e082a9b17ae00325cb5a65c2ee0ee8425646991b0b77e5b17cef42d88
+  reference_patch2_sha256=ceb4492ca19efbee67ed6e433a787eb48c887193544e1f88acb364d7b7f41b44
+  selected_schema_4_checkpoint_sha256=72fdd25e457e27ece30739ca52d59536cb3ed247439c14bbd0777e534ad2b368
+  selected_multipatch_restart_exact_match=PASS
+
+Frozen fixed-schema compatibility result:
+  fixed schema-3 reference: PASS, coarse step 4, final time 3.0e-6 s
+  fixed schema-3 checkpoint-stop: PASS, coarse step 1,
+    time 8.8902088401232140e-7 s, completed regrids=1
+  independent fixed schema-3 restart: PASS, coarse step 4, final time 3.0e-6 s
+  fixed_schema_3_checkpoint_sha256=3ce931f5dcd017de4864789f53b57a47e40fe82cc5fa6c87e9292ff7efe1022c
+  check_reactive_eb_amr_multipatch_restart_2d=PASS
+
+Generated log SHA-256:
+  installed_fixed_reference.log=703de364d50c61870113fc29d527346f6d80ebfa8379cb3a75e1dacb8e6a1e6f
+  installed_selected_reference.log=d49769a43abcf818eafb2e45097e924555296d0758006276e2101bdc2e4bcb1a
+  installed_selected_stop.log=deed1aaeaee2e850b39bb12fd41364cd17f77cdeb5237a3602ea725ebcfa3389
+  installed_selected_resume.log=791c50027fcbf3b836d1238a4b2f7a60fdac51afd0e1aef098db4256ecd67eb6
+  installed_selected_mismatch.log=a4eab1786a5a56fead18a10f2d901fd2c24a2de0b7e180107e07cdf6357f5089
+  installed_selected_multipatch_restart_check.log=e63911cfd1685f87b066e744b06ea3f4c7bb98af936471343cf4c907c98583b9
+  installed_fixed_schema3_reference.log=fb1d52a8f34aef89820c4a085706294daa0579e40c1dd82d0d8f6838310101f0
+  installed_fixed_schema3_stop.log=9f3a14719c4bf0d8848ba57034a0e23c0229b2f4c84f72a98e74ce6a8899e7ec
+  installed_fixed_schema3_resume.log=522b6e25e1a0d1633925f161b03ba64fcee5f8b827d6ec6edcbd4da87b930e52
+  installed_fixed_schema3_restart_check.log=f128c3cfac47b30fd2cb3b5fc846abcbde526537618938e17399ae7a4af8e97d

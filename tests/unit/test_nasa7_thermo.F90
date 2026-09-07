@@ -1,13 +1,18 @@
 program test_nasa7_thermo
+  use, intrinsic :: ieee_arithmetic, only: &
+    ieee_positive_inf, ieee_quiet_nan, ieee_value
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: &
-    nasa7_species, nasa7_mass_properties, nasa7_specific_gas_constant
+    nasa7_species, valid_nasa7_species, nasa7_mass_properties, &
+    nasa7_specific_gas_constant
   use thermo_database_mod, only: &
     load_gri30_thermo_subset, gri_h2_index, gri_o2_index
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
+  type(nasa7_species) :: invalid_species
   real(dp) :: cp, cv, enthalpy, internal_energy, entropy, gas_constant
+  real(dp) :: nan_value, positive_inf
   logical :: ok
 
   call load_gri30_thermo_subset(species, ok)
@@ -47,6 +52,58 @@ program test_nasa7_thermo
     species(gri_h2_index), 199.0_dp, cp, cv, enthalpy, &
     internal_energy, entropy, ok)
   if (ok) error stop "NASA7 accepted a temperature below its valid range"
+
+  nan_value = ieee_value(0.0_dp, ieee_quiet_nan)
+  positive_inf = ieee_value(0.0_dp, ieee_positive_inf)
+
+  call nasa7_mass_properties( &
+    species(gri_h2_index), nan_value, cp, cv, enthalpy, &
+    internal_energy, entropy, ok)
+  if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
+    error stop "NASA7 accepted a NaN temperature"
+
+  call nasa7_mass_properties( &
+    species(gri_h2_index), positive_inf, cp, cv, enthalpy, &
+    internal_energy, entropy, ok)
+  if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
+    error stop "NASA7 accepted an infinite temperature"
+
+  invalid_species = species(gri_h2_index)
+  invalid_species%temperature_mid = nan_value
+  if (valid_nasa7_species(invalid_species)) &
+    error stop "NASA7 accepted a NaN temperature bound"
+
+  invalid_species = species(gri_h2_index)
+  invalid_species%low_coefficients(1) = positive_inf
+  if (valid_nasa7_species(invalid_species)) &
+    error stop "NASA7 accepted an infinite coefficient"
+
+  invalid_species = species(gri_h2_index)
+  invalid_species%low_coefficients(1) = huge(1.0_dp)
+  call nasa7_mass_properties( &
+    invalid_species, 300.0_dp, cp, cv, enthalpy, internal_energy, entropy, ok)
+  if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
+    error stop "NASA7 failed to reject an overflowing polynomial"
+
+  invalid_species = species(gri_h2_index)
+  invalid_species%temperature_min = 1.0_dp / huge(1.0_dp)
+  invalid_species%temperature_mid = 1.0_dp
+  invalid_species%temperature_max = 2.0_dp
+  call nasa7_mass_properties( &
+    invalid_species, invalid_species%temperature_min, cp, cv, enthalpy, &
+    internal_energy, entropy, ok)
+  if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
+    error stop "NASA7 failed to reject an overflowing reciprocal term"
+
+  invalid_species = species(gri_h2_index)
+  invalid_species%molecular_weight = tiny(1.0_dp)
+  gas_constant = nasa7_specific_gas_constant(invalid_species)
+  if (gas_constant /= -huge(1.0_dp)) &
+    error stop "NASA7 failed to reject an overflowing gas constant"
+  call nasa7_mass_properties( &
+    invalid_species, 300.0_dp, cp, cv, enthalpy, internal_energy, entropy, ok)
+  if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
+    error stop "NASA7 failed to reject overflowing mass properties"
 
   write(*, '(a)') "test_nasa7_thermo: PASS"
 

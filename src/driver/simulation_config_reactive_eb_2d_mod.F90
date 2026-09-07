@@ -66,11 +66,13 @@ contains
     end if
   end function reactive_eb_wall_configuration_is_valid
 
-  subroutine read_reactive_eb_2d_configuration(path, config, ok, message)
+  subroutine read_reactive_eb_2d_configuration( &
+      path, config, ok, message, allow_selected)
     character(len=*), intent(in) :: path
     type(reactive_eb_2d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    logical, intent(in), optional :: allow_selected
 
     character(len=32) :: geometry
     real(dp) :: plane_normal_x, plane_normal_y, plane_offset
@@ -87,7 +89,12 @@ contains
       embedded_wall_temperature, embedded_wall_velocity
 
     config = reactive_eb_2d_config()
-    call read_reactive_2d_configuration(path, config%flow, ok, message)
+    if (present(allow_selected)) then
+      call read_reactive_2d_configuration( &
+        path, config%flow, ok, message, allow_selected)
+    else
+      call read_reactive_2d_configuration(path, config%flow, ok, message)
+    end if
     if (.not. ok) return
 
     geometry = config%geometry

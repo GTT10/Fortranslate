@@ -1,35 +1,51 @@
 #!/usr/bin/env python3
-"""Run a command, mirror its combined output, and save that output to a file."""
+"""Run one command, mirror its combined output, and save that output atomically."""
 
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--log", required=True, type=Path)
+    parser.add_argument("--output", "--log", dest="output", type=Path, required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    command = args.command
-    if command and command[0] == "--":
-        command = command[1:]
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("a command is required after --")
 
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = result.stdout
+    except OSError as error:
+        output = f"Could not execute {command[0]}: {error}\n"
+        result = subprocess.CompletedProcess(command, 127)
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=args.output.parent, prefix=f".{args.output.name}.", text=True
     )
-    args.log.write_text(completed.stdout, encoding="utf-8")
-    sys.stdout.write(completed.stdout)
-    return completed.returncode
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(output)
+        os.replace(temporary_name, args.output)
+    except BaseException:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+    sys.stdout.write(output)
+    return result.returncode
 
 
 if __name__ == "__main__":

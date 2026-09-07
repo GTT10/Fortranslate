@@ -4,7 +4,7 @@ module mpi_amr_patch_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: advance_reactive_chemistry
   use amr_reactive_1d_mod, only: recover_level_temperatures_1d

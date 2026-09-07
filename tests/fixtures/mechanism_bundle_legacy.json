@@ -1,0 +1,28 @@
+{
+  "kernel_name": "legacy_fixture_production_rates",
+  "loader_name": "load_legacy_fixture_mechanism",
+  "module_name": "legacy_fixture_mechanism_mod",
+  "reactions": [
+    {
+      "arrhenius": {
+        "A": 1.0,
+        "Ea": 0.0,
+        "b": 0.0
+      },
+      "equation": "A <=> B",
+      "products": {
+        "B": 1.0
+      },
+      "reactants": {
+        "A": 1.0
+      },
+      "reversible": true,
+      "type": "elementary"
+    }
+  ],
+  "schema_version": 1,
+  "species": [
+    "A",
+    "B"
+  ]
+}

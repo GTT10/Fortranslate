@@ -1,0 +1,69 @@
+PeleF 0.242.0 clean tests-disabled Release install and selected static 3D AMR audit
+Date: 2026-09-01 Asia/Tokyo
+
+Build tree:
+  build/mpi-3d-0242-final-audit-release
+Install prefix:
+  build/mpi-3d-0242-final-audit-install
+Installed smoke tree:
+  build/mpi-3d-0242-final-audit-smoke
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec (OpenMPI 4.1.6)
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Build/install result:
+  clean configure=PASS
+  clean build=659/659 steps PASS
+  install=PASS
+  install manifest entries=42
+  CMakeCache.txt sha256=0b97c5b53732f1a1c13c2c52c8cdb7f0320a388d662299c5aea81c5047323876
+  install_manifest.txt sha256=de0c7dddcd3ec4d8bb161b6d307a9ff172ac634d547b19a4696d99d26ece07d1
+  installed selected serial AMR 3D sha256=22ddfd20b5148bf62b6a189bdb2b9a470c568099ac7971592233029ea4360132
+  installed selected MPI AMR 3D sha256=bb046ea2742868adbb5c03f97152e2eb96c16958046819d1b1bf38f8a0684303
+  installed fixed MPI AMR 3D sha256=ee750afee1cec5b834c90f3cc013b6bae27266ffa91339dd3010f9c6147f0208
+
+Installed Release audit result:
+  install_manifest_entries=42
+  installed_elf_count=42
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=42
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS
+
+Installed selected full-H2/O2 static 3D AMR qualification:
+  installed application version=0.242.0
+  bundle sha256=f65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3
+  generated chemistry integrator=implicit
+  selected serial case=PASS
+  strict topology/physicality/closure/activity checker=PASS
+  selected serial versus MPI ranks=1,2,4,8 coarse/fine byte identity=PASS
+  four-rank fine x planes per rank: min=0, max=4
+  eight-rank fine x planes per rank: min=0, max=2
+  checker activity metric=1.263e-08
+  coarse CSV sha256=3313a9a6eff5d6175625e4bbe3613a782cdd794314fd9fbdd53ddaa309fc9516
+  fine CSV sha256=4ff0785c3462a49648fd694d090eb23bffd5af05a43a33360cd187417bd8a31d
+  fixed 0.241.0 artifact identity=PASS
+
+Installed fixed characteristic-PLM compatibility qualification:
+  serial versus MPI ranks=1,2,4,8 coarse/fine byte identity=PASS
+  checkpoint-stop ranks=2 PASS
+  independent restart ranks=4,8 PASS
+  uninterrupted/restarted coarse/fine byte identity=PASS
+  schema-2 checkpoint sha256=8f51be7f192dd61ab0e1f4eccf665870c2103205d13ea562fb52d32e981dbf9d
+  final coarse CSV sha256=864e9cabe8f5c2bee19f97e9279bdada7647305171955c6c767cc83e4db15c21
+  final fine CSV sha256=8f764e38491e9cf62f8c0f17eac2470c4705f7d80bfe7e686db4ba54de2f58d7

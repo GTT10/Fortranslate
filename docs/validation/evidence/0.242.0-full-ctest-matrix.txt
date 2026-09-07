@@ -1,0 +1,61 @@
+PeleF 0.242.0 full CTest matrix evidence
+Date: 2026-09-01 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  OpenMPI 4.1.6
+
+Qualified working-tree snapshot:
+  repository HEAD=bc584fc65e7e945b98475cd1c0394b483c5cc685
+  CMakeLists.txt sha256=bd941881c29e00e108f906755c696f091bd71ac52fb584bb2c5098cb98fd64e8
+  src/driver/amr_reactive_3d_application_mod.F90 sha256=1a94b2b92fae129d8049311097823e3ec9ccb6aa638c373aa46fbed04d101424
+  src/driver/mpi_amr_reactive_3d_application_mod.F90 sha256=c844227e303ba3b4523e1578d6cd319424e34b3eb9204817bcb80776a90bad63
+  app/pelef_amr_reactive_3d_selected.F90.in sha256=58373c8df3d3fb5210ecdd07cff00e0a500987214357bf73eab0d35a1b4a204a
+  app/pelef_mpi_amr_reactive_3d_selected.F90.in sha256=06c1e5c2734816293a11a711b7e40f2d8859abda8f05231cae7b5229deba37a5
+  tests/mpi/test_mpi_amr_selected_context_3d.F90 sha256=ac215ed17b1e92e71a4b05e691b17462d6c58a4ec17d6984ed799c1ca674a969
+  tools/check_selected_amr_reactive_3d.py sha256=434fd51a23781cbc65bf8b807ca653626acb8c773aaf9486346707e3fa62777f
+  tools/compare_mpi_amr_reactive_3d.py sha256=ad50f1a9a3238c9a82273c92b0a7e614791bb35ab016219744647601e920da4b
+
+Results:
+  Debug: 503/503 PASS, 255.87 sec
+    log path=build-debug/Testing/Temporary/LastTest.log
+    log sha256=12c8022e7f4af0cb17dbe0f1c9784a0f33abadd2f548eaae36c4cccd00a6112f
+  Release: 503/503 PASS, 84.21 sec
+    log path=build-release/Testing/Temporary/LastTest.log
+    log sha256=7e3a5ceee29f4a8bc71fa178ad5116d8475693f5e419697b10cd4a7b7df35d3d
+  Debug + Cantera: 508/508 PASS, 239.56 sec
+    log path=build/debug-cantera/Testing/Temporary/LastTest.log
+    log sha256=4935e8f22303375243dce251babb2ab13d07b397a9d15b9905ebe03c3f16220c
+  MPI Debug: 632/632 PASS, 453.21 sec
+    log path=build/mpi-debug/Testing/Temporary/LastTest.log
+    log sha256=57b003e7c15efc2f0e58a89ceb2bf3c9567d86b440c6f462e40424d95e709367
+  MPI Release: 632/632 PASS, 205.33 sec
+    log path=build/mpi-release/Testing/Temporary/LastTest.log
+    log sha256=87a8adb38f59dd5992722b76a3b4595e7d785d86b53e12b9aebe4bfcc6a9b960
+  CVODE Debug: 512/512 PASS, 252.55 sec
+    log path=build/cvode-debug/Testing/Temporary/LastTest.log
+    log sha256=53f8fbff525df893a4a3e3e4b0e2fa83d74cba8c3fda35e4aeb328e98b2f0ffc
+  CVODE Debug + Cantera: 518/518 PASS, 235.26 sec
+    log path=build/cvode-debug-cantera/Testing/Temporary/LastTest.log
+    log sha256=34b7a85bde294b69e154de94f1d4a9f8cefe35116c68a8813ec328ce02334c07
+  CVODE Release: 512/512 PASS, 80.35 sec
+    log path=build/cvode-release/Testing/Temporary/LastTest.log
+    log sha256=53fb6cd204219be4fafd0bd3cb5f3a8737fbe6533d230a9e5b4981418180ad7d
+
+Aggregate:
+  4320/4320 PASS
+  failed tests=0
+  aggregate real test time=1806.34 sec
+
+Final-source selected static 3D AMR gates:
+  selected serial focused Release set: 15/15 PASS
+  selected serial/MPI plus context focused Debug set: 32/32 PASS
+  fixed full-H2/O2 and characteristic-PLM compatibility set: 18/18 PASS
+  two-species fixture serial repeat and MPI ranks=1,2,4 exact parity=PASS
+  full-H2/O2 fixed/selected and MPI ranks=1,2,4,8 exact parity=PASS
+  four/eight-rank zero-fine ownership=PASS
+  SHA/integrator/composition/NASA7/reaction/transport mismatch rejection=PASS
+  selected transport/checkpoint/restart/path-alias startup rejection=PASS
+  fixed full-H2/O2 and characteristic-PLM artifact hash gates=PASS
+  quality project and non-executable-stack gates=PASS
+  clean tests-disabled Release install/ELF/installed-smoke audit=PASS

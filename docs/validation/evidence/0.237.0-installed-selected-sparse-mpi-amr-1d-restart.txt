@@ -1,0 +1,59 @@
+PeleF 0.237.0 installed selected sparse MPI AMR 1D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-mpi-amr1d-0237-final2-audit-install/bin/pelef_mpi_amr_reactive_1d
+  sha256=42ccff407f09abad70b2ea2f63bfd5fd910b53b7c75319183ee4486ee99094ed
+  build/selected-mpi-amr1d-0237-final2-audit-install/bin/pelef_mpi_amr_reactive_1d_selected
+  sha256=6b472199c971f422d6640f2e56d310e93fcc5eae9a5ae18647cfaa53145e1e0c
+
+Inputs:
+  cases/selected_mpi_sparse_amr_restart_1d/fixed_reference.nml
+  cases/selected_mpi_sparse_amr_restart_1d/selected_reference.nml
+  cases/selected_mpi_sparse_amr_restart_1d/checkpoint_stop.nml
+  cases/selected_mpi_sparse_amr_restart_1d/restart.nml
+  cases/selected_amr_reactive_1d/invalid_path_alias.nml
+
+Execution directory:
+  build/selected-mpi-amr1d-0237-final2-audit-smoke
+
+Execution result:
+  installed fixed reference: PASS, MPI ranks 1
+  installed selected references: PASS, MPI ranks 1, 2, and 4
+  installed selected checkpoint-stop: PASS, MPI ranks 1, coarse step 1,
+    time 2.8740562104126945e-10 s
+  independent installed selected restarts: PASS, MPI ranks 2 and 4
+  final active AMR levels=3, active patches=3, coarse steps=4
+  final regrid evaluations=5, hierarchy changes=1
+  final time=1.0000000000000001e-9 s
+  maximum composite conservation error=2.0283901185614493e-16
+  fixed/selected, rank-count, and uninterrupted/restarted final CSV: byte exact
+
+Installed validation result:
+  checkpoint_sha256=0e5cc002ac5cceb3fa7732f8fe46382f140e038d19cac17664230ce8c500c2fd
+  checkpoint_time=2.8740562104126945e-10
+  checkpoint_steps=1
+  final_output_sha256=664fd578e102ddb769972289bd60e3c2678b61b5d4b9b219d053a682a90ca809
+  stopped_output_sha256=c22e963ce4f35c3ef3db7c868a0252feda6bea1c0941b82a130427b2caf3ff5f
+  selected_mpi_sparse_amr_restart_1d=PASS
+
+Installed failure gates under /usr/bin/mpiexec -n 1:
+  sha256, integrator, composition, species, baseline: rejected, exit 4
+  density, state_species, near_floor_species, state_closure: rejected, exit 4
+  temperature, geometry: rejected, exit 4
+  input/output path alias: rejected, exit 2
+  diagnostics=PASS
+  all failure-gate inputs unchanged=PASS
+  all forbidden outputs absent=PASS
+  total=12/12 PASS
+
+Generated log SHA-256:
+  installed_fixed_np1.log=ca4c58fa3e380bb8e147c0f42e3e295e1e6ab458e7ac88d71bb11462ed91fec9
+  installed_selected_np1.log=8ea1c8fae8d7b669c15740ee70c80433f3b9c984abb0e486bb8ed1dd71b155f0
+  installed_selected_np2.log=1c56903aff6925d6108733b55838d90c85104f81f1ae538516d72bb0d31118f6
+  installed_selected_np4.log=29ead8def2b5f207d07bd6782fe081f5ff7d581a478d6fb40ad37a9bebd4c751
+  installed_selected_stop_np1.log=586f0d83e2f3973cbc658d225b028f14b884f5c718695bb1b923608ff4047251
+  installed_selected_restart_np2.log=1aeebb09e535bc7d739695221f7461b30e61e5b3e548dd8842e17fecee3a5d35
+  installed_selected_restart_np4.log=0527fc4d311b621456469eafac5fd2cd3f8d956b1c74146f38961e7a372e3f2c
+  installed_selected_restart_check.log=bbb5f792548bb5dc9a7442708efe6ec62e175ad4bc1c38fa94c3551ca65ef9eb
+  installed_mpiexec_failure_gates.log=fb0991a406be05273d5fc199ef77000d8987ba8535fb158b90f0825cb855e425

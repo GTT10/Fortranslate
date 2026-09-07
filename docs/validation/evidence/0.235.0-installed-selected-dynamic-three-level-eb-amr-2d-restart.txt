@@ -1,0 +1,68 @@
+PeleF 0.235.0 installed selected dynamic three-level EB AMR 2D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-ebamr2d-dynamic-three-level-0235-final2-audit-install/bin/pelef_reactive_eb_amr_2d
+  sha256=c9155af85d3ce66dee347e696985d8964283589b27304b551c0abecb8d50e2cf
+  build/selected-ebamr2d-dynamic-three-level-0235-final2-audit-install/bin/pelef_reactive_eb_amr_2d_selected
+  sha256=a3abac17c9122d45831f69ee6e0c493020ad9d0191ba23779ccc24d09b10f5c8
+
+Selected inputs:
+  cases/selected_reactive_eb_amr_2d_dynamic_three_level_restart/fixed_reference.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_three_level_restart/reference.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_three_level_restart/checkpoint_stop.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_three_level_restart/restart.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_three_level_restart/mismatched_composition.nml
+
+Frozen fixed-schema inputs:
+  cases/reactive_eb_amr_three_level_dynamic_restart_2d/reference.nml
+  cases/reactive_eb_amr_three_level_dynamic_restart_2d/checkpoint_stop.nml
+  cases/reactive_eb_amr_three_level_dynamic_restart_2d/restart.nml
+
+Execution directory:
+  build/selected-ebamr2d-dynamic-three-level-0235-final2-audit-smoke
+
+Selected execution result:
+  fixed full-H2/O2 reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected checkpoint-stop: PASS, coarse step 1,
+    time 6.2599067153266454e-9 s, completed regrids=1
+  independent selected restart: PASS, coarse step 2, final time 1.0e-8 s
+  changed composition rejection before output: PASS
+  root/middle/finest dimensions: 12 by 12, 12 by 16, 16 by 24
+  uninterrupted/restarted maximum composite conservation error:
+    1.1879823316399355e-10 (exact textual identity)
+
+Selected validation result:
+  root_rows=144
+  middle_rows=192
+  finest_rows=384
+  checkpoint_time=6.2599067153266454e-09
+  final_time=1.0000000000000000e-08
+  maximum_closure_error=2.2204460492503131e-16
+  active_ho2_or_h2o2=1.9622254400584569e-08
+  reference_root_sha256=91e8ecebce463172ed8c04a1a65589845c9e49c9ae4c1c67e7ae2627d1252ebf
+  reference_middle_sha256=c752ebcd7308a888395b9206bfc944585d88c011bc86d10f7450a8286f5a237e
+  reference_finest_sha256=ceb72783d7a0f531667227862eba3d877af464d46585e86e75cf377c42bef5dd
+  selected_schema_5_checkpoint_sha256=1e8e24e2ead15ac71199cb73146656ffb63be089bafc57eced95fbf419ec1502
+  selected_dynamic_three_level_restart_exact_match=PASS
+
+Frozen fixed-schema compatibility result:
+  fixed schema-4 reference: PASS, coarse step 7, final time 2.0e-7 s
+  fixed schema-4 checkpoint-stop: PASS, coarse step 1,
+    time 3.1299533576633226e-8 s, completed regrids=1
+  independent fixed schema-4 restart: PASS, coarse step 7, final time 2.0e-7 s
+  fixed_schema_4_checkpoint_sha256=ced92fed867264fd0863b5c85a90702e29647e2494a5d6d69b87a51f194702c5
+  check_reactive_eb_amr_three_level_dynamic_restart_2d=PASS
+
+Generated log SHA-256:
+  installed_fixed_reference.log=d9bbf30a06c53af65578b757b953ee7ff94babbacbc9937ba48f6220ba519777
+  installed_selected_reference.log=6ac150a292a08737648a5df28dcb4cb4ea8e21cd09ed2bfb695bfc8601d7dfa4
+  installed_selected_stop.log=94a94733e1208e4e1fd89e1d683a7dcc3f325c8396ab0ee7a7418c88fe6b2142
+  installed_selected_resume.log=07d2b9be6a2135c1961e0f059485aa552e56044ee469eb7a7d1064db6da52ce6
+  installed_selected_mismatch.log=affdfec878a7c6202f13aaf522a8163879626ec033f8cb19ed75451df06613a4
+  installed_dynamic_three_level_restart_check.log=654db940769799c65bc83efad5c617a4da8f01121e65ce2ed97eefd053d09d80
+  installed_fixed_dynamic_reference.log=d124dfc6249710ee9b079a82359bf31aacbab851e4e2bbecbd096706e3df868c
+  installed_fixed_dynamic_stop.log=a66645fe45b0b7202b596c343a8f93b286ca3dd09c9183b46c054d700b4e9cdf
+  installed_fixed_dynamic_resume.log=7717535b75af7982cdbbdee8ac16c784ae4a4f4b87844334271d5391369f1436
+  installed_fixed_dynamic_restart_check.log=57e3c4138c39df20118dd795eed5e4d35d7828b8885e30e1453cd5049a253dc8

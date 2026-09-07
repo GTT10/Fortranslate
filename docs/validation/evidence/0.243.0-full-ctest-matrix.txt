@@ -1,0 +1,74 @@
+PeleF 0.243.0 full CTest matrix evidence
+Date: 2026-09-01 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  /usr/bin/mpifort: Open MPI 4.1.6 (Fortran)
+  /usr/bin/mpiexec: OpenRTE 4.1.6
+
+Qualified working-tree snapshot:
+  repository HEAD=bc584fc65e7e945b98475cd1c0394b483c5cc685
+  CMakeLists.txt sha256=8f84e62238062fb9737eb0320d668e5e328de8b64889ac4ed07132055dee2395
+  src/core/constants_mod.F90 sha256=0fda965b8f96e0f1eec3f404369a4c27dd580c4a9b2217bad4dd7f728756c8a0
+  src/io/amr_reactive_3d_checkpoint_mod.F90 sha256=97312f93a31d7d2f24455ca2c176a57a313e09c9145cbf7d14b2cbf5e163a911
+  src/driver/simulation_config_amr_reactive_3d_mod.F90 sha256=6940ac12d1c6ce3a62353aa519ef038843f90d43ce91f78a3d2050922f26ae70
+  src/driver/amr_reactive_3d_application_mod.F90 sha256=475ae529813eeb043078d1c3f41df7d3acd86695eb5a4906838c7f87ee4cd9c6
+  src/driver/mpi_amr_reactive_3d_application_mod.F90 sha256=8007cea481cc96aeb529af489103e98b61bbbe724f25da05c8ce5a9d05243908
+  src/driver/mpi_amr_reactive_1d_application_mod.F90 sha256=57b4f1a3b00eaf6752a855c6d7461abea4bb7ed0af48deec6446b4428cebf459
+  app/pelef_amr_reactive_3d_selected.F90.in sha256=b37fab46c3e89195c789064ec488b23320a429437ff8403f807e173db8eff02c
+  app/pelef_mpi_amr_reactive_3d_selected.F90.in sha256=c0ea9ef16ef711340af09ff220ffdccc3419499049cc7fb404b60253030442ed
+  tests/unit/test_amr_reactive_3d_checkpoint.F90 sha256=3bfd35f68c96b7062b0d49e91caa8827ebc611210dc0b55053d66f208613435e
+  tests/unit/test_amr_reactive_3d_config.F90 sha256=0f82d0458f83e650c59cb474cf0268ffe8f4a0b5fdac03a237208bffe965f857
+  tests/mpi/test_mpi_amr_selected_context_3d.F90 sha256=c8b2c2a6e56baa8045125d972000d9fe4541349c5fa0e4a8296a4bd01a4d913f
+  tests/CMakeLists.txt sha256=6939e78e07aa8db32697d7a3531d88f7bdb9345638ed922ed37e42708fb13e79
+  tools/compare_mpi_amr_reactive_3d.py sha256=ae0158a523164399410d2e476206ffd093b6152a63f0b99d27b3059dc95eccea
+  h2o2_full_restart_reference.nml sha256=11ba258332668d1ec3386b4c6676e4fb65990297ff43e631e0c2d73a491b0ab7
+  h2o2_full_restart_checkpoint.nml sha256=4119764e1841c68220c0eb84a24426150c49b0b060eedb5e0beadaee7cad96f6
+  h2o2_full_restart.nml sha256=7275ae7c73a5ed59067137c2655e1e24d4ec56fdcd21d376aa483a6c1965606e
+
+Results:
+  Debug: 507/507 PASS, 243.51 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/debug.log
+    log sha256=95397e4174d15318f6bb2fdea8a99d9174ba5174a2a55d5e619f93da582f325e
+  Release: 507/507 PASS, 78.02 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/release.log
+    log sha256=2b9608d40ee81be68808059cbc54b332f7e69a389fbc86a41b09fbe5235ba809
+  Debug + Cantera: 512/512 PASS, 237.80 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/debug-cantera.log
+    log sha256=2d6f881e0f5fb8d6fdaa7ac06751d679d92dc126b2540b95b70e972939c94f98
+  MPI Debug: 643/643 PASS, 449.35 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/mpi-debug.log
+    log sha256=10e5ddb3f67208e9db9462a1a160e73fbc0945d87457784a65b84eb0b8d02e45
+  MPI Release: 643/643 PASS, 167.38 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/mpi-release.log
+    log sha256=adcf9421f8c919205371c5aac1c190ba59a97fa69f58adb7b67d71e512acd41d
+  CVODE Debug: 516/516 PASS, 233.35 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/cvode-debug.log
+    log sha256=2ae4e121052afd8ac4d4e06154fffb67a8a88a56d0d8facfbeede3c05a97ab75
+  CVODE Debug + Cantera: 522/522 PASS, 233.47 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/cvode-debug-cantera.log
+    log sha256=15c9cfc69bafa0462695553791f96f09966426a5f5295527181ad3b185bdea37
+  CVODE Release: 516/516 PASS, 77.72 sec
+    log path=/tmp/pelef-0.243.0-matrix.HdCdku/cvode-release.log
+    log sha256=c9b82b5650367e43da9760dee97173c31126ef9b8f388b0c3f191c357a347c98
+
+Aggregate:
+  4366/4366 PASS
+  failed tests=0
+  aggregate real test time=1720.60 sec
+
+Final-source selected static 3D AMR gates:
+  schema-3 exact round trip and fixed/selected cross-schema rejection=PASS
+  transactional SHA/integrator/composition/reaction/tolerance mismatch rejection=PASS
+  incomplete/malformed context rejection before file creation=PASS
+  rank-dependent malformed third-body shape rejection at ranks=2,4=PASS
+  chemistry-tolerance representation consensus at ranks=2,4=PASS
+  serial uninterrupted/checkpoint/restart exact parity=PASS
+  two-rank checkpoint restart at ranks=1,2,4,8 exact parity=PASS
+  serial/MPI checkpoint byte identity=PASS
+  zero-fine-plane ranks at ranks=4,8=PASS
+  input/output/checkpoint/restart lexical alias rejection=PASS
+  fixed schema-2 characteristic-PLM hashes and changed-rank restart=PASS
+  MPI expected-failure diagnostic stress, five gates x20 repetitions=PASS
+  quality project contract and non-executable-stack gates=PASS
+  independent Luna Max final audit: release-blocking findings=0

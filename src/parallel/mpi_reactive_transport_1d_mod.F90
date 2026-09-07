@@ -4,7 +4,7 @@ module mpi_reactive_transport_1d_mod
   use mpi_domain_1d_mod, only: &
     mpi_domain_1d, exchange_periodic_halo_1d, global_minimum_1d
   use nasa7_thermo_mod, only: nasa7_species
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
     reactive_diffusive_flux_x, reactive_transport_timestep

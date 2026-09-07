@@ -1,0 +1,49 @@
+PeleF 0.237.0 clean tests-disabled Release install audit
+Date: 2026-08-31 Asia/Tokyo
+
+Build tree:
+  build/selected-mpi-amr1d-0237-final2-audit-release
+Install prefix:
+  build/selected-mpi-amr1d-0237-final2-audit-install
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Generated logs:
+  configure.log sha256=4500c87bffa7cfc712bf1330003f2dbf1c26ca4fea46f747d00a219301bd6617
+  build-install.log sha256=06e9683f7525a2058698e4465d3c05b0681826312d83e0a94943b50fad162736
+  install-elf-audit.log sha256=a6b269fc8719ec54ea4ae836f1778d2883ba565be878de3b01d10bbb05be38ec
+
+Build/install result:
+  613/614 final link steps completed
+  Install the project: PASS
+  install manifest entries=39
+
+Audit command:
+  python3 tools/audit_installed_release.py \
+    --build-dir build/selected-mpi-amr1d-0237-final2-audit-release \
+    --install-prefix build/selected-mpi-amr1d-0237-final2-audit-install \
+    --expected-elf-count 39
+
+Audit result:
+  install_manifest_entries=39
+  installed_elf_count=39
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=39
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS

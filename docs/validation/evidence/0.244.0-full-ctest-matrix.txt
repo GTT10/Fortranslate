@@ -1,0 +1,92 @@
+PeleF 0.244.0 full CTest matrix evidence
+Execution date: 2026-09-01 Asia/Tokyo
+Record finalized: 2026-09-07 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  /usr/bin/mpifort: Open MPI 4.1.6 (Fortran)
+  /usr/bin/mpiexec.openmpi: OpenRTE 4.1.6
+
+Qualified working-tree snapshot:
+  repository HEAD=bc584fc65e7e945b98475cd1c0394b483c5cc685
+  CMakeLists.txt sha256=319322404984750aedd04ac742002417f3cab9f575a9000656bc3cf7af974b26
+  src/core/constants_mod.F90 sha256=27c4e6ca6a38478545f3a328e6e4420cabc339775ce456f1a05de192ffa1b0a8
+  src/transport/reactive_transport_3d_mod.F90 sha256=f7d0b8d47a855630d414e4f1b96598bacc03461f05b5ebbc2ea51e4c590d1b13
+  src/amr/amr_reactive_transport_3d_mod.F90 sha256=b5c95901e32df6cfd5aa06d3e143878a7d9835df57a46ee6f00d4593d1c222db
+  src/parallel/mpi_amr_sparse_reactive_3d_mod.F90 sha256=cf9cd30d8ba20956ba202a4ed2027fd171fb94eb6f48dfb46ac0d7913d46e976
+  src/driver/simulation_config_amr_reactive_3d_mod.F90 sha256=28b7519917184e2a0c827f158519ca323b842e892de02edde654d1d28d912f9f
+  src/driver/amr_reactive_3d_application_mod.F90 sha256=86172c0a54111a41dadf04090c300254322d4ebaa6d31d7c87649b79510d67d1
+  src/driver/mpi_amr_reactive_3d_application_mod.F90 sha256=08c6524f02d65922e034f8e755c73b48169ac12f3953db9ca60c48b318e2badf
+  app/pelef_amr_reactive_3d.F90 sha256=6efec36890b181ef0d65ed661040f7f6d9dcc35a4129a304cedc1be1eccef231
+  app/pelef_amr_reactive_3d_selected.F90.in sha256=8a1a9097f9df7d13ff3cb337733e01088a55c48a9f60bd8288d4b79b0193eaaf
+  app/pelef_mpi_amr_reactive_3d.F90 sha256=20748eabba53c9a799e6eef735d8bcf465f6b5bb41b933e5c54249da51742024
+  app/pelef_mpi_amr_reactive_3d_selected.F90.in sha256=c0ea9ef16ef711340af09ff220ffdccc3419499049cc7fb404b60253030442ed
+  tests/unit/test_reactive_transport_3d.F90 sha256=1e0ee8a2a18f091b2cfa596bcdac1a0a5ceaab4fa5c349a671b872cc03f4c411
+  tests/unit/test_amr_reactive_transport_3d.F90 sha256=29f3a390e1ef9f41a2f680eb36ffe729fee9e33736cc98df3ddbb3e98de123fd
+  tests/unit/test_amr_reactive_3d_config.F90 sha256=d331f4a538e50e5ab01d7cf72bc7743bbfb1af79aea4a63ab05a641a342712c7
+  tests/unit/test_reactive_euler_3d_dimensional_reduction.F90 sha256=9cc15863017c05708e06d9032d58f4891dc86620fafa93d8ed1b1fc29fda1d69
+  tests/mpi/test_mpi_amr_reactive_3d.F90 sha256=f9d39d2ccece0bcd008d3d7ee16525debefd079737f07373afa1920f01eaca8e
+  tests/CMakeLists.txt sha256=ef1217f2bcef06e0ff247d41c6ab118b6b29cb0bc3f9d0a0d8e859c72802823e
+  tools/compare_mpi_amr_reactive_3d.py sha256=ae0158a523164399410d2e476206ffd093b6152a63f0b99d27b3059dc95eccea
+  cases/amr_reactive_3d/amr_hotspot_transport.nml sha256=e708c373608d7fb6fa45e9101983ecbf71620ed02acde04ddfd93d28aebcca4d
+  cases/selected_amr_reactive_3d/h2o2_full_transport.nml sha256=7b303c83f5ef921ad84c232566439d43c692729cfd6ea4c4d28a9003b3f58229
+
+Results:
+  Debug: 512/512 PASS, 1563.55 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/debug.log
+    log sha256=3208ce0cbdeddd11fdf3ab93516cfe7dd4dc6ebc590f7b3c01b871a2dafca74d
+  Release: 512/512 PASS, 512.04 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/release.log
+    log sha256=4c34ce5e63affa01e401fcd79e62f48024ab5eaf26517971b35332a187bd3361
+  Debug + Cantera: 517/517 PASS, 1563.92 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/debug-cantera.log
+    log sha256=704bcd1d74c6654197caa1ea7ffa8ccd54b22256278d72deab23a4db07247925
+  MPI Debug: 661/661 PASS, 2154.79 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/mpi-debug.log
+    log sha256=43c6bc515625803bfa0b0c73a4a988638ab8cd6c7ddf7e3b2b116b192784eaea
+  MPI Release: 661/661 PASS, 780.76 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/mpi-release.log
+    log sha256=a267f6d197e304fda13422381edba765a51f4c34b903bb90f8778219a5f77868
+  CVODE Debug: 521/521 PASS, 1561.91 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/cvode-debug.log
+    log sha256=1f50f57570a2af20960380d96e8cc5cc6682b5b3ffab189c0f98358435f75c19
+  CVODE Debug + Cantera: 527/527 PASS, 1562.25 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/cvode-debug-cantera.log
+    log sha256=0e12db6a1cde0d1d1bb5e91fde92a308d1ca2d41e936a897ac37df4179f18d8c
+  CVODE Release: 521/521 PASS, 510.16 sec
+    log path=/tmp/pelef-0.244.0-matrix.03IIIT/cvode-release.log
+    log sha256=b65d691c9588016616482e3d035d6ed3e09dd195fc7b033baac9f00a183b692c
+
+Aggregate:
+  4432/4432 PASS
+  failed tests=0
+  aggregate real test time=10209.38 sec
+  configurations were executed concurrently; the aggregate is the sum of
+  each CTest-reported real time, not elapsed wall-clock time.
+
+Final-source static 3D AMR transport gates:
+  individual viscosity/conduction/species-diffusion modes=PASS
+  refinement ratios two and three with r^2 fine subcycling=PASS
+  x/y/z lower/upper active interface limiter and conservation=PASS
+  external theta zero/one acceptance and invalid/NaN rollback=PASS
+  barodiffusion-without-species-diffusion rejection=PASS
+  active serial R-T-H-T-R and late-middle-hydro rollback=PASS
+  rollback includes state, temperature, theta, and reflux diagnostics=PASS
+  sparse MPI active limiter and full R-T-H-T-R at ranks=1,2,4,8=PASS
+  zero-fine-plane rank participation at ranks=4,8=PASS
+  rank-local transport-record/policy mismatch rollback=PASS
+  fixed/selected serial/MPI transport exact parity within each build type=PASS
+  Debug coarse sha256=5687cb97f834b759b3932bbd3f0b6e30fc5b48e6029e3f47cadfb3ec6a8d74fb
+  Release coarse sha256=f0713f3a68f48b6537afaafd57209ea8ed4767f9c7d093fe2961bd3a1fa37fae
+  Debug/Release fine sha256=eaf132bbf89974d739c26a35f6b76137f9774438cfe9eebfc12436aa364cff58
+  transport-enabled checkpoint/restart pre-output rejection=PASS
+  transport-disabled fixed schema-2 and selected schema-3 restart gates=PASS
+  quality project-contract and non-executable-stack gates=PASS
+  independent Luna Max implementation/document audit: numerical release blockers=0
+
+Qualification boundary:
+  This matrix is structural, conservation, rollback, deterministic rank-parity,
+  build-configuration, and packaging evidence. It is not dynamic 3D AMR,
+  physical-boundary, 3D EB AMR, scalable-I/O, performance, detailed-fuel,
+  ignition, or external PeleC field validation. Repository licensing remains
+  an explicit project-owner release decision outside this numerical gate.

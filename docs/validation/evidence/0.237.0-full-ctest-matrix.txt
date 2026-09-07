@@ -1,0 +1,33 @@
+PeleF 0.237.0 full CTest matrix evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Log path pattern:
+  build/<configuration>/0.237.0-final2-full-ctest.log
+
+Results:
+  Debug: 482/482 PASS, 475.67 sec
+    log sha256=bc4dda38e46ee1b2b8668e94fe9a8745a10ccb68b171093b58537c529a23533e
+  Release: 482/482 PASS, 193.00 sec
+    log sha256=8bce06b4fccf9078ce6506082da3ff486c372b2ffb6f2e463173f1d738ea4d51
+  Debug + Cantera: 487/487 PASS, 470.79 sec
+    log sha256=0ca7f39e2d414f1625d632e8c346e7db2fe6172d713d2fcc498c55bbf2993f16
+  MPI Debug: 545/545 PASS, 511.41 sec
+    log sha256=a9090453409b1d3225d60ea256323fc0e2171578c9cb924233300d72df130fa3
+  MPI Release: 545/545 PASS, 225.99 sec
+    log sha256=31019c1d421a16aac15c275e8ec37aad6588fa45061ac1f7ef89f49ff94223ec
+  CVODE Debug: 491/491 PASS, 472.88 sec
+    log sha256=5053a09d04b3c0c0e0711c8be041b995cc2af71941066fb4db36bd72025688be
+  CVODE Debug + Cantera: 497/497 PASS, 471.78 sec
+    log sha256=ea7ecbb0c17bf36537d25f1d5ae71d0c936078a53409e674eda9690afb6707f8
+  CVODE Release: 491/491 PASS, 187.97 sec
+    log sha256=81d1adca1716ff9eefb1ac9f99b443973b00dfcb7ca522f479e194efb67b14cd
+
+Aggregate:
+  4020/4020 PASS
+  failed tests=0
+
+Focused MPI Debug gate:
+  37/37 PASS, 18.48 sec
+  log path=build/mpi-debug/0.237.0-final2-focused-ctest.log
+  log sha256=5e437585251894b59dae196e3fb7d9e2a3273766f7d0d4dbcd4da5ce3e6261c4
+  independent Luna Max read-only audit: blocking=0

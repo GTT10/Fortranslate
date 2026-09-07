@@ -6,12 +6,14 @@ module multispecies_flux_mod
     mass_fractions_from_state
   use riemann_flux_mod, only: compute_riemann_flux_x
   use directional_flux_mod, only: &
-    rotate_conserved_y_to_x, rotate_flux_x_to_y
+    rotate_conserved_y_to_x, rotate_conserved_z_to_x, &
+    rotate_flux_x_to_y, rotate_flux_x_to_z
   implicit none
   private
 
   public :: compute_multispecies_flux_x
   public :: compute_multispecies_flux_y
+  public :: compute_multispecies_flux_z
 
 contains
 
@@ -115,5 +117,46 @@ contains
     flux(1:ncons) = base_flux_y
     flux(ncons + 1:nvar) = rotated_flux(ncons + 1:nvar)
   end subroutine compute_multispecies_flux_y
+
+  pure subroutine compute_multispecies_flux_z( &
+      lower_state, upper_state, nspecies, gamma, solver, flux, ok)
+    integer, intent(in) :: nspecies
+    real(dp), intent(in) :: lower_state(:), upper_state(:), gamma
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+
+    real(dp) :: lower_rotated(ncons), upper_rotated(ncons)
+    real(dp) :: lower_extended(nbase + max_supported_species)
+    real(dp) :: upper_extended(nbase + max_supported_species)
+    real(dp) :: rotated_flux(nbase + max_supported_species)
+    real(dp) :: base_flux_z(ncons)
+    integer :: nvar
+
+    flux = 0.0_dp
+    ok = .false.
+    nvar = multispecies_nvar(nspecies)
+    if (nvar == 0) return
+    if (size(lower_state) /= nvar .or. size(upper_state) /= nvar) return
+    if (size(flux) /= nvar) return
+
+    call rotate_conserved_z_to_x(lower_state(1:ncons), lower_rotated)
+    call rotate_conserved_z_to_x(upper_state(1:ncons), upper_rotated)
+    lower_extended = 0.0_dp
+    upper_extended = 0.0_dp
+    lower_extended(1:ncons) = lower_rotated
+    upper_extended(1:ncons) = upper_rotated
+    lower_extended(ncons + 1:nvar) = lower_state(ncons + 1:nvar)
+    upper_extended(ncons + 1:nvar) = upper_state(ncons + 1:nvar)
+
+    call compute_multispecies_flux_x( &
+      lower_extended(1:nvar), upper_extended(1:nvar), nspecies, gamma, &
+      solver, rotated_flux(1:nvar), ok)
+    if (.not. ok) return
+
+    call rotate_flux_x_to_z(rotated_flux(1:ncons), base_flux_z)
+    flux(1:ncons) = base_flux_z
+    flux(ncons + 1:nvar) = rotated_flux(ncons + 1:nvar)
+  end subroutine compute_multispecies_flux_z
 
 end module multispecies_flux_mod

@@ -1,0 +1,41 @@
+&reactive_eb_3d
+  nx = 24
+  ny = 8
+  nz = 6
+  maximum_steps = 20
+  x_lower = 0.0
+  x_upper = 2.4e-4
+  y_lower = 0.0
+  y_upper = 1.0e-4
+  z_lower = 0.0
+  z_upper = 1.0e-4
+  final_time = 2.728e-9
+  cfl = 0.5
+  plane_axis = "x"
+  plane_position = 3.95e-5
+  riemann_solver = "rusanov"
+  redistribution = "state_redist"
+  thermo_model = "selected"
+  state_redist_target_volume_fraction = 0.5
+  chemistry_enabled = .true.
+  chemistry_relative_tolerance = 2.0e-7
+  chemistry_absolute_tolerance = 1.0e-12
+  transport_enabled = .true.
+  viscosity_enabled = .true.
+  thermal_conduction_enabled = .true.
+  species_diffusion_enabled = .true.
+  barodiffusion_enabled = .true.
+  transport_cfl = 0.35
+  regular_density = 0.31
+  cut_density = 0.93
+  initial_pressure = 135000.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  initial_velocity_z = 0.0
+  composition_count = 7
+  composition_species = "N2", "H2O", "OH", "O2", "O", "H", "H2"
+  composition_mole_fractions = 0.55643, 0.0, 1.0e-5, 0.14784, 1.0e-5,
+    1.0e-5, 0.29570
+  restart_file = "selected_reactive_eb_3d_restart.chk"
+  output_file = "selected_reactive_eb_3d_restart_restarted.csv"
+/

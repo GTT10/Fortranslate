@@ -2668,3 +2668,59 @@ transfer and adiabatic suppresses heat transfer. Invalid geometry, wall data,
 transport evaluation, or EOS recovery rejects the candidate before state
 publication. This is a first-order wall-normal model, not PeleC's quadratic EB
 boundary-gradient stencil.
+
+## Static two-level 3D AMR molecular transport
+
+For maximum qualified transport diffusivity `alpha`, the regular 3D operator
+uses
+
+```text
+dt_T = C_T / [alpha (1/dx^2 + 1/dy^2 + 1/dz^2)],  0 < C_T <= 0.5.
+```
+
+For refinement ratio `r`, the hierarchy coarse-step limit is
+
+```text
+dt_AMR = min(dt_T,coarse, r^2 dt_T,fine).
+```
+
+One transport Euler stage advances the coarse state for `dt_AMR`. The fine
+state advances `r^2` times with `dt_AMR/r^2`; each exterior ghost is obtained
+from the coarse start/end states at the fine-stage time and limited linear
+coarse-to-fine prolongation. The fine flux on every patch face is averaged
+over `r^2` face children and over all fine substeps before it replaces the
+coarse interface flux. Reflux and conservative average-down then synchronize
+the hierarchy.
+
+Replacing a coarse flux can violate an uncovered coarse species budget even
+when the coarse and fine operators were limited separately. For one interface,
+write the neighbor state after removing the old coarse-face contribution as
+`U_b`, the signed finite-volume coefficient as `a`, and the averaged fine flux
+as `F_f`. The common face limiter is
+
+```text
+theta = min_s [1, 0.9 U_b,rhoY_s / max(-a F_f,rhoY_s, 0)],
+```
+
+where a zero denominator contributes one. Invalid or negative base species
+reject the candidate. The complete face-flux vector is replaced by
+`theta F_f`, and the integrated difference `(theta-1) F_f` is applied with the
+opposite sign to every corresponding fine boundary cell. Thus the interface
+correction is composite-conservative. The full-vector scaling is an explicit
+robustness choice: it couples viscous, conductive, and diffusive corrections
+only when the species interface limiter activates. EOS temperature recovery
+still gates both levels transactionally.
+
+Two synchronized Euler stages form hierarchy SSPRK2. The complete reacting
+step is
+
+```text
+R(dt/2) -> T(dt/2) -> H(dt) -> T(dt/2) -> R(dt/2).
+```
+
+Every stage operates on a private candidate. Sparse MPI partitions only x
+planes, reduces the six deterministic interface-flux and theta layouts, and
+keeps ranks with no fine planes in all contract and success collectives. The
+qualified boundary is periodic, static, strictly interior, and single-patch;
+transport persistence, dynamic topology, physical coarse boundaries, and 3D
+EB AMR are not implied.

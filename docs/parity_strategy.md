@@ -102,6 +102,11 @@ The state relative tolerance is `2e-5`, with an absolute floor of `2e-11`. The r
 
 ## Reference-data policy
 
+The repository-wide default is the recursive snapshot in
+`references/pelec_baseline.json`, rooted at PeleC commit
+`bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8`. A comparison may pin a narrower
+source file or dataset, but it must not silently follow a moving branch.
+
 Every external comparison must record:
 
 - upstream repository and commit SHA;
@@ -3173,3 +3178,1224 @@ Run the same reacting full-transport case in serial and sparse MPI at 1/2/4/8
 ranks. Reuse the serial and two-to-four/eight-rank restart chains and require
 identity-keyed topology and every numeric field to match the uninterrupted
 branching reference. The schema remains 8.
+
+## 0.202.0 three-dimensional directional-core gates
+
+Verify exact z-to-x-to-z round trips for conserved and primitive states.
+Compare z-normal equal-state Rusanov and PeleC-style fluxes with the analytic
+Euler physical flux, including both transverse momenta. Require passive-species
+z fluxes to sum to the mass flux and reacting H2/O2 z-normal HLLC fluxes to
+preserve analytic momentum, energy, and species placement. Independently
+verify x/y/z mesh spacings and endpoint cell centers.
+
+These are local algebraic and thermodynamic gates. Whole-step 3D dimensional
+reduction and convergence remain mandatory before the regular 3D solver can be
+called qualified.
+
+## 0.203.0 conservative periodic 3D Euler gates
+
+Initialize the same smooth constant-pressure state as x-, y-, and z-dependent
+fields. Rotate the y- and z-dependent results back to canonical x layout and
+require the complete PCM/SSPRK2 update to match the established 1D periodic
+solver for both Rusanov and PeleC-style fluxes. Reject an invalid solver
+without changing any caller-owned state.
+
+Advect a diagonal periodic entropy wave on 16^3, 32^3, and 64^3 grids. Require
+monotonically decreasing density L1 error, observed orders above 0.85, positive
+density and pressure, and relative conservation error below `2e-11` for mass,
+all three momenta, and total energy. Run the public 16^3 input separately and
+check its row count, coordinate cardinality, exact-wave L1 bound, primitive to
+conserved relations, and analytical integral totals from the emitted CSV.
+
+These are analytical and cross-dimensional internal gates, not a claim of
+whole-application parity with a three-dimensional PeleC executable.
+
+## 0.204.0 general-EOS multispecies 3D Euler gates
+
+Build one elementary H2/O2/N2 general-EOS line state and advance an independent
+periodic 1D SSPRK2 reference directly from the public x-normal flux. Embed and
+rotate that line through x, y, and z uniform 3D fields. Require the complete
+state and recovered temperature to agree for Rusanov, HLLC, and PeleC-style
+fluxes. Reject an invalid solver without changing either caller-owned array.
+
+Advect a constant-composition, constant-pressure diagonal entropy wave on
+6^3, 12^3, and 24^3 grids. Require density L1 order above 0.70, positive
+density/pressure/temperature, species closure below `5e-11`, and relative
+conservation below `5e-11` for every Euler and species component. Separately
+run the public 12^3 full-H2O2-thermo application and check its dynamic species
+schema, x-fastest ordering, exact-wave L1 bound, ideal-mixture EOS,
+primitive/conserved identities, composition, and analytical mass, momentum,
+and species totals.
+
+These gates qualify composition-dependent 3D hydrodynamics only. They do not
+exercise reaction rates, chemistry splitting, or molecular transport and do
+not establish whole-application PeleC parity.
+
+## 0.205.0 cell-local 3D chemistry gates
+
+Initialize uniform elementary and full-H2O2 3D fields and advance one chemistry
+interval. Require every cell's conserved state and recovered temperature to
+match the established one-dimensional constant-volume reactor path. Require
+nonzero species evolution and H/O/N elemental conservation for both the
+explicit seven-species and implicit ten-species mechanisms.
+
+For a uniform field, require the complete 3D Strang transaction to reduce to
+two independent one-dimensional chemistry half-steps because periodic uniform
+hydro has zero divergence. Let the first reaction half-step succeed and then
+select an invalid hydro solver; the outer transaction must retain every
+caller-owned state and temperature value exactly.
+
+Run the public periodic 6^3 elementary-H2/O2 Gaussian hotspot. Independently
+check its dynamic species schema, row and coordinate order, physical fields,
+EOS and conserved/primitive identities, nonnegative mass fractions, closure,
+analytical initial mass, H/O/N elemental totals, zero net momentum, nonzero
+chemistry evolution, and resolved temperature structure. These are internal
+coupling and conservation gates, not external ignition validation or
+whole-application PeleC parity. Molecular transport remains unqualified.
+
+## 0.206.0 regular-grid 3D molecular-transport gates
+
+Embed the same nonuniform reacting line in x-, y-, and z-dependent uniform
+3D fields. Advance one full transport SSPRK2 interval with viscosity,
+conduction, species diffusion, and barodiffusion enabled. Rotate z momentum
+back to the canonical line layout and require elementary seven-species and
+full-H2O2 ten-species state, temperature, and limiter results to match the
+established 2D operator to component-scaled roundoff. Independently verify
+the summed `1/dx^2 + 1/dy^2 + 1/dz^2` stable-step formula and exact rollback
+for an incompatible transport table.
+
+Diffuse a periodic diagonal three-dimensional divergence-free shear mode on
+6^3, 12^3, and 24^3 grids. Require both observed L1 orders above 1.70,
+inactive species limiting, and roundoff total-energy and momentum
+conservation. Separately require Fourier conduction to contract a temperature
+span and mixture-averaged/barodiffusive species transport to reduce H2
+mass-fraction variance while conserving every periodic species integral and
+retaining nonnegative species density.
+
+Require transport-disabled full composition to match the established
+`R-H-R` result exactly. With transport enabled, reject an invalid middle hydro
+step after a valid transport prefix without changing caller state or
+temperature. Run paired public 6^3 full-H2O2 inert hotspots and require the
+transport result to retain EOS/closure identities and every conserved
+integral while producing resolved thermal and species differences from the
+control.
+
+These gates qualify only the selected serial, single-level, periodic transport
+subset. They are not evidence for Soret/Dufour or multicomponent transport,
+AMR reflux, restart, MPI decomposition, EB walls, or whole-PeleC parity.
+
+## 0.207.0 static two-level reactive 3D AMR gates
+
+Require PCM prolongation followed by restriction to reproduce every covered
+parent exactly, composite integration to avoid double-counting covered coarse
+cells, and average-down to change no uncovered cell. Require the new
+flux-returning coarse SSPRK2 interface to reproduce the established update
+exactly and to zero its output without changing caller fields on rejection.
+
+Advance a genuinely three-dimensional elementary-H2/O2 entropy wave through a
+strictly interior ratio-two patch. Require a nonzero reflux correction,
+roundoff conservation of every composite Euler and species integral, exact
+covered-parent synchronization, positive density/pressure/temperature,
+species closure, and complete rollback for an invalid face solver. A separate
+uniform-field case must remain invariant across subcycling and synchronization.
+
+Run the public full-H2O2 case through `pelef_amr_reactive_3d`. Independently
+parse both level CSV files, validate dynamic species relationships and
+physicality, and reconstruct every covered coarse conserved component from
+the `2^3` fine children. These gates do not qualify chemistry or transport on
+AMR, high-order reconstruction, dynamic regridding, restart, MPI rank parity,
+boundary-touching refinement, EB, or whole-application PeleC parity.
+
+## 0.208.0 static 3D AMR checkpoint/restart gates
+
+Round-trip a synchronized elementary-H2/O2 hierarchy through the public
+checkpoint API. Require exact conserved arrays and scalar metadata, recovered
+temperature agreement, and rejection of unsynchronized writes. Change the
+solver fingerprint and truncate the file independently; each read must fail
+without changing any caller array, temperature, time, step, integral, or
+reflux value. Configuration tests reject checkpoint or restart paths that
+would overwrite a CSV output.
+
+For the public full-H2O2 ratio-two case, run an uninterrupted reference, stop
+after coarse step four, and resume from the resulting checkpoint to the same
+final time. Compare the complete coarse and fine CSV byte streams, not only
+norms or selected fields. Exact identity is required. These gates establish
+serial same-build continuation for the static single-patch hydro hierarchy;
+they do not establish schema migration, cross-toolchain bitwise identity,
+distributed restart, dynamic patch restoration, or physics beyond the
+qualified AMR boundary.
+
+## 0.209.0 distributed-slab static 3D AMR gates
+
+Partition both coarse and fine levels into contiguous x slabs and run the
+kernel with one, two, four, and eight OpenMPI ranks. Each rank must own at
+least one plane at the eight-rank edge. Require the distributed CFL value,
+one complete AMR advance, both temperature fields, and the maximum reflux
+correction to match the serial kernel bit for bit.
+
+Collective preflight must reject a rank-disagreed root, field extent, solver,
+patch descriptor, floating control, or NASA7 species value before entering a
+variable-count collective. Every such rejection must leave state,
+temperature, continuation metadata, and reflux output unchanged.
+
+Run the public full-H2O2 case continuously in serial and at 1/2/4/8 ranks.
+Apply the independent physical/coarse-fine checker to the MPI result and
+require byte-for-byte equality of both level CSV streams at every rank count.
+Then write a synchronized checkpoint at coarse step four with two ranks and
+resume it independently with four and eight ranks. Both continuations must
+match the uninterrupted serial files byte for byte.
+
+These gates qualify rank-owned arithmetic over a replicated hierarchy and
+selected-root formatted I/O. They do not establish sparse persistent fields,
+distributed checkpoint layout, performance scaling, AMR source/diffusion
+coupling, dynamic topology, high-order reconstruction, 3D EB, or complete
+PeleC parity.
+
+## 0.210.0 regular and static-AMR characteristic-PLM gates
+
+Rotate one nonuniform general-EOS line through x, y, and z fields and require
+the complete PLM SSPRK2 state and recovered temperature to agree after the
+corresponding momentum rotation. Unknown reconstruction, limiter, or Riemann
+controls must leave state and temperature unchanged and return zero face
+fluxes.
+
+Advect the elementary-H2/O2 diagonal entropy wave on 6^3, 12^3, and 24^3
+periodic grids. Require positive state, species closure, all-component
+conservation, and observed density orders above 1.65. Run a separate
+full-H2O2 namelist case through the public executable and independently check
+its x-fastest CSV state relationships and analytical density error.
+
+Advance the static hierarchy with PCM and characteristic PLM. Require
+roundoff composite conservation, exact average-down synchronization, physical
+coarse/fine states, nonzero reflux, and a PLM fine-grid density L1 no more than
+70 percent of the PCM error. Exercise both MC and minmod on a uniform
+hierarchy. A step-four PLM checkpoint must resume to coarse and fine CSV files
+that are byte-identical to an uninterrupted run; changing reconstruction in
+the restart target must reject transactionally.
+
+These gates qualify a serial method-of-lines characteristic PLM path and
+limited coarse ghost prolongation. They do not establish CTU/PPM, distributed
+PLM halo exchange, physical boundaries, AMR source/diffusion coupling,
+dynamic topology, or 3D EB.
+
+## 0.211.0 static axis-plane 3D EB gates
+
+Construct x-, y-, and z-normal planes analytically and require exact fluid
+volume, cut-cell count, cut fraction, cell and face centroids, EB area,
+physical centroid, and solid-to-fluid normal. In every cell, independently
+reconstruct the signed Cartesian aperture divergence and compare it with the
+stored EB normal integral. Mutating either side of that identity must make the
+geometry invalid. Invalid axes, bounds, extents, nonfinite positions, and an
+interior grid-face-aligned plane must be rejected.
+
+Recover an elementary-H2/O2 mixture pressure from conserved state and require
+the 3D slip wall to emit only the negative pressure traction along the
+solid-to-fluid normal. Its result must be independent of velocity. Integrate
+the wall source over x/y/z plane cuts and require the expected unit-area
+pressure force with no mass, energy, or species leakage. Cartesian equal-state
+pressure fluxes plus the wall source must leave every active cell at zero
+right-hand side to roundoff, while covered cells stay exactly zero.
+
+Advance uniform flow tangent to the x/y/z planes using HLLC, Rusanov, and
+PeleC-style PCM faces. Require exact state and temperature invariance. Advance
+a localized density perturbation with Rusanov and require roundoff
+fluid-volume conservation of every component, species-density closure,
+positive temperature, and unchanged covered cells. Unknown solvers, invalid
+timesteps, nonphysical cut states, nonfinite fluxes, and bad extents must fail
+transactionally.
+
+These gates establish an internal analytic geometry and conservation
+reference; they are not a direct field comparison to the pinned PeleC build.
+They do not establish oblique/curved geometry, face-aligned EB ownership,
+small-cell redistribution, high-order cut-face reconstruction, chemistry or
+transport at EB cells, AMR/reflux/regridding, restart, MPI, or a public 3D EB
+application.
+
+## 0.212.0 conservative planar 3D EB FluxRedist gates
+
+Apply arbitrary residuals to fully regular and fully covered geometry and
+require exact identity and zero respectively. For x-, y-, and z-normal planes
+with `kappa=0.05`, compare the cut and one receiving-cell values against the
+closed-form FluxRedist result. Require less than eleven percent of the raw cut
+residual, exact uniform active-residual preservation, compact support, and
+fluid-volume conservation for every component.
+
+On an x-normal `8 x 3 x 3` cut sheet, seed the central cut cell and require
+nonzero transfer through the positive-x face and both y and z directions.
+The overlapping neighborhoods must retain the original weighted integral.
+Invalid geometry and nonfinite residuals must return a zero unpublished
+result.
+
+Advance an elementary-H2/O2 state from a supplied residual that would make
+the raw cut state negative. Require positive cut and receiving states after
+redistribution, unchanged temperature for a uniformly scaled state, exact
+component conservation, and transaction rollback for a larger nonphysical
+request.
+
+Finally construct the complete PCM Rusanov residual for a `kappa=0.05`
+density jump. At a three-dimensional CFL-0.5 full-grid step, independently
+prove that the raw cut density is negative and that the raw update rejects.
+Require the redistributed path to remain physical and conserve all Euler and
+species integrals to roundoff. Repeat x/y/z tangent-flow invariance and all
+invalid solver/timestep/state transactions through the integrated path.
+
+These are internal formula, conservation, and stability gates against the
+frozen 2D FluxRedist semantics. They are not a direct PeleC field comparison
+and do not qualify weighted StateRedist, arbitrary geometry, an EB-aware
+public timestep selector, high-order reconstruction, coupled physics, AMR,
+restart, MPI, or an application-level 3D EB workflow.
+
+## 0.213.0 zeroth-order planar 3D EB StateRedist gates
+
+For x-, y-, and z-normal `kappa=0.05` planes, set one provisional cut state to
+`-U` in an otherwise uniform active field. With target `0.5`, independently
+derive neighbor weight `0.45`, cut factor `0.6363636363636364`, and receiver
+factor `0.9181818181818182`; require all components to match. Require compact
+support, uniform-state identity, covered standalone zero, and
+fluid-volume-weighted conservation.
+
+The geometry selector must follow the sole nonzero aperture-difference-normal
+component to a regular receiver. A domain-edge small cell without that
+receiver, an invalid target, a nonfinite provisional state, or any unsupported
+normal must fail without publishing a partial result.
+
+From a caller-supplied reactive residual, require StateRedist to repair a
+provisional negative cut density, recover its NASA7 temperature, and conserve
+all Euler/species components. Setting `target=kappa` must remove the merge and
+therefore expose the nonphysical provisional state; a larger bad update must
+also roll back state and temperature exactly.
+
+Finally feed raw, FluxRedist, and StateRedist from one common PCM face/wall
+divergence. Repeat all x/y/z uniform tangent-flow gates, nonuniform
+conservation/species closure/covered identity, and invalid
+solver/timestep/state/target transactions. At the frozen CFL-0.5 full-grid
+control, independently require raw negative density and rollback while both
+named stabilization routes remain physical and conservative.
+
+These are analytical and invariant-based internal gates for order-zero
+StateRedist on exact axis planes. They do not establish higher-order or
+general-geometry AMReX/PeleC StateRedist parity, a public 3D EB solver,
+coupled physics, AMR/restart, or MPI ownership.
+
+## 0.214.0 public stabilized planar 3D EB gates
+
+Recover the frozen elementary-mixture primitive state on every active cell and
+compare the EB CFL result with the direct x/y/z spectral-rate formula. Covered
+storage must not affect the result. Invalid CFL, an inadmissible active state,
+bad extents, and an all-covered geometry must return zero timestep.
+
+Validate all three plane orientations and an actual namelist read. Reject
+nonfinite configuration, face alignment, a cut cell without a regular
+receiver, invalid StateRedist target, unsupported solver/method, and public
+selection of the raw route.
+
+Run the installed app twice on the same `10 x 8 x 6`, `kappa=0.05`,
+constant-pressure density sheet, selecting StateRedist and FluxRedist. Both
+must take two positive steps to `5.0e-5`, remain physical, preserve mass,
+energy, species, and tangential momenta to roundoff, and report the normal
+wall-momentum exchange separately.
+
+Independently parse both 480-row CSV files. Reconstruct x-fastest indices,
+Cartesian centers, 144/48/288 covered/cut/regular classifications, fractions,
+and fluid centroids. Recompute mixture-EOS and conserved/primitive relations,
+analytical mass/species totals, resolved density/pressure response, and
+cross-method invariant agreement. Freeze one distinct maximum-density and
+normal-impulse signature for each algorithm.
+
+These gates establish a reproducible public workflow, not external PeleC
+field parity or physical validation. They do not cover higher-order EB hydro,
+coupled chemistry/transport, general geometry, AMR/restart, or MPI execution.
+
+## 0.215.0 optional elementary chemistry in planar 3D EB gates
+
+Advance x-, y-, and z-oriented 3D fields through the cell-local elementary
+reactor with an active mask. Require roundoff conservation of density, total
+energy, and H/O/N totals, a nonzero species response, exact identity of one
+masked regular cell and every covered cell, and whole-field rollback for an
+invalid mask shape.
+
+Compose masked chemistry around the planar EB hydro transaction. The direct
+unit gate must contain a `kappa=0.05` cut cell below the `0.5` StateRedist
+target, preserve mass, total energy, both tangential momenta, and H/O/N totals,
+change at least one active species, and retain covered state and temperature
+bitwise. Chemistry-disabled execution must match the direct StateRedist result
+bitwise. Empty chemistry, invalid solver, and invalid reactor tolerances must
+reject without publishing any candidate.
+
+Run public inert and reacting StateRedist cases beside the frozen `0.214.0`
+StateRedist baseline. Require the inert CSV to be byte-identical to the
+baseline. Independently parse the reacting 480-row CSV, reconstruct geometry,
+EOS and species closure, verify all 144 covered rows column-for-column against
+the inert output, preserve mass/energy/tangential momentum and H/O/N totals,
+and freeze both the active-species-change and maximum-density signatures.
+
+These gates qualify only the serial, single-level, first-order, pre-reaction-
+CFL-controlled case with the fixed seven-species elementary mechanism. They do
+not establish general reactive timestep stability, a production stiff
+mechanism, public FluxRedist chemistry, molecular transport, higher-order or
+general-geometry EB, AMR/restart, MPI ownership, or external PeleC parity.
+
+## 0.216.0 molecular transport in planar 3D EB gates
+
+For x-, y-, and z-normal `kappa=0.05` planes, exclude covered storage from the
+transport-step scan and require the same positive bound after overwriting that
+storage with invalid values. Evaluate nonuniform velocity and composition
+fields through the aperture-weighted transport residual and SSPRK2 StateRedist
+advance. Require exact-zero outer and embedded-wall face fluxes, a resolved
+state response, all-component and H/O/N conservation to roundoff, exact
+covered identity, and activation of the species-inventory limiter under a
+forced oversized interval.
+
+The full split unit must prove that transport-disabled execution is bitwise
+identical to the `0.215.0` `R-H-R` wrapper. With transport and chemistry active,
+require a resolved coupled response, fluid and elemental conservation, exact
+covered storage, and a bounded limiter diagnostic. Invalid solver,
+redistribution, process dependency, transport-table extent, interval, or
+post-stage EOS state must reject without publishing any part of the candidate.
+
+Run public control, transport-only, and coupled StateRedist cases on the same
+`10 x 8 x 6`, `kappa=0.05`, constant-pressure density sheet. Stop after one
+clipped `2.0e-9 s` step so the zero-gradient hydro outer boundary does not
+enter the conservation comparison. Parse all 480 rows and require 144 covered
+rows to remain byte-identical. Independently reconstruct geometry, NASA7 EOS,
+energy, closure, physical-volume component and H/O/N integrals, active
+transport/chemistry response, operator flags and sequence, step schedule,
+transport diagnostics, and the complete Debug/Release CSV SHA-256 set.
+
+The frozen signatures are transport response `1.0489647406832604e-1`,
+chemistry response `4.043407673691575e-8`, effective relative conservation
+error `6.867e-15`, elemental error `1.112e-14`, maximum diffusivity
+`9.7180419287635654e-4`, and limiter factor `1.0`. These are internal formula,
+transaction, and invariant gates, not direct PeleC field parity or external
+validation. They do not qualify nonzero physical-boundary transport, general
+embedded-wall models, FluxRedist transport, higher-order/general geometry,
+AMR/restart, MPI, or long-time reacting-flow stability.
+
+## 0.217.0 transactional planar 3D EB restart gates
+
+Round-trip a physical coupled planar EB state through the schema-1 checkpoint
+and require exact state, temperature, inventories, clock, and cumulative
+diagnostic recovery. Mutate immutable configuration, reaction, and transport
+records independently. Truncate the file and make a stored temperature
+inconsistent with its conserved state. Every negative read must reject and
+leave all caller-owned arrays and scalar metadata bitwise unchanged.
+
+Run the installed application continuously and as two processes separated
+after the first committed chemistry-plus-transport step. The public case must
+take at least one additional step after restart. Require byte-identical final
+CSV output, identical final step/time and cumulative minimum-step/diffusivity/
+limiter diagnostics, an earlier distinct checkpoint-stop CSV, and explicit
+magic, schema, and terminal-marker records.
+
+These tests establish deterministic serial continuation under the exact stored
+physics contract. They are not an external PeleC field comparison, a scalable
+checkpoint performance result, a general schema-compatibility guarantee, or
+evidence for MPI/AMR/general-geometry restart.
+
+## 0.218.0 pinned Cantera ingestion gates
+
+Hash the repository YAML and require explicit selection of `ohmech`, not the
+co-located Redlich-Kwong phase. Import it twice and require deterministic JSON.
+Verify ten ordered species, 29 ordered reactions, NASA7 at 101325 Pa, complete
+gas transport, element balance, eleven third-body records, one Troe record,
+six duplicate flags, and source indices 1 through 29. Negative fixtures reject
+NASA9, missing transport, PLOG, Chebyshev, SRI, Lindemann-only falloff,
+unbalanced reactions, invalid identifiers, nonfinite values, and oversized
+species sets.
+
+Regenerate the committed normalized JSON under Cantera 3.2 and compare it
+byte-for-byte. Then regenerate the Fortran module with the dependency-free
+Python generator and compare it byte-for-byte in every build configuration.
+The compiled full-H2/O2 support test checks the embedded source provenance,
+reaction-family counts, duplicate/order metadata, thermo/transport ordering,
+and a positive mixture-transport evaluation.
+
+Finally rerun the existing Cantera production-rate/0D trajectory gate and the
+regular 1D/2D full-H2/O2 parity pair. Those comparisons are the numerical
+guard against a semantically wrong named-collider or unit conversion. They do
+not establish arbitrary-mechanism parsing, detailed-fuel validation, runtime
+selection, or CVODE parity.
+
+## 0.219.0 selected mechanism build gates
+
+Generate a Fortran module from a normalized two-species fixture as an ordinary
+build dependency, compile it into an isolated library, and run a configured
+probe. The probe must load ordered NASA7, reaction, and primitive transport
+records, select a temperature inside their common range, and obtain finite
+production rates and a finite nonzero Jacobian. The fixture deliberately uses
+a third-body reaction so this is more than a syntax-only module import.
+
+For a user-selected bundle, configure a clean tests-disabled Release build
+with the pinned full-H2/O2 JSON and its YAML source. Require configure-time and
+build-time source hash checks, a successful ten-species/29-reaction probe, an
+installed probe byte-identical to the build-tree executable, and a
+non-executable stack. Pair that with a negative configuration using the wrong
+YAML and require rejection before generation.
+
+Treat the selected bundle and source as configure dependencies. Touch copied
+inputs and require a plain build to rerun CMake, recheck the source, regenerate,
+and relink. Compile a maximum-length 128-character reaction equation with all
+generated lines bounded to 100 characters, and reject invalid or colliding
+Fortran names before publication.
+
+Compare the energy-constrained reduced reactor Jacobian with a centered
+directional finite difference of the full thermochemical RHS. This prepares a
+stronger callback gate for a future stiff backend without claiming CVODE
+integration in this milestone.
+
+These gates qualify one configure-time normalized-bundle ABI. They do not
+establish runtime mechanism dispatch, CFD coupling of the selected bundle,
+new thermo/rate families, mechanisms above 32 species, or physical validation.
+
+## 0.223.0 selected regular 1D reacting-flow gates
+
+Build the selected two-species fixture through the same CMake mechanism-bundle
+helper used by an external bundle. Run a uniform reacting case with chemistry
+and molecular transport enabled. Independently parse its dynamic species CSV
+schema and require the configured bundle order, finite positive thermodynamic
+state, mass-fraction closure, spatial uniformity, nonzero chemical activity,
+the requested final time, and the application's zero reported invariant drift.
+Repeat the run and require a byte-identical file.
+
+Build the pinned full-H2/O2 bundle as a separate selected runtime. Run the
+ordinary fixed and configured selected regular-1D applications from matching
+inputs and require byte-for-byte CSV identity, in addition to independent
+schema, physicality, closure, final-time, and uniformity checks. This is a
+stronger gate than tolerance comparison because it exercises the same
+hydrodynamic, native reaction, and mixture-transport implementation through
+two separately linked mechanism-loading paths.
+
+Give the selected application an unknown composition species and give the
+fixed application `chemistry_model = "selected"`; both must fail during
+startup and create no output artifact. Unit gates also reject duplicate names,
+nonfinite unused composition entries, and a composition-wave endpoint that
+would become negative, while proving safe normalization of finite near-maximum
+fractions.
+
+Finally rerun the eight Debug/Release, Cantera, MPI, and optional SUNDIALS
+configurations. In a clean tests-disabled selected Release build, run all three
+selected executables, install every application, require build/install byte
+identity and non-executable GNU stacks, and verify that the installed selected
+1D executable has no RPATH/RUNPATH or unresolved library. These gates establish
+one configure-time serial regular-grid 1D dispatch boundary. They do not
+establish runtime loading, selected 2D/3D/AMR/EB/MPI coupling, CVODE in CFD,
+PeleC field parity, detailed-fuel validity, or production performance.
+
+## 0.224.0 selected regular 3D reacting-flow gates
+
+Build the selected two-species fixture through the public mechanism-bundle
+helper and run a 4-by-4-by-4 periodic uniform reactor with chemistry and
+molecular transport enabled. Independently parse its dynamic species CSV and
+require bundle ordering, finite positive density/pressure/temperature,
+mass-fraction closure, spatial uniformity, nonzero H2 conversion, the requested
+final time, and zero reported mass, momentum, and energy drift.
+Repeat the run and require a byte-identical file.
+
+Build the pinned full-H2/O2 bundle in a separate selected runtime. Run matching
+fixed and selected periodic regular-3D transport-hotspot inputs and require
+byte-for-byte CSV identity. Retain the existing independent checker requiring
+positive state, composition closure, conservation, and a nonzero H2 transport
+response relative to the uniform control. This separates loader/configuration
+parity from the shared time-integration driver without claiming two independent
+3D algorithms.
+
+Run a short nonuniform ten-species/29-reaction full-H2/O2 hotspot with
+characteristic PLM and chemistry enabled through both fixed and selected front
+ends. Require measurable H2 conversion, positive state, closure, the requested
+time, and byte-exact fixed/selected CSV identity. This is a dispatch and active
+reaction-family smoke gate, not an ignition-delay or physical-validation case.
+
+Give the selected front end an unknown composition species and give the fixed
+front end `thermo_model = "selected"`; both must fail during startup without a
+CSV artifact. Unit gates also exercise duplicate-name, active/unused-tail,
+finite-value, and overflow-safe normalization behavior through the shared
+composition resolver. Generator tests render and compile the selected 3D
+template using maximum-length legal generated identifiers.
+
+Finally rerun the eight Debug/Release, Cantera, MPI, and optional SUNDIALS
+configurations. In a fresh tests-disabled selected Release build, run all four
+selected executables, install every application, require build/install byte
+identity and non-executable GNU stacks, and verify that the installed selected
+3D executable has no RPATH/RUNPATH or unresolved library. These gates establish
+configure-time serial periodic single-level regular-3D dispatch. They do not
+establish physical-boundary, selected 2D/AMR/EB/MPI, runtime loading, CVODE in
+CFD, PeleC field parity, detailed-fuel validity, or production performance.
+
+## 0.225.0 selected regular 2D reacting-flow gates
+
+Build the two-species selected fixture through the public bundle helper and
+run a 4-by-4 uniform 2D reactor with chemistry and transport enabled.
+Independently parse the dynamic species schema and require bundle ordering,
+positive density/pressure/temperature, closure, spatial uniformity, measurable
+H2 conversion, and the requested final time. Repeat the run and require
+byte-identical output.
+
+Run matching fixed and selected pinned full-H2/O2 2D inputs in three regimes.
+The uniform `2.0e-6 s` case must exercise the generic adaptive implicit
+chemistry path and produce byte-identical CSV. A `4 x 4`, `1.0e-9 s`
+nonuniform hotspot must enable characteristic PLM, CTU, and all 29 reactions;
+require positive state, closure, measurable H2 conversion, and byte-exact
+fixed/selected output. An `8 x 8`, `5.0e-7 s` physical-boundary case must
+enable species diffusion and a zero-net-mass prescribed wall flux and again
+produce byte-identical output.
+
+The selected parser must remain opt-in. Reject selected input sent to the
+fixed executable and reject an unknown bundle species before output creation.
+Unit gates cover duplicate names, nonfinite composition tails, overflow-safe
+normalization, selected composition-wave endpoints, a valid actual-species
+wall flux, and a nonzero wall-flux slot beyond the actual bundle size. Runtime
+negative gates require conservative double-hotspot and isothermal reflected
+ghost-temperature ranges to remain within the common NASA7 interval.
+
+Generator tests must render and compile the selected 2D template using
+maximum-length legal identifiers. Rerun the eight standard configurations and
+perform a fresh tests-disabled selected Release build/install audit with all
+five selected executables. Require build/install byte identity, non-executable
+stacks, no selected-2D RPATH/RUNPATH or unresolved libraries, and installed
+smoke/parity runs. These gates establish configure-time serial single-level
+regular-2D dispatch, including the existing physical-boundary set. They do not
+establish selected AMR/EB/MPI, runtime loading, CVODE inside CFD, external
+PeleC field parity, detailed-fuel validity, or production performance.
+
+## 0.226.0 selected serial AMR 1D reacting-flow gates
+
+Build the two-species selected fixture through the public bundle helper and
+run a nonuniform reactive hotspot with chemistry, molecular transport, and
+solution-driven ratio-two refinement enabled. Independently parse the dynamic
+species schema and require levels zero and one, positive state, mass-fraction
+closure, exact requested time, level-width ratio, gap-free/nonoverlapping
+composite domain coverage, measurable H2 conversion, and at least one fine
+region. Repeat the run and require byte-identical output.
+
+Run matching fixed and selected pinned full-H2/O2 inputs in three regimes. A
+two-level nonuniform hotspot must enable chemistry and molecular transport and
+produce byte-identical CSV. An arbitrary-depth case must create three levels
+with characteristic PPM and preserve exact fixed/selected output. A dynamic
+multipatch transport case must create at least three disjoint fine regions and
+again produce byte-identical output.
+
+The selected parser must remain opt-in. Reject an unknown bundle species,
+non-AMR input, an entropy wave whose constant-pressure density amplitude sends
+`T0/(1-A)` outside the common NASA7 range, and selected input sent to the fixed
+AMR executable before output creation. Generator tests must reserve the new
+program/module namespace and render and compile the selected AMR template with
+maximum-length legal identifiers.
+
+Rerun the eight standard configurations and perform a fresh tests-disabled
+selected Release build/install audit with all six selected executables.
+Require build/install byte identity, non-executable stacks, no selected-AMR
+RPATH/RUNPATH or unresolved libraries, and installed fixture/full-H2/O2
+two-level, multilevel, and multipatch smoke/parity runs. These gates establish
+configure-time serial reactive-1D AMR dispatch. They do not establish selected
+AMR checkpoint/restart, EB/MPI, runtime loading, CVODE inside CFD, external
+PeleC field parity, detailed-fuel validity, or production performance.
+
+## 0.227.0 selected serial reactive EB 2D gates
+
+Build the two-species selected fixture through the public bundle helper and
+run a plane-cut 4-by-4 case with native chemistry and molecular transport.
+Independently parse the dynamic species schema and require exactly 8 regular,
+4 cut, and 4 covered cells, valid volume fractions, positive active state,
+mass-fraction closure, exact requested time, measurable H2 conversion, and
+repeat-byte output identity.
+
+Run matching fixed and selected pinned full-H2/O2 inputs in two regimes. A
+plane-cut case must execute active chemistry and produce byte-identical CSV. A
+circle-cut characteristic-PLM case must execute viscosity, conduction,
+species diffusion, barodiffusion, correction velocity, species enthalpy flux,
+and an isothermal moving no-slip embedded wall; require nonzero H2 spatial
+response and byte-identical fixed/selected CSV.
+
+The selected parser must remain opt-in. Reject an unknown bundle species, an
+embedded-wall temperature outside the common NASA7 interval, a lexical
+input/output alias, and selected input sent to the fixed EB executable before
+output creation. Unit gates must require fixed-parser rejection and exact
+caller-output rollback after an invalid selected chemistry-integrator policy.
+Generator tests must reserve the new namespace and render and compile the
+selected EB template with maximum-length legal identifiers.
+
+Rerun the eight standard configurations and perform a fresh tests-disabled
+selected Release build/install audit with all seven selected executables.
+Require build/install byte identity, non-executable stacks, no selected-EB
+RPATH/RUNPATH or unresolved libraries, and installed full-H2/O2 chemistry and
+transport smoke/parity runs. These gates establish configure-time serial
+single-level reactive 2D EB dispatch. They do not establish selected EB AMR/3D,
+checkpoint/restart, MPI, runtime loading, CVODE inside CFD, external PeleC
+field parity, detailed-fuel validity, or production performance.
+
+## 0.228.0 selected regular MPI 1D gates
+
+Extract the fixed 19-cell periodic decomposition, deterministic initialization,
+adaptive `R-T-H-T-R` loop, collective invariants, ordered gather, and CSV
+publication into one mechanism-independent driver. Freeze the old fixed
+one-rank CSV before extraction and require the refactored fixed executable to
+remain byte-identical on 1/2/4 ranks.
+
+Build independently ordered two-species and pinned full-H2/O2 selected bundles
+through the public mechanism helper. The two-species case must use explicit
+chemistry, complete to `1.0e-7 s`, change both temperature and a species
+integral, and produce byte-identical 1/2/4-rank CSV. The full bundle must use
+implicit chemistry and remain byte-identical across ranks and to the fixed
+MPI output. Compare dynamic `rhoY_*` columns rather than assuming H2/O2 names.
+
+First run a nonzero valid adaptive-Strang control and require a chemical state
+change. Then run an invalid policy at one rank or valid explicit/implicit
+policies that disagree across ranks on 1/2/4 ranks; require collective failure
+plus exact caller state and temperature rollback. Reserve the new Fortran
+namespaces, render and MPI-compile the selected template with maximum legal
+identifiers, and audit the selected link graph for absence of `pelef_core` and
+committed mechanisms.
+
+Rerun the eight standard configurations and perform a fresh tests-disabled
+selected MPI Release build/install audit with all 36 installed executables.
+Require build/install byte identity, non-executable stacks, no selected-MPI
+RPATH/RUNPATH or unresolved libraries, a single coherent MPI implementation,
+and installed fixed/selected 1/2/4-rank parity. These gates do not establish a
+general input-driven MPI application, selected MPI AMR/EB, restart, runtime
+loading, CVODE inside CFD, thread safety, scaling, detailed-fuel validity, or
+external validation.
+
+## 0.229.0 selected serial EB AMR 2D gates
+
+Extract a shared fixed/selected application driver without changing the
+existing static two-level arithmetic. Run the established fixed EB AMR
+regression after extraction. Require the selected runtime link graph to omit
+`pelef_core`, fixed database loaders, and committed generated mechanisms.
+
+Run an independently ordered two-species static plane fixture twice. On the
+coarse level require 32 regular, eight cut, and 24 covered cells; on the fine
+level require 84 regular, 12 cut, and 48 covered cells. Require finite positive
+state, mass-fraction closure, the exact final time, H2 change above `1.0e-5`,
+exact ratio-two coordinates, volume-fraction consistency, composite
+conserved-state average-down below `5.0e-12`, and byte-identical repeated CSV
+independently on both levels.
+
+Run matching fixed and selected pinned full-H2/O2 hotspot cases with
+characteristic PLM, native implicit chemistry, viscosity, thermal conduction,
+species diffusion, barodiffusion, and an isothermal moving no-slip embedded
+wall. Require nonzero H2 change, coarse/fine average-down consistency, and
+byte-identical fixed/selected coarse and fine CSV. Reject unknown species, an
+out-of-range reflected wall temperature, every input/coarse/fine path alias,
+dynamic, three-level, multipatch, and dynamic-parent modes, each checkpoint
+control, restart, and selected input sent to the fixed executable. Preserve
+the input and create neither level output on every startup rejection.
+
+Reserve the new Fortran namespaces and render and compile the selected
+template with maximum-length legal identifiers. Rerun the eight standard
+configurations and perform a fresh tests-disabled selected MPI Release
+build/install audit with all 37 installed executables. Require build/install
+byte identity, non-executable stacks, no RPATH/RUNPATH, coherent MPI runtime
+dependencies, and installed fixed/selected full-H2/O2 EB AMR parity. These
+gates do not establish selected dynamic/three-level/multipatch EB AMR,
+restart, selected EB 3D, MPI EB AMR, runtime loading, CFD CVODE, thread safety,
+scaling, detailed-fuel validity, or external validation.
+
+## 0.230.0 selected serial EB 3D gates
+
+Freeze the fixed coupled seven-species Debug and Release CSV before extracting
+one mechanism-independent application driver. Require the refactored fixed
+wrapper to retain those files byte-for-byte. Build a complete test-only
+selected bundle from the same reaction, thermo, and transport records and
+require its selected output to be byte-identical to the fixed output in both
+configurations.
+
+Run an independently ordered H2/H bundle twice on a 4-by-4-by-4 exact
+non-face-aligned plane. Require 32 regular, 16 cut, and 16 covered cells,
+finite positive active state, mass-fraction closure, active H2 change, exact
+covered storage, and byte-identical repeated CSV. Run the pinned full-H2/O2
+bundle on a 10-by-8-by-6 plane with implicit chemistry and every qualified
+molecular-transport term active; require 288 regular, 48 cut, and 144 covered
+cells, nonzero H2 and density changes, positivity, and closure.
+
+Reject unknown or duplicate species, nonfinite/zero/negative composition,
+out-of-range initial temperatures, lexical input/output aliases, checkpoint
+controls, restart, unsupported diagnostic element families, and selected
+input sent to the fixed executable before output creation. Reserve the new
+Fortran namespaces, compile the maximum-length rendered template, and audit
+the selected target graph for absence of `pelef_core` and committed
+mechanisms.
+
+Rerun the eight standard configurations and perform a fresh tests-disabled
+Release build/install audit with all 38 executables. Require build/install
+byte identity, non-executable stacks, no RPATH/RUNPATH, resolved dependencies,
+one coherent MPI ABI, and installed fixed and selected EB 3D smoke/checks.
+These gates do not establish selected EB3D checkpoint/restart, arbitrary
+element diagnostics, general geometry, EB AMR/MPI 3D, runtime loading, CFD
+CVODE, thread safety, scaling, detailed-fuel validity, or external validation.
+
+## 0.231.0 selected serial EB 3D restart gates
+
+Freeze the Debug and Release schema-1 checkpoint-stop artifacts before changing
+the adapter. After adding selected persistence, rerun the same fixed executable
+and require the checkpoint and stopped CSV to retain their build-type-specific
+exact SHA-256 values in the automated checker. The first common-body marker
+must remain `SPECIES`; no selected record may be written by a fixed caller.
+
+At the checkpoint API, write and read complete selected schema 2. Require the
+`SELECTED_CONTEXT` marker, canonical bundle SHA-256, exact generated integrator,
+species count, normalized bundle-order composition, and the unchanged complete
+model/geometry/state body. Reject schema 1 through a selected reader, schema 2
+through a fixed reader, incomplete context, changed SHA, changed integrator,
+changed composition, malformed context records, negative/nonfinite composition,
+truncation, wrong target shape, and existing model/configuration/state
+incompatibilities. Every failed read must leave all caller geometry, arrays,
+clock, counters, inventories, and cumulative diagnostics unchanged.
+
+Run the complete seven-species selected elementary executable in three separate
+processes on the established 24-by-8-by-6 coupled planar case: uninterrupted,
+stop after the first committed checkpoint, and restart to completion. Require
+the stopped output to precede final time, two committed final steps, exact
+uninterrupted/restarted 1152-row CSV bytes, exact cumulative summaries, and a
+schema-2 checkpoint containing the generated bundle identity and explicit
+policy. Require the selected uninterrupted reference to equal the matched
+fixed reference byte-for-byte. A fourth process must reject a changed normalized composition without
+creating output. Reject lexical input/checkpoint and input/restart aliases
+before model loading or file replacement.
+
+Retain the fixed schema-1 restart chain and the complete eight-configuration
+matrix, then repeat the tests-disabled selected Release build/install and ELF
+audit. These gates establish provenance and transactional compatibility, not a
+cryptographic digest of the checkpoint payload, crash-atomic replacement,
+schema migration, scalable I/O, general EB geometry, AMR/MPI EB 3D restart,
+physical validity of a selected mechanism, or external PeleC field parity.
+
+## 0.232.0 selected static two-level EB AMR 2D restart gates
+
+Freeze the fixed schema-3 checkpoint and checkpoint-stop coarse CSV before
+adding selected context. Require their exact SHA-256 values in the fixed
+restart checker after the change. Fixed calls must continue to write the same
+header, first species record, patch, coarse/fine body, and terminal marker.
+
+At the two-level API, require selected schema 4 to contain
+`SELECTED_CONTEXT`, the canonical full-bundle SHA-256, `implicit` policy,
+ten-species count, and normalized bundle-order composition before the
+unchanged body. Exercise selected round trip, partial read/write context,
+both cross-schema directions, changed SHA, policy, and composition, malformed
+marker, truncation, invalid composition, failed-write non-destruction, and
+complete rollback. Require failure text to distinguish missing context,
+cross-schema input, and each selected identity mismatch.
+
+Run five separate full-H2/O2 processes on the same static 8-by-8 coarse and
+12-by-12 fine plane hierarchy: fixed uninterrupted, selected uninterrupted,
+selected first-step checkpoint-stop, selected restart, and changed-composition
+restart. Require 32/8/24 coarse and 84/12/48 fine regular/cut/covered counts,
+two final coarse steps, a one-step checkpoint, exact fixed/selected reference
+bytes, exact uninterrupted/restarted bytes on both levels, and no output from
+the mismatch process. Freeze the selected reference coarse/fine, stopped
+coarse/fine, and checkpoint SHA-256 values. Reject input/checkpoint and
+restart/output lexical aliases before any output is created.
+
+Rerun the full configuration matrix and repeat the tests-disabled selected
+Release build/install and ELF audit. These gates establish deterministic
+serial static two-level continuation and selected-context provenance only;
+they do not qualify dynamic, three-level, multipatch, or MPI EB AMR
+persistence, payload authentication, crash-atomic/scalable I/O, detailed-fuel
+physics, or external PeleC parity.
+
+## 0.233.0 selected dynamic two-level EB AMR 2D restart gates
+
+Rerun the frozen fixed schema-3 and selected static schema-4 restart chains
+after introducing dynamic selected persistence. Their exact checkpoint and
+CSV hashes must not change. At the API level, require a selected dynamic call
+to write and read schema 5, retain the complete selected context and initial
+composite-integral baseline, and reject schema 4; require a selected static
+call to reject schema 5. Corrupt the baseline marker and require rejection.
+Every rejection must preserve caller-owned patch, arrays, clock, counters, and
+diagnostics.
+
+Use a 12-by-12 full-H2/O2 coarse grid whose initial `(2:5,2:5)` fine patch
+does not contain the temperature hotspot. Regrid once to `(5:12,4:12)` before
+the first-step checkpoint, producing a 16-by-18 fine grid. Run fixed and
+selected uninterrupted references, selected checkpoint-stop, independent
+selected restart, and changed-composition restart. Require three final coarse
+steps, one checkpointed step, one completed regrid, exact fixed/selected
+reference bytes, exact uninterrupted/restarted bytes on both levels, and no
+output from the mismatch process.
+
+The checker must validate schema 5, selected context, species order, dynamic
+flags, stored post-regrid patch, regrid metadata, row counts, cell-type counts,
+physicality, mass-fraction closure, logs, and frozen reference/stopped/
+checkpoint SHA-256 values. Require uninterrupted/restarted maximum composite
+conservation-error identity. Rerun the complete configuration matrix and a fresh
+tests-disabled Release install with installed fixed and selected dynamic
+restart smoke. These gates do not qualify selected three-level, multipatch,
+dynamic-parent, or MPI EB AMR persistence, payload authentication,
+crash-atomic/scalable I/O, detailed-fuel physics, or external PeleC parity.
+
+## 0.234.0 selected static three-level EB AMR 2D restart gates
+
+Rerun both frozen fixed three-level restart chains after introducing selected
+static persistence: static magic/schema 3 and dynamic magic/schema 4 hashes
+must not change. At the API level, require a selected static three-level call
+to write and read schema 4 under the static magic, retain the complete selected
+context and initial composite-integral baseline, and reject fixed schema 3.
+The fixed reader must reject selected schema 4. Corrupt the baseline marker,
+change bundle SHA, integrator, or composition, and require every failure to
+publish no candidate and return topology, arrays, clock, counters,
+diagnostics, and baseline in their empty/default failure states.
+
+Run fixed and selected full-H2/O2 uninterrupted references, a selected
+first-step checkpoint-stop, independent selected restart, and a changed-
+composition restart on an 8-by-8 root with 12-by-12 middle and 16-by-16 finest
+levels. Require two final coarse steps, one checkpointed step, exact fixed/
+selected reference bytes, exact uninterrupted/restarted bytes on all three
+levels, and no output from the mismatch process.
+
+The checker must validate selected context, baseline, species order, topology,
+time/step metadata, 64/144/256 row counts, cell-type counts, physicality,
+mass-fraction closure, log identity, and frozen reference/stopped/checkpoint
+SHA-256 values. Require uninterrupted/restarted cumulative conservation text
+identity. Also reject lexical aliases involving the finest output before any
+write. Rerun the complete configuration matrix and a clean tests-disabled
+Release install with installed fixed and selected restart smoke. These gates
+do not qualify selected dynamic-three-level, multipatch, dynamic-parent, or
+MPI EB AMR persistence, payload authentication, crash-atomic/scalable I/O,
+detailed-fuel physics, or external PeleC parity.
+
+## 0.235.0 selected dynamic three-level EB AMR 2D restart gates
+
+Rerun both frozen fixed three-level chains and the selected static chain.
+Fixed dynamic magic/schema 4 and all earlier checkpoint and CSV hashes must
+remain unchanged. At the API level, require a selected dynamic three-level
+call to write and read schema 5 under the dynamic magic, retain the complete
+selected context and original composite-integral baseline, and reject schema
+4. Require the fixed dynamic reader to reject schema 5, and require both
+static/dynamic selected magic directions to fail without publishing a
+candidate.
+
+Corrupt the baseline marker and numeric baseline, dynamic controls, committed
+middle patch, first state field, and terminal marker. Reject an invalid
+baseline write without replacing an existing checkpoint. Every failure must
+leave topology, arrays, clock, counters, diagnostics, and baseline in their
+documented empty/default states.
+
+Run fixed and selected full-H2/O2 uninterrupted references, a selected
+first-step checkpoint-stop, independent selected restart, and a changed-
+composition restart on a 12-by-12 root. Require dynamic-parent regridding to
+move the middle patch from `(2:11,2:11)` to `(5:10,3:10)` and the finest patch
+from `(6:9,6:9)` to `(3:10,3:14)` before the checkpoint. The committed level
+shapes must be 12-by-12, 12-by-16, and 16-by-24. Require two final coarse
+steps, one checkpointed step, one completed regrid, exact fixed/selected and
+uninterrupted/restarted bytes on all three levels, identical cumulative
+conservation text, and no output from the mismatch process.
+
+The checker must validate schema 5, selected context, composite baseline,
+species order, dynamic controls, committed patches, clock/regrid metadata,
+complete checkpoint fields, CSV topology and physicality, mass-fraction
+closure, chemistry activity, logs, and frozen reference/stopped/checkpoint
+SHA-256 values. Rerun the complete configuration matrix and a clean tests-
+disabled Release install with installed fixed and selected dynamic-three-level
+restart smoke. These gates do not qualify selected multipatch or MPI EB AMR
+persistence, payload authentication, crash-atomic/scalable I/O, detailed-fuel
+physics, or external PeleC parity.
+
+## 0.236.0 selected dynamic multipatch EB AMR 2D restart gates
+
+Rerun the frozen fixed patch-set restart chain and require its schema-3
+checkpoint SHA-256 to remain
+`3ce931f5dcd017de4864789f53b57a47e40fe82cc5fa6c87e9292ff7efe1022c`.
+At the API level, require a selected patch-set call to write and read schema 4,
+retain the complete selected context and original composite-integral baseline,
+and reject schema 3. Require the fixed reader to reject selected schema 4.
+
+Change composition, corrupt the baseline or terminal marker, append trailing
+content, and reject an invalid baseline write without replacing an existing
+checkpoint. Every read failure must leave the child-patch list, arrays, clock,
+counters, diagnostics, and baseline in their documented empty/default states.
+Pass an invalid selected integrator directly to the patch-set advance and
+require rejection at the first root chemistry half-step, proving the policy is
+not dropped before any child advance.
+
+Run fixed and selected full-H2/O2 uninterrupted references, a selected first-
+step checkpoint-stop, independent selected restart, and a changed-composition
+restart on a 14-by-14 root with two disjoint 10-by-10 children. Require three
+final coarse steps, one checkpointed step, one completed regrid, exact fixed/
+selected reference bytes, exact uninterrupted/restarted bytes on root and both
+children, identical cumulative conservation text, and no output from the
+mismatch process.
+
+The checker must validate schema 4, selected context, composite baseline,
+species order, complete committed patch set, clock/regrid metadata, every
+checkpoint field through end-of-stream, CSV topology and physicality, mass-
+fraction closure, chemistry activity, logs, and frozen reference/stopped/
+checkpoint SHA-256 values. Also require the selected front end to reject every
+derived child-output alias before mechanism loading. Rerun the complete
+configuration matrix and a clean tests-disabled Release install with installed
+fixed and selected multipatch restart smoke. These gates do not qualify
+selected MPI EB AMR persistence, payload authentication, crash-atomic/scalable
+I/O, detailed-fuel physics, or external PeleC parity.
+
+## 0.237.0 selected sparse MPI AMR 1D restart gates
+
+Rerun the frozen fixed patch-tree regression and require its schema-1
+checkpoint SHA-256 to remain
+`1337b54d2761f2e3a2d25e264e9d6d073d1934756b206da16634d3140d933ed6`.
+At the API level, require selected schema 2 to round-trip its complete context
+and original composite baseline, reject schema 1, and leave caller state
+unchanged after mismatch, truncation, or trailing content. Require the fixed
+reader to reject schema 2 and an invalid selected write to preserve its target.
+
+Run the sparse chemistry policy unit on one, two, and four ranks. An explicit
+policy must be accepted; an invalid policy must fail collectively at the first
+chemistry half-step with exact solution rollback. Give different ranks
+different otherwise-valid compositions and require context consensus to abort
+before output.
+
+Run fixed one-rank and selected one-/two-/four-rank uninterrupted full-H2/O2
+references, a selected one-rank first-step checkpoint-stop, and independent
+two-/four-rank restarts. Require three active levels, four final coarse steps,
+exact fixed/selected and rank-count bytes, exact uninterrupted/restarted bytes,
+physicality, closure, active HO2/H2O2, and the frozen selected checkpoint and
+CSV hashes. Mutate bundle, integrator, composition, species order, and baseline
+independently. Also mutate density, raw species density, an EOS-tolerance-scale
+negative raw species density, species closure, temperature, and geometry.
+Require every restart to reject without input mutation or output. Reject
+input/output aliasing before mechanism loading.
+
+Rerun the complete configuration matrix and a clean tests-disabled Release
+install with installed fixed and selected changed-rank restart smoke. These
+gates do not qualify selected MPI EB AMR, payload authentication, crash-atomic
+or scalable I/O, detailed-fuel physics, or external PeleC parity.
+
+## 0.238.0 selected sparse MPI reactive EB patch-tree 2D gates
+
+Preserve the fixed schema-8 sparse MPI EB lifecycle while moving it into one
+shared fixed/selected driver. Under matched GNU Release flags, require the
+new fixed checkpoint and stopped CSV to remain byte-identical to the final
+`0.237.0` executable. Pin the Debug and Release checkpoint hashes separately
+because floating-point optimization changes trailing digits.
+
+Run a planar-EB sparse chemistry policy unit on one, two, and four ranks.
+Reject an invalid one-rank policy and otherwise-valid rank-dependent policies
+collectively before candidate mutation, then accept a uniform explicit policy.
+Give different ranks different normalized selected compositions and require
+the shared driver to abort before root initialization or output.
+
+Run the fixed full-H2/O2 one-rank reference and selected one-, two-, and four-
+rank processes on the same 12-by-12 dynamic case. Require levels 0 through 3,
+active chemistry on every level, an initialization regrid and post-step regrid
+evaluation, physical finite output, species closure, and byte-exact fixed/
+selected/rank-count CSV parity. Require the selected front end to reject fixed
+chemistry, input/output aliasing, checkpoint cadence/path, and restart path;
+require the fixed front end to reject selected chemistry. No rejected process
+may publish an output or checkpoint.
+
+Also build the selected MPI EB target from the independent two-species fixture
+bundle, run its generated explicit policy through the same four-level dynamic
+lifecycle, and validate the resulting topology, EB classes, finite state, and
+species closure independently of the full-H2/O2 exact-parity case.
+
+Rerun the complete configuration matrix and a clean tests-disabled Release
+install with installed selected one-/two-/four-rank smoke and ELF/MPI ABI
+audit. These gates qualify configure-time selected execution only. They do not
+qualify selected MPI EB persistence, fixed-depth MPI modes, runtime loading,
+scalable I/O, physical detailed-fuel validity, or external field parity.
+
+## 0.239.0 selected sparse MPI reactive EB patch-tree 2D restart gates
+
+Keep the frozen fixed schema-8 Debug and Release checkpoint hashes. At the
+serial checkpoint API, require schema-9 round trip with selected context and
+original composite baseline, fixed-to-selected and selected-to-fixed rejection,
+composition mismatch rejection, and invalid-baseline write non-replacement.
+
+Run fixed one-rank and selected one-/two-/four-rank uninterrupted full-H2/O2
+references. Stop a selected one-rank process after its first checkpoint and
+resume independently on two and four ranks. Require four active levels, two
+final root steps, exact fixed/selected/rank-count CSV bytes, exact
+uninterrupted/restarted bytes, restored operator and regrid histories, finite
+physical state, species closure, and frozen GNU Debug/Release schema-9,
+stopped, and final hashes.
+
+Mutate schema, species order, bundle, integrator, composition, numerical
+fingerprint, geometry, composite baseline, density, raw species, near-floor
+negative species, species closure, temperature, terminal marker, truncation,
+and trailing content independently. Every restart must fail before output and
+must leave its checkpoint bytes unchanged. Exercise all six lexical alias
+classes among input, output, checkpoint, and restart paths before mechanism
+loading. On two ranks, pass the selected fingerprint on only one rank at the
+read and write boundaries; both calls must reject collectively before root I/O
+or gather, transfer no entities, and publish no checkpoint.
+
+Rerun the complete configuration matrix and a clean tests-disabled Release
+install with the installed one-rank stop and two-/four-rank restart chain.
+These gates establish rank-neutral selected persistence, not payload
+authentication, crash-atomic/scalable I/O, schema migration, runtime loading,
+fixed-depth MPI modes, performance, detailed-fuel physics, or external parity.
+
+## 0.240.0 rank-local sparse static 3D AMR gates
+
+At one, two, four, and eight ranks, require the parent-aligned distribution to
+cover every coarse and fine x plane exactly. Check previous/next active fine
+neighbors directly, require four zero-fine-cell ranks in the eight-rank case,
+and prove that every multi-rank hierarchy stores fewer numerical values than
+the complete global hierarchy. Compare both periodic coarse ghost layers with
+the corresponding serial planes bit for bit.
+
+Advance the coarse periodic level and the complete static hierarchy with
+characteristic PLM. Require exact serial parity for conserved state,
+temperature, all three time-averaged face-flux families, reflux magnitude,
+and synchronized coarse/fine state. Repeat the public PCM and PLM entropy-wave
+cases at one, two, four, and eight ranks and compare both CSV files byte for
+byte with their serial references.
+
+Reject invalid and otherwise-valid rank-dependent reconstruction, NASA7, root,
+and patch/layout contracts before mutation or a variable-count collective.
+Every failure must keep the sparse hierarchy bit-identical and zero the reflux
+result. Write PCM and PLM checkpoints with two ranks, restart independently at
+four and eight ranks, and require byte-exact serial final files. The schema
+must contain neither communicator size nor ownership.
+
+Run GNU Debug and Release focused sets, the complete configuration matrix, and
+a tests-disabled installed MPI Release smoke. These gates qualify rank-local
+static periodic inviscid hydro and rank-neutral compatibility I/O. They do not
+qualify dynamic topology, AMR chemistry/transport, physical boundaries,
+CTU/PPM, 3D EB AMR, scalable I/O, performance scaling, or external PeleC
+field parity.
+
+## 0.241.0 fixed static 3D AMR chemistry gates
+
+At the serial API, advance an elementary uniform hierarchy through a source
+phase and require species activity, exact Euler invariance, H/O/N conservation,
+average-down synchronization, and rollback for invalid reaction, integrator,
+and middle-hydro stages. Compare chemistry-disabled Strang dispatch directly
+with the established hydro entry.
+
+At one, two, four, and eight MPI ranks, require bitwise serial parity for the
+source phase and the complete `R-H-R` split. Reject otherwise-valid
+rank-dependent reaction records and chemistry-enable flags without mutation.
+At eight ranks, corrupt coarse state only on a rank with no fine cells and
+require collective source rejection with exact local rollback.
+
+Run the full-H2/O2 hotspot and inert control through the public serial
+application. Validate exact schema and row topology, state relationships,
+physicality, closure, nonzero species and temperature response, Euler and
+H/O/N conservation. Repeat the reacting application at one, two, four, and
+eight ranks and compare both CSV levels byte for byte with serial. Run these
+gates in GNU Debug and Release, retain all prior hydro/restart hashes, and
+rerun the complete configuration matrix. These are structural, conservation,
+and deterministic parity gates, not ignition or external field validation.
+
+## 0.242.0 selected static 3D AMR gates
+
+Run the generated two-species fixture twice in serial and require exact coarse
+and fine bytes. Repeat it at one, two, and four MPI ranks, with the four-rank
+layout proving that ranks owning no fine planes remain active. Apply the
+generic output checker because H/O/N diagnostics are intentionally unavailable
+for this mechanism.
+
+Run generated full-H2/O2 through the selected serial frontend and at one, two,
+four, and eight MPI ranks. Require both levels to match the fixed `0.241.0`
+serial files byte for byte and require their frozen SHA-256 values. Retain the
+fixed characteristic-PLM checkpoint, coarse-output, and fine-output hash gates
+so a common fixed/selected regression cannot self-reference to green.
+
+At two and four ranks, mutate one otherwise-valid selected context field on one
+rank: SHA, integrator, composition, NASA7 coefficient, reaction equation,
+reaction rate, or transport record. Every rank must return rejection without
+abort or output. Public negative cases must reject selected transport,
+checkpoint, restart, and lexical path aliases before creating output, and the
+fixed frontend must reject selected input. Run focused Debug and Release gates,
+the complete eight-configuration matrix, and a tests-disabled installed MPI
+Release smoke. These gates do not qualify selected restart, AMR transport,
+physical validation, performance, or scaling.
+
+## 0.243.0 selected static 3D AMR restart gates
+
+1. Preserve the fixed schema-2 checkpoint and characteristic-PLM checkpoint,
+   coarse, and fine SHA-256 gates without routing fixed calls through schema 3.
+2. Require all selected context fields before opening a checkpoint and reject
+   fixed/selected cross-schema reads without changing caller state.
+3. Round-trip schema 3 exactly and reject changed bundle SHA, integrator,
+   normalized composition, reaction rate, or chemistry tolerance while state,
+   temperatures, clock, step, baseline, and reflux history remain unchanged.
+4. Reject malformed rank-local reaction efficiency shape collectively before
+   shape-dependent packing at two and four ranks. Require chemistry tolerances
+   to agree by representation before root I/O.
+5. Stop a full-H2/O2 selected serial run after its first step, restart it, and
+   compare both final CSV files byte-for-byte with an uninterrupted run.
+6. Write the same checkpoint on two MPI ranks and resume it independently on
+   one, two, four, and eight ranks. Require exact serial reference bytes and a
+   zero-fine-plane diagnostic at eight ranks.
+7. Require serial and MPI checkpoint byte identity and freeze schema-3,
+   coarse, and fine hashes as `f44f69...c423`, `a03884...0ff3`, and
+   `8d5a99...fcbe`.
+8. Preserve input bytes and forbid outputs when checkpoint/input paths alias.
+
+These gates prove deterministic rank-neutral continuation and provenance
+binding. They do not authenticate payloads or qualify crash-atomic/scalable
+I/O, AMR transport, dynamic topology, physical boundaries, performance,
+ignition, detailed fuels, or external PeleC field parity.
+
+## 0.244.0 static 3D AMR molecular-transport gates
+
+1. Compare the hierarchy parabolic step with independent coarse and fine
+   regular-grid limits and require `min(dt_c, r^2 dt_f)` exactly.
+2. Advance a nonuniform serial hierarchy with all transport processes and
+   require finite positive temperatures, species closure, average-down
+   synchronization, nonzero reflux, and composite conservation. Repeat with
+   viscosity, conduction, and species diffusion enabled individually and with
+   refinement ratio three.
+3. Force an extreme species gradient independently across x/y/z lower and
+   upper coarse/fine faces. Require an active interface theta below one,
+   nonnegative coarse and fine species, successful EOS recovery, and composite
+   conservation after the conservative fine-side flux correction.
+4. Reject negative, greater-than-one, and NaN external ghost-face theta values
+   with zero outputs and unchanged inputs. Reject barodiffusion without species
+   diffusion in configuration and numerical APIs.
+5. Compose active chemistry and transport through `R-T-H-T-R`; require a
+   synchronized physical result and exact rollback when the middle hydro stage
+   rejects its candidate.
+6. At one, two, four, and eight MPI ranks, compare transport timestep,
+   diffusivity, theta, reflux, conserved fields, and recovered temperatures
+   bit for bit with serial. Repeat the six active-interface cases; the
+   eight-rank case must include ranks with no fine planes.
+7. Reject a rank-local transport-record or transport-policy mismatch before
+   mutation or payload-dependent communication. Require identical rollback on
+   every rank.
+8. Run fixed and selected full-H2/O2 public cases in serial and at one, two,
+   four, and eight ranks. Check schema, physicality, species closure,
+   conservation, resolved transport activity, synchronization, and frozen
+   coarse/fine SHA-256 values.
+9. Require transport-enabled checkpoint or restart input to fail before any
+   output because schemas 2 and 3 do not persist the parabolic operator
+   contract. Retain all prior fixed and selected restart hashes.
+
+These gates qualify one periodic, static, strictly interior two-level
+hierarchy and deterministic rank-local arithmetic. They do not qualify
+dynamic topology, physical coarse boundaries, 3D EB AMR, scalable I/O,
+performance, detailed-fuel physics, ignition, or external PeleC field parity.
+
+## 0.245.0 static 3D AMR transport-checkpoint gates
+
+1. Write and read fixed transport checkpoints as exclusive schema 4 for the
+   public `full_h2o2` case with `chemistry_enabled=.false.` and
+   `transport_enabled=.true.`. Write and read selected transport checkpoints
+   as exclusive schema 5 with `thermo_model='selected'`,
+   `chemistry_enabled=.true.`, and `transport_enabled=.true.`.
+2. Require both schemas to bind the complete ordered gas-transport database,
+   parameter convention, operator identity, all transport controls, and
+   cumulative transport diagnostics. Require the phase to be
+   `POST_ACCEPTED_COARSE_STEP` after a committed `R-T-H-T-R` step.
+3. Validate private read candidates through the terminal marker and strict EOF
+   before publication. Mutate each transport record/control/diagnostic and
+   require rejection with caller state unchanged. Retain fixed schema-2 and
+   selected schema-3 transport-disabled compatibility and reject cross-schema
+   fallback.
+4. Require all MPI ranks, including ranks with no fine planes, to agree on
+   transport and selected context before payload communication or root I/O.
+   Require root read/write failure to be reported collectively and prevent any
+   rank from continuing.
+5. Write a serial and a two-rank root-formatted checkpoint, resume it at the
+   supported changed rank counts, and compare coarse/fine fields and restored
+   transport diagnostics exactly with the uninterrupted reference.
+6. The focused gates pass GNU Debug/Release serial `10/10` each and
+   GNU/OpenMPI Debug/Release MPI `23/23` each. Freeze the schema-4/schema-5
+   checkpoint and output hashes in
+   [`validation/0.245.0.md`](validation/0.245.0.md).
+
+These focused gates cover transport persistence for one static, strictly
+interior, periodic, two-level Cartesian hierarchy. No 0.245 full configuration
+matrix or clean installed Release result is claimed. Formatted replacement is
+not crash-atomic; payload authentication, scalable I/O, dynamic topology,
+physical boundaries, 3D EB AMR, performance, and external PeleC field parity
+remain outside this increment.

@@ -2,7 +2,7 @@ module amr_eb_transport_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_boundary_2d_mod, only: reactive_boundary_set_2d

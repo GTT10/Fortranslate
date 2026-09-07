@@ -1,0 +1,100 @@
+program pelef_mechanism_probe
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    @PELEF_BUNDLE_LOADER_NAME@, &
+    @PELEF_BUNDLE_KERNEL_NAME@, &
+    @PELEF_BUNDLE_JACOBIAN_NAME@, &
+    @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  integer, parameter :: nspecies = @PELEF_BUNDLE_NSPECIES_SYMBOL@
+  integer, parameter :: nreactions = @PELEF_BUNDLE_NREACTIONS_SYMBOL@
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  character(len=24) :: transport_names(nspecies)
+  integer :: transport_geometries(nspecies)
+  real(dp) :: transport_values(5, nspecies)
+  real(dp) :: mass_fractions(nspecies), production_rates(nspecies)
+  real(dp) :: jacobian(nspecies, nspecies)
+  real(dp) :: probe_temperature
+  logical :: ok
+  integer :: species_index
+
+  call @PELEF_BUNDLE_THERMO_LOADER_NAME@(species, ok)
+  if (.not. ok) then
+    error stop "Selected mechanism thermo loader failed"
+  end if
+  if (.not. allocated(species)) then
+    error stop "Selected mechanism thermo loader returned no species"
+  end if
+  if (size(species) /= nspecies) then
+    error stop "Selected mechanism thermo loader returned wrong size"
+  end if
+  probe_temperature = 0.5_dp * &
+    (maxval(species%temperature_min) + minval(species%temperature_max))
+  if (.not. ieee_is_finite(probe_temperature) .or. &
+      maxval(species%temperature_min) >= minval(species%temperature_max)) then
+    error stop "Selected mechanism has no common thermo interval"
+  end if
+  call @PELEF_BUNDLE_LOADER_NAME@(reactions, ok)
+  if (.not. ok) then
+    error stop "Selected mechanism reaction loader failed"
+  end if
+  if (.not. allocated(reactions)) then
+    error stop "Selected mechanism reaction loader returned no reactions"
+  end if
+  if (size(reactions) /= nreactions) then
+    error stop "Selected mechanism reaction loader returned wrong size"
+  end if
+  call @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) error stop "Selected mechanism transport loader failed"
+  do species_index = 1, nspecies
+    if (trim(transport_names(species_index)) /= trim(species(species_index)%name)) then
+      error stop "Selected mechanism transport order mismatch"
+    end if
+  end do
+  if (any(transport_geometries < 0) .or. any(transport_geometries > 2)) then
+    error stop "Selected mechanism transport geometry is invalid"
+  end if
+  if (any(transport_values(1:2, :) <= 0.0_dp) .or. &
+      any(transport_values(3:5, :) < 0.0_dp) .or. &
+      any(.not. ieee_is_finite(transport_values))) then
+    error stop "Selected mechanism transport values are invalid"
+  end if
+
+  mass_fractions = 1.0_dp / real(nspecies, dp)
+  call @PELEF_BUNDLE_KERNEL_NAME@( &
+    species, reactions, probe_temperature, 1.0_dp, mass_fractions, &
+    production_rates, ok)
+  if (.not. ok) then
+    error stop "Selected mechanism production-rate kernel failed"
+  end if
+  if (any(.not. ieee_is_finite(production_rates))) then
+    error stop "Selected mechanism production-rate kernel returned nonfinite values"
+  end if
+  call @PELEF_BUNDLE_JACOBIAN_NAME@( &
+    species, reactions, probe_temperature, 1.0_dp, mass_fractions, &
+    jacobian, ok)
+  if (.not. ok) then
+    error stop "Selected mechanism Jacobian kernel failed"
+  end if
+  if (any(.not. ieee_is_finite(jacobian))) then
+    error stop "Selected mechanism Jacobian kernel returned nonfinite values"
+  end if
+  if (@PELEF_BUNDLE_REQUIRE_ACTIVITY_LITERAL@ .and. &
+      (maxval(abs(production_rates)) <= 0.0_dp .or. &
+       maxval(abs(jacobian)) <= 0.0_dp)) then
+    error stop "Selected mechanism probe did not exercise kinetics"
+  end if
+
+  write(*, '(a,i0,a,i0,a)') &
+    "Selected mechanism bundle: PASS (", nspecies, " species, ", &
+    nreactions, " reactions)"
+end program pelef_mechanism_probe

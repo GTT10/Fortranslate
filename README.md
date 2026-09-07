@@ -2,14 +2,459 @@
 
 PeleF is an independent Modern Fortran reimplementation of selected numerical algorithms and capabilities from PeleC. It is not a mechanical C++ translation and is not an official Pele Suite project.
 
-Reference implementation: `Pele-Suite/PeleC:development`.
+Reference implementation: `Pele-Suite/PeleC:development` at
+`bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8`; recursive revisions are frozen in
+[`references/pelec_baseline.json`](references/pelec_baseline.json).
 
 ## Current capability
 
-The `0.200.0` milestone contains the serial verification suite, ten optional
-MPI executables, and runnable serial and sparse-MPI one-dimensional
+The `0.245.0` milestone contains the released `0.244.0` capability baseline
+and adds focused static-3D-AMR transport checkpoint persistence. The released
+`0.244.0` baseline contains seventeen default serial
+executables, ten
+serial configure-time selected-mechanism executables, eleven fixed optional
+MPI executables, four configure-time selected-mechanism MPI executables, and
+runnable serial and sparse-MPI one-dimensional
 reactive AMR applications with solution-driven dynamic regridding and
-molecular transport. The sparse MPI driver can write an intermediate
+molecular transport. It now includes a conservative uniform-grid `pelef3d`
+application with periodic x/y/z flux divergence, multidimensional CFL
+selection, transactional SSPRK2 stepping, and a smooth entropy-wave
+convergence and conservation gate. The new `pelef_reactive_3d` path applies
+the same conservative boundary to an elementary or full-H2O2 NASA7 mixture,
+recovers temperature transactionally at every SSPRK2 stage, and conserves all
+Euler and species components. It now optionally composes cell-local chemistry
+as `R(dt/2)-H(dt)-R(dt/2)` over one private 3D candidate, with exact rollback
+of state and temperature on any reaction or hydro rejection. The public
+periodic hotspot exercises both chemistry and hydrodynamic response while an
+independent checker enforces Euler and H/O/N elemental conservation. The same
+3D application now optionally adds periodic Newtonian viscosity, Fourier
+conduction, mixture-averaged species diffusion, barodiffusion, correction
+velocity, and species-enthalpy flux. It selects the minimum hydrodynamic and
+parabolic stable steps and publishes the complete `R-T-H-T-R` update only
+after every stage succeeds. A full-H2O2 transport/control pair checks the
+public configuration, transport database, conservation, physicality, and
+resolved thermal/species response. The regular 3D hydro path now also offers
+frozen-composition characteristic PLM in x, y, and z with MC or minmod
+limiting. Its diagonal smooth-wave gate observes orders `2.02` and `2.46`.
+The new `pelef_amr_reactive_3d` path adds
+a static, strictly interior, ratio-two fine patch with coarse-step SSPRK2
+fluxes, two fine substeps, time-interpolated coarse boundary states, six-face
+reflux, and conservative average-down. Its full-H2O2 public entropy wave
+checks composite conservation and coarse/fine synchronization. With transport
+disabled, the hierarchy writes and transactionally reads a versioned,
+self-describing checkpoint
+containing both levels, recovered temperatures, time/step history,
+conservation baseline, reflux history, mesh/solver settings, and the complete
+NASA7 species fingerprint. A stop/restart public case is byte-identical to an
+uninterrupted run at both levels. The MPI 3D AMR application now stores only
+each rank's coarse x slab and the fine x planes whose parents it owns. Two
+periodic coarse ghost planes and active-rank fine halos support both PCM and
+characteristic PLM without materializing either global level during a step.
+Ranks with no fine cells remain valid participants. Reflux, average-down,
+temperature recovery, and candidate publication remain owner-local and
+collectively transactional. Its PCM and PLM 1/2/4/8-rank outputs are
+byte-identical to the serial results. A two-rank root checkpoint can be
+resumed on four or eight ranks with the same exact final fields; root gather
+is retained only as rank-neutral compatibility I/O. Fine-patch faces use two
+coarse ghost layers filled by time interpolation and limited spatial
+prolongation; reflux still consumes the SSPRK2 time-averaged high-order face
+fluxes. On the public entropy wave, fine-grid density L1 decreases from
+`1.2481e-3` for PCM to `4.3313e-4` for PLM, while composite conservation
+remains below `1e-15`.
+The static two-level 3D AMR path now also supports fixed elementary or
+full-H2/O2 cell-local chemistry in serial and rank-local sparse MPI runs.
+Each step is a hierarchy-wide transactional `R(dt/2)-H(dt)-R(dt/2)` update;
+both chemistry phases average down the fine state and recover covered coarse
+temperatures before publication. Serial and one-, two-, four-, and eight-rank
+hotspot outputs are byte-identical, including ranks that own no fine cells.
+The application gates the five Euler integrals and H/O/N totals separately
+from reacting species activity. Chemistry-enabled schema-2 checkpoint/restart
+is rejected because that schema does not persist reaction or integrator
+context.
+The static two-level 3D AMR path now also dispatches configure-time selected
+mechanisms in serial and rank-local sparse MPI execution. A shared lifecycle
+driver accepts the generated NASA7, ordered reaction, transport-provenance,
+composition, bundle-SHA, and integrator context. Before root state
+initialization, MPI ranks compare that complete context bit-for-bit. The
+two-species fixture remains exact at one, two, and four ranks, including ranks
+with no fine cells; the full-H2/O2 selected path is byte-identical to both the
+fixed executable and one-/two-/four-/eight-rank MPI output. Selected
+checkpoint/restart now uses an exclusive schema 3 that binds the bundle SHA,
+generated integrator, bundle-order composition, complete ordered reactions,
+chemistry tolerances, NASA7 records, numerical fingerprint, baseline, and both
+levels before transactional publication. The root-formatted file contains no
+rank count or ownership map, so a two-rank full-H2/O2 checkpoint resumes
+exactly on one, two, four, and eight ranks. The same fixed and selected static
+hierarchy now accepts mixture molecular transport in serial and sparse MPI
+execution. Each transport half-step is SSPRK2, advances the fine patch with
+`r^2` subcycles per Euler stage, accumulates all six time- and area-averaged
+interface fluxes, refluxes, and averages down before publication. A common
+coarse/fine interface limiter protects uncovered coarse-cell species budgets
+and applies the equal-and-opposite correction to fine boundary cells. The
+full hierarchy composes chemistry, transport, hydro, transport, and chemistry
+as one transaction. Fixed/selected serial and one-/two-/four-/eight-rank MPI
+transport outputs are byte-identical within each build type; transport
+checkpoint/restart was explicitly rejected in the released `0.244.0` path
+because neither checkpoint schema recorded its operator contract.
+
+The current `0.245.0` increment adds exclusive schema 4 for the fixed public
+`full_h2o2` case (`chemistry_enabled=.false.`, `transport_enabled=.true.`) and
+schema 5 for selected chemistry (`thermo_model='selected'`,
+`chemistry_enabled=.true.`, `transport_enabled=.true.`). Both schemas bind the
+complete ordered gas-transport database, transport controls, cumulative
+transport diagnostics, operator identity, and `POST_ACCEPTED_COARSE_STEP`
+phase. Reads validate private candidates through strict end-of-stream and
+publish only transactionally; root-formatted serial/MPI checkpoints remain
+rank-neutral, so exact changed-rank continuation is covered while the old
+schema 2/3 transport-disabled compatibility contracts remain isolated. Focused
+0.245 validation records serial GNU Debug/Release `10/10` each and GNU/OpenMPI Debug/
+Release MPI `23/23` each; no full matrix or clean-install result is claimed.
+See [`docs/validation/0.245.0.md`](docs/validation/0.245.0.md).
+
+The final `0.244.0` matrix passes `4432/4432` tests across eight build
+configurations. An isolated tests-disabled Release install audits `42/42`
+executables and repeats fixed/selected serial/MPI transport and retained
+transport-disabled restart parity using only installed programs.
+The first 3D embedded-boundary increment now constructs exact x-, y-, or
+z-normal planar cut-cell metrics, validates the discrete aperture/normal
+identity, evaluates general-EOS slip-wall pressure fluxes, and advances a
+transactional PCM Euler candidate with zero-gradient outer faces. Uniform
+tangential flow is invariant under all three Riemann solvers and a nonuniform
+case conserves every fluid-volume-weighted component to `2.78e-17`. A new
+six-face conservative FluxRedist stage now blends every cut-cell right-hand
+side with its open-face neighborhood and returns the excess with exact
+fluid-volume weighting. For a volume fraction `0.05`, a CFL-0.5 full-grid
+step that makes the raw cut density negative instead completes with density
+`0.8725725`. The same planar kernel now also provides zeroth-order weighted
+StateRedist on the provisional conserved state. Its normal-directed
+neighborhood reaches target volume `0.5`, preserves every
+fluid-volume-weighted component, and completes that control step with cut
+density `0.2078409091`. Both stabilized routes are transactional through
+NASA7 temperature recovery. The installed `pelef_reactive_eb_3d` application
+now selects either route, advances repeated full-grid CFL steps, and writes
+cell type, volume fraction, fluid centroid, primitive state, and all species
+fields to deterministic CSV. Its public two-step density-sheet cases conserve
+mass, energy, species, and tangential momentum to `2.13e-15`; wall-normal
+momentum is reported separately as physical wall exchange. Arbitrary or curved
+geometry, face-aligned interior cuts, higher-order StateRedist, AMR,
+and MPI EB remain open. The `0.215.0` increment optionally composes
+the existing three-dimensional cell-local elementary chemistry with this
+StateRedist workflow as a transactional `R(dt/2)-H(dt)-R(dt/2)` update.
+Chemistry is masked to active cells, preserves covered storage bit-for-bit, and
+recovers each active temperature from the conserved state. The paired inert
+output is byte-identical to the frozen 0.214 StateRedist output, while the
+reacting run changes active species and preserves mass, total energy,
+tangential momentum, and H/O/N totals to the reported roundoff gates. The
+`0.216.0` increment adds StateRedist-only planar molecular transport with
+Newtonian viscosity, Fourier conduction, mixture-averaged species diffusion,
+barodiffusion, correction velocity, and species enthalpy flux. It selects the
+minimum hydro/transport step and publishes the coupled `R-T-H-T-R` candidate
+only after every stage succeeds. Outer-domain and embedded-wall transport
+fluxes are zero, covered storage remains bitwise fixed, and independent
+control/transport/coupled outputs freeze roundoff conservation plus resolved
+transport and chemistry responses. The `0.217.0` increment adds a versioned,
+transactional checkpoint for this coupled planar path. It fingerprints the
+complete thermodynamic, reaction, transport, geometry, and numerical contract,
+preserves cumulative diagnostics, and requires byte-exact final CSV parity
+after a one-step stop/restart. The `0.218.0` increment adds deterministic,
+build-time ingestion of the pinned Cantera `h2o2.yaml` `ohmech` phase. The
+normalized bundle preserves NASA7 thermodynamics, ideal-gas Lennard-Jones
+transport, element compositions, all 29 source reaction indices, duplicate
+flags, named colliders, third-body efficiencies, and the Troe falloff record.
+The generated Fortran now supplies the existing full-H2/O2 thermo, kinetics,
+and transport runtime path, while CTest regenerates both JSON and Fortran and
+compares them byte-for-byte. The `0.219.0` increment adds an optional CMake
+selection boundary for any normalized bundle within that schema. It generates
+the declared Fortran module in the build tree, compiles it as a separate
+library, and builds an installable probe that executes its thermo, reaction,
+transport, production-rate, and Jacobian interfaces. An optional source YAML
+is checked against the bundle's SHA-256 and basename at configure and build
+time. This is build-time qualification, not runtime CFD dispatch. General wall
+or FluxRedist transport, general
+geometry, AMR, MPI chemistry/transport, scalable I/O, runtime YAML loading,
+CHEMKIN, and arbitrary detailed mechanisms remain open.
+The `0.220.0` increment added the installed `pelef0d_selected` application to
+that configure-time boundary. It maps initial mole fractions by exact bundle
+species name, loads the generated NASA7 and reaction tables, rejects invalid
+or mass-unbalanced inputs before creating output, and advances the existing
+adaptive implicit constant-volume reactor. A two-species fixture is
+conservative and byte-deterministic, and the selected pinned H2/O2 trajectory
+is byte-identical to the fixed full-H2/O2 application. The selected build
+requires a complete schema-1 NASA7/transport bundle; legacy kinetics-only JSON
+remains generator-only. The adaptive minimum permits only an unreduced shorter
+fragment needed to land on a scheduled final time. CSV `wdot_*` values are in
+`kmol/(m^3 s)`. This is a serial 0D application for normalized bundles of
+2--32 species, not runtime mechanism loading, CFD application dispatch, or
+physical validation of an arbitrary mechanism.
+The `0.221.0` increment adds an optional SUNDIALS `7.2.0` CVODE BDF backend to
+that same selected application through the official Fortran interface. The
+native implicit backend remains the default and is SUNDIALS-independent.
+Configuration requires the official static targets and a double-precision
+SUNDIALS ABI; single- and extended-precision installations are rejected.
+CVODE advances a private reduced mass-fraction state, reconstructs the largest
+initial species as the closure species, recovers temperature from fixed
+specific internal energy, and uses the energy-constrained semi-analytic
+Jacobian with a dense linear solver. Failed advances do not modify caller
+state; that initial adapter permitted one serial, non-reentrant context per
+process. The two-species fixture is byte-deterministic, the short-final-step
+contract is retained, and the pinned 10-species/29-reaction H2/O2 trajectory
+passes conservation and Cantera 3.2.0 gates. This does not qualify selected
+chemistry in CFD, mechanisms above 32 species, detailed fuels, concurrent
+reactors, sparse solvers, or performance.
+The `0.222.0` increment replaces that singleton adapter with an opaque,
+generation-checked handle API. Up to 64 CVODE contexts may be live in one
+process and advanced in any sequentially interleaved order. A stable
+C-interoperable `(slot, generation)` token is passed through CVODE user data;
+the noninteroperable Fortran mechanism state and all SUNDIALS resources remain
+in a private registry. Failure quarantine, cumulative step budgets,
+statistics, and cleanup are context-local. Finalizing one context does not
+disturb another, copied stale handles cannot release a reused slot, and
+capacity exhaustion leaves the requested handle empty. The interleaved
+two-state gate is exactly identical to the corresponding standalone
+trajectories and solver statistics. This is serial multi-context support, not
+thread-safe or reentrant execution, performance qualification, CFD chemistry
+dispatch, or broader mechanism validation.
+The `0.223.0` increment brings the configure-time selected mechanism into an
+installed regular-grid `pelef_reactive_1d_selected` application. It maps an
+input composition by exact species name, constructs the mixture-transport
+database from the selected bundle, and advances the existing conservative
+reactive hydro, chemistry, and molecular-transport path without linking the
+committed fixed-H2/O2 generated module. A reactive two-species fixture checks
+activity, conservation, deterministic output, and invalid-name rejection.
+For the pinned ten-species/29-reaction H2/O2 bundle, the selected and fixed
+regular-1D CSV files are byte-identical. This is configure-time dispatch for
+one serial regular 1D application, not runtime mechanism loading, CVODE-backed
+CFD chemistry, 2D/3D/AMR/EB/MPI dispatch, thread-safety or performance
+qualification, detailed-fuel validation, or external PeleC field parity.
+The `0.224.0` increment extends that isolated mechanism boundary to the
+installed periodic `pelef_reactive_3d_selected` application. A shared generic
+3D application driver now receives already validated thermo, reaction,
+transport, and exact-name composition arrays from either the fixed or selected
+front end. A two-species 4-by-4-by-4 reactor proves active chemistry and
+repeat-run byte identity. A short full-H2/O2 characteristic-PLM hotspot proves
+active selected chemistry and is byte-identical to the fixed front end. The
+selected pinned full-H2/O2 transport hotspot separately exercises viscosity,
+conduction, mixture diffusion, barodiffusion, correction velocity, species
+enthalpy, and SSPRK2 hydro and is also byte-identical to the fixed 3D output.
+This remains serial, periodic, regular-grid, configure-time dispatch; selected
+2D/AMR/EB/MPI, runtime loading, CFD CVODE, detailed-fuel validation, thread
+safety, and performance remain open.
+The `0.225.0` increment adds the installed
+`pelef_reactive_2d_selected` application without copying the regular 2D time
+loop. Fixed and selected front ends supply validated model arrays and a
+bundle-order composition to one generic 2D application driver. The isolated
+selected 2D runtime supports the existing periodic and physical-boundary PCM,
+characteristic-PLM/PPM, CTU, native chemistry, and molecular-transport paths
+for 2--32 species. An independent two-species fixture proves active chemistry
+and repeat-byte identity. Matching full-H2/O2 uniform chemistry,
+characteristic-PLM hotspot chemistry, and prescribed-species-wall transport
+cases are byte-identical between fixed and selected executables. This closes
+serial single-level regular 2D configure-time dispatch, including its existing
+physical boundaries; selected AMR/EB/MPI, runtime loading, CFD CVODE,
+detailed-fuel validation, thread safety, and performance remain open.
+The `0.226.0` increment adds the installed
+`pelef_amr_reactive_1d_selected` application. Fixed and selected front ends
+now call one mechanism-independent AMR driver, while an isolated selected AMR
+runtime compiles the existing two-level, arbitrary-depth, and dynamic
+multipatch 1D hierarchy modules without either committed generated mechanism.
+The independently ordered two-species fixture proves active chemistry,
+molecular transport, regridding, and repeat-byte identity. Matching pinned
+full-H2/O2 cases are byte-identical for active two-level chemistry/transport,
+three-level characteristic PPM, and three-patch molecular transport. This is
+also the first selected-flow release to require each complete schema-1 bundle
+to declare `chemistry_integrator = "explicit"` or `"implicit"`. The generated
+constant is threaded through selected regular 1D/2D/3D and AMR 1D chemistry,
+so an arbitrary ten-species bundle is no longer classified by species count.
+Fixed front ends retain their established policy. A boundary-touching outflow
+case additionally exercises three levels, characteristic PPM, and hybrid
+WENO7-Z. This is
+serial 1D configure-time selected AMR dispatch without checkpoint/restart;
+selected EB/MPI, runtime loading, CFD CVODE, detailed-fuel validation, thread
+safety, and performance remain open.
+The `0.227.0` increment adds the installed
+`pelef_reactive_eb_2d_selected` application. Fixed and selected front ends
+load their own models and call one mechanism-independent single-level EB
+application driver. The isolated selected runtime composes the existing plane
+or circle geometry, PCM or characteristic-PLM hydro, native explicit or
+implicit chemistry, molecular transport, StateRedist, and embedded-wall
+controls for schema-1 bundles containing 2--32 species. An independently
+ordered two-species plane fixture proves active chemistry, transport, cut-cell
+masking, and repeat-byte identity. Pinned full-H2/O2 plane chemistry and
+isothermal moving no-slip circle-transport cases are byte-identical between
+fixed and selected executables. This closes only configure-time selected
+serial single-level 2D EB dispatch; selected EB AMR/3D, MPI, restart, runtime
+loading, CFD CVODE, detailed-fuel validation, thread safety, and performance
+remain open. All four outer-domain boundaries remain outflow-only in this EB
+application.
+The `0.228.0` increment adds the installed
+`pelef_mpi_reactive_1d_selected` verification application. Fixed and selected
+front ends load their own models and call one mechanism-independent MPI
+driver over the established 19-cell uneven periodic decomposition. A private
+selected MPI runtime contains the generic domain, hydro, native chemistry,
+and molecular-transport modules without linking `pelef_core` or either
+committed mechanism. The generated explicit/implicit policy reaches both
+distributed Strang half-steps. The two-species fixture is reactive and
+rank-invariant for 1/2/4 ranks; the pinned full-H2/O2 selected output is
+byte-identical across ranks and to the fixed MPI output. This is a bounded
+configure-time regular-1D MPI verification boundary, not selected MPI AMR/EB,
+general input-driven MPI flow, restart, runtime loading, CFD CVODE,
+detailed-fuel validation, thread safety, or performance qualification.
+The `0.229.0` increment adds the installed
+`pelef_reactive_eb_amr_2d_selected` application for the established static
+two-level serial EB hierarchy. Fixed and selected front ends share geometry,
+boundary construction, subcycled `R-T-H-T-R` advancement, reflux,
+average-down, deterministic coarse/fine CSV, and diagnostics. An independently
+ordered two-species fixture proves geometry, positivity, closure, and exact
+repeat output on both levels. The pinned full-H2/O2 selected run uses the
+bundle-declared implicit integrator, changes H2 on both levels, and is
+byte-identical to the fixed executable with chemistry, molecular transport,
+and an isothermal moving no-slip embedded wall. Dynamic, three-level,
+multipatch, checkpoint/restart, MPI EB AMR, runtime loading, CFD CVODE,
+detailed-fuel validation, thread safety, and performance remain open.
+The `0.230.0` increment adds the installed
+`pelef_reactive_eb_3d_selected` application for the established serial,
+single-level, exact planar 3D EB path. Fixed and selected front ends share
+geometry, CFL selection, `R-T-H-T-R` advancement, StateRedist, diagnostics,
+and dynamic-species CSV output. A reversed-order two-species fixture proves
+active chemistry and repeat-byte identity. A generated seven-species bundle
+using the fixed elementary kinetics, thermodynamics, and transport produces
+byte-identical fixed/selected Debug and Release CSV files, while the pinned
+full-H2/O2 bundle exercises implicit chemistry and all transport processes.
+Chemistry-enabled species outside the qualified H/O/N/Ar set remain rejected
+before output.
+The `0.231.0` increment qualifies selected checkpoint/stop/restart for that
+same serial planar EB 3D path. Fixed calls retain byte-identical schema-1
+checkpoints. Selected calls use schema 2 and persist the configure-time bundle
+SHA-256, generated explicit/implicit integrator policy, and normalized
+bundle-order composition before the existing complete model, geometry, state,
+and diagnostic records. Fixed and selected readers reject the other schema;
+selected bundle, policy, or composition mismatch fails transactionally. A
+separate-process selected elementary case stops after step one and resumes to
+the exact uninterrupted 1152-row CSV. AMR/MPI EB 3D, general geometry,
+runtime loading, arbitrary-element diagnostics, payload tamper evidence,
+detailed-fuel validation, thread safety, and performance remain open.
+The `0.232.0` increment qualifies checkpoint/stop/restart for the selected
+serial static two-level reactive EB AMR 2D path. Fixed calls retain their
+byte-identical schema-3 stream. Selected calls use exclusive schema 4 and
+place the configure-time bundle SHA-256, generated integrator policy, species
+count, and normalized bundle-order composition ahead of the unchanged
+two-level configuration, patch, coarse/fine state, and terminal records.
+Cross-schema reads and changed SHA, policy, or composition fail before any
+restart target is published. A full-H2/O2 selected process stops after coarse
+step one and resumes to the exact uninterrupted coarse and fine CSV files;
+the uninterrupted selected files are also byte-identical to the fixed path.
+Checkpoint/restart remains limited to static exactly-two-level selected EB
+AMR: dynamic, three-level, multipatch, MPI EB AMR, runtime loading, scalable
+I/O, payload tamper evidence, detailed-fuel validation, thread safety, and
+performance remain open.
+The `0.233.0` increment extends that selected persistence boundary to serial,
+dynamic, exactly-two-level reactive EB AMR 2D with one fine patch. Fixed calls
+retain byte-identical schema 3, static selected calls retain byte-identical
+schema 4, and dynamic selected calls use exclusive schema 5. Schema 5 binds
+the same configure-time bundle context and stores the initial composite
+integrals needed to retain cumulative conservation diagnostics, while the
+established body records the dynamic policy, actual refined patch, regrid
+count, clock, and coarse/fine fields. The qualified full-H2/O2 hierarchy moves
+its fine patch
+from coarse bounds `(2:5,2:5)` to `(5:12,4:12)` before the first-step
+checkpoint, then resumes in a separate process to byte-exact uninterrupted
+coarse and fine CSV files that also match the fixed reference. Static/dynamic
+cross-schema reads fail transactionally, and the uninterrupted/restarted
+maximum composite conservation error is exact. Three-level, multipatch, dynamic
+At that milestone, three-level, multipatch, dynamic-parent regridding, MPI EB
+AMR, runtime loading, scalable or crash-atomic I/O, payload authentication,
+detailed-fuel validation, thread safety, and performance remained open.
+The `0.234.0` increment extends selected persistence to the established serial,
+static, exactly-three-level reactive EB AMR 2D hierarchy with one patch per
+level. Fixed static three-level checkpoints remain byte-identical schema 3;
+selected static calls use schema 4 under the same checkpoint magic and add the
+complete configure-time bundle context plus the original composite-integral
+baseline. Restart validates all three private state/temperature candidates and
+the terminal marker before publishing any caller target. A pinned full-H2/O2
+process stops after coarse step one at `6.2673103087327447e-9 s` and resumes to
+the exact uninterrupted root, middle, and finest CSV bytes at `1.0e-8 s`;
+those selected reference files also equal the fixed reference at every level,
+and the cumulative conservation diagnostic is textually identical. Selected
+dynamic three-level, multipatch, dynamic-parent, MPI EB AMR, runtime loading,
+scalable or crash-atomic I/O, payload authentication, detailed-fuel
+validation, thread safety, and performance remain open.
+The `0.235.0` increment extends selected persistence to the established serial,
+dynamic, exactly-three-level reactive EB AMR 2D hierarchy with one patch per
+level, including the dynamic-parent lifecycle. Fixed dynamic three-level
+checkpoints remain byte-identical schema 4; selected dynamic calls use schema 5
+under the same dynamic magic and prepend the complete configure-time bundle
+context plus the original composite-integral baseline to the established body.
+The qualified full-H2/O2 process moves the middle patch from `(2:11,2:11)` to
+`(5:10,3:10)` and the finest patch from `(6:9,6:9)` to `(3:10,3:14)` before
+its first-step checkpoint, then resumes in another process to the exact
+uninterrupted root, middle, and finest CSV bytes at `1.0e-8 s`. Those selected
+files also equal the fixed reference at every level, and the cumulative
+conservation diagnostic is textually identical. Selected multipatch and MPI
+EB AMR persistence, runtime loading, scalable or crash-atomic I/O, payload
+authentication, detailed-fuel validation, thread safety, and performance
+remain open.
+The `0.236.0` increment extends selected persistence to the established serial,
+dynamic two-level multipatch reactive EB AMR 2D lifecycle. The fixed patch-set
+checkpoint remains byte-identical schema 3; selected calls use schema 4 under
+the same magic and prepend the configure-time bundle context plus the original
+composite-integral baseline. The qualified full-H2/O2 process commits two
+separated 10-by-10 child patches over a 14-by-14 root, stops after coarse step
+one at `4.5125253966820509e-9 s`, and resumes in another process to step three
+at `1.0e-8 s`. Fixed/selected reference and uninterrupted/restarted root and
+both child CSV files are byte-exact, including the cumulative conservation
+diagnostic. Selected MPI AMR/EB persistence, runtime loading, scalable or
+crash-atomic I/O, payload authentication, detailed-fuel validation, thread
+safety, and performance remain open.
+The `0.237.0` increment adds the installed
+`pelef_mpi_amr_reactive_1d_selected` application and context-bound,
+rank-neutral restart to the existing sparse MPI AMR 1D patch tree. Fixed
+schema 1 remains byte-identical; selected schema 2 records the generated
+bundle SHA-256, integrator, bundle-order composition, and original composite
+baseline while excluding communicator size and owner assignments. A pinned
+full-H2/O2 process stops on one rank and resumes on two and four ranks to the
+exact uninterrupted selected and fixed-reference CSV bytes. Bundle,
+integrator, composition, species-order, baseline, rank-consensus, and path-
+alias failures publish no output. Density, raw and near-floor species,
+closure, temperature, and geometry corruptions are also rejected before
+restart publication. Selected MPI EB AMR, runtime loading,
+scalable or crash-atomic I/O, payload authentication, detailed-fuel
+validation, thread safety, and performance remain open.
+The `0.238.0` increment adds the installed
+`pelef_mpi_reactive_eb_patch_tree_2d_selected` application on the existing
+owner-local sparse MPI reactive EB patch-tree lifecycle. Fixed and selected
+front ends now share one mechanism-independent driver. The generated bundle-
+order composition initializes the root and boundary states, while the
+generated explicit/implicit policy reaches both chemistry half-steps on every
+active level. A four-level dynamically regridded full-H2/O2 case produces
+byte-identical fixed one-rank and selected one-, two-, and four-rank composite
+CSV output. Complete selected context is rank-consensus checked before field
+initialization. Selected checkpoint/restart remains intentionally rejected,
+including checkpoint schedules, while the fixed schema-8 Release checkpoint
+and stopped CSV remain byte-identical to `0.237.0`. An independent two-species
+fixture target also executes the generated explicit policy and validates its
+four-level sparse EB output.
+The `0.239.0` increment admits selected checkpoint/stop/restart on that shared
+sparse MPI EB lifecycle through exclusive schema 9 while preserving fixed
+schema 8 byte-for-byte. Schema 9 binds the generated bundle SHA-256,
+integrator, bundle-order composition, complete numerical fingerprint, original
+composite baseline, clock, operator counters, regrid history, rank-neutral
+topology, and all patch fields. A one-rank full-H2/O2 checkpoint resumes on
+two and four ranks to byte-identical uninterrupted fixed and selected output.
+Context, schema, fingerprint, geometry, baseline, density, raw or near-floor
+species, closure, temperature, terminal, truncation, trailing-content, and all
+six input/output/checkpoint/restart alias failures publish no output. The
+MPI adapter also rejects rank-dependent selected metadata presence
+collectively before root I/O or gather. The formatted root I/O is not
+crash-atomic, scalable, or payload-authenticated.
+The preceding
+`0.202.0` coordinate core
+also covers x/y/z directional flux consistency for ideal-gas,
+passive-multispecies, and reacting states. The `0.201.0` work makes the
+completion roadmap and upstream
+reference machine-readable, rejects an incompatible `mpi_f08` toolchain during
+configuration, keeps build/runtime/documented versions synchronized, and
+requires non-executable stacks for shipped ELF targets. The sparse MPI driver
+can write an intermediate
 patch-tree checkpoint and restart it with a different MPI rank count. The
 public sparse-MPI arbitrary-depth 2D EB application now qualifies that same
 process boundary: a two-rank run writes a four-level checkpoint using one
@@ -304,6 +749,207 @@ and StateRedist, and use an adiabatic slip/impermeable embedded-wall closure.
 - CTU-style transverse half-step corrections with positivity scaling;
 - one unsplit conservative update;
 - periodic isentropic-vortex analytical and convergence regressions.
+
+### `pelef3d`: three-dimensional periodic Euler solver
+
+- uniform periodic Cartesian mesh with x/y/z face fluxes;
+- Rusanov or qualified single-species PeleC-style Riemann fluxes;
+- summed directional spectral-radius CFL selection;
+- conservative PCM spatial divergence and transactional SSPRK2 stepping;
+- exact x/y/z reduction to the one-dimensional PCM solver;
+- periodic entropy-wave convergence, conservation, and deterministic CSV gate.
+
+This baseline 3D application is constant-`gamma` and single-level. Use
+`pelef_reactive_3d` for the qualified general-EOS chemistry and transport
+path. Molecular transport remains outside this constant-`gamma` baseline;
+AMR, restart, MPI decomposition, and EB geometry remain outside both 3D
+application boundaries.
+
+### `pelef_reactive_3d`: general-EOS multispecies 3D Euler solver
+
+- elementary seven-species or full ten-species H2/O2 NASA7 thermodynamics;
+- periodic x/y/z general-EOS Rusanov, HLLC, or PeleC-style fluxes;
+- summed directional CFL selection and transactional SSPRK2 temperature recovery;
+- selectable PCM or frozen-composition characteristic PLM with MC/minmod limiting;
+- conservation of mass, three momenta, energy, and every species density;
+- exact x/y/z reduction and diagonal entropy-wave convergence gates;
+- optional elementary/full-H2O2 cell-local chemistry;
+- optional viscosity, conduction, mixture-averaged species diffusion,
+  barodiffusion, correction velocity, and species-enthalpy transport;
+- minimum hydro/parabolic timestep selection and transactional
+  `R-T-H-T-R` composition;
+- deterministic x-fastest CSV with primitive, `Y_k`, and `rhoY_k` fields.
+
+The executable remains serial, periodic, uniform-grid, and single-level. Its
+hotspot cases are internal coupling and conservation regressions, not external
+ignition or transport validation.
+
+### Three-dimensional planar embedded-boundary kernel
+
+- exact cell volume fractions, normalized cell and open-face centroids,
+  Cartesian face apertures, EB area/centroid, and solid-to-fluid normal
+  integrals for one x-, y-, or z-normal plane;
+- validator-enforced cell classification, metric bounds, and cellwise
+  discrete aperture-divergence/EB-normal identity;
+- general-EOS impermeable slip-wall pressure flux and aperture-weighted
+  conservative divergence;
+- PCM Riemann faces with zero-gradient physical-domain exterior states;
+- transactional forward-Euler state and temperature publication, with
+  covered cells unchanged;
+- conservative FluxRedist through all open x/y/z neighbor faces, with exact
+  uniform-RHS preservation and fluid-volume-weighted component conservation;
+- a transactional redistributed Euler path that accepts a CFL-0.5 full-grid
+  step rejected by the raw volume-fraction-scaled update at `kappa=0.05`;
+- zeroth-order weighted StateRedist through the axis-normal regular receiver,
+  with target-volume weighting, uniform-state identity, component
+  conservation, and transactional EOS recovery;
+- one shared face/divergence residual builder feeding raw, FluxRedist, and
+  StateRedist Euler paths under identical PCM wall-flux arithmetic;
+- an active-cell full-grid CFL selector and installed
+  `pelef_reactive_eb_3d` multi-step application that requires stabilization;
+- optional masked elementary chemistry composed transactionally as
+  `R(dt/2)-H(dt)-R(dt/2)`, with exact covered-cell identity and H/O/N gates;
+- optional StateRedist molecular transport with an active-state diffusive
+  bound, aperture-weighted internal face fluxes, zero outer/embedded-wall
+  transport flux, a species-outflow limiter, transactional SSPRK2 stages, and
+  full `R-T-H-T-R` composition;
+- versioned single-level checkpoint/restart with complete thermo, reaction,
+  transport, geometry, state, and cumulative-diagnostic records plus
+  transactional incompatible/truncated-input rollback;
+- x-fastest EB CSV with cell classification, volume fraction, physical fluid
+  centroid, primitive fields, and every species density;
+- exact stationary/tangential uniform-state invariance for x/y/z walls and
+  roundoff fluid-volume conservation for a nonuniform case.
+
+The fluid occupies the coordinate-positive side of one non-grid-aligned
+plane. An interior plane exactly on a Cartesian face is rejected because this
+first data model requires a positive-volume cut cell to own the EB metric.
+Curved/oblique geometry, higher-order face reconstruction or StateRedist,
+general wall or FluxRedist transport, AMR/reflux, MPI ownership, and a
+public 3D EB parallel application remain later increments. Its optional
+chemistry is limited to
+active cells in the frozen elementary H2/O2/N2 density-sheet problem. The
+current public executable is serial, single-level, PCM, forward-Euler hydro,
+and exact-axis-plane only. Optional transport is SSPRK2 and StateRedist-only.
+It selects the step before the first reaction stage from the minimum hydro and
+transport bounds; no general reaction-aware stability guarantee is claimed.
+
+Run both stabilization variants and the independent output audit with:
+
+```bash
+./build/release/pelef_reactive_eb_3d cases/reactive_eb_3d/density_sheet_state.nml
+./build/release/pelef_reactive_eb_3d cases/reactive_eb_3d/density_sheet_flux.nml
+python3 tools/check_reactive_eb_3d.py \
+  --state reactive_eb_3d_state.csv --flux reactive_eb_3d_flux.csv
+
+python3 tools/run_and_capture.py \
+  --output reactive_eb_3d_chemistry_inert.log -- \
+  ./build/release/pelef_reactive_eb_3d cases/reactive_eb_3d/chemistry_inert.nml
+python3 tools/run_and_capture.py \
+  --output reactive_eb_3d_chemistry_reactive.log -- \
+  ./build/release/pelef_reactive_eb_3d cases/reactive_eb_3d/chemistry_reactive.nml
+python3 tools/check_reactive_eb_chemistry_3d.py \
+  --baseline reactive_eb_3d_state.csv \
+  --inert reactive_eb_3d_chemistry_inert.csv \
+  --reactive reactive_eb_3d_chemistry_reactive.csv \
+  --inert-log reactive_eb_3d_chemistry_inert.log \
+  --reactive-log reactive_eb_3d_chemistry_reactive.log
+
+python3 tools/run_and_capture.py --output control.log -- \
+  ./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d/transport_control.nml
+python3 tools/run_and_capture.py --output transport.log -- \
+  ./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d/transport_only.nml
+python3 tools/run_and_capture.py --output coupled.log -- \
+  ./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d/transport_chemistry.nml
+python3 tools/check_reactive_eb_transport_3d.py \
+  --control reactive_eb_3d_transport_control.csv \
+  --transport reactive_eb_3d_transport_only.csv \
+  --coupled reactive_eb_3d_transport_chemistry.csv \
+  --control-log control.log --transport-log transport.log \
+  --coupled-log coupled.log
+
+./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d_restart/reference.nml
+./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d_restart/checkpoint_stop.nml
+./build/release/pelef_reactive_eb_3d \
+  cases/reactive_eb_3d_restart/restart.nml
+ctest --test-dir build/release --output-on-failure \
+  -R '^regression_reactive_eb_restart_3d_'
+```
+
+### `pelef_amr_reactive_3d`: static two-level reactive 3D AMR solver
+
+- one configurable, strictly interior Cartesian fine patch;
+- integer refinement ratio with `r` hydro and `r^2` transport fine subcycles;
+- linearly time-interpolated coarse states on all fine-patch boundaries;
+- SSPRK2 time-averaged coarse and fine x/y/z face fluxes;
+- selectable PCM or characteristic PLM on both levels, with limited linear
+  coarse-to-fine ghost interpolation for PLM;
+- area/time-averaged six-face reflux and conservative average-down;
+- optional viscosity, thermal conduction, mixture-averaged species diffusion,
+  barodiffusion (only with species diffusion), correction velocity, and
+  species-enthalpy transport;
+- transport-specific limited linear coarse-to-fine ghosts and a common
+  six-face interface limiter with a conservative fine-side flux correction;
+- transactional `R-T-H-T-R` composition when chemistry and transport are
+  enabled together;
+- composite all-component conservation and transactional whole-step rollback;
+- separate deterministic coarse/fine CSV output and an independent checker;
+- when transport is disabled, versioned two-level checkpoint/restart with
+  configuration and species
+  fingerprints, transactional incompatible/truncated-input rejection, and
+  exact uninterrupted/restarted output parity; schema 2 fingerprints the
+  reconstruction and limiter as well as the preceding solver metadata.
+- when transport is enabled, exclusive schema 4 (fixed public `full_h2o2`) or
+  schema 5 (selected chemistry) records the ordered gas-transport database,
+  controls, cumulative diagnostics, operator identity, and accepted-step
+  phase, with transactional read publication.
+
+This serial 3D AMR boundary is periodic, static, and single-patch.
+`pelef_mpi_amr_reactive_3d` distributes the same PCM or characteristic-PLM
+hierarchy over parent-aligned rank-local x slabs. Root-formatted compatibility
+I/O remains rank-neutral and supports transport-disabled schema 2/3 and
+transport-enabled schema 4/5 without storing rank ownership. Fixed
+elementary/full-H2/O2 chemistry and configure-time selected mechanisms are
+available through the same transactional hierarchy split, including molecular
+transport and exact changed-rank transport restart. Boundary-touching patches,
+regridding, crash-atomic replacement, scalable I/O, CTU/PPM, and EB remain
+separate workstream increments.
+
+### `pelef_mpi_amr_reactive_3d`: rank-local sparse 3D AMR verification
+
+- uneven coarse x slabs and parent-aligned fine ownership, including ranks
+  with zero fine cells;
+- rank-local conserved state and temperature storage throughout CFL, hydro,
+  subcycling, reflux, average-down, and temperature recovery;
+- two-plane periodic coarse halo propagation and active-neighbor fine halo
+  exchange for PCM or characteristic PLM with MC/minmod limiting;
+- time-interpolated, limited coarse-to-fine ghost construction and owner-only
+  six-face flux-register accumulation;
+- fixed elementary/full-H2/O2 `R(dt/2)-H(dt)-R(dt/2)` with source-phase
+  average-down, covered-coarse temperature recovery, and zero-fine-rank
+  collective participation;
+- owner-local SSPRK2 molecular transport with `r^2` fine subcycling,
+  time-averaged six-face reflux, common coarse/fine interface limiting, and
+  transactional `R-T-H-T-R` full-physics composition;
+- exact NASA7, ownership, patch, timestep, solver, reconstruction, and limiter
+  consensus before data-dependent collectives, extended to complete ordered
+  reaction and source-integrator context when chemistry is enabled;
+- root-only schema-2/schema-3 compatibility and schema-4/schema-5 transport
+  checkpoint gather/scatter, with no rank count or ownership stored in the
+  checkpoint;
+- serial/MPI byte parity at 1, 2, 4, and 8 ranks and two-to-four/eight-rank
+  restart parity for both PCM and characteristic PLM.
+
+This is a rank-local stepping and memory boundary for one static, periodic
+two-level hierarchy. Root-formatted checkpoint/output is deliberately not
+described as scalable I/O, and formatted replacement does not claim
+crash-atomic persistence. Dynamic topology, physical boundaries, CTU/PPM, 3D EB
+AMR, scalable output, and performance scaling remain open.
 
 ### `pelef_ms`: passive multispecies Euler solver
 
@@ -998,7 +1644,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 MPI verification additionally requires an MPI implementation with the Fortran
-2018 `mpi_f08` module:
+2008 `mpi_f08` module. The MPI wrapper must use the same Fortran compiler
+family as `CMAKE_Fortran_COMPILER`; configuration fails early when the module
+probe is incompatible:
 
 ```bash
 cmake -S . -B build-mpi \
@@ -1009,6 +1657,8 @@ mpiexec -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
 mpiexec -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d \
   cases/mpi_sparse_amr_hotspot/hotspot.nml sparse_amr_np4.csv
 mpiexec -n 4 ./build-mpi/pelef_mpi_eb_amr_patch_2d
+mpiexec -n 4 ./build-mpi/pelef_mpi_amr_reactive_3d \
+  cases/amr_reactive_3d/amr_entropy_wave.nml mpi_amr_3d_np4
 ```
 
 To enable the live Cantera reference gate:
@@ -1022,12 +1672,165 @@ cmake --build build-cantera --parallel
 ctest --test-dir build-cantera --output-on-failure
 ```
 
-With Ninja installed, the provided presets can be used for the ordinary suite:
+Regenerate the pinned full-H2/O2 bundle explicitly with:
+
+```bash
+python3 tools/ingest_cantera_mechanism.py \
+  --input mechanisms/h2o2_cantera.yaml --phase ohmech \
+  --output mechanisms/h2o2_full.json \
+  --module-name h2o2_full_mechanism_mod \
+  --loader-name load_h2o2_full_mechanism \
+  --kernel-name h2o2_full_production_rates \
+  --jacobian-name h2o2_full_mass_fraction_jacobian \
+  --thermo-loader-name load_h2o2_full_thermo_data \
+  --transport-loader-name load_h2o2_full_transport_data \
+  --symbol-prefix h2o2_full \
+  --chemistry-integrator implicit \
+  --description \
+    "Full 10-species, 29-reaction H2/O2 bundle ingested from pinned Cantera YAML"
+python3 tools/generate_elementary_mechanism.py \
+  --input mechanisms/h2o2_full.json \
+  --output src/generated/h2o2_full_mechanism_mod.F90
+```
+
+The importer publishes through a temporary sibling and atomic replacement;
+it never exposes a partially validated JSON file. This command is a build-time
+source update, not a runtime mechanism-selection interface.
+
+To compile and execute a selected normalized bundle without modifying the
+fixed application modules:
+
+```bash
+cmake -S . -B build-selected -DCMAKE_BUILD_TYPE=Release \
+  -DPELEF_ENABLE_TESTS=OFF \
+  -DPELEF_ENABLE_MPI=ON \
+  -DCMAKE_Fortran_COMPILER=/path/to/gfortran \
+  -DMPI_Fortran_COMPILER=/path/to/mpifort \
+  -DMPIEXEC_EXECUTABLE=/path/to/mpiexec \
+  -DPELEF_MECHANISM_BUNDLE="$PWD/mechanisms/h2o2_full.json" \
+  -DPELEF_MECHANISM_SOURCE="$PWD/mechanisms/h2o2_cantera.yaml"
+cmake --build build-selected \
+  --target pelef_mechanism_probe pelef0d_selected \
+    pelef_reactive_1d_selected pelef_amr_reactive_1d_selected \
+    pelef_reactive_2d_selected pelef_reactive_eb_2d_selected \
+    pelef_reactive_eb_amr_2d_selected pelef_reactive_3d_selected \
+    pelef_reactive_eb_3d_selected \
+    pelef_mpi_reactive_1d_selected \
+    pelef_mpi_amr_reactive_1d_selected --parallel
+./build-selected/pelef_mechanism_probe
+./build-selected/pelef0d_selected cases/selected_reactor/h2o2_full.nml
+./build-selected/pelef_reactive_1d_selected \
+  cases/selected_reactive_1d/h2o2_full.nml
+./build-selected/pelef_amr_reactive_1d_selected \
+  cases/selected_amr_reactive_1d/h2o2_full_two_level_selected.nml
+./build-selected/pelef_reactive_2d_selected \
+  cases/selected_reactive_2d/h2o2_full_chemistry_plm.nml
+./build-selected/pelef_reactive_eb_2d_selected \
+  cases/selected_reactive_eb_2d/h2o2_full_transport_selected.nml
+./build-selected/pelef_reactive_eb_amr_2d_selected \
+  cases/selected_reactive_eb_amr_2d/h2o2_full_selected.nml
+./build-selected/pelef_reactive_3d_selected \
+  cases/selected_reactive_3d/h2o2_full_transport.nml
+./build-selected/pelef_reactive_eb_3d_selected \
+  cases/selected_reactive_eb_3d/h2o2_full_transport_chemistry.nml
+/path/to/mpiexec -n 4 ./build-selected/pelef_mpi_reactive_1d_selected \
+  mpi_reactive_1d_selected_np4.csv
+/path/to/mpiexec -n 4 \
+  ./build-selected/pelef_mpi_amr_reactive_1d_selected \
+  cases/selected_mpi_sparse_amr_restart_1d/selected_reference.nml \
+  selected_sparse_mpi_amr_np4.csv
+```
+
+The MPI launcher, wrapper, and `CMAKE_Fortran_COMPILER` must belong to one
+toolchain. Remove foreign MPI include/library environment paths before
+configuration; otherwise the wrapper can compile against one `mpi_f08` module
+while the linker resolves `libmpi` from another implementation.
+
+The optional stiff backend requires the pinned SUNDIALS `7.2.0` installation
+to contain its official static Fortran-module libraries. C-only and
+shared-only installs, and single- or extended-precision ABIs, are rejected.
+After building that dependency with `BUILD_FORTRAN_MODULE_INTERFACE=ON`,
+double precision, and static libraries enabled, use:
+
+```bash
+cmake -S . -B build-selected-cvode -DCMAKE_BUILD_TYPE=Release \
+  -DPELEF_ENABLE_TESTS=OFF \
+  -DPELEF_ENABLE_SUNDIALS=ON \
+  -DCMAKE_PREFIX_PATH=/path/to/sundials-7.2.0-install \
+  -DPELEF_MECHANISM_BUNDLE="$PWD/mechanisms/h2o2_full.json" \
+  -DPELEF_MECHANISM_SOURCE="$PWD/mechanisms/h2o2_cantera.yaml"
+cmake --build build-selected-cvode --parallel
+./build-selected-cvode/pelef0d_selected \
+  cases/selected_reactor/h2o2_full_cvode.nml
+```
+
+The baseline SUNDIALS commit and all recursive upstream revisions are frozen
+in `references/pelec_baseline.json`. The CVODE build uses BDF with the serial
+vector and dense matrix/linear-solver modules; it does not use a C-only
+compatibility shim.
+
+`PELEF_MECHANISM_SOURCE` is optional, but when supplied its basename and
+SHA-256 must match the bundle provenance and a bundle selection is required.
+Every complete schema-1 selected bundle must declare `chemistry_integrator`
+as `explicit` or `implicit`; legacy kinetics-only generator inputs remain
+exempt because they cannot configure a selected application.
+The selected probe, `pelef0d_selected`, `pelef_reactive_1d_selected`,
+`pelef_amr_reactive_1d_selected`, `pelef_reactive_2d_selected`,
+`pelef_reactive_eb_2d_selected`, `pelef_reactive_eb_amr_2d_selected`, and
+`pelef_reactive_3d_selected` are installed in a configuration that sets
+`PELEF_MECHANISM_BUNDLE`.
+`pelef_mpi_reactive_1d_selected` and
+`pelef_mpi_amr_reactive_1d_selected`, and
+`pelef_mpi_reactive_eb_patch_tree_2d_selected` are additionally installed
+when `PELEF_ENABLE_MPI=ON`. The 0D reactor
+namelist gives
+`composition_count`, exact `composition_species` names, matching
+`composition_mole_fractions`, time-integration controls, temperature,
+pressure, and an output path. Bundle and source paths are CMake configure
+dependencies, so changing either input and rebuilding refreshes all configured
+applications and the source-hash expectation before regeneration.
+`integrator` defaults to `implicit`; `cvode` is accepted only in a SUNDIALS
+build. `maximum_steps` controls the native backend and
+`cvode_max_internal_steps` controls CVODE's cumulative internal steps across
+all requested output intervals. The selected regular-1D application reuses the
+ordinary `reactive_1d` namelists, requires `chemistry_model = "selected"`, and
+accepts the same exact-name composition arrays in `&reactive_1d`. The selected
+AMR-1D application uses the same selected composition contract, requires
+`amr_enabled = .true.`, and dispatches the established two-level, multilevel,
+and dynamic-multipatch serial AMR modes. Checkpoint/restart remains outside
+that selected front end. The selected
+regular-2D application reuses `&reactive_2d`, requires
+`chemistry_model = "selected"`, and supports the ordinary regular-grid 2D
+periodic and physical-boundary controls. The selected single-level EB-2D
+application additionally reuses `&embedded_boundary`, including plane/circle
+geometry and embedded thermal/velocity wall controls, and rejects selected
+AMR or checkpoint/restart use. It requires all four outer-domain boundaries
+to be `outflow`; this is not general physical-boundary support. The selected
+regular-3D application similarly reuses `&reactive_3d`, requires
+`thermo_model = "selected"`, and remains periodic and single-level.
+The selected regular-MPI-1D application deliberately accepts only an optional
+output filename. It reuses the fixed 19-cell periodic verification setup,
+bundle-order composition wave, native chemistry, molecular transport, and
+ordered gather. Only the exact ordered H2/H two-species and pinned full-H2/O2
+ten-species initialization profiles are admitted; it is not the general serial
+`reactive_1d` namelist interface.
+The selected sparse-MPI-AMR-1D application instead consumes the ordinary
+`&reactive_1d` namelist, requires selected chemistry, AMR, and patch-tree mode,
+and binds checkpoints to the bundle SHA-256, generated integrator, normalized
+bundle-order composition, and original composite-integral baseline. A
+checkpoint contains no MPI rank count or owner map, so a one-rank stop can be
+continued on two or four ranks with deterministic redistribution. Use the
+launcher selected by CMake/CTest when multiple MPI implementations are on
+`PATH`.
+
+With Ninja installed, presets cover ordinary, Cantera, and MPI builds:
 
 ```bash
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug
+cmake --preset debug-cantera
+cmake --preset mpi-release -DMPI_Fortran_COMPILER=/path/to/mpifort
 ```
 
 ## Representative runs
@@ -1044,6 +1847,15 @@ Two-dimensional periodic isentropic vortex:
 ```bash
 ./build/pelef2d cases/isentropic_vortex/vortex.nml
 python3 tools/check_isentropic_vortex.py --input isentropic_vortex.csv
+```
+
+Three-dimensional periodic entropy wave:
+
+```bash
+./build/pelef3d cases/entropy_wave_3d/entropy_wave.nml
+python3 tools/check_entropy_wave_3d.py \
+  --input entropy_wave_3d.csv --nx 16 --ny 16 --nz 16 \
+  --time 0.05 --maximum-l1 0.04
 ```
 
 Passive two-species Sod problem:
@@ -1294,6 +2106,7 @@ ctest --test-dir build --output-on-failure \
 
 ## Project records
 
+- [Completion roadmap](docs/completion_roadmap.md)
 - [Porting plan](docs/porting_plan.md)
 - [Architecture](docs/architecture.md)
 - [Numerical methods](docs/numerical_methods.md)

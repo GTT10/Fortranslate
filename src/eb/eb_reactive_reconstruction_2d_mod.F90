@@ -493,7 +493,7 @@ contains
           cycle
         end if
         offset = geometry%x_face_centroid_y(i, j)
-        if (offset == 0.0_dp) cycle
+        if (abs(offset) <= epsilon(offset)) cycle
         neighbor = j + merge(1, -1, offset > 0.0_dp)
         if (neighbor < 1 .or. neighbor > geometry%ny) cycle
         if (geometry%x_face_fraction(i, neighbor) <= 0.0_dp) cycle
@@ -510,7 +510,7 @@ contains
           cycle
         end if
         offset = geometry%y_face_centroid_x(i, j)
-        if (offset == 0.0_dp) cycle
+        if (abs(offset) <= epsilon(offset)) cycle
         neighbor = i + merge(1, -1, offset > 0.0_dp)
         if (neighbor < 1 .or. neighbor > geometry%nx) cycle
         if (geometry%y_face_fraction(neighbor, j) <= 0.0_dp) cycle

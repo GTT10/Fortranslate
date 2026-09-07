@@ -1,10 +1,11 @@
 module reactive_eb_amr_2d_driver_mod
+  use, intrinsic :: iso_fortran_env, only: iostat_end
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use state_indices_mod, only: irho
+  use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_2d_mod, only: &
@@ -73,16 +74,23 @@ module reactive_eb_amr_2d_driver_mod
   character(len=*), parameter :: reactive_eb_amr_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_amr_checkpoint_schema = 3
+  integer, parameter :: reactive_eb_amr_selected_checkpoint_schema = 4
+  integer, parameter :: reactive_eb_amr_selected_dynamic_checkpoint_schema = 5
+  integer, parameter :: reactive_eb_amr_bundle_sha256_length = 64
   character(len=*), parameter :: reactive_eb_patch_set_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_patch_set_checkpoint_schema = 3
+  integer, parameter :: reactive_eb_selected_patch_set_checkpoint_schema = 4
   character(len=*), parameter :: reactive_eb_three_level_checkpoint_magic = &
     "PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_three_level_checkpoint_schema = 3
+  integer, parameter :: reactive_eb_selected_three_level_checkpoint_schema = 4
   character(len=*), parameter :: &
     reactive_eb_dynamic_three_level_checkpoint_magic = &
       "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
   integer, parameter :: reactive_eb_dynamic_three_level_checkpoint_schema = 4
+  integer, parameter :: &
+    reactive_eb_selected_dynamic_three_level_checkpoint_schema = 5
 
   public :: compute_reactive_eb_amr_cfl_timestep_2d
   public :: compute_three_level_reactive_eb_cfl_timestep_2d
@@ -325,13 +333,14 @@ contains
 
   subroutine advance_reactive_eb_chemistry_level_2d( &
       species, reactions, geometry, interval, rtol, atol, state, &
-      temperature, ok)
+      temperature, ok, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_2d), intent(in) :: geometry
     real(dp), intent(in) :: interval, rtol, atol
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     logical, allocatable :: active_mask(:, :)
 
@@ -341,7 +350,7 @@ contains
     active_mask = geometry%cell_type /= eb_covered_cell
     call advance_reactive_chemistry_2d( &
       species, reactions, state, temperature, geometry%nx, geometry%ny, &
-      interval, rtol, atol, ok, active_mask)
+      interval, rtol, atol, ok, active_mask, chemistry_integrator)
   end subroutine advance_reactive_eb_chemistry_level_2d
 
   subroutine advance_two_level_reactive_eb_strang_2d( &
@@ -353,7 +362,7 @@ contains
       target_volume_fraction, transport, transport_enabled, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, boundaries)
+      minimum_transport_theta, boundaries, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -378,6 +387,7 @@ contains
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: candidate_coarse_state(:, :, :)
     real(dp), allocatable :: candidate_coarse_temperature(:, :)
@@ -430,11 +440,13 @@ contains
     if (chemistry_enabled) then
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_coarse_state, candidate_coarse_temperature, local_ok)
+        candidate_coarse_state, candidate_coarse_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, fine_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_fine_state, candidate_fine_temperature, local_ok)
+        candidate_fine_state, candidate_fine_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
     end if
 
@@ -498,11 +510,13 @@ contains
     if (chemistry_enabled) then
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_coarse_state, candidate_coarse_temperature, local_ok)
+        candidate_coarse_state, candidate_coarse_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, fine_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_fine_state, candidate_fine_temperature, local_ok)
+        candidate_fine_state, candidate_fine_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       allocate(synchronized_coarse_state, mold=coarse_state)
       allocate(synchronized_coarse_temperature, mold=coarse_temperature)
@@ -534,7 +548,8 @@ contains
       new_level_two_temperature, ok, target_volume_fraction, transport, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, boundaries, failure_context)
+      minimum_transport_theta, boundaries, failure_context, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: root_state(:, :, :), root_temperature(:, :)
@@ -567,6 +582,7 @@ contains
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
     character(len=*), intent(out), optional :: failure_context
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -633,17 +649,20 @@ contains
       if (present(failure_context)) failure_context = "first root chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
-        root_candidate, root_candidate_temperature, local_ok)
+        root_candidate, root_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "first middle chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
-        level_one_candidate, level_one_candidate_temperature, local_ok)
+        level_one_candidate, level_one_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "first finest chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
-        level_two_candidate, level_two_candidate_temperature, local_ok)
+        level_two_candidate, level_two_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
     end if
 
@@ -727,17 +746,20 @@ contains
       if (present(failure_context)) failure_context = "second root chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, root_geometry, 0.5_dp * dt, rtol, atol, &
-        root_candidate, root_candidate_temperature, local_ok)
+        root_candidate, root_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "second middle chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_one_geometry, 0.5_dp * dt, rtol, atol, &
-        level_one_candidate, level_one_candidate_temperature, local_ok)
+        level_one_candidate, level_one_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "second finest chemistry"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, level_two_geometry, 0.5_dp * dt, rtol, atol, &
-        level_two_candidate, level_two_candidate_temperature, local_ok)
+        level_two_candidate, level_two_candidate_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       allocate(synchronized_root, mold=root_state)
       allocate(synchronized_root_temperature, mold=root_temperature)
@@ -777,7 +799,8 @@ contains
       new_coarse_temperature, new_patch_set, ok, target_volume_fraction, &
       failure_context, transport, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, minimum_transport_theta, boundaries)
+      barodiffusion_enabled, minimum_transport_theta, boundaries, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: coarse_state(:, :, :), coarse_temperature(:, :)
@@ -800,6 +823,7 @@ contains
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(reactive_eb_patch_set_2d) :: candidate_set, hydro_set, transport_set
     real(dp), allocatable :: candidate_coarse(:, :, :)
@@ -859,7 +883,8 @@ contains
         failure_context = "first coarse chemistry half-step"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_coarse, candidate_coarse_temperature, local_ok)
+        candidate_coarse, candidate_coarse_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       do child = 1, candidate_set%patch_count()
         if (present(failure_context)) &
@@ -867,7 +892,8 @@ contains
         call advance_reactive_eb_chemistry_level_2d( &
           species, reactions, candidate_set%children(child)%geometry, &
           0.5_dp * dt, rtol, atol, candidate_set%children(child)%state, &
-          candidate_set%children(child)%temperature, local_ok)
+          candidate_set%children(child)%temperature, local_ok, &
+          chemistry_integrator)
         if (.not. local_ok) return
       end do
     end if
@@ -926,7 +952,8 @@ contains
         failure_context = "second coarse chemistry half-step"
       call advance_reactive_eb_chemistry_level_2d( &
         species, reactions, coarse_geometry, 0.5_dp * dt, rtol, atol, &
-        candidate_coarse, candidate_coarse_temperature, local_ok)
+        candidate_coarse, candidate_coarse_temperature, local_ok, &
+        chemistry_integrator)
       if (.not. local_ok) return
       do child = 1, candidate_set%patch_count()
         if (present(failure_context)) &
@@ -934,7 +961,8 @@ contains
         call advance_reactive_eb_chemistry_level_2d( &
           species, reactions, candidate_set%children(child)%geometry, &
           0.5_dp * dt, rtol, atol, candidate_set%children(child)%state, &
-          candidate_set%children(child)%temperature, local_ok)
+          candidate_set%children(child)%temperature, local_ok, &
+          chemistry_integrator)
         if (.not. local_ok) return
       end do
       allocate(synchronized_coarse, mold=coarse_state)
@@ -1674,6 +1702,73 @@ contains
       max(tiny(1.0_dp), abs(actual), abs(expected))
   end function checkpoint_real_matches
 
+  logical function valid_reactive_eb_amr_selected_checkpoint_context( &
+      nspecies, bundle_sha256, chemistry_integrator, base_mole_fractions) &
+      result(valid)
+    integer, intent(in) :: nspecies
+    character(len=*), intent(in) :: bundle_sha256, chemistry_integrator
+    real(dp), intent(in) :: base_mole_fractions(:)
+
+    valid = valid_reactive_eb_amr_bundle_sha256(bundle_sha256) .and. &
+      valid_reactive_eb_amr_chemistry_integrator(chemistry_integrator) .and. &
+      valid_reactive_eb_amr_selected_composition( &
+        base_mole_fractions, nspecies)
+  end function valid_reactive_eb_amr_selected_checkpoint_context
+
+  logical function valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+      baseline_integrals, nvar) result(valid)
+    real(dp), intent(in) :: baseline_integrals(:)
+    integer, intent(in) :: nvar
+
+    valid = size(baseline_integrals) == nvar
+    if (.not. valid) return
+    valid = all(ieee_is_finite(baseline_integrals))
+    if (.not. valid) return
+    valid = baseline_integrals(irho) > 0.0_dp .and. &
+      baseline_integrals(iet) > 0.0_dp
+    if (.not. valid) return
+    if (nvar > iet) then
+      valid = all(baseline_integrals(iet + 1:) >= 0.0_dp)
+      if (.not. valid) return
+      valid = checkpoint_real_matches( &
+        sum(baseline_integrals(iet + 1:)), baseline_integrals(irho))
+    end if
+  end function valid_reactive_eb_amr_dynamic_checkpoint_baseline
+
+  logical function valid_reactive_eb_amr_bundle_sha256(value) result(valid)
+    character(len=*), intent(in) :: value
+
+    integer :: index
+
+    valid = len_trim(value) == reactive_eb_amr_bundle_sha256_length
+    if (.not. valid) return
+    do index = 1, reactive_eb_amr_bundle_sha256_length
+      if (scan("0123456789abcdef", value(index:index)) == 0) then
+        valid = .false.
+        return
+      end if
+    end do
+  end function valid_reactive_eb_amr_bundle_sha256
+
+  logical function valid_reactive_eb_amr_chemistry_integrator(value) &
+      result(valid)
+    character(len=*), intent(in) :: value
+
+    valid = trim(value) == "explicit" .or. trim(value) == "implicit"
+  end function valid_reactive_eb_amr_chemistry_integrator
+
+  logical function valid_reactive_eb_amr_selected_composition( &
+      values, nspecies) result(valid)
+    real(dp), intent(in) :: values(:)
+    integer, intent(in) :: nspecies
+
+    valid = nspecies > 0 .and. size(values) == nspecies
+    if (.not. valid) return
+    valid = all(ieee_is_finite(values)) .and. all(values >= 0.0_dp)
+    if (.not. valid) return
+    valid = checkpoint_real_matches(sum(values), 1.0_dp)
+  end function valid_reactive_eb_amr_selected_composition
+
   subroutine write_reactive_eb_wall_checkpoint_2d(unit, config, status)
     integer, intent(in) :: unit
     type(reactive_eb_2d_config), intent(in) :: config
@@ -1792,7 +1887,9 @@ contains
   subroutine write_reactive_eb_amr_2d_checkpoint( &
       path, species, config, coarse_state, coarse_temperature, &
       coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
-      fine_active, time, steps, regrids, minimum_dt, base_density, ok)
+      fine_active, time, steps, regrids, minimum_dt, base_density, ok, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions, &
+      initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -1806,12 +1903,58 @@ contains
     real(dp), intent(in) :: time, minimum_dt, base_density
     integer, intent(in) :: steps, regrids
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), intent(in), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp) :: time_tolerance
-    integer :: unit, status, nvar, i, j, species_index
+    integer :: unit, status, nvar, i, j, species_index, schema
+    logical :: selected_context
 
     ok = .false.
+    if (present(failure_context)) failure_context = ""
     nvar = reactive_nvar(size(species))
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        return
+      end if
+      if (config%dynamic_regridding) then
+        schema = reactive_eb_amr_selected_dynamic_checkpoint_schema
+      else
+        schema = reactive_eb_amr_selected_checkpoint_schema
+      end if
+    else
+      schema = reactive_eb_amr_checkpoint_schema
+    end if
+    if ((schema == reactive_eb_amr_selected_dynamic_checkpoint_schema) &
+        .neqv. present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR 2D selected dynamic checkpoint baseline is missing"
+      return
+    end if
+    if (present(initial_integrals)) then
+      if (.not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+          initial_integrals, nvar)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected dynamic checkpoint baseline is invalid"
+        return
+      end if
+    end if
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
@@ -1850,13 +1993,36 @@ contains
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR 2D checkpoint for writing"
+      return
+    end if
     write(unit, '(a)', iostat=status) reactive_eb_amr_checkpoint_magic
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
-      reactive_eb_amr_checkpoint_schema, size(species), nvar, &
-      merge(1, 0, fine_active)
+      schema, size(species), nvar, merge(1, 0, fine_active)
     if (status /= 0) go to 900
+    if (selected_context) then
+      write(unit, '(a)', iostat=status) "SELECTED_CONTEXT"
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(bundle_sha256)
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(chemistry_integrator)
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(base_mole_fractions)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
+      if (status /= 0) go to 900
+    end if
+    if (schema == reactive_eb_amr_selected_dynamic_checkpoint_schema) then
+      write(unit, '(a)', iostat=status) "DYNAMIC_BASELINE"
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(initial_integrals)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) initial_integrals
+      if (status /= 0) go to 900
+    end if
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
       if (status /= 0) go to 900
@@ -1953,12 +2119,16 @@ contains
 
 900 continue
     close(unit)
+    if (present(failure_context)) failure_context = &
+      "Failed while writing Reactive EB AMR 2D checkpoint"
   end subroutine write_reactive_eb_amr_2d_checkpoint
 
   subroutine read_reactive_eb_amr_2d_checkpoint( &
       path, species, config, coarse_state, coarse_temperature, &
       coarse_geometry, fine_state, fine_temperature, fine_geometry, patch, &
-      fine_active, time, steps, regrids, minimum_dt, base_density, ok)
+      fine_active, time, steps, regrids, minimum_dt, base_density, ok, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions, &
+      initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -1973,6 +2143,11 @@ contains
     real(dp), intent(out) :: time, minimum_dt, base_density
     integer, intent(out) :: steps, regrids
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), allocatable, intent(out), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     type(eb_geometry_2d) :: candidate_coarse_geometry
     type(eb_geometry_2d) :: candidate_fine_geometry
@@ -1981,9 +2156,15 @@ contains
     real(dp), allocatable :: candidate_coarse_temperature(:, :)
     real(dp), allocatable :: candidate_fine_state(:, :, :)
     real(dp), allocatable :: candidate_fine_temperature(:, :)
+    real(dp), allocatable :: stored_base_mole_fractions(:)
+    real(dp), allocatable :: candidate_initial_integrals(:)
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=1024) :: trailing_record
+    character(len=1024) :: stored_bundle_sha256
+    character(len=1024) :: stored_chemistry_integrator, context_marker
+    character(len=1024) :: baseline_marker
     character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
@@ -1994,7 +2175,9 @@ contains
     integer :: stored_coarse_nx, stored_coarse_ny
     integer :: stored_fine_nx, stored_fine_ny
     integer :: stored_steps, stored_regrids, i, j, species_index
-    logical :: local_ok
+    integer :: expected_schema, stored_composition_size
+    integer :: stored_baseline_size
+    logical :: local_ok, selected_context
 
     magic = ""
     stored_name = ""
@@ -2004,6 +2187,10 @@ contains
     stored_reconstruction = ""
     stored_limiter = ""
     stored_prolongation_method = ""
+    stored_bundle_sha256 = ""
+    stored_chemistry_integrator = ""
+    context_marker = ""
+    baseline_marker = ""
     end_marker = ""
     stored_domain = 0.0_dp
     stored_geometry_values = 0.0_dp
@@ -2027,6 +2214,7 @@ contains
     stored_fine_ny = 0
     stored_steps = 0
     stored_regrids = 0
+    stored_baseline_size = 0
     coarse_geometry = eb_geometry_2d()
     fine_geometry = eb_geometry_2d()
     patch = amr_eb_patch_2d()
@@ -2037,21 +2225,165 @@ contains
     steps = 0
     regrids = 0
     ok = .false.
+    if (present(failure_context)) failure_context = ""
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected restart context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected restart context is invalid"
+        return
+      end if
+      if (config%dynamic_regridding) then
+        expected_schema = reactive_eb_amr_selected_dynamic_checkpoint_schema
+      else
+        expected_schema = reactive_eb_amr_selected_checkpoint_schema
+      end if
+    else
+      expected_schema = reactive_eb_amr_checkpoint_schema
+    end if
+    if ((expected_schema == &
+         reactive_eb_amr_selected_dynamic_checkpoint_schema) .neqv. &
+        present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR 2D selected dynamic restart baseline target is missing"
+      return
+    end if
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
         config%multipatch_enabled .or. config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR 2D checkpoint"
+      return
+    end if
     read(unit, '(a)', iostat=status) magic
     if (status /= 0 .or. &
         trim(magic) /= reactive_eb_amr_checkpoint_magic) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, stored_fine_flag
-    if (status /= 0 .or. schema /= reactive_eb_amr_checkpoint_schema .or. &
-        stored_species /= size(species) .or. &
+    if (status /= 0) go to 900
+    if (schema /= expected_schema) then
+      if (present(failure_context)) then
+        if (selected_context) then
+          if (schema == reactive_eb_amr_checkpoint_schema) then
+            failure_context = &
+              "Reactive EB AMR 2D checkpoint lacks selected mechanism context"
+          else if (schema == reactive_eb_amr_selected_checkpoint_schema .and. &
+                   expected_schema == &
+                     reactive_eb_amr_selected_dynamic_checkpoint_schema) then
+            failure_context = &
+              "Reactive EB AMR 2D selected static checkpoint cannot restart dynamic hierarchy"
+          else if (schema == &
+                     reactive_eb_amr_selected_dynamic_checkpoint_schema .and. &
+                   expected_schema == &
+                     reactive_eb_amr_selected_checkpoint_schema) then
+            failure_context = &
+              "Reactive EB AMR 2D selected dynamic checkpoint cannot restart static hierarchy"
+          else
+            failure_context = &
+              "Reactive EB AMR 2D selected checkpoint schema is unsupported"
+          end if
+        else
+          failure_context = &
+            "Reactive EB AMR 2D checkpoint is not a fixed-runtime schema"
+        end if
+      end if
+      go to 900
+    end if
+    if (stored_species /= size(species) .or. &
         stored_nvar /= reactive_nvar(size(species)) .or. &
         (stored_fine_flag /= 0 .and. stored_fine_flag /= 1)) go to 900
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) context_marker
+      if (status /= 0 .or. trim(context_marker) /= "SELECTED_CONTEXT") then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) stored_bundle_sha256
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_bundle_sha256( &
+            stored_bundle_sha256)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (trim(stored_bundle_sha256) /= trim(bundle_sha256)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint bundle SHA-256 mismatch"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) stored_chemistry_integrator
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_chemistry_integrator( &
+            stored_chemistry_integrator)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (trim(stored_chemistry_integrator) /= &
+          trim(chemistry_integrator)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint chemistry integrator mismatch"
+        go to 900
+      end if
+      read(unit, *, iostat=status) stored_composition_size
+      if (status /= 0 .or. stored_composition_size /= size(species)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        go to 900
+      end if
+      allocate(stored_base_mole_fractions(stored_composition_size))
+      read(unit, *, iostat=status) stored_base_mole_fractions
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_selected_composition( &
+            stored_base_mole_fractions, size(species))) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (.not. all(checkpoint_real_matches( &
+          stored_base_mole_fractions, base_mole_fractions))) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected checkpoint composition mismatch"
+        go to 900
+      end if
+    end if
+    if (schema == reactive_eb_amr_selected_dynamic_checkpoint_schema) then
+      read(unit, '(a)', iostat=status) baseline_marker
+      if (status /= 0 .or. trim(baseline_marker) /= "DYNAMIC_BASELINE") then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected dynamic checkpoint baseline is invalid"
+        go to 900
+      end if
+      read(unit, *, iostat=status) stored_baseline_size
+      if (status /= 0 .or. stored_baseline_size /= stored_nvar) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected dynamic checkpoint baseline is invalid"
+        go to 900
+      end if
+      allocate(candidate_initial_integrals(stored_baseline_size))
+      read(unit, *, iostat=status) candidate_initial_integrals
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+            candidate_initial_integrals, stored_nvar)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected dynamic checkpoint baseline is invalid"
+        go to 900
+      end if
+    end if
     do species_index = 1, stored_species
       read(unit, '(a)', iostat=status) stored_name
       if (status /= 0 .or. &
@@ -2191,6 +2523,12 @@ contains
     end if
     read(unit, '(a)', iostat=status) end_marker
     if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    read(unit, '(a)', iostat=status) trailing_record
+    if (status /= iostat_end) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR 2D checkpoint has trailing content"
+      go to 900
+    end if
     close(unit, iostat=status)
     if (status /= 0) return
 
@@ -2209,17 +2547,24 @@ contains
     base_density = stored_base_density
     steps = stored_steps
     regrids = stored_regrids
+    if (present(initial_integrals)) &
+      call move_alloc(candidate_initial_integrals, initial_integrals)
     ok = .true.
     return
 
 900 continue
     close(unit)
+    if (present(failure_context)) then
+      if (len_trim(failure_context) == 0) failure_context = &
+        "Reactive EB AMR 2D checkpoint is invalid"
+    end if
   end subroutine read_reactive_eb_amr_2d_checkpoint
 
   subroutine write_reactive_eb_amr_patch_set_2d_checkpoint( &
       path, species, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, minimum_dt, &
-      base_density, ok)
+      base_density, ok, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2229,12 +2574,53 @@ contains
     real(dp), intent(in) :: time, minimum_dt, base_density
     integer, intent(in) :: steps, regrids
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), intent(in), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp) :: time_tolerance
-    integer :: unit, status, nvar, child, i, j, species_index
+    integer :: unit, status, nvar, child, i, j, species_index, schema
+    logical :: selected_context
 
     ok = .false.
+    if (present(failure_context)) failure_context = ""
     nvar = reactive_nvar(size(species))
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint context is invalid"
+        return
+      end if
+      schema = reactive_eb_selected_patch_set_checkpoint_schema
+    else
+      schema = reactive_eb_patch_set_checkpoint_schema
+    end if
+    if (selected_context .neqv. present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR patch-set selected checkpoint baseline is missing"
+      return
+    end if
+    if (present(initial_integrals)) then
+      if (.not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+          initial_integrals, nvar)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint baseline is invalid"
+        return
+      end if
+    end if
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
@@ -2259,13 +2645,34 @@ contains
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR patch-set checkpoint for writing"
+      return
+    end if
     write(unit, '(a)', iostat=status) reactive_eb_patch_set_checkpoint_magic
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
-      reactive_eb_patch_set_checkpoint_schema, size(species), nvar, &
-      patch_set%patch_count()
+      schema, size(species), nvar, patch_set%patch_count()
     if (status /= 0) go to 900
+    if (selected_context) then
+      write(unit, '(a)', iostat=status) "SELECTED_CONTEXT"
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(bundle_sha256)
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(chemistry_integrator)
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(base_mole_fractions)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) "COMPOSITE_BASELINE"
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(initial_integrals)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) initial_integrals
+      if (status /= 0) go to 900
+    end if
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
       if (status /= 0) go to 900
@@ -2366,12 +2773,15 @@ contains
 
 900 continue
     close(unit)
+    if (present(failure_context)) failure_context = &
+      "Failed while writing Reactive EB AMR patch-set checkpoint"
   end subroutine write_reactive_eb_amr_patch_set_2d_checkpoint
 
   subroutine read_reactive_eb_amr_patch_set_2d_checkpoint( &
       path, species, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, minimum_dt, &
-      base_density, ok)
+      base_density, ok, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2382,14 +2792,24 @@ contains
     real(dp), intent(out) :: time, minimum_dt, base_density
     integer, intent(out) :: steps, regrids
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), allocatable, intent(out), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     type(eb_geometry_2d) :: candidate_coarse_geometry
     type(reactive_eb_patch_set_2d) :: candidate_set
     real(dp), allocatable :: candidate_coarse_state(:, :, :)
     real(dp), allocatable :: candidate_coarse_temperature(:, :)
+    real(dp), allocatable :: stored_base_mole_fractions(:)
+    real(dp), allocatable :: candidate_initial_integrals(:)
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=1024) :: trailing_record, stored_bundle_sha256
+    character(len=1024) :: stored_chemistry_integrator, context_marker
+    character(len=1024) :: baseline_marker
     character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(8), stored_time, stored_minimum_dt
@@ -2400,7 +2820,8 @@ contains
     integer :: stored_coarse_nx, stored_coarse_ny
     integer :: stored_fine_nx, stored_fine_ny
     integer :: stored_steps, stored_regrids, child, i, j, species_index
-    logical :: local_ok
+    integer :: expected_schema, stored_composition_size, stored_baseline_size
+    logical :: local_ok, selected_context
 
     magic = ""
     stored_name = ""
@@ -2410,6 +2831,10 @@ contains
     stored_reconstruction = ""
     stored_limiter = ""
     end_marker = ""
+    stored_bundle_sha256 = ""
+    stored_chemistry_integrator = ""
+    context_marker = ""
+    baseline_marker = ""
     stored_domain = 0.0_dp
     stored_geometry_values = 0.0_dp
     stored_numerics = 0.0_dp
@@ -2432,6 +2857,8 @@ contains
     stored_fine_ny = 0
     stored_steps = 0
     stored_regrids = 0
+    stored_composition_size = 0
+    stored_baseline_size = 0
     coarse_geometry = eb_geometry_2d()
     patch_set = reactive_eb_patch_set_2d()
     time = 0.0_dp
@@ -2440,23 +2867,117 @@ contains
     steps = 0
     regrids = 0
     ok = .false.
+    if (present(failure_context)) failure_context = ""
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected restart context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected restart context is invalid"
+        return
+      end if
+      expected_schema = reactive_eb_selected_patch_set_checkpoint_schema
+    else
+      expected_schema = reactive_eb_patch_set_checkpoint_schema
+    end if
+    if (selected_context .neqv. present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR patch-set selected restart baseline target is missing"
+      return
+    end if
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_reactive_eb_amr_config(config) .or. &
         .not. config%multipatch_enabled .or. &
         config%three_level_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR patch-set checkpoint"
+      return
+    end if
     read(unit, '(a)', iostat=status) magic
     if (status /= 0 .or. &
         trim(magic) /= reactive_eb_patch_set_checkpoint_magic) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, stored_patch_count
-    if (status /= 0 .or. &
-        schema /= reactive_eb_patch_set_checkpoint_schema .or. &
-        stored_species /= size(species) .or. &
+    if (status /= 0) go to 900
+    if (schema /= expected_schema) then
+      if (present(failure_context)) then
+        if (selected_context .and. &
+            schema == reactive_eb_patch_set_checkpoint_schema) then
+          failure_context = &
+            "Reactive EB AMR patch-set checkpoint lacks selected context"
+        else if (.not. selected_context .and. &
+                 schema == reactive_eb_selected_patch_set_checkpoint_schema) then
+          failure_context = &
+            "Selected Reactive EB AMR patch-set checkpoint requires selected reader"
+        else
+          failure_context = &
+            "Reactive EB AMR patch-set checkpoint schema mismatch"
+        end if
+      end if
+      go to 900
+    end if
+    if (stored_species /= size(species) .or. &
         stored_nvar /= reactive_nvar(size(species)) .or. &
         stored_patch_count < 0) go to 900
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) context_marker
+      if (status /= 0 .or. trim(context_marker) /= "SELECTED_CONTEXT") &
+        go to 900
+      read(unit, '(a)', iostat=status) stored_bundle_sha256
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_bundle_sha256( &
+            stored_bundle_sha256)) go to 900
+      if (trim(stored_bundle_sha256) /= trim(bundle_sha256)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint bundle SHA mismatch"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) stored_chemistry_integrator
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_chemistry_integrator( &
+            stored_chemistry_integrator)) go to 900
+      if (trim(stored_chemistry_integrator) /= trim(chemistry_integrator)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint integrator mismatch"
+        go to 900
+      end if
+      read(unit, *, iostat=status) stored_composition_size
+      if (status /= 0 .or. stored_composition_size /= size(species)) &
+        go to 900
+      allocate(stored_base_mole_fractions(stored_composition_size))
+      read(unit, *, iostat=status) stored_base_mole_fractions
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_selected_composition( &
+            stored_base_mole_fractions, size(species))) go to 900
+      if (.not. all(checkpoint_real_matches( &
+          stored_base_mole_fractions, base_mole_fractions))) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR patch-set selected checkpoint composition mismatch"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) baseline_marker
+      if (status /= 0 .or. trim(baseline_marker) /= &
+          "COMPOSITE_BASELINE") go to 900
+      read(unit, *, iostat=status) stored_baseline_size
+      if (status /= 0 .or. stored_baseline_size /= stored_nvar) go to 900
+      allocate(candidate_initial_integrals(stored_baseline_size))
+      read(unit, *, iostat=status) candidate_initial_integrals
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+            candidate_initial_integrals, stored_nvar)) go to 900
+    end if
     do species_index = 1, stored_species
       read(unit, '(a)', iostat=status) stored_name
       if (status /= 0 .or. &
@@ -2600,6 +3121,12 @@ contains
         candidate_coarse_geometry, stored_nvar)) go to 900
     read(unit, '(a)', iostat=status) end_marker
     if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    read(unit, '(a)', iostat=status) trailing_record
+    if (status /= iostat_end) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR patch-set checkpoint has trailing content"
+      go to 900
+    end if
     close(unit, iostat=status)
     if (status /= 0) return
 
@@ -2612,11 +3139,17 @@ contains
     base_density = stored_base_density
     steps = stored_steps
     regrids = stored_regrids
+    if (present(initial_integrals)) &
+      call move_alloc(candidate_initial_integrals, initial_integrals)
     ok = .true.
     return
 
 900 continue
     close(unit)
+    if (present(failure_context)) then
+      if (len_trim(failure_context) == 0) failure_context = &
+        "Reactive EB AMR patch-set checkpoint is invalid"
+    end if
   end subroutine read_reactive_eb_amr_patch_set_2d_checkpoint
 
   subroutine write_reactive_eb_amr_three_level_2d_checkpoint( &
@@ -2624,7 +3157,8 @@ contains
       level_one_state, level_one_temperature, level_one_geometry, &
       root_patch, level_two_state, level_two_temperature, &
       level_two_geometry, level_one_patch, time, steps, minimum_dt, &
-      base_density, ok, regrids)
+      base_density, ok, regrids, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2642,14 +3176,61 @@ contains
     integer, intent(in) :: steps
     logical, intent(out) :: ok
     integer, intent(in), optional :: regrids
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), intent(in), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp) :: time_tolerance
-    integer :: unit, status, nvar, species_index, checkpoint_regrids
+    integer :: unit, status, nvar, species_index, checkpoint_regrids, schema
+    logical :: selected_context
 
     ok = .false.
+    if (present(failure_context)) failure_context = ""
     checkpoint_regrids = 0
     if (present(regrids)) checkpoint_regrids = regrids
     nvar = reactive_nvar(size(species))
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        return
+      end if
+      if (config%dynamic_regridding) then
+        schema = reactive_eb_selected_dynamic_three_level_checkpoint_schema
+      else
+        schema = reactive_eb_selected_three_level_checkpoint_schema
+      end if
+    else if (config%dynamic_regridding) then
+      schema = reactive_eb_dynamic_three_level_checkpoint_schema
+    else
+      schema = reactive_eb_three_level_checkpoint_schema
+    end if
+    if (selected_context .neqv. present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR three-level selected checkpoint baseline is missing"
+      return
+    end if
+    if (present(initial_integrals)) then
+      if (.not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+          initial_integrals, nvar)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint baseline is invalid"
+        return
+      end if
+    end if
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%eb%flow%final_time))
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
@@ -2705,7 +3286,11 @@ contains
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR three-level checkpoint for writing"
+      return
+    end if
     if (config%dynamic_regridding) then
       write(unit, '(a)', iostat=status) &
         reactive_eb_dynamic_three_level_checkpoint_magic
@@ -2713,15 +3298,26 @@ contains
       write(unit, '(a)', iostat=status) reactive_eb_three_level_checkpoint_magic
     end if
     if (status /= 0) go to 900
-    if (config%dynamic_regridding) then
-      write(unit, '(*(i0,1x))', iostat=status) &
-        reactive_eb_dynamic_three_level_checkpoint_schema, &
-        size(species), nvar
-    else
-      write(unit, '(*(i0,1x))', iostat=status) &
-        reactive_eb_three_level_checkpoint_schema, size(species), nvar
-    end if
+    write(unit, '(*(i0,1x))', iostat=status) schema, size(species), nvar
     if (status /= 0) go to 900
+    if (selected_context) then
+      write(unit, '(a)', iostat=status) "SELECTED_CONTEXT"
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(bundle_sha256)
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(chemistry_integrator)
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(base_mole_fractions)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) "COMPOSITE_BASELINE"
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(initial_integrals)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) initial_integrals
+      if (status /= 0) go to 900
+    end if
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
       if (status /= 0) go to 900
@@ -2821,6 +3417,10 @@ contains
 
 900 continue
     close(unit)
+    if (present(failure_context)) then
+      if (len_trim(failure_context) == 0) failure_context = &
+        "Reactive EB AMR three-level checkpoint write failed"
+    end if
   end subroutine write_reactive_eb_amr_three_level_2d_checkpoint
 
   subroutine read_reactive_eb_amr_three_level_2d_checkpoint( &
@@ -2828,7 +3428,8 @@ contains
       level_one_state, level_one_temperature, level_one_geometry, &
       root_patch, level_two_state, level_two_temperature, &
       level_two_geometry, level_one_patch, time, steps, minimum_dt, &
-      base_density, ok, regrids)
+      base_density, ok, regrids, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, initial_integrals, failure_context)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -2847,6 +3448,11 @@ contains
     integer, intent(out) :: steps
     logical, intent(out) :: ok
     integer, intent(out), optional :: regrids
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    real(dp), allocatable, intent(out), optional :: initial_integrals(:)
+    character(len=*), intent(out), optional :: failure_context
 
     type(eb_geometry_2d) :: candidate_root_geometry
     type(eb_geometry_2d) :: candidate_level_one_geometry
@@ -2859,9 +3465,15 @@ contains
     real(dp), allocatable :: candidate_level_one_temperature(:, :)
     real(dp), allocatable :: candidate_level_two_state(:, :, :)
     real(dp), allocatable :: candidate_level_two_temperature(:, :)
+    real(dp), allocatable :: stored_base_mole_fractions(:)
+    real(dp), allocatable :: candidate_initial_integrals(:)
     character(len=1024) :: magic, stored_name, stored_geometry
     character(len=1024) :: stored_chemistry_model, stored_solver
     character(len=1024) :: stored_reconstruction, stored_limiter, end_marker
+    character(len=1024) :: trailing_record
+    character(len=1024) :: stored_bundle_sha256
+    character(len=1024) :: stored_chemistry_integrator, context_marker
+    character(len=1024) :: baseline_marker
     character(len=32) :: stored_prolongation_method
     real(dp) :: stored_domain(4), stored_geometry_values(6)
     real(dp) :: stored_numerics(5), stored_time, stored_minimum_dt
@@ -2873,7 +3485,9 @@ contains
     integer :: stored_regrid_controls(7)
     integer :: stored_steps, stored_regrids, species_index
     integer :: stored_level_one_nx, stored_level_one_ny
-    logical :: local_ok, dynamic_checkpoint
+    integer :: expected_schema, stored_composition_size
+    integer :: stored_baseline_size
+    logical :: local_ok, dynamic_checkpoint, selected_context
 
     root_geometry = eb_geometry_2d()
     level_one_geometry = eb_geometry_2d()
@@ -2887,11 +3501,49 @@ contains
     stored_regrids = 0
     if (present(regrids)) regrids = 0
     ok = .false.
+    if (present(failure_context)) failure_context = ""
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected restart context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected restart context is invalid"
+        return
+      end if
+      if (config%dynamic_regridding) then
+        expected_schema = &
+          reactive_eb_selected_dynamic_three_level_checkpoint_schema
+      else
+        expected_schema = reactive_eb_selected_three_level_checkpoint_schema
+      end if
+    else if (config%dynamic_regridding) then
+      expected_schema = reactive_eb_dynamic_three_level_checkpoint_schema
+    else
+      expected_schema = reactive_eb_three_level_checkpoint_schema
+    end if
+    if (selected_context .neqv. present(initial_integrals)) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR three-level selected restart baseline target is missing"
+      return
+    end if
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. supported_three_level_reactive_eb_amr_config(config)) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
-    if (status /= 0) return
+    if (status /= 0) then
+      if (present(failure_context)) failure_context = &
+        "Could not open Reactive EB AMR three-level checkpoint"
+      return
+    end if
     read(unit, '(a)', iostat=status) magic
     if (status /= 0) go to 900
     dynamic_checkpoint = &
@@ -2902,13 +3554,110 @@ contains
     if (dynamic_checkpoint .and. .not. present(regrids)) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar
-    if (status /= 0 .or. &
-        (dynamic_checkpoint .and. &
-         schema /= reactive_eb_dynamic_three_level_checkpoint_schema) .or. &
-        (.not. dynamic_checkpoint .and. &
-         schema /= reactive_eb_three_level_checkpoint_schema) .or. &
-        stored_species /= size(species) .or. &
+    if (status /= 0) go to 900
+    if (schema /= expected_schema) then
+      if (present(failure_context)) then
+        if (selected_context .and. &
+            ((dynamic_checkpoint .and. &
+              schema == reactive_eb_dynamic_three_level_checkpoint_schema) .or. &
+             (.not. dynamic_checkpoint .and. &
+              schema == reactive_eb_three_level_checkpoint_schema))) then
+          failure_context = &
+            "Reactive EB AMR three-level checkpoint lacks selected mechanism context"
+        else if (.not. selected_context .and. &
+                 ((dynamic_checkpoint .and. schema == &
+                   reactive_eb_selected_dynamic_three_level_checkpoint_schema) .or. &
+                  (.not. dynamic_checkpoint .and. schema == &
+                   reactive_eb_selected_three_level_checkpoint_schema))) then
+          failure_context = &
+            "Reactive EB AMR three-level checkpoint is not a fixed-runtime schema"
+        else
+          failure_context = &
+            "Reactive EB AMR three-level checkpoint schema is unsupported"
+        end if
+      end if
+      go to 900
+    end if
+    if (stored_species /= size(species) .or. &
         stored_nvar /= reactive_nvar(size(species))) go to 900
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) context_marker
+      if (status /= 0 .or. trim(context_marker) /= "SELECTED_CONTEXT") then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) stored_bundle_sha256
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_bundle_sha256( &
+            stored_bundle_sha256)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (trim(stored_bundle_sha256) /= trim(bundle_sha256)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint bundle SHA-256 mismatch"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) stored_chemistry_integrator
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_chemistry_integrator( &
+            stored_chemistry_integrator)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (trim(stored_chemistry_integrator) /= &
+          trim(chemistry_integrator)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint chemistry integrator mismatch"
+        go to 900
+      end if
+      read(unit, *, iostat=status) stored_composition_size
+      if (status /= 0 .or. stored_composition_size /= size(species)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        go to 900
+      end if
+      allocate(stored_base_mole_fractions(stored_composition_size))
+      read(unit, *, iostat=status) stored_base_mole_fractions
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_selected_composition( &
+            stored_base_mole_fractions, size(species))) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint context is invalid"
+        go to 900
+      end if
+      if (.not. all(checkpoint_real_matches( &
+          stored_base_mole_fractions, base_mole_fractions))) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint composition mismatch"
+        go to 900
+      end if
+      read(unit, '(a)', iostat=status) baseline_marker
+      if (status /= 0 .or. trim(baseline_marker) /= &
+          "COMPOSITE_BASELINE") then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint baseline is invalid"
+        go to 900
+      end if
+      read(unit, *, iostat=status) stored_baseline_size
+      if (status /= 0 .or. stored_baseline_size /= stored_nvar) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint baseline is invalid"
+        go to 900
+      end if
+      allocate(candidate_initial_integrals(stored_baseline_size))
+      read(unit, *, iostat=status) candidate_initial_integrals
+      if (status /= 0 .or. &
+          .not. valid_reactive_eb_amr_dynamic_checkpoint_baseline( &
+            candidate_initial_integrals, stored_nvar)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR three-level selected checkpoint baseline is invalid"
+        go to 900
+      end if
+    end if
     do species_index = 1, stored_species
       read(unit, '(a)', iostat=status) stored_name
       if (status /= 0 .or. &
@@ -3081,6 +3830,12 @@ contains
     if (.not. local_ok) go to 900
     read(unit, '(a)', iostat=status) end_marker
     if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    read(unit, '(a)', iostat=status) trailing_record
+    if (status /= iostat_end) then
+      if (present(failure_context)) failure_context = &
+        "Reactive EB AMR three-level checkpoint has trailing content"
+      go to 900
+    end if
     close(unit, iostat=status)
     if (status /= 0) return
 
@@ -3100,11 +3855,17 @@ contains
     base_density = stored_base_density
     steps = stored_steps
     if (present(regrids)) regrids = stored_regrids
+    if (present(initial_integrals)) &
+      call move_alloc(candidate_initial_integrals, initial_integrals)
     ok = .true.
     return
 
 900 continue
     close(unit)
+    if (present(failure_context)) then
+      if (len_trim(failure_context) == 0) failure_context = &
+        "Reactive EB AMR three-level checkpoint read failed"
+    end if
   end subroutine read_reactive_eb_amr_three_level_2d_checkpoint
 
   subroutine simulate_reactive_eb_amr_2d( &
@@ -3112,7 +3873,9 @@ contains
       coarse_geometry, &
       fine_state, fine_temperature, fine_geometry, patch, fine_active, time, &
       steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-      base_density, ok, transport, minimum_transport_theta)
+      base_density, ok, transport, minimum_transport_theta, &
+      base_mole_fractions, chemistry_integrator, bundle_sha256, &
+      failure_context)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -3131,6 +3894,10 @@ contains
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(out), optional :: failure_context
 
     real(dp), allocatable :: coarse_candidate(:, :, :)
     real(dp), allocatable :: coarse_candidate_temperature(:, :)
@@ -3140,11 +3907,14 @@ contains
     real(dp) :: coarse_transport_dt, fine_transport_dt
     real(dp) :: maximum_diffusivity, step_transport_theta
     real(dp) :: local_minimum_transport_theta
-    logical :: changed, local_ok, stopped_after_checkpoint
+    logical :: changed, local_ok, stopped_after_checkpoint, selected_context
     integer :: fine_nx, fine_ny, nvar, last_checkpoint_step
     type(reactive_boundary_set_2d) :: boundaries
+    character(len=1024) :: checkpoint_failure
 
     ok = .false.
+    checkpoint_failure = ""
+    if (present(failure_context)) failure_context = ""
     time = 0.0_dp
     steps = 0
     regrids = 0
@@ -3159,16 +3929,52 @@ contains
     if (config%multipatch_enabled .or. config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected simulation context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "Reactive EB AMR 2D selected simulation context is invalid"
+        return
+      end if
+    end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok)
+      species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
-      call read_reactive_eb_amr_2d_checkpoint( &
-        config%restart_file, species, config, coarse_state, &
-        coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
-        fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
-        base_density, local_ok)
-      if (.not. local_ok) return
+      if (selected_context .and. config%dynamic_regridding) then
+        call read_reactive_eb_amr_2d_checkpoint( &
+          config%restart_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+          fine_geometry, patch, fine_active, time, steps, regrids, &
+          minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call read_reactive_eb_amr_2d_checkpoint( &
+          config%restart_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+          fine_geometry, patch, fine_active, time, steps, regrids, &
+          minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
       nvar = size(coarse_state, 1)
     else
       call build_configured_eb_geometry_2d( &
@@ -3182,9 +3988,15 @@ contains
       fine_nx = fine_geometry%nx
       fine_ny = fine_geometry%ny
 
-      call initialize_reactive_2d( &
-        species, config%eb%flow, coarse_state, coarse_temperature, &
-        coarse_dx, coarse_dy, base_density, local_ok)
+      if (present(base_mole_fractions)) then
+        call initialize_reactive_2d( &
+          species, config%eb%flow, coarse_state, coarse_temperature, &
+          coarse_dx, coarse_dy, base_density, local_ok, base_mole_fractions)
+      else
+        call initialize_reactive_2d( &
+          species, config%eb%flow, coarse_state, coarse_temperature, &
+          coarse_dx, coarse_dy, base_density, local_ok)
+      end if
       if (.not. local_ok) return
       if (abs(coarse_dx - coarse_geometry%dx) > &
           8.0_dp * epsilon(1.0_dp) * coarse_geometry%dx .or. &
@@ -3210,11 +4022,16 @@ contains
       minimum_dt = huge(1.0_dp)
     end if
 
-    allocate(initial_integrals(nvar), final_integrals(nvar))
-    call compute_reactive_eb_amr_integrals_2d( &
-      coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
-      fine_active, initial_integrals, local_ok)
-    if (.not. local_ok) return
+    allocate(final_integrals(nvar))
+    if (.not. allocated(initial_integrals)) then
+      allocate(initial_integrals(nvar))
+      call compute_reactive_eb_amr_integrals_2d( &
+        coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
+        fine_active, initial_integrals, local_ok)
+      if (.not. local_ok) return
+    else if (size(initial_integrals) /= nvar) then
+      return
+    end if
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
 
@@ -3285,7 +4102,7 @@ contains
             config%eb%flow%thermal_conduction_enabled, &
             config%eb%flow%species_diffusion_enabled, &
             config%eb%flow%barodiffusion_enabled, step_transport_theta, &
-            boundaries)
+            boundaries, chemistry_integrator)
         else
           call advance_two_level_reactive_eb_strang_2d( &
             species, reactions, coarse_state, coarse_temperature, &
@@ -3298,7 +4115,8 @@ contains
             config%eb%flow%chemistry_absolute_tolerance, coarse_candidate, &
             coarse_candidate_temperature, fine_candidate, &
             fine_candidate_temperature, local_ok, &
-            config%eb%state_redist_target_volume_fraction)
+            config%eb%state_redist_target_volume_fraction, &
+            chemistry_integrator=chemistry_integrator)
           step_transport_theta = 1.0_dp
         end if
       else
@@ -3318,7 +4136,7 @@ contains
             config%eb%flow%thermal_conduction_enabled, &
             config%eb%flow%species_diffusion_enabled, &
             config%eb%flow%barodiffusion_enabled, step_transport_theta, &
-            boundaries)
+            boundaries, chemistry_integrator)
         else
           call advance_reactive_eb_strang_2d( &
             species, reactions, coarse_state, coarse_temperature, &
@@ -3329,7 +4147,8 @@ contains
             coarse_candidate_temperature, local_ok, &
             config%eb%state_redist_target_volume_fraction, &
             config%eb%flow%reconstruction, config%eb%flow%limiter, &
-            config%eb%state_redist_max_order)
+            config%eb%state_redist_max_order, &
+            chemistry_integrator=chemistry_integrator)
           step_transport_theta = 1.0_dp
         end if
       end if
@@ -3356,12 +4175,32 @@ contains
       end if
       if (config%checkpoint_interval > 0) then
         if (modulo(steps, config%checkpoint_interval) == 0) then
-          call write_reactive_eb_amr_2d_checkpoint( &
-            config%checkpoint_file, species, config, coarse_state, &
-            coarse_temperature, coarse_geometry, fine_state, &
-            fine_temperature, fine_geometry, patch, fine_active, time, steps, &
-            regrids, minimum_dt, base_density, local_ok)
-          if (.not. local_ok) return
+          if (selected_context .and. config%dynamic_regridding) then
+            call write_reactive_eb_amr_2d_checkpoint( &
+              config%checkpoint_file, species, config, coarse_state, &
+              coarse_temperature, coarse_geometry, fine_state, &
+              fine_temperature, fine_geometry, patch, fine_active, time, &
+              steps, regrids, minimum_dt, base_density, local_ok, &
+              bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, &
+              initial_integrals=initial_integrals, &
+              failure_context=checkpoint_failure)
+          else
+            call write_reactive_eb_amr_2d_checkpoint( &
+              config%checkpoint_file, species, config, coarse_state, &
+              coarse_temperature, coarse_geometry, fine_state, &
+              fine_temperature, fine_geometry, patch, fine_active, time, &
+              steps, regrids, minimum_dt, base_density, local_ok, &
+              bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, &
+              failure_context=checkpoint_failure)
+          end if
+          if (.not. local_ok) then
+            if (present(failure_context)) failure_context = checkpoint_failure
+            return
+          end if
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
             stopped_after_checkpoint = .true.
@@ -3374,12 +4213,30 @@ contains
       time = config%eb%flow%final_time
     if (len_trim(config%checkpoint_file) > 0 .and. &
         last_checkpoint_step /= steps) then
-      call write_reactive_eb_amr_2d_checkpoint( &
-        config%checkpoint_file, species, config, coarse_state, &
-        coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
-        fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
-        base_density, local_ok)
-      if (.not. local_ok) return
+      if (selected_context .and. config%dynamic_regridding) then
+        call write_reactive_eb_amr_2d_checkpoint( &
+          config%checkpoint_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+          fine_geometry, patch, fine_active, time, steps, regrids, &
+          minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call write_reactive_eb_amr_2d_checkpoint( &
+          config%checkpoint_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+          fine_geometry, patch, fine_active, time, steps, regrids, &
+          minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
     end if
     call compute_reactive_eb_amr_integrals_2d( &
       coarse_state, coarse_geometry, fine_state, fine_geometry, patch, &
@@ -3396,7 +4253,8 @@ contains
       level_one_geometry, root_patch, level_two_state, &
       level_two_temperature, level_two_geometry, level_one_patch, time, &
       steps, regrids, initial_integrals, final_integrals, minimum_dt, &
-      base_density, ok, failure_context, transport, minimum_transport_theta)
+      base_density, ok, failure_context, transport, minimum_transport_theta, &
+      base_mole_fractions, chemistry_integrator, bundle_sha256)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -3419,6 +4277,9 @@ contains
     character(len=*), intent(out), optional :: failure_context
     type(gas_transport_species), intent(in), optional :: transport(:)
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
+    character(len=*), intent(in), optional :: bundle_sha256
 
     real(dp), allocatable :: root_candidate(:, :, :)
     real(dp), allocatable :: root_candidate_temperature(:, :)
@@ -3430,9 +4291,10 @@ contains
     real(dp) :: root_transport_dt, level_one_transport_dt
     real(dp) :: level_two_transport_dt, maximum_diffusivity
     real(dp) :: step_transport_theta, local_minimum_transport_theta
-    logical :: changed, local_ok, stopped_after_checkpoint
+    logical :: changed, local_ok, stopped_after_checkpoint, selected_context
     integer :: nvar, last_checkpoint_step
     type(reactive_boundary_set_2d) :: boundaries
+    character(len=1024) :: checkpoint_failure
 
     root_geometry = eb_geometry_2d()
     level_one_geometry = eb_geometry_2d()
@@ -3447,25 +4309,62 @@ contains
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
     local_minimum_transport_theta = 1.0_dp
+    checkpoint_failure = ""
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     ok = .false.
     if (present(failure_context)) failure_context = "validation"
     if (.not. supported_three_level_reactive_eb_amr_config(config)) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "selected three-level simulation context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "selected three-level simulation context is invalid"
+        return
+      end if
+    end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok)
+      species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
 
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "restart"
-      call read_reactive_eb_amr_three_level_2d_checkpoint( &
-        config%restart_file, species, config, root_state, root_temperature, &
-        root_geometry, level_one_state, level_one_temperature, &
-        level_one_geometry, root_patch, level_two_state, &
-        level_two_temperature, level_two_geometry, level_one_patch, time, &
-        steps, minimum_dt, base_density, local_ok, regrids)
-      if (.not. local_ok) return
+      if (selected_context) then
+        call read_reactive_eb_amr_three_level_2d_checkpoint( &
+          config%restart_file, species, config, root_state, root_temperature, &
+          root_geometry, level_one_state, level_one_temperature, &
+          level_one_geometry, root_patch, level_two_state, &
+          level_two_temperature, level_two_geometry, level_one_patch, time, &
+          steps, minimum_dt, base_density, local_ok, regrids, &
+          bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call read_reactive_eb_amr_three_level_2d_checkpoint( &
+          config%restart_file, species, config, root_state, root_temperature, &
+          root_geometry, level_one_state, level_one_temperature, &
+          level_one_geometry, root_patch, level_two_state, &
+          level_two_temperature, level_two_geometry, level_one_patch, time, &
+          steps, minimum_dt, base_density, local_ok, regrids, &
+          failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
       nvar = size(root_state, 1)
     else
       if (present(failure_context)) failure_context = "root geometry"
@@ -3485,9 +4384,15 @@ contains
     if (.not. local_ok) return
 
     if (present(failure_context)) failure_context = "root initialization"
-    call initialize_reactive_2d( &
-      species, config%eb%flow, root_state, root_temperature, root_dx, &
-      root_dy, base_density, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_2d( &
+        species, config%eb%flow, root_state, root_temperature, root_dx, &
+        root_dy, base_density, local_ok, base_mole_fractions)
+    else
+      call initialize_reactive_2d( &
+        species, config%eb%flow, root_state, root_temperature, root_dx, &
+        root_dy, base_density, local_ok)
+    end if
     if (.not. local_ok) return
     if (abs(root_dx - root_geometry%dx) > &
         8.0_dp * epsilon(1.0_dp) * root_geometry%dx .or. &
@@ -3531,13 +4436,21 @@ contains
       minimum_dt = huge(1.0_dp)
     end if
 
-    allocate(initial_integrals(nvar), final_integrals(nvar))
-    if (present(failure_context)) failure_context = "initial composite integral"
-    call composite_three_level_eb_integral_2d( &
-      root_state, root_geometry, level_one_state, level_one_geometry, &
-      root_patch, level_two_state, level_two_geometry, level_one_patch, &
-      initial_integrals, local_ok)
-    if (.not. local_ok) return
+    allocate(final_integrals(nvar))
+    if (.not. allocated(initial_integrals)) then
+      allocate(initial_integrals(nvar))
+      if (present(failure_context)) &
+        failure_context = "initial composite integral"
+      call composite_three_level_eb_integral_2d( &
+        root_state, root_geometry, level_one_state, level_one_geometry, &
+        root_patch, level_two_state, level_two_geometry, level_one_patch, &
+        initial_integrals, local_ok)
+      if (.not. local_ok) return
+    else if (size(initial_integrals) /= nvar) then
+      if (present(failure_context)) &
+        failure_context = "restored composite baseline has invalid size"
+      return
+    end if
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
 
@@ -3620,7 +4533,7 @@ contains
           config%eb%flow%thermal_conduction_enabled, &
           config%eb%flow%species_diffusion_enabled, &
           config%eb%flow%barodiffusion_enabled, step_transport_theta, &
-          boundaries, failure_context)
+          boundaries, failure_context, chemistry_integrator)
       else
         call advance_three_level_reactive_eb_strang_2d( &
           species, reactions, root_state, root_temperature, root_geometry, &
@@ -3636,7 +4549,8 @@ contains
           level_one_candidate_temperature, level_two_candidate, &
           level_two_candidate_temperature, local_ok, &
           config%eb%state_redist_target_volume_fraction, &
-          failure_context=failure_context)
+          failure_context=failure_context, &
+          chemistry_integrator=chemistry_integrator)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) return
@@ -3666,14 +4580,31 @@ contains
       if (config%checkpoint_interval > 0) then
         if (modulo(steps, config%checkpoint_interval) == 0) then
           if (present(failure_context)) failure_context = "scheduled checkpoint"
-          call write_reactive_eb_amr_three_level_2d_checkpoint( &
-            config%checkpoint_file, species, config, root_state, &
-            root_temperature, root_geometry, level_one_state, &
-            level_one_temperature, level_one_geometry, root_patch, &
-            level_two_state, level_two_temperature, level_two_geometry, &
-            level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
-            regrids)
-          if (.not. local_ok) return
+          if (selected_context) then
+            call write_reactive_eb_amr_three_level_2d_checkpoint( &
+              config%checkpoint_file, species, config, root_state, &
+              root_temperature, root_geometry, level_one_state, &
+              level_one_temperature, level_one_geometry, root_patch, &
+              level_two_state, level_two_temperature, level_two_geometry, &
+              level_one_patch, time, steps, minimum_dt, base_density, &
+              local_ok, regrids, bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, &
+              initial_integrals=initial_integrals, &
+              failure_context=checkpoint_failure)
+          else
+            call write_reactive_eb_amr_three_level_2d_checkpoint( &
+              config%checkpoint_file, species, config, root_state, &
+              root_temperature, root_geometry, level_one_state, &
+              level_one_temperature, level_one_geometry, root_patch, &
+              level_two_state, level_two_temperature, level_two_geometry, &
+              level_one_patch, time, steps, minimum_dt, base_density, &
+              local_ok, regrids, failure_context=checkpoint_failure)
+          end if
+          if (.not. local_ok) then
+            if (present(failure_context)) failure_context = checkpoint_failure
+            return
+          end if
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
             stopped_after_checkpoint = .true.
@@ -3687,14 +4618,31 @@ contains
     if (len_trim(config%checkpoint_file) > 0 .and. &
         last_checkpoint_step /= steps) then
       if (present(failure_context)) failure_context = "final checkpoint"
-      call write_reactive_eb_amr_three_level_2d_checkpoint( &
-        config%checkpoint_file, species, config, root_state, &
-        root_temperature, root_geometry, level_one_state, &
-        level_one_temperature, level_one_geometry, root_patch, &
-        level_two_state, level_two_temperature, level_two_geometry, &
-        level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
-        regrids)
-      if (.not. local_ok) return
+      if (selected_context) then
+        call write_reactive_eb_amr_three_level_2d_checkpoint( &
+          config%checkpoint_file, species, config, root_state, &
+          root_temperature, root_geometry, level_one_state, &
+          level_one_temperature, level_one_geometry, root_patch, &
+          level_two_state, level_two_temperature, level_two_geometry, &
+          level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
+          regrids, bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call write_reactive_eb_amr_three_level_2d_checkpoint( &
+          config%checkpoint_file, species, config, root_state, &
+          root_temperature, root_geometry, level_one_state, &
+          level_one_temperature, level_one_geometry, root_patch, &
+          level_two_state, level_two_temperature, level_two_geometry, &
+          level_one_patch, time, steps, minimum_dt, base_density, local_ok, &
+          regrids, failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
     end if
     if (present(failure_context)) failure_context = "final composite integral"
     call composite_three_level_eb_integral_2d( &
@@ -3712,7 +4660,8 @@ contains
       species, reactions, config, coarse_state, coarse_temperature, &
       coarse_geometry, patch_set, time, steps, regrids, initial_integrals, &
       final_integrals, minimum_dt, base_density, ok, failure_context, &
-      transport, minimum_transport_theta)
+      transport, minimum_transport_theta, base_mole_fractions, &
+      chemistry_integrator, bundle_sha256)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -3728,6 +4677,9 @@ contains
     character(len=*), intent(out), optional :: failure_context
     type(gas_transport_species), intent(in), optional :: transport(:)
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
+    character(len=*), intent(in), optional :: bundle_sha256
 
     type(amr_eb_regrid_plan_collection_2d) :: initial_collection
     type(reactive_eb_patch_set_2d) :: candidate_set
@@ -3738,8 +4690,9 @@ contains
     real(dp) :: coarse_dx, coarse_dy, dt, remaining, time_tolerance
     real(dp) :: coarse_transport_dt, fine_transport_dt, maximum_diffusivity
     real(dp) :: step_transport_theta, local_minimum_transport_theta
-    logical :: changed, local_ok, stopped_after_checkpoint
+    logical :: changed, local_ok, stopped_after_checkpoint, selected_context
     integer :: child, nvar, last_checkpoint_step
+    character(len=1024) :: checkpoint_failure
 
     ok = .false.
     time = 0.0_dp
@@ -3750,6 +4703,7 @@ contains
     stopped_after_checkpoint = .false.
     last_checkpoint_step = -1
     local_minimum_transport_theta = 1.0_dp
+    checkpoint_failure = ""
     if (present(minimum_transport_theta)) minimum_transport_theta = 1.0_dp
     patch_set = reactive_eb_patch_set_2d()
     if (present(failure_context)) failure_context = "input validation"
@@ -3758,16 +4712,50 @@ contains
         config%three_level_enabled) return
     if (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) return
     if (config%eb%flow%transport_enabled .and. .not. present(transport)) return
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "selected patch-set simulation context is incomplete"
+        return
+      end if
+      if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) then
+        if (present(failure_context)) failure_context = &
+          "selected patch-set simulation context is invalid"
+        return
+      end if
+    end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok)
+      species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
-      call read_reactive_eb_amr_patch_set_2d_checkpoint( &
-        config%restart_file, species, config, coarse_state, &
-        coarse_temperature, coarse_geometry, patch_set, time, steps, &
-        regrids, minimum_dt, base_density, local_ok)
-      if (.not. local_ok) return
+      if (selected_context) then
+        call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+          config%restart_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, patch_set, time, steps, &
+          regrids, minimum_dt, base_density, local_ok, &
+          bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+          config%restart_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, patch_set, time, steps, &
+          regrids, minimum_dt, base_density, local_ok, &
+          failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
       nvar = size(coarse_state, 1)
     else
       if (present(failure_context)) failure_context = "coarse geometry"
@@ -3775,9 +4763,15 @@ contains
         config%eb, coarse_geometry, local_ok)
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "coarse initialization"
-      call initialize_reactive_2d( &
-        species, config%eb%flow, coarse_state, coarse_temperature, &
-        coarse_dx, coarse_dy, base_density, local_ok)
+      if (present(base_mole_fractions)) then
+        call initialize_reactive_2d( &
+          species, config%eb%flow, coarse_state, coarse_temperature, &
+          coarse_dx, coarse_dy, base_density, local_ok, base_mole_fractions)
+      else
+        call initialize_reactive_2d( &
+          species, config%eb%flow, coarse_state, coarse_temperature, &
+          coarse_dx, coarse_dy, base_density, local_ok)
+      end if
       if (.not. local_ok) return
       if (abs(coarse_dx - coarse_geometry%dx) > &
           8.0_dp * epsilon(1.0_dp) * coarse_geometry%dx .or. &
@@ -3809,11 +4803,18 @@ contains
       end if
       minimum_dt = huge(1.0_dp)
     end if
-    allocate(initial_integrals(nvar), final_integrals(nvar))
-    if (present(failure_context)) failure_context = "initial integral"
-    call composite_reactive_eb_patch_set_integral_2d( &
-      coarse_state, coarse_geometry, patch_set, initial_integrals, local_ok)
-    if (.not. local_ok) return
+    allocate(final_integrals(nvar))
+    if (.not. allocated(initial_integrals)) then
+      allocate(initial_integrals(nvar))
+      if (present(failure_context)) failure_context = "initial integral"
+      call composite_reactive_eb_patch_set_integral_2d( &
+        coarse_state, coarse_geometry, patch_set, initial_integrals, local_ok)
+      if (.not. local_ok) return
+    else if (size(initial_integrals) /= nvar) then
+      if (present(failure_context)) failure_context = &
+        "restored patch-set composite baseline has invalid size"
+      return
+    end if
     time_tolerance = 16.0_dp * epsilon(1.0_dp) * &
       max(tiny(1.0_dp), abs(config%eb%flow%final_time))
 
@@ -3876,7 +4877,7 @@ contains
           config%eb%flow%thermal_conduction_enabled, &
           config%eb%flow%species_diffusion_enabled, &
           config%eb%flow%barodiffusion_enabled, step_transport_theta, &
-          boundaries)
+          boundaries, chemistry_integrator)
       else
         call advance_reactive_eb_patch_set_strang_2d( &
           species, reactions, coarse_state, coarse_temperature, &
@@ -3887,7 +4888,8 @@ contains
           config%eb%flow%chemistry_relative_tolerance, &
           config%eb%flow%chemistry_absolute_tolerance, candidate_state, &
           candidate_temperature, candidate_set, local_ok, &
-          config%eb%state_redist_target_volume_fraction, failure_context)
+          config%eb%state_redist_target_volume_fraction, failure_context, &
+          chemistry_integrator=chemistry_integrator)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) return
@@ -3910,11 +4912,27 @@ contains
       if (config%checkpoint_interval > 0) then
         if (modulo(steps, config%checkpoint_interval) == 0) then
           if (present(failure_context)) failure_context = "checkpoint write"
-          call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-            config%checkpoint_file, species, config, coarse_state, &
-            coarse_temperature, coarse_geometry, patch_set, time, steps, &
-            regrids, minimum_dt, base_density, local_ok)
-          if (.not. local_ok) return
+          if (selected_context) then
+            call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+              config%checkpoint_file, species, config, coarse_state, &
+              coarse_temperature, coarse_geometry, patch_set, time, steps, &
+              regrids, minimum_dt, base_density, local_ok, &
+              bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, &
+              initial_integrals=initial_integrals, &
+              failure_context=checkpoint_failure)
+          else
+            call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+              config%checkpoint_file, species, config, coarse_state, &
+              coarse_temperature, coarse_geometry, patch_set, time, steps, &
+              regrids, minimum_dt, base_density, local_ok, &
+              failure_context=checkpoint_failure)
+          end if
+          if (.not. local_ok) then
+            if (present(failure_context)) failure_context = checkpoint_failure
+            return
+          end if
           last_checkpoint_step = steps
           if (config%checkpoint_stop_after_write) then
             stopped_after_checkpoint = .true.
@@ -3927,11 +4945,27 @@ contains
     if (len_trim(config%checkpoint_file) > 0 .and. &
         last_checkpoint_step /= steps) then
       if (present(failure_context)) failure_context = "final checkpoint write"
-      call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-        config%checkpoint_file, species, config, coarse_state, &
-        coarse_temperature, coarse_geometry, patch_set, time, steps, regrids, &
-        minimum_dt, base_density, local_ok)
-      if (.not. local_ok) return
+      if (selected_context) then
+        call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+          config%checkpoint_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, patch_set, time, steps, &
+          regrids, minimum_dt, base_density, local_ok, &
+          bundle_sha256=bundle_sha256, &
+          chemistry_integrator=chemistry_integrator, &
+          base_mole_fractions=base_mole_fractions, &
+          initial_integrals=initial_integrals, &
+          failure_context=checkpoint_failure)
+      else
+        call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+          config%checkpoint_file, species, config, coarse_state, &
+          coarse_temperature, coarse_geometry, patch_set, time, steps, &
+          regrids, minimum_dt, base_density, local_ok, &
+          failure_context=checkpoint_failure)
+      end if
+      if (.not. local_ok) then
+        if (present(failure_context)) failure_context = checkpoint_failure
+        return
+      end if
     end if
     if (present(failure_context)) failure_context = "final integral"
     call composite_reactive_eb_patch_set_integral_2d( &
@@ -4142,8 +5176,8 @@ contains
         if (present(failure_context)) failure_context = "initial regrid"
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
           species, solution, criteria, config%patch_tree_maximum_levels, &
-          config%refinement_ratio, build_patch_tree_geometry, local_ok, &
-          changed, tagged_cells, &
+          config%refinement_ratio, build_patch_tree_geometry, config, &
+          local_ok, changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
         if (.not. local_ok) return
         call accumulate_regrid_history(tagged_cells, local_ok)
@@ -4242,8 +5276,8 @@ contains
         if (present(failure_context)) failure_context = "periodic regrid"
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
           species, solution, criteria, config%patch_tree_maximum_levels, &
-          config%refinement_ratio, build_patch_tree_geometry, local_ok, &
-          changed, tagged_cells, &
+          config%refinement_ratio, build_patch_tree_geometry, config, &
+          local_ok, changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
         if (.not. local_ok) return
         call accumulate_regrid_history(tagged_cells, local_ok)
@@ -4323,40 +5357,48 @@ contains
       accumulated_tagged_cells = accumulated_tagged_cells + tagged
     end subroutine accumulate_regrid_history
 
-    subroutine build_patch_tree_geometry( &
-        parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
-        coarse_j_upper, refinement_ratio, child_geometry, geometry_ok)
-      type(eb_geometry_2d), intent(in) :: parent_geometry
-      integer, intent(in) :: coarse_i_lower, coarse_i_upper
-      integer, intent(in) :: coarse_j_lower, coarse_j_upper
-      integer, intent(in) :: refinement_ratio
-      type(eb_geometry_2d), intent(out) :: child_geometry
-      logical, intent(out) :: geometry_ok
-
-      real(dp) :: x_lower, x_upper, y_lower, y_upper
-      integer :: nx, ny
-
-      geometry_ok = coarse_i_lower >= 1 .and. &
-        coarse_i_upper <= parent_geometry%nx .and. &
-        coarse_j_lower >= 1 .and. coarse_j_upper <= parent_geometry%ny .and. &
-        coarse_i_upper >= coarse_i_lower .and. &
-        coarse_j_upper >= coarse_j_lower .and. refinement_ratio >= 2
-      if (.not. geometry_ok) return
-      nx = (coarse_i_upper - coarse_i_lower + 1) * refinement_ratio
-      ny = (coarse_j_upper - coarse_j_lower + 1) * refinement_ratio
-      x_lower = parent_geometry%x_lower + &
-        real(coarse_i_lower - 1, dp) * parent_geometry%dx
-      x_upper = parent_geometry%x_lower + &
-        real(coarse_i_upper, dp) * parent_geometry%dx
-      y_lower = parent_geometry%y_lower + &
-        real(coarse_j_lower - 1, dp) * parent_geometry%dy
-      y_upper = parent_geometry%y_lower + &
-        real(coarse_j_upper, dp) * parent_geometry%dy
-      call build_configured_eb_geometry_region_2d( &
-        config%eb, nx, ny, x_lower, x_upper, y_lower, y_upper, &
-        child_geometry, geometry_ok)
-    end subroutine build_patch_tree_geometry
-
   end subroutine simulate_reactive_amr_eb_patch_tree_2d
+
+  subroutine build_patch_tree_geometry( &
+      parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
+      coarse_j_upper, refinement_ratio, geometry_context, child_geometry, &
+      geometry_ok)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: coarse_i_lower, coarse_i_upper
+    integer, intent(in) :: coarse_j_lower, coarse_j_upper
+    integer, intent(in) :: refinement_ratio
+    class(*), intent(in) :: geometry_context
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: geometry_ok
+
+    real(dp) :: x_lower, x_upper, y_lower, y_upper
+    integer :: nx, ny
+
+    geometry_ok = coarse_i_lower >= 1 .and. &
+      coarse_i_upper <= parent_geometry%nx .and. &
+      coarse_j_lower >= 1 .and. coarse_j_upper <= parent_geometry%ny .and. &
+      coarse_i_upper >= coarse_i_lower .and. &
+      coarse_j_upper >= coarse_j_lower .and. refinement_ratio >= 2
+    if (.not. geometry_ok) return
+    nx = (coarse_i_upper - coarse_i_lower + 1) * refinement_ratio
+    ny = (coarse_j_upper - coarse_j_lower + 1) * refinement_ratio
+    x_lower = parent_geometry%x_lower + &
+      real(coarse_i_lower - 1, dp) * parent_geometry%dx
+    x_upper = parent_geometry%x_lower + &
+      real(coarse_i_upper, dp) * parent_geometry%dx
+    y_lower = parent_geometry%y_lower + &
+      real(coarse_j_lower - 1, dp) * parent_geometry%dy
+    y_upper = parent_geometry%y_lower + &
+      real(coarse_j_upper, dp) * parent_geometry%dy
+    select type(local_config => geometry_context)
+    type is (reactive_eb_amr_2d_config)
+      call build_configured_eb_geometry_region_2d( &
+        local_config%eb, nx, ny, x_lower, x_upper, y_lower, y_upper, &
+        child_geometry, geometry_ok)
+    class default
+      child_geometry = eb_geometry_2d()
+      geometry_ok = .false.
+    end select
+  end subroutine build_patch_tree_geometry
 
 end module reactive_eb_amr_2d_driver_mod

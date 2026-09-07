@@ -1,0 +1,59 @@
+PeleF 0.239.0 clean tests-disabled Release install and restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Build tree:
+  build/selected-mpi-eb2d-0239-final-audit-release
+Install prefix:
+  build/selected-mpi-eb2d-0239-final-audit-install
+Installed smoke tree:
+  build/selected-mpi-eb2d-0239-final-audit-smoke
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec (OpenMPI 4.1.6)
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Build/install result:
+  clean configure: PASS
+  clean build: 627/627 steps PASS
+  final-source incremental rebuild: 32/32 steps PASS
+  install after final-source rebuild: PASS
+  install manifest entries=40
+  CMakeCache.txt sha256=b270c0b798feae0da789b8e48390bcae08131b5d927dd7d93cccba4620dc7d4f
+  install_manifest.txt sha256=35340acfaa82f51d3e921f0c326de1a829a05c41010615079d65e8c887141cdc
+
+Installed Release audit result:
+  install_manifest_entries=40
+  installed_elf_count=40
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=40
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS
+
+Installed selected restart qualification:
+  installed application version=0.239.0
+  fixed uninterrupted ranks=1 PASS
+  selected uninterrupted ranks=1,2,4 PASS
+  selected checkpoint-stop ranks=1 PASS
+  independent selected restart ranks=2,4 PASS
+  four active levels and final root steps=2 PASS
+  selected checkpoint sha256=2edd758ca1ff888735f5719de8ed9969b36f60d45bb0b3c523e47c2e35510f4d
+  fixed/selected/restarted final CSV sha256=5394fd007283d746ec4507832ccce8a7013fd4fb9b5c1b10d50d7c91e216975a
+  stopped CSV sha256=bba321c7ace389a6e0d95af0d1a07edd55c9cde870daee514e9b6c1c49e5fc3c
+  selected restart checker=PASS
+  independent corruption gates=16/16 PASS
+  lexical alias gates=6/6 PASS
+  failed restart output publication=NONE

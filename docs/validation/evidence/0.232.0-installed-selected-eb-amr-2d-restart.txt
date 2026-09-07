@@ -1,0 +1,54 @@
+PeleF 0.232.0 installed selected EB AMR 2D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-ebamr2d-0232-final-audit-install/bin/pelef_reactive_eb_amr_2d
+  sha256=10a67a15a14f870b0d8db9003e6a61dc0b4aa0890a145707b4fff3279056c483
+  build/selected-ebamr2d-0232-final-audit-install/bin/pelef_reactive_eb_amr_2d_selected
+  sha256=885ff747d78336123d172373b5e4e9e4b39d50052bdd0a2a4064247d3c5faeba
+
+Fixed inputs:
+  cases/selected_reactive_eb_amr_2d_restart/fixed_reference.nml
+  cases/selected_reactive_eb_amr_2d_restart/reference.nml
+  cases/selected_reactive_eb_amr_2d_restart/checkpoint_stop.nml
+  cases/selected_reactive_eb_amr_2d_restart/restart.nml
+
+Execution directory:
+  build/selected-ebamr2d-0232-final-audit-smoke
+
+Execution result:
+  fixed reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected checkpoint-stop: PASS, coarse step 1,
+    time 6.3479525559440055e-9 s
+  independent selected restart: PASS, coarse step 2, final time 1.0e-8 s
+
+Validation command:
+  python3 tools/check_selected_reactive_eb_amr_2d_restart.py \
+    --fixed-coarse build/selected-ebamr2d-0232-final-audit-smoke/fixed_selected_reactive_eb_amr_restart_reference_coarse.csv \
+    --fixed-fine build/selected-ebamr2d-0232-final-audit-smoke/fixed_selected_reactive_eb_amr_restart_reference_fine.csv \
+    --reference-coarse build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restart_reference_coarse.csv \
+    --reference-fine build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restart_reference_fine.csv \
+    --stopped-coarse build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restart_stopped_coarse.csv \
+    --stopped-fine build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restart_stopped_fine.csv \
+    --restarted-coarse build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restarted_coarse.csv \
+    --restarted-fine build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restarted_fine.csv \
+    --checkpoint build/selected-ebamr2d-0232-final-audit-smoke/selected_reactive_eb_amr_restart.chk \
+    --reference-log build/selected-ebamr2d-0232-final-audit-smoke/installed_selected_reference.log \
+    --stopped-log build/selected-ebamr2d-0232-final-audit-smoke/installed_selected_stop.log \
+    --restarted-log build/selected-ebamr2d-0232-final-audit-smoke/installed_selected_resume.log \
+    --expected-reference-coarse-sha256 5d8e24295aa1331dfdd7a6224fd0809a5df712e2db22c733ac44bed5ffb3f7ac \
+    --expected-reference-fine-sha256 cbfef95067e8674239122633711c8e35371ea97e3709f80beeadccbabbc64af2 \
+    --expected-stopped-coarse-sha256 dda501bd9c27cb090f8bc8f7d06ec55f27e02fdd59e667cff8f89b2edb52c736 \
+    --expected-stopped-fine-sha256 6f30dd051f9fa46180a539ca62b7dc0f7c237850b9fe1ce0bdab557258bec817 \
+    --expected-checkpoint-sha256 6d1a5e35cc001f3dfb7049cba243482bf902acde8da3dd487d4ba93598d784ba
+
+Result:
+  coarse_rows=64
+  fine_rows=144
+  checkpoint_time=6.3479525559440055e-9
+  final_time=1.0e-8
+  reference_coarse_sha256=5d8e24295aa1331dfdd7a6224fd0809a5df712e2db22c733ac44bed5ffb3f7ac
+  reference_fine_sha256=cbfef95067e8674239122633711c8e35371ea97e3709f80beeadccbabbc64af2
+  checkpoint_sha256=6d1a5e35cc001f3dfb7049cba243482bf902acde8da3dd487d4ba93598d784ba
+  selected_reactive_eb_amr_2d_restart_exact_match=PASS

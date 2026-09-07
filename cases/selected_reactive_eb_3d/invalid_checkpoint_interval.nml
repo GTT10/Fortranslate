@@ -1,0 +1,9 @@
+&reactive_eb_3d
+  thermo_model = "selected"
+  composition_count = 2
+  composition_species = "H2", "H"
+  composition_mole_fractions = 0.8, 0.2
+  checkpoint_interval_steps = 1
+  checkpoint_file = "invalid_checkpoint_interval.nml"
+  output_file = "invalid_selected_reactive_eb_3d_checkpoint_interval.csv"
+/

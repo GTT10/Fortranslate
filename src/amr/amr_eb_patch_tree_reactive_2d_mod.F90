@@ -1,10 +1,11 @@
 module amr_eb_patch_tree_reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: iso_fortran_env, only: iostat_end
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, &
@@ -49,6 +50,11 @@ module amr_eb_patch_tree_reactive_2d_mod
     "PELEF_REACTIVE_AMR_EB_PATCH_TREE_2D"
   integer, parameter :: patch_tree_checkpoint_schema = 5
   integer, parameter :: patch_tree_checkpoint_fingerprint_schema = 8
+  integer, parameter :: patch_tree_selected_checkpoint_schema = 9
+  character(len=*), parameter :: patch_tree_selected_context_marker = &
+    "SELECTED_CONTEXT"
+  character(len=*), parameter :: patch_tree_selected_baseline_marker = &
+    "COMPOSITE_BASELINE"
   integer, parameter :: checkpoint_maximum_levels = 64
   integer, parameter :: checkpoint_maximum_patches = 1000000
   integer, parameter :: checkpoint_maximum_geometry_cells = 100000000
@@ -98,12 +104,14 @@ module amr_eb_patch_tree_reactive_2d_mod
   abstract interface
     subroutine reactive_amr_eb_tree_geometry_builder_2d( &
         parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
-        coarse_j_upper, refinement_ratio, child_geometry, ok)
+        coarse_j_upper, refinement_ratio, geometry_context, child_geometry, &
+        ok)
       import :: eb_geometry_2d
       type(eb_geometry_2d), intent(in) :: parent_geometry
       integer, intent(in) :: coarse_i_lower, coarse_i_upper
       integer, intent(in) :: coarse_j_lower, coarse_j_upper
       integer, intent(in) :: refinement_ratio
+      class(*), intent(in) :: geometry_context
       type(eb_geometry_2d), intent(out) :: child_geometry
       logical, intent(out) :: ok
     end subroutine reactive_amr_eb_tree_geometry_builder_2d
@@ -375,13 +383,14 @@ contains
 
   subroutine plan_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, plans, tagged_cells, ok, failure_context, &
-      prolongation_method)
+      geometry_builder, geometry_context, plans, tagged_cells, ok, &
+      failure_context, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
     type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
     integer, intent(in) :: maximum_levels, refinement_ratio
     procedure(reactive_amr_eb_tree_geometry_builder_2d) :: geometry_builder
+    class(*), intent(in) :: geometry_context
     type(amr_eb_patch_tree_level_plan_2d), allocatable, intent(out) :: plans(:)
     integer, intent(out) :: tagged_cells
     logical, intent(out) :: ok
@@ -474,7 +483,7 @@ contains
             workspace(relation)%children(entry)%coarse_i_upper, &
             workspace(relation)%children(entry)%coarse_j_lower, &
             workspace(relation)%children(entry)%coarse_j_upper, &
-            refinement_ratio, &
+            refinement_ratio, geometry_context, &
             workspace(relation)%children(entry)%geometry, local_ok)
           if (.not. local_ok) return
         end do
@@ -504,13 +513,14 @@ contains
 
   subroutine regrid_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, ok, changed, tagged_cells, failure_context, &
-      prolongation_method)
+      geometry_builder, geometry_context, ok, changed, tagged_cells, &
+      failure_context, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(inout) :: solution
     type(amr_eb_tagging_criteria_2d), intent(in) :: criteria
     integer, intent(in) :: maximum_levels, refinement_ratio
     procedure(reactive_amr_eb_tree_geometry_builder_2d) :: geometry_builder
+    class(*), intent(in) :: geometry_context
     logical, intent(out) :: ok, changed
     integer, intent(out) :: tagged_cells
     character(len=*), intent(out), optional :: failure_context
@@ -529,7 +539,8 @@ contains
     if (present(failure_context)) failure_context = context
     call plan_tagged_reactive_amr_eb_patch_tree_2d( &
       species, solution, criteria, maximum_levels, refinement_ratio, &
-      geometry_builder, plans, tagged_cells, ok, context, method)
+      geometry_builder, geometry_context, plans, tagged_cells, ok, context, &
+      method)
     if (.not. ok) then
       if (present(failure_context)) failure_context = context
       return
@@ -631,7 +642,8 @@ contains
       path, species, solution, time, steps, regrids, minimum_dt, ok, &
       fingerprint, minimum_transport_theta, initial_integrals, &
       chemistry_level_advances, transport_level_advances, &
-      hydro_level_advances, regrid_evaluations, cumulative_tagged_cells)
+      hydro_level_advances, regrid_evaluations, cumulative_tagged_cells, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
@@ -647,6 +659,9 @@ contains
     integer, intent(in), optional :: hydro_level_advances(:)
     integer, intent(in), optional :: regrid_evaluations
     integer, intent(in), optional :: cumulative_tagged_cells
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     integer :: unit, status, species_index, relation, child, schema
     integer :: counter_levels, counter_presence, level, patch, i, j
@@ -657,9 +672,29 @@ contains
     integer, allocatable :: selected_hydro_advances(:)
     real(dp), allocatable :: selected_initial_integrals(:)
     real(dp) :: selected_minimum_transport_theta
-    logical :: local_ok
+    logical :: local_ok, selected_context
 
     ok = .false.
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions) .or. &
+          .not. present(fingerprint) .or. &
+          .not. present(minimum_transport_theta) .or. &
+          .not. present(initial_integrals) .or. &
+          .not. present(chemistry_level_advances) .or. &
+          .not. present(transport_level_advances) .or. &
+          .not. present(hydro_level_advances) .or. &
+          .not. present(regrid_evaluations) .or. &
+          .not. present(cumulative_tagged_cells)) return
+      if (.not. valid_patch_tree_selected_checkpoint_context_2d( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) return
+      if (.not. patch_tree_selected_checkpoint_state_is_physical_2d( &
+          species, solution)) return
+    end if
     selected_minimum_transport_theta = 1.0_dp
     if (present(minimum_transport_theta)) &
       selected_minimum_transport_theta = minimum_transport_theta
@@ -682,6 +717,10 @@ contains
       call composite_integral_reactive_amr_eb_patch_tree_2d( &
         solution, selected_initial_integrals, local_ok)
       if (.not. local_ok) return
+    end if
+    if (selected_context) then
+      if (.not. valid_patch_tree_selected_checkpoint_baseline_2d( &
+          selected_initial_integrals, solution%nvar, size(species))) return
     end if
     counter_presence = count([ &
       present(chemistry_level_advances), &
@@ -720,6 +759,7 @@ contains
         selected_cumulative_tagged_cells)) return
     schema = patch_tree_checkpoint_schema
     if (present(fingerprint)) schema = patch_tree_checkpoint_fingerprint_schema
+    if (selected_context) schema = patch_tree_selected_checkpoint_schema
 
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
@@ -734,6 +774,18 @@ contains
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
       if (status /= 0) go to 900
     end do
+    if (selected_context) then
+      write(unit, '(a)', iostat=status) patch_tree_selected_context_marker
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(bundle_sha256)
+      if (status /= 0) go to 900
+      write(unit, '(a)', iostat=status) trim(chemistry_integrator)
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(base_mole_fractions)
+      if (status /= 0) go to 900
+      write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
+      if (status /= 0) go to 900
+    end if
     if (present(fingerprint)) then
       call write_patch_tree_checkpoint_fingerprint_2d( &
         unit, fingerprint, status)
@@ -772,6 +824,12 @@ contains
     write(unit, '(3(es27.18e3,1x),2(i0,1x))', iostat=status) &
       time, minimum_dt, selected_minimum_transport_theta, steps, regrids
     if (status /= 0) go to 900
+    if (selected_context) then
+      write(unit, '(a)', iostat=status) patch_tree_selected_baseline_marker
+      if (status /= 0) go to 900
+      write(unit, '(i0)', iostat=status) size(selected_initial_integrals)
+      if (status /= 0) go to 900
+    end if
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
       selected_initial_integrals
     if (status /= 0) go to 900
@@ -820,7 +878,8 @@ contains
       minimum_dt, ok, fingerprint, minimum_transport_theta, &
       initial_integrals, chemistry_level_advances, &
       transport_level_advances, hydro_level_advances, &
-      regrid_evaluations, cumulative_tagged_cells)
+      regrid_evaluations, cumulative_tagged_cells, bundle_sha256, &
+      chemistry_integrator, base_mole_fractions)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: maximum_levels
@@ -837,6 +896,9 @@ contains
     integer, allocatable, intent(out), optional :: hydro_level_advances(:)
     integer, intent(out), optional :: regrid_evaluations
     integer, intent(out), optional :: cumulative_tagged_cells
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(amr_eb_patch_tree_level_plan_2d), allocatable :: plans(:)
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -845,17 +907,21 @@ contains
     type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: &
       stored_fingerprint
     character(len=1024) :: magic, stored_name, end_marker
-    logical :: local_ok
+    character(len=1024) :: context_marker, stored_bundle, stored_integrator
+    character(len=1024) :: baseline_marker, trailing_record
+    logical :: local_ok, selected_context
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: stored_levels, stored_relation, relation_patches
     integer :: species_index, relation, child, level, patch, i, j
     integer :: stored_level, stored_patch, stored_nx, stored_ny
     integer :: stored_counter_levels, stored_regrid_evaluations
     integer :: stored_cumulative_tagged_cells
+    integer :: stored_context_size, stored_baseline_size
     integer, allocatable :: stored_chemistry_advances(:)
     integer, allocatable :: stored_transport_advances(:)
     integer, allocatable :: stored_hydro_advances(:)
     real(dp), allocatable :: stored_initial_integrals(:)
+    real(dp), allocatable :: stored_composition(:)
     real(dp) :: stored_minimum_transport_theta
 
     solution = reactive_amr_eb_patch_tree_2d()
@@ -868,9 +934,20 @@ contains
     steps = 0
     regrids = 0
     ok = .false.
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions)
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         maximum_levels < 1 .or. &
         maximum_levels > checkpoint_maximum_levels) return
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions) .or. &
+          .not. present(fingerprint)) return
+      if (.not. valid_patch_tree_selected_checkpoint_context_2d( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions)) return
+    end if
 
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
@@ -881,7 +958,9 @@ contains
     read(unit, *, iostat=status) schema, stored_species, stored_nvar, &
       stored_levels
     if (status /= 0) go to 900
-    if (present(fingerprint)) then
+    if (selected_context) then
+      if (schema /= patch_tree_selected_checkpoint_schema) go to 900
+    else if (present(fingerprint)) then
       if (schema /= patch_tree_checkpoint_fingerprint_schema) go to 900
     else
       if (schema /= patch_tree_checkpoint_schema) go to 900
@@ -894,6 +973,25 @@ contains
       if (status /= 0 .or. &
           trim(stored_name) /= trim(species(species_index)%name)) go to 900
     end do
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) context_marker
+      if (status /= 0 .or. &
+          trim(context_marker) /= patch_tree_selected_context_marker) go to 900
+      read(unit, '(a)', iostat=status) stored_bundle
+      if (status /= 0 .or. trim(stored_bundle) /= trim(bundle_sha256)) go to 900
+      read(unit, '(a)', iostat=status) stored_integrator
+      if (status /= 0 .or. &
+          trim(stored_integrator) /= trim(chemistry_integrator)) go to 900
+      read(unit, *, iostat=status) stored_context_size
+      if (status /= 0 .or. &
+          stored_context_size /= size(base_mole_fractions)) go to 900
+      allocate(stored_composition(stored_context_size))
+      read(unit, *, iostat=status) stored_composition
+      if (status /= 0 .or. &
+          any(.not. ieee_is_finite(stored_composition))) go to 900
+      if (any(abs(stored_composition - base_mole_fractions) > 0.0_dp)) &
+        go to 900
+    end if
     if (present(fingerprint)) then
       call read_patch_tree_checkpoint_fingerprint_2d( &
         unit, stored_fingerprint, status)
@@ -935,10 +1033,22 @@ contains
     if (status /= 0 .or. .not. patch_tree_checkpoint_metadata_is_valid( &
         time, steps, regrids, minimum_dt, &
         stored_minimum_transport_theta)) go to 900
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) baseline_marker
+      if (status /= 0 .or. &
+          trim(baseline_marker) /= patch_tree_selected_baseline_marker) &
+        go to 900
+      read(unit, *, iostat=status) stored_baseline_size
+      if (status /= 0 .or. stored_baseline_size /= stored_nvar) go to 900
+    end if
     allocate(stored_initial_integrals(stored_nvar))
     read(unit, *, iostat=status) stored_initial_integrals
     if (status /= 0 .or. &
         any(.not. ieee_is_finite(stored_initial_integrals))) go to 900
+    if (selected_context) then
+      if (.not. valid_patch_tree_selected_checkpoint_baseline_2d( &
+          stored_initial_integrals, stored_nvar, stored_species)) go to 900
+    end if
     read(unit, *, iostat=status) stored_counter_levels
     if (status /= 0 .or. stored_counter_levels < stored_levels .or. &
         stored_counter_levels > maximum_levels) go to 900
@@ -1000,8 +1110,17 @@ contains
         if (.not. local_ok) go to 900
       end do
     end do
+    if (selected_context) then
+      if (.not. patch_tree_selected_checkpoint_state_is_physical_2d( &
+          species, candidate)) go to 900
+    end if
     read(unit, '(a)', iostat=status) end_marker
     if (status /= 0 .or. trim(end_marker) /= "END_CHECKPOINT") go to 900
+    if (selected_context) then
+      read(unit, '(a)', iostat=status) trailing_record
+      if (status /= iostat_end) go to 900
+      status = 0
+    end if
     close(unit, iostat=status)
     if (status /= 0 .or. .not. candidate%is_valid()) then
       solution = reactive_amr_eb_patch_tree_2d()
@@ -3036,6 +3155,138 @@ contains
       alpha = real(substep - 1, dp) / real(ratio, dp)
     end if
   end function patch_tree_substep_time_alpha
+
+  pure logical function valid_patch_tree_selected_checkpoint_context_2d( &
+      nspecies, bundle_sha256, chemistry_integrator, base_mole_fractions) &
+      result(valid)
+    integer, intent(in) :: nspecies
+    character(len=*), intent(in) :: bundle_sha256, chemistry_integrator
+    real(dp), intent(in) :: base_mole_fractions(:)
+
+    integer :: index
+
+    valid = nspecies > 0 .and. len_trim(bundle_sha256) == 64 .and. &
+      size(base_mole_fractions) == nspecies
+    if (.not. valid) return
+    do index = 1, 64
+      select case (bundle_sha256(index:index))
+      case ('0':'9', 'a':'f', 'A':'F')
+      case default
+        valid = .false.
+        return
+      end select
+    end do
+    valid = trim(chemistry_integrator) == "explicit" .or. &
+      trim(chemistry_integrator) == "implicit"
+    if (.not. valid) return
+    valid = all(ieee_is_finite(base_mole_fractions))
+    if (.not. valid) return
+    valid = minval(base_mole_fractions) >= 0.0_dp .and. &
+      abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+  end function valid_patch_tree_selected_checkpoint_context_2d
+
+  pure logical function valid_patch_tree_selected_checkpoint_baseline_2d( &
+      initial_integrals, nvar, nspecies) result(valid)
+    real(dp), intent(in) :: initial_integrals(:)
+    integer, intent(in) :: nvar, nspecies
+
+    real(dp) :: closure_tolerance
+    integer :: first_species, last_species
+
+    valid = nspecies > 0
+    if (.not. valid) return
+    valid = nvar == reactive_nvar(nspecies) .and. &
+      size(initial_integrals) == nvar
+    if (.not. valid) return
+    first_species = reactive_species_component(1)
+    last_species = reactive_species_component(nspecies)
+    valid = all(ieee_is_finite(initial_integrals)) .and. &
+      initial_integrals(irho) > 0.0_dp .and. initial_integrals(iet) > 0.0_dp
+    if (.not. valid) return
+    closure_tolerance = 5.0e-10_dp * &
+      max(1.0_dp, abs(initial_integrals(irho)))
+    valid = minval(initial_integrals(first_species:last_species)) >= &
+      -closure_tolerance .and. &
+      abs(sum(initial_integrals(first_species:last_species)) - &
+        initial_integrals(irho)) <= closure_tolerance
+  end function valid_patch_tree_selected_checkpoint_baseline_2d
+
+  logical function patch_tree_selected_checkpoint_state_is_physical_2d( &
+      species, solution) result(valid)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_amr_eb_patch_tree_2d), intent(in) :: solution
+
+    type(eb_geometry_2d) :: geometry
+    real(dp), allocatable :: primitive(:)
+    real(dp) :: density, closure_tolerance, recovered_temperature
+    real(dp) :: sound_speed, stored_temperature
+    logical :: local_ok
+    integer :: first_species, last_species
+    integer :: level, patch, i, j
+
+    valid = size(species) > 0
+    if (.not. valid) return
+    valid = solution%nvar == reactive_nvar(size(species))
+    if (.not. valid) return
+    valid = solution%is_valid()
+    if (.not. valid) return
+    first_species = reactive_species_component(1)
+    last_species = reactive_species_component(size(species))
+    allocate(primitive(reactive_nprim(size(species))))
+    do level = 1, solution%level_count()
+      do patch = 1, solution%levels(level)%patch_count()
+        call patch_geometry_at( &
+          solution%topology, level, patch, geometry, local_ok)
+        if (.not. local_ok) then
+          valid = .false.
+          return
+        end if
+        do j = 1, geometry%ny
+          do i = 1, geometry%nx
+            if (geometry%cell_type(i, j) == eb_covered_cell) cycle
+            if (any(solution%levels(level)%patches(patch)%state( &
+                first_species:last_species, i, j) < 0.0_dp)) then
+              valid = .false.
+              return
+            end if
+            density = solution%levels(level)%patches(patch)%state(irho, i, j)
+            if (.not. ieee_is_finite(density) .or. density <= 0.0_dp) then
+              valid = .false.
+              return
+            end if
+            if (solution%levels(level)%patches(patch)%state(iet, i, j) <= &
+                0.0_dp) then
+              valid = .false.
+              return
+            end if
+            closure_tolerance = 5.0e-10_dp * max(1.0_dp, abs(density))
+            if (abs(sum(solution%levels(level)%patches(patch)%state( &
+                first_species:last_species, i, j)) - density) > &
+                closure_tolerance) then
+              valid = .false.
+              return
+            end if
+            stored_temperature = &
+              solution%levels(level)%patches(patch)%temperature(i, j)
+            if (.not. ieee_is_finite(stored_temperature) .or. &
+                stored_temperature <= 0.0_dp) then
+              valid = .false.
+              return
+            end if
+            call reactive_conserved_to_primitive( &
+              species, solution%levels(level)%patches(patch)%state(:, i, j), &
+              stored_temperature, primitive, recovered_temperature, &
+              sound_speed, local_ok)
+            if (.not. local_ok) then
+              valid = .false.
+              return
+            end if
+          end do
+        end do
+      end do
+    end do
+    valid = .true.
+  end function patch_tree_selected_checkpoint_state_is_physical_2d
 
   pure logical function patch_tree_checkpoint_metadata_is_valid( &
       time, steps, regrids, minimum_dt, minimum_transport_theta) result(valid)

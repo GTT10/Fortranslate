@@ -1,0 +1,332 @@
+program pelef0d_selected
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use precision_mod, only: dp
+  use constants_mod, only: pelef_version
+  use nasa7_thermo_mod, only: nasa7_species
+  use mixture_thermo_mod, only: &
+    mass_fractions_from_mole_fractions, mixture_density, mixture_pressure, &
+    mixture_mass_properties
+  use elementary_kinetics_mod, only: &
+    elementary_reaction, valid_elementary_reaction
+  use constant_volume_reactor_mod, only: &
+    advance_constant_volume_implicit_adaptive
+#ifdef PELEF_HAVE_SUNDIALS
+  use sundials_constant_volume_reactor_mod, only: &
+    cvode_reactor_context, cvode_reactor_statistics, &
+    initialize_constant_volume_cvode, &
+    advance_constant_volume_cvode, &
+    get_constant_volume_cvode_statistics, finalize_constant_volume_cvode
+#endif
+  use simulation_config_selected_reactor_mod, only: &
+    selected_reactor_config, read_selected_reactor_configuration, &
+    resolve_selected_reactor_composition, &
+    selected_reactor_paths_alias_lexically
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => &
+      @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => &
+      @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_selected_production_rates => &
+      @PELEF_BUNDLE_KERNEL_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@
+  implicit none
+
+  type(selected_reactor_config) :: config
+#ifdef PELEF_HAVE_SUNDIALS
+  type(cvode_reactor_context) :: cvode_context
+  type(cvode_reactor_statistics) :: cvode_statistics
+#endif
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: mass_fractions(pelef_selected_species_count)
+  real(dp) :: production_rates(pelef_selected_species_count)
+  real(dp) :: density, temperature, target_energy, current_energy, pressure
+  real(dp) :: molecular_weight, gas_constant, cp, cv, gamma, enthalpy, entropy
+  real(dp) :: time, requested_step, accepted_step, suggested_step, next_output
+  real(dp) :: minimum_accepted_step
+  real(dp) :: relative_energy_error, closure_error, time_tolerance
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  integer :: unit, io_status, steps, total_newton, total_rejected
+  integer :: newton_iterations, rejected_steps, reaction_index
+  character(len=1024) :: input_path, message
+  character(len=1024) :: cleanup_message
+  logical :: ok, cleanup_ok
+
+  if (command_argument_count() /= 1) then
+    write(*, '(a)') "Usage: pelef0d_selected <input.nml>"
+    error stop 2
+  end if
+  call get_command_argument(1, input_path)
+  call read_selected_reactor_configuration(trim(input_path), config, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  if (selected_reactor_paths_alias_lexically( &
+      config%output_file, input_path)) then
+    error stop "Selected reactor input and output paths must differ"
+  end if
+#ifndef PELEF_HAVE_SUNDIALS
+  if (trim(config%integrator) == "cvode") then
+    write(*, '(a)') &
+      "CVODE integrator is unavailable; configure PELEF_ENABLE_SUNDIALS=ON"
+    error stop 2
+  end if
+#endif
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected mechanism thermodynamics"
+  end if
+  if (size(species) /= pelef_selected_species_count .or. size(species) < 2) then
+    error stop "Selected mechanism returned an unsupported species count"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected mechanism reactions"
+  end if
+  if (size(reactions) /= pelef_selected_reaction_count) then
+    error stop "Selected mechanism returned the wrong reaction count"
+  end if
+  do reaction_index = 1, size(reactions)
+    if (.not. valid_elementary_reaction(reactions(reaction_index), size(species))) then
+      error stop "Selected mechanism returned an invalid reaction"
+    end if
+    call require_mass_balanced_reaction(reaction_index)
+  end do
+
+  common_temperature_minimum = maxval(species%temperature_min)
+  common_temperature_maximum = minval(species%temperature_max)
+  if (.not. ieee_is_finite(common_temperature_minimum) .or. &
+      .not. ieee_is_finite(common_temperature_maximum) .or. &
+      common_temperature_minimum >= common_temperature_maximum) then
+    error stop "Selected mechanism has no common thermodynamic interval"
+  end if
+  if (config%initial_temperature < common_temperature_minimum .or. &
+      config%initial_temperature > common_temperature_maximum) then
+    error stop "Selected reactor initial temperature is outside the mechanism range"
+  end if
+
+  call resolve_selected_reactor_composition( &
+    config, species, mole_fractions, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  call mass_fractions_from_mole_fractions( &
+    species, mole_fractions, mass_fractions, ok)
+  if (.not. ok) error stop "Failed to convert selected reactor composition"
+  temperature = config%initial_temperature
+  density = mixture_density( &
+    species, mass_fractions, config%initial_pressure, temperature, ok)
+  if (.not. ok) error stop "Failed to evaluate selected reactor density"
+  call mixture_mass_properties( &
+    species, mass_fractions, temperature, molecular_weight, gas_constant, &
+    cp, cv, gamma, enthalpy, target_energy, entropy, ok)
+  if (.not. ok) error stop "Failed to evaluate selected reactor energy"
+
+#ifdef PELEF_HAVE_SUNDIALS
+  if (trim(config%integrator) == "cvode") then
+    call initialize_constant_volume_cvode( &
+      cvode_context, species, reactions, density, target_energy, 0.0_dp, &
+      config%initial_time_step, config%minimum_time_step, &
+      config%maximum_time_step, config%relative_tolerance, &
+      config%absolute_tolerance, config%cvode_max_internal_steps, &
+      mass_fractions, &
+      temperature, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      error stop 2
+    end if
+  end if
+#endif
+
+  open(newunit=unit, file=trim(config%output_file), status="replace", &
+    action="write", iostat=io_status)
+  if (io_status /= 0) error stop "Could not create selected reactor CSV"
+  call write_header()
+
+  write(*, '(a)') "PeleF " // pelef_version // " selected mechanism 0D"
+  write(*, '(a,1x,a)') "Input:", trim(input_path)
+  write(*, '(a,i0)') "Species: ", pelef_selected_species_count
+  write(*, '(a,i0)') "Reactions: ", pelef_selected_reaction_count
+  write(*, '(a,1x,a)') "Integrator:", trim(config%integrator)
+  write(*, '(a,es24.16)') "Constant density: ", density
+
+  time = 0.0_dp
+  requested_step = config%initial_time_step
+  next_output = 0.0_dp
+  steps = 0
+  total_newton = 0
+  total_rejected = 0
+  time_tolerance = 100.0_dp * epsilon(1.0_dp) * &
+    max(1.0_dp, config%final_time)
+  call write_row()
+  next_output = min(config%output_interval, config%final_time)
+
+  if (trim(config%integrator) == "implicit") then
+    do while (time < config%final_time - time_tolerance)
+      if (steps >= config%maximum_steps) then
+        error stop "Selected reactor step limit reached"
+      end if
+      requested_step = min(requested_step, config%maximum_time_step)
+      requested_step = min(requested_step, config%final_time - time)
+      requested_step = min(requested_step, next_output - time)
+      if (requested_step <= time_tolerance) then
+        time = next_output
+        call write_row()
+        if (next_output >= config%final_time - time_tolerance) exit
+        next_output = min(next_output + config%output_interval, config%final_time)
+        cycle
+      end if
+      ! The configured minimum bounds adaptive reductions.  A scheduler-clipped
+      ! output or final interval may itself be shorter, but it must then be
+      ! accepted without any further reduction.
+      minimum_accepted_step = min(config%minimum_time_step, requested_step)
+      call advance_constant_volume_implicit_adaptive( &
+        species, reactions, density, target_energy, requested_step, &
+        config%relative_tolerance, config%absolute_tolerance, mass_fractions, &
+        temperature, accepted_step, suggested_step, newton_iterations, &
+        rejected_steps, ok)
+      if (.not. ok .or. accepted_step < minimum_accepted_step) then
+        error stop "Selected reactor implicit step failed"
+      end if
+      time = time + accepted_step
+      requested_step = min(config%maximum_time_step, suggested_step)
+      steps = steps + 1
+      total_newton = total_newton + newton_iterations
+      total_rejected = total_rejected + rejected_steps
+      if (time >= next_output - time_tolerance) then
+        time = next_output
+        call write_row()
+        if (next_output >= config%final_time - time_tolerance) exit
+        next_output = min(next_output + config%output_interval, config%final_time)
+      end if
+    end do
+  else
+#ifdef PELEF_HAVE_SUNDIALS
+    do while (time < config%final_time - time_tolerance)
+      call advance_constant_volume_cvode( &
+        cvode_context, next_output, mass_fractions, temperature, ok, message)
+      if (.not. ok) then
+        close(unit)
+        write(*, '(a)') trim(message)
+        call finalize_constant_volume_cvode( &
+          cvode_context, cleanup_ok, cleanup_message)
+        error stop 2
+      end if
+      time = next_output
+      call write_row()
+      if (next_output >= config%final_time - time_tolerance) exit
+      next_output = min(next_output + config%output_interval, config%final_time)
+    end do
+    call get_constant_volume_cvode_statistics( &
+      cvode_context, cvode_statistics, ok, message)
+    if (.not. ok) then
+      close(unit)
+      write(*, '(a)') trim(message)
+      call finalize_constant_volume_cvode( &
+        cvode_context, cleanup_ok, cleanup_message)
+      error stop 2
+    end if
+    call finalize_constant_volume_cvode( &
+      cvode_context, cleanup_ok, cleanup_message)
+    if (.not. cleanup_ok) then
+      close(unit)
+      write(*, '(a)') trim(cleanup_message)
+      error stop 2
+    end if
+#endif
+  end if
+  close(unit)
+
+  call mixture_mass_properties( &
+    species, mass_fractions, temperature, molecular_weight, gas_constant, &
+    cp, cv, gamma, enthalpy, current_energy, entropy, ok)
+  if (.not. ok) error stop "Failed to evaluate selected reactor final energy"
+  relative_energy_error = abs(current_energy - target_energy) / &
+    max(1.0_dp, abs(target_energy))
+  pressure = mixture_pressure(species, mass_fractions, density, temperature, ok)
+  if (.not. ok) error stop "Failed to evaluate selected reactor final pressure"
+  if (trim(config%integrator) == "implicit") then
+    write(*, '(a,i0)') "Accepted implicit steps: ", steps
+    write(*, '(a,i0)') "Newton iterations: ", total_newton
+    write(*, '(a,i0)') "Rejected trial steps: ", total_rejected
+  else
+#ifdef PELEF_HAVE_SUNDIALS
+    write(*, '(a,i0)') "CVODE internal steps: ", &
+      cvode_statistics%internal_steps
+    write(*, '(a,i0)') "CVODE RHS evaluations: ", &
+      cvode_statistics%rhs_evaluations
+    write(*, '(a,i0)') "CVODE Jacobian evaluations: ", &
+      cvode_statistics%jacobian_evaluations
+    write(*, '(a,i0)') "CVODE nonlinear iterations: ", &
+      cvode_statistics%nonlinear_iterations
+    write(*, '(a,i0)') "CVODE nonlinear convergence failures: ", &
+      cvode_statistics%nonlinear_convergence_failures
+    write(*, '(a,i0)') "CVODE error-test failures: ", &
+      cvode_statistics%error_test_failures
+#endif
+  end if
+  write(*, '(a,es24.16)') "Final temperature: ", temperature
+  write(*, '(a,es24.16)') "Final pressure: ", pressure
+  write(*, '(a,es24.16)') "Relative energy error: ", relative_energy_error
+  write(*, '(a,1x,a)') "Output:", trim(config%output_file)
+
+contains
+
+  subroutine require_mass_balanced_reaction(index)
+    integer, intent(in) :: index
+    real(dp) :: reactant_mass, product_mass, mass_scale
+
+    reactant_mass = sum( &
+      species%molecular_weight * reactions(index)%reactant_stoich)
+    product_mass = sum( &
+      species%molecular_weight * reactions(index)%product_stoich)
+    mass_scale = max(1.0_dp, abs(reactant_mass), abs(product_mass))
+    if (.not. ieee_is_finite(reactant_mass) .or. &
+        .not. ieee_is_finite(product_mass) .or. &
+        abs(product_mass - reactant_mass) > 2.0e-12_dp * mass_scale) then
+      error stop "Selected mechanism reaction is not mass balanced"
+    end if
+  end subroutine require_mass_balanced_reaction
+
+  subroutine write_header()
+    integer :: index
+
+    write(unit, '(a)', advance="no") &
+      "time,temperature,pressure,density,specific_internal_energy," // &
+      "relative_energy_error,closure_error"
+    do index = 1, size(species)
+      write(unit, '(a)', advance="no") ",Y_" // trim(species(index)%name)
+    end do
+    do index = 1, size(species)
+      write(unit, '(a)', advance="no") ",wdot_" // trim(species(index)%name)
+    end do
+    write(unit, '(a)') ""
+  end subroutine write_header
+
+  subroutine write_row()
+    call mixture_mass_properties( &
+      species, mass_fractions, temperature, molecular_weight, gas_constant, &
+      cp, cv, gamma, enthalpy, current_energy, entropy, ok)
+    if (.not. ok) error stop "Failed to evaluate selected reactor row energy"
+    pressure = mixture_pressure(species, mass_fractions, density, temperature, ok)
+    if (.not. ok) error stop "Failed to evaluate selected reactor row pressure"
+    call pelef_selected_production_rates( &
+      species, reactions, temperature, density, mass_fractions, &
+      production_rates, ok)
+    if (.not. ok) error stop "Failed to evaluate selected production rates"
+    relative_energy_error = abs(current_energy - target_energy) / &
+      max(1.0_dp, abs(target_energy))
+    closure_error = abs(sum(mass_fractions) - 1.0_dp)
+    write(unit, '(*(es25.16e3,:,","))') &
+      time, temperature, pressure, density, current_energy, &
+      relative_energy_error, closure_error, mass_fractions, production_rates
+  end subroutine write_row
+
+end program pelef0d_selected

@@ -81,7 +81,8 @@ contains
       minimum_transport_theta, initial_integrals, &
       chemistry_level_advances, transport_level_advances, &
       hydro_level_advances, regrid_evaluations, &
-      cumulative_tagged_cells)
+      cumulative_tagged_cells, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -100,9 +101,12 @@ contains
     integer, intent(in), optional :: hydro_level_advances(:)
     integer, intent(in), optional :: regrid_evaluations
     integer, intent(in), optional :: cumulative_tagged_cells
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: gathered
-    logical :: controls_ok, gathered_ok, write_ok
+    logical :: controls_ok, gathered_ok, selected_context, write_ok
     integer :: ierr, transfers
     integer, allocatable :: selected_chemistry_advances(:)
     integer, allocatable :: selected_transport_advances(:)
@@ -129,6 +133,19 @@ contains
     call checkpoint_species_match_2d( &
       distribution%comm, distribution%rank, root, species, controls_ok)
     if (.not. controls_ok) return
+    call checkpoint_selected_context_match_2d( &
+      distribution%comm, root, size(species), bundle_sha256, &
+      chemistry_integrator, base_mole_fractions, selected_context, &
+      controls_ok)
+    if (.not. controls_ok) return
+    call checkpoint_selected_metadata_present_2d( &
+      distribution%comm, selected_context, [ &
+        present(fingerprint), present(minimum_transport_theta), &
+        present(initial_integrals), present(chemistry_level_advances), &
+        present(transport_level_advances), &
+        present(hydro_level_advances), present(regrid_evaluations), &
+        present(cumulative_tagged_cells)], controls_ok)
+    if (.not. controls_ok) return
 
     call gather_sparse_owned_reactive_amr_eb_patch_tree_to_root_2d( &
       distribution, sparse, root, gathered, gathered_ok, transfers)
@@ -154,12 +171,22 @@ contains
         allocate(selected_hydro_advances(gathered%level_count()), source=0)
       end if
       if (write_ok .and. present(fingerprint)) then
-        call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-          path, species, gathered, time, steps, regrids, minimum_dt, &
-          write_ok, fingerprint, selected_minimum_transport_theta, &
-          selected_initial_integrals, selected_chemistry_advances, &
-          selected_transport_advances, selected_hydro_advances, &
-          regrid_evaluations, cumulative_tagged_cells)
+        if (selected_context) then
+          call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            path, species, gathered, time, steps, regrids, minimum_dt, &
+            write_ok, fingerprint, selected_minimum_transport_theta, &
+            selected_initial_integrals, selected_chemistry_advances, &
+            selected_transport_advances, selected_hydro_advances, &
+            regrid_evaluations, cumulative_tagged_cells, bundle_sha256, &
+            chemistry_integrator, base_mole_fractions)
+        else
+          call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            path, species, gathered, time, steps, regrids, minimum_dt, &
+            write_ok, fingerprint, selected_minimum_transport_theta, &
+            selected_initial_integrals, selected_chemistry_advances, &
+            selected_transport_advances, selected_hydro_advances, &
+            regrid_evaluations, cumulative_tagged_cells)
+        end if
       else if (write_ok) then
         call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, gathered, time, steps, regrids, minimum_dt, write_ok, &
@@ -186,7 +213,8 @@ contains
       local_entity_transfers, fingerprint, minimum_transport_theta, &
       initial_integrals, chemistry_level_advances, &
       transport_level_advances, hydro_level_advances, &
-      regrid_evaluations, cumulative_tagged_cells)
+      regrid_evaluations, cumulative_tagged_cells, bundle_sha256, &
+      chemistry_integrator, base_mole_fractions)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(MPI_Comm), intent(in) :: comm
@@ -206,6 +234,9 @@ contains
     integer, allocatable, intent(out), optional :: hydro_level_advances(:)
     integer, intent(out), optional :: regrid_evaluations
     integer, intent(out), optional :: cumulative_tagged_cells
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(reactive_amr_eb_patch_tree_2d) :: loaded
     type(amr_eb_patch_tree_topology_2d) :: topology
@@ -215,7 +246,8 @@ contains
     integer, allocatable :: restored_hydro_advances(:)
     real(dp) :: real_metadata(3)
     integer :: counter_levels, ierr, integer_metadata(4), rank, transfers
-    logical :: controls_ok, distributed_ok, read_ok, topology_ok
+    logical :: controls_ok, distributed_ok, read_ok, selected_context
+    logical :: topology_ok
 
     distribution = mpi_amr_eb_patch_tree_distribution_2d()
     sparse = mpi_sparse_reactive_amr_eb_patch_tree_2d()
@@ -239,16 +271,35 @@ contains
     call checkpoint_species_match_2d( &
       comm, rank, root, species, controls_ok)
     if (.not. controls_ok) return
+    call checkpoint_selected_context_match_2d( &
+      comm, root, size(species), bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, selected_context, controls_ok)
+    if (.not. controls_ok) return
+    call checkpoint_selected_metadata_present_2d( &
+      comm, selected_context, [present(fingerprint)], controls_ok)
+    if (.not. controls_ok) return
 
     read_ok = .true.
     if (rank == root) then
       if (present(fingerprint)) then
-        call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
-          path, species, maximum_levels, loaded, real_metadata(1), &
-          integer_metadata(1), integer_metadata(2), real_metadata(2), &
-          read_ok, fingerprint, real_metadata(3), restored_initial_integrals, &
-          restored_chemistry_advances, restored_transport_advances, &
-          restored_hydro_advances, integer_metadata(3), integer_metadata(4))
+        if (selected_context) then
+          call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            path, species, maximum_levels, loaded, real_metadata(1), &
+            integer_metadata(1), integer_metadata(2), real_metadata(2), &
+            read_ok, fingerprint, real_metadata(3), &
+            restored_initial_integrals, restored_chemistry_advances, &
+            restored_transport_advances, restored_hydro_advances, &
+            integer_metadata(3), integer_metadata(4), bundle_sha256, &
+            chemistry_integrator, base_mole_fractions)
+        else
+          call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+            path, species, maximum_levels, loaded, real_metadata(1), &
+            integer_metadata(1), integer_metadata(2), real_metadata(2), &
+            read_ok, fingerprint, real_metadata(3), &
+            restored_initial_integrals, restored_chemistry_advances, &
+            restored_transport_advances, restored_hydro_advances, &
+            integer_metadata(3), integer_metadata(4))
+        end if
       else
         call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
           path, species, maximum_levels, loaded, real_metadata(1), &
@@ -647,6 +698,121 @@ contains
       local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
     ok = ierr == MPI_SUCCESS .and. accepted
   end subroutine checkpoint_species_match_2d
+
+  subroutine checkpoint_selected_context_match_2d( &
+      comm, root, nspecies, bundle_sha256, chemistry_integrator, &
+      base_mole_fractions, selected_context, ok)
+    type(MPI_Comm), intent(in) :: comm
+    integer, intent(in) :: root, nspecies
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    logical, intent(out) :: selected_context, ok
+
+    character(len=64) :: root_bundle
+    character(len=32) :: root_integrator
+    integer :: ierr, index, nranks, rank
+    integer :: local_presence(3), minimum_presence(3), maximum_presence(3)
+    logical :: accepted, local_ok
+    real(dp), allocatable :: root_composition(:)
+
+    selected_context = .false.
+    ok = .false.
+    local_presence = [ &
+      merge(1, 0, present(bundle_sha256)), &
+      merge(1, 0, present(chemistry_integrator)), &
+      merge(1, 0, present(base_mole_fractions))]
+    call MPI_Allreduce( &
+      local_presence, minimum_presence, size(local_presence), MPI_INTEGER, &
+      MPI_MIN, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Allreduce( &
+      local_presence, maximum_presence, size(local_presence), MPI_INTEGER, &
+      MPI_MAX, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. &
+        any(minimum_presence /= maximum_presence)) return
+    if (all(minimum_presence == 0)) then
+      ok = .true.
+      return
+    end if
+    if (.not. all(minimum_presence == 1)) return
+    selected_context = .true.
+
+    call MPI_Comm_rank(comm, rank, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Comm_size(comm, nranks, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    local_ok = root >= 0 .and. root < nranks .and. nspecies > 0 .and. &
+      len_trim(bundle_sha256) == 64 .and. &
+      size(base_mole_fractions) == nspecies
+    if (local_ok) then
+      local_ok = trim(chemistry_integrator) == "explicit" .or. &
+        trim(chemistry_integrator) == "implicit"
+    end if
+    if (local_ok) then
+      do index = 1, 64
+        select case (bundle_sha256(index:index))
+        case ('0':'9', 'a':'f', 'A':'F')
+        case default
+          local_ok = .false.
+        end select
+      end do
+    end if
+    if (local_ok) local_ok = all(ieee_is_finite(base_mole_fractions))
+    if (local_ok) then
+      local_ok = minval(base_mole_fractions) >= 0.0_dp .and. &
+        abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+    end if
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. accepted) return
+
+    root_bundle = ""
+    root_integrator = ""
+    allocate(root_composition(nspecies))
+    root_composition = 0.0_dp
+    if (rank == root) then
+      root_bundle = bundle_sha256
+      root_integrator = chemistry_integrator
+      root_composition = base_mole_fractions
+    end if
+    call MPI_Bcast( &
+      root_bundle, len(root_bundle), MPI_CHARACTER, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      root_integrator, len(root_integrator), MPI_CHARACTER, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+    call MPI_Bcast( &
+      root_composition, nspecies, MPI_DOUBLE_PRECISION, root, comm, ierr)
+    if (ierr /= MPI_SUCCESS) return
+
+    local_ok = trim(root_bundle) == trim(bundle_sha256) .and. &
+      trim(root_integrator) == trim(chemistry_integrator) .and. &
+      all(root_composition == base_mole_fractions)
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. accepted
+  end subroutine checkpoint_selected_context_match_2d
+
+  subroutine checkpoint_selected_metadata_present_2d( &
+      comm, selected_context, metadata_present, ok)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(in) :: selected_context
+    logical, intent(in) :: metadata_present(:)
+    logical, intent(out) :: ok
+
+    integer :: ierr
+    logical :: accepted, local_ok
+
+    if (.not. selected_context) then
+      ok = .true.
+      return
+    end if
+    local_ok = all(metadata_present)
+    call MPI_Allreduce( &
+      local_ok, accepted, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    ok = ierr == MPI_SUCCESS .and. accepted
+  end subroutine checkpoint_selected_metadata_present_2d
 
   subroutine broadcast_root_patch_tree_topology_2d( &
       comm, rank, root, root_tree, topology, ok)

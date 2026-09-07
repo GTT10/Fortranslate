@@ -1,7 +1,17 @@
 module simulation_config_reactive_1d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use selected_composition_mod, only: &
+    selected_composition_max_species, selected_composition_name_length, &
+    validate_selected_composition_fields, resolve_selected_composition
   implicit none
   private
+
+  integer, parameter :: reactive_1d_species_name_length = &
+    selected_composition_name_length
+  integer, parameter, public :: reactive_1d_max_species = &
+    selected_composition_max_species
 
   type, public :: reactive_1d_config
     integer :: nx = 96
@@ -63,6 +73,11 @@ module simulation_config_reactive_1d_mod
     real(dp) :: x_h2o2 = 0.0_dp
     real(dp) :: x_ar = 0.0_dp
     real(dp) :: x_n2 = 0.55643_dp
+    integer :: composition_count = 0
+    character(len=reactive_1d_species_name_length) :: &
+      composition_species(reactive_1d_max_species) = ""
+    real(dp) :: &
+      composition_mole_fractions(reactive_1d_max_species) = 0.0_dp
     character(len=256) :: output_file = "reactive_1d.csv"
     character(len=256) :: checkpoint_file = ""
     character(len=256) :: restart_file = ""
@@ -70,14 +85,17 @@ module simulation_config_reactive_1d_mod
 
   public :: read_reactive_1d_configuration
   public :: reactive_1d_mole_fractions
+  public :: resolve_reactive_1d_selected_composition
 
 contains
 
-  subroutine read_reactive_1d_configuration(path, config, ok, message)
+  subroutine read_reactive_1d_configuration( &
+      path, config, ok, message, allow_selected)
     character(len=*), intent(in) :: path
     type(reactive_1d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    logical, intent(in), optional :: allow_selected
 
     integer :: nx, maximum_steps, unit, status
     integer :: amr_refinement_ratio, amr_max_levels, amr_regrid_interval
@@ -96,11 +114,15 @@ contains
     real(dp) :: hotspot_temperature_rise
     real(dp) :: hotspot_center, hotspot_width
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2
+    real(dp) :: composition_mole_fractions(reactive_1d_max_species)
+    integer :: composition_count
+    character(len=reactive_1d_species_name_length) :: &
+      composition_species(reactive_1d_max_species)
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=32) :: chemistry_model, amr_reconstruction
     character(len=32) :: boundary_condition
     character(len=256) :: output_file, checkpoint_file, restart_file
-    logical :: chemistry_enabled
+    logical :: chemistry_enabled, selected_allowed, selected_model
     logical :: transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
@@ -129,7 +151,8 @@ contains
       density_wave_amplitude, composition_wave_amplitude, &
       hotspot_temperature_rise, hotspot_center, hotspot_width, x_h2, x_h, &
       x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, output_file, &
-      checkpoint_file, restart_file
+      checkpoint_file, restart_file, composition_count, &
+      composition_species, composition_mole_fractions
 
     config = reactive_1d_config()
     nx = config%nx
@@ -193,9 +216,14 @@ contains
     x_h2o2 = config%x_h2o2
     x_ar = config%x_ar
     x_n2 = config%x_n2
+    composition_count = config%composition_count
+    composition_species = config%composition_species
+    composition_mole_fractions = config%composition_mole_fractions
     output_file = config%output_file
     checkpoint_file = config%checkpoint_file
     restart_file = config%restart_file
+    selected_allowed = .false.
+    if (present(allow_selected)) selected_allowed = allow_selected
 
     message = ""
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -213,7 +241,9 @@ contains
       return
     end if
 
-    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + x_h2o2 + x_ar + x_n2
+    selected_model = trim(chemistry_model) == "selected"
+    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + &
+      x_h2o2 + x_ar + x_n2
     ok = nx >= 8 .and. maximum_steps >= 1 .and. x_upper > x_lower .and. &
       final_time > 0.0_dp .and. cfl > 0.0_dp .and. cfl <= 0.9_dp .and. &
       initial_temperature > 0.0_dp .and. initial_pressure > 0.0_dp .and. &
@@ -223,9 +253,12 @@ contains
       chemistry_relative_tolerance > 0.0_dp .and. &
       transport_cfl > 0.0_dp .and. transport_cfl <= 0.5_dp .and. &
       chemistry_absolute_tolerance > 0.0_dp .and. &
-      checkpoint_interval >= 0 .and. &
-      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
-      abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+      checkpoint_interval >= 0
+    if (ok .and. .not. selected_model) then
+      ok = min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
+        x_ar, x_n2) >= 0.0_dp .and. &
+        abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+    end if
     if (ok .and. checkpoint_interval > 0) &
       ok = len_trim(checkpoint_file) > 0
     if (ok .and. checkpoint_stop_after_write) &
@@ -261,10 +294,17 @@ contains
       return
     end if
     if (trim(chemistry_model) /= "elementary" .and. &
-        trim(chemistry_model) /= "full_h2o2") then
+        trim(chemistry_model) /= "full_h2o2" .and. &
+        .not. (selected_model .and. selected_allowed)) then
       ok = .false.
       message = "Unknown reactive 1D chemistry model"
       return
+    end if
+    if (selected_model) then
+      call validate_selected_composition_fields( &
+        "Reactive 1D", composition_count, composition_species, &
+        composition_mole_fractions, ok, message)
+      if (.not. ok) return
     end if
     if (trim(chemistry_model) == "elementary" .and. &
         max(x_ho2, x_h2o2, x_ar) > 5.0e-14_dp) then
@@ -280,7 +320,7 @@ contains
       message = "Unknown reactive 1D problem"
       return
     end if
-    if (trim(problem) == "composition_wave" .and. &
+    if (.not. selected_model .and. trim(problem) == "composition_wave" .and. &
         composition_wave_amplitude > min(x_h2, x_n2)) then
       ok = .false.
       message = "Composition-wave amplitude exceeds the H2/N2 base fraction"
@@ -382,6 +422,9 @@ contains
     config%x_h2o2 = x_h2o2
     config%x_ar = x_ar
     config%x_n2 = x_n2
+    config%composition_count = composition_count
+    config%composition_species = composition_species
+    config%composition_mole_fractions = composition_mole_fractions
     config%output_file = trim(output_file)
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
@@ -412,5 +455,37 @@ contains
     ok = minval(mole_fractions) >= 0.0_dp .and. &
       abs(sum(mole_fractions) - 1.0_dp) <= 5.0e-10_dp
   end subroutine reactive_1d_mole_fractions
+
+
+  subroutine resolve_reactive_1d_selected_composition( &
+      config, species, mole_fractions, ok, message)
+    type(reactive_1d_config), intent(in) :: config
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(out) :: mole_fractions(:)
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    mole_fractions = 0.0_dp
+    if (trim(config%chemistry_model) /= "selected") then
+      ok = .false.
+      message = "Reactive 1D selected composition requires chemistry_model='selected'"
+      return
+    end if
+    call resolve_selected_composition( &
+      "Reactive 1D", &
+      config%composition_count, config%composition_species, &
+      config%composition_mole_fractions, species, mole_fractions, ok, message)
+    if (.not. ok) return
+    if (trim(config%problem) == "composition_wave" .and. &
+        config%composition_wave_amplitude > &
+          min(mole_fractions(1), mole_fractions(size(species)))) then
+      ok = .false.
+      message = &
+        "Composition-wave amplitude exceeds the selected endpoint fractions"
+      return
+    end if
+    message = ""
+    ok = .true.
+  end subroutine resolve_reactive_1d_selected_composition
 
 end module simulation_config_reactive_1d_mod

@@ -1,0 +1,29 @@
+&reactive_3d
+  nx = 4
+  ny = 4
+  nz = 4
+  maximum_steps = 1000
+  x_lower = 0.0
+  x_upper = 0.004
+  y_lower = 0.0
+  y_upper = 0.004
+  z_lower = 0.0
+  z_upper = 0.004
+  final_time = 1.0e-7
+  cfl = 0.25
+  problem = "uniform_reactor"
+  thermo_model = "selected"
+  riemann_solver = "hllc"
+  boundary_condition = "periodic"
+  chemistry_enabled = .true.
+  transport_enabled = .false.
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  initial_velocity_z = 0.0
+  composition_count = 2
+  composition_species = "H2", "UNKNOWN"
+  composition_mole_fractions = 0.8, 0.2
+  output_file = "invalid_selected_reactive_3d.csv"
+/

@@ -1,0 +1,7 @@
+&reactive_eb_3d
+  thermo_model = "selected"
+  composition_count = 2
+  composition_species = "H2", "H"
+  composition_mole_fractions = 0.0, 0.0
+  output_file = "invalid_selected_reactive_eb_3d_zero.csv"
+/

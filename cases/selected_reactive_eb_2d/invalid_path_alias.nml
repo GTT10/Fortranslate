@@ -1,0 +1,22 @@
+&reactive_2d
+  nx = 4
+  ny = 4
+  final_time = 1.0e-8
+  problem = "uniform_reactor"
+  use_transverse_correction = .false.
+  chemistry_model = "selected"
+  boundary_x_lower = "outflow"
+  boundary_x_upper = "outflow"
+  boundary_y_lower = "outflow"
+  boundary_y_upper = "outflow"
+  composition_count = 2
+  composition_species = "H", "H2"
+  composition_mole_fractions = 0.2, 0.8
+  output_file = "invalid_path_alias.nml"
+/
+
+&embedded_boundary
+  geometry = "plane"
+  plane_normal_x = 1.0
+  plane_offset = 0.00137
+/

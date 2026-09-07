@@ -3,7 +3,7 @@ module amr_multipatch_reactive_1d_mod
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_cfl_timestep, &
@@ -119,12 +119,14 @@ contains
   end function multipatch_reactive_is_valid
 
   subroutine initialize_multipatch_reactive_1d( &
-      species, config, patch_parent_lower, patch_parent_upper, solution, ok)
+      species, config, patch_parent_lower, patch_parent_upper, solution, ok, &
+      base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     integer, intent(in) :: patch_parent_lower(:), patch_parent_upper(:)
     type(amr_multipatch_reactive_solution_1d), intent(out) :: solution
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(amr_level_field_1d), allocatable :: fields(:)
     real(dp) :: coarse_dx
@@ -133,9 +135,15 @@ contains
 
     ok = .false.
     if (size(species) < 1 .or. .not. config%amr_enabled) return
-    call initialize_reactive_1d( &
-      species, config, solution%coarse, solution%coarse_temperature, &
-      coarse_dx, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_1d( &
+        species, config, solution%coarse, solution%coarse_temperature, &
+        coarse_dx, local_ok, base_mole_fractions)
+    else
+      call initialize_reactive_1d( &
+        species, config, solution%coarse, solution%coarse_temperature, &
+        coarse_dx, local_ok)
+    end if
     if (.not. local_ok) return
     call initialize_patch_set_1d( &
       config%nx, patch_parent_lower, patch_parent_upper, &
@@ -184,11 +192,12 @@ contains
   end subroutine initialize_multipatch_reactive_1d
 
   subroutine initialize_tagged_multipatch_reactive_1d( &
-      species, config, solution, ok)
+      species, config, solution, ok, base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_multipatch_reactive_solution_1d), intent(out) :: solution
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(amr_regrid_plan_collection_1d) :: collection
     real(dp), allocatable :: root_state(:, :), root_temperature(:)
@@ -200,8 +209,14 @@ contains
     ok = .false.
     if (.not. valid_tagged_multipatch_configuration(config, &
         reactive_nvar(size(species)))) return
-    call initialize_reactive_1d( &
-      species, config, root_state, root_temperature, root_dx, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_1d( &
+        species, config, root_state, root_temperature, root_dx, local_ok, &
+        base_mole_fractions)
+    else
+      call initialize_reactive_1d( &
+        species, config, root_state, root_temperature, root_dx, local_ok)
+    end if
     if (.not. local_ok .or. root_dx <= 0.0_dp) return
     call build_tagged_patch_collection( &
       config, root_state(:, 1:config%nx), collection, local_ok)
@@ -212,8 +227,14 @@ contains
       patch_lower(patch) = collection%plans(patch)%patch_lower
       patch_upper(patch) = collection%plans(patch)%patch_upper
     end do
-    call initialize_multipatch_reactive_1d( &
-      species, config, patch_lower, patch_upper, solution, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_multipatch_reactive_1d( &
+        species, config, patch_lower, patch_upper, solution, local_ok, &
+        base_mole_fractions)
+    else
+      call initialize_multipatch_reactive_1d( &
+        species, config, patch_lower, patch_upper, solution, local_ok)
+    end if
     if (.not. local_ok) return
     solution%regrid_evaluations = 1
     solution%regrids = merge(1, 0, solution%patch_count() > 0)
@@ -293,7 +314,8 @@ contains
   end subroutine multipatch_reactive_timestep_1d
 
   subroutine advance_multipatch_reactive_1d( &
-      species, reactions, config, dt, solution, ok, transport)
+      species, reactions, config, dt, solution, ok, transport, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -301,6 +323,7 @@ contains
     type(amr_multipatch_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(amr_multipatch_reactive_solution_1d) :: backup
     logical :: local_ok
@@ -312,7 +335,8 @@ contains
 
     if (config%chemistry_enabled) then
       call advance_multipatch_chemistry( &
-        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+        species, reactions, config, 0.5_dp * dt, solution, local_ok, &
+        chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) then
         solution = backup
         return
@@ -342,7 +366,8 @@ contains
     end if
     if (config%chemistry_enabled) then
       call advance_multipatch_chemistry( &
-        species, reactions, config, 0.5_dp * dt, solution, local_ok)
+        species, reactions, config, 0.5_dp * dt, solution, local_ok, &
+        chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) then
         solution = backup
         return
@@ -621,13 +646,14 @@ contains
   end subroutine advance_multipatch_transport
 
   subroutine advance_multipatch_chemistry( &
-      species, reactions, config, interval, solution, ok)
+      species, reactions, config, interval, solution, ok, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
     real(dp), intent(in) :: interval
     type(amr_multipatch_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(amr_level_field_1d), allocatable :: fields(:)
     logical :: local_ok
@@ -639,8 +665,8 @@ contains
     call advance_reactive_chemistry( &
       species, reactions, solution%coarse, solution%coarse_temperature, &
       nx, interval, config%chemistry_relative_tolerance, &
-      config%chemistry_absolute_tolerance, config%boundary_condition, &
-      local_ok)
+        config%chemistry_absolute_tolerance, config%boundary_condition, &
+        local_ok, chemistry_integrator=chemistry_integrator)
     if (.not. local_ok) then
       ok = .false.
       return
@@ -651,7 +677,8 @@ contains
         species, reactions, solution%patches(patch)%state, &
         solution%patches(patch)%temperature, fine_cells, interval, &
         config%chemistry_relative_tolerance, &
-        config%chemistry_absolute_tolerance, "outflow", local_ok)
+        config%chemistry_absolute_tolerance, "outflow", local_ok, &
+        chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) then
         ok = .false.
         return
@@ -748,7 +775,8 @@ contains
 
   subroutine simulate_multipatch_reactive_1d( &
       species, reactions, config, solution, initial_integrals, &
-      final_integrals, ok, transport)
+      final_integrals, ok, transport, base_mole_fractions, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -756,6 +784,8 @@ contains
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: all_integrals(:)
     real(dp) :: dt, tolerance
@@ -765,8 +795,13 @@ contains
     final_integrals = 0.0_dp
     ok = .false.
     if (config%transport_enabled .and. .not. present(transport)) return
-    call initialize_tagged_multipatch_reactive_1d( &
-      species, config, solution, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_tagged_multipatch_reactive_1d( &
+        species, config, solution, local_ok, base_mole_fractions)
+    else
+      call initialize_tagged_multipatch_reactive_1d( &
+        species, config, solution, local_ok)
+    end if
     if (.not. local_ok) return
     allocate(all_integrals(reactive_nvar(size(species))))
     call multipatch_reactive_integrals_1d(solution, all_integrals, local_ok)
@@ -787,10 +822,12 @@ contains
       dt = min(dt, config%final_time - solution%time)
       if (config%transport_enabled) then
         call advance_multipatch_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, transport)
+          species, reactions, config, dt, solution, local_ok, transport, &
+          chemistry_integrator=chemistry_integrator)
       else
         call advance_multipatch_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok)
+          species, reactions, config, dt, solution, local_ok, &
+          chemistry_integrator=chemistry_integrator)
       end if
       if (.not. local_ok) return
       if (mod(solution%steps, config%amr_regrid_interval) == 0) then

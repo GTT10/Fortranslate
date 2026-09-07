@@ -1,0 +1,271 @@
+program pelef_reactive_eb_amr_2d_selected
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use simulation_config_reactive_2d_mod, only: &
+    resolve_reactive_2d_selected_composition
+  use simulation_config_reactive_eb_amr_2d_mod, only: &
+    reactive_eb_amr_2d_config, read_reactive_eb_amr_2d_configuration
+  use simulation_config_selected_reactor_mod, only: &
+    selected_reactor_paths_alias_lexically
+  use reactive_eb_amr_2d_application_mod, only: &
+    run_reactive_eb_amr_2d_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(reactive_eb_amr_2d_config) :: config
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  real(dp) :: requested_temperature_minimum, requested_temperature_maximum
+  real(dp) :: interior_temperature_minimum, interior_temperature_maximum
+  real(dp) :: reflected_temperature_minimum, reflected_temperature_maximum
+  character(len=1024) :: input_path, message
+  logical :: ok
+
+  if (command_argument_count() /= 1) then
+    write(*, '(a)') &
+      "Usage: pelef_reactive_eb_amr_2d_selected <input.nml>"
+    error stop 2
+  end if
+  call get_command_argument(1, input_path)
+  call read_reactive_eb_amr_2d_configuration( &
+    trim(input_path), config, ok, message, allow_selected=.true.)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  if (trim(config%eb%flow%chemistry_model) /= "selected") then
+    error stop &
+      "Selected reactive EB AMR 2D requires chemistry_model='selected'"
+  end if
+  if (selected_reactor_paths_alias_lexically( &
+      config%eb%flow%output_file, input_path) .or. &
+      selected_reactor_paths_alias_lexically( &
+        config%fine_output_file, input_path) .or. &
+      selected_reactor_paths_alias_lexically( &
+        config%eb%flow%output_file, config%fine_output_file)) then
+    error stop "Selected reactive EB AMR 2D paths must be distinct"
+  end if
+  if (config%three_level_enabled) then
+    if (selected_reactor_paths_alias_lexically( &
+        config%level_two_output_file, input_path) .or. &
+        selected_reactor_paths_alias_lexically( &
+          config%level_two_output_file, config%eb%flow%output_file) .or. &
+        selected_reactor_paths_alias_lexically( &
+          config%level_two_output_file, config%fine_output_file)) then
+      error stop "Selected reactive EB AMR 2D three-level paths must be distinct"
+    end if
+  end if
+  if (len_trim(config%checkpoint_file) > 0 .and. &
+      (selected_reactor_paths_alias_lexically( &
+         config%checkpoint_file, input_path) .or. &
+       selected_reactor_paths_alias_lexically( &
+         config%checkpoint_file, config%eb%flow%output_file) .or. &
+       selected_reactor_paths_alias_lexically( &
+         config%checkpoint_file, config%fine_output_file) .or. &
+       (config%three_level_enabled .and. &
+        selected_reactor_paths_alias_lexically( &
+          config%checkpoint_file, config%level_two_output_file)))) then
+    error stop "Selected reactive EB AMR 2D checkpoint path must be distinct"
+  end if
+  if (len_trim(config%restart_file) > 0 .and. &
+      (selected_reactor_paths_alias_lexically( &
+         config%restart_file, input_path) .or. &
+       selected_reactor_paths_alias_lexically( &
+         config%restart_file, config%eb%flow%output_file) .or. &
+       selected_reactor_paths_alias_lexically( &
+         config%restart_file, config%fine_output_file) .or. &
+       (config%three_level_enabled .and. &
+        selected_reactor_paths_alias_lexically( &
+          config%restart_file, config%level_two_output_file)))) then
+    error stop "Selected reactive EB AMR 2D restart path must be distinct"
+  end if
+  if (len_trim(config%checkpoint_file) > 0 .and. &
+      len_trim(config%restart_file) > 0 .and. &
+      selected_reactor_paths_alias_lexically( &
+        config%checkpoint_file, config%restart_file)) then
+    error stop &
+      "Selected reactive EB AMR 2D checkpoint and restart paths must be distinct"
+  end if
+  if (config%multipatch_enabled) then
+    call validate_selected_multipatch_paths(config, input_path, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      error stop 2
+    end if
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected reactive EB AMR 2D thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected reactive EB AMR 2D reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected reactive EB AMR 2D transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected reactive EB AMR 2D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  requested_temperature_minimum = config%eb%flow%initial_temperature
+  requested_temperature_maximum = config%eb%flow%initial_temperature
+  select case (trim(config%eb%flow%problem))
+  case ("reactive_hotspot")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, config%eb%flow%initial_temperature + &
+        config%eb%flow%hotspot_temperature_rise)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, config%eb%flow%initial_temperature + &
+        config%eb%flow%hotspot_temperature_rise)
+  case ("reactive_double_hotspot")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, config%eb%flow%initial_temperature + &
+        min(0.0_dp, config%eb%flow%hotspot_temperature_rise) + &
+        min(0.0_dp, config%eb%flow%second_hotspot_temperature_rise))
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, config%eb%flow%initial_temperature + &
+        max(0.0_dp, config%eb%flow%hotspot_temperature_rise) + &
+        max(0.0_dp, config%eb%flow%second_hotspot_temperature_rise))
+  end select
+  if (trim(config%eb%embedded_wall_thermal) == "isothermal") then
+    interior_temperature_minimum = requested_temperature_minimum
+    interior_temperature_maximum = requested_temperature_maximum
+    reflected_temperature_minimum = max( &
+      tiny(1.0_dp), 2.0_dp * config%eb%embedded_wall_temperature - &
+        interior_temperature_maximum)
+    reflected_temperature_maximum = max( &
+      tiny(1.0_dp), 2.0_dp * config%eb%embedded_wall_temperature - &
+        interior_temperature_minimum)
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, config%eb%embedded_wall_temperature, &
+      reflected_temperature_minimum)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, config%eb%embedded_wall_temperature, &
+      reflected_temperature_maximum)
+  end if
+  call validate_selected_temperature_range( &
+    "Selected reactive EB AMR 2D", requested_temperature_minimum, &
+    requested_temperature_maximum, common_temperature_minimum, &
+    common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  call resolve_reactive_2d_selected_composition( &
+    config%eb%flow, species, mole_fractions, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  write(*, '(a,i0)') "Species: ", pelef_selected_species_count
+  write(*, '(a,i0)') "Reactions: ", pelef_selected_reaction_count
+  write(*, '(a,1x,a)') "Input:", trim(input_path)
+  call run_reactive_eb_amr_2d_application( &
+    "selected mechanism reactive EB AMR 2D", &
+    pelef_selected_bundle_sha256, config, species, reactions, transport, &
+    mole_fractions, pelef_selected_chemistry_integrator)
+
+contains
+
+  subroutine validate_selected_multipatch_paths( &
+      selected_config, selected_input_path, valid, failure_message)
+    type(reactive_eb_amr_2d_config), intent(in) :: selected_config
+    character(len=*), intent(in) :: selected_input_path
+    logical, intent(out) :: valid
+    character(len=*), intent(out) :: failure_message
+
+    character(len=1024) :: patch_path
+    integer :: maximum_patches, patch_index
+
+    valid = .false.
+    failure_message = ""
+    if (selected_config%eb%flow%nx > &
+        9999 / selected_config%eb%flow%ny) then
+      failure_message = &
+        "Selected reactive EB AMR multipatch output supports at most 9999 patches"
+      return
+    end if
+    if (len_trim(selected_config%fine_output_file) + 14 > len(patch_path)) then
+      failure_message = &
+        "Selected reactive EB AMR multipatch output path is too long"
+      return
+    end if
+    maximum_patches = &
+      selected_config%eb%flow%nx * selected_config%eb%flow%ny
+    do patch_index = 1, maximum_patches
+      call make_selected_patch_output_path( &
+        selected_config%fine_output_file, patch_index, patch_path)
+      if (selected_reactor_paths_alias_lexically( &
+            patch_path, selected_input_path) .or. &
+          selected_reactor_paths_alias_lexically( &
+            patch_path, selected_config%eb%flow%output_file) .or. &
+          selected_reactor_paths_alias_lexically( &
+            patch_path, selected_config%fine_output_file) .or. &
+          (len_trim(selected_config%checkpoint_file) > 0 .and. &
+           selected_reactor_paths_alias_lexically( &
+             patch_path, selected_config%checkpoint_file)) .or. &
+          (len_trim(selected_config%restart_file) > 0 .and. &
+           selected_reactor_paths_alias_lexically( &
+             patch_path, selected_config%restart_file))) then
+        failure_message = &
+          "Selected reactive EB AMR multipatch derived paths must be distinct"
+        return
+      end if
+    end do
+    valid = .true.
+  end subroutine validate_selected_multipatch_paths
+
+  subroutine make_selected_patch_output_path( &
+      base_path, patch_index, output_path)
+    character(len=*), intent(in) :: base_path
+    integer, intent(in) :: patch_index
+    character(len=*), intent(out) :: output_path
+
+    character(len=16) :: index_text
+    integer :: dot
+
+    output_path = ""
+    write(index_text, '(i4.4)') patch_index
+    dot = scan(trim(base_path), ".", back=.true.)
+    if (dot > 1) then
+      output_path = trim(base_path(:dot - 1)) // "_patch" // &
+        trim(index_text) // trim(base_path(dot:))
+    else
+      output_path = &
+        trim(base_path) // "_patch" // trim(index_text) // ".csv"
+    end if
+  end subroutine make_selected_patch_output_path
+
+end program pelef_reactive_eb_amr_2d_selected

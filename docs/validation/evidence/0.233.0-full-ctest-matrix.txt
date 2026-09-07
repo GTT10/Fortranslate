@@ -1,0 +1,28 @@
+PeleF 0.233.0 full CTest matrix evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Command pattern:
+  ctest --test-dir build/<configuration> --output-on-failure \
+    --output-log build/<configuration>/ctest-0.233-full.log -j 2
+
+Results:
+  Debug: 459/459 PASS, 511.16 sec
+    log sha256=5cc603235df2cd5380160e82a5afe393b34e0e77a8810c1d7bee40e39138fbc5
+  Release: 459/459 PASS, 170.34 sec
+    log sha256=9775abc07f48621faac10e5f9fd6766c4c1ccedb370885e0408cb4362952e9ee
+  Debug + Cantera: 464/464 PASS, 508.78 sec
+    log sha256=21a8c673620c5ef684a6f7e8cc25067ddb58da9f338c5b9c9660c67b96d75224
+  MPI Debug: 487/487 PASS, 544.88 sec
+    log sha256=fe1188445f8bbed417f0d51fcbe765b5e4fa1979100224526fc0f00f316738e8
+  MPI Release: 487/487 PASS, 185.16 sec
+    log sha256=bb1133e0310bc2ffa5a6ca9a9716bf350a56ff645058ffaf4029475c8662f2b7
+  CVODE Debug: 468/468 PASS, 509.89 sec
+    log sha256=ecd0a57843a7a09e4bf599130529c8322527d26938392138fffeeca922f08106
+  CVODE Debug + Cantera: 474/474 PASS, 504.09 sec
+    log sha256=51488c94e0a844bda43a91e23785a5cc285f7d53fab452f3460328a70cbcd442
+  CVODE Release: 468/468 PASS, 170.47 sec
+    log sha256=f9cfec585c9f2225f8aad5073264d2717e8cbfcfd4a9cbfda99014670809b7cf
+
+Aggregate:
+  3766/3766 PASS
+  failed tests=0

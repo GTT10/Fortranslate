@@ -1,0 +1,57 @@
+PeleF 0.239.0 full CTest matrix evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  OpenMPI 4.1.6
+
+Results:
+  Debug: 482/482 PASS, 423.79 sec
+    log path=build/debug/0.239.0-full-ctest.log
+    log sha256=6adb9976326e2526bf04d90d7c19c771ca7258221558977e5e926ed7cc50f05c
+  Release: 482/482 PASS, 147.63 sec
+    log path=build/release/0.239.0-full-ctest.log
+    log sha256=f5dd2891888745bdb8e5df7c441c2096cb620a3c361cf4ff33db06bb9f4f924e
+  Debug + Cantera: 487/487 PASS, 417.64 sec
+    log path=build/debug-cantera/0.239.0-full-ctest.log
+    log sha256=74d3d4cf4f892a733832ed0d12c5e6a1f9a5a89152529ceb4fd6bb218e897972
+  MPI Debug: 572/572 PASS, 566.77 sec
+    log path=build/mpi-debug/0.239.0-final-full-ctest.log
+    log sha256=a34226641f2bb76f5ed9051513be820700678119241bfccd334ea3d08949214f
+  MPI Release: 572/572 PASS, 209.76 sec
+    log path=build/mpi-release/0.239.0-final-full-ctest.log
+    log sha256=97649b357a9e54e61336a413165c35a456055686c32c3adb91fc734d06586dba
+  CVODE Debug: 491/491 PASS, 421.55 sec
+    log path=build/cvode-debug/0.239.0-full-ctest.log
+    log sha256=8eb25e5cee6e6b6aa2c91178792d8f6f3b8dc5c5a918fb48447d89ae5a36a4fa
+  CVODE Debug + Cantera: 497/497 PASS, 409.42 sec
+    log path=build/cvode-debug-cantera/0.239.0-full-ctest.log
+    log sha256=5899e3a89d4c9da9fa9a711efff1cf2c59a30ef911975a928ba56af2e3092799
+  CVODE Release: 491/491 PASS, 126.54 sec
+    log path=build/cvode-release/0.239.0-full-ctest.log
+    log sha256=6b4c1d2adae9fef12e37bf955fc25de4f9f2bb2ea1db7fb86a576ba0e706e2a3
+
+Aggregate:
+  4074/4074 PASS
+  failed tests=0
+
+Configured full-H2/O2 selected MPI Debug tree:
+  573/573 PASS, 570.01 sec
+  log path=build/selected-mpi-eb2d-0238-dev/0.239.0-final-full-selected-ctest.log
+  log sha256=82810322da75463580a6bacc55feb31879842e1013dc78b9726aec6255ebe2e6
+
+Final-source selected checkpoint/restart focused gates:
+  Debug: 14/14 PASS, 104.49 sec
+    log path=build/selected-mpi-eb2d-0238-dev/0.239.0-final-focused-ctest.log
+    log sha256=b8fe95363e7d131698c9e65da5ffbffea93052e0ec7ed9f3acb929faf94c623e
+  Release: 14/14 PASS, 59.50 sec
+    log path=build/selected-mpi-eb2d-0239-release/0.239.0-final-focused-ctest.log
+    log sha256=5925a00263de6eae42077c03fe93ca20003cb9b52ac534cce8822ae93dfcaf37
+  direct 2-rank read/write selected-metadata presence rejection=PASS
+  fixed schema-8 Debug/Release frozen hashes=PASS
+  selected schema-9 checkpoint/final/stopped frozen hashes=PASS
+  corruption gates=16/16 PASS
+  lexical alias gates=6/6 PASS
+
+Independent Luna Max final read-only audit:
+  release-blocking issues=0

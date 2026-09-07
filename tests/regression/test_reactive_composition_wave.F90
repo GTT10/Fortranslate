@@ -66,8 +66,10 @@ contains
     real(dp), intent(out) :: y_error, density_error
     type(reactive_1d_config) :: config
     real(dp), allocatable :: state(:, :), temperature(:), primitive(:)
-    real(dp) :: dx, time, x, exact_density, local_temperature, sound_speed
-    real(dp) :: exact_y(7), initial_integrals(5), final_integrals(5)
+    real(dp) :: dx, time, x, exact_density, selected_exact_density
+    real(dp) :: local_temperature, sound_speed
+    real(dp) :: exact_y(7), selected_exact_y(7), base_mole_fractions(7)
+    real(dp) :: initial_integrals(5), final_integrals(5)
     logical :: run_ok, local_ok
     integer :: steps, cell
 
@@ -87,6 +89,9 @@ contains
     config%initial_pressure = 101325.0_dp
     config%initial_velocity = 200.0_dp
     config%composition_wave_amplitude = 0.04_dp
+    base_mole_fractions = [ &
+      config%x_h2, config%x_h, config%x_o, config%x_o2, config%x_oh, &
+      config%x_h2o, config%x_n2 ]
 
     call simulate_reactive_1d(species, reactions, config, state, temperature, &
       dx, time, steps, initial_integrals, final_integrals, run_ok)
@@ -99,6 +104,15 @@ contains
       call reactive_composition_wave_exact( &
         species, x, time, config, exact_density, exact_y, local_ok)
       if (.not. local_ok) error stop "Composition-wave exact state failed"
+      call reactive_composition_wave_exact( &
+        species, x, time, config, selected_exact_density, selected_exact_y, &
+        local_ok, base_mole_fractions)
+      if (.not. local_ok .or. &
+          abs(selected_exact_density - exact_density) > &
+            5.0e-15_dp * max(1.0_dp, abs(exact_density)) .or. &
+          maxval(abs(selected_exact_y - exact_y)) > 5.0e-15_dp) then
+        error stop "Selected composition-wave exact state differs"
+      end if
       call reactive_conserved_to_primitive( &
         species, state(:, cell), temperature(cell), primitive, &
         local_temperature, sound_speed, local_ok)

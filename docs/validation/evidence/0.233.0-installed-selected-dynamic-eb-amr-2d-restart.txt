@@ -1,0 +1,69 @@
+PeleF 0.233.0 installed selected dynamic EB AMR 2D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-ebamr2d-dynamic-0233-final3-audit-install/bin/pelef_reactive_eb_amr_2d
+  sha256=692417de2a89c12fcc86e66fe059cca61f861b0f717ab17b602edb0ff5780f3d
+  build/selected-ebamr2d-dynamic-0233-final3-audit-install/bin/pelef_reactive_eb_amr_2d_selected
+  sha256=14844c73b6d87408b78a099c96c1aee16c4ab72a3f6ef3fa523037b93a01270a
+
+Inputs:
+  cases/selected_reactive_eb_amr_2d_dynamic_restart/fixed_reference.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_restart/reference.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_restart/checkpoint_stop.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_restart/restart.nml
+  cases/selected_reactive_eb_amr_2d_dynamic_restart/mismatched_composition.nml
+
+Execution directory:
+  build/selected-ebamr2d-dynamic-0233-final3-audit-smoke
+
+Execution result:
+  fixed reference: PASS, coarse step 3, final time 1.0e-8 s
+  selected reference: PASS, coarse step 3, final time 1.0e-8 s
+  selected checkpoint-stop: PASS, coarse step 1,
+    time 4.9460878884884128e-9 s, completed regrids=1
+  independent selected restart: PASS, coarse step 3, final time 1.0e-8 s
+  changed composition rejection before output: PASS
+  final patch: (5:12,4:12), fine dimensions 16 by 18
+  uninterrupted/restarted maximum composite conservation error:
+    3.4191424330682467e-11 (exact identity)
+
+Validation command:
+  python3 tools/check_selected_reactive_eb_amr_dynamic_restart_2d.py \
+    --fixed-coarse build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/fixed_selected_reactive_eb_amr_dynamic_restart_reference_coarse.csv \
+    --fixed-fine build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/fixed_selected_reactive_eb_amr_dynamic_restart_reference_fine.csv \
+    --reference-coarse build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restart_reference_coarse.csv \
+    --reference-fine build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restart_reference_fine.csv \
+    --stopped-coarse build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restart_stopped_coarse.csv \
+    --stopped-fine build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restart_stopped_fine.csv \
+    --restarted-coarse build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restarted_coarse.csv \
+    --restarted-fine build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restarted_fine.csv \
+    --checkpoint build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/selected_reactive_eb_amr_dynamic_restart.chk \
+    --reference-log build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/installed_selected_reference.log \
+    --stopped-log build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/installed_selected_stop.log \
+    --restarted-log build/selected-ebamr2d-dynamic-0233-final3-audit-smoke/installed_selected_resume.log \
+    --expected-reference-coarse-sha256 2a67c9b9a618fc36412c0156adec150e3271a5b1ef9ab5ec84e158a8d07c1a87 \
+    --expected-reference-fine-sha256 66f479a71de2474ae2cad3f126b847238311d5e9a1ae40d0b60d25a1a9b776e9 \
+    --expected-stopped-coarse-sha256 8c0b0c74beb20ad5915e03578fa16c336b235b1d10d2e3e96b183d261052ba72 \
+    --expected-stopped-fine-sha256 a0e71a149a0a0991732024bef41f46cdd0b3318946390141ae0a2071f5c5acb2 \
+    --expected-checkpoint-sha256 a91050d485886e3109337331f0af2ce0df8f8b8aa99227a2aaa0c69feeb2500d
+
+Result:
+  coarse_rows=144
+  fine_rows=288
+  checkpoint_time=4.9460878884884128e-09
+  checkpoint_patch=5:12,4:12
+  completed_regrids=1
+  maximum_composite_conservation_error=3.4191424330682467e-11
+  reference_coarse_sha256=2a67c9b9a618fc36412c0156adec150e3271a5b1ef9ab5ec84e158a8d07c1a87
+  reference_fine_sha256=66f479a71de2474ae2cad3f126b847238311d5e9a1ae40d0b60d25a1a9b776e9
+  checkpoint_sha256=a91050d485886e3109337331f0af2ce0df8f8b8aa99227a2aaa0c69feeb2500d
+  selected_dynamic_reactive_eb_amr_2d_restart_exact_match=PASS
+
+Generated log SHA-256:
+  installed_fixed_reference.log=b52d79070ff4a84e5009fa44c4304735835cb47d1ff6ced3fe52555597f5cc72
+  installed_selected_reference.log=3942213174192d6f4be3b6f27b46d20ee932f9be357c472ed137f189dcdf9d79
+  installed_selected_stop.log=ee93458ba60b61761c865f0bdd1ebfb42fac6299105b8e99199f1251a8bffc1f
+  installed_selected_resume.log=1ef14c50d294890f5c79852fa5c94a31329e6f02dd5ac3fca22f10a8550fbb1f
+  installed_selected_mismatch.log=5cfd1f4abdc2bb43a3368e3a642355f34079d25688da5a078ec39d85ad31a818
+  installed_dynamic_restart_check.log=38b7a9c623dbf6986539dcb7b5d207e0bbcd83a90ae83652bbbffc208289e87b

@@ -4,7 +4,7 @@ module amr_reactive_1d_mod
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
@@ -73,11 +73,12 @@ contains
   end function amr_reactive_fine_active
 
   subroutine initialize_amr_reactive_1d( &
-      species, config, solution, ok)
+      species, config, solution, ok, base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     type(amr_reactive_solution_1d), intent(out) :: solution
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     type(amr_tagging_criteria_1d) :: criteria
     type(amr_regrid_plan_1d) :: plan
@@ -87,9 +88,15 @@ contains
     ok = .false.
     if (.not. valid_amr_configuration(config, reactive_nvar(size(species)))) &
       return
-    call initialize_reactive_1d( &
-      species, config, solution%coarse, solution%coarse_temperature, &
-      solution%coarse_dx, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_1d( &
+        species, config, solution%coarse, solution%coarse_temperature, &
+        solution%coarse_dx, local_ok, base_mole_fractions)
+    else
+      call initialize_reactive_1d( &
+        species, config, solution%coarse, solution%coarse_temperature, &
+        solution%coarse_dx, local_ok)
+    end if
     if (.not. local_ok) return
     solution%x_lower = config%x_lower
     solution%x_upper = config%x_upper
@@ -173,7 +180,8 @@ contains
   end subroutine amr_reactive_timestep_1d
 
   subroutine advance_amr_reactive_1d( &
-      species, reactions, config, dt, solution, ok, transport)
+      species, reactions, config, dt, solution, ok, transport, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -181,6 +189,7 @@ contains
     type(amr_reactive_solution_1d), intent(inout) :: solution
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(amr_reactive_solution_1d) :: backup
     type(amr_flux_register_1d) :: flux_register
@@ -201,7 +210,7 @@ contains
         species, reactions, solution%coarse, solution%coarse_temperature, &
         config%nx, 0.5_dp * dt, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, config%boundary_condition, &
-        local_ok)
+        local_ok, chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) then
         solution = backup
         return
@@ -211,7 +220,8 @@ contains
         call advance_reactive_chemistry( &
           species, reactions, solution%fine, solution%fine_temperature, &
           fine_cells, 0.5_dp * dt, config%chemistry_relative_tolerance, &
-          config%chemistry_absolute_tolerance, "outflow", local_ok)
+          config%chemistry_absolute_tolerance, "outflow", local_ok, &
+          chemistry_integrator=chemistry_integrator)
         if (.not. local_ok) then
           solution = backup
           return
@@ -324,7 +334,7 @@ contains
         species, reactions, solution%coarse, solution%coarse_temperature, &
         config%nx, 0.5_dp * dt, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, config%boundary_condition, &
-        local_ok)
+        local_ok, chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) then
         solution = backup
         return
@@ -341,7 +351,8 @@ contains
         call advance_reactive_chemistry( &
           species, reactions, solution%fine, solution%fine_temperature, &
           fine_cells, 0.5_dp * dt, config%chemistry_relative_tolerance, &
-          config%chemistry_absolute_tolerance, "outflow", local_ok)
+          config%chemistry_absolute_tolerance, "outflow", local_ok, &
+          chemistry_integrator=chemistry_integrator)
         if (.not. local_ok) then
           solution = backup
           return
@@ -410,7 +421,8 @@ contains
 
   subroutine simulate_amr_reactive_1d( &
       species, reactions, config, solution, initial_integrals, &
-      final_integrals, ok, transport)
+      final_integrals, ok, transport, base_mole_fractions, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -418,13 +430,20 @@ contains
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp) :: dt, tolerance
     logical :: local_ok, changed
 
     initial_integrals = 0.0_dp
     final_integrals = 0.0_dp
-    call initialize_amr_reactive_1d(species, config, solution, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_amr_reactive_1d( &
+        species, config, solution, local_ok, base_mole_fractions)
+    else
+      call initialize_amr_reactive_1d(species, config, solution, local_ok)
+    end if
     if (.not. local_ok) then
       ok = .false.
       return
@@ -459,10 +478,12 @@ contains
       dt = min(dt, config%final_time - solution%time)
       if (config%transport_enabled) then
         call advance_amr_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, transport)
+          species, reactions, config, dt, solution, local_ok, transport, &
+          chemistry_integrator=chemistry_integrator)
       else
         call advance_amr_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok)
+          species, reactions, config, dt, solution, local_ok, &
+          chemistry_integrator=chemistry_integrator)
       end if
       if (.not. local_ok) then
         ok = .false.
@@ -715,7 +736,7 @@ contains
 
     ok = .false.
     if (interval < 0.0_dp .or. size(transport) /= size(species)) return
-    if (interval == 0.0_dp .or. .not. &
+    if (interval <= 0.0_dp .or. .not. &
         (config%viscosity_enabled .or. &
           config%thermal_conduction_enabled .or. &
           config%species_diffusion_enabled)) then

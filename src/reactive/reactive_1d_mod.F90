@@ -10,7 +10,7 @@ module reactive_1d_mod
     mixture_sound_speed, temperature_from_internal_energy, &
     mass_fractions_from_mole_fractions, mole_fractions_from_mass_fractions
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use mixture_transport_mod, only: mixture_transport_coefficients
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive, &
     advance_constant_volume_implicit_adaptive
@@ -63,6 +63,7 @@ module reactive_1d_mod
   public :: reactive_transport_timestep
   public :: advance_reactive_transport
   public :: advance_reactive_chemistry
+  public :: resolve_reactive_chemistry_integrator
   public :: advance_reactive_strang
   public :: simulate_reactive_1d
   public :: write_reactive_1d_csv
@@ -71,6 +72,32 @@ module reactive_1d_mod
   public :: reactive_composition_wave_exact
 
 contains
+
+  subroutine resolve_reactive_chemistry_integrator( &
+      nspecies, requested, use_implicit, ok)
+    integer, intent(in) :: nspecies
+    character(len=*), intent(in), optional :: requested
+    logical, intent(out) :: use_implicit, ok
+
+    use_implicit = .false.
+    ok = .false.
+    if (nspecies < 1) return
+    if (present(requested)) then
+      select case (trim(requested))
+      case ("explicit")
+        use_implicit = .false.
+      case ("implicit")
+        use_implicit = .true.
+      case default
+        return
+      end select
+    else
+      ! Preserve the fixed mechanism policy for callers that do not provide
+      ! selected-bundle metadata.
+      use_implicit = nspecies == 10
+    end if
+    ok = .true.
+  end subroutine resolve_reactive_chemistry_integrator
 
   pure integer function reactive_nvar(nspecies) result(nvar)
     integer, intent(in) :: nspecies
@@ -115,10 +142,14 @@ contains
     real(dp), intent(out) :: conserved(:), temperature, sound_speed
     logical, intent(out) :: ok
 
-    real(dp), allocatable :: y(:)
+    real(dp), allocatable :: y(:), candidate_conserved(:)
     real(dp) :: rho, u, v, w, pressure, r_mix
     real(dp) :: molecular_weight, cp, cv, gamma, enthalpy, energy, entropy
-    real(dp) :: kinetic
+    real(dp) :: denominator, candidate_temperature, candidate_sound_speed
+    real(dp) :: sound_speed_squared, sound_speed_ratio, kinetic
+    real(dp) :: u_squared, v_squared, w_squared, velocity_sum
+    real(dp) :: velocity_sum_with_w, energy_with_kinetic
+    logical :: local_ok
     integer :: nspecies, k
 
     conserved = 0.0_dp
@@ -128,38 +159,88 @@ contains
     nspecies = size(species)
     if (size(primitive) /= reactive_nprim(nspecies)) return
     if (size(conserved) /= reactive_nvar(nspecies)) return
+    if (nspecies < 1 .or. nspecies > 32) return
+    if (.not. all(ieee_is_finite(primitive))) return
 
     rho = primitive(1)
     u = primitive(2)
     v = primitive(3)
     w = primitive(4)
     pressure = primitive(5)
-    if (rho <= density_floor .or. pressure <= pressure_floor) return
+    if (rho <= density_floor) return
+    if (pressure <= pressure_floor) return
     allocate(y(nspecies))
     do k = 1, nspecies
       y(k) = primitive(reactive_mass_fraction_component(k))
     end do
     if (.not. valid_mixture_composition(species, y)) return
-    r_mix = mixture_specific_gas_constant(species, y, ok)
-    if (.not. ok .or. r_mix <= 0.0_dp) return
-    temperature = pressure / (rho * r_mix)
+    r_mix = mixture_specific_gas_constant(species, y, local_ok)
+    if (.not. local_ok) return
+    if (.not. ieee_is_finite(r_mix)) return
+    if (r_mix <= 0.0_dp) return
+    call reactive_checked_multiply(rho, r_mix, denominator, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide( &
+      pressure, denominator, candidate_temperature, local_ok)
+    if (.not. local_ok) return
     call mixture_mass_properties( &
-      species, y, temperature, molecular_weight, r_mix, cp, cv, gamma, &
-      enthalpy, energy, entropy, ok)
-    if (.not. ok) return
-    sound_speed = sqrt(gamma * pressure / rho)
-    kinetic = 0.5_dp * (u * u + v * v + w * w)
+      species, y, candidate_temperature, molecular_weight, r_mix, cp, cv, &
+      gamma, enthalpy, energy, entropy, local_ok)
+    if (.not. local_ok) return
+    if (.not. all(ieee_is_finite([ &
+        molecular_weight, r_mix, cp, cv, gamma, enthalpy, energy, entropy]))) return
+    call reactive_checked_multiply(gamma, pressure, sound_speed_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide( &
+      sound_speed_squared, rho, sound_speed_ratio, local_ok)
+    if (.not. local_ok) return
+    if (sound_speed_ratio <= 0.0_dp) return
+    candidate_sound_speed = sqrt(sound_speed_ratio)
+    if (.not. ieee_is_finite(candidate_sound_speed)) return
+    if (candidate_sound_speed <= 0.0_dp) return
 
-    conserved(irho) = rho
-    conserved(imx) = rho * u
-    conserved(imy) = rho * v
-    conserved(imz) = rho * w
-    conserved(iet) = rho * (energy + kinetic)
+    call reactive_checked_multiply(u, u, u_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(v, v, v_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(w, w, w_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(u_squared, v_squared, velocity_sum, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(velocity_sum, w_squared, &
+      velocity_sum_with_w, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(0.5_dp, velocity_sum_with_w, kinetic, local_ok)
+    if (.not. local_ok) return
+
+    allocate(candidate_conserved(size(conserved)))
+    candidate_conserved = 0.0_dp
+    candidate_conserved(irho) = rho
+    call reactive_checked_multiply(rho, u, candidate_conserved(imx), local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(rho, v, candidate_conserved(imy), local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(rho, w, candidate_conserved(imz), local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(energy, kinetic, energy_with_kinetic, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply( &
+      rho, energy_with_kinetic, candidate_conserved(iet), local_ok)
+    if (.not. local_ok) return
     do k = 1, nspecies
-      conserved(reactive_species_component(k)) = rho * y(k)
+      call reactive_checked_multiply( &
+        rho, y(k), candidate_conserved(reactive_species_component(k)), local_ok)
+      if (.not. local_ok) return
     end do
-    ok = all(ieee_is_finite(conserved)) .and. &
-      ieee_is_finite(temperature) .and. sound_speed > 0.0_dp
+    if (.not. all(ieee_is_finite(candidate_conserved))) return
+    if (.not. ieee_is_finite(candidate_temperature)) return
+    if (.not. ieee_is_finite(candidate_sound_speed)) return
+    if (candidate_sound_speed <= 0.0_dp) return
+
+    conserved = candidate_conserved
+    temperature = candidate_temperature
+    sound_speed = candidate_sound_speed
+    ok = .true.
   end subroutine reactive_primitive_to_conserved
 
   subroutine reactive_conserved_to_primitive( &
@@ -170,8 +251,12 @@ contains
     real(dp), intent(out) :: primitive(:), temperature, sound_speed
     logical, intent(out) :: ok
 
-    real(dp), allocatable :: y(:)
+    real(dp), allocatable :: y(:), candidate_primitive(:)
     real(dp) :: rho, u, v, w, kinetic_density, target_energy, pressure
+    real(dp) :: mx_squared, my_squared, mz_squared, momentum_sum
+    real(dp) :: momentum_sum_with_z, kinetic_numerator, energy_residual
+    real(dp) :: candidate_temperature, candidate_sound_speed
+    logical :: local_ok
     integer :: nspecies, k
 
     primitive = 0.0_dp
@@ -181,32 +266,72 @@ contains
     nspecies = size(species)
     if (size(conserved) /= reactive_nvar(nspecies)) return
     if (size(primitive) /= reactive_nprim(nspecies)) return
+    if (nspecies < 1 .or. nspecies > 32) return
     if (any(.not. ieee_is_finite(conserved))) return
+    if (.not. ieee_is_finite(temperature_guess)) return
     rho = conserved(irho)
     if (rho <= density_floor) return
-    u = conserved(imx) / rho
-    v = conserved(imy) / rho
-    w = conserved(imz) / rho
-    kinetic_density = 0.5_dp * &
-      (conserved(imx)**2 + conserved(imy)**2 + conserved(imz)**2) / rho
-    target_energy = (conserved(iet) - kinetic_density) / rho
+    call reactive_checked_divide(conserved(imx), rho, u, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide(conserved(imy), rho, v, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide(conserved(imz), rho, w, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(conserved(imx), conserved(imx), &
+      mx_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(conserved(imy), conserved(imy), &
+      my_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(conserved(imz), conserved(imz), &
+      mz_squared, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(mx_squared, my_squared, momentum_sum, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(momentum_sum, mz_squared, &
+      momentum_sum_with_z, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_multiply(0.5_dp, momentum_sum_with_z, &
+      kinetic_numerator, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide(kinetic_numerator, rho, kinetic_density, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_add(conserved(iet), -kinetic_density, &
+      energy_residual, local_ok)
+    if (.not. local_ok) return
+    call reactive_checked_divide(energy_residual, rho, target_energy, local_ok)
+    if (.not. local_ok) return
 
     allocate(y(nspecies))
-    call mass_fractions_from_state(conserved, nspecies, y, ok)
-    if (.not. ok) return
+    call mass_fractions_from_state(conserved, nspecies, y, local_ok)
+    if (.not. local_ok) return
     call temperature_from_internal_energy( &
-      species, y, target_energy, temperature_guess, temperature, ok)
-    if (.not. ok) return
-    pressure = mixture_pressure(species, y, rho, temperature, ok)
-    if (.not. ok .or. pressure <= pressure_floor) return
-    sound_speed = mixture_sound_speed(species, y, temperature, ok)
-    if (.not. ok) return
+      species, y, target_energy, temperature_guess, candidate_temperature, &
+      local_ok)
+    if (.not. local_ok) return
+    if (.not. ieee_is_finite(candidate_temperature)) return
+    pressure = mixture_pressure( &
+      species, y, rho, candidate_temperature, local_ok)
+    if (.not. local_ok) return
+    if (.not. ieee_is_finite(pressure)) return
+    if (pressure <= pressure_floor) return
+    candidate_sound_speed = mixture_sound_speed( &
+      species, y, candidate_temperature, local_ok)
+    if (.not. local_ok) return
+    if (.not. ieee_is_finite(candidate_sound_speed)) return
+    if (candidate_sound_speed <= 0.0_dp) return
 
-    primitive(1:5) = [rho, u, v, w, pressure]
+    allocate(candidate_primitive(size(primitive)))
+    candidate_primitive = 0.0_dp
+    candidate_primitive(1:5) = [rho, u, v, w, pressure]
     do k = 1, nspecies
-      primitive(reactive_mass_fraction_component(k)) = y(k)
+      candidate_primitive(reactive_mass_fraction_component(k)) = y(k)
     end do
-    ok = all(ieee_is_finite(primitive))
+    if (.not. all(ieee_is_finite(candidate_primitive))) return
+    primitive = candidate_primitive
+    temperature = candidate_temperature
+    sound_speed = candidate_sound_speed
+    ok = .true.
   end subroutine reactive_conserved_to_primitive
 
   subroutine mass_fractions_from_state(conserved, nspecies, y, ok)
@@ -214,26 +339,62 @@ contains
     integer, intent(in) :: nspecies
     real(dp), intent(out) :: y(:)
     logical, intent(out) :: ok
-    real(dp) :: rho, total, closure
+    real(dp), allocatable :: candidate_y(:)
+    real(dp) :: rho, total, closure, closure_difference, denominator
+    real(dp) :: species_density, species_bound, normalized_total
+    real(dp) :: normalized_component
+    real(dp) :: next_total, next_normalized_total
+    logical :: local_ok
     integer :: k
 
     y = 0.0_dp
     ok = .false.
     if (size(conserved) /= reactive_nvar(nspecies) .or. &
         size(y) /= nspecies) return
+    if (nspecies < 1 .or. nspecies > 32) return
+    if (any(.not. ieee_is_finite(conserved))) return
     rho = conserved(irho)
     if (rho <= density_floor) return
+    call reactive_checked_multiply( &
+      species_tolerance, max(1.0_dp, rho), species_bound, local_ok)
+    if (.not. local_ok) return
     total = 0.0_dp
+    allocate(candidate_y(nspecies))
+    candidate_y = 0.0_dp
     do k = 1, nspecies
-      if (conserved(reactive_species_component(k)) < &
-          -species_tolerance * max(1.0_dp, rho)) return
-      y(k) = max(0.0_dp, conserved(reactive_species_component(k))) / rho
-      total = total + conserved(reactive_species_component(k))
+      species_density = conserved(reactive_species_component(k))
+      if (species_density < -species_bound) return
+      call reactive_checked_divide( &
+        max(0.0_dp, species_density), rho, candidate_y(k), local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_add(total, species_density, next_total, local_ok)
+      if (.not. local_ok) return
+      total = next_total
     end do
-    closure = abs(total - rho) / max(rho, density_floor)
-    if (closure > species_tolerance .or. sum(y) <= 0.0_dp) return
-    y = y / sum(y)
-    ok = all(ieee_is_finite(y))
+    call reactive_checked_add(total, -rho, closure_difference, local_ok)
+    if (.not. local_ok) return
+    denominator = max(rho, density_floor)
+    call reactive_checked_divide( &
+      abs(closure_difference), denominator, closure, local_ok)
+    if (.not. local_ok) return
+    if (closure > species_tolerance) return
+    normalized_total = 0.0_dp
+    do k = 1, nspecies
+      call reactive_checked_add( &
+        normalized_total, candidate_y(k), next_normalized_total, local_ok)
+      if (.not. local_ok) return
+      normalized_total = next_normalized_total
+    end do
+    if (normalized_total <= 0.0_dp) return
+    do k = 1, nspecies
+      call reactive_checked_divide( &
+        candidate_y(k), normalized_total, normalized_component, local_ok)
+      if (.not. local_ok) return
+      candidate_y(k) = normalized_component
+    end do
+    if (.not. all(ieee_is_finite(candidate_y))) return
+    y = candidate_y
+    ok = .true.
   end subroutine mass_fractions_from_state
 
   subroutine reactive_physical_flux_x( &
@@ -2275,7 +2436,7 @@ contains
 
   subroutine advance_reactive_chemistry( &
       species, reactions, state, temperature, nx, interval, rtol, atol, &
-      boundary, ok)
+      boundary, ok, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
@@ -2283,13 +2444,17 @@ contains
     real(dp), intent(in) :: interval, rtol, atol
     character(len=*), intent(in) :: boundary
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
     real(dp), allocatable :: y(:)
     real(dp) :: rho, kinetic_density, target_energy
     real(dp) :: elapsed, request, accepted, next_step, tolerance
-    logical :: local_ok
+    logical :: local_ok, use_implicit
     integer :: i, k, substeps, newton_iterations, rejected_attempts
 
     ok = .false.
+    call resolve_reactive_chemistry_integrator( &
+      size(species), chemistry_integrator, use_implicit, local_ok)
+    if (.not. local_ok) return
     if (interval <= 0.0_dp) then
       ok = interval >= 0.0_dp
       return
@@ -2309,7 +2474,7 @@ contains
       do while (elapsed < interval - tolerance)
         if (substeps >= max_chemistry_substeps) return
         request = min(request, interval - elapsed)
-        if (size(species) == 10) then
+        if (use_implicit) then
           call advance_constant_volume_implicit_adaptive( &
             species, reactions, rho, target_energy, request, rtol, atol, y, &
             temperature(i), accepted, next_step, newton_iterations, &
@@ -2336,7 +2501,7 @@ contains
       limiter, boundary, chemistry_enabled, rtol, atol, ok, riemann_solver, &
       ppm_contact_steepening, ppm_shock_flattening, transport, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled)
+      species_diffusion_enabled, barodiffusion_enabled, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
@@ -2353,6 +2518,7 @@ contains
     logical, intent(in), optional :: thermal_conduction_enabled
     logical, intent(in), optional :: species_diffusion_enabled
     logical, intent(in), optional :: barodiffusion_enabled
+    character(len=*), intent(in), optional :: chemistry_integrator
     logical :: local_ok, use_contact_steepening, use_shock_flattening
     logical :: use_transport, use_viscosity, use_conduction
     logical :: use_species_diffusion, use_barodiffusion
@@ -2383,7 +2549,8 @@ contains
     if (use_transport .and. .not. present(transport)) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
-        nx, 0.5_dp * dt, rtol, atol, boundary, local_ok)
+        nx, 0.5_dp * dt, rtol, atol, boundary, local_ok, &
+        chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) return
     end if
     if (use_transport) then
@@ -2406,18 +2573,21 @@ contains
     end if
     if (chemistry_enabled) then
       call advance_reactive_chemistry(species, reactions, state, temperature, &
-        nx, 0.5_dp * dt, rtol, atol, boundary, local_ok)
+        nx, 0.5_dp * dt, rtol, atol, boundary, local_ok, &
+        chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) return
     end if
     ok = .true.
   end subroutine advance_reactive_strang
 
-  subroutine initialize_reactive_1d(species, config, state, temperature, dx, ok)
+  subroutine initialize_reactive_1d( &
+      species, config, state, temperature, dx, ok, base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_1d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: state(:, :), temperature(:)
     real(dp), intent(out) :: dx
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
     real(dp), allocatable :: q(:), base_xmol(:), local_xmol(:)
     real(dp), allocatable :: base_y(:), local_y(:)
     real(dp) :: x, rho, base_rho, local_temperature, c, gaussian
@@ -2432,8 +2602,17 @@ contains
       local_xmol(size(species)))
     allocate(base_y(size(species)), local_y(size(species)))
     dx = (config%x_upper - config%x_lower) / real(config%nx, dp)
-    call reactive_1d_mole_fractions(config, size(species), base_xmol, local_ok)
-    if (.not. local_ok) return
+    if (present(base_mole_fractions)) then
+      if (size(base_mole_fractions) /= size(species) .or. &
+          any(.not. ieee_is_finite(base_mole_fractions)) .or. &
+          minval(base_mole_fractions) < 0.0_dp .or. &
+          abs(sum(base_mole_fractions) - 1.0_dp) > 5.0e-10_dp) return
+      base_xmol = base_mole_fractions
+    else
+      call reactive_1d_mole_fractions( &
+        config, size(species), base_xmol, local_ok)
+      if (.not. local_ok) return
+    end if
     call mass_fractions_from_mole_fractions(species, base_xmol, base_y, local_ok)
     if (.not. local_ok) return
     base_rho = mixture_density(species, base_y, config%initial_pressure, &
@@ -2501,7 +2680,8 @@ contains
 
   subroutine simulate_reactive_1d( &
       species, reactions, config, state, temperature, dx, time, steps, &
-      initial_integrals, final_integrals, ok, transport)
+      initial_integrals, final_integrals, ok, transport, &
+      base_mole_fractions, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -2511,12 +2691,21 @@ contains
     real(dp), intent(out) :: initial_integrals(5), final_integrals(5)
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
     real(dp) :: dt, hydro_dt, transport_dt, maximum_diffusivity, tolerance
     logical :: local_ok
 
     time = 0.0_dp
     steps = 0
-    call initialize_reactive_1d(species, config, state, temperature, dx, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_1d( &
+        species, config, state, temperature, dx, local_ok, &
+        base_mole_fractions)
+    else
+      call initialize_reactive_1d( &
+        species, config, state, temperature, dx, local_ok)
+    end if
     if (.not. local_ok) then
       ok = .false.; return
     end if
@@ -2556,14 +2745,15 @@ contains
           config%ppm_contact_steepening, config%ppm_shock_flattening, &
           transport, .true., config%viscosity_enabled, &
           config%thermal_conduction_enabled, config%species_diffusion_enabled, &
-          config%barodiffusion_enabled)
+          config%barodiffusion_enabled, chemistry_integrator)
       else
         call advance_reactive_strang( &
           species, reactions, state, temperature, config%nx, dx, dt, &
           config%reconstruction, config%limiter, config%boundary_condition, &
           config%chemistry_enabled, config%chemistry_relative_tolerance, &
           config%chemistry_absolute_tolerance, local_ok, config%riemann_solver, &
-          config%ppm_contact_steepening, config%ppm_shock_flattening)
+          config%ppm_contact_steepening, config%ppm_shock_flattening, &
+          chemistry_integrator=chemistry_integrator)
       end if
       if (.not. local_ok) then
         ok = .false.; return
@@ -2627,12 +2817,14 @@ contains
   end function reactive_entropy_wave_density
 
   subroutine reactive_composition_wave_exact( &
-      species, x, time, config, density, mass_fractions, ok)
+      species, x, time, config, density, mass_fractions, ok, &
+      base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: x, time
     type(reactive_1d_config), intent(in) :: config
     real(dp), intent(out) :: density, mass_fractions(:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     real(dp), allocatable :: mole_fractions(:)
     real(dp) :: length, shifted, phase
@@ -2647,8 +2839,17 @@ contains
     shifted = config%x_lower + modulo(x - config%x_lower - &
       config%initial_velocity * time, length)
     phase = sin(2.0_dp * pi * (shifted - config%x_lower) / length)
-    call reactive_1d_mole_fractions(config, size(species), mole_fractions, ok)
-    if (.not. ok) return
+    if (present(base_mole_fractions)) then
+      if (size(base_mole_fractions) /= size(species) .or. &
+          any(.not. ieee_is_finite(base_mole_fractions)) .or. &
+          minval(base_mole_fractions) < 0.0_dp .or. &
+          abs(sum(base_mole_fractions) - 1.0_dp) > 5.0e-10_dp) return
+      mole_fractions = base_mole_fractions
+    else
+      call reactive_1d_mole_fractions( &
+        config, size(species), mole_fractions, ok)
+      if (.not. ok) return
+    end if
     mole_fractions(1) = mole_fractions(1) + &
       config%composition_wave_amplitude * phase
     mole_fractions(size(species)) = mole_fractions(size(species)) - &
@@ -2659,5 +2860,56 @@ contains
     density = mixture_density(species, mass_fractions, &
       config%initial_pressure, config%initial_temperature, ok)
   end subroutine reactive_composition_wave_exact
+
+  subroutine reactive_checked_add(left, right, value, ok)
+    real(dp), intent(in) :: left, right
+    real(dp), intent(out) :: value
+    logical, intent(out) :: ok
+
+    value = 0.0_dp
+    ok = .false.
+    if (.not. all(ieee_is_finite([left, right]))) return
+    if (right > 0.0_dp) then
+      if (left > huge(1.0_dp) - right) return
+    else if (right < 0.0_dp) then
+      if (left < -huge(1.0_dp) - right) return
+    end if
+    value = left + right
+    ok = ieee_is_finite(value)
+    if (.not. ok) value = 0.0_dp
+  end subroutine reactive_checked_add
+
+  subroutine reactive_checked_multiply(left, right, product, ok)
+    real(dp), intent(in) :: left, right
+    real(dp), intent(out) :: product
+    logical, intent(out) :: ok
+
+    product = 0.0_dp
+    ok = .false.
+    if (.not. all(ieee_is_finite([left, right]))) return
+    if (abs(left) > 1.0_dp .and. abs(right) > 1.0_dp) then
+      if (abs(left) > huge(1.0_dp) / abs(right)) return
+    end if
+    product = left * right
+    ok = ieee_is_finite(product)
+    if (.not. ok) product = 0.0_dp
+  end subroutine reactive_checked_multiply
+
+  subroutine reactive_checked_divide(numerator, denominator, quotient, ok)
+    real(dp), intent(in) :: numerator, denominator
+    real(dp), intent(out) :: quotient
+    logical, intent(out) :: ok
+
+    quotient = 0.0_dp
+    ok = .false.
+    if (.not. all(ieee_is_finite([numerator, denominator]))) return
+    if (abs(denominator) <= 0.0_dp) return
+    if (abs(denominator) < 1.0_dp) then
+      if (abs(numerator) > huge(1.0_dp) * abs(denominator)) return
+    end if
+    quotient = numerator / denominator
+    ok = ieee_is_finite(quotient)
+    if (.not. ok) quotient = 0.0_dp
+  end subroutine reactive_checked_divide
 
 end module reactive_1d_mod

@@ -5,7 +5,8 @@ program test_multispecies_flux
   use multispecies_state_mod, only: &
     species_component, multispecies_state_from_base
   use multispecies_flux_mod, only: &
-    compute_multispecies_flux_x, compute_multispecies_flux_y
+    compute_multispecies_flux_x, compute_multispecies_flux_y, &
+    compute_multispecies_flux_z
   implicit none
 
   integer, parameter :: nspecies = 2
@@ -47,6 +48,15 @@ program test_multispecies_flux
     "y species 1 flux")
   call assert_close(sum(flux(nbase + 1:nbase + nspecies)), &
     flux(irho), tolerance, "y species-flux closure")
+
+  call compute_multispecies_flux_z( &
+    left_state, right_state, nspecies, gamma, "pelec", flux, ok)
+  call assert_true(ok, "z flux")
+  call assert_close(flux(irho), 0.1_dp, tolerance, "z mass flux")
+  call assert_close(flux(species_component(1)), 0.025_dp, tolerance, &
+    "z species 1 flux")
+  call assert_close(sum(flux(nbase + 1:nbase + nspecies)), &
+    flux(irho), tolerance, "z species-flux closure")
 
   primitive(qrho) = 0.5_dp
   call primitive_to_conserved(primitive, gamma, base_state, ok)

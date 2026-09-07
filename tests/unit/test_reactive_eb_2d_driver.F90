@@ -208,6 +208,16 @@ program test_reactive_eb_2d_driver
     maxval(abs(state - initial_state)) == 0.0_dp .and. &
     maxval(abs(temperature - initial_temperature)) == 0.0_dp, &
     "reactive EB Strang rollback after hydro failure")
+  call advance_reactive_eb_strang_2d( &
+    species, reactions, initial_state, initial_temperature, geometry, &
+    "hllc", 1.0e-9_dp, .true., &
+    config%flow%chemistry_relative_tolerance, &
+    config%flow%chemistry_absolute_tolerance, state, temperature, ok, &
+    chemistry_integrator="invalid")
+  call require(.not. ok .and. &
+    maxval(abs(state - initial_state)) == 0.0_dp .and. &
+    maxval(abs(temperature - initial_temperature)) == 0.0_dp, &
+    "reactive EB Strang rollback after chemistry policy failure")
 
   config%flow%transport_enabled = .true.
   call simulate_reactive_eb_2d( &
