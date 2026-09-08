@@ -1,0 +1,64 @@
+name: One-time CMake layout verification
+on:
+  push:
+    branches: [maintenance/layout-bootstrap-20260909]
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build openmpi-bin libopenmpi-dev
+          python3 -m pip install --break-system-packages cantera==3.2.0
+      - name: Preserve migration tools and check out the exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp __maintenance__/migrate.py "$RUNNER_TEMP/migrate.py"
+          cp __maintenance__/verify.py "$RUNNER_TEMP/verify.py"
+          git checkout --detach bf74884043a8cf25aece292604dd5d88035831bf
+          test "$(git rev-parse HEAD^{tree})" = 795f7c7021ddf650008506f02545babfa27a6d22
+          mkdir -p "$RUNNER_TEMP/layout-before" "$RUNNER_TEMP/layout-evidence"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/layout-before"
+      - name: Split registrations and verify unchanged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/migrate.py" | tee "$RUNNER_TEMP/layout-evidence/expanded-source.json"
+          python3 "$RUNNER_TEMP/verify.py" "$RUNNER_TEMP/layout-before" "$PWD" "$RUNNER_TEMP/layout-evidence" | tee "$RUNNER_TEMP/layout-evidence/verification.log"
+          python3 tools/check_project_contract.py --source .
+          python3 -m unittest discover -s tests/python -p test_mechanism_provenance.py -v
+          git diff --check
+      - name: Publish only verified CMake changes on a new result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -n "$(git ls-remote --heads origin maintenance/layout-result-20260909)"; then
+            echo 'Result branch already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          git add CMakeLists.txt tests/CMakeLists.txt cmake/targets tests/cmake
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: split CMake registration into scoped modules with equivalent contracts'
+          git rev-parse HEAD > "$RUNNER_TEMP/layout-evidence/source-commit.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/layout-evidence/source-tree.txt"
+          git diff --stat HEAD^ HEAD > "$RUNNER_TEMP/layout-evidence/changes.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/layout-evidence/source.tar.gz"
+          git push origin HEAD:refs/heads/maintenance/layout-result-20260909
+      - name: Retain migration and verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/layout-evidence/*.json
+            ${{ runner.temp }}/layout-evidence/*.log
+            ${{ runner.temp }}/layout-evidence/*.txt
+            ${{ runner.temp }}/layout-evidence/source.tar.gz
+          retention-days: 30
