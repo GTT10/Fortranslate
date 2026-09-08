@@ -1,0 +1,24 @@
+program pelef_spray_3d
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use transport_database_mod, only: load_h2o2_full_transport
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
+  use spray_application_mod, only: run_spray_application
+  implicit none
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=1024) :: input_path
+  logical :: ok
+  if (command_argument_count()/=1) error stop 'Usage: pelef_spray_3d <input.nml>'
+  call get_command_argument(1,input_path)
+  call load_h2o2_full_thermo(species,ok)
+  if (.not. ok) error stop 'Cannot load fixed thermodynamics'
+  call load_h2o2_full_mechanism(reactions,ok)
+  if (.not. ok) error stop 'Cannot load fixed mechanism'
+  call load_h2o2_full_transport(transport,ok)
+  if (.not. ok) error stop 'Cannot load fixed transport'
+  call run_spray_application(trim(input_path),species,reactions,transport,'@PELEF_SPRAY_FIXED_SHA256@')
+end program

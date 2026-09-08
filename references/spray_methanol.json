@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Pele-Suite/PelePhysics.git",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "phase": "gas",
+  "symbol_prefix": "ffcm1_red",
+  "species_count": 21,
+  "reaction_count": 124,
+  "files": {
+    "yaml": {
+      "path": "Mechanisms/FFCM1_Red/mechanism.yaml",
+      "basename": "ffcm1_red.yaml",
+      "git_blob": "9c81961fd4c4eaf4edb3e8b5599ebb8d5d8993ac",
+      "sha256": "ddbba8c97d929530cfb213da45485cca4f979dccf97c1063721bd855d7b3f259"
+    },
+    "license": {
+      "path": "license.txt",
+      "basename": "PelePhysics-license.txt",
+      "sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2"
+    }
+  },
+  "liquid_model": {
+    "note": "Illustrative constant-property sub-boiling methanol; not a property fit or experiment validation. Reference energy is derived from the gas NASA7 enthalpy minus L_ref.",
+    "density_kg_m3": 792.0,
+    "heat_capacity_J_kg_K": 2530.0,
+    "reference_temperature_K": 337.85,
+    "reference_pressure_Pa": 101325.0,
+    "latent_heat_J_kg": 1100000.0
+  }
+}

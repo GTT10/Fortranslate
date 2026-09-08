@@ -26,6 +26,18 @@ Do not redo this housekeeping as a substitute for the remaining physical
 capabilities. Conversely, do not label the following capabilities implemented
 merely because the repository has been consolidated.
 
+## 0.246.0 functional increment
+
+The opt-in periodic 3D path now connects single-component parcels, conservative
+mass/momentum/total-energy exchange, drag/heating/evaporation, timed cone
+injection with optional mass-CDF diameters, deviatoric Smagorinsky and coupled checkpoint/restart to the existing
+gas solver. Cell-local CVODE is connected to this CFD path, with a pinned
+FFCM1_Red liquid-methanol burn fixture and independent Cantera gas-only oracles.
+Chemical labels, single-interval NASA7 and classified Lindemann ingestion are
+supported. See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).
+These are bounded implemented capabilities, not completion of diesel chemistry,
+multicomponent liquids, breakup, physical boundaries or MPI/AMR particles.
+
 ## Ordered implementation work
 
 | Order | Work unit | Measurable exit gate |

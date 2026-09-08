@@ -101,7 +101,7 @@ class IngestHelpersTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, label):
                     ingest._reaction_kind(reaction, reaction.input_data, base["equation"])
 
-    def test_rejects_lindemann_falloff(self) -> None:
+    def test_rejects_unclassified_falloff_without_troe(self) -> None:
         reaction = SimpleNamespace(
             input_data={
                 "type": "falloff",

@@ -924,7 +924,7 @@ class GenerateMechanismBundleTest(unittest.TestCase):
             generator.validate(data)
 
         data = self.bundle()
-        data["species"][1] = "bad-name"
+        data["species"][1] = "bad name"
         with self.assertRaisesRegex(ValueError, "Fortran-safe identifiers"):
             generator.validate(data)
 

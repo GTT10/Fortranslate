@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -20,6 +21,17 @@ MAX_EQUATION_LENGTH = 128
 MAX_FORTRAN_IDENTIFIER_LENGTH = 63
 MAX_FORTRAN_LINE_LENGTH = 100
 FORTRAN_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+# Preserve chemical labels in strings; only generated index identifiers need
+# Fortran spelling. Existing alphanumeric symbols remain byte-for-byte stable.
+SPECIES_LABEL = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_()+.*-]*$")
+
+
+def species_symbol_stem(name: str) -> str:
+    if FORTRAN_IDENTIFIER.fullmatch(name):
+        return name.lower()
+    return "label_" + hashlib.sha256(name.lower().encode("ascii")).hexdigest()[:16]
+
+
 FORTRAN_DEPENDENCY_MODULES = {
     "ieee_arithmetic",
     "precision_mod",
@@ -341,11 +353,11 @@ def validate(data: dict[str, Any]) -> None:
         raise ValueError("species must be non-empty and unique")
     if any(
         not isinstance(name, str)
-        or not FORTRAN_IDENTIFIER.fullmatch(name)
+        or not SPECIES_LABEL.fullmatch(name)
         or len(name) > 24
         for name in species
     ):
-        raise ValueError("species names must be Fortran-safe identifiers")
+        raise ValueError("species names must be Fortran-safe identifiers or supported chemical labels")
     if len({name.lower() for name in species}) != len(species):
         raise ValueError("species names collide in case-insensitive Fortran")
     if len(species) > MAX_SPECIES:
@@ -435,7 +447,7 @@ def validate(data: dict[str, Any]) -> None:
     if "thermo" in data or "transport" in data:
         generated_symbols.append(f"{prefix}_chemistry_integrator")
     generated_symbols.extend(
-        f"{prefix}_{name.lower()}_index" for name in species
+        f"{prefix}_{species_symbol_stem(name)}_index" for name in species
     )
     if any(len(name) > MAX_FORTRAN_IDENTIFIER_LENGTH for name in generated_symbols):
         raise ValueError("generated Fortran symbol exceeds identifier length limit")
@@ -773,7 +785,7 @@ def generate(data: dict[str, Any]) -> str:
         )
     for index, name in enumerate(species, start=1):
         lines.append(
-            f"  integer, parameter, public :: {prefix}_{name.lower()}_index = {index}"
+            f"  integer, parameter, public :: {prefix}_{species_symbol_stem(name)}_index = {index}"
         )
     lines += [
         "",

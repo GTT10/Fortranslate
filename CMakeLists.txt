@@ -2,11 +2,12 @@ cmake_minimum_required(VERSION 3.23)
 
 project(
   PeleF
-  VERSION 0.245.0
+  VERSION 0.246.0
   DESCRIPTION "Modern Fortran reimplementation of selected PeleC algorithms"
   LANGUAGES Fortran
 )
 
+option(PELEF_ENABLE_SPRAY "Build experimental conservative spray/LES applications" OFF)
 option(PELEF_ENABLE_TESTS "Build PeleF tests" ON)
 option(PELEF_ENABLE_CANTERA_REFERENCE "Enable live Cantera parity tests" OFF)
 option(PELEF_ENABLE_MPI "Build MPI verification targets" OFF)
@@ -103,6 +104,7 @@ endif()
 
 include("${PROJECT_SOURCE_DIR}/cmake/targets/Core.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/targets/SelectedRuntime.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/targets/Spray.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/targets/Applications.cmake")
 if(PELEF_ENABLE_TESTS)
   add_subdirectory(tests)

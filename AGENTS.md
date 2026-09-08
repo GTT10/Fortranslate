@@ -14,9 +14,11 @@ standing instruction to reuse its old worktree or overwrite current user work.
   build-system refactoring, and qualification-record edits.
 - Preserve user changes and running simulations. Do not reset, clean, force
   push, delete branches, or stop unrelated jobs without explicit authorization.
-- Use `main` for new work after integration. While PR #102 is open, checkpoint
-  repairs belong on its integration branch; do not start another historical
-  PR stack. Do not merge divergent PR #11 without reviewing its unique changes.
+- Use current `main` for new work. PR #102 is integrated and historical PR #11
+  is closed as superseded; do not reopen their accidental PR stack.
+- Spray/SGS support is opt-in and experimental. Read `docs/spray.md` before
+  extending it. Do not label periodic small-grid conservation tests as nozzle,
+  diesel ignition, AMR-particle or validated LES results.
 - Read generated-file headers. Change a mechanism's source and regenerate with
   the pinned importer; never hand-edit generated rates or bypass SHA checks.
   `mechanisms/h2o2_cantera.yaml` is byte-pinned upstream data: preserve its

@@ -8,11 +8,13 @@ in [the reference manifest](references/pelec_baseline.json).
 
 ## Current scope
 
-The `0.245.0` milestone contains reacting-flow, molecular-transport, MPI,
-selected-mechanism, and bounded AMR/embedded-boundary implementations. The
-latest increment persists transport-aware fixed/selected static 3D AMR
-checkpoints. This is an integration candidate, not a declaration of complete
-PeleC parity or production diesel-spray capability.
+The `0.246.0` milestone contains the previous reacting-flow, transport,
+MPI and bounded AMR/embedded-boundary paths plus an **opt-in experimental
+periodic 3D reacting-spray application**: single-component Lagrangian parcels,
+drag/heating/evaporation, conservative two-way exchange, scheduled injection,
+restart, deviatoric Smagorinsky fluxes and cell-local CVODE chemistry.
+A pinned 21-species methanol mechanism exercises liquid-fuel combustion.
+This is not complete PeleC parity or a validated diesel spray solver.
 
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,
@@ -54,6 +56,19 @@ Further examples live with their inputs:
 [full H2/O2 reactor](cases/zero_d_h2o2_full/README.md),
 [3D reacting flow](cases/reactive_hotspot_3d/README.md), and
 [static 3D AMR](cases/amr_reactive_3d/README.md).
+
+## Experimental spray application
+
+```sh
+cmake -S . -B build/spray -DPELEF_ENABLE_SPRAY=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/spray --parallel 2
+ctest --test-dir build/spray -L spray --output-on-failure
+./build/spray/pelef_spray_3d cases/spray_3d/water.nml
+```
+
+For the selected methanol mechanism and CVODE build, see
+[the spray model, limitations and examples](docs/spray.md).
+The option is OFF by default; existing application/install contracts are retained.
 
 ## Project navigation
 

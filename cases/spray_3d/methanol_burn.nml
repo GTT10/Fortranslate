@@ -1,0 +1,16 @@
+! Uniform periodic closed-cell integration fixture, not a diesel injection case.
+! Requires selected FFCM1_Red and PELEF_ENABLE_SUNDIALS=ON.
+! Constant liquid properties are illustrative, not a fitted property database.
+&spray
+ cells=2,2,2, domain_length=.004,.004,.004, hydro_reconstruction='pcm',
+ gas_temperature=2200, gas_pressure=500000,
+ mole_names='O2','N2','', mole_amounts=1,3.76,0,
+ vapor_name='CH3OH', liquid_density=792, liquid_cp=2530,
+ reference_temperature=337.85, reference_pressure=101325, latent_heat=1100000,
+ drop_temperature=300, drop_diameter=2e-6,
+ initial_liquid_mass=1.6e-9, parcel_count=1,
+ injection_center=.002,.002,.002, injection_speed=0, cone_angle=0,
+ final_time=5e-5, maximum_dt=2e-7, chemistry_method='cvode',
+ rtol=1e-7, atol=1e-13, transport_enabled=.false.,
+ output_prefix='methanol_burn', checkpoint_file='methanol_burn.chk'
+/
