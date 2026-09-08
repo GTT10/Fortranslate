@@ -1,0 +1,162 @@
+add_library(
+  pelef_core
+  src/core/precision_mod.F90
+  src/core/constants_mod.F90
+  src/core/state_indices_mod.F90
+  src/core/multispecies_state_mod.F90
+  src/core/mesh_mod.F90
+  src/core/mesh_2d_mod.F90
+  src/core/mesh_3d_mod.F90
+  src/eb/eb_geometry_2d_mod.F90
+  src/eb/eb_geometry_3d_mod.F90
+  src/physics/eos_ideal_mod.F90
+  src/physics/nasa7_thermo_mod.F90
+  src/physics/thermo_database_mod.F90
+  src/physics/h2o2_full_thermo_mod.F90
+  src/physics/mixture_thermo_mod.F90
+  src/transport/gas_transport_mod.F90
+  src/transport/transport_database_mod.F90
+  src/transport/mixture_transport_mod.F90
+  src/driver/selected_composition_mod.F90
+  src/driver/simulation_config_reactive_1d_mod.F90
+  src/driver/simulation_config_reactive_2d_mod.F90
+  src/driver/simulation_config_reactive_3d_mod.F90
+  src/driver/simulation_config_amr_reactive_3d_mod.F90
+  src/driver/simulation_config_reactive_eb_3d_mod.F90
+  src/driver/simulation_config_reactive_eb_2d_mod.F90
+  src/driver/simulation_config_reactive_eb_amr_2d_mod.F90
+  src/hydro/reconstruction_weno_mod.F90
+  src/reactive/reactive_1d_mod.F90
+  src/reactive/reactive_directional_flux_3d_mod.F90
+  src/eb/reactive_eb_cfl_2d_mod.F90
+  src/eb/eb_reactive_wall_flux_2d_mod.F90
+  src/eb/eb_reactive_wall_flux_3d_mod.F90
+  src/eb/reactive_eb_cfl_3d_mod.F90
+  src/eb/eb_reactive_redistribution_2d_mod.F90
+  src/eb/eb_reactive_redistribution_3d_mod.F90
+  src/amr/amr_reactive_1d_mod.F90
+  src/amr/amr_eb_hierarchy_2d_mod.F90
+  src/amr/amr_eb_patch_tree_2d_mod.F90
+  src/amr/amr_eb_multilevel_2d_mod.F90
+  src/amr/amr_eb_flux_register_2d_mod.F90
+  src/amr/amr_eb_reactive_2d_mod.F90
+  src/amr/amr_eb_patch_tree_reactive_2d_mod.F90
+  src/amr/amr_eb_multilevel_reactive_2d_mod.F90
+  src/amr/amr_eb_regrid_2d_mod.F90
+  src/boundary/reactive_boundary_2d_mod.F90
+  src/transport/reactive_transport_2d_mod.F90
+  src/transport/reactive_transport_3d_mod.F90
+  src/eb/eb_reactive_transport_3d_mod.F90
+  src/reactive/reactive_2d_mod.F90
+  src/driver/reactive_2d_application_mod.F90
+  src/reactive/reactive_3d_mod.F90
+  src/eb/eb_reactive_hydro_3d_mod.F90
+  src/amr/amr_hierarchy_3d_mod.F90
+  src/amr/amr_reactive_3d_mod.F90
+  src/amr/amr_reactive_transport_3d_mod.F90
+  src/io/amr_reactive_3d_checkpoint_mod.F90
+  src/driver/amr_reactive_3d_application_mod.F90
+  src/io/reactive_eb_3d_checkpoint_mod.F90
+  src/eb/eb_reactive_reconstruction_2d_mod.F90
+  src/eb/eb_reactive_hydro_2d_mod.F90
+  src/eb/eb_reactive_transport_2d_mod.F90
+  src/amr/amr_eb_transport_2d_mod.F90
+  src/amr/amr_eb_multilevel_transport_2d_mod.F90
+  src/amr/amr_eb_multipatch_transport_2d_mod.F90
+  src/driver/reactive_eb_2d_driver_mod.F90
+  src/driver/reactive_eb_2d_application_mod.F90
+  src/driver/reactive_eb_amr_2d_driver_mod.F90
+  src/driver/reactive_eb_amr_2d_application_mod.F90
+  src/chemistry/elementary_kinetics_mod.F90
+  src/generated/h2o2_elementary_mechanism_mod.F90
+  src/generated/h2o2_full_mechanism_mod.F90
+  src/chemistry/constant_volume_reactor_mod.F90
+  src/chemistry/isomerization_reactor_mod.F90
+  src/hydro/state_conversion_mod.F90
+  src/hydro/boundary_conditions_mod.F90
+  src/hydro/boundary_conditions_multispecies_mod.F90
+  src/hydro/slope_limiter_mod.F90
+  src/amr/amr_hierarchy_1d_mod.F90
+  src/amr/amr_multipatch_1d_mod.F90
+  src/amr/amr_patch_tree_1d_mod.F90
+  src/amr/amr_patch_tree_reactive_1d_mod.F90
+  src/amr/amr_regrid_1d_mod.F90
+  src/amr/amr_multilevel_reactive_1d_mod.F90
+  src/amr/amr_multipatch_reactive_1d_mod.F90
+  src/driver/amr_reactive_1d_application_mod.F90
+  src/hydro/reconstruction_plm_mod.F90
+  src/hydro/reconstruction_pelec_plm_mod.F90
+  src/hydro/riemann_rusanov_mod.F90
+  src/hydro/riemann_pelec_mod.F90
+  src/hydro/riemann_flux_mod.F90
+  src/hydro/directional_flux_mod.F90
+  src/hydro/multispecies_flux_mod.F90
+  src/hydro/ctu_2d_mod.F90
+  src/hydro/ctu_multispecies_2d_mod.F90
+  src/hydro/reconstruction_multispecies_mod.F90
+  src/hydro/finite_volume_multispecies_mod.F90
+  src/hydro/finite_volume_mod.F90
+  src/hydro/finite_volume_3d_mod.F90
+  src/driver/time_integrator_mod.F90
+  src/driver/time_integrator_multispecies_mod.F90
+  src/driver/diagnostics_mod.F90
+  src/driver/diagnostics_2d_mod.F90
+  src/driver/diagnostics_3d_mod.F90
+  src/driver/reactive_eb_3d_driver_mod.F90
+  src/driver/reactive_eb_3d_application_mod.F90
+  src/driver/simulation_config_mod.F90
+  src/driver/simulation_config_2d_mod.F90
+  src/driver/simulation_config_3d_mod.F90
+  src/driver/simulation_config_multispecies_mod.F90
+  src/driver/simulation_config_reactor_mod.F90
+  src/driver/simulation_config_h2o2_reactor_mod.F90
+  src/driver/simulation_config_h2o2_full_mod.F90
+  src/problems/sod_problem_mod.F90
+  src/problems/shu_osher_problem_mod.F90
+  src/problems/sedov_problem_mod.F90
+  src/problems/isentropic_vortex_problem_mod.F90
+  src/problems/entropy_wave_3d_problem_mod.F90
+  src/problems/reactive_entropy_wave_3d_problem_mod.F90
+  src/problems/multispec_sod_problem_mod.F90
+  src/io/csv_io_mod.F90
+  src/io/csv_io_2d_mod.F90
+  src/io/csv_io_3d_mod.F90
+  src/io/reactive_csv_io_3d_mod.F90
+  src/driver/reactive_3d_application_mod.F90
+  src/io/csv_io_multispecies_mod.F90
+)
+
+set_target_properties(
+  pelef_core
+  PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules"
+)
+
+target_include_directories(
+  pelef_core
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/modules>"
+)
+
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(
+    pelef_core
+    PRIVATE
+      -Wall
+      -Wextra
+      -Wpedantic
+      -Wimplicit-interface
+      -Wconversion-extra
+  )
+
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(
+      pelef_core
+      PRIVATE
+        -fcheck=all
+        -fbacktrace
+        -ffpe-trap=invalid,zero,overflow
+    )
+  endif()
+endif()
+
