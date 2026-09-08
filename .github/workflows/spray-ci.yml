@@ -1,0 +1,130 @@
+name: Periodic spray combustion
+
+on:
+  push:
+    branches: [main, 'agent/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spray-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  spray:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Record source and toolchain
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+          gfortran --version > evidence/fortran-version.txt
+          cmake --version > evidence/cmake-version.txt
+      - uses: actions/checkout@v4
+        with:
+          repository: LLNL/sundials
+          ref: 71a4cc9ad5e7bc8b4e33a1ca9795b4e96883f9a6
+          path: build-dependencies/sundials-src
+          persist-credentials: false
+      - name: Build pinned official Fortran CVODE interface
+        run: |
+          set -euo pipefail
+          git -C build-dependencies/sundials-src rev-parse HEAD > evidence/sundials-commit.txt
+          cmake -S build-dependencies/sundials-src -B build-dependencies/sundials-build \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build-dependencies/sundials-install" \
+            -DBUILD_FORTRAN_MODULE_INTERFACE=ON -DBUILD_STATIC_LIBS=ON -DBUILD_SHARED_LIBS=OFF \
+            -DSUNDIALS_PRECISION=double -DBUILD_CVODE=ON -DBUILD_CVODES=OFF \
+            -DBUILD_ARKODE=OFF -DBUILD_IDA=OFF -DBUILD_IDAS=OFF -DBUILD_KINSOL=OFF \
+            -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_ENABLE_CXX=OFF -DEXAMPLES_ENABLE_F2003=OFF
+          cmake --build build-dependencies/sundials-build --parallel 2
+          cmake --install build-dependencies/sundials-build
+          python3 -m pip install cantera==3.2.0
+          python3 -m pip freeze > evidence/python-packages.txt
+      - name: Verify and import pinned methanol fixture
+        run: |
+          set -euo pipefail
+          python3 tools/prepare_spray_reference.py --output-dir build/methanol-reference
+          cp build/methanol-reference/upstream.json evidence/
+          sha256sum build/methanol-reference/* > evidence/mechanism-hashes.txt
+          python3 tools/check_project_contract.py --source .
+          python3 tools/check_mechanism_provenance.py --bundle mechanisms/h2o2_full.json \
+            --source mechanisms/h2o2_cantera.yaml --regenerate
+          python3 -m compileall -q tools tests/python tests/spray
+          git diff --exit-code
+      - name: Configure opt-in reacting spray with CVODE
+        run: |
+          cmake -S . -B build-spray -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran \
+            -DCMAKE_PREFIX_PATH="$PWD/build-dependencies/sundials-install" \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install-spray" \
+            -DPELEF_ENABLE_SPRAY=ON -DPELEF_ENABLE_SUNDIALS=ON \
+            -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_CANTERA_REFERENCE=ON \
+            -DPELEF_MECHANISM_BUNDLE="$PWD/build/methanol-reference/ffcm1_red.json" \
+            -DPELEF_MECHANISM_SOURCE="$PWD/build/methanol-reference/ffcm1_red.yaml"
+          ctest --test-dir build-spray --show-only=json-v1 > evidence/registered-tests.json
+      - name: Build complete fixed and selected applications
+        run: cmake --build build-spray --parallel 2
+      - name: Run every registered case in the spray configuration
+        run: |
+          set -euo pipefail
+          ctest --test-dir build-spray --output-on-failure --parallel 2 --no-tests=error \
+            --output-junit "$PWD/evidence/all-tests.xml" 2>&1 | tee evidence/all-tests.log
+      - name: Retain independent chemistry, burn and nonuniform restart evidence
+        run: |
+          set -euo pipefail
+          python3 tools/check_spray_cantera.py --exe build-spray/pelef_spray_3d \
+            --yaml mechanisms/h2o2_cantera.yaml --phase ohmech --case h2-chemistry \
+            --output-dir evidence/h2-chemistry
+          for case in methanol-chemistry methanol-spray; do
+            python3 tools/check_spray_cantera.py --exe build-spray/pelef_spray_3d_selected \
+              --yaml build/methanol-reference/ffcm1_red.yaml --phase gas --case "$case" \
+              --output-dir "evidence/$case"
+          done
+          python3 tools/check_spray_cone.py --exe build-spray/pelef_spray_3d_selected \
+            --yaml build/methanol-reference/ffcm1_red.yaml --output-dir evidence/reactive-cone
+          python3 tools/check_spray_convergence.py --exe build-spray/pelef_spray_3d_selected \
+            --yaml build/methanol-reference/ffcm1_red.yaml --output-dir evidence/temporal-refinement
+      - name: Verify installed spray executables
+        run: |
+          set -euo pipefail
+          cmake --install build-spray
+          cmp build-spray/pelef_spray_3d install-spray/bin/pelef_spray_3d
+          cmp build-spray/pelef_spray_3d_selected install-spray/bin/pelef_spray_3d_selected
+          python3 tests/spray/test_spray_application.py --exe install-spray/bin/pelef_spray_3d
+          python3 tools/check_spray_cantera.py --exe install-spray/bin/pelef_spray_3d_selected \
+            --yaml build/methanol-reference/ffcm1_red.yaml --phase gas --case methanol-spray \
+            --output-dir evidence/installed-methanol-spray
+      - name: Preserve complete source and verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spray-${{ matrix.build_type }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            build-spray/CMakeCache.txt
+            build-spray/install_manifest.txt
+            build-spray/Testing/Temporary/LastTest.log
+            build-dependencies/sundials-build/CMakeCache.txt
+          retention-days: 30
+          if-no-files-found: error
