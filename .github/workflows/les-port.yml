@@ -41,3 +41,21 @@ jobs:
           path: evidence/
           retention-days: 30
           if-no-files-found: error
+  mpi-dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download matching Debian GNU14 MPI packages
+        run: |
+          mkdir debs
+          docker run --rm -v "$PWD/debs:/out" debian:trixie sh -ec '
+            apt-get update
+            apt-get -y --download-only --no-install-recommends install libmpich-dev mpich
+            cp /var/cache/apt/archives/*.deb /out/
+            cd /out && sha256sum *.deb > SHA256SUMS
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-mpich-dependencies
+          path: debs/
+          retention-days: 7
+          if-no-files-found: error
