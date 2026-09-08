@@ -1,0 +1,28 @@
+name: Spray SUNDIALS source snapshot
+on:
+  push:
+    branches: [maintenance/spray-sundials-20260909]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LLNL/sundials
+          ref: 71a4cc9ad5e7bc8b4e33a1ca9795b4e96883f9a6
+          persist-credentials: false
+      - name: Archive the pinned public source
+        run: |
+          mkdir -p snapshot
+          git rev-parse HEAD > snapshot/commit.txt
+          git archive --format=tar.gz --prefix=sundials/ HEAD > snapshot/sundials.tar.gz
+          sha256sum snapshot/sundials.tar.gz > snapshot/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spray-sundials-source
+          path: snapshot/
+          retention-days: 30
+          if-no-files-found: error
