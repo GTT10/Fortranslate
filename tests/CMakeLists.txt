@@ -17,3 +17,5 @@ include("${PROJECT_SOURCE_DIR}/tests/cmake/SelectedZeroD.cmake")
 include("${PROJECT_SOURCE_DIR}/tests/cmake/FixedReactive.cmake")
 include("${PROJECT_SOURCE_DIR}/tests/cmake/FixedReactiveEB.cmake")
 include("${PROJECT_SOURCE_DIR}/tests/cmake/EBAndMPIContext.cmake")
+
+include("${PROJECT_SOURCE_DIR}/tests/cmake/Spray.cmake")

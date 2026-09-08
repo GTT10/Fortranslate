@@ -1,3 +1,7 @@
+set(pelef_selected_spray_option)
+if(PELEF_ENABLE_SPRAY)
+  set(pelef_selected_spray_option SPRAY_3D_NAME pelef_spray_3d_selected)
+endif()
 if(PELEF_MECHANISM_BUNDLE)
   set(pelef_selected_test_option)
   set(pelef_selected_mpi_option)
@@ -26,6 +30,7 @@ if(PELEF_MECHANISM_BUNDLE)
       REACTIVE_2D_NAME pelef_reactive_2d_selected
       REACTIVE_EB_2D_NAME pelef_reactive_eb_2d_selected
       REACTIVE_EB_AMR_2D_NAME pelef_reactive_eb_amr_2d_selected
+      ${pelef_selected_spray_option}
       REACTIVE_3D_NAME pelef_reactive_3d_selected
       AMR_REACTIVE_3D_NAME pelef_amr_reactive_3d_selected
       REACTIVE_EB_3D_NAME pelef_reactive_eb_3d_selected
@@ -44,6 +49,7 @@ if(PELEF_MECHANISM_BUNDLE)
       REACTIVE_2D_NAME pelef_reactive_2d_selected
       REACTIVE_EB_2D_NAME pelef_reactive_eb_2d_selected
       REACTIVE_EB_AMR_2D_NAME pelef_reactive_eb_amr_2d_selected
+      ${pelef_selected_spray_option}
       REACTIVE_3D_NAME pelef_reactive_3d_selected
       AMR_REACTIVE_3D_NAME pelef_amr_reactive_3d_selected
       REACTIVE_EB_3D_NAME pelef_reactive_eb_3d_selected

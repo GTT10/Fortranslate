@@ -42,3 +42,8 @@ explains the two-byte source mismatch and its independent reproduction.
 transport-persistence evidence. [The dated handoff](handoff-pelef-0.245.0-20260908.md)
 reports a later local matrix; its old operational instructions and temporary
 paths are not current workflow instructions.
+
+## Spray/LES increment
+
+[Periodic 3D spray guide](spray.md): build commands, equations, cases, restart and explicit limits.
+[0.246.0 validation](validation/0.246.0.md): acceptance gates and evidence classes.

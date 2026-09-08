@@ -1,0 +1,55 @@
+program pelef_spray_3d_selected
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: prepare_selected_mechanism
+  use spray_application_mod, only: run_spray_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => &
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5,pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum,common_temperature_maximum
+  character(len=1024) :: input_path,message
+  logical :: ok
+  if (command_argument_count()/=1) error stop 'Usage: pelef_spray_3d_selected <input.nml>'
+  call get_command_argument(1,input_path)
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected reactive 3D thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected reactive 3D reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected reactive 3D transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected reactive 3D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  call run_spray_application(trim(input_path),species,reactions,transport,'@PELEF_BUNDLE_BUNDLE_SHA256@')
+end program

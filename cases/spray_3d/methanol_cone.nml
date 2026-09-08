@@ -1,0 +1,15 @@
+! Nonuniform, periodic, premixed-carrier demonstration with scheduled parcels.
+! Requires selected FFCM1_Red and CVODE. This is not an open-nozzle spray validation.
+&spray
+ cells=3,3,3, domain_length=.004,.004,.004,
+ gas_temperature=2200, gas_pressure=500000, shear_velocity=5,
+ mole_names='O2','N2','', mole_amounts=1,3.76,0,
+ vapor_name='CH3OH', liquid_density=792, liquid_cp=2530,
+ reference_temperature=337.85, reference_pressure=101325, latent_heat=1100000,
+ drop_temperature=300, drop_diameter=2e-6, initial_liquid_mass=1e-9, parcel_count=2,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1, injection_speed=50, cone_angle=.15,
+ mass_flow_rate=1e-4, injection_start=5e-7, injection_end=1.5e-6, injection_interval=5e-7,
+ final_time=3e-6, maximum_dt=1e-7, chemistry_method='cvode', rtol=1e-7, atol=1e-13,
+ smagorinsky_constant=.12, turbulent_prandtl=.7, turbulent_schmidt=.7,
+ output_prefix='methanol_cone', checkpoint_file='methanol_cone.chk'
+/

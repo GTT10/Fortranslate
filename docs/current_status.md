@@ -1,8 +1,10 @@
-# Current status: PeleF 0.245.0
+# Current status: PeleF 0.246.0
 
 This page separates implemented capability, dated reported results, and
-independent checks. The actual merge/qualification state and tested SHA are
-recorded in [PR #102](https://github.com/GTT10/Fortranslate/pull/102).
+independent checks. The preceding integration is
+recorded in [PR #102](https://github.com/GTT10/Fortranslate/pull/102). The new
+opt-in spray scope and qualification boundary are in
+[the spray guide](spray.md) and [0.246.0 validation](validation/0.246.0.md).
 Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
@@ -12,9 +14,9 @@ Older milestone prose remains historical detail, not a current global status.
 | Reactive flow and transport | 1D/2D paths and periodic regular 3D NASA7 mixtures, cell-local chemistry, molecular transport | General production 3D boundary/coupling qualification |
 | 3D AMR | Static, strictly interior, periodic, ratio-two two-level hierarchy; fixed/selected chemistry/transport; sparse MPI; transport-aware restart | Dynamic topology, multiple general patches/levels, physical coarse boundaries |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
-| Chemistry | Fixed H2/O2 and configure-time selected supported bundles; optional official-Fortran CVODE for selected 0D | General detailed-fuel ingestion/validation and stiff CFD integration |
+| Chemistry | Fixed H2/O2 and configure-time selected supported bundles; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol fixture | 2--32 species; production diesel-fuel mechanisms and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
-| LES and spray | Not claimed complete | Validated LES, particle transport/evaporation/coupling and breakup |
+| LES and spray | Opt-in periodic regular 3D single-component parcels; drag/heating/evaporation, conservative two-way coupling, deterministic cone/scheduled injection and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Multicomponent/boiling/breakup/collision, particle MPI/AMR/EB, physical boundaries, calibrated properties and experimental validation |
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
@@ -82,6 +84,6 @@ not overwritten or added together as though all configurations were identical.
 ## Remaining work
 
 [The roadmap](completion_roadmap.md) distinguishes further solver development
-from repository consolidation. General 3D AMR/EB, detailed-fuel stiff CFD,
-LES, spray and external physical validation remain genuine engineering work,
+from repository consolidation. General 3D AMR/EB, production detailed-fuel stiff CFD,
+full LES/spray qualification and external physical validation remain genuine engineering work,
 not features implicitly completed by housekeeping or large test counts.

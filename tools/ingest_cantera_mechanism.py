@@ -14,7 +14,7 @@ The accepted mechanism subset is deliberately small:
 * NASA7 species with gas Lennard-Jones transport data;
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
-* falloff reactions with Troe broadening.
+* Lindemann falloff and falloff reactions with Troe broadening.
 
 PLOG, Chebyshev, SRI, NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
@@ -41,6 +41,7 @@ REFERENCE_PRESSURE = 101325.0
 SUPPORTED_CANTERA_VERSION = "3.2.0"
 SUPPORTED_CANTERA_GIT_COMMIT = "4a8358e"
 _SPECIES_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SPECIES_LABEL = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_()+.*-]*$")
 _TRANSPORT_GEOMETRIES = {"atom", "linear", "nonlinear"}
 _TRANSPORT_KEYS = {
     "model",
@@ -209,9 +210,9 @@ def _validate_species_names(names: Sequence[str]) -> list[str]:
             raise ValueError(
                 f"species {name!r} exceeds the 24-character runtime limit"
             )
-        if not _SPECIES_IDENTIFIER.fullmatch(name):
+        if not _SPECIES_LABEL.fullmatch(name):
             raise ValueError(
-                f"species {name!r} is not a generator-safe identifier"
+                f"species {name!r} is not a supported generator-safe chemical label"
             )
     return result
 
@@ -288,21 +289,28 @@ def _thermo_record(species: Any, index: int) -> dict[str, Any]:
     ranges = thermo.get("temperature-ranges")
     if not isinstance(ranges, Sequence) or isinstance(ranges, (str, bytes)):
         raise ValueError(f"species {name}: NASA7 temperature-ranges is invalid")
-    if len(ranges) != 3:
+    if len(ranges) not in (2, 3):
         raise ValueError(
-            f"species {name}: NASA7 temperature-ranges must contain three values"
+            f"species {name}: NASA7 temperature-ranges must contain two or three values"
         )
     temperatures = [
         _positive(value, f"species {name} temperature-ranges[{item}]")
         for item, value in enumerate(ranges)
     ]
-    if not temperatures[0] < temperatures[1] < temperatures[2]:
-        raise ValueError(f"species {name}: NASA7 temperature ranges are not increasing")
-
+    single_interval = len(temperatures) == 2
+    if single_interval:
+        low, high = temperatures
+        temperatures = [low, low + 0.5 * (high - low), high]
     data = thermo.get("data")
     if not isinstance(data, Sequence) or isinstance(data, (str, bytes)):
         raise ValueError(f"species {name}: NASA7 data is invalid")
-    if len(data) != 2:
+    if single_interval:
+        if len(data) != 1:
+            raise ValueError(f"species {name}: single-interval NASA7 requires exactly one row")
+        # Duplicate the same polynomial on two subintervals, without changing
+        # its function, coefficients, reference pressure or validity interval.
+        data = [data[0], data[0]]
+    elif len(data) != 2:
         raise ValueError(f"species {name}: NASA7 data must contain low and high rows")
     coefficients: list[list[float]] = []
     for row_index, row in enumerate(data):
@@ -318,6 +326,16 @@ def _thermo_record(species: Any, index: int) -> dict[str, Any]:
                 for coefficient, value in enumerate(row)
             ]
         )
+
+    if not temperatures[0] < temperatures[1] < temperatures[2]:
+        # Cantera 3.2 exports a one-interval NASA7 as [Tmin,Tmax,Tmax]
+        # with two identical rows. Preserve the function with an interior split;
+        # never "repair" unequal polynomials or a reversed/empty range.
+        low, mid, high = temperatures
+        if low < high and mid in (low, high) and coefficients[0] == coefficients[1]:
+            temperatures[1] = low + 0.5 * (high - low)
+        if not temperatures[0] < temperatures[1] < temperatures[2]:
+            raise ValueError(f"species {name}: NASA7 temperature ranges are not increasing")
 
     composition_data = raw_species.get("composition")
     composition_mapping = _mapping(
@@ -431,7 +449,7 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
     if bool(getattr(rate, "chemically_activated", False)):
         raise ValueError(f"{equation}: chemically-activated rates are unsupported")
-    if rate_subtype in {"sri", "tsang", "lindemann"}:
+    if rate_subtype in {"sri", "tsang"}:
         raise ValueError(f"{equation}: {rate_subtype} falloff is unsupported")
 
     if "plog" in combined or "pressure-dependent-arrhenius" in combined:
@@ -591,11 +609,15 @@ def _reaction_record(
         )
         troe = _troe_record(raw, equation)
         if troe is None:
-            raise ValueError(
-                f"{equation}: only Troe falloff is supported; "
-                "Lindemann falloff is unsupported"
-            )
-        record["troe"] = troe
+            # Require Cantera's explicit rate classification. Missing Troe data
+            # must not silently downgrade a malformed/unknown falloff model.
+            subtype = str(getattr(getattr(reaction, "rate", None), "sub_type", "")).lower()
+            rate_kind = str(getattr(reaction, "reaction_type", "")).lower()
+            if subtype != "lindemann" or rate_kind != "falloff-lindemann":
+                raise ValueError(f"{equation}: missing Troe data for non-Lindemann falloff")
+            # An absent troe field selects the existing runtime's F=1 path.
+        else:
+            record["troe"] = troe
     else:
         record["arrhenius"] = _arrhenius_record(
             raw.get("rate-constant"), f"{equation} Arrhenius rate"
