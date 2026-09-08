@@ -4,7 +4,8 @@ program test_nasa7_thermo
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: &
     nasa7_species, valid_nasa7_species, nasa7_mass_properties, &
-    nasa7_specific_gas_constant
+    nasa7_specific_gas_constant, nasa7_molar_properties, &
+    nasa7_dimensionless_properties, universal_gas_constant
   use thermo_database_mod, only: &
     load_gri30_thermo_subset, gri_h2_index, gri_o2_index
   implicit none
@@ -105,9 +106,50 @@ program test_nasa7_thermo
   if (ok .or. any([cp, cv, enthalpy, internal_energy, entropy] /= 0.0_dp)) &
     error stop "NASA7 failed to reject overflowing mass properties"
 
+  call check_molar_conversion_rejection()
+
   write(*, '(a)') "test_nasa7_thermo: PASS"
 
 contains
+
+  subroutine check_molar_conversion_rejection()
+    type(nasa7_species) :: synthetic_species
+    real(dp) :: cp_over_r, h_over_rt, s_over_r, oversized_coefficient
+    real(dp) :: local_cp, local_cv, local_h, local_u, local_s
+    logical :: local_ok
+    integer :: coefficient_index, test_case
+    integer, parameter :: conversion_coefficients(3) = [1, 6, 7]
+
+    synthetic_species = species(gri_h2_index)
+    synthetic_species%temperature_min = 0.5_dp
+    synthetic_species%temperature_mid = 1.0_dp
+    synthetic_species%temperature_max = 2.0_dp
+    ! These finite dimensionless values pass polynomial evaluation, but their
+    ! dimensional conversion would overflow. Test cp, enthalpy, and entropy.
+    oversized_coefficient = 2.0_dp * (huge(1.0_dp) / universal_gas_constant)
+    do test_case = 1, size(conversion_coefficients)
+      synthetic_species%low_coefficients = 0.0_dp
+      synthetic_species%low_coefficients(1) = 3.5_dp
+      coefficient_index = conversion_coefficients(test_case)
+      synthetic_species%low_coefficients(coefficient_index) = &
+        oversized_coefficient
+      call nasa7_dimensionless_properties( &
+        synthetic_species, 1.0_dp, cp_over_r, h_over_rt, s_over_r, local_ok)
+      if (.not. local_ok) &
+        error stop "Molar overflow fixture failed before dimensional conversion"
+
+      call nasa7_molar_properties( &
+        synthetic_species, 1.0_dp, local_cp, local_cv, local_h, local_u, &
+        local_s, local_ok)
+      if (local_ok .or. any([local_cp, local_cv, local_h, local_u, local_s] /= 0.0_dp)) &
+        error stop "NASA7 molar conversion reported success after overflow rejection"
+      call nasa7_mass_properties( &
+        synthetic_species, 1.0_dp, local_cp, local_cv, local_h, local_u, &
+        local_s, local_ok)
+      if (local_ok .or. any([local_cp, local_cv, local_h, local_u, local_s] /= 0.0_dp)) &
+        error stop "NASA7 mass conversion did not propagate molar overflow failure"
+    end do
+  end subroutine check_molar_conversion_rejection
 
   subroutine assert_close(actual, expected, relative_tolerance, label)
     real(dp), intent(in) :: actual, expected, relative_tolerance

@@ -151,6 +151,9 @@ contains
     call nasa7_dimensionless_properties( &
       species, temperature, cp_over_r, h_over_rt, s_over_r, ok)
     if (.not. ok) return
+    ! Polynomial success does not imply that dimensional conversion is safe.
+    ! Every guard below must leave failure until all outputs are committed.
+    ok = .false.
 
     if (cp_over_r > finite_guard_limit / universal_gas_constant) return
     if (temperature > finite_guard_limit / universal_gas_constant) return
