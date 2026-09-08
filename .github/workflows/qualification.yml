@@ -1,0 +1,134 @@
+name: Optional backend and clean install
+
+on:
+  push:
+    branches: [main, 'agent/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cvode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record source and toolchain
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          gfortran --version > evidence/fortran-version.txt
+          cmake --version > evidence/cmake-version.txt
+      - name: Check out pinned SUNDIALS 7.2.0
+        uses: actions/checkout@v4
+        with:
+          repository: LLNL/sundials
+          ref: 71a4cc9ad5e7bc8b4e33a1ca9795b4e96883f9a6
+          path: build-dependencies/sundials-src
+          persist-credentials: false
+      - name: Build official static double-precision Fortran interface
+        run: |
+          set -euo pipefail
+          git -C build-dependencies/sundials-src rev-parse HEAD > evidence/sundials-commit.txt
+          cmake -S build-dependencies/sundials-src -B build-dependencies/sundials-build \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build-dependencies/sundials-install" \
+            -DBUILD_FORTRAN_MODULE_INTERFACE=ON -DBUILD_STATIC_LIBS=ON -DBUILD_SHARED_LIBS=OFF \
+            -DSUNDIALS_PRECISION=double -DBUILD_CVODE=ON -DBUILD_CVODES=OFF \
+            -DBUILD_ARKODE=OFF -DBUILD_IDA=OFF -DBUILD_IDAS=OFF -DBUILD_KINSOL=OFF \
+            -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_ENABLE_CXX=OFF -DEXAMPLES_ENABLE_F2003=OFF
+          cmake --build build-dependencies/sundials-build --parallel 2
+          cmake --install build-dependencies/sundials-build
+          python3 -m pip install cantera==3.2.0
+          python3 -m pip freeze > evidence/python-packages.txt
+      - name: Configure complete selected CVODE and Cantera test suite
+        run: >-
+          cmake -S . -B build-cvode
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build-dependencies/sundials-install
+          -DPELEF_ENABLE_TESTS=ON -DPELEF_ENABLE_SUNDIALS=ON
+          -DPELEF_ENABLE_CANTERA_REFERENCE=ON
+          -DPELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+          -DPELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+      - name: Build
+        run: cmake --build build-cvode --parallel 2
+      - name: Test all registered cases
+        run: >-
+          ctest --test-dir build-cvode --output-on-failure --parallel 2
+          --output-junit ${{ github.workspace }}/evidence/ctest-results.xml
+      - name: Preserve optional-backend evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cvode-${{ matrix.build_type }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            build-cvode/CMakeCache.txt
+            build-cvode/Testing/Temporary/LastTest.log
+            build-dependencies/sundials-build/CMakeCache.txt
+          retention-days: 30
+
+  clean-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install matching MPI toolchain and record source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openmpi-bin libopenmpi-dev
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          gfortran --version > evidence/fortran-version.txt
+          cmake --version > evidence/cmake-version.txt
+      - name: Configure separate tests-disabled Release installation
+        run: >-
+          cmake -S . -B build-mpi
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran
+          -DMPI_Fortran_COMPILER=/usr/bin/mpifort -DMPIEXEC_EXECUTABLE=/usr/bin/mpiexec
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-mpi
+          -DPELEF_ENABLE_TESTS=OFF -DPELEF_ENABLE_MPI=ON
+          -DPELEF_ENABLE_SUNDIALS=OFF -DPELEF_ENABLE_CANTERA_REFERENCE=OFF
+          -DPELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+          -DPELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+      - name: Build and exercise installed applications
+        run: |
+          set -euo pipefail
+          cmake --build build-mpi --parallel 2
+          bash tools/ci_mpi_installed_smoke.sh 2>&1 | tee evidence/installed-smoke.log
+          python3 tools/audit_installed_release.py --build-dir build-mpi \
+            --install-prefix install-mpi --expected-elf-count 42 2>&1 | tee evidence/installed-audit.log
+      - name: Preserve clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-install-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            build-mpi/CMakeCache.txt
+            build-mpi/install_manifest.txt
+          retention-days: 30
