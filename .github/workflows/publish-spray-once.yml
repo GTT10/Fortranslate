@@ -1,0 +1,62 @@
+name: Publish verified spray source
+on:
+  push:
+    branches: [maintenance/publish-spray-0246]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify and unpack the source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,lzma,pathlib,os
+          parts=pathlib.Path('maintenance/spray-publication')
+          packed=b''.join((parts/f'part{i}.bin').read_bytes() for i in range(4))
+          assert hashlib.sha256(packed).hexdigest()=='1ee2de4ffeccbd30efd306904bfed37d55157d01bb3c6745a8f3d2328d904a56'
+          patch=lzma.decompress(packed)
+          assert len(patch)==206393
+          assert hashlib.sha256(patch).hexdigest()=='7e86764267102716be78f59630df58ffc2c0e1111cb58c428aae99acb88a26e6'
+          (pathlib.Path(os.environ['RUNNER_TEMP'])/'spray.patch').write_bytes(patch)
+          PY
+      - name: Apply only to the pinned parent and publish a new feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin 5a2c818899f7213dad2fbb3c6808558711aced10
+          git checkout --detach 5a2c818899f7213dad2fbb3c6808558711aced10
+          test "$(git rev-parse HEAD^{tree})" = 9dceaf713de7be932155adb3379f20a583d91976
+          git apply --check --index "$RUNNER_TEMP/spray.patch"
+          git apply --index "$RUNNER_TEMP/spray.patch"
+          git diff --cached --check
+          test "$(git write-tree)" = b7e886ec2ac663786d7b09443b7fe854073f5459
+          python3 tools/check_project_contract.py --source .
+          python3 -m compileall -q tools tests/python tests/spray
+          python3 tests/python/test_mechanism_portability.py
+          if git ls-remote --exit-code --heads origin refs/heads/feature/periodic-spray-combustion-0246; then
+            echo 'Refusing to overwrite an existing feature branch' >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: add conservative periodic 3D spray combustion, LES and cell CVODE' -m 'PeleF 0.246.0: single-component parcels, drag, heat and evaporation; conservative CIC two-way coupling; deterministic cone, prescribed injection and mass-CDF diameters; deviatoric SGS transport; transactional native/CVODE reacting cells; exact coupled restart. Add pinned FFCM1_Red methanol integration and Cantera chemistry/refinement oracles. Preserve default-disabled existing solver paths. Experimental periodic serial scope; not full production diesel or AMR/MPI spray validation.'
+          git push origin HEAD:refs/heads/feature/periodic-spray-combustion-0246
+          mkdir -p "$RUNNER_TEMP/spray-publication-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/spray-publication-evidence/commit.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/spray-publication-evidence/tree.txt"
+          git diff HEAD^ HEAD --stat > "$RUNNER_TEMP/spray-publication-evidence/changes.txt"
+          cp "$RUNNER_TEMP/spray.patch" "$RUNNER_TEMP/spray-publication-evidence/"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/spray-publication-evidence/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spray-published-source
+          path: ${{ runner.temp }}/spray-publication-evidence/
+          retention-days: 30
+          if-no-files-found: error
