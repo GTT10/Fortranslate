@@ -1,0 +1,31 @@
+name: One-time integration history audit
+on:
+  push:
+    branches: [maintenance/history-audit-20260909]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Preserve repository history for independent review
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          git bundle create evidence/source-history.bundle --all
+          git bundle verify evidence/source-history.bundle 2>&1 | tee evidence/bundle-verification.txt
+          git cherry bf74884043a8cf25aece292604dd5d88035831bf 24cf4ec35017b27ed9903fb1b45b7e4f3ca8543d > evidence/pr11-cherry.txt
+          git log --oneline --left-right bf74884043a8cf25aece292604dd5d88035831bf...24cf4ec35017b27ed9903fb1b45b7e4f3ca8543d > evidence/pr11-history.txt
+          git for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin > evidence/branches.txt
+          sha256sum evidence/source-history.bundle > evidence/bundle-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: history-audit-${{ github.run_id }}
+          path: evidence/
+          retention-days: 30
