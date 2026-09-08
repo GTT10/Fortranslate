@@ -1,0 +1,47 @@
+PeleF 0.238.0 installed selected sparse MPI reactive EB patch-tree 2D audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-mpi-eb2d-0238-final-audit-install/bin/pelef_mpi_reactive_eb_patch_tree_2d
+  sha256=11ed7151483b5678c7f1b0cf84d0f53bb210090f6c8b65df1f87e6b47b1b4d4c
+  build/selected-mpi-eb2d-0238-final-audit-install/bin/pelef_mpi_reactive_eb_patch_tree_2d_selected
+  sha256=b2e67b628b9f6014122a3d988209c1159eda5a41bb4af58335a5453a584c6d27
+
+Inputs:
+  cases/selected_mpi_reactive_eb_patch_tree_2d/h2o2_full_fixed.nml
+  cases/selected_mpi_reactive_eb_patch_tree_2d/h2o2_full_selected.nml
+  cases/selected_mpi_reactive_eb_patch_tree_2d/invalid_checkpoint_interval.nml
+  cases/selected_mpi_reactive_eb_patch_tree_2d/invalid_restart_file.nml
+  cases/reactive_eb_patch_tree_restart_2d/checkpoint_stop.nml
+
+Execution result:
+  installed fixed reference: PASS, MPI ranks 1
+  installed selected references: PASS, MPI ranks 1, 2, and 4
+  active levels=4, active patches=4, coarse steps=1, regrids=1
+  chemistry level advances=2 2 2 2
+  hydro level advances=1 2 4 8
+  final time=9.9999999999999998e-13 s
+  bundle sha256=f65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3
+  species=10, reactions=29, integrator=implicit
+  fixed/selected and selected rank-count composite CSV: byte exact
+  final output sha256=96cfbb523031b8a22163ff8308627ba937a7d3789719de2c81011e50490009dc
+  selected_mpi_reactive_eb_patch_tree_2d_exact_match=PASS
+
+Fixed compatibility result:
+  installed checkpoint-stop: PASS, stopped after checkpoint
+  fixed schema-8 checkpoint sha256=d3ed831ad70a488f7303bbc296b07f63f503c9f02c04a0ddff81d0bb8e7f1de1
+  fixed stopped CSV sha256=7fb65b8520938d7add2ff10aa86f0912c6a04fd92a172919f96869a98f9e911c
+  both hashes equal the final installed 0.237.0 GNU/OpenMPI Release artifacts
+
+Installed failure gates under /usr/bin/mpiexec -n 2:
+  selected checkpoint cadence/path: rejected, no output/checkpoint
+  selected restart path: rejected, no output
+  fixed input to selected executable: rejected, no output
+  selected input to fixed executable: rejected, no output
+  selected input/output alias: rejected, input unchanged
+  diagnostics=PASS
+  forbidden outputs absent=PASS
+  total=5/5 PASS
+
+Qualification boundary:
+  selected checkpoint/restart is intentionally rejected in 0.238.0

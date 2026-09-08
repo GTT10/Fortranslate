@@ -6,10 +6,11 @@ module mpi_amr_eb_patch_tree_2d_mod
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: &
+  use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_species_component
+    reactive_nvar, reactive_nprim, reactive_species_component, &
+    resolve_reactive_chemistry_integrator
   use reactive_2d_mod, only: advance_reactive_chemistry_2d
   use reactive_boundary_2d_mod, only: &
     reactive_boundary_set_2d, validate_reactive_boundary_set_2d
@@ -120,12 +121,14 @@ module mpi_amr_eb_patch_tree_2d_mod
   abstract interface
     subroutine sparse_reactive_amr_eb_tree_geometry_builder_2d( &
         parent_geometry, coarse_i_lower, coarse_i_upper, coarse_j_lower, &
-        coarse_j_upper, refinement_ratio, child_geometry, ok)
+        coarse_j_upper, refinement_ratio, geometry_context, child_geometry, &
+        ok)
       import :: eb_geometry_2d
       type(eb_geometry_2d), intent(in) :: parent_geometry
       integer, intent(in) :: coarse_i_lower, coarse_i_upper
       integer, intent(in) :: coarse_j_lower, coarse_j_upper
       integer, intent(in) :: refinement_ratio
+      class(*), intent(in) :: geometry_context
       type(eb_geometry_2d), intent(out) :: child_geometry
       logical, intent(out) :: ok
     end subroutine sparse_reactive_amr_eb_tree_geometry_builder_2d
@@ -1032,11 +1035,11 @@ contains
 
   subroutine regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, criteria, maximum_levels, &
-      refinement_ratio, geometry_builder, new_distribution, ok, changed, &
-      tagged_cells, transferred_cells, local_tagging_evaluations, &
-      local_candidate_transfers, local_restriction_transfers, &
-      local_prolongation_transfers, local_overlap_transfers, &
-      prolongation_method)
+      refinement_ratio, geometry_builder, geometry_context, new_distribution, &
+      ok, changed, tagged_cells, transferred_cells, &
+      local_tagging_evaluations, local_candidate_transfers, &
+      local_restriction_transfers, local_prolongation_transfers, &
+      local_overlap_transfers, prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: &
       old_distribution
@@ -1045,6 +1048,7 @@ contains
     integer, intent(in) :: maximum_levels, refinement_ratio
     procedure(sparse_reactive_amr_eb_tree_geometry_builder_2d) :: &
       geometry_builder
+    class(*), intent(in) :: geometry_context
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(out) :: &
       new_distribution
     logical, intent(out) :: ok, changed
@@ -1089,8 +1093,9 @@ contains
 
     call plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, criteria, maximum_levels, &
-      refinement_ratio, geometry_builder, plans, tagged_cells, local_ok, &
-      tagging_evaluations, candidate_transfers, restriction_transfers, method)
+      refinement_ratio, geometry_builder, geometry_context, plans, &
+      tagged_cells, local_ok, tagging_evaluations, candidate_transfers, &
+      restriction_transfers, method)
     if (.not. local_ok) go to 900
     call regrid_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, old_distribution, sparse, plans, new_distribution, local_ok, &
@@ -1131,9 +1136,10 @@ contains
 
   subroutine plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
       species, distribution, sparse, criteria, maximum_levels, &
-      refinement_ratio, geometry_builder, plans, tagged_cells, ok, &
-      local_tagging_evaluations, local_candidate_transfers, &
-      local_restriction_transfers, prolongation_method)
+      refinement_ratio, geometry_builder, geometry_context, plans, &
+      tagged_cells, ok, local_tagging_evaluations, &
+      local_candidate_transfers, local_restriction_transfers, &
+      prolongation_method)
     type(nasa7_species), intent(in) :: species(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d), intent(in) :: sparse
@@ -1141,6 +1147,7 @@ contains
     integer, intent(in) :: maximum_levels, refinement_ratio
     procedure(sparse_reactive_amr_eb_tree_geometry_builder_2d) :: &
       geometry_builder
+    class(*), intent(in) :: geometry_context
     type(amr_eb_patch_tree_level_plan_2d), allocatable, intent(out) :: plans(:)
     integer, intent(out) :: tagged_cells
     logical, intent(out) :: ok
@@ -1292,7 +1299,7 @@ contains
             extended(entry)%coarse_i_upper, &
             extended(entry)%coarse_j_lower, &
             extended(entry)%coarse_j_upper, refinement_ratio, &
-            extended(entry)%geometry, entity_ok)
+            geometry_context, extended(entry)%geometry, entity_ok)
           call all_ranks_accept_2d( &
             distribution%comm, entity_ok, accepted, global_ok)
           if (.not. global_ok .or. .not. accepted) return
@@ -2105,7 +2112,7 @@ contains
 
   subroutine advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
       species, reactions, distribution, sparse, interval, rtol, atol, ok, &
-      local_level_advances, local_restriction_transfers)
+      local_level_advances, local_restriction_transfers, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(mpi_amr_eb_patch_tree_distribution_2d), intent(in) :: distribution
@@ -2114,6 +2121,7 @@ contains
     logical, intent(out) :: ok
     integer, intent(out), optional :: local_level_advances(:)
     integer, intent(out), optional :: local_restriction_transfers
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
     type(eb_geometry_2d) :: geometry, parent_geometry
@@ -2123,10 +2131,12 @@ contains
     real(dp) :: control_maximum(3), control_minimum(3), controls(3)
     logical, allocatable :: active_mask(:, :)
     integer, allocatable :: advances(:)
-    integer :: child, child_owner, ierr, integer_maximum(2)
-    integer :: integer_minimum(2), integer_values(2), level, parent
+    integer :: child, child_owner, ierr, integer_maximum(3)
+    integer :: integrator_policy, integer_minimum(3), integer_values(3)
+    integer :: level, parent
     integer :: parent_owner, patch, relation, transfers
     logical :: accepted, entity_ok, global_ok, local_ok, matches
+    logical :: policy_ok, use_implicit
 
     ok = .false.
     transfers = 0
@@ -2134,7 +2144,10 @@ contains
     if (present(local_restriction_transfers)) &
       local_restriction_transfers = 0
     controls = [interval, rtol, atol]
-    integer_values = [size(species), size(reactions)]
+    call resolve_reactive_chemistry_integrator( &
+      size(species), chemistry_integrator, use_implicit, policy_ok)
+    integrator_policy = merge(2, 1, use_implicit)
+    integer_values = [size(species), size(reactions), integrator_policy]
 
     call replicated_distribution_matches_2d( &
       distribution, sparse%topology, matches)
@@ -2142,7 +2155,7 @@ contains
       sparse%nvar == reactive_nvar(size(species)) .and. &
       size(species) >= 1 .and. size(reactions) >= 1 .and. &
       all(ieee_is_finite(controls)) .and. interval >= 0.0_dp .and. &
-      rtol > 0.0_dp .and. atol > 0.0_dp
+      rtol > 0.0_dp .and. atol > 0.0_dp .and. policy_ok
     if (present(local_level_advances)) local_ok = local_ok .and. &
       size(local_level_advances) == sparse%level_count()
     call all_ranks_accept_2d( &
@@ -2184,7 +2197,8 @@ contains
               candidate%levels(level)%patches(patch)%state, &
               candidate%levels(level)%patches(patch)%temperature, &
               geometry%nx, geometry%ny, interval, rtol, atol, entity_ok, &
-              active_mask)
+              active_mask=active_mask, &
+              chemistry_integrator=chemistry_integrator)
             deallocate(active_mask)
           end if
           if (entity_ok) then
@@ -2609,7 +2623,7 @@ contains
       target_volume_fraction, minimum_transport_theta, ok, failure_context, &
       local_chemistry_level_advances, local_transport_level_advances, &
       local_hydro_level_advances, local_chemistry_transfers, &
-      local_transport_transfers, local_hydro_transfers)
+      local_transport_transfers, local_hydro_transfers, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -2632,6 +2646,7 @@ contains
     integer, intent(out), optional :: local_chemistry_transfers
     integer, intent(out), optional :: local_transport_transfers
     integer, intent(out), optional :: local_hydro_transfers
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
     real(dp) :: first_transport_theta, second_transport_theta
@@ -2727,7 +2742,8 @@ contains
       context = "first chemistry"
       call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
         species, reactions, distribution, candidate, 0.5_dp * dt, rtol, &
-        atol, local_ok, first_chemistry, first_chemistry_transfers)
+        atol, local_ok, first_chemistry, first_chemistry_transfers, &
+        chemistry_integrator)
       if (.not. local_ok) then
         if (present(failure_context)) failure_context = context
         return
@@ -2772,7 +2788,8 @@ contains
       context = "second chemistry"
       call advance_sparse_owned_reactive_amr_eb_patch_tree_chemistry_2d( &
         species, reactions, distribution, candidate, 0.5_dp * dt, rtol, &
-        atol, local_ok, second_chemistry, second_chemistry_transfers)
+        atol, local_ok, second_chemistry, second_chemistry_transfers, &
+        chemistry_integrator)
       if (.not. local_ok) then
         if (present(failure_context)) failure_context = context
         return
@@ -2831,7 +2848,7 @@ contains
       failure_context, advanced_steps, local_timestep_evaluations, &
       local_chemistry_level_advances, local_transport_level_advances, &
       local_hydro_level_advances, local_chemistry_transfers, &
-      local_transport_transfers, local_hydro_transfers)
+      local_transport_transfers, local_hydro_transfers, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -2860,6 +2877,7 @@ contains
     integer, intent(out), optional :: local_chemistry_transfers
     integer, intent(out), optional :: local_transport_transfers
     integer, intent(out), optional :: local_hydro_transfers
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(mpi_sparse_reactive_amr_eb_patch_tree_2d) :: candidate
     real(dp) :: dt, numeric_maximum(7), numeric_minimum(7)
@@ -3007,7 +3025,7 @@ contains
         target_volume_fraction, step_theta, local_ok, context, &
         step_chemistry, step_transport, step_hydro, &
         step_chemistry_transfers, step_transport_transfers, &
-        step_hydro_transfers)
+        step_hydro_transfers, chemistry_integrator)
       if (.not. local_ok) then
         if (present(failure_context)) failure_context = context
         return

@@ -1,0 +1,49 @@
+PeleF 0.234.0 clean tests-disabled Release install audit
+Date: 2026-08-31 Asia/Tokyo
+
+Build tree:
+  build/selected-ebamr2d-three-level-0234-final-audit-release
+Install prefix:
+  build/selected-ebamr2d-three-level-0234-final-audit-install
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Generated logs:
+  configure.log sha256=3131f584f9dcf627c679f4ebab99e43782a7438a77476a315f6e41cebcec7c4b
+  build-install.log sha256=6ba255f412300b9b7c54f73ec4258dddc511943a4b0743941e9c053cb96cb16e
+  install-elf-audit.log sha256=e6867fe1060a053d0190728fde12883387482d543632c041e682a76f3a4d66d2
+
+Build/install result:
+  595/596 final link steps completed
+  Install the project: PASS
+  install manifest entries=38
+
+Audit command:
+  python3 tools/audit_installed_release.py \
+    --build-dir build/selected-ebamr2d-three-level-0234-final-audit-release \
+    --install-prefix build/selected-ebamr2d-three-level-0234-final-audit-install \
+    --expected-elf-count 38
+
+Audit result:
+  install_manifest_entries=38
+  installed_elf_count=38
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=38
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS

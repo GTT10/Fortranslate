@@ -1,0 +1,3 @@
+# This vendored Cantera source is byte-pinned by h2o2_full.json.
+# Preserve upstream line endings and the two spaces on description line 4.
+/mechanisms/h2o2_cantera.yaml -text whitespace=-blank-at-eol

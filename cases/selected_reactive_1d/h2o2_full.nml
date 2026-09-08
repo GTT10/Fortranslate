@@ -1,0 +1,27 @@
+&reactive_1d
+  nx = 8
+  maximum_steps = 20000
+  x_lower = 0.0
+  x_upper = 0.008
+  final_time = 2.0e-6
+  cfl = 0.25
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  limiter = "mc"
+  boundary_condition = "periodic"
+  chemistry_enabled = .true.
+  chemistry_model = "selected"
+  transport_enabled = .false.
+  chemistry_relative_tolerance = 2.0e-6
+  chemistry_absolute_tolerance = 1.0e-12
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity = 0.0
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  output_file = "selected_full_h2o2_reactive_1d.csv"
+/

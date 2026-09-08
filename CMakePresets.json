@@ -20,6 +20,33 @@
         "CMAKE_BUILD_TYPE": "Release",
         "PELEF_ENABLE_TESTS": "ON"
       }
+    },
+    {
+      "name": "debug-cantera",
+      "displayName": "Debug with live Cantera parity",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/debug-cantera",
+      "cacheVariables": {
+        "PELEF_ENABLE_CANTERA_REFERENCE": "ON"
+      }
+    },
+    {
+      "name": "mpi-debug",
+      "displayName": "MPI Debug",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/mpi-debug",
+      "cacheVariables": {
+        "PELEF_ENABLE_MPI": "ON"
+      }
+    },
+    {
+      "name": "mpi-release",
+      "displayName": "MPI Release",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/mpi-release",
+      "cacheVariables": {
+        "PELEF_ENABLE_MPI": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -30,6 +57,18 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "debug-cantera",
+      "configurePreset": "debug-cantera"
+    },
+    {
+      "name": "mpi-debug",
+      "configurePreset": "mpi-debug"
+    },
+    {
+      "name": "mpi-release",
+      "configurePreset": "mpi-release"
     }
   ],
   "testPresets": [
@@ -43,6 +82,27 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-cantera",
+      "configurePreset": "debug-cantera",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mpi-debug",
+      "configurePreset": "mpi-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mpi-release",
+      "configurePreset": "mpi-release",
       "output": {
         "outputOnFailure": true
       }

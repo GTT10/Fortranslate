@@ -28,9 +28,12 @@ program test_reactive_eb_amr_2d_driver
     read_reactive_eb_amr_patch_set_2d_checkpoint, &
     simulate_reactive_eb_amr_2d, &
     compute_reactive_eb_patch_set_cfl_timestep_2d, &
+    advance_reactive_eb_patch_set_strang_2d, &
     simulate_reactive_eb_amr_patch_set_2d, &
     compute_three_level_reactive_eb_cfl_timestep_2d, &
     regrid_three_level_reactive_eb_amr_parent_2d, &
+    write_reactive_eb_amr_three_level_2d_checkpoint, &
+    read_reactive_eb_amr_three_level_2d_checkpoint, &
     simulate_three_level_reactive_eb_amr_2d, &
     build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d
   use reactive_eb_2d_driver_mod, only: reactive_eb_integrals_2d
@@ -43,9 +46,11 @@ program test_reactive_eb_amr_2d_driver
   type(eb_geometry_2d) :: level_two_geometry
   type(eb_geometry_2d) :: checkpoint_coarse_geometry
   type(eb_geometry_2d) :: checkpoint_fine_geometry
+  type(eb_geometry_2d) :: checkpoint_level_two_geometry
   type(amr_eb_patch_2d) :: patch
   type(amr_eb_patch_2d) :: level_two_patch
   type(amr_eb_patch_2d) :: checkpoint_patch
+  type(amr_eb_patch_2d) :: checkpoint_level_two_patch
   type(reactive_eb_patch_set_2d) :: multipatch_set
   type(reactive_eb_patch_set_2d) :: checkpoint_multipatch_set
   type(reactive_eb_patch_set_2d) :: empty_multipatch_set
@@ -73,6 +78,13 @@ program test_reactive_eb_amr_2d_driver
   real(dp), allocatable :: checkpoint_coarse_temperature(:, :)
   real(dp), allocatable :: checkpoint_fine_state(:, :, :)
   real(dp), allocatable :: checkpoint_fine_temperature(:, :)
+  real(dp), allocatable :: checkpoint_level_two_state(:, :, :)
+  real(dp), allocatable :: checkpoint_level_two_temperature(:, :)
+  real(dp), allocatable :: checkpoint_initial_integrals(:)
+  real(dp), allocatable :: invalid_initial_integrals(:)
+  real(dp), allocatable :: selected_mole_fractions(:)
+  real(dp), allocatable :: changed_mole_fractions(:)
+  real(dp), allocatable :: invalid_mole_fractions(:)
   real(dp) :: time, minimum_dt, base_density, cfl_dt, conservation_error, scale
   real(dp) :: minimum_transport_theta
   real(dp) :: checkpoint_time, checkpoint_minimum_dt
@@ -85,9 +97,46 @@ program test_reactive_eb_amr_2d_driver
   integer :: checkpoint_regrids, checkpoint_steps, child
   character(len=*), parameter :: checkpoint_path = &
     "reactive_eb_amr_2d_driver.chk"
+  character(len=*), parameter :: selected_checkpoint_path = &
+    "selected_reactive_eb_amr_2d_driver.chk"
+  character(len=*), parameter :: selected_dynamic_checkpoint_path = &
+    "selected_dynamic_reactive_eb_amr_2d_driver.chk"
+  character(len=*), parameter :: selected_dynamic_bad_baseline_path = &
+    "selected_dynamic_reactive_eb_amr_2d_driver_bad_baseline.chk"
+  character(len=*), parameter :: three_level_checkpoint_path = &
+    "reactive_eb_amr_three_level_2d_driver.chk"
+  character(len=*), parameter :: selected_three_level_checkpoint_path = &
+    "selected_reactive_eb_amr_three_level_2d_driver.chk"
+  character(len=*), parameter :: selected_three_level_bad_baseline_path = &
+    "selected_reactive_eb_amr_three_level_2d_driver_bad_baseline.chk"
+  character(len=*), parameter :: dynamic_three_level_checkpoint_path = &
+    "dynamic_reactive_eb_amr_three_level_2d_driver.chk"
+  character(len=*), parameter :: selected_dynamic_three_level_checkpoint_path = &
+    "selected_dynamic_reactive_eb_amr_three_level_2d_driver.chk"
+  character(len=*), parameter :: &
+    selected_dynamic_three_level_corrupt_path = &
+      "selected_dynamic_reactive_eb_amr_three_level_2d_driver_corrupt.chk"
+  character(len=*), parameter :: selected_bad_context_path = &
+    "selected_reactive_eb_amr_2d_driver_bad_context.chk"
+  character(len=*), parameter :: selected_truncated_path = &
+    "selected_reactive_eb_amr_2d_driver_truncated.chk"
+  character(len=*), parameter :: selected_invalid_write_path = &
+    "selected_reactive_eb_amr_2d_driver_invalid_write.chk"
+  character(len=*), parameter :: selected_bundle_sha256 = &
+    "f65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3"
+  character(len=*), parameter :: changed_bundle_sha256 = &
+    "e65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3"
   character(len=*), parameter :: patch_set_checkpoint_path = &
     "reactive_eb_amr_patch_set_2d_driver.chk"
+  character(len=*), parameter :: selected_patch_set_checkpoint_path = &
+    "selected_reactive_eb_amr_patch_set_2d_driver.chk"
+  character(len=*), parameter :: selected_patch_set_corrupt_path = &
+    "selected_reactive_eb_amr_patch_set_2d_driver_corrupt.chk"
+  character(len=*), parameter :: selected_patch_set_invalid_write_path = &
+    "selected_reactive_eb_amr_patch_set_2d_driver_invalid.chk"
   character(len=64) :: multipatch_failure_context, three_level_failure_context
+  character(len=1024) :: checkpoint_failure_context
+  character(len=8192) :: invalid_baseline_record
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -198,6 +247,243 @@ program test_reactive_eb_amr_2d_driver
     coarse_temperature)) <= 3.0e-12_dp * scale .and. &
     maxval(abs(checkpoint_fine_temperature - fine_temperature)) <= &
     3.0e-12_dp * scale, "checkpoint EOS temperature recovery")
+
+  allocate(selected_mole_fractions(size(species)), &
+    changed_mole_fractions(size(species)), &
+    invalid_mole_fractions(size(species)))
+  selected_mole_fractions = 0.0_dp
+  selected_mole_fractions(1) = 0.25_dp
+  selected_mole_fractions(4) = 0.25_dp
+  selected_mole_fractions(7) = 0.50_dp
+  call write_reactive_eb_amr_2d_checkpoint( &
+    selected_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
+    base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "selected two-level checkpoint write")
+  call require_selected_checkpoint_context( &
+    selected_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+
+  call delete_checkpoint(selected_invalid_write_path)
+  call write_reactive_eb_amr_2d_checkpoint( &
+    selected_invalid_write_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
+    base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint context is incomplete") > 0, &
+    "incomplete selected checkpoint write rejection")
+  call require_file_absent( &
+    selected_invalid_write_path, "incomplete selected write creates no file")
+
+  call read_reactive_eb_amr_2d_checkpoint( &
+    selected_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "not a fixed-runtime schema") > 0, &
+    "fixed reader rejects selected checkpoint")
+  call require_checkpoint_targets_empty( &
+    "selected checkpoint fixed-reader rollback")
+
+  call read_reactive_eb_amr_2d_checkpoint( &
+    checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "lacks selected mechanism context") > 0, &
+    "selected reader rejects fixed checkpoint")
+  call require_checkpoint_targets_empty( &
+    "fixed checkpoint selected-reader rollback")
+
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(ok .and. checkpoint_fine_active .and. &
+    checkpoint_patch%is_valid( &
+      checkpoint_coarse_geometry, checkpoint_fine_geometry) .and. &
+    checkpoint_time == time .and. checkpoint_steps == steps .and. &
+    checkpoint_regrids == regrids .and. &
+    checkpoint_minimum_dt == minimum_dt .and. &
+    checkpoint_base_density == base_density .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_coarse_temperature == coarse_temperature) .and. &
+    all(checkpoint_fine_state == fine_state) .and. &
+    all(checkpoint_fine_temperature == fine_temperature), &
+    "selected two-level checkpoint round trip")
+
+  config%dynamic_regridding = .true.
+  config%regrid_at_initialization = .false.
+  call write_reactive_eb_amr_2d_checkpoint( &
+    selected_dynamic_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
+    base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "selected dynamic checkpoint write")
+  call require_selected_checkpoint_context( &
+    selected_dynamic_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions, 5, initial_integrals)
+  call read_selected_checkpoint( &
+    selected_dynamic_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(ok .and. checkpoint_fine_active .and. &
+    checkpoint_time == time .and. checkpoint_steps == steps .and. &
+    checkpoint_regrids == regrids .and. &
+    allocated(checkpoint_initial_integrals) .and. &
+    all(checkpoint_initial_integrals == initial_integrals) .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state), &
+    "selected dynamic checkpoint round trip")
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected static checkpoint cannot restart dynamic hierarchy") > 0, &
+    "selected dynamic reader rejects static schema")
+  call require_checkpoint_targets_empty( &
+    "selected static checkpoint dynamic-reader rollback")
+
+  config%dynamic_regridding = .false.
+  config%regrid_at_initialization = .true.
+  call read_selected_checkpoint( &
+    selected_dynamic_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected dynamic checkpoint cannot restart static hierarchy") > 0, &
+    "selected static reader rejects dynamic schema")
+  call require_checkpoint_targets_empty( &
+    "selected dynamic checkpoint static-reader rollback")
+  config%dynamic_regridding = .true.
+  config%regrid_at_initialization = .false.
+  call replace_checkpoint_line( &
+    selected_dynamic_checkpoint_path, selected_dynamic_bad_baseline_path, 8, &
+    "BROKEN_DYNAMIC_BASELINE")
+  call read_selected_checkpoint( &
+    selected_dynamic_bad_baseline_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected dynamic checkpoint baseline is invalid") > 0, &
+    "selected dynamic checkpoint baseline rejection")
+  call require_checkpoint_targets_empty( &
+    "selected dynamic checkpoint baseline rollback")
+  call delete_checkpoint(selected_dynamic_bad_baseline_path)
+  config%dynamic_regridding = .false.
+  config%regrid_at_initialization = .true.
+  call delete_checkpoint(selected_dynamic_checkpoint_path)
+
+  call read_reactive_eb_amr_2d_checkpoint( &
+    selected_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_fine_state, checkpoint_fine_temperature, &
+    checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+    checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected restart context is incomplete") > 0, &
+    "incomplete selected restart context rejection")
+  call require_checkpoint_targets_empty( &
+    "incomplete selected restart context rollback")
+
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, changed_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "bundle SHA-256 mismatch") > 0, &
+    "selected checkpoint bundle mismatch rejection")
+  call require_checkpoint_targets_empty( &
+    "selected checkpoint bundle mismatch rollback")
+
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, selected_bundle_sha256, "explicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "chemistry integrator mismatch") > 0, &
+    "selected checkpoint integrator mismatch rejection")
+  call require_checkpoint_targets_empty( &
+    "selected checkpoint integrator mismatch rollback")
+
+  changed_mole_fractions = selected_mole_fractions
+  changed_mole_fractions(1) = 0.24_dp
+  changed_mole_fractions(4) = 0.26_dp
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, selected_bundle_sha256, "implicit", &
+    changed_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "composition mismatch") > 0, &
+    "selected checkpoint composition mismatch rejection")
+  call require_checkpoint_targets_empty( &
+    "selected checkpoint composition mismatch rollback")
+
+  call replace_checkpoint_line( &
+    selected_checkpoint_path, selected_bad_context_path, 3, &
+    "BROKEN_SELECTED_CONTEXT")
+  call read_selected_checkpoint( &
+    selected_bad_context_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint context is invalid") > 0, &
+    "selected checkpoint marker rejection")
+  call require_checkpoint_targets_empty("selected checkpoint marker rollback")
+
+  call make_prefix_checkpoint( &
+    selected_checkpoint_path, selected_truncated_path, 5)
+  call read_selected_checkpoint( &
+    selected_truncated_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint context is invalid") > 0, &
+    "selected checkpoint context truncation rejection")
+  call require_checkpoint_targets_empty( &
+    "selected checkpoint context truncation rollback")
+
+  invalid_mole_fractions = selected_mole_fractions
+  invalid_mole_fractions(1) = -0.25_dp
+  invalid_mole_fractions(7) = 1.0_dp
+  call write_reactive_eb_amr_2d_checkpoint( &
+    selected_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, fine_active, time, steps, regrids, minimum_dt, &
+    base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=invalid_mole_fractions, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint context is invalid") > 0, &
+    "invalid selected checkpoint write rejection")
+  call read_selected_checkpoint( &
+    selected_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(ok .and. all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state), &
+    "invalid selected write preserves existing checkpoint")
+
+  call delete_checkpoint(selected_checkpoint_path)
+  call delete_checkpoint(selected_bad_context_path)
+  call delete_checkpoint(selected_truncated_path)
 
   allocate(rollback_coarse_state, mold=coarse_state)
   allocate(rollback_coarse_temperature, mold=coarse_temperature)
@@ -574,6 +860,24 @@ program test_reactive_eb_amr_2d_driver
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public multipatch CFL selection")
 
+  allocate(checkpoint_coarse_state, mold=coarse_state)
+  allocate(checkpoint_coarse_temperature, mold=coarse_temperature)
+  call advance_reactive_eb_patch_set_strang_2d( &
+    species, reactions, coarse_state, coarse_temperature, coarse_geometry, &
+    multipatch_set, config%eb%flow%riemann_solver, &
+    config%eb%flow%reconstruction, config%eb%flow%limiter, &
+    config%eb%state_redist_max_order, 1.0e-12_dp, .true., &
+    config%eb%flow%chemistry_relative_tolerance, &
+    config%eb%flow%chemistry_absolute_tolerance, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_multipatch_set, ok, &
+    config%eb%state_redist_target_volume_fraction, &
+    multipatch_failure_context, chemistry_integrator="invalid")
+  call require(.not. ok .and. index(multipatch_failure_context, &
+    "first coarse chemistry half-step") > 0, &
+    "multipatch chemistry-integrator propagation")
+  deallocate(checkpoint_coarse_state, checkpoint_coarse_temperature)
+  checkpoint_multipatch_set = reactive_eb_patch_set_2d()
+
   config%prolongation_method = "pcm"
   call simulate_reactive_eb_amr_patch_set_2d( &
     species, reactions, config, coarse_state, coarse_temperature, &
@@ -628,6 +932,140 @@ program test_reactive_eb_amr_2d_driver
       multipatch_set%children(child)%temperature)) <= 3.0e-12_dp * scale, &
       "multipatch checkpoint child temperature recovery")
   end do
+
+  call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, multipatch_set, time, steps, &
+    regrids, minimum_dt, base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "selected multipatch checkpoint write")
+  call require_selected_patch_set_checkpoint_context( &
+    selected_patch_set_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions, initial_integrals, &
+    multipatch_set%patch_count())
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_checkpoint_path, species, config, &
+    checkpoint_coarse_state, checkpoint_coarse_temperature, &
+    checkpoint_coarse_geometry, checkpoint_multipatch_set, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, &
+    checkpoint_base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=checkpoint_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. &
+    checkpoint_multipatch_set%patch_count() == &
+      multipatch_set%patch_count() .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_initial_integrals == initial_integrals), &
+    "selected multipatch checkpoint round trip")
+
+  deallocate(checkpoint_initial_integrals)
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_checkpoint_path, species, config, &
+    checkpoint_coarse_state, checkpoint_coarse_temperature, &
+    checkpoint_coarse_geometry, checkpoint_multipatch_set, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, &
+    checkpoint_base_density, ok, failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "requires selected reader") > 0, &
+    "selected multipatch checkpoint fixed-reader rejection")
+  call require_patch_set_checkpoint_targets_empty( &
+    "selected multipatch fixed-reader rollback")
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    patch_set_checkpoint_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=checkpoint_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "lacks selected context") > 0, &
+    "fixed multipatch checkpoint selected-reader rejection")
+  call require_patch_set_checkpoint_targets_empty( &
+    "fixed multipatch selected-reader rollback")
+
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_checkpoint_path, species, config, &
+    checkpoint_coarse_state, checkpoint_coarse_temperature, &
+    checkpoint_coarse_geometry, checkpoint_multipatch_set, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, &
+    checkpoint_base_density, ok, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=changed_mole_fractions, &
+    initial_integrals=checkpoint_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "composition mismatch") > 0, &
+    "selected multipatch composition mismatch rejection")
+  call require_patch_set_checkpoint_targets_empty( &
+    "selected multipatch composition rollback")
+
+  call replace_checkpoint_record( &
+    selected_patch_set_checkpoint_path, selected_patch_set_corrupt_path, &
+    "END_CHECKPOINT", "CORRUPT_END")
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_corrupt_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=checkpoint_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok, &
+    "selected multipatch corrupt end-marker rejection")
+  call require_patch_set_checkpoint_targets_empty( &
+    "selected multipatch corrupt end-marker rollback")
+  call append_checkpoint_record( &
+    selected_patch_set_checkpoint_path, selected_patch_set_corrupt_path, &
+    "TRAILING_CONTENT")
+  call read_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_corrupt_path, species, config, checkpoint_coarse_state, &
+    checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+    checkpoint_multipatch_set, checkpoint_time, checkpoint_steps, &
+    checkpoint_regrids, checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=checkpoint_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "trailing content") > 0, &
+    "selected multipatch trailing-content rejection")
+  call require_patch_set_checkpoint_targets_empty( &
+    "selected multipatch trailing-content rollback")
+
+  allocate(invalid_initial_integrals, source=initial_integrals)
+  invalid_initial_integrals(iet + 1) = &
+    invalid_initial_integrals(iet + 1) + 1.0e-3_dp * &
+      invalid_initial_integrals(irho)
+  call delete_checkpoint(selected_patch_set_invalid_write_path)
+  call write_reactive_eb_amr_patch_set_2d_checkpoint( &
+    selected_patch_set_invalid_write_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, multipatch_set, time, steps, &
+    regrids, minimum_dt, base_density, ok, &
+    bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=invalid_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "baseline is invalid") > 0, &
+    "selected multipatch invalid baseline rejection")
+  call require_file_absent(selected_patch_set_invalid_write_path, &
+    "selected multipatch invalid baseline creates no file")
+  deallocate(invalid_initial_integrals)
+
   allocate(empty_multipatch_set%children(0))
   call write_reactive_eb_amr_patch_set_2d_checkpoint( &
     patch_set_checkpoint_path, species, config, coarse_state, &
@@ -657,6 +1095,8 @@ program test_reactive_eb_amr_2d_driver
     .not. allocated(checkpoint_multipatch_set%children), &
     "truncated multipatch checkpoint transactional rejection")
   call delete_checkpoint(patch_set_checkpoint_path)
+  call delete_checkpoint(selected_patch_set_checkpoint_path)
+  call delete_checkpoint(selected_patch_set_corrupt_path)
 
   config = reactive_eb_amr_2d_config()
   config%eb%flow%nx = 8
@@ -732,6 +1172,151 @@ program test_reactive_eb_amr_2d_driver
     level_two_patch, config%eb%flow%cfl, cfl_dt, ok)
   call require(ok .and. cfl_dt > 0.0_dp, &
     "public three-level CFL selection")
+
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    three_level_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, level_two_state, level_two_temperature, &
+    level_two_geometry, level_two_patch, time, steps, minimum_dt, &
+    base_density, ok, regrids, failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "fixed three-level checkpoint write")
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    selected_three_level_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, level_two_state, level_two_temperature, &
+    level_two_geometry, level_two_patch, time, steps, minimum_dt, &
+    base_density, ok, regrids, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "selected three-level checkpoint write")
+  call require_selected_three_level_checkpoint_context( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions, initial_integrals)
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(ok .and. checkpoint_time == time .and. &
+    checkpoint_steps == steps .and. checkpoint_regrids == regrids .and. &
+    checkpoint_minimum_dt == minimum_dt .and. &
+    checkpoint_base_density == base_density .and. &
+    checkpoint_patch%is_valid( &
+      checkpoint_coarse_geometry, checkpoint_fine_geometry) .and. &
+    checkpoint_level_two_patch%is_valid( &
+      checkpoint_fine_geometry, checkpoint_level_two_geometry) .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state) .and. &
+    all(checkpoint_level_two_state == level_two_state) .and. &
+    allocated(checkpoint_initial_integrals) .and. &
+    all(checkpoint_initial_integrals == initial_integrals), &
+    "selected three-level checkpoint round trip")
+
+  allocate(invalid_initial_integrals, source=initial_integrals)
+  invalid_initial_integrals(irho) = -1.0_dp
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    selected_three_level_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, level_two_state, level_two_temperature, &
+    level_two_geometry, level_two_patch, time, steps, minimum_dt, &
+    base_density, ok, regrids, bundle_sha256=selected_bundle_sha256, &
+    chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=invalid_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "invalid selected three-level checkpoint write rejection")
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(ok .and. all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state) .and. &
+    all(checkpoint_level_two_state == level_two_state) .and. &
+    all(checkpoint_initial_integrals == initial_integrals), &
+    "invalid selected three-level write preserves existing checkpoint")
+
+  if (allocated(checkpoint_initial_integrals)) &
+    deallocate(checkpoint_initial_integrals)
+  call read_reactive_eb_amr_three_level_2d_checkpoint( &
+    selected_three_level_checkpoint_path, species, config, &
+    checkpoint_coarse_state, checkpoint_coarse_temperature, &
+    checkpoint_coarse_geometry, checkpoint_fine_state, &
+    checkpoint_fine_temperature, checkpoint_fine_geometry, &
+    checkpoint_patch, checkpoint_level_two_state, &
+    checkpoint_level_two_temperature, checkpoint_level_two_geometry, &
+    checkpoint_level_two_patch, checkpoint_time, checkpoint_steps, &
+    checkpoint_minimum_dt, checkpoint_base_density, ok, &
+    checkpoint_regrids, failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "not a fixed-runtime schema") > 0, &
+    "fixed reader rejects selected three-level checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level checkpoint fixed-reader rollback")
+
+  call read_selected_three_level_checkpoint( &
+    three_level_checkpoint_path, selected_bundle_sha256, "implicit", &
+    selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "lacks selected mechanism context") > 0, &
+    "selected reader rejects fixed three-level checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "fixed three-level checkpoint selected-reader rollback")
+
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, changed_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "bundle SHA-256 mismatch") > 0, &
+    "selected three-level bundle mismatch rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level bundle mismatch rollback")
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "explicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "chemistry integrator mismatch") > 0, &
+    "selected three-level integrator mismatch rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level integrator mismatch rollback")
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", changed_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "composition mismatch") > 0, &
+    "selected three-level composition mismatch rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level composition mismatch rollback")
+
+  call replace_checkpoint_line( &
+    selected_three_level_checkpoint_path, &
+    selected_three_level_bad_baseline_path, 8, "BROKEN_COMPOSITE_BASELINE")
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_bad_baseline_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "selected three-level baseline marker rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level baseline marker rollback")
+  write(invalid_baseline_record, '(*(es27.18e3,1x))') &
+    invalid_initial_integrals
+  call replace_checkpoint_line( &
+    selected_three_level_checkpoint_path, &
+    selected_three_level_bad_baseline_path, 10, &
+    trim(invalid_baseline_record))
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_bad_baseline_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "selected three-level numeric baseline rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected three-level numeric baseline rollback")
+  deallocate(invalid_initial_integrals)
+  call delete_checkpoint(selected_three_level_bad_baseline_path)
 
   config%eb%flow%chemistry_enabled = .false.
   config%eb%flow%transport_enabled = .true.
@@ -932,9 +1517,650 @@ program test_reactive_eb_amr_2d_driver
       2.0e-8_dp * scale, &
     "public scheduled three-level parent regrid")
 
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    dynamic_three_level_checkpoint_path, species, config, coarse_state, &
+    coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
+    fine_geometry, patch, level_two_state, level_two_temperature, &
+    level_two_geometry, level_two_patch, time, steps, minimum_dt, &
+    base_density, ok, regrids, failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "fixed dynamic three-level checkpoint write")
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path, species, config, &
+    coarse_state, coarse_temperature, coarse_geometry, fine_state, &
+    fine_temperature, fine_geometry, patch, level_two_state, &
+    level_two_temperature, level_two_geometry, level_two_patch, time, &
+    steps, minimum_dt, base_density, ok, regrids, &
+    bundle_sha256=selected_bundle_sha256, chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(ok .and. len_trim(checkpoint_failure_context) == 0, &
+    "selected dynamic three-level checkpoint write")
+  call require_selected_three_level_checkpoint_context( &
+    selected_dynamic_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions, initial_integrals, &
+    expected_schema=5)
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(ok .and. checkpoint_time == time .and. &
+    checkpoint_steps == steps .and. checkpoint_regrids == regrids .and. &
+    checkpoint_minimum_dt == minimum_dt .and. &
+    checkpoint_base_density == base_density .and. &
+    checkpoint_patch%is_valid( &
+      checkpoint_coarse_geometry, checkpoint_fine_geometry) .and. &
+    checkpoint_level_two_patch%is_valid( &
+      checkpoint_fine_geometry, checkpoint_level_two_geometry) .and. &
+    all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state) .and. &
+    all(checkpoint_level_two_state == level_two_state) .and. &
+    allocated(checkpoint_initial_integrals) .and. &
+    all(checkpoint_initial_integrals == initial_integrals), &
+    "selected dynamic three-level checkpoint round trip")
+
+  allocate(invalid_initial_integrals, source=initial_integrals)
+  invalid_initial_integrals(iet + 1) = &
+    invalid_initial_integrals(iet + 1) + 1.0e-3_dp * &
+      invalid_initial_integrals(irho)
+  call write_reactive_eb_amr_three_level_2d_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path, species, config, &
+    coarse_state, coarse_temperature, coarse_geometry, fine_state, &
+    fine_temperature, fine_geometry, patch, level_two_state, &
+    level_two_temperature, level_two_geometry, level_two_patch, time, &
+    steps, minimum_dt, base_density, ok, regrids, &
+    bundle_sha256=selected_bundle_sha256, chemistry_integrator="implicit", &
+    base_mole_fractions=selected_mole_fractions, &
+    initial_integrals=invalid_initial_integrals, &
+    failure_context=checkpoint_failure_context)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "selected dynamic three-level baseline closure rejection")
+  deallocate(invalid_initial_integrals)
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(ok .and. all(checkpoint_coarse_state == coarse_state) .and. &
+    all(checkpoint_fine_state == fine_state) .and. &
+    all(checkpoint_level_two_state == level_two_state), &
+    "invalid dynamic baseline write preserves existing checkpoint")
+
+  call read_fixed_three_level_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "not a fixed-runtime schema") > 0, &
+    "fixed reader rejects selected dynamic three-level checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic checkpoint fixed-reader rollback")
+  call read_selected_three_level_checkpoint( &
+    dynamic_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "lacks selected mechanism context") > 0, &
+    "selected reader rejects fixed dynamic three-level checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "fixed dynamic checkpoint selected-reader rollback")
+
+  call read_selected_three_level_checkpoint( &
+    selected_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, &
+    "selected dynamic reader rejects selected static checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected static checkpoint dynamic-reader rollback")
+  config%dynamic_regridding = .false.
+  config%dynamic_parent_regridding = .false.
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_checkpoint_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, &
+    "selected static reader rejects selected dynamic checkpoint")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic checkpoint static-reader rollback")
+  config%dynamic_regridding = .true.
+  config%dynamic_parent_regridding = .true.
+
+  call replace_checkpoint_record( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, "COMPOSITE_BASELINE", &
+    "BROKEN_COMPOSITE_BASELINE")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "selected dynamic baseline marker rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic baseline marker rollback")
+  allocate(invalid_initial_integrals, source=initial_integrals)
+  invalid_initial_integrals(irho) = -1.0_dp
+  write(invalid_baseline_record, '(*(es27.18e3,1x))') &
+    invalid_initial_integrals
+  call replace_checkpoint_line( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, 10, &
+    trim(invalid_baseline_record))
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "selected checkpoint baseline is invalid") > 0, &
+    "selected dynamic numeric baseline rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic numeric baseline rollback")
+  deallocate(invalid_initial_integrals)
+
+  call replace_checkpoint_line( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, 33, "1 1 2 0 4 4 0")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, "selected dynamic control corruption rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic control corruption rollback")
+  call replace_checkpoint_line( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, 35, "0 1 1 1 2")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, "selected dynamic parent patch corruption rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic parent patch corruption rollback")
+  call replace_checkpoint_line( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, 39, "BROKEN_FIELD")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, "selected dynamic field corruption rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic field corruption rollback")
+  call replace_checkpoint_record( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, "END_CHECKPOINT", &
+    "BROKEN_END_CHECKPOINT")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok, "selected dynamic terminal marker rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic terminal marker rollback")
+  call append_checkpoint_record( &
+    selected_dynamic_three_level_checkpoint_path, &
+    selected_dynamic_three_level_corrupt_path, "TRAILING_CONTENT")
+  call read_selected_three_level_checkpoint( &
+    selected_dynamic_three_level_corrupt_path, selected_bundle_sha256, &
+    "implicit", selected_mole_fractions)
+  call require(.not. ok .and. index(checkpoint_failure_context, &
+    "trailing content") > 0, &
+    "selected dynamic trailing content rejection")
+  call require_three_level_checkpoint_targets_empty( &
+    "selected dynamic trailing content rollback")
+
+  call delete_checkpoint(three_level_checkpoint_path)
+  call delete_checkpoint(selected_three_level_checkpoint_path)
+  call delete_checkpoint(dynamic_three_level_checkpoint_path)
+  call delete_checkpoint(selected_dynamic_three_level_checkpoint_path)
+  call delete_checkpoint(selected_dynamic_three_level_corrupt_path)
+
   write(*, '(a)') "test_reactive_eb_amr_2d_driver: PASS"
 
 contains
+
+  subroutine read_selected_checkpoint( &
+      path, bundle_sha256, chemistry_integrator, base_mole_fractions)
+    character(len=*), intent(in) :: path, bundle_sha256
+    character(len=*), intent(in) :: chemistry_integrator
+    real(dp), intent(in) :: base_mole_fractions(:)
+
+    if (config%dynamic_regridding) then
+      call read_reactive_eb_amr_2d_checkpoint( &
+        path, species, config, checkpoint_coarse_state, &
+        checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+        checkpoint_fine_state, checkpoint_fine_temperature, &
+        checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+        checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+        checkpoint_minimum_dt, checkpoint_base_density, ok, &
+        bundle_sha256=bundle_sha256, &
+        chemistry_integrator=chemistry_integrator, &
+        base_mole_fractions=base_mole_fractions, &
+        initial_integrals=checkpoint_initial_integrals, &
+        failure_context=checkpoint_failure_context)
+    else
+      call read_reactive_eb_amr_2d_checkpoint( &
+        path, species, config, checkpoint_coarse_state, &
+        checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+        checkpoint_fine_state, checkpoint_fine_temperature, &
+        checkpoint_fine_geometry, checkpoint_patch, checkpoint_fine_active, &
+        checkpoint_time, checkpoint_steps, checkpoint_regrids, &
+        checkpoint_minimum_dt, checkpoint_base_density, ok, &
+        bundle_sha256=bundle_sha256, &
+        chemistry_integrator=chemistry_integrator, &
+        base_mole_fractions=base_mole_fractions, &
+        failure_context=checkpoint_failure_context)
+    end if
+  end subroutine read_selected_checkpoint
+
+  subroutine read_selected_three_level_checkpoint( &
+      path, bundle_sha256, chemistry_integrator, base_mole_fractions)
+    character(len=*), intent(in) :: path, bundle_sha256
+    character(len=*), intent(in) :: chemistry_integrator
+    real(dp), intent(in) :: base_mole_fractions(:)
+
+    call read_reactive_eb_amr_three_level_2d_checkpoint( &
+      path, species, config, checkpoint_coarse_state, &
+      checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+      checkpoint_fine_state, checkpoint_fine_temperature, &
+      checkpoint_fine_geometry, checkpoint_patch, &
+      checkpoint_level_two_state, checkpoint_level_two_temperature, &
+      checkpoint_level_two_geometry, checkpoint_level_two_patch, &
+      checkpoint_time, checkpoint_steps, checkpoint_minimum_dt, &
+      checkpoint_base_density, ok, checkpoint_regrids, &
+      bundle_sha256=bundle_sha256, &
+      chemistry_integrator=chemistry_integrator, &
+      base_mole_fractions=base_mole_fractions, &
+      initial_integrals=checkpoint_initial_integrals, &
+      failure_context=checkpoint_failure_context)
+  end subroutine read_selected_three_level_checkpoint
+
+  subroutine read_fixed_three_level_checkpoint(path)
+    character(len=*), intent(in) :: path
+
+    if (allocated(checkpoint_initial_integrals)) &
+      deallocate(checkpoint_initial_integrals)
+    call read_reactive_eb_amr_three_level_2d_checkpoint( &
+      path, species, config, checkpoint_coarse_state, &
+      checkpoint_coarse_temperature, checkpoint_coarse_geometry, &
+      checkpoint_fine_state, checkpoint_fine_temperature, &
+      checkpoint_fine_geometry, checkpoint_patch, &
+      checkpoint_level_two_state, checkpoint_level_two_temperature, &
+      checkpoint_level_two_geometry, checkpoint_level_two_patch, &
+      checkpoint_time, checkpoint_steps, checkpoint_minimum_dt, &
+      checkpoint_base_density, ok, checkpoint_regrids, &
+      failure_context=checkpoint_failure_context)
+  end subroutine read_fixed_three_level_checkpoint
+
+  subroutine require_selected_three_level_checkpoint_context( &
+      path, expected_sha256, expected_integrator, expected_composition, &
+      expected_initial_integrals, expected_schema)
+    character(len=*), intent(in) :: path, expected_sha256
+    character(len=*), intent(in) :: expected_integrator
+    real(dp), intent(in) :: expected_composition(:)
+    real(dp), intent(in) :: expected_initial_integrals(:)
+    integer, intent(in), optional :: expected_schema
+
+    character(len=1024) :: magic, marker, stored_sha256, stored_integrator
+    character(len=1024) :: expected_magic
+    character(len=1024) :: baseline_marker
+    real(dp), allocatable :: stored_composition(:), stored_baseline(:)
+    integer :: unit, status, header(3), stored_size, stored_baseline_size, schema
+
+    schema = 4
+    if (present(expected_schema)) schema = expected_schema
+    expected_magic = "PELEF_REACTIVE_EB_AMR_THREE_LEVEL_2D_CHECKPOINT"
+    if (schema == 5) expected_magic = &
+      "PELEF_REACTIVE_EB_AMR_DYNAMIC_THREE_LEVEL_2D_CHECKPOINT"
+
+    open(newunit=unit, file=path, status="old", action="read", iostat=status)
+    call require(status == 0, &
+      "open selected three-level checkpoint context probe")
+    read(unit, '(a)', iostat=status) magic
+    call require(status == 0 .and. trim(magic) == trim(expected_magic), &
+      "selected three-level checkpoint magic")
+    read(unit, *, iostat=status) header
+    call require(status == 0 .and. header(1) == schema .and. &
+      header(2) == size(expected_composition) .and. &
+      header(3) == size(expected_initial_integrals), &
+      "selected three-level checkpoint schema")
+    read(unit, '(a)', iostat=status) marker
+    call require(status == 0 .and. trim(marker) == "SELECTED_CONTEXT", &
+      "selected three-level checkpoint context marker")
+    read(unit, '(a)', iostat=status) stored_sha256
+    call require(status == 0 .and. &
+      trim(stored_sha256) == trim(expected_sha256), &
+      "selected three-level checkpoint bundle SHA")
+    read(unit, '(a)', iostat=status) stored_integrator
+    call require(status == 0 .and. &
+      trim(stored_integrator) == trim(expected_integrator), &
+      "selected three-level checkpoint integrator")
+    read(unit, *, iostat=status) stored_size
+    call require(status == 0 .and. &
+      stored_size == size(expected_composition), &
+      "selected three-level checkpoint composition size")
+    allocate(stored_composition(stored_size))
+    read(unit, *, iostat=status) stored_composition
+    call require(status == 0 .and. &
+      all(stored_composition == expected_composition), &
+      "selected three-level checkpoint composition")
+    read(unit, '(a)', iostat=status) baseline_marker
+    call require(status == 0 .and. &
+      trim(baseline_marker) == "COMPOSITE_BASELINE", &
+      "selected three-level checkpoint baseline marker")
+    read(unit, *, iostat=status) stored_baseline_size
+    call require(status == 0 .and. &
+      stored_baseline_size == size(expected_initial_integrals), &
+      "selected three-level checkpoint baseline size")
+    allocate(stored_baseline(stored_baseline_size))
+    read(unit, *, iostat=status) stored_baseline
+    call require(status == 0 .and. &
+      all(stored_baseline == expected_initial_integrals), &
+      "selected three-level checkpoint baseline")
+    close(unit)
+  end subroutine require_selected_three_level_checkpoint_context
+
+  subroutine require_three_level_checkpoint_targets_empty(label)
+    character(len=*), intent(in) :: label
+
+    call require( &
+      .not. allocated(checkpoint_coarse_state) .and. &
+      .not. allocated(checkpoint_coarse_temperature) .and. &
+      .not. allocated(checkpoint_fine_state) .and. &
+      .not. allocated(checkpoint_fine_temperature) .and. &
+      .not. allocated(checkpoint_level_two_state) .and. &
+      .not. allocated(checkpoint_level_two_temperature) .and. &
+      .not. allocated(checkpoint_initial_integrals) .and. &
+      .not. checkpoint_coarse_geometry%is_valid() .and. &
+      .not. checkpoint_fine_geometry%is_valid() .and. &
+      .not. checkpoint_level_two_geometry%is_valid() .and. &
+      checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
+      checkpoint_regrids == 0 .and. &
+      checkpoint_minimum_dt == 0.0_dp .and. &
+      checkpoint_base_density == 0.0_dp, label)
+  end subroutine require_three_level_checkpoint_targets_empty
+
+  subroutine require_selected_patch_set_checkpoint_context( &
+      path, expected_sha256, expected_integrator, expected_composition, &
+      expected_initial_integrals, expected_patch_count)
+    character(len=*), intent(in) :: path, expected_sha256
+    character(len=*), intent(in) :: expected_integrator
+    real(dp), intent(in) :: expected_composition(:)
+    real(dp), intent(in) :: expected_initial_integrals(:)
+    integer, intent(in) :: expected_patch_count
+
+    character(len=1024) :: magic, marker, stored_sha256, stored_integrator
+    real(dp), allocatable :: stored_composition(:), stored_integrals(:)
+    integer :: unit, status, header(4), stored_size
+
+    open(newunit=unit, file=path, status="old", action="read", &
+      iostat=status)
+    call require(status == 0, &
+      "open selected multipatch checkpoint context probe")
+    read(unit, '(a)', iostat=status) magic
+    call require(status == 0 .and. trim(magic) == &
+      "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT", &
+      "selected multipatch checkpoint context magic")
+    read(unit, *, iostat=status) header
+    call require(status == 0 .and. header(1) == 4 .and. &
+      header(2) == size(expected_composition) .and. &
+      header(4) == expected_patch_count, &
+      "selected multipatch checkpoint context schema")
+    read(unit, '(a)', iostat=status) marker
+    call require(status == 0 .and. trim(marker) == "SELECTED_CONTEXT", &
+      "selected multipatch checkpoint context marker")
+    read(unit, '(a)', iostat=status) stored_sha256
+    call require(status == 0 .and. &
+      trim(stored_sha256) == trim(expected_sha256), &
+      "selected multipatch checkpoint stored bundle SHA")
+    read(unit, '(a)', iostat=status) stored_integrator
+    call require(status == 0 .and. &
+      trim(stored_integrator) == trim(expected_integrator), &
+      "selected multipatch checkpoint stored integrator")
+    read(unit, *, iostat=status) stored_size
+    call require(status == 0 .and. &
+      stored_size == size(expected_composition), &
+      "selected multipatch checkpoint stored composition size")
+    allocate(stored_composition(stored_size))
+    read(unit, *, iostat=status) stored_composition
+    call require(status == 0 .and. &
+      all(stored_composition == expected_composition), &
+      "selected multipatch checkpoint stored composition")
+    read(unit, '(a)', iostat=status) marker
+    call require(status == 0 .and. trim(marker) == "COMPOSITE_BASELINE", &
+      "selected multipatch checkpoint baseline marker")
+    read(unit, *, iostat=status) stored_size
+    call require(status == 0 .and. &
+      stored_size == size(expected_initial_integrals), &
+      "selected multipatch checkpoint baseline size")
+    allocate(stored_integrals(stored_size))
+    read(unit, *, iostat=status) stored_integrals
+    call require(status == 0 .and. &
+      all(stored_integrals == expected_initial_integrals), &
+      "selected multipatch checkpoint baseline values")
+    close(unit)
+  end subroutine require_selected_patch_set_checkpoint_context
+
+  subroutine require_patch_set_checkpoint_targets_empty(label)
+    character(len=*), intent(in) :: label
+
+    call require( &
+      .not. allocated(checkpoint_coarse_state) .and. &
+      .not. allocated(checkpoint_coarse_temperature) .and. &
+      .not. allocated(checkpoint_initial_integrals) .and. &
+      .not. checkpoint_coarse_geometry%is_valid() .and. &
+      .not. allocated(checkpoint_multipatch_set%children) .and. &
+      checkpoint_time == 0.0_dp .and. checkpoint_steps == 0 .and. &
+      checkpoint_regrids == 0 .and. &
+      checkpoint_minimum_dt == 0.0_dp .and. &
+      checkpoint_base_density == 0.0_dp, label)
+  end subroutine require_patch_set_checkpoint_targets_empty
+
+  subroutine require_selected_checkpoint_context( &
+      path, expected_sha256, expected_integrator, expected_composition, &
+      expected_schema, expected_initial_integrals)
+    character(len=*), intent(in) :: path, expected_sha256
+    character(len=*), intent(in) :: expected_integrator
+    real(dp), intent(in) :: expected_composition(:)
+    integer, intent(in), optional :: expected_schema
+    real(dp), intent(in), optional :: expected_initial_integrals(:)
+
+    character(len=1024) :: magic, marker, stored_sha256, stored_integrator
+    character(len=1024) :: baseline_marker
+    real(dp), allocatable :: stored_composition(:), stored_initial_integrals(:)
+    integer :: unit, status, header(4), stored_size, schema
+    integer :: stored_baseline_size
+
+    schema = 4
+    if (present(expected_schema)) schema = expected_schema
+
+    open(newunit=unit, file=path, status="old", action="read", &
+      iostat=status)
+    call require(status == 0, "open selected AMR checkpoint context probe")
+    read(unit, '(a)', iostat=status) magic
+    call require(status == 0 .and. &
+      trim(magic) == "PELEF_REACTIVE_EB_AMR_2D_CHECKPOINT", &
+      "selected AMR checkpoint context magic")
+    read(unit, *, iostat=status) header
+    call require(status == 0 .and. header(1) == schema .and. &
+      header(2) == size(expected_composition) .and. header(4) == 1, &
+      "selected AMR checkpoint context schema")
+    read(unit, '(a)', iostat=status) marker
+    call require(status == 0 .and. trim(marker) == "SELECTED_CONTEXT", &
+      "selected AMR checkpoint context marker")
+    read(unit, '(a)', iostat=status) stored_sha256
+    call require(status == 0 .and. &
+      trim(stored_sha256) == trim(expected_sha256), &
+      "selected AMR checkpoint stored bundle SHA")
+    read(unit, '(a)', iostat=status) stored_integrator
+    call require(status == 0 .and. &
+      trim(stored_integrator) == trim(expected_integrator), &
+      "selected AMR checkpoint stored integrator")
+    read(unit, *, iostat=status) stored_size
+    call require(status == 0 .and. &
+      stored_size == size(expected_composition), &
+      "selected AMR checkpoint stored composition size")
+    allocate(stored_composition(stored_size))
+    read(unit, *, iostat=status) stored_composition
+    call require(status == 0 .and. &
+      all(stored_composition == expected_composition), &
+      "selected AMR checkpoint stored composition")
+    if (schema == 5) then
+      call require(present(expected_initial_integrals), &
+        "selected dynamic checkpoint expected baseline")
+      read(unit, '(a)', iostat=status) baseline_marker
+      call require(status == 0 .and. &
+        trim(baseline_marker) == "DYNAMIC_BASELINE", &
+        "selected dynamic checkpoint baseline marker")
+      read(unit, *, iostat=status) stored_baseline_size
+      call require(status == 0 .and. &
+        stored_baseline_size == size(expected_initial_integrals), &
+        "selected dynamic checkpoint baseline size")
+      allocate(stored_initial_integrals(stored_baseline_size))
+      read(unit, *, iostat=status) stored_initial_integrals
+      call require(status == 0 .and. &
+        all(stored_initial_integrals == expected_initial_integrals), &
+        "selected dynamic checkpoint baseline values")
+    else
+      call require(.not. present(expected_initial_integrals), &
+        "selected static checkpoint has no baseline record")
+    end if
+    close(unit)
+  end subroutine require_selected_checkpoint_context
+
+  subroutine require_checkpoint_targets_empty(label)
+    character(len=*), intent(in) :: label
+
+    call require( &
+      .not. allocated(checkpoint_coarse_state) .and. &
+      .not. allocated(checkpoint_coarse_temperature) .and. &
+      .not. allocated(checkpoint_fine_state) .and. &
+      .not. allocated(checkpoint_fine_temperature) .and. &
+      .not. allocated(checkpoint_initial_integrals) .and. &
+      .not. checkpoint_coarse_geometry%is_valid() .and. &
+      .not. checkpoint_fine_geometry%is_valid() .and. &
+      .not. checkpoint_fine_active .and. checkpoint_time == 0.0_dp .and. &
+      checkpoint_steps == 0 .and. checkpoint_regrids == 0 .and. &
+      checkpoint_minimum_dt == 0.0_dp .and. &
+      checkpoint_base_density == 0.0_dp, label)
+  end subroutine require_checkpoint_targets_empty
+
+  subroutine require_file_absent(path, label)
+    character(len=*), intent(in) :: path, label
+
+    logical :: exists
+
+    inquire(file=path, exist=exists)
+    call require(.not. exists, label)
+  end subroutine require_file_absent
+
+  subroutine replace_checkpoint_line( &
+      source_path, destination_path, line_number, replacement)
+    character(len=*), intent(in) :: source_path, destination_path
+    integer, intent(in) :: line_number
+    character(len=*), intent(in) :: replacement
+
+    character(len=8192) :: line
+    integer :: input_unit, output_unit, status, current_line
+
+    open(newunit=input_unit, file=source_path, status="old", action="read", &
+      iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint mutation source"
+    open(newunit=output_unit, file=destination_path, status="replace", &
+      action="write", iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint mutation target"
+    current_line = 0
+    do
+      read(input_unit, '(a)', iostat=status) line
+      if (status < 0) exit
+      if (status > 0) error stop "Could not read checkpoint mutation source"
+      current_line = current_line + 1
+      if (current_line == line_number) then
+        write(output_unit, '(a)', iostat=status) trim(replacement)
+      else
+        write(output_unit, '(a)', iostat=status) trim(line)
+      end if
+      if (status /= 0) error stop "Could not write checkpoint mutation target"
+    end do
+    close(input_unit)
+    close(output_unit)
+    call require(current_line >= line_number, &
+      "checkpoint mutation line is present")
+  end subroutine replace_checkpoint_line
+
+  subroutine replace_checkpoint_record( &
+      source_path, destination_path, target, replacement)
+    character(len=*), intent(in) :: source_path, destination_path
+    character(len=*), intent(in) :: target, replacement
+
+    character(len=8192) :: line
+    integer :: input_unit, output_unit, status
+    logical :: replaced
+
+    open(newunit=input_unit, file=source_path, status="old", action="read", &
+      iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint mutation source"
+    open(newunit=output_unit, file=destination_path, status="replace", &
+      action="write", iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint mutation target"
+    replaced = .false.
+    do
+      read(input_unit, '(a)', iostat=status) line
+      if (status < 0) exit
+      if (status > 0) error stop "Could not read checkpoint mutation source"
+      if (trim(line) == trim(target)) then
+        write(output_unit, '(a)', iostat=status) trim(replacement)
+        replaced = .true.
+      else
+        write(output_unit, '(a)', iostat=status) trim(line)
+      end if
+      if (status /= 0) error stop "Could not write checkpoint mutation target"
+    end do
+    close(input_unit)
+    close(output_unit)
+    call require(replaced, "checkpoint mutation record is present")
+  end subroutine replace_checkpoint_record
+
+  subroutine append_checkpoint_record( &
+      source_path, destination_path, appended_record)
+    character(len=*), intent(in) :: source_path, destination_path
+    character(len=*), intent(in) :: appended_record
+
+    character(len=8192) :: line
+    integer :: input_unit, output_unit, status
+
+    open(newunit=input_unit, file=source_path, status="old", action="read", &
+      iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint append source"
+    open(newunit=output_unit, file=destination_path, status="replace", &
+      action="write", iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint append target"
+    do
+      read(input_unit, '(a)', iostat=status) line
+      if (status < 0) exit
+      if (status > 0) error stop "Could not read checkpoint append source"
+      write(output_unit, '(a)', iostat=status) trim(line)
+      if (status /= 0) error stop "Could not write checkpoint append target"
+    end do
+    write(output_unit, '(a)', iostat=status) trim(appended_record)
+    if (status /= 0) error stop "Could not append checkpoint record"
+    close(input_unit)
+    close(output_unit)
+  end subroutine append_checkpoint_record
+
+  subroutine make_prefix_checkpoint( &
+      source_path, destination_path, retained_lines)
+    character(len=*), intent(in) :: source_path, destination_path
+    integer, intent(in) :: retained_lines
+
+    character(len=8192) :: line
+    integer :: input_unit, output_unit, status, line_number
+
+    open(newunit=input_unit, file=source_path, status="old", action="read", &
+      iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint prefix source"
+    open(newunit=output_unit, file=destination_path, status="replace", &
+      action="write", iostat=status)
+    if (status /= 0) error stop "Could not open checkpoint prefix target"
+    do line_number = 1, retained_lines
+      read(input_unit, '(a)', iostat=status) line
+      if (status /= 0) error stop "Could not read checkpoint prefix source"
+      write(output_unit, '(a)', iostat=status) trim(line)
+      if (status /= 0) error stop "Could not write checkpoint prefix target"
+    end do
+    close(input_unit)
+    close(output_unit)
+  end subroutine make_prefix_checkpoint
 
   subroutine write_truncated_checkpoint(path)
     character(len=*), intent(in) :: path

@@ -1,0 +1,5 @@
+# Do not rewrite the byte-pinned upstream mechanism during editor saves.
+[mechanisms/h2o2_cantera.yaml]
+trim_trailing_whitespace = false
+end_of_line = lf
+insert_final_newline = true

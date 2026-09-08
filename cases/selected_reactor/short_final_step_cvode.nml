@@ -1,0 +1,18 @@
+&selected_reactor
+  integrator = "cvode"
+  final_time = 1.000005e-7
+  output_interval = 5.0e-8
+  initial_time_step = 1.0e-12
+  minimum_time_step = 1.0e-12
+  maximum_time_step = 2.5e-8
+  relative_tolerance = 1.0e-7
+  absolute_tolerance = 1.0e-13
+  maximum_steps = 100000
+  cvode_max_internal_steps = 100000
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  composition_count = 2
+  composition_species = "H", "H2"
+  composition_mole_fractions = 0.2, 0.8
+  output_file = "selected_short_final_cvode.csv"
+/

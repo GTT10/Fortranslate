@@ -1,0 +1,44 @@
+PeleF 0.238.0 full CTest matrix evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Log path pattern:
+  build/<configuration>/0.238.0-full-ctest.log
+
+Results:
+  Debug: 482/482 PASS, 519.96 sec
+    log sha256=e3cd4a7b6058606c89e29141dca0b1b8773dafb0e02650a84bdd50287a20a33b
+  Release: 482/482 PASS, 175.38 sec
+    log sha256=9cdb0d7cfa9973d0f421ebc1d13448f7ff65cc9822027db5ec965e8f61af6024
+  Debug + Cantera: 487/487 PASS, 518.42 sec
+    log sha256=168767f83cec178e306459214164daa287547948e3178acaf93808bf87d3f5a3
+  MPI Debug: 563/563 PASS, 462.83 sec
+    log sha256=bcc498bb084a3f17d9f7b890eb48144362d69558560be58e0dee979f1eafd47a
+  MPI Release: 563/563 PASS, 161.72 sec
+    log sha256=4ab0583183c60d437e9ce5c40d8b1e53b5f0bace2e7290373792a50f0e4f5c96
+  CVODE Debug: 491/491 PASS, 520.40 sec
+    log sha256=2cfa06dfa64e102f43332ffc8c96ce21379a53a4efc55ca6e72b0131bdd1b621
+  CVODE Debug + Cantera: 497/497 PASS, 520.27 sec
+    log sha256=8a517ddabf62dcdf39355727bdfbc67d9537e7f7e99f7e52db7c9e359589c665
+  CVODE Release: 491/491 PASS, 175.34 sec
+    log sha256=24e36b74b7cfffe88f64c26d6179b895fd2c0e5637b30004360630c5fb4f2a0b
+
+Aggregate:
+  4056/4056 PASS
+  failed tests=0
+
+Focused 0.238.0 MPI Release gate:
+  18/18 PASS, 20.04 sec
+  log path=build/mpi-release/0.238.0-focused-ctest.log
+  log sha256=2bd3f8bdb23a92b67c2b4fe6083a1fa8eaf79b76f574835ba96b9c625e8f10fa
+
+Additional configured full-bundle MPI Debug evidence:
+  pre-fixture full suite: 562/562 PASS, 453.56 sec
+    log path=build/selected-mpi-eb2d-0238-dev/ctest-full-0.238.0.log
+    log sha256=cab59dc59c3e7047ff46442ff6206b0ff67564d42036f7a516dd0f39a46c31ca
+  final fixture execution and validation: 2/2 PASS, 2.63 sec
+    log path=build/selected-mpi-eb2d-0238-dev/ctest-fixture-0.238.0.log
+    log sha256=a5ce536fe89617c924840e3b52ea57c09c0bfd56013db6f19ec79ca00055c021
+  fixture CSV sha256=83e459f0d7d77a5b674b49ad191a60b8fe9a3afcb4482e3b4020d6f544b54192
+
+Independent Luna Max final read-only audit:
+  blocking issues=0

@@ -8,12 +8,17 @@ module mpi_reactive_1d_mod
     mpi_reactive_transport_timestep, advance_mpi_reactive_transport
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
     reactive_riemann_flux_x, advance_reactive_chemistry
   implicit none
   private
+
+  integer, parameter :: chemistry_integrator_invalid = -1
+  integer, parameter :: chemistry_integrator_default = 0
+  integer, parameter :: chemistry_integrator_explicit = 1
+  integer, parameter :: chemistry_integrator_implicit = 2
 
   public :: mpi_reactive_timestep
   public :: advance_mpi_reactive_hydro
@@ -213,16 +218,17 @@ contains
 
   subroutine advance_mpi_reactive_chemistry( &
       domain, species, reactions, state, temperature, interval, rtol, atol, &
-      ok)
+      ok, chemistry_integrator)
     type(mpi_domain_1d), intent(in) :: domain
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, 0:), temperature(0:)
     real(dp), intent(in) :: interval, rtol, atol
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: work_state(:, :), work_temperature(:)
-    logical :: local_ok, global_ok, reduction_ok
+    logical :: local_ok, global_ok, reduction_ok, integrator_consensus_ok
     integer :: nvar
 
     local_ok = valid_local_shape(domain, species, state, temperature) .and. &
@@ -230,6 +236,12 @@ contains
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call collective_chemistry_integrator_consensus( &
+      domain, chemistry_integrator, integrator_consensus_ok)
+    if (.not. integrator_consensus_ok) then
       ok = .false.
       return
     end if
@@ -241,7 +253,8 @@ contains
     work_temperature = temperature
     call advance_reactive_chemistry( &
       species, reactions, work_state, work_temperature, &
-      domain%local_cells, interval, rtol, atol, "periodic", local_ok)
+      domain%local_cells, interval, rtol, atol, "periodic", local_ok, &
+      chemistry_integrator)
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
@@ -266,7 +279,8 @@ contains
       domain, species, reactions, transport, state, temperature, dx, dt, &
       chemistry_enabled, rtol, atol, transport_enabled, &
       viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, riemann_solver, ok)
+      species_diffusion_enabled, barodiffusion_enabled, riemann_solver, ok, &
+      chemistry_integrator)
     type(mpi_domain_1d), intent(in) :: domain
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -279,6 +293,7 @@ contains
     logical, intent(in) :: barodiffusion_enabled
     character(len=*), intent(in) :: riemann_solver
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: work_state(:, :), work_temperature(:)
     logical :: local_ok, global_ok, reduction_ok
@@ -303,7 +318,7 @@ contains
     if (chemistry_enabled) then
       call advance_mpi_reactive_chemistry( &
         domain, species, reactions, work_state, work_temperature, &
-        0.5_dp * dt, rtol, atol, local_ok)
+        0.5_dp * dt, rtol, atol, local_ok, chemistry_integrator)
       if (.not. local_ok) then
         ok = .false.
         return
@@ -341,7 +356,7 @@ contains
     if (chemistry_enabled) then
       call advance_mpi_reactive_chemistry( &
         domain, species, reactions, work_state, work_temperature, &
-        0.5_dp * dt, rtol, atol, local_ok)
+        0.5_dp * dt, rtol, atol, local_ok, chemistry_integrator)
       if (.not. local_ok) then
         ok = .false.
         return
@@ -358,7 +373,7 @@ contains
       requested_interval, minimum_interval, chemistry_enabled, rtol, atol, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, riemann_solver, &
-      accepted_interval, rejected_trials, ok)
+      accepted_interval, rejected_trials, ok, chemistry_integrator)
     type(mpi_domain_1d), intent(in) :: domain
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -374,6 +389,7 @@ contains
     real(dp), intent(out) :: accepted_interval
     integer, intent(out) :: rejected_trials
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: trial_state(:, :), trial_temperature(:)
     real(dp) :: trial_interval
@@ -411,7 +427,8 @@ contains
         trial_temperature, dx, trial_interval, chemistry_enabled, rtol, &
         atol, transport_enabled, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, riemann_solver, local_ok)
+        barodiffusion_enabled, riemann_solver, local_ok, &
+        chemistry_integrator)
       if (local_ok) then
         state = trial_state
         temperature = trial_temperature
@@ -466,5 +483,37 @@ contains
       local_value, global_value, 1, MPI_LOGICAL, MPI_LAND, domain%comm, ierr)
     ok = ierr == MPI_SUCCESS
   end subroutine collective_logical_and
+
+  subroutine collective_chemistry_integrator_consensus( &
+      domain, chemistry_integrator, ok)
+    type(mpi_domain_1d), intent(in) :: domain
+    character(len=*), intent(in), optional :: chemistry_integrator
+    logical, intent(out) :: ok
+
+    integer :: local_code, minimum_code, maximum_code
+    integer :: minimum_ierr, maximum_ierr
+
+    local_code = chemistry_integrator_default
+    if (present(chemistry_integrator)) then
+      select case (trim(adjustl(chemistry_integrator)))
+      case ("explicit")
+        local_code = chemistry_integrator_explicit
+      case ("implicit")
+        local_code = chemistry_integrator_implicit
+      case default
+        local_code = chemistry_integrator_invalid
+      end select
+    end if
+
+    call MPI_Allreduce( &
+      local_code, minimum_code, 1, MPI_INTEGER, MPI_MIN, domain%comm, &
+      minimum_ierr)
+    call MPI_Allreduce( &
+      local_code, maximum_code, 1, MPI_INTEGER, MPI_MAX, domain%comm, &
+      maximum_ierr)
+    ok = minimum_ierr == MPI_SUCCESS .and. maximum_ierr == MPI_SUCCESS .and. &
+      minimum_code >= chemistry_integrator_default .and. &
+      minimum_code == maximum_code
+  end subroutine collective_chemistry_integrator_consensus
 
 end module mpi_reactive_1d_mod

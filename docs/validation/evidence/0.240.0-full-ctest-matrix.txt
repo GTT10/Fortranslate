@@ -1,0 +1,59 @@
+PeleF 0.240.0 full CTest matrix evidence
+Date: 2026-08-31 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  OpenMPI 4.1.6
+
+Qualified working-tree snapshot:
+  repository HEAD=bc584fc65e7e945b98475cd1c0394b483c5cc685
+  CMakeLists.txt sha256=f0596c9f9a39e6ac8d44e027721cef299e409c27b11067e1487b6838811c6b8d
+  src/parallel/mpi_amr_sparse_reactive_3d_mod.F90 sha256=86e08c3e841a1e97fc8f240fdf4505bf176246881c5c29080109fa2c847cf135
+  tests/mpi/test_mpi_amr_reactive_3d.F90 sha256=0526faec949c6920c647036f4dceb17fcb26409f6801856e3367050ad50ed68c
+
+Results:
+  Debug: 482/482 PASS, 431.47 sec
+    log path=build/debug/0.240.0-full-ctest.log
+    log sha256=0a1c1bb8f4df05cc7c5f5aa681ee6c50a849ad86ad74b3a59a17bfd666d213d7
+  Release: 482/482 PASS, 158.12 sec
+    log path=build/release/0.240.0-full-ctest.log
+    log sha256=1f970876972d6ace948b40264dfe4d17d576199ea22a030783c45a697f88f7a1
+  Debug + Cantera: 487/487 PASS, 428.88 sec
+    log path=build/debug-cantera/0.240.0-full-ctest.log
+    log sha256=56e9a595c11ff57b7ba8e31d39ae0111131b398f0224f6115295f41a806dc3d1
+  MPI Debug: 583/583 PASS, 551.76 sec
+    log path=build/mpi-debug/0.240.0-full-ctest.log
+    log sha256=1c211dcb7900727af14906813e009b33c223c1a9c7a4fe287f832d8b2377b385
+  MPI Release: 583/583 PASS, 210.73 sec
+    log path=build/mpi-release/0.240.0-full-ctest.log
+    log sha256=a8cafef38bb92e91ecc36b316477df88d89f78ae1995a6196b37aa752ed4f3f4
+  CVODE Debug: 491/491 PASS, 429.88 sec
+    log path=build/cvode-debug/0.240.0-full-ctest.log
+    log sha256=b0c11e64714aa275006d2614301db3b6a8a016cc12dc70f7ce9a574752ce12f5
+  CVODE Debug + Cantera: 497/497 PASS, 428.12 sec
+    log path=build/cvode-debug-cantera/0.240.0-full-ctest.log
+    log sha256=f97fb4f58785552be15751e97d08e6d9d360b05d7abca6afe94cbf7a19154336
+  CVODE Release: 491/491 PASS, 165.51 sec
+    log path=build/cvode-release/0.240.0-full-ctest.log
+    log sha256=86e1a3b56debb4d863e1f97ec86583a18bc66f1638e5b40cb7eabda7b92a8dc0
+
+Aggregate:
+  4096/4096 PASS
+  failed tests=0
+
+Final-source sparse 3D AMR focused gates:
+  Debug: 26/26 PASS, 84.52 sec
+    log path=build/openmpi-debug/0.240.0-final-focused-ctest.log
+    log sha256=e59200ad159c80ce77ecb6863723a608cd4e4e3fafea9db90a28a280e8cfd6ee
+  Release: 26/26 PASS, 35.78 sec
+    log path=build/mpi-release/0.240.0-final-focused-ctest.log
+    log sha256=ee743e6e75e5dab11d045e314d57dfd66c703cdb78fc60a69d927a8e3ef0df07
+  direct one-/two-/four-/eight-rank unit execution=PASS
+  zero-fine-rank invalid coarse CFL collective rejection=PASS
+  PCM and characteristic-PLM public rank/restart exact parity=PASS
+  quality contract: 7/7 PASS
+
+Independent Luna Max final read-only audit:
+  release-blocking issues=0
+  reported zero-fine-rank CFL validation overwrite=FIXED
+  early-return ok initialization regression=FIXED

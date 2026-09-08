@@ -1,0 +1,189 @@
+program pelef_reactive_2d_selected
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use simulation_config_reactive_2d_mod, only: &
+    reactive_2d_config, read_reactive_2d_configuration, &
+    resolve_reactive_2d_selected_composition
+  use simulation_config_selected_reactor_mod, only: &
+    selected_reactor_paths_alias_lexically
+  use reactive_2d_application_mod, only: run_reactive_2d_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => &
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(reactive_2d_config) :: config
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  real(dp) :: requested_temperature_minimum, requested_temperature_maximum
+  character(len=1024) :: input_path, message
+  logical :: ok
+
+  if (command_argument_count() /= 1) then
+    write(*, '(a)') "Usage: pelef_reactive_2d_selected <input.nml>"
+    error stop 2
+  end if
+  call get_command_argument(1, input_path)
+  call read_reactive_2d_configuration( &
+    trim(input_path), config, ok, message, allow_selected=.true.)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  if (trim(config%chemistry_model) /= "selected") then
+    error stop "Selected reactive 2D requires chemistry_model='selected'"
+  end if
+  if (selected_reactor_paths_alias_lexically( &
+      config%output_file, input_path)) then
+    error stop "Selected reactive 2D input and output paths must differ"
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected reactive 2D thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected reactive 2D reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected reactive 2D transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected reactive 2D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  requested_temperature_minimum = config%initial_temperature
+  requested_temperature_maximum = config%initial_temperature
+  select case (trim(config%problem))
+  case ("reactive_hotspot")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+  case ("reactive_double_hotspot")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, &
+      config%initial_temperature + &
+        min(0.0_dp, config%hotspot_temperature_rise) + &
+        min(0.0_dp, config%second_hotspot_temperature_rise))
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, &
+      config%initial_temperature + &
+        max(0.0_dp, config%hotspot_temperature_rise) + &
+        max(0.0_dp, config%second_hotspot_temperature_rise))
+  case ("thermal_channel")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, config%wall_temperature_y_lower, &
+      config%wall_temperature_y_upper)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, config%wall_temperature_y_lower, &
+      config%wall_temperature_y_upper)
+  end select
+  call include_isothermal_wall_temperatures( &
+    config, requested_temperature_minimum, requested_temperature_maximum)
+  call validate_selected_temperature_range( &
+    "Selected reactive 2D", requested_temperature_minimum, &
+    requested_temperature_maximum, common_temperature_minimum, &
+    common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  call resolve_reactive_2d_selected_composition( &
+    config, species, mole_fractions, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  write(*, '(a,i0)') "Species: ", pelef_selected_species_count
+  write(*, '(a,i0)') "Reactions: ", pelef_selected_reaction_count
+  call run_reactive_2d_application( &
+    trim(input_path), "selected mechanism reactive 2D", &
+    pelef_selected_bundle_sha256, config, species, reactions, transport, &
+    mole_fractions, pelef_selected_chemistry_integrator)
+
+contains
+
+  subroutine include_isothermal_wall_temperatures( &
+      active_config, minimum_temperature, maximum_temperature)
+    type(reactive_2d_config), intent(in) :: active_config
+    real(dp), intent(inout) :: minimum_temperature, maximum_temperature
+    real(dp) :: interior_minimum, interior_maximum
+
+    interior_minimum = minimum_temperature
+    interior_maximum = maximum_temperature
+    call include_wall( &
+      active_config%boundary_x_lower, active_config%thermal_x_lower, &
+      active_config%wall_temperature_x_lower, interior_minimum, &
+      interior_maximum, minimum_temperature, maximum_temperature)
+    call include_wall( &
+      active_config%boundary_x_upper, active_config%thermal_x_upper, &
+      active_config%wall_temperature_x_upper, interior_minimum, &
+      interior_maximum, minimum_temperature, maximum_temperature)
+    call include_wall( &
+      active_config%boundary_y_lower, active_config%thermal_y_lower, &
+      active_config%wall_temperature_y_lower, interior_minimum, &
+      interior_maximum, minimum_temperature, maximum_temperature)
+    call include_wall( &
+      active_config%boundary_y_upper, active_config%thermal_y_upper, &
+      active_config%wall_temperature_y_upper, interior_minimum, &
+      interior_maximum, minimum_temperature, maximum_temperature)
+  end subroutine include_isothermal_wall_temperatures
+
+
+  subroutine include_wall( &
+      boundary_kind, thermal_kind, wall_temperature, interior_minimum, &
+      interior_maximum, minimum_temperature, maximum_temperature)
+    character(len=*), intent(in) :: boundary_kind, thermal_kind
+    real(dp), intent(in) :: wall_temperature
+    real(dp), intent(in) :: interior_minimum, interior_maximum
+    real(dp), intent(inout) :: minimum_temperature, maximum_temperature
+    real(dp) :: reflected_minimum, reflected_maximum
+
+    if (trim(thermal_kind) /= "isothermal") return
+    if (trim(boundary_kind) /= "slip_wall" .and. &
+        trim(boundary_kind) /= "no_slip_wall") return
+    reflected_minimum = max( &
+      tiny(1.0_dp), 2.0_dp * wall_temperature - interior_maximum)
+    reflected_maximum = max( &
+      tiny(1.0_dp), 2.0_dp * wall_temperature - interior_minimum)
+    minimum_temperature = min( &
+      minimum_temperature, wall_temperature, reflected_minimum)
+    maximum_temperature = max( &
+      maximum_temperature, wall_temperature, reflected_maximum)
+  end subroutine include_wall
+
+end program pelef_reactive_2d_selected

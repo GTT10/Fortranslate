@@ -1,0 +1,141 @@
+PeleF 0.245.0 clean Release install and installed restart audit
+Execution date: 2026-09-07 Asia/Tokyo
+
+Isolated trees:
+  tests-disabled build=/tmp/pelef-0.245.0-final-source-audit.GXJOOX/build-disabled
+  tests-disabled install=/tmp/pelef-0.245.0-final-source-audit.GXJOOX/install-disabled
+  manual smoke=/tmp/pelef-0.245.0-final-source-audit.GXJOOX/smoke-disabled
+  tests-enabled build=/tmp/pelef-0.245.0-final-source-audit.GXJOOX/build-tests-on
+  tests-enabled staged install=/tmp/pelef-0.245.0-final-source-audit.GXJOOX/build-tests-on/installed_amr_reactive_3d_transport_restart_0245/prefix
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja 1.11.1
+  CMake: 3.28.3
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort (Open MPI 4.1.6)
+  MPI launcher: /usr/bin/mpiexec (OpenRTE 4.1.6)
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+  selected bundle sha256=f65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3
+
+Tests-disabled build/install result:
+  PELEF_ENABLE_TESTS=OFF
+  clean configure=PASS
+  clean Ninja build/install target=PASS
+  install manifest entries=42
+  configure.log sha256=689b2fe0b8f35b6ea0d7268a6b6e7a90b8e21c9033c62ae33439ef61344c04e2
+  build-install.log sha256=c084b068627693f92bfdc11655e9724e39260a639965b1e7a7a679063d3b6064
+  audit.log sha256=65fb70dcf794a1b97304772cb6eb2d9bada12eca025713af0df09c46bc224822
+  CMakeCache.txt sha256=89a596c4d361f88360abcd1212f1523008f9bc5b55bb950ce8b4dbf92507c98f
+  install_manifest.txt sha256=188ebc8af4a9bf64b9cf0a6d97366c4d4cef1c1c1f3987f681f4244f87e0f807
+  installed fixed serial AMR 3D sha256=003d4512655323e6ada30d7690c69924450a8c10ccb507d7ddb6932dcf6f6cfa
+  installed selected serial AMR 3D sha256=2cd86cd57e8ff19cb9b7752b7027cf2335d12eda62c8c4fb7fd9165d53d38df3
+  installed fixed MPI AMR 3D sha256=e3ea8cdce9963fcaf10283bb5fbc5041bca5dfd95dc85da4231da49028caf7d5
+  installed selected MPI AMR 3D sha256=8a450e5b89c1968e112b9656129aaf8a04cdd4f23dde514dc7037f30a083407f
+
+Installed Release ELF audit result:
+  install_manifest_entries=42
+  installed_elf_count=42
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=42
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS
+
+Separately staged installed CTest qualification:
+  PELEF_ENABLE_TESTS=ON
+  registration regex=^regression_installed_.*transport_restart_0245_
+  registered tests=23
+  result=23/23 PASS
+  failed tests=0
+  total real test time=130.23 sec
+  configure-tests-on.log sha256=79b99e32ca712b0fe36757b3c8486aee49c287e6809eefbf94486d1155b50333
+  build-tests-on.log sha256=9753126be0deff5afb60a924e23d5f1f8d0d49da0e02225790ed3eb0f5eaecba
+  installed-ctest.log sha256=735805865ed7c72f7e832e4c36348ea02479738a62783a8b3b15f8f47b1127d4
+  CMakeCache.txt sha256=062dfefad187730dfafa589f51dae6a17d6f2a17d408c69ae2bee6aab7a8d78c
+  install_manifest.txt sha256=ab2c8afa292e72421124d8eef8a36d21a5ef4888e816476636dd903e1a75473e
+  staged installed entries=42
+
+The 23 CTest cases use the tests-enabled staged prefix, not the separately
+audited tests-disabled prefix. The two installed sets are intentionally
+identified separately; byte identity between those sets is not claimed.
+
+Tests-disabled installed restart qualification:
+  application version=0.245.0
+  fresh application invocations=32/32 exit 0
+  corrected exact checker invocations=8/8 exit 0
+  serial/MPI checkpoint and checkpoint-stop CSV cmp checks=12/12 exit 0
+  serial reference/checkpoint-stop/restart=PASS for every mode
+  MPI checkpoint-stop at ranks=2=PASS for every mode
+  same checkpoint resumed at MPI ranks=1,2,4,8=PASS for every mode
+  coarse/fine outputs and checkpoint-stop artifacts are byte-identical=PASS
+  transport diagnostics are exact across serial and all MPI ranks=PASS
+  ranks=4,8 include zero-fine-plane ranks=PASS
+  manual-installed-smoke-report.md sha256=fdd81c966ae26aeed019ac40b5d21a2847b78ea5b9fd2b5a3a28e87a287e9bee
+
+Installed fixed PCM schema-2 compatibility:
+  thermodynamics=full_h2o2
+  chemistry=OFF, transport=OFF
+  reconstruction=pcm, limiter=mc
+  schema-2 checkpoint sha256=3f7a6faa750aaa99cb10a9c0a409666feb4c83fa9876648d461a8b501c03aa01
+  final coarse CSV sha256=bc0879978968b9bafcf25f007938ad10e2bdec55ba91d46e5e7dbbd494a16665
+  final fine CSV sha256=7468b42004f6e0a654cfeb6882cb78bfed6ad29f5207ef85a884c1c2ef096b45
+
+Installed selected schema-3 compatibility:
+  thermodynamics=selected
+  chemistry=ON, transport=OFF
+  reconstruction=characteristic_plm, limiter=mc
+  generated chemistry integrator=implicit
+  schema-3 checkpoint sha256=f44f69a7e1a1657b549b26373feb277840732e5453b0734321cc8c7cdf91c423
+  final coarse CSV sha256=a03884837909bab719f0783d23ea9150a81f2afc628fee1a01c645c1b47e0ff3
+  final fine CSV sha256=8d5a992d07b89832624e37af6ddacd510df63633707678693b9053057d4efcbe
+
+Installed fixed schema-4 transport persistence:
+  thermodynamics=full_h2o2
+  chemistry=OFF, transport=ON
+  reconstruction=characteristic_plm, limiter=mc
+  schema-4 checkpoint sha256=15c2e5a3a087a38fe34ece1fa575bbc7857ec7c651ae9ee84f3fd8d52615afc5
+  final coarse CSV sha256=c81eb517ab4111f66eafa09b70d1f9543251e206d62143cfe02e50ca74e4f441
+  final fine CSV sha256=45d51c690e8f3b1d20bb224deae24cbbb5ec4dc0c648a9b1367d6963acaeb37b
+  completed coarse/hydro-fine/transport-fine steps=6/12/96
+  maximum transport diffusivity=2.0270711667340910e-3
+  minimum transport theta=1.0
+  maximum reflux correction=1.4306370052764861e-3
+
+Installed selected schema-5 transport persistence:
+  thermodynamics=selected
+  chemistry=ON, transport=ON
+  reconstruction=characteristic_plm, limiter=mc
+  generated chemistry integrator=implicit
+  schema-5 checkpoint sha256=52526217eb88e869167b8ef8b958f3cf6176b5346746a5d9ff1d1757ca526df3
+  final coarse CSV sha256=21470b7ac704274637266990f8bd77bbeacdba5c2808c2943fdc17fb106ee35a
+  final fine CSV sha256=e4c3f6fe27ed9c8e62d33912c42adc6bdef4ee1c3e8cd0b6aebfdf34c42956ed
+  completed coarse/hydro-fine/transport-fine steps=6/12/96
+  maximum transport diffusivity=2.0270711667340910e-3
+  minimum transport theta=1.0
+  maximum reflux correction=1.4306392422206229e-3
+
+Excluded operator-command diagnostics:
+  one initial fixed-schema-2 checker invocation supplied an empty expected
+  hash and exited 1; its corrected checker exited 0 and is the cited result.
+  one exploratory MPI shell invocation passed a literal rank variable and
+  exited before application launch; the concrete ranks=1,2,4,8 commands all
+  exited 0 and are the cited results.
+
+Qualification boundary:
+  This audit proves clean packaging/linkage, separately staged installed
+  tests, and installed serial/changed-rank restart identity for the static,
+  strictly interior, periodic, two-level transport-persistence path. It does
+  not qualify dynamic 3D AMR topology, physical coarse boundaries, 3D EB AMR,
+  scalable/distributed I/O, crash-atomic replacement, payload authentication,
+  performance/scaling, detailed-fuel physics, ignition, or external PeleC
+  field parity. Repository licensing remains an explicit project-owner
+  release decision outside this numerical and packaging gate.

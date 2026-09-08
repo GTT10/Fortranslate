@@ -1,0 +1,62 @@
+PeleF 0.241.0 full CTest matrix evidence
+Date: 2026-09-01 Asia/Tokyo
+
+Compiler/runtime:
+  GNU Fortran 13.3.0
+  OpenMPI 4.1.6
+
+Qualified working-tree snapshot:
+  repository HEAD=bc584fc65e7e945b98475cd1c0394b483c5cc685
+  CMakeLists.txt sha256=4257455a77cf4447882fab71172b7411a815e811c4936d17f28ade433046ae9d
+  src/amr/amr_reactive_3d_mod.F90 sha256=6faee7834d0d98f7bab6fcd99b27bc2ef63371ec3e4ddd1cd8c5a7a0f18e4a75
+  src/parallel/mpi_amr_sparse_reactive_3d_mod.F90 sha256=7a2d88b14ddd94e533c1c41deff0eaeaed0829c80ce066a2040f4740b6bb083f
+  tests/unit/test_amr_reactive_chemistry_3d.F90 sha256=b66f96d03021f214355e056c3784c125d028a16891d0c1045716b06f504e7adc
+  tests/mpi/test_mpi_amr_reactive_chemistry_3d.F90 sha256=27f9cdbe593642818c5ab50b12489b695ecaebdc39ba1bf49da64a0bd5fb8abd
+  tools/check_amr_reactive_chemistry_3d.py sha256=9f370caa92aa441860606d50a5759f6f05442fef2e356443c26c14355bfad235
+
+Results:
+  Debug: 488/488 PASS, 431.31 sec
+    log path=build/debug/0.241.0-full-ctest.log
+    log sha256=379936e618f12f930d000c554425da6b9c316b18c161c2c0ceb1c8cd6fd69c55
+  Release: 488/488 PASS, 159.55 sec
+    log path=build/release/0.241.0-full-ctest.log
+    log sha256=1357b5c9f7e270daf43b058f09830e50f62c85fedbd0c69f043c6ee3e124d879
+  Debug + Cantera: 493/493 PASS, 431.50 sec
+    log path=build/debug-cantera/0.241.0-full-ctest.log
+    log sha256=f26a3db711deb4b76b333b5209c07c8d40fc92032a87895dfad629d7988fbd02
+  MPI Debug: 600/600 PASS, 581.94 sec
+    log path=build/mpi-debug/0.241.0-full-ctest.log
+    log sha256=309a3d2baa47b8c0881020ec02fd986c0962146cefcc20e75878190ee10f69e6
+  MPI Release: 600/600 PASS, 262.29 sec
+    log path=build/mpi-release/0.241.0-full-ctest.log
+    log sha256=7434b344f175f34f22c5f2aae65e38bf531a784f7e62b1e29b7aa5f47b83cb7d
+  CVODE Debug: 497/497 PASS, 435.38 sec
+    log path=build/cvode-debug/0.241.0-full-ctest.log
+    log sha256=5d5fcc5355cd53d77aef231e3b844555a8647e22234bf9a7eed62e54e86e01ed
+  CVODE Debug + Cantera: 503/503 PASS, 435.05 sec
+    log path=build/cvode-debug-cantera/0.241.0-full-ctest.log
+    log sha256=8f57bf23d7793547b582bc1a86544b217e0890e5c8b9a9a12d1228b1294cd579
+  CVODE Release: 497/497 PASS, 159.22 sec
+    log path=build/cvode-release/0.241.0-full-ctest.log
+    log sha256=fdc8033412c84e107b5a062660e545a74d1e31ffb7e20bb2bd2c8f1d56305de5
+
+Aggregate:
+  4166/4166 PASS
+  failed tests=0
+
+Final-source static 3D AMR chemistry gates:
+  GNU Debug and Release focused chemistry set: 17/17 PASS
+  direct sparse MPI source/split API at ranks=1,2,4,8 PASS
+  zero-fine-rank source failure collective rollback=PASS
+  serial and MPI ranks=1,2,4,8 public fixed-H2/O2 exact parity=PASS
+  strict topology, physicality, closure, activity, Euler, and H/O/N checker=PASS
+  chemistry-disabled PLM and changed-rank restart hashes unchanged=PASS
+  clean tests-disabled Release install/ELF/installed-smoke audit=PASS
+  quality contract: 7/7 PASS
+
+Independent Luna Max final read-only audit:
+  release-blocking issues=0
+  zero-fine-rank collective ordering=PASS
+  static-field diagnostics=PASS
+  public CTest dependency graph=PASS
+  strict checker coverage=PASS

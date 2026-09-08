@@ -3,7 +3,7 @@ module mpi_amr_sparse_patch_1d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use simulation_config_reactive_1d_mod, only: reactive_1d_config
   use reactive_1d_mod, only: &
     reactive_cfl_timestep, reactive_transport_timestep, &
@@ -165,7 +165,7 @@ contains
   subroutine advance_sparse_patch_tree_chemistry_1d( &
       species, reactions, config, interval, distribution, solution, ok, &
       local_patch_advances, local_halo_transfers, local_parent_transfers, &
-      local_parent_state_transfers)
+      local_parent_state_transfers, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -177,6 +177,7 @@ contains
     integer, intent(out), optional :: local_halo_transfers
     integer, intent(out), optional :: local_parent_transfers
     integer, intent(out), optional :: local_parent_state_transfers
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
     character(len=32) :: boundary
@@ -213,7 +214,8 @@ contains
             solution%levels(level)%patches(patch)%state, &
             solution%levels(level)%patches(patch)%temperature, nx, interval, &
             config%chemistry_relative_tolerance, &
-            config%chemistry_absolute_tolerance, boundary, local_ok)
+            config%chemistry_absolute_tolerance, boundary, local_ok, &
+            chemistry_integrator=chemistry_integrator)
           if (local_ok) advances = advances + 1
         end if
         call all_ranks_accept_sparse_1d( &
@@ -632,7 +634,7 @@ contains
   subroutine advance_sparse_patch_tree_reactive_1d( &
       species, reactions, config, dt, distribution, solution, ok, transport, &
       local_chemistry_advances, local_hydro_advances, &
-      local_transport_advances)
+      local_transport_advances, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_1d_config), intent(in) :: config
@@ -644,6 +646,7 @@ contains
     integer, intent(out), optional :: local_chemistry_advances
     integer, intent(out), optional :: local_hydro_advances
     integer, intent(out), optional :: local_transport_advances
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     type(mpi_amr_sparse_reactive_solution_1d) :: backup
     logical :: local_ok, accepted, mpi_ok
@@ -672,7 +675,8 @@ contains
     if (config%chemistry_enabled) then
       call advance_sparse_patch_tree_chemistry_1d( &
         species, reactions, config, 0.5_dp * dt, distribution, solution, &
-        local_ok, stage_advances)
+        local_ok, stage_advances, &
+        chemistry_integrator=chemistry_integrator)
       call all_ranks_accept_sparse_1d( &
         distribution, local_ok, accepted, mpi_ok)
       if (.not. mpi_ok .or. .not. accepted) go to 900
@@ -705,7 +709,8 @@ contains
     if (config%chemistry_enabled) then
       call advance_sparse_patch_tree_chemistry_1d( &
         species, reactions, config, 0.5_dp * dt, distribution, solution, &
-        local_ok, stage_advances)
+        local_ok, stage_advances, &
+        chemistry_integrator=chemistry_integrator)
       call all_ranks_accept_sparse_1d( &
         distribution, local_ok, accepted, mpi_ok)
       if (.not. mpi_ok .or. .not. accepted) go to 900

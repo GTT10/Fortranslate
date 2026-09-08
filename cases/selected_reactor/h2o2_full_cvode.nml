@@ -1,0 +1,21 @@
+&selected_reactor
+  integrator = "cvode"
+  final_time = 2.0e-3
+  output_interval = 2.0e-5
+  initial_time_step = 1.0e-9
+  minimum_time_step = 1.0e-14
+  maximum_time_step = 2.0e-5
+  relative_tolerance = 1.0e-8
+  absolute_tolerance = 1.0e-14
+  maximum_steps = 500000
+  cvode_max_internal_steps = 500000
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  composition_count = 10
+  composition_species =
+    "H2", "H", "O", "O2", "OH", "H2O", "HO2", "H2O2", "AR", "N2"
+  composition_mole_fractions =
+    0.295, 1.0e-8, 1.0e-8, 0.1475, 1.0e-8,
+    0.0, 1.0e-10, 1.0e-10, 0.0, 0.5574999698
+  output_file = "selected_h2o2_full_cvode.csv"
+/

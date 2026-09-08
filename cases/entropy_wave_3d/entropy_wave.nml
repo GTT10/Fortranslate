@@ -1,0 +1,30 @@
+&simulation_3d
+  nx = 16
+  ny = 16
+  nz = 16
+  max_steps = 100000
+  x_min = 0.0
+  x_max = 1.0
+  y_min = 0.0
+  y_max = 1.0
+  z_min = 0.0
+  z_max = 1.0
+  final_time = 0.05
+  cfl = 0.4
+  gamma = 1.4
+  output_file = "entropy_wave_3d.csv"
+  boundary_condition = "periodic"
+  riemann_solver = "rusanov"
+/
+
+&entropy_wave_3d
+  base_density = 1.0
+  density_amplitude = 0.1
+  base_pressure = 1.0
+  velocity_x = 0.7
+  velocity_y = 0.2
+  velocity_z = -0.1
+  wave_number_x = 1
+  wave_number_y = 1
+  wave_number_z = 1
+/

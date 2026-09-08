@@ -48,11 +48,12 @@ module simulation_config_reactive_eb_amr_2d_mod
 contains
 
   subroutine read_reactive_eb_amr_2d_configuration( &
-      path, config, ok, message)
+      path, config, ok, message, allow_selected)
     character(len=*), intent(in) :: path
     type(reactive_eb_amr_2d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    logical, intent(in), optional :: allow_selected
 
     integer :: coarse_i_lower, coarse_i_upper
     integer :: coarse_j_lower, coarse_j_upper, refinement_ratio
@@ -96,7 +97,7 @@ contains
 
     config = reactive_eb_amr_2d_config()
     call read_reactive_eb_2d_configuration( &
-      path, config%eb, ok, message)
+      path, config%eb, ok, message, allow_selected)
     if (.not. ok) return
 
     coarse_i_lower = config%coarse_i_lower

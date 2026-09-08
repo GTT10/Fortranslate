@@ -3,7 +3,12 @@ program test_full_h2o2_cfd_support
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_full_mechanism_mod, only: &
-    h2o2_full_nspecies, h2o2_full_nreactions, load_h2o2_full_mechanism
+    h2o2_full_nspecies, h2o2_full_nreactions, load_h2o2_full_mechanism, &
+    h2o2_full_source_sha256, h2o2_full_source_phase, &
+    h2o2_full_source_cantera_version, &
+    h2o2_full_runtime_cantera_version, &
+    h2o2_full_runtime_cantera_git_commit, h2o2_full_source_indices, &
+    h2o2_full_duplicate_reactions
   use elementary_kinetics_mod, only: &
     elementary_reaction, reaction_kind_three_body, reaction_kind_falloff
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
@@ -45,6 +50,21 @@ program test_full_h2o2_cfd_support
     "full thermo/transport ordering")
   call require(reactive_nvar(size(species)) == 15, &
     "ten-species conserved-state width")
+  call require(h2o2_full_source_sha256 == &
+    "0efc6c52862741a29e0c29b65d979c7d8cb409db5282bca83b9c5437b3d8c8d4", &
+    "pinned Cantera YAML digest")
+  call require(h2o2_full_source_phase == "ohmech", &
+    "explicit ideal-gas phase")
+  call require(h2o2_full_source_cantera_version == "2.5.0", &
+    "source Cantera metadata")
+  call require(h2o2_full_runtime_cantera_version == "3.2.0", &
+    "ingestion Cantera version")
+  call require(h2o2_full_runtime_cantera_git_commit == "4a8358e", &
+    "ingestion Cantera git commit")
+  call require(all(h2o2_full_source_indices == &
+    [(k, k = 1, h2o2_full_nreactions)]), "source reaction ordering")
+  call require(count(h2o2_full_duplicate_reactions) == 6, &
+    "duplicate reaction provenance")
 
   three_body_count = 0
   falloff_count = 0
@@ -54,8 +74,8 @@ program test_full_h2o2_cfd_support
     if (reactions(k)%kind == reaction_kind_falloff) &
       falloff_count = falloff_count + 1
   end do
-  call require(three_body_count > 0, "third-body reactions present")
-  call require(falloff_count > 0, "falloff reactions present")
+  call require(three_body_count == 11, "eleven third-body reactions")
+  call require(falloff_count == 1, "one Troe falloff reaction")
 
   config_1d%chemistry_model = "full_h2o2"
   call reactive_1d_mole_fractions(config_1d, size(species), x, ok)

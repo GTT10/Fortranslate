@@ -1,0 +1,37 @@
+&reactive_eb_3d
+  nx = 10
+  ny = 8
+  nz = 6
+  maximum_steps = 20
+  x_lower = 0.0
+  x_upper = 1.0e-4
+  y_lower = 0.0
+  y_upper = 1.0e-4
+  z_lower = 0.0
+  z_upper = 1.0e-4
+  final_time = 1.0e-8
+  cfl = 0.5
+  plane_axis = "x"
+  plane_position = 3.95e-5
+  riemann_solver = "rusanov"
+  redistribution = "state_redist"
+  thermo_model = "selected"
+  state_redist_target_volume_fraction = 0.5
+  chemistry_enabled = .false.
+  transport_enabled = .false.
+  regular_density = 0.31
+  cut_density = 0.93
+  initial_pressure = 135000.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  initial_velocity_z = 0.0
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  checkpoint_interval_steps = 1
+  stop_after_checkpoint = .true.
+  checkpoint_file = "installed_full_selected_restart.chk"
+  output_file = "installed_full_selected_restart_stopped.csv"
+/

@@ -1,0 +1,12 @@
+&reactive_1d
+  nx = 8
+  final_time = 1.0e-8
+  chemistry_model = "selected"
+  composition_count = 2
+  composition_species = "H", "H2"
+  composition_mole_fractions = 0.2, 0.8
+  amr_enabled = .true.
+  amr_minimum_patch_cells = 4
+  restart_file = "invalid_selected_amr_restart.chk"
+  output_file = "invalid_selected_amr_restart.csv"
+/

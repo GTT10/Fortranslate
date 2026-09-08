@@ -1,0 +1,66 @@
+name: Mechanism integrity
+
+on:
+  push:
+    branches: [main, 'agent/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mechanism-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record reproducible source snapshot
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+          python3 --version > evidence/python-version.txt
+      - name: Test provenance checker without Cantera
+        run: python3 -m unittest discover -s tests/python -p test_mechanism_provenance.py -v
+      - name: Install pinned regeneration dependency
+        run: python3 -m pip install cantera==3.2.0
+      - name: Record dependency and packaged source
+        run: |
+          python3 -m pip freeze > evidence/python-packages.txt
+          python3 - <<'PY'
+          import cantera as ct
+          import hashlib
+          from pathlib import Path
+          for directory in ct.get_data_directories():
+              source = Path(directory) / 'h2o2.yaml'
+              if source.is_file():
+                  data = source.read_bytes()
+                  Path('evidence/h2o2-packaged.yaml').write_bytes(data)
+                  print('Cantera packaged source SHA-256:', hashlib.sha256(data).hexdigest())
+                  break
+          PY
+      - name: Verify source and deterministic regeneration
+        run: |
+          set -o pipefail
+          python3 tools/check_mechanism_provenance.py \
+            --bundle mechanisms/h2o2_full.json --regenerate \
+            --output evidence/h2o2_full.regenerated.json 2>&1 | tee evidence/provenance.log
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mechanism-integrity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error

@@ -1,0 +1,17 @@
+&reactive_1d
+  nx = 8
+  x_lower = 0.0
+  x_upper = 0.008
+  final_time = 1.0e-7
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  chemistry_enabled = .true.
+  chemistry_model = "selected"
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  composition_count = 2
+  composition_species = "H2", "UNKNOWN"
+  composition_mole_fractions = 0.8, 0.2
+  output_file = "invalid_selected_reactive_1d.csv"
+/

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import math
 from pathlib import Path
 
@@ -51,12 +52,20 @@ def compare_rows(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--expected-checkpoint-sha256", required=True)
     parser.add_argument("--reference", required=True, nargs=3, type=Path)
     parser.add_argument("--stopped", required=True, nargs=3, type=Path)
     parser.add_argument("--restarted", required=True, nargs=3, type=Path)
     args = parser.parse_args()
 
-    checkpoint_lines = args.checkpoint.read_text(encoding="utf-8").splitlines()
+    checkpoint_data = args.checkpoint.read_bytes()
+    checkpoint_sha256 = hashlib.sha256(checkpoint_data).hexdigest()
+    if checkpoint_sha256 != args.expected_checkpoint_sha256:
+        raise AssertionError(
+            "fixed multipatch checkpoint SHA-256 mismatch: "
+            f"{checkpoint_sha256} != {args.expected_checkpoint_sha256}"
+        )
+    checkpoint_lines = checkpoint_data.decode("utf-8").splitlines()
     if checkpoint_lines[0] != "PELEF_REACTIVE_EB_AMR_PATCH_SET_2D_CHECKPOINT":
         raise AssertionError("multipatch checkpoint magic mismatch")
     header = [int(value) for value in checkpoint_lines[1].split()]
@@ -98,6 +107,7 @@ def main() -> None:
     if first_x >= second_x:
         raise AssertionError("restarted child ordering or separation changed")
     print("check_reactive_eb_amr_multipatch_restart_2d: PASS")
+    print(f"checkpoint_sha256={checkpoint_sha256}")
 
 
 if __name__ == "__main__":

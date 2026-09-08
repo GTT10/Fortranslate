@@ -1,0 +1,56 @@
+&reactive_3d
+  nx = 8
+  ny = 8
+  nz = 8
+  maximum_steps = 100000
+  x_lower = 0.0
+  x_upper = 0.004
+  y_lower = 0.0
+  y_upper = 0.004
+  z_lower = 0.0
+  z_upper = 0.004
+  final_time = 1.0e-9
+  cfl = 0.25
+  problem = "reactive_hotspot"
+  reconstruction = "characteristic_plm"
+  limiter = "mc"
+  thermo_model = "selected"
+  riemann_solver = "hllc"
+  boundary_condition = "periodic"
+  chemistry_enabled = .false.
+  chemistry_relative_tolerance = 2.0e-7
+  chemistry_absolute_tolerance = 1.0e-12
+  transport_enabled = .true.
+  viscosity_enabled = .true.
+  thermal_conduction_enabled = .true.
+  species_diffusion_enabled = .true.
+  barodiffusion_enabled = .true.
+  transport_cfl = 0.35
+  initial_temperature = 1200.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  initial_velocity_z = 0.0
+  hotspot_temperature_rise = 250.0
+  hotspot_center_x = 0.002
+  hotspot_center_y = 0.002
+  hotspot_center_z = 0.002
+  hotspot_width = 0.0006
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  output_file = "unused_selected_full_transport_regular_3d.csv"
+/
+&amr_reactive_3d
+  refinement_ratio = 2
+  coarse_i_lower = 3
+  coarse_i_upper = 6
+  coarse_j_lower = 3
+  coarse_j_upper = 6
+  coarse_k_lower = 3
+  coarse_k_upper = 6
+  coarse_output_file = "selected_amr_hotspot_transport_3d_coarse.csv"
+  fine_output_file = "selected_amr_hotspot_transport_3d_fine.csv"
+/

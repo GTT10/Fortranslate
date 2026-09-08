@@ -14,6 +14,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mpi-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   mpi-build-and-test:
     strategy:
@@ -21,9 +29,16 @@ jobs:
       matrix:
         build_type: [Release, Debug]
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Record source identity
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          gfortran --version > evidence/fortran-version.txt
+          cmake --version > evidence/cmake-version.txt
       - name: Install OpenMPI
         run: |
           sudo apt-get update
@@ -32,10 +47,18 @@ jobs:
         run: >-
           cmake -S . -B build-mpi
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran
+          -DMPI_Fortran_COMPILER=/usr/bin/mpifort
+          -DMPIEXEC_EXECUTABLE=/usr/bin/mpiexec
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-mpi
           -DPELEF_ENABLE_TESTS=ON
           -DPELEF_ENABLE_MPI=ON
+          -DPELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+          -DPELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
       - name: Build
         run: cmake --build build-mpi --parallel 2
+      - name: Install and audit MPI artifacts
+        run: bash tools/ci_mpi_installed_smoke.sh
       - name: Halo exchange gates
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_1d --halo-test
@@ -121,6 +144,12 @@ jobs:
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_reactive_1d mpi_reactive_np8.csv
           python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_reactive_np2.csv mpi_reactive_np4.csv mpi_reactive_np8.csv
+      - name: Selected-mechanism coupled MPI rank and fixed parity
+        run: |
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_reactive_1d_selected mpi_selected_np1.csv
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_reactive_1d_selected mpi_selected_np2.csv
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_reactive_1d_selected mpi_selected_np4.csv
+          python3 tools/compare_mpi_reactive_1d.py mpi_reactive_np1.csv mpi_selected_np1.csv mpi_selected_np2.csv mpi_selected_np4.csv
       - name: Public sparse MPI AMR driver rank-count parity
         run: |
           mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/hotspot.nml mpi_sparse_amr_np1.csv
@@ -135,5 +164,32 @@ jobs:
           mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/restart.nml mpi_sparse_amr_restarted_np4.csv
           mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_1d cases/mpi_sparse_amr_hotspot/restart.nml mpi_sparse_amr_restarted_np8.csv
           python3 tools/compare_mpi_sparse_amr_restart.py mpi_sparse_amr_restart.chk mpi_sparse_amr_restart_reference.csv mpi_sparse_amr_restarted_np4.csv mpi_sparse_amr_restarted_np8.csv
+      - name: Distributed 3D AMR serial and rank-count exact parity
+        run: |
+          ./build-mpi/pelef_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave.nml
+          mpiexec --oversubscribe -n 1 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave.nml mpi_amr_3d_np1
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave.nml mpi_amr_3d_np2
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave.nml mpi_amr_3d_np4
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave.nml mpi_amr_3d_np8
+          python3 tools/check_amr_reactive_3d.py --coarse mpi_amr_3d_np1_coarse.csv --fine mpi_amr_3d_np1_fine.csv --nx 8 --ny 8 --nz 8 --i-lower 3 --i-upper 6 --j-lower 3 --j-upper 6 --k-lower 3 --k-upper 6 --ratio 2 --time 1.0e-6
+          python3 tools/compare_mpi_amr_reactive_3d.py --reference-prefix amr_reactive_3d --candidate-prefix mpi_amr_3d_np1 --candidate-prefix mpi_amr_3d_np2 --candidate-prefix mpi_amr_3d_np4 --candidate-prefix mpi_amr_3d_np8
+      - name: Distributed 3D AMR changed-rank checkpoint restart
+        run: |
+          mpiexec --oversubscribe -n 2 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave_checkpoint.nml mpi_amr_3d_checkpoint_np2
+          mpiexec --oversubscribe -n 4 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave_restart.nml mpi_amr_3d_restart_np4
+          mpiexec --oversubscribe -n 8 ./build-mpi/pelef_mpi_amr_reactive_3d cases/amr_reactive_3d/amr_entropy_wave_restart.nml mpi_amr_3d_restart_np8
+          python3 tools/compare_mpi_amr_reactive_3d.py --reference-prefix amr_reactive_3d --candidate-prefix mpi_amr_3d_restart_np4 --candidate-prefix mpi_amr_3d_restart_np8 --checkpoint amr_reactive_3d.chk --final-time 1.0e-6
       - name: Preserve serial regressions
-        run: ctest --test-dir build-mpi --output-on-failure -j 2
+        run: ctest --test-dir build-mpi --output-on-failure -j 2 --output-junit "${{ github.workspace }}/build-mpi/ctest-results.xml"
+      - name: Preserve MPI validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpi-evidence-${{ matrix.build_type }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            build-mpi/ctest-results.xml
+            build-mpi/Testing/Temporary/LastTest.log
+            build-mpi/CMakeCache.txt
+            build-mpi/install_manifest.txt
+          retention-days: 30

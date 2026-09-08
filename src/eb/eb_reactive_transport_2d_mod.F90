@@ -3,7 +3,7 @@ module eb_reactive_transport_2d_mod
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use mixture_transport_mod, only: mixture_transport_coefficients
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &

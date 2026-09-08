@@ -206,11 +206,13 @@ contains
     boundaries%embedded_wall%inflow_primitive = 0.0_dp
   end subroutine initialize_periodic_boundary_set_2d
 
-  subroutine build_reactive_boundary_set_2d(species, config, boundaries, ok)
+  subroutine build_reactive_boundary_set_2d( &
+      species, config, boundaries, ok, base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_2d_config), intent(in) :: config
     type(reactive_boundary_set_2d), intent(out) :: boundaries
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     real(dp), allocatable :: mass_fractions(:), primitive(:)
     real(dp), allocatable :: mole_fractions(:)
@@ -221,8 +223,18 @@ contains
     ok = .false.
     allocate(mass_fractions(size(species)), mole_fractions(size(species)), &
       primitive(reactive_nprim(size(species))))
-    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
-    if (.not. local_ok) return
+    if (present(base_mole_fractions)) then
+      local_ok = size(base_mole_fractions) == size(species) .and. &
+        all(ieee_is_finite(base_mole_fractions)) .and. &
+        all(base_mole_fractions >= 0.0_dp) .and. &
+        abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+      if (.not. local_ok) return
+      mole_fractions = base_mole_fractions
+    else
+      call reactive_2d_mole_fractions( &
+        config, size(species), mole_fractions, local_ok)
+      if (.not. local_ok) return
+    end if
     call mass_fractions_from_mole_fractions( &
       species, mole_fractions, mass_fractions, local_ok)
     if (.not. local_ok) return

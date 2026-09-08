@@ -1,0 +1,18 @@
+&reactive_eb_3d
+  nx = 4
+  ny = 4
+  nz = 4
+  x_upper = 0.004
+  y_upper = 0.004
+  z_upper = 0.004
+  plane_position = 0.00163
+  thermo_model = "selected"
+  chemistry_enabled = .true.
+  regular_density = 0.022111360462263332
+  cut_density = 0.022111360462263332
+  initial_pressure = 101325.0
+  composition_count = 2
+  composition_species = "A", "B"
+  composition_mole_fractions = 0.8, 0.2
+  output_file = "invalid_selected_reactive_eb_3d_element.csv"
+/

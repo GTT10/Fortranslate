@@ -1,0 +1,58 @@
+PeleF 0.240.0 clean tests-disabled Release install and 3D AMR audit
+Date: 2026-08-31 Asia/Tokyo
+
+Build tree:
+  build/mpi-3d-0240-final-audit-release
+Install prefix:
+  build/mpi-3d-0240-final-audit-install
+Installed smoke tree:
+  build/mpi-3d-0240-final2-audit-smoke
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort
+  MPI launcher: /usr/bin/mpiexec (OpenMPI 4.1.6)
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Build/install result:
+  clean configure: PASS
+  clean build: 629/629 steps PASS
+  final-source incremental rebuild after CFL validation fix: 26/26 steps PASS
+  install after final-source rebuild: PASS
+  install manifest entries=40
+  CMakeCache.txt sha256=beab93fd2b4beb8c6a56c85dda7ebbeaa904ea6387505a2f1e54e21fe4317611
+  install_manifest.txt sha256=59991a08a7a8f5653528bdaa2b5e84f7c3c60f876fdcc55a24b1dfe4f379390e
+  installed pelef_mpi_amr_reactive_3d sha256=48a8abb3076bc50294051e35cb51797f4dc3bbb5e4187c18f741f78b909c5e9d
+
+Installed Release audit result:
+  install_manifest_entries=40
+  installed_elf_count=40
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=40
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS
+
+Installed characteristic-PLM qualification:
+  installed application version=0.240.0
+  serial invariant checker=PASS
+  serial versus MPI ranks=1,2,4,8 coarse/fine byte identity=PASS
+  four-rank fine x planes per rank: min=0, max=4
+  eight-rank fine x planes per rank: min=0, max=2
+  checkpoint-stop ranks=2 PASS
+  independent restart ranks=4,8 PASS
+  uninterrupted/restarted coarse/fine byte identity=PASS
+  schema-2 checkpoint sha256=8f51be7f192dd61ab0e1f4eccf665870c2103205d13ea562fb52d32e981dbf9d
+  final coarse CSV sha256=864e9cabe8f5c2bee19f97e9279bdada7647305171955c6c767cc83e4db15c21
+  final fine CSV sha256=8f764e38491e9cf62f8c0f17eac2470c4705f7d80bfe7e686db4ba54de2f58d7

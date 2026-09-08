@@ -1,0 +1,50 @@
+PeleF 0.234.0 installed selected static three-level EB AMR 2D restart audit
+Date: 2026-08-31 Asia/Tokyo
+
+Executables:
+  build/selected-ebamr2d-three-level-0234-final-audit-install/bin/pelef_reactive_eb_amr_2d
+  sha256=68593bb47cbf7027aa2e39ab5974daf21fd97150afae2cf658ef952fc9645011
+  build/selected-ebamr2d-three-level-0234-final-audit-install/bin/pelef_reactive_eb_amr_2d_selected
+  sha256=83e22244de3a36cfaf407efc0a226aa7f6244ab44fba76e6aabcb3c279c4998f
+
+Inputs:
+  cases/selected_reactive_eb_amr_2d_three_level_restart/fixed_reference.nml
+  cases/selected_reactive_eb_amr_2d_three_level_restart/reference.nml
+  cases/selected_reactive_eb_amr_2d_three_level_restart/checkpoint_stop.nml
+  cases/selected_reactive_eb_amr_2d_three_level_restart/restart.nml
+  cases/selected_reactive_eb_amr_2d_three_level_restart/mismatched_composition.nml
+
+Execution directory:
+  build/selected-ebamr2d-three-level-0234-final-audit-smoke
+
+Execution result:
+  fixed reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected reference: PASS, coarse step 2, final time 1.0e-8 s
+  selected checkpoint-stop: PASS, coarse step 1,
+    time 6.2673103087327447e-9 s, completed regrids=0
+  independent selected restart: PASS, coarse step 2, final time 1.0e-8 s
+  changed composition rejection before output: PASS
+  root/middle/finest dimensions: 8 by 8, 12 by 12, 16 by 16
+  uninterrupted/restarted maximum composite conservation error:
+    4.5441946758675300e-12 (exact textual identity)
+
+Validation result:
+  root_rows=64
+  middle_rows=144
+  finest_rows=256
+  checkpoint_time=6.2673103087327447e-09
+  final_time=1.0000000000000000e-08
+  maximum_closure_error=1.1102230246251565e-16
+  reference_root_sha256=92f9580d35032710b09653e6cfd80d97c133c6df8fd70af0db4f5011714ec980
+  reference_middle_sha256=59e66071d6aaf3fe1fd62de9db72d28163acbb7820c95e9a93f8618ab013c1b9
+  reference_finest_sha256=70062b794483b16de5e7de66a3aeaebfbd914dd9ac1adb7bf3515a9b7a9f4250
+  checkpoint_sha256=e8655df9aeb62ece3bcf3e23ee5ed1bcda17a2d834cf214e3ecaaf71f3e952b6
+  selected_reactive_eb_amr_three_level_restart_exact_match=PASS
+
+Generated log SHA-256:
+  installed_fixed_reference.log=64b3428ad7ae754bbd4676d4d9feb04ded85e708c0d2861cc939108df50874d2
+  installed_selected_reference.log=960707786b563d83caf1fe9dbdfe1c61443e9417bde2265f54f30700bd920527
+  installed_selected_stop.log=137d4c856936239a51eab0d0e7fcfdbe9458d03e60ee707c4d7ea80ec773dc0e
+  installed_selected_resume.log=15fc0bfcb0fe035f27585c0acb42c01598efde4cc9f6ca085d202e0b0fb7ddf3
+  installed_selected_mismatch.log=f6e1f17cbaacf58b2eb7582309da93f77c0b55bb829378a345e26605d4dd7f8a
+  installed_three_level_restart_check.log=9e29324475f83db3db4d6d1a30d14226837f3d2018f1c785f48163e8a9c838c7

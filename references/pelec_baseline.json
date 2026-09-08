@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-08-29",
+  "purpose": "Pinned algorithm and parity reference; not a source dependency",
+  "pelec": {
+    "repository": "https://github.com/Pele-Suite/PeleC.git",
+    "branch": "development",
+    "commit": "bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8"
+  },
+  "submodules": [
+    {
+      "path": "Submodules/PelePhysics",
+      "repository": "https://github.com/Pele-Suite/PelePhysics.git",
+      "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b"
+    },
+    {
+      "path": "Submodules/PelePhysics/Submodules/amrex",
+      "repository": "https://github.com/AMReX-Codes/amrex.git",
+      "commit": "1546c1ccbf41c704a33790f4bf445a2fcee1372e"
+    },
+    {
+      "path": "Submodules/PelePhysics/Submodules/sundials",
+      "repository": "https://github.com/LLNL/sundials.git",
+      "commit": "0eff39663606f2ff280c4059a947ed62ae38180a"
+    }
+  ]
+}

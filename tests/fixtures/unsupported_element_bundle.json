@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "chemistry_integrator": "explicit",
+  "description": "Two-species unsupported-element startup rejection fixture",
+  "module_name": "unsupported_element_mechanism_mod",
+  "loader_name": "load_unsupported_element_mechanism",
+  "kernel_name": "unsupported_element_production_rates",
+  "jacobian_name": "unsupported_element_mass_fraction_jacobian",
+  "thermo_loader_name": "load_unsupported_element_thermo",
+  "transport_loader_name": "load_unsupported_element_transport",
+  "symbol_prefix": "unsupported_element",
+  "source": "PeleF selected EB 3D unsupported-element test fixture",
+  "species": [
+    "A",
+    "B"
+  ],
+  "thermo": [
+    {
+      "name": "A",
+      "composition": {"X": 2.0},
+      "molecular_weight": 2.016,
+      "reference_pressure": 101325.0,
+      "temperature_min": 200.0,
+      "temperature_mid": 1000.0,
+      "temperature_max": 3500.0,
+      "low_coefficients": [
+        2.34433112,
+        0.00798052075,
+        -0.000019478151,
+        2.01572094e-8,
+        -7.37611761e-12,
+        -917.935173,
+        0.683010238
+      ],
+      "high_coefficients": [
+        3.3372792,
+        -0.0000494024731,
+        4.99456778e-7,
+        -1.79566394e-10,
+        2.00255376e-14,
+        -950.158922,
+        -3.20502331
+      ]
+    },
+    {
+      "name": "B",
+      "composition": {"X": 1.0},
+      "molecular_weight": 1.008,
+      "reference_pressure": 101325.0,
+      "temperature_min": 200.0,
+      "temperature_mid": 1000.0,
+      "temperature_max": 3500.0,
+      "low_coefficients": [
+        2.5,
+        7.05332819e-13,
+        -1.99591964e-15,
+        2.30081632e-18,
+        -9.27732332e-22,
+        25473.6599,
+        -0.446682853
+      ],
+      "high_coefficients": [
+        2.50000001,
+        -2.30842973e-11,
+        1.61561948e-14,
+        -4.73515235e-18,
+        4.98197357e-22,
+        25473.6599,
+        -0.446682914
+      ]
+    }
+  ],
+  "transport": [
+    {
+      "name": "A",
+      "geometry": "linear",
+      "well_depth": 38.0,
+      "diameter": 2.92,
+      "dipole": 0.0,
+      "polarizability": 0.79,
+      "rotational_relaxation": 280.0
+    },
+    {
+      "name": "B",
+      "geometry": "atom",
+      "well_depth": 145.0,
+      "diameter": 2.05,
+      "dipole": 0.0,
+      "polarizability": 0.0,
+      "rotational_relaxation": 0.0
+    }
+  ],
+  "reactions": [
+    {
+      "equation": "2 B <=> A",
+      "reactants": {"B": 2.0},
+      "products": {"A": 1.0},
+      "reversible": true,
+      "arrhenius": {
+        "A": 1000000000000.0,
+        "b": -1.0,
+        "Ea": 0.0
+      }
+    }
+  ]
+}

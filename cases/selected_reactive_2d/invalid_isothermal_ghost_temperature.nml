@@ -1,0 +1,26 @@
+&reactive_2d
+  nx = 4
+  ny = 4
+  final_time = 1.0e-9
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  use_transverse_correction = .false.
+  chemistry_enabled = .false.
+  chemistry_model = "selected"
+  transport_enabled = .false.
+  boundary_x_lower = "periodic"
+  boundary_x_upper = "periodic"
+  boundary_y_lower = "slip_wall"
+  boundary_y_upper = "slip_wall"
+  thermal_y_lower = "isothermal"
+  thermal_y_upper = "adiabatic"
+  wall_temperature_y_lower = 300.0
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  composition_count = 2
+  composition_species = "H2", "H"
+  composition_mole_fractions = 0.8, 0.2
+  output_file = "invalid_isothermal_ghost_temperature_2d.csv"
+/

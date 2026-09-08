@@ -1,3 +1,58 @@
+module pelef_mpi_amr_eb_patch_tree_geometry_mod
+  use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  implicit none
+  private
+
+  public :: build_regular_geometry
+  public :: build_tagged_regular_geometry
+
+contains
+
+  subroutine build_regular_geometry( &
+      nx, ny, x_lower, x_upper, y_lower, y_upper, geometry, geometry_ok)
+    integer, intent(in) :: nx, ny
+    real(dp), intent(in) :: x_lower, x_upper, y_lower, y_upper
+    type(eb_geometry_2d), intent(out) :: geometry
+    logical, intent(out) :: geometry_ok
+
+    real(dp), allocatable :: level_set(:, :)
+
+    allocate(level_set(0:nx, 0:ny), source=1.0_dp)
+    call build_eb_geometry_2d( &
+      level_set, x_lower, x_upper, y_lower, y_upper, geometry, geometry_ok)
+  end subroutine build_regular_geometry
+
+  subroutine build_tagged_regular_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, geometry_context, child_geometry, geometry_ok)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    class(*), intent(in) :: geometry_context
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: geometry_ok
+
+    real(dp) :: x_lower, x_upper, y_lower, y_upper
+    integer :: nx, ny
+
+    nx = (i_upper - i_lower + 1) * refinement_ratio
+    ny = (j_upper - j_lower + 1) * refinement_ratio
+    x_lower = parent_geometry%x_lower + &
+      real(i_lower - 1, dp) * parent_geometry%dx
+    x_upper = parent_geometry%x_lower + &
+      real(i_upper, dp) * parent_geometry%dx
+    y_lower = parent_geometry%y_lower + &
+      real(j_lower - 1, dp) * parent_geometry%dy
+    y_upper = parent_geometry%y_lower + &
+      real(j_upper, dp) * parent_geometry%dy
+    call build_regular_geometry( &
+      nx, ny, x_lower, x_upper, y_lower, y_upper, child_geometry, &
+      geometry_ok)
+  end subroutine build_tagged_regular_geometry
+
+end module pelef_mpi_amr_eb_patch_tree_geometry_mod
+
 program pelef_mpi_amr_eb_patch_tree_2d
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
@@ -56,6 +111,8 @@ program pelef_mpi_amr_eb_patch_tree_2d
     write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint, &
     read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint, &
     write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv
+  use pelef_mpi_amr_eb_patch_tree_geometry_mod, only: &
+    build_regular_geometry, build_tagged_regular_geometry
   implicit none
 
   character(len=*), parameter :: checkpoint_path = &
@@ -1191,13 +1248,13 @@ program pelef_mpi_amr_eb_patch_tree_2d
   tagged_criteria%maximum_patch_gap_cells = 0
   call plan_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_serial, tagged_criteria, 3, 2, &
-    build_tagged_regular_geometry, serial_tagged_plans, &
+    build_tagged_regular_geometry, 0, serial_tagged_plans, &
     serial_tagged_cells, ok)
   call assert_all(ok .and. size(serial_tagged_plans) == 2 .and. &
     serial_tagged_cells > 0, "MPI tagged EB serial plan reference", comm)
   call plan_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     species, tagged_distribution, tagged_sparse, tagged_criteria, 3, 2, &
-    build_tagged_regular_geometry, tagged_plans, tagged_cells, ok, &
+    build_tagged_regular_geometry, 0, tagged_plans, tagged_cells, ok, &
     local_tagging_evaluations, local_candidate_transfers, &
     local_regrid_restriction_transfers)
   call MPI_Allreduce( &
@@ -1219,7 +1276,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
 
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_serial, tagged_criteria, 3, 2, &
-    build_tagged_regular_geometry, ok, topology_changed, &
+    build_tagged_regular_geometry, 0, ok, topology_changed, &
     serial_tagged_cells)
   call assert_all(ok .and. topology_changed .and. &
     tagged_serial%level_count() == 3, &
@@ -1260,13 +1317,13 @@ program pelef_mpi_amr_eb_patch_tree_2d
   expanded_tagged_criteria%minimum_patch_cells_y = 6
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_serial, expanded_tagged_criteria, 3, 2, &
-    build_tagged_regular_geometry, ok, topology_changed, &
+    build_tagged_regular_geometry, 0, ok, topology_changed, &
     serial_tagged_cells)
   call assert_all(ok .and. topology_changed, &
     "MPI tagged EB serial expanded rebuild", comm)
   call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
-    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    3, 2, build_tagged_regular_geometry, 0, tagged_new_distribution, ok, &
     topology_changed, tagged_cells, transferred_cells, &
     local_tagging_evaluations, local_candidate_transfers, &
     local_regrid_restriction_transfers, local_prolongation_transfers, &
@@ -1289,7 +1346,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   tagged_sparse_snapshot = tagged_sparse
   call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
-    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    3, 2, build_tagged_regular_geometry, 0, tagged_new_distribution, ok, &
     topology_changed, tagged_cells, transferred_cells)
   call assert_all(ok .and. .not. topology_changed .and. &
     tagged_cells > 0 .and. transferred_cells == 0 .and. &
@@ -1308,7 +1365,7 @@ program pelef_mpi_amr_eb_patch_tree_2d
   tagged_sparse_snapshot = tagged_sparse
   call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     species, tagged_distribution, tagged_sparse, rejected_tagged_criteria, &
-    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    3, 2, build_tagged_regular_geometry, 0, tagged_new_distribution, ok, &
     topology_changed, tagged_cells, transferred_cells, &
     local_tagging_evaluations, local_candidate_transfers, &
     local_regrid_restriction_transfers, local_prolongation_transfers, &
@@ -1345,14 +1402,14 @@ program pelef_mpi_amr_eb_patch_tree_2d
   end do
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_serial, expanded_tagged_criteria, 3, 2, &
-    build_tagged_regular_geometry, ok, topology_changed, &
+    build_tagged_regular_geometry, 0, ok, topology_changed, &
     serial_tagged_cells)
   call assert_all(ok .and. topology_changed .and. &
     serial_tagged_cells == 0 .and. tagged_serial%level_count() == 1, &
     "MPI tagged EB serial collapse", comm)
   call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
     species, tagged_distribution, tagged_sparse, expanded_tagged_criteria, &
-    3, 2, build_tagged_regular_geometry, tagged_new_distribution, ok, &
+    3, 2, build_tagged_regular_geometry, 0, tagged_new_distribution, ok, &
     topology_changed, tagged_cells, transferred_cells)
   call assert_all(ok .and. topology_changed .and. tagged_cells == 0 .and. &
     tagged_sparse%level_count() == 1 .and. &
@@ -1391,47 +1448,6 @@ program pelef_mpi_amr_eb_patch_tree_2d
   if (ierr /= MPI_SUCCESS) error stop "MPI finalization failed"
 
 contains
-
-  subroutine build_regular_geometry( &
-      nx, ny, x_lower, x_upper, y_lower, y_upper, geometry, geometry_ok)
-    integer, intent(in) :: nx, ny
-    real(dp), intent(in) :: x_lower, x_upper, y_lower, y_upper
-    type(eb_geometry_2d), intent(out) :: geometry
-    logical, intent(out) :: geometry_ok
-
-    real(dp), allocatable :: level_set(:, :)
-
-    allocate(level_set(0:nx, 0:ny), source=1.0_dp)
-    call build_eb_geometry_2d( &
-      level_set, x_lower, x_upper, y_lower, y_upper, geometry, geometry_ok)
-  end subroutine build_regular_geometry
-
-  subroutine build_tagged_regular_geometry( &
-      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, child_geometry, geometry_ok)
-    type(eb_geometry_2d), intent(in) :: parent_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: child_geometry
-    logical, intent(out) :: geometry_ok
-
-    real(dp) :: x_lower, x_upper, y_lower, y_upper
-    integer :: nx, ny
-
-    nx = (i_upper - i_lower + 1) * refinement_ratio
-    ny = (j_upper - j_lower + 1) * refinement_ratio
-    x_lower = parent_geometry%x_lower + &
-      real(i_lower - 1, dp) * parent_geometry%dx
-    x_upper = parent_geometry%x_lower + &
-      real(i_upper, dp) * parent_geometry%dx
-    y_lower = parent_geometry%y_lower + &
-      real(j_lower - 1, dp) * parent_geometry%dy
-    y_upper = parent_geometry%y_lower + &
-      real(j_upper, dp) * parent_geometry%dy
-    call build_regular_geometry( &
-      nx, ny, x_lower, x_upper, y_lower, y_upper, child_geometry, &
-      geometry_ok)
-  end subroutine build_tagged_regular_geometry
 
   integer function expected_remote_tree_edges( &
       tree_topology, tree_distribution) result(count)

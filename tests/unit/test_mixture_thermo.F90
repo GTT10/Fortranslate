@@ -1,4 +1,6 @@
 program test_mixture_thermo
+  use, intrinsic :: ieee_arithmetic, only: &
+    ieee_is_finite, ieee_positive_inf, ieee_quiet_nan, ieee_value
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: &
@@ -6,7 +8,10 @@ program test_mixture_thermo
     gri_h2o_index, gri_n2_index
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mixture_mass_properties, mixture_pressure, &
-    mixture_density, mixture_sound_speed, temperature_from_internal_energy
+    mixture_density, mixture_sound_speed, temperature_from_internal_energy, &
+    mixture_temperature_bounds, mixture_molecular_weight, &
+    mixture_specific_gas_constant, mass_fractions_from_mole_fractions, &
+    mole_fractions_from_mass_fractions
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -103,9 +108,137 @@ program test_mixture_thermo
     error stop "Negative mixture composition was accepted"
   end if
 
+  call check_nonfinite_contract(species, mass_fractions, ok)
+  if (.not. ok) error stop "Mixture thermodynamics finite contract failed"
+
   write(*, '(a)') "test_mixture_thermo: PASS"
 
 contains
+
+  subroutine check_nonfinite_contract(active_species, valid_mass_fractions, ok_out)
+    type(nasa7_species), intent(in) :: active_species(:)
+    real(dp), intent(in) :: valid_mass_fractions(:)
+    logical, intent(out) :: ok_out
+
+    type(nasa7_species), allocatable :: bad_species(:)
+    real(dp) :: bad_values(2), bad_value
+    real(dp) :: bad_mass_fractions(4), bad_mole_fractions(4)
+    real(dp) :: output_mass_fractions(4), output_mole_fractions(4)
+    real(dp) :: lower, upper, molecular_weight, gas_constant
+    real(dp) :: cp, cv, gamma, enthalpy, internal_energy, entropy
+    real(dp) :: pressure, density, sound_speed, recovered_temperature
+    logical :: local_ok
+    integer :: bad_index
+
+    ok_out = .false.
+    if (size(active_species) /= 4 .or. size(valid_mass_fractions) /= 4) return
+    allocate(bad_species, source=active_species)
+    bad_values(1) = ieee_value(0.0_dp, ieee_quiet_nan)
+    bad_values(2) = ieee_value(0.0_dp, ieee_positive_inf)
+
+    do bad_index = 1, 2
+      bad_value = bad_values(bad_index)
+
+      bad_mass_fractions = valid_mass_fractions
+      bad_mass_fractions(1) = bad_value
+      if (valid_mixture_composition(active_species, bad_mass_fractions)) return
+
+      bad_species = active_species
+      bad_species(1)%molecular_weight = bad_value
+      call mixture_temperature_bounds(bad_species, lower, upper, local_ok)
+      if (local_ok .or. lower /= 0.0_dp .or. upper /= 0.0_dp) return
+      molecular_weight = mixture_molecular_weight( &
+        bad_species, valid_mass_fractions, local_ok)
+      if (local_ok .or. molecular_weight /= 0.0_dp) return
+      gas_constant = mixture_specific_gas_constant( &
+        bad_species, valid_mass_fractions, local_ok)
+      if (local_ok .or. gas_constant /= 0.0_dp) return
+
+      call mixture_mass_properties( &
+        active_species, valid_mass_fractions, bad_value, molecular_weight, &
+        gas_constant, cp, cv, gamma, enthalpy, internal_energy, entropy, local_ok)
+      if (local_ok .or. .not. all([molecular_weight, gas_constant, cp, cv, &
+          gamma, enthalpy, internal_energy, entropy] == 0.0_dp)) return
+
+      pressure = mixture_pressure( &
+        active_species, valid_mass_fractions, bad_value, 1200.0_dp, local_ok)
+      if (local_ok .or. pressure /= 0.0_dp) return
+      pressure = mixture_pressure( &
+        active_species, valid_mass_fractions, 1.2_dp, bad_value, local_ok)
+      if (local_ok .or. pressure /= 0.0_dp) return
+      pressure = mixture_pressure( &
+        active_species, valid_mass_fractions, huge(1.0_dp), &
+        huge(1.0_dp), local_ok)
+      if (local_ok .or. pressure /= 0.0_dp) return
+
+      density = mixture_density( &
+        active_species, valid_mass_fractions, bad_value, 1200.0_dp, local_ok)
+      if (local_ok .or. density /= 0.0_dp) return
+      density = mixture_density( &
+        active_species, valid_mass_fractions, 101325.0_dp, bad_value, local_ok)
+      if (local_ok .or. density /= 0.0_dp) return
+      density = mixture_density( &
+        active_species, valid_mass_fractions, huge(1.0_dp), &
+        tiny(1.0_dp), local_ok)
+      if (local_ok .or. density /= 0.0_dp) return
+
+      sound_speed = mixture_sound_speed( &
+        active_species, valid_mass_fractions, bad_value, local_ok)
+      if (local_ok .or. sound_speed /= 0.0_dp) return
+
+      call mixture_mass_properties( &
+        active_species, valid_mass_fractions, 1200.0_dp, molecular_weight, &
+        gas_constant, cp, cv, gamma, enthalpy, internal_energy, entropy, local_ok)
+      if (.not. local_ok .or. .not. ieee_is_finite(internal_energy)) return
+      recovered_temperature = 77.0_dp
+      call temperature_from_internal_energy( &
+        active_species, valid_mass_fractions, bad_value, 900.0_dp, &
+        recovered_temperature, local_ok)
+      if (local_ok .or. recovered_temperature /= 0.0_dp) return
+      recovered_temperature = 77.0_dp
+      call temperature_from_internal_energy( &
+        active_species, valid_mass_fractions, internal_energy, bad_value, &
+        recovered_temperature, local_ok)
+      if (local_ok .or. recovered_temperature /= 0.0_dp) return
+
+      bad_mole_fractions = valid_mass_fractions
+      bad_mole_fractions(1) = bad_value
+      output_mass_fractions = 1.0_dp
+      call mass_fractions_from_mole_fractions( &
+        active_species, bad_mole_fractions, output_mass_fractions, local_ok)
+      if (local_ok .or. .not. all(output_mass_fractions == 0.0_dp)) return
+      output_mole_fractions = 1.0_dp
+      call mole_fractions_from_mass_fractions( &
+        active_species, bad_mass_fractions, output_mole_fractions, local_ok)
+      if (local_ok .or. .not. all(output_mole_fractions == 0.0_dp)) return
+    end do
+
+    bad_species = active_species
+    bad_species(1)%molecular_weight = 0.125_dp * tiny(1.0_dp)
+    bad_mass_fractions = 0.0_dp
+    bad_mass_fractions(1) = 1.0_dp
+    molecular_weight = mixture_molecular_weight( &
+      bad_species, bad_mass_fractions, local_ok)
+    if (local_ok .or. molecular_weight /= 0.0_dp) return
+    gas_constant = mixture_specific_gas_constant( &
+      bad_species, bad_mass_fractions, local_ok)
+    if (local_ok .or. gas_constant /= 0.0_dp) return
+    output_mole_fractions = 1.0_dp
+    call mole_fractions_from_mass_fractions( &
+      bad_species, bad_mass_fractions, output_mole_fractions, local_ok)
+    if (local_ok .or. .not. all(output_mole_fractions == 0.0_dp)) return
+
+    bad_species = active_species
+    bad_species(1)%molecular_weight = huge(1.0_dp)
+    molecular_weight = mixture_molecular_weight( &
+      bad_species, bad_mass_fractions, local_ok)
+    if (local_ok .or. molecular_weight /= 0.0_dp) return
+    gas_constant = mixture_specific_gas_constant( &
+      bad_species, bad_mass_fractions, local_ok)
+    if (local_ok .or. gas_constant /= 0.0_dp) return
+
+    ok_out = .true.
+  end subroutine check_nonfinite_contract
 
   subroutine assert_close(actual, expected, relative_tolerance, label)
     real(dp), intent(in) :: actual, expected, relative_tolerance

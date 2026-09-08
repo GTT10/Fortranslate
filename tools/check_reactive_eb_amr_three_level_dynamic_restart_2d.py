@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import math
 from pathlib import Path
 
@@ -93,11 +94,18 @@ def check_checkpoint(path: Path) -> list[int]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--expected-checkpoint-sha256", required=True)
     parser.add_argument("--reference", required=True, nargs=3, type=Path)
     parser.add_argument("--stopped", required=True, nargs=3, type=Path)
     parser.add_argument("--restarted", required=True, nargs=3, type=Path)
     args = parser.parse_args()
 
+    checkpoint_digest = hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
+    if checkpoint_digest != args.expected_checkpoint_sha256:
+        raise AssertionError(
+            "fixed dynamic three-level checkpoint SHA-256 "
+            f"{checkpoint_digest} != {args.expected_checkpoint_sha256}"
+        )
     counts = check_checkpoint(args.checkpoint)
     reference = [load(path, count) for path, count in zip(args.reference, counts)]
     stopped = [load(path, count) for path, count in zip(args.stopped, counts)]
@@ -108,6 +116,7 @@ def main() -> None:
     for index, label in enumerate(("root", "middle", "finest")):
         compare(reference[index], restarted[index], label)
     print("check_reactive_eb_amr_three_level_dynamic_restart_2d: PASS")
+    print(f"checkpoint_sha256={checkpoint_digest}")
 
 
 if __name__ == "__main__":

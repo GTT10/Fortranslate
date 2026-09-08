@@ -1,0 +1,96 @@
+program pelef_mpi_reactive_1d_selected
+  use mpi_f08
+  use precision_mod, only: dp
+  use constants_mod, only: pelef_version
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use mpi_reactive_1d_application_mod, only: &
+    run_mpi_reactive_1d_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => &
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  character(len=1024) :: message
+  character(len=256) :: output_file
+  integer :: ierr, rank
+  logical :: ok
+
+  call MPI_Init(ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
+  call MPI_Comm_rank(MPI_COMM_WORLD, rank, ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Comm_rank failed"
+
+  if (command_argument_count() >= 1) then
+    call get_command_argument(1, output_file)
+  else
+    output_file = "mpi_reactive_1d_selected.csv"
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected MPI reactive thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected MPI reactive reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected MPI reactive transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected MPI reactive 1D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    if (rank == 0) write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  call validate_selected_temperature_range( &
+    "Selected MPI reactive 1D", 975.0_dp, 1025.0_dp, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    if (rank == 0) write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  if (rank == 0) then
+    write(*, '(a)') "PeleF " // pelef_version // &
+      " selected mechanism MPI reactive 1D"
+    write(*, '(a,1x,a)') "Bundle SHA-256:", pelef_selected_bundle_sha256
+    write(*, '(a,i0)') "Species: ", pelef_selected_species_count
+    write(*, '(a,i0)') "Reactions: ", pelef_selected_reaction_count
+    write(*, '(a,1x,a)') "Chemistry integrator:", &
+      pelef_selected_chemistry_integrator
+  end if
+  call run_mpi_reactive_1d_application( &
+    MPI_COMM_WORLD, species, reactions, transport, trim(output_file), &
+    pelef_selected_chemistry_integrator)
+
+  call MPI_Finalize(ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
+end program pelef_mpi_reactive_1d_selected

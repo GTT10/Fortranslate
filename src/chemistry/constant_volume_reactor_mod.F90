@@ -254,13 +254,14 @@ contains
 
   subroutine reactor_reduced_jacobian( &
       species, reactions, density, target_internal_energy, mass_fractions, &
-      temperature_guess, jacobian, temperature, ok)
+      temperature_guess, jacobian, temperature, ok, dependent_species)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: density, target_internal_energy
     real(dp), intent(in) :: mass_fractions(:), temperature_guess
     real(dp), intent(out) :: jacobian(:, :), temperature
     logical, intent(out) :: ok
+    integer, intent(in), optional :: dependent_species
 
     real(dp), allocatable :: fixed_temperature_jacobian(:, :)
     real(dp), allocatable :: rhs_lower(:), rhs_upper(:)
@@ -272,15 +273,19 @@ contains
     real(dp) :: lower_temperature, upper_temperature, temperature_delta
     real(dp) :: common_minimum, common_maximum, d_temperature_d_variable
     logical :: property_ok
-    integer :: i, j, nspecies, reduced_size
+    integer :: dependent, i, j, nspecies, reduced_size
+    integer :: row_species, column_species
 
     jacobian = 0.0_dp
     temperature = 0.0_dp
     nspecies = size(species)
     reduced_size = nspecies - 1
+    dependent = nspecies
+    if (present(dependent_species)) dependent = dependent_species
     ok = nspecies >= 2 .and. size(mass_fractions) == nspecies .and. &
       size(jacobian, 1) == reduced_size .and. &
-      size(jacobian, 2) == reduced_size .and. density > 0.0_dp
+      size(jacobian, 2) == reduced_size .and. density > 0.0_dp .and. &
+      dependent >= 1 .and. dependent <= nspecies
     if (.not. ok) return
     ok = valid_mixture_composition(species, mass_fractions)
     if (.not. ok) return
@@ -337,16 +342,28 @@ contains
     end do
 
     do j = 1, reduced_size
-      d_temperature_d_variable = -(species_internal_energy(j) - &
-        species_internal_energy(nspecies)) / cv
+      column_species = reduced_species_index(j, dependent)
+      d_temperature_d_variable = -( &
+        species_internal_energy(column_species) - &
+        species_internal_energy(dependent)) / cv
       do i = 1, reduced_size
-        jacobian(i, j) = fixed_temperature_jacobian(i, j) - &
-          fixed_temperature_jacobian(i, nspecies) + &
-          d_rhs_d_temperature(i) * d_temperature_d_variable
+        row_species = reduced_species_index(i, dependent)
+        jacobian(i, j) = &
+          fixed_temperature_jacobian(row_species, column_species) - &
+          fixed_temperature_jacobian(row_species, dependent) + &
+          d_rhs_d_temperature(row_species) * d_temperature_d_variable
       end do
     end do
     ok = all(ieee_is_finite(jacobian))
   end subroutine reactor_reduced_jacobian
+
+  pure integer function reduced_species_index( &
+      reduced_index, dependent_species) result(species_index)
+    integer, intent(in) :: reduced_index, dependent_species
+
+    species_index = reduced_index
+    if (reduced_index >= dependent_species) species_index = reduced_index + 1
+  end function reduced_species_index
 
   subroutine backward_euler_trial( &
       species, reactions, density, target_internal_energy, initial_state, &

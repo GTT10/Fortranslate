@@ -1,0 +1,175 @@
+program pelef_mpi_amr_reactive_1d_selected
+  use, intrinsic :: iso_fortran_env, only: error_unit
+  use mpi_f08
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use simulation_config_reactive_1d_mod, only: &
+    reactive_1d_config, read_reactive_1d_configuration, &
+    resolve_reactive_1d_selected_composition
+  use simulation_config_selected_reactor_mod, only: &
+    selected_reactor_paths_alias_lexically
+  use mpi_amr_reactive_1d_application_mod, only: &
+    run_mpi_amr_reactive_1d_application
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => &
+      @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => &
+      @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => &
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(reactive_1d_config) :: config
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  real(dp) :: requested_temperature_minimum, requested_temperature_maximum
+  character(len=1024) :: input_path, output_path, message
+  logical :: ok
+  integer :: ierr, rank, argument_count
+
+  call MPI_Init(ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Init failed"
+  call MPI_Comm_rank(MPI_COMM_WORLD, rank, ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Comm_rank failed"
+
+  argument_count = command_argument_count()
+  if (argument_count < 1 .or. argument_count > 2) then
+    call abort_run( &
+      "Usage: pelef_mpi_amr_reactive_1d_selected " // &
+      "<input.nml> [output.csv]", 2)
+  end if
+  call get_command_argument(1, input_path)
+  call read_reactive_1d_configuration( &
+    trim(input_path), config, ok, message, allow_selected=.true.)
+  if (.not. ok) call abort_run(trim(message), 2)
+  if (trim(config%chemistry_model) /= "selected") then
+    call abort_run( &
+      "Selected sparse MPI AMR requires chemistry_model='selected'", 2)
+  end if
+  if (.not. config%amr_enabled) &
+    call abort_run("Selected sparse MPI AMR requires amr_enabled", 2)
+  if (config%amr_multipatch_enabled) then
+    call abort_run( &
+      "Selected sparse MPI AMR requires patch-tree mode", 2)
+  end if
+  output_path = config%output_file
+  if (argument_count == 2) call get_command_argument(2, output_path)
+  if (len_trim(output_path) == 0) &
+    call abort_run("Selected sparse MPI AMR output path is empty", 2)
+  if (paths_alias(trim(input_path), trim(output_path))) then
+    call abort_run("Selected sparse MPI AMR input and output paths alias", 2)
+  end if
+  if (len_trim(config%checkpoint_file) > 0) then
+    if (paths_alias(trim(input_path), trim(config%checkpoint_file)) .or. &
+        paths_alias(trim(output_path), trim(config%checkpoint_file))) then
+      call abort_run( &
+        "Selected sparse MPI AMR checkpoint path aliases input or output", 2)
+    end if
+  end if
+  if (len_trim(config%restart_file) > 0) then
+    if (paths_alias(trim(input_path), trim(config%restart_file)) .or. &
+        paths_alias(trim(output_path), trim(config%restart_file))) then
+      call abort_run( &
+        "Selected sparse MPI AMR restart path aliases input or output", 2)
+    end if
+  end if
+  if (len_trim(config%checkpoint_file) > 0 .and. &
+      len_trim(config%restart_file) > 0) then
+    if (paths_alias(config%checkpoint_file, config%restart_file)) then
+      call abort_run( &
+        "Selected sparse MPI AMR checkpoint and restart paths alias", 2)
+    end if
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    call abort_run( &
+      "Failed to load selected sparse MPI AMR thermodynamics", 3)
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    call abort_run("Failed to load selected sparse MPI AMR reactions", 3)
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    call abort_run( &
+      "Failed to load selected sparse MPI AMR transport data", 3)
+  end if
+  call prepare_selected_mechanism( &
+    "Selected sparse MPI AMR reactive 1D", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) call abort_run(trim(message), 3)
+
+  requested_temperature_minimum = config%initial_temperature
+  requested_temperature_maximum = config%initial_temperature
+  if (trim(config%problem) == "reactive_hotspot") then
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+  else if (trim(config%problem) == "entropy_wave") then
+    requested_temperature_minimum = config%initial_temperature / &
+      (1.0_dp + config%density_wave_amplitude)
+    requested_temperature_maximum = config%initial_temperature / &
+      (1.0_dp - config%density_wave_amplitude)
+  end if
+  call validate_selected_temperature_range( &
+    "Selected sparse MPI AMR reactive 1D", requested_temperature_minimum, &
+    requested_temperature_maximum, common_temperature_minimum, &
+    common_temperature_maximum, ok, message)
+  if (.not. ok) call abort_run(trim(message), 3)
+
+  call resolve_reactive_1d_selected_composition( &
+    config, species, mole_fractions, ok, message)
+  if (.not. ok) call abort_run(trim(message), 3)
+  call run_mpi_amr_reactive_1d_application( &
+    MPI_COMM_WORLD, "selected mechanism sparse MPI AMR reactive 1D", &
+    config, species, reactions, transport, trim(output_path), &
+    pelef_selected_bundle_sha256, mole_fractions, &
+    pelef_selected_chemistry_integrator)
+
+  call MPI_Finalize(ierr)
+  if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
+
+contains
+
+  pure logical function paths_alias(left, right) result(aliases)
+    character(len=*), intent(in) :: left, right
+
+    aliases = selected_reactor_paths_alias_lexically(left, right)
+  end function paths_alias
+
+  subroutine abort_run(reason, code)
+    character(len=*), intent(in) :: reason
+    integer, intent(in) :: code
+
+    integer :: abort_ierr
+
+    if (rank == 0) write(error_unit, '(a)') trim(reason)
+    call MPI_Abort(MPI_COMM_WORLD, code, abort_ierr)
+    error stop code
+  end subroutine abort_run
+
+end program pelef_mpi_amr_reactive_1d_selected

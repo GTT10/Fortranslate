@@ -4,7 +4,7 @@ module reactive_eb_2d_driver_mod
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive
@@ -39,14 +39,15 @@ module reactive_eb_2d_driver_mod
 contains
 
   subroutine build_configured_reactive_boundary_set_2d( &
-      species, config, boundaries, ok)
+      species, config, boundaries, ok, base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_eb_2d_config), intent(in) :: config
     type(reactive_boundary_set_2d), intent(out) :: boundaries
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     call build_reactive_boundary_set_2d( &
-      species, config%flow, boundaries, ok)
+      species, config%flow, boundaries, ok, base_mole_fractions)
     if (.not. ok) return
     call configure_reactive_embedded_wall_2d( &
       boundaries, config%embedded_wall_kind, config%embedded_wall_thermal, &
@@ -249,7 +250,8 @@ contains
       target_volume_fraction, reconstruction, limiter, state_redist_max_order, &
       transport, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, minimum_transport_theta, boundaries)
+      barodiffusion_enabled, minimum_transport_theta, boundaries, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :), temperature(:, :)
@@ -269,6 +271,7 @@ contains
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
@@ -333,7 +336,7 @@ contains
       call advance_reactive_chemistry_2d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, 0.5_dp * dt, rtol, atol, local_ok, &
-        active_mask)
+        active_mask, chemistry_integrator)
       if (.not. local_ok) return
     end if
     if (use_transport) then
@@ -374,7 +377,7 @@ contains
       call advance_reactive_chemistry_2d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, 0.5_dp * dt, rtol, atol, local_ok, &
-        active_mask)
+        active_mask, chemistry_integrator)
       if (.not. local_ok) return
     end if
     new_state = candidate_state
@@ -387,7 +390,8 @@ contains
   subroutine simulate_reactive_eb_2d( &
       species, reactions, config, state, temperature, geometry, time, steps, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok, &
-      transport, minimum_transport_theta)
+      transport, minimum_transport_theta, base_mole_fractions, &
+      chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_2d_config), intent(in) :: config
@@ -400,6 +404,8 @@ contains
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: candidate_state(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :)
@@ -420,12 +426,19 @@ contains
     if (.not. supported_reactive_eb_hydro_config(config)) return
     if (config%flow%transport_enabled .and. .not. present(transport)) return
     call build_configured_reactive_boundary_set_2d( &
-      species, config, boundaries, local_ok)
+      species, config, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return
-    call initialize_reactive_2d( &
-      species, config%flow, state, temperature, dx, dy, base_density, local_ok)
+    if (present(base_mole_fractions)) then
+      call initialize_reactive_2d( &
+        species, config%flow, state, temperature, dx, dy, base_density, &
+        local_ok, base_mole_fractions)
+    else
+      call initialize_reactive_2d( &
+        species, config%flow, state, temperature, dx, dy, base_density, &
+        local_ok)
+    end if
     if (.not. local_ok) return
     if (abs(dx - geometry%dx) > 8.0_dp * epsilon(1.0_dp) * geometry%dx .or. &
         abs(dy - geometry%dy) > 8.0_dp * epsilon(1.0_dp) * geometry%dy) return
@@ -472,7 +485,8 @@ contains
           config%flow%transport_enabled, config%flow%viscosity_enabled, &
           config%flow%thermal_conduction_enabled, &
           config%flow%species_diffusion_enabled, &
-          config%flow%barodiffusion_enabled, step_transport_theta, boundaries)
+          config%flow%barodiffusion_enabled, step_transport_theta, &
+          boundaries, chemistry_integrator)
       else
         call advance_reactive_eb_strang_2d( &
           species, reactions, state, temperature, geometry, &
@@ -482,7 +496,8 @@ contains
           candidate_temperature, local_ok, &
           config%state_redist_target_volume_fraction, &
           config%flow%reconstruction, config%flow%limiter, &
-          config%state_redist_max_order)
+          config%state_redist_max_order, &
+          chemistry_integrator=chemistry_integrator)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) return

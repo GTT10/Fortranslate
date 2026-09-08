@@ -1,0 +1,94 @@
+PeleF 0.244.0 clean tests-disabled Release install audit
+Execution date: 2026-09-01 Asia/Tokyo
+Record finalized: 2026-09-07 Asia/Tokyo
+
+Isolated trees:
+  build=/tmp/pelef-0.244.0-build.3P0kw6
+  install=/tmp/pelef-0.244.0-install.V9lUUY
+  smoke=/tmp/pelef-0.244.0-smoke.Ynn8hd
+
+Configuration contract:
+  environment: env -i PATH=/usr/bin:/bin LC_ALL=C
+  generator: Ninja
+  build type: Release
+  Fortran compiler: /usr/bin/gfortran (GNU 13.3.0)
+  MPI compiler: /usr/bin/mpifort (Open MPI 4.1.6)
+  MPI launcher: /usr/bin/mpiexec.openmpi (OpenRTE 4.1.6)
+  PELEF_ENABLE_MPI=ON
+  PELEF_ENABLE_SUNDIALS=OFF
+  PELEF_ENABLE_TESTS=OFF
+  PELEF_ENABLE_CANTERA_REFERENCE=OFF
+  PELEF_MECHANISM_BUNDLE=mechanisms/h2o2_full.json
+  PELEF_MECHANISM_SOURCE=mechanisms/h2o2_cantera.yaml
+
+Build/install result:
+  clean configure=PASS
+  clean Ninja build/install target=PASS
+  final-source incremental reconfigure/install=PASS, all entries up to date
+  install manifest entries=42
+  configure.log sha256=ec2002e16ced6a03c35347c241b8c0e47a4fe9c2b99956d4a0a238e3e7c2bbfc
+  build-install.log sha256=0c97f232f646774e20033d66d1497e5642f05cc03bb516add3841f5697818043
+  final-rebuild-install.log sha256=021c9e1526d861bb6a4e48ce1b68e2c87f67127ac579b9fe3b4665f5c568b404
+  CMakeCache.txt sha256=8821ef8f64f9644ccc3a5efe724afb27503557d4dc839ca0861c728c90abe7f6
+  install_manifest.txt sha256=1b62af4cd1181f96633f773f1e39a7725e252ef2289a420cc1e588c750534ac8
+  installed fixed serial AMR 3D sha256=39e740c9a5194a9ef1a70cdd528cbad80e79fab4b6ce1326f05be371711eb83b
+  installed selected serial AMR 3D sha256=0dd6b553042665cdf98344fb0eb36ecb3c38111ecaaad50a8fd37004d0dd5fe2
+  installed fixed MPI AMR 3D sha256=761b570431b2da0e66e24103444c8fb1a748d8bd75c87ccc89ebf1a6b4e92882
+  installed selected MPI AMR 3D sha256=270b9770c83cafd228af94081d757520a05d1446bd7387e48ccd730ba2d5de6c
+
+Installed Release ELF audit result:
+  install_manifest_entries=42
+  installed_elf_count=42
+  installed_build_byte_identity=PASS
+  non_executable_stack_count=42
+  rpath_runpath=NONE
+  unresolved_runtime_dependencies=NONE
+  mpi_sonames=libmpi.so.40,libmpi_mpifh.so.40,libmpi_usempif08.so.40
+  fortran_implicit_link_directories=/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib
+  oneapi_or_libmpi_so_12_contamination=NONE
+  installed_release_audit=PASS
+
+Installed fixed/selected static 3D AMR transport qualification:
+  installed application version=0.244.0
+  fixed serial=PASS
+  selected serial=PASS
+  fixed MPI ranks=1,2,4,8=PASS
+  selected MPI ranks=1,2,4,8=PASS
+  fixed/selected/serial/MPI coarse and fine byte identity=PASS
+  eight-rank fine x planes per rank: min=0, max=2
+  completed transport fine substeps=16
+  maximum reflux correction=7.4396549753794191e-3
+  maximum transport diffusivity=2.0270711667340910e-3
+  minimum transport theta=1.0
+  Release coarse CSV sha256=f0713f3a68f48b6537afaafd57209ea8ed4767f9c7d093fe2961bd3a1fa37fae
+  Release fine CSV sha256=eaf132bbf89974d739c26a35f6b76137f9774438cfe9eebfc12436aa364cff58
+
+Installed selected full-H2/O2 schema-3 qualification:
+  uninterrupted selected serial reference=PASS
+  selected serial first-step checkpoint-stop=PASS
+  selected serial restart=PASS
+  same serial checkpoint resumed at MPI ranks=1,2,4,8=PASS
+  uninterrupted/restarted coarse/fine byte identity for every run=PASS
+  eight-rank fine x planes per rank: min=0, max=2
+  bundle sha256=f65e1c02e77618d188bc95f0868f3749d6345afb355fda924297521f69ce04c3
+  generated chemistry integrator=implicit
+  schema-3 checkpoint sha256=f44f69a7e1a1657b549b26373feb277840732e5453b0734321cc8c7cdf91c423
+  final coarse CSV sha256=a03884837909bab719f0783d23ea9150a81f2afc628fee1a01c645c1b47e0ff3
+  final fine CSV sha256=8d5a992d07b89832624e37af6ddacd510df63633707678693b9053057d4efcbe
+
+Installed fixed characteristic-PLM schema-2 compatibility:
+  uninterrupted serial reference=PASS
+  serial checkpoint-stop and restart=PASS
+  same serial checkpoint resumed at MPI ranks=4,8=PASS
+  uninterrupted/restarted coarse/fine byte identity=PASS
+  eight-rank fine x planes per rank: min=0, max=2
+  schema-2 checkpoint sha256=8f51be7f192dd61ab0e1f4eccf665870c2103205d13ea562fb52d32e981dbf9d
+  final coarse CSV sha256=864e9cabe8f5c2bee19f97e9279bdada7647305171955c6c767cc83e4db15c21
+  final fine CSV sha256=8f764e38491e9cf62f8c0f17eac2470c4705f7d80bfe7e686db4ba54de2f58d7
+
+Qualification boundary:
+  The install audit proves packaging identity, runtime linkage, the new static
+  3D AMR transport path, and retained transport-disabled restart compatibility.
+  It does not qualify transport checkpoint persistence, dynamic topology,
+  physical boundaries, 3D EB AMR, scalable I/O, performance/scaling,
+  detailed-fuel physics, ignition, or external PeleC field parity.

@@ -1,3 +1,94 @@
+module test_amr_eb_multilevel_geometry_mod
+  use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    amr_eb_patch_2d, build_amr_eb_patch_2d
+  implicit none
+  private
+
+  public :: build_patch_geometry
+  public :: build_tagged_tree_geometry
+  public :: reject_tagged_tree_geometry
+
+contains
+
+  subroutine build_patch_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, patch, valid)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    type(amr_eb_patch_2d), intent(out) :: patch
+    logical, intent(out) :: valid
+
+    real(dp), allocatable :: level_set(:, :)
+    real(dp) :: x_lower, x_upper, y_lower, y_upper, local_x, local_y
+    integer :: nx, ny, local_i, local_j
+
+    nx = (i_upper - i_lower + 1) * refinement_ratio
+    ny = (j_upper - j_lower + 1) * refinement_ratio
+    x_lower = parent_geometry%x_lower + real(i_lower - 1, dp) * &
+      parent_geometry%dx
+    x_upper = parent_geometry%x_lower + real(i_upper, dp) * &
+      parent_geometry%dx
+    y_lower = parent_geometry%y_lower + real(j_lower - 1, dp) * &
+      parent_geometry%dy
+    y_upper = parent_geometry%y_lower + real(j_upper, dp) * &
+      parent_geometry%dy
+    allocate(level_set(0:nx, 0:ny))
+    do local_j = 0, ny
+      local_y = y_lower + real(local_j, dp) * &
+        (y_upper - y_lower) / real(ny, dp)
+      do local_i = 0, nx
+        local_x = x_lower + real(local_i, dp) * &
+          (x_upper - x_lower) / real(nx, dp)
+        level_set(local_i, local_j) = local_x + local_y - 0.78_dp
+      end do
+    end do
+    call build_eb_geometry_2d( &
+      level_set, x_lower, x_upper, y_lower, y_upper, child_geometry, valid)
+    if (.not. valid) return
+    call build_amr_eb_patch_2d( &
+      parent_geometry, child_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, patch, valid)
+  end subroutine build_patch_geometry
+
+  subroutine build_tagged_tree_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, geometry_context, child_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    class(*), intent(in) :: geometry_context
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: valid
+
+    type(amr_eb_patch_2d) :: scratch_patch
+
+    call build_patch_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, child_geometry, scratch_patch, valid)
+  end subroutine build_tagged_tree_geometry
+
+  subroutine reject_tagged_tree_geometry( &
+      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, geometry_context, child_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: parent_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    class(*), intent(in) :: geometry_context
+    type(eb_geometry_2d), intent(out) :: child_geometry
+    logical, intent(out) :: valid
+
+    child_geometry = eb_geometry_2d()
+    valid = parent_geometry%is_valid() .and. i_lower <= i_upper .and. &
+      j_lower <= j_upper .and. refinement_ratio >= 2
+    valid = .false.
+  end subroutine reject_tagged_tree_geometry
+
+end module test_amr_eb_multilevel_geometry_mod
+
 program test_amr_eb_multilevel_2d
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_is_finite, ieee_value, ieee_quiet_nan
@@ -26,6 +117,7 @@ program test_amr_eb_multilevel_2d
     patch_tree_topologies_match_2d
   use amr_eb_patch_tree_reactive_2d_mod, only: &
     reactive_amr_eb_patch_tree_2d, &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d, &
     initialize_reactive_amr_eb_patch_tree_2d, &
     synchronize_reactive_amr_eb_patch_tree_2d, &
     rebuild_reactive_amr_eb_patch_tree_2d, &
@@ -50,6 +142,9 @@ program test_amr_eb_multilevel_2d
     advance_three_level_reactive_eb_strang_2d
   use reactive_eb_2d_driver_mod, only: &
     compute_reactive_eb_cfl_timestep_2d
+  use test_amr_eb_multilevel_geometry_mod, only: &
+    build_patch_geometry, build_tagged_tree_geometry, &
+    reject_tagged_tree_geometry
   implicit none
 
   integer, parameter :: root_nx = 8, root_ny = 8, ratio = 2
@@ -96,6 +191,8 @@ program test_amr_eb_multilevel_2d
   type(reactive_amr_eb_patch_tree_2d) :: tagged_tree
   type(reactive_amr_eb_patch_tree_2d) :: tagged_tree_snapshot
   type(amr_eb_tagging_criteria_2d) :: tree_tagging_criteria
+  type(reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d) :: &
+    selected_checkpoint_fingerprint
   type(nasa7_species), allocatable :: species(:)
   type(nasa7_species), allocatable :: checkpoint_species(:)
   type(nasa7_species) :: species_scratch
@@ -110,6 +207,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: primitive(:), mass_fractions(:), state_cell(:)
   real(dp), allocatable :: tree_integral_before(:), tree_integral_after(:)
   real(dp), allocatable :: checkpoint_initial_integrals(:)
+  real(dp), allocatable :: selected_checkpoint_initial_integrals(:)
   real(dp), allocatable :: restored_checkpoint_initial_integrals(:)
   real(dp), allocatable :: tagged_integral_before(:)
   real(dp), allocatable :: tagged_integral_after(:)
@@ -129,6 +227,7 @@ program test_amr_eb_multilevel_2d
   real(dp), allocatable :: level_one_temperature_sync(:, :)
   real(dp), allocatable :: level_two_temperature_sync(:, :)
   real(dp) :: mole_fractions(7), x, y, temperature_cell, sound_speed
+  real(dp) :: selected_checkpoint_composition(7)
   real(dp) :: hot_temperature
   real(dp) :: scale, dt, species_integral_sum, species_change
   logical, allocatable :: local_refined(:, :), local_recipients(:, :)
@@ -398,7 +497,7 @@ program test_amr_eb_multilevel_2d
   tree_tagging_criteria%maximum_patch_gap_cells = 0
   call plan_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_tree, tree_tagging_criteria, 3, ratio, &
-    build_tagged_tree_geometry, tagged_tree_plans, tagged_cells, ok, &
+    build_tagged_tree_geometry, 0, tagged_tree_plans, tagged_cells, ok, &
     tree_failure_context)
   call require(ok .and. tagged_cells > 0 .and. &
     size(tagged_tree_plans) == 2, &
@@ -416,7 +515,7 @@ program test_amr_eb_multilevel_2d
   call require(ok, "pre-tagged EB patch-tree integral")
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_tree, tree_tagging_criteria, 3, ratio, &
-    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    build_tagged_tree_geometry, 0, ok, topology_changed, tagged_cells, &
     tree_failure_context)
   call require(ok .and. topology_changed .and. tagged_cells > 0 .and. &
     tagged_tree%is_valid() .and. tagged_tree%level_count() == 3 .and. &
@@ -433,7 +532,7 @@ program test_amr_eb_multilevel_2d
   tagged_tree_snapshot = tagged_tree
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_tree, tree_tagging_criteria, 3, ratio, &
-    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    build_tagged_tree_geometry, 0, ok, topology_changed, tagged_cells, &
     tree_failure_context)
   call require(ok .and. .not. topology_changed .and. tagged_cells > 0 .and. &
     reactive_tree_solutions_match(tagged_tree, tagged_tree_snapshot), &
@@ -442,7 +541,7 @@ program test_amr_eb_multilevel_2d
   tagged_tree_snapshot = tagged_tree
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_tree, tree_tagging_criteria, 3, ratio, &
-    reject_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    reject_tagged_tree_geometry, 0, ok, topology_changed, tagged_cells, &
     tree_failure_context)
   call require(.not. ok .and. .not. topology_changed .and. &
     tagged_cells > 0 .and. &
@@ -463,7 +562,7 @@ program test_amr_eb_multilevel_2d
   call require(ok, "pre-collapse tagged EB patch-tree integral")
   call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
     species, tagged_tree, tree_tagging_criteria, 3, ratio, &
-    build_tagged_tree_geometry, ok, topology_changed, tagged_cells, &
+    build_tagged_tree_geometry, 0, ok, topology_changed, tagged_cells, &
     tree_failure_context)
   call require(ok .and. topology_changed .and. tagged_cells == 0 .and. &
     tagged_tree%is_valid() .and. tagged_tree%level_count() == 1, &
@@ -642,6 +741,146 @@ program test_amr_eb_multilevel_2d
     checkpoint_minimum_dt, ok)
   call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
     "EB patch-tree checkpoint species-order rejection")
+
+  selected_checkpoint_fingerprint = &
+    reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d()
+  selected_checkpoint_fingerprint%geometry = "plane"
+  selected_checkpoint_fingerprint%chemistry_model = "selected"
+  selected_checkpoint_fingerprint%riemann_solver = "hllc"
+  selected_checkpoint_fingerprint%reconstruction = "pcm"
+  selected_checkpoint_fingerprint%limiter = "mc"
+  selected_checkpoint_fingerprint%prolongation_method = "linear"
+  selected_checkpoint_fingerprint%embedded_wall_kind = "slip_wall"
+  selected_checkpoint_fingerprint%embedded_wall_thermal = "adiabatic"
+  selected_checkpoint_fingerprint%mesh_and_regrid = [ &
+    root_nx, root_ny, 6, ratio, 0, 0, 0, 0, 0, 0]
+  selected_checkpoint_fingerprint%physics_and_regrid_flags = 0
+  selected_checkpoint_fingerprint%domain = [ &
+    0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp]
+  selected_checkpoint_fingerprint%geometry_parameters = 0.0_dp
+  selected_checkpoint_fingerprint%numerical_controls = 0.0_dp
+  selected_checkpoint_fingerprint%embedded_wall_values = 0.0_dp
+  selected_checkpoint_fingerprint%embedded_wall_values(1) = 300.0_dp
+  call require(selected_checkpoint_fingerprint%is_valid(), &
+    "selected EB patch-tree checkpoint fingerprint")
+  allocate(selected_checkpoint_initial_integrals(nvar))
+  call composite_integral_reactive_amr_eb_patch_tree_2d( &
+    reactive_tree, selected_checkpoint_initial_integrals, ok)
+  call require(ok, "selected EB patch-tree checkpoint baseline")
+  selected_checkpoint_composition = mole_fractions
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, fingerprint=selected_checkpoint_fingerprint, &
+    minimum_transport_theta=0.625_dp, &
+    initial_integrals=selected_checkpoint_initial_integrals, &
+    chemistry_level_advances=checkpoint_chemistry_advances, &
+    transport_level_advances=checkpoint_transport_advances, &
+    hydro_level_advances=checkpoint_hydro_advances, &
+    regrid_evaluations=4, cumulative_tagged_cells=37, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(ok, "selected EB patch-tree schema-9 checkpoint write")
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint, &
+    minimum_transport_theta=checkpoint_minimum_transport_theta, &
+    initial_integrals=restored_checkpoint_initial_integrals, &
+    chemistry_level_advances=restored_checkpoint_chemistry_advances, &
+    transport_level_advances=restored_checkpoint_transport_advances, &
+    hydro_level_advances=restored_checkpoint_hydro_advances, &
+    regrid_evaluations=checkpoint_regrid_evaluations, &
+    cumulative_tagged_cells=checkpoint_tagged_cells, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(ok .and. checkpoint_tree%is_valid() .and. &
+    reactive_tree_solutions_close( &
+      checkpoint_tree, reactive_tree, 8.0e-12_dp) .and. &
+    all(restored_checkpoint_initial_integrals == &
+      selected_checkpoint_initial_integrals), &
+    "selected EB patch-tree schema-9 checkpoint round trip")
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
+    "fixed reader rejects selected EB patch-tree schema-9")
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint, &
+    bundle_sha256= &
+      "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
+    "selected EB patch-tree bundle mismatch rejection")
+  selected_checkpoint_composition(1) = &
+    selected_checkpoint_composition(1) + 1.0e-6_dp
+  selected_checkpoint_composition(2) = &
+    selected_checkpoint_composition(2) - 1.0e-6_dp
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
+    "selected EB patch-tree composition mismatch rejection")
+  selected_checkpoint_composition = mole_fractions
+  selected_checkpoint_initial_integrals( &
+    reactive_species_component(1)) = &
+      selected_checkpoint_initial_integrals( &
+        reactive_species_component(1)) + 0.125_dp
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, fingerprint=selected_checkpoint_fingerprint, &
+    minimum_transport_theta=0.625_dp, &
+    initial_integrals=selected_checkpoint_initial_integrals, &
+    chemistry_level_advances=checkpoint_chemistry_advances, &
+    transport_level_advances=checkpoint_transport_advances, &
+    hydro_level_advances=checkpoint_hydro_advances, &
+    regrid_evaluations=4, cumulative_tagged_cells=37, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(.not. ok, &
+    "selected EB patch-tree invalid baseline write rejection")
+  selected_checkpoint_initial_integrals( &
+    reactive_species_component(1)) = &
+      selected_checkpoint_initial_integrals( &
+        reactive_species_component(1)) - 0.125_dp
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(ok .and. checkpoint_tree%is_valid(), &
+    "invalid selected EB write preserves prior checkpoint")
+  call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, reactive_tree, 0.125_dp, 5, 2, &
+    0.01_dp, ok, fingerprint=selected_checkpoint_fingerprint)
+  call require(ok, "fixed schema-8 checkpoint after selected gates")
+  call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
+    tree_checkpoint_path, species, 6, checkpoint_tree, checkpoint_time, &
+    checkpoint_steps, checkpoint_regrids, checkpoint_minimum_dt, ok, &
+    fingerprint=selected_checkpoint_fingerprint, &
+    bundle_sha256= &
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &
+    chemistry_integrator="explicit", &
+    base_mole_fractions=selected_checkpoint_composition)
+  call require(.not. ok .and. .not. checkpoint_tree%is_valid(), &
+    "selected reader rejects fixed EB patch-tree schema-8")
 
   call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
     tree_checkpoint_path, species, reactive_tree, 0.125_dp, 0, 0, &
@@ -1285,79 +1524,6 @@ contains
     plan%coarse_j_upper = j_upper
     plan%geometry = geometry
   end subroutine set_tree_child_plan
-
-  subroutine build_patch_geometry( &
-      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, child_geometry, patch, valid)
-    type(eb_geometry_2d), intent(in) :: parent_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: child_geometry
-    type(amr_eb_patch_2d), intent(out) :: patch
-    logical, intent(out) :: valid
-
-    real(dp), allocatable :: level_set(:, :)
-    real(dp) :: x_lower, x_upper, y_lower, y_upper, local_x, local_y
-    integer :: nx, ny, local_i, local_j
-
-    nx = (i_upper - i_lower + 1) * refinement_ratio
-    ny = (j_upper - j_lower + 1) * refinement_ratio
-    x_lower = parent_geometry%x_lower + real(i_lower - 1, dp) * &
-      parent_geometry%dx
-    x_upper = parent_geometry%x_lower + real(i_upper, dp) * &
-      parent_geometry%dx
-    y_lower = parent_geometry%y_lower + real(j_lower - 1, dp) * &
-      parent_geometry%dy
-    y_upper = parent_geometry%y_lower + real(j_upper, dp) * &
-      parent_geometry%dy
-    allocate(level_set(0:nx, 0:ny))
-    do local_j = 0, ny
-      local_y = y_lower + real(local_j, dp) * &
-        (y_upper - y_lower) / real(ny, dp)
-      do local_i = 0, nx
-        local_x = x_lower + real(local_i, dp) * &
-          (x_upper - x_lower) / real(nx, dp)
-        level_set(local_i, local_j) = local_x + local_y - 0.78_dp
-      end do
-    end do
-    call build_eb_geometry_2d( &
-      level_set, x_lower, x_upper, y_lower, y_upper, child_geometry, valid)
-    if (.not. valid) return
-    call build_amr_eb_patch_2d( &
-      parent_geometry, child_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, patch, valid)
-  end subroutine build_patch_geometry
-
-  subroutine build_tagged_tree_geometry( &
-      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, child_geometry, valid)
-    type(eb_geometry_2d), intent(in) :: parent_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: child_geometry
-    logical, intent(out) :: valid
-
-    type(amr_eb_patch_2d) :: scratch_patch
-
-    call build_patch_geometry( &
-      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, child_geometry, scratch_patch, valid)
-  end subroutine build_tagged_tree_geometry
-
-  subroutine reject_tagged_tree_geometry( &
-      parent_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, child_geometry, valid)
-    type(eb_geometry_2d), intent(in) :: parent_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: child_geometry
-    logical, intent(out) :: valid
-
-    child_geometry = eb_geometry_2d()
-    valid = parent_geometry%is_valid() .and. i_lower <= i_upper .and. &
-      j_lower <= j_upper .and. refinement_ratio >= 2
-    valid = .false.
-  end subroutine reject_tagged_tree_geometry
 
   logical function reactive_tree_solutions_match(first, second) &
       result(matches)

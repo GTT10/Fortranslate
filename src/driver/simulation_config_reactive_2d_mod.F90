@@ -1,8 +1,15 @@
 module simulation_config_reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use selected_composition_mod, only: &
+    selected_composition_max_species, selected_composition_name_length, &
+    validate_selected_composition_fields, resolve_selected_composition
   implicit none
   private
+
+  integer, parameter, public :: reactive_2d_max_species = &
+    selected_composition_max_species
 
   type, public :: reactive_2d_config
     integer :: nx = 32
@@ -47,10 +54,14 @@ module simulation_config_reactive_2d_mod
     character(len=24) :: wall_species_x_upper = "impermeable"
     character(len=24) :: wall_species_y_lower = "impermeable"
     character(len=24) :: wall_species_y_upper = "impermeable"
-    real(dp) :: prescribed_species_flux_x_lower(10) = 0.0_dp
-    real(dp) :: prescribed_species_flux_x_upper(10) = 0.0_dp
-    real(dp) :: prescribed_species_flux_y_lower(10) = 0.0_dp
-    real(dp) :: prescribed_species_flux_y_upper(10) = 0.0_dp
+    real(dp) :: &
+      prescribed_species_flux_x_lower(reactive_2d_max_species) = 0.0_dp
+    real(dp) :: &
+      prescribed_species_flux_x_upper(reactive_2d_max_species) = 0.0_dp
+    real(dp) :: &
+      prescribed_species_flux_y_lower(reactive_2d_max_species) = 0.0_dp
+    real(dp) :: &
+      prescribed_species_flux_y_upper(reactive_2d_max_species) = 0.0_dp
     logical :: ppm_contact_steepening = .false.
     logical :: ppm_shock_flattening = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -82,11 +93,17 @@ module simulation_config_reactive_2d_mod
     real(dp) :: x_h2o2 = 0.0_dp
     real(dp) :: x_ar = 0.0_dp
     real(dp) :: x_n2 = 0.55643_dp
+    integer :: composition_count = 0
+    character(len=selected_composition_name_length) :: &
+      composition_species(reactive_2d_max_species) = ""
+    real(dp) :: &
+      composition_mole_fractions(reactive_2d_max_species) = 0.0_dp
     character(len=256) :: output_file = "reactive_2d.csv"
   end type reactive_2d_config
 
   public :: read_reactive_2d_configuration
   public :: reactive_2d_mole_fractions
+  public :: resolve_reactive_2d_selected_composition
 
 contains
 
@@ -139,11 +156,13 @@ contains
     end select
   end function valid_wall_species_flux
 
-  subroutine read_reactive_2d_configuration(path, config, ok, message)
+  subroutine read_reactive_2d_configuration( &
+      path, config, ok, message, allow_selected)
     character(len=*), intent(in) :: path
     type(reactive_2d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    logical, intent(in), optional :: allow_selected
 
     integer :: nx, ny, maximum_steps, unit, status, active_nspecies
     real(dp) :: x_lower, x_upper, y_lower, y_upper, final_time, cfl
@@ -153,10 +172,10 @@ contains
     real(dp) :: wall_temperature_y_lower, wall_temperature_y_upper
     real(dp) :: wall_velocity_x_lower(3), wall_velocity_x_upper(3)
     real(dp) :: wall_velocity_y_lower(3), wall_velocity_y_upper(3)
-    real(dp) :: prescribed_species_flux_x_lower(10)
-    real(dp) :: prescribed_species_flux_x_upper(10)
-    real(dp) :: prescribed_species_flux_y_lower(10)
-    real(dp) :: prescribed_species_flux_y_upper(10)
+    real(dp) :: prescribed_species_flux_x_lower(reactive_2d_max_species)
+    real(dp) :: prescribed_species_flux_x_upper(reactive_2d_max_species)
+    real(dp) :: prescribed_species_flux_y_lower(reactive_2d_max_species)
+    real(dp) :: prescribed_species_flux_y_upper(reactive_2d_max_species)
     real(dp) :: initial_temperature, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y
     real(dp) :: density_wave_amplitude, composition_wave_amplitude
@@ -167,6 +186,10 @@ contains
     real(dp) :: second_hotspot_temperature_rise
     real(dp) :: second_hotspot_center_x, second_hotspot_center_y
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2, mole_sum
+    real(dp) :: composition_mole_fractions(reactive_2d_max_species)
+    integer :: composition_count
+    character(len=selected_composition_name_length) :: &
+      composition_species(reactive_2d_max_species)
     character(len=32) :: problem, reconstruction, riemann_solver, limiter
     character(len=32) :: chemistry_model
     character(len=24) :: boundary_x_lower, boundary_x_upper
@@ -181,7 +204,7 @@ contains
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled
     logical :: ppm_contact_steepening, ppm_shock_flattening
-    logical :: has_prescribed_species_wall
+    logical :: has_prescribed_species_wall, selected_allowed, selected_model
     namelist /reactive_2d/ &
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
@@ -208,7 +231,8 @@ contains
       hotspot_width, second_hotspot_temperature_rise, &
       second_hotspot_center_x, second_hotspot_center_y, &
       x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
-      x_ar, x_n2, output_file
+      x_ar, x_n2, composition_count, composition_species, &
+      composition_mole_fractions, output_file
 
     config = reactive_2d_config()
     nx = config%nx
@@ -289,7 +313,12 @@ contains
     x_h2o2 = config%x_h2o2
     x_ar = config%x_ar
     x_n2 = config%x_n2
+    composition_count = config%composition_count
+    composition_species = config%composition_species
+    composition_mole_fractions = config%composition_mole_fractions
     output_file = config%output_file
+    selected_allowed = .false.
+    if (present(allow_selected)) selected_allowed = allow_selected
 
     message = ""
     open(newunit=unit, file=trim(path), status="old", action="read", &
@@ -307,7 +336,9 @@ contains
       return
     end if
 
-    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + x_h2o2 + x_ar + x_n2
+    selected_model = trim(chemistry_model) == "selected"
+    mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + &
+      x_h2o2 + x_ar + x_n2
     ok = nx >= 4 .and. ny >= 4 .and. maximum_steps >= 1 .and. &
       x_upper > x_lower .and. y_upper > y_lower .and. final_time > 0.0_dp .and. &
       cfl > 0.0_dp .and. cfl <= 0.8_dp .and. initial_temperature > 0.0_dp .and. &
@@ -320,20 +351,30 @@ contains
       min(wall_temperature_x_lower, wall_temperature_x_upper, &
         wall_temperature_y_lower, wall_temperature_y_upper) > 0.0_dp .and. &
       transport_cfl <= 0.5_dp .and. chemistry_relative_tolerance > 0.0_dp .and. &
-      chemistry_absolute_tolerance > 0.0_dp .and. &
-      min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, x_ar, x_n2) >= 0.0_dp .and. &
-      abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+      chemistry_absolute_tolerance > 0.0_dp
+    if (ok .and. .not. selected_model) then
+      ok = min(x_h2, x_h, x_o, x_o2, x_oh, x_h2o, x_ho2, x_h2o2, &
+        x_ar, x_n2) >= 0.0_dp .and. &
+        abs(mole_sum - 1.0_dp) <= 5.0e-10_dp
+    end if
     if (.not. ok) then
       message = "Invalid reactive 2D configuration"
       return
     end if
     if (trim(chemistry_model) /= "elementary" .and. &
-        trim(chemistry_model) /= "full_h2o2") then
+        trim(chemistry_model) /= "full_h2o2" .and. &
+        .not. (selected_model .and. selected_allowed)) then
       ok = .false.
       message = "Unknown reactive 2D chemistry model"
       return
     end if
-    if (trim(chemistry_model) == "elementary") then
+    if (selected_model) then
+      call validate_selected_composition_fields( &
+        "Reactive 2D", composition_count, composition_species, &
+        composition_mole_fractions, ok, message)
+      if (.not. ok) return
+      active_nspecies = reactive_2d_max_species
+    else if (trim(chemistry_model) == "elementary") then
       active_nspecies = 7
     else
       active_nspecies = 10
@@ -390,7 +431,8 @@ contains
       message = "Unknown reactive 2D problem"
       return
     end if
-    if (trim(problem) == "diagonal_composition_wave" .and. &
+    if (.not. selected_model .and. &
+        trim(problem) == "diagonal_composition_wave" .and. &
         composition_wave_amplitude > min(x_h2, x_n2)) then
       ok = .false.
       message = "Reactive 2D composition-wave amplitude exceeds H2/N2 base fraction"
@@ -514,6 +556,9 @@ contains
     config%x_h2o2 = x_h2o2
     config%x_ar = x_ar
     config%x_n2 = x_n2
+    config%composition_count = composition_count
+    config%composition_species = composition_species
+    config%composition_mole_fractions = composition_mole_fractions
     config%output_file = trim(output_file)
   end subroutine read_reactive_2d_configuration
 
@@ -542,5 +587,53 @@ contains
     ok = minval(mole_fractions) >= 0.0_dp .and. &
       abs(sum(mole_fractions) - 1.0_dp) <= 5.0e-10_dp
   end subroutine reactive_2d_mole_fractions
+
+
+  subroutine resolve_reactive_2d_selected_composition( &
+      config, species, mole_fractions, ok, message)
+    type(reactive_2d_config), intent(in) :: config
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(out) :: mole_fractions(:)
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+
+    mole_fractions = 0.0_dp
+    if (trim(config%chemistry_model) /= "selected") then
+      ok = .false.
+      message = &
+        "Reactive 2D selected composition requires chemistry_model='selected'"
+      return
+    end if
+    call resolve_selected_composition( &
+      "Reactive 2D", config%composition_count, config%composition_species, &
+      config%composition_mole_fractions, species, mole_fractions, ok, message)
+    if (.not. ok) return
+    if (.not. valid_wall_species_flux( &
+          config%wall_species_x_lower, config%boundary_x_lower, &
+          config%prescribed_species_flux_x_lower, size(species)) .or. &
+        .not. valid_wall_species_flux( &
+          config%wall_species_x_upper, config%boundary_x_upper, &
+          config%prescribed_species_flux_x_upper, size(species)) .or. &
+        .not. valid_wall_species_flux( &
+          config%wall_species_y_lower, config%boundary_y_lower, &
+          config%prescribed_species_flux_y_lower, size(species)) .or. &
+        .not. valid_wall_species_flux( &
+          config%wall_species_y_upper, config%boundary_y_upper, &
+          config%prescribed_species_flux_y_upper, size(species))) then
+      ok = .false.
+      message = "Invalid selected reactive 2D wall species flux"
+      return
+    end if
+    if (trim(config%problem) == "diagonal_composition_wave" .and. &
+        config%composition_wave_amplitude > &
+          min(mole_fractions(1), mole_fractions(size(species)))) then
+      ok = .false.
+      message = &
+        "Composition-wave amplitude exceeds the selected endpoint fractions"
+      return
+    end if
+    message = ""
+    ok = .true.
+  end subroutine resolve_reactive_2d_selected_composition
 
 end module simulation_config_reactive_2d_mod

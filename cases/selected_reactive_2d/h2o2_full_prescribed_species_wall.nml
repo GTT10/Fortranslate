@@ -1,0 +1,40 @@
+&reactive_2d
+  nx = 8
+  ny = 8
+  x_lower = 0.0
+  x_upper = 0.004
+  y_lower = 0.0
+  y_upper = 0.004
+  final_time = 5.0e-7
+  cfl = 0.20
+  maximum_steps = 20000
+  problem = "uniform_reactor"
+  reconstruction = "pcm"
+  riemann_solver = "hllc"
+  limiter = "mc"
+  use_transverse_correction = .false.
+  chemistry_enabled = .false.
+  chemistry_model = "selected"
+  transport_enabled = .true.
+  viscosity_enabled = .false.
+  thermal_conduction_enabled = .false.
+  species_diffusion_enabled = .true.
+  barodiffusion_enabled = .false.
+  transport_cfl = 0.35
+  boundary_x_lower = "periodic"
+  boundary_x_upper = "periodic"
+  boundary_y_lower = "slip_wall"
+  boundary_y_upper = "slip_wall"
+  wall_species_y_lower = "prescribed"
+  prescribed_species_flux_y_lower = 0.05, 0.0, 0.0, -0.05
+  initial_temperature = 1000.0
+  initial_pressure = 101325.0
+  initial_velocity_x = 0.0
+  initial_velocity_y = 0.0
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  output_file = "selected_full_h2o2_prescribed_species_wall_2d.csv"
+/

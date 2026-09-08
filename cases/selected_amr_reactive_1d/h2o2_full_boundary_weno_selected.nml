@@ -1,0 +1,41 @@
+&reactive_1d
+  nx = 24
+  maximum_steps = 100
+  x_lower = 0.0
+  x_upper = 0.012
+  final_time = 1.0e-7
+  cfl = 0.20
+  problem = "reactive_hotspot"
+  reconstruction = "pcm"
+  riemann_solver = "rusanov"
+  limiter = "mc"
+  boundary_condition = "outflow"
+  chemistry_enabled = .false.
+  chemistry_model = "selected"
+  transport_enabled = .false.
+  initial_temperature = 1200.0
+  initial_pressure = 101325.0
+  initial_velocity = 0.0
+  hotspot_temperature_rise = 250.0
+  hotspot_center = 0.0
+  hotspot_width = 0.0012
+  composition_count = 10
+  composition_species = "N2", "H2O2", "H2", "AR", "O2", "H", "O",
+    "OH", "H2O", "HO2"
+  composition_mole_fractions = 0.55643, 0.0, 0.29570, 0.0, 0.14784,
+    1.0e-5, 1.0e-5, 1.0e-5, 0.0, 0.0
+  amr_enabled = .true.
+  amr_reconstruction = "characteristic_ppm"
+  amr_hybrid_weno = .true.
+  amr_weno_scheme = 2
+  amr_refinement_ratio = 2
+  amr_max_levels = 3
+  amr_regrid_interval = 1
+  amr_tag_component = 1
+  amr_buffer_cells = 1
+  amr_minimum_patch_cells = 6
+  amr_relative_gradient_threshold = 0.005
+  amr_absolute_gradient_threshold = 0.0
+  amr_scale_floor = 1.0e-12
+  output_file = "selected_full_h2o2_amr_boundary_weno.csv"
+/

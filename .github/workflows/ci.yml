@@ -7,9 +7,17 @@ on:
       - agent/**
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: serial-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +27,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Record source identity
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          git rev-parse HEAD^{tree} > evidence/source-tree.txt
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+          gfortran --version > evidence/fortran-version.txt
+          cmake --version > evidence/cmake-version.txt
+
       - name: Check preinstalled toolchain
         run: |
           gfortran --version
@@ -27,7 +44,9 @@ jobs:
           python3 -m pip --version
 
       - name: Install Cantera reference package
-        run: python3 -m pip install --break-system-packages cantera==3.2.0
+        run: |
+          python3 -m pip install --break-system-packages cantera==3.2.0
+          python3 -m pip freeze > evidence/python-packages.txt
 
       - name: Configure
         run: >-
@@ -37,7 +56,7 @@ jobs:
           -DPELEF_ENABLE_CANTERA_REFERENCE=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel 2
 
       - name: Test reactive EB AMR core gate
         run: >-
@@ -58,4 +77,17 @@ jobs:
           --output-on-failure
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel 2
+          --output-junit ${{ github.workspace }}/evidence/ctest-results.xml
+
+      - name: Preserve serial validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-${{ matrix.build_type }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/
+            build/CMakeCache.txt
+            build/Testing/Temporary/LastTest.log
+          retention-days: 30

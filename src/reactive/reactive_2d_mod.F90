@@ -7,7 +7,7 @@ module reactive_2d_mod
   use mixture_thermo_mod, only: &
     mass_fractions_from_mole_fractions, mixture_density
   use elementary_kinetics_mod, only: elementary_reaction
-  use transport_database_mod, only: gas_transport_species
+  use gas_transport_mod, only: gas_transport_species
   use reactive_transport_2d_mod, only: &
     reactive_transport_timestep_2d, advance_reactive_transport_2d
   use constant_volume_reactor_mod, only: advance_constant_volume_adaptive, &
@@ -27,7 +27,7 @@ module reactive_2d_mod
     reactive_ppm_flattening_coefficient, &
     reactive_ppm_contact_steepening_factor, &
     reactive_ppm_apply_contact_steepening, &
-    build_characteristic_ppm_states
+    build_characteristic_ppm_states, resolve_reactive_chemistry_integrator
   implicit none
   private
 
@@ -327,11 +327,13 @@ contains
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: local_temperature, sound_speed, rate, maximum_rate
+    real(dp) :: speed_x, speed_y, rate_x, rate_y
     logical :: local_ok
     integer :: i, j
 
     dt = 0.0_dp
     ok = .false.
+    if (.not. all(ieee_is_finite([dx, dy, cfl]))) return
     if (size(state, 2) /= nx .or. size(state, 3) /= ny .or. &
         size(temperature, 1) /= nx .or. size(temperature, 2) /= ny .or. &
         nx < 2 .or. ny < 2 .or. dx <= 0.0_dp .or. dy <= 0.0_dp .or. &
@@ -344,14 +346,31 @@ contains
           species, state(:, i, j), temperature(i, j), primitive, &
           local_temperature, sound_speed, local_ok)
         if (.not. local_ok) return
-        rate = (abs(primitive(2)) + sound_speed) / dx + &
-          (abs(primitive(3)) + sound_speed) / dy
+        if (.not. all(ieee_is_finite([ &
+            primitive(2), primitive(3), sound_speed]))) return
+        if (sound_speed < 0.0_dp) return
+        if (abs(primitive(2)) > huge(1.0_dp) - sound_speed) return
+        if (abs(primitive(3)) > huge(1.0_dp) - sound_speed) return
+        speed_x = abs(primitive(2)) + sound_speed
+        speed_y = abs(primitive(3)) + sound_speed
+        if (dx < speed_x / huge(1.0_dp)) return
+        if (dy < speed_y / huge(1.0_dp)) return
+        rate_x = speed_x / dx
+        rate_y = speed_y / dy
+        if (.not. all(ieee_is_finite([rate_x, rate_y]))) return
+        if (rate_x > huge(1.0_dp) - rate_y) return
+        rate = rate_x + rate_y
+        if (.not. ieee_is_finite(rate)) return
         maximum_rate = max(maximum_rate, rate)
       end do
     end do
+    if (.not. ieee_is_finite(maximum_rate)) return
     if (maximum_rate <= 0.0_dp) return
+    if (maximum_rate < cfl / huge(1.0_dp)) return
     dt = cfl / maximum_rate
-    ok = ieee_is_finite(dt) .and. dt > 0.0_dp
+    if (.not. ieee_is_finite(dt)) return
+    if (dt <= 0.0_dp) return
+    ok = .true.
   end subroutine compute_reactive_cfl_timestep_2d
 
   subroutine apply_reactive_transverse_correction_2d( &
@@ -1188,7 +1207,7 @@ contains
 
   subroutine advance_reactive_chemistry_2d( &
       species, reactions, state, temperature, nx, ny, interval, rtol, atol, &
-      ok, active_mask)
+      ok, active_mask, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
@@ -1196,6 +1215,7 @@ contains
     real(dp), intent(in) :: interval, rtol, atol
     logical, intent(out) :: ok
     logical, intent(in), optional :: active_mask(:, :)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp), allocatable :: primitive(:), mass_fractions(:)
     real(dp), allocatable :: candidate_state(:, :, :)
@@ -1203,14 +1223,17 @@ contains
     real(dp) :: rho, kinetic_density, target_energy
     real(dp) :: elapsed, request, accepted, next_step, tolerance
     real(dp) :: checked_temperature, sound_speed
-    logical :: local_ok
+    logical :: local_ok, use_implicit
     integer :: i, j, k, substeps, nspecies, newton_iterations, rejected_attempts
 
     ok = .false.
     nspecies = size(species)
-    if (.not. ieee_is_finite(interval) .or. .not. ieee_is_finite(rtol) .or. &
-        .not. ieee_is_finite(atol) .or. interval < 0.0_dp .or. &
-        rtol <= 0.0_dp .or. atol <= 0.0_dp .or. nx < 1 .or. ny < 1 .or. &
+    call resolve_reactive_chemistry_integrator( &
+      nspecies, chemistry_integrator, use_implicit, local_ok)
+    if (.not. local_ok) return
+    if (.not. all(ieee_is_finite([interval, rtol, atol]))) return
+    if (interval < 0.0_dp .or. rtol <= 0.0_dp .or. atol <= 0.0_dp .or. &
+        nx < 1 .or. ny < 1 .or. &
         size(state, 1) /= reactive_nvar(nspecies) .or. &
         size(state, 2) /= nx .or. size(state, 3) /= ny .or. &
         any(shape(temperature) /= [nx, ny])) return
@@ -1251,7 +1274,7 @@ contains
         do while (elapsed < interval - tolerance)
           if (substeps >= max_chemistry_substeps) return
           request = min(request, interval - elapsed)
-          if (nspecies == 10) then
+          if (use_implicit) then
             call advance_constant_volume_implicit_adaptive( &
               species, reactions, rho, target_energy, request, rtol, atol, &
               mass_fractions, candidate_temperature(i, j), accepted, &
@@ -1295,7 +1318,7 @@ contains
       ppm_contact_steepening, ppm_shock_flattening, transport, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, boundaries)
+      minimum_transport_theta, boundaries, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :), temperature(:, :)
@@ -1314,6 +1337,7 @@ contains
     logical, intent(in), optional :: barodiffusion_enabled
     real(dp), intent(out), optional :: minimum_transport_theta
     type(reactive_boundary_set_2d), intent(in), optional :: boundaries
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     logical :: local_ok, use_contact_steepening, use_shock_flattening
     logical :: use_transport, use_viscosity, use_conduction, use_diffusion
@@ -1346,7 +1370,7 @@ contains
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, state, temperature, nx, ny, 0.5_dp * dt, &
-        rtol, atol, local_ok)
+        rtol, atol, local_ok, chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) return
     end if
     if (use_transport) then
@@ -1394,7 +1418,7 @@ contains
     if (chemistry_enabled) then
       call advance_reactive_chemistry_2d( &
         species, reactions, state, temperature, nx, ny, 0.5_dp * dt, &
-        rtol, atol, local_ok)
+        rtol, atol, local_ok, chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) return
     end if
     if (present(minimum_transverse_theta)) minimum_transverse_theta = theta
@@ -1425,12 +1449,14 @@ contains
   end function reactive_diagonal_wave_density
 
   subroutine reactive_diagonal_composition_wave_exact( &
-      species, x, y, time, config, density, mass_fractions, ok)
+      species, x, y, time, config, density, mass_fractions, ok, &
+      base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: x, y, time
     type(reactive_2d_config), intent(in) :: config
     real(dp), intent(out) :: density, mass_fractions(:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     real(dp), allocatable :: mole_fractions(:)
     real(dp) :: phase, lx, ly
@@ -1447,8 +1473,18 @@ contains
       (x - config%x_lower - config%initial_velocity_x * time) / lx + &
       (y - config%y_lower - config%initial_velocity_y * time) / ly))
     allocate(mole_fractions(size(species)))
-    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
-    if (.not. local_ok) return
+    if (present(base_mole_fractions)) then
+      local_ok = size(base_mole_fractions) == size(species) .and. &
+        all(ieee_is_finite(base_mole_fractions)) .and. &
+        all(base_mole_fractions >= 0.0_dp) .and. &
+        abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+      if (.not. local_ok) return
+      mole_fractions = base_mole_fractions
+    else
+      call reactive_2d_mole_fractions( &
+        config, size(species), mole_fractions, local_ok)
+      if (.not. local_ok) return
+    end if
     mole_fractions(1) = mole_fractions(1) + &
       config%composition_wave_amplitude * phase
     mole_fractions(size(species)) = mole_fractions(size(species)) - &
@@ -1462,12 +1498,14 @@ contains
   end subroutine reactive_diagonal_composition_wave_exact
 
   subroutine initialize_reactive_2d( &
-      species, config, state, temperature, dx, dy, base_density, ok)
+      species, config, state, temperature, dx, dy, base_density, ok, &
+      base_mole_fractions)
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: state(:, :, :), temperature(:, :)
     real(dp), intent(out) :: dx, dy, base_density
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: base_mole_fractions(:)
 
     real(dp), allocatable :: mole_fractions(:), mass_fractions(:), primitive(:)
     real(dp), allocatable :: local_mass_fractions(:)
@@ -1487,8 +1525,18 @@ contains
     allocate(mole_fractions(size(species)), mass_fractions(size(species)))
     allocate(local_mass_fractions(size(species)))
     allocate(primitive(nprimitive))
-    call reactive_2d_mole_fractions(config, size(species), mole_fractions, local_ok)
-    if (.not. local_ok) return
+    if (present(base_mole_fractions)) then
+      local_ok = size(base_mole_fractions) == size(species) .and. &
+        all(ieee_is_finite(base_mole_fractions)) .and. &
+        all(base_mole_fractions >= 0.0_dp) .and. &
+        abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
+      if (.not. local_ok) return
+      mole_fractions = base_mole_fractions
+    else
+      call reactive_2d_mole_fractions( &
+        config, size(species), mole_fractions, local_ok)
+      if (.not. local_ok) return
+    end if
     call mass_fractions_from_mole_fractions( &
       species, mole_fractions, mass_fractions, local_ok)
     if (.not. local_ok) return
@@ -1511,7 +1559,8 @@ contains
           rho = reactive_diagonal_wave_density(x, y, 0.0_dp, config, base_density)
         case ("diagonal_composition_wave")
           call reactive_diagonal_composition_wave_exact( &
-            species, x, y, 0.0_dp, config, rho, local_mass_fractions, local_ok)
+            species, x, y, 0.0_dp, config, rho, local_mass_fractions, &
+            local_ok, base_mole_fractions)
           if (.not. local_ok) return
         case ("reactive_vortex")
           rx = periodic_displacement( &
@@ -1659,7 +1708,8 @@ contains
   subroutine simulate_reactive_2d( &
       species, reactions, config, state, temperature, dx, dy, time, steps, &
       initial_integrals, final_integrals, minimum_transverse_theta, &
-      base_density, ok, transport, minimum_transport_theta)
+      base_density, ok, transport, minimum_transport_theta, &
+      base_mole_fractions, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_2d_config), intent(in) :: config
@@ -1671,6 +1721,8 @@ contains
     logical, intent(out) :: ok
     type(gas_transport_species), intent(in), optional :: transport(:)
     real(dp), intent(out), optional :: minimum_transport_theta
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    character(len=*), intent(in), optional :: chemistry_integrator
 
     real(dp) :: dt, step_theta, transport_dt, maximum_diffusivity
     real(dp) :: step_transport_theta, local_minimum_transport_theta
@@ -1678,12 +1730,14 @@ contains
     type(reactive_boundary_set_2d) :: boundaries
 
     call initialize_reactive_2d( &
-      species, config, state, temperature, dx, dy, base_density, local_ok)
+      species, config, state, temperature, dx, dy, base_density, local_ok, &
+      base_mole_fractions)
     if (.not. local_ok) then
       ok = .false.
       return
     end if
-    call build_reactive_boundary_set_2d(species, config, boundaries, local_ok)
+    call build_reactive_boundary_set_2d( &
+      species, config, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) then
       ok = .false.
       return
@@ -1733,7 +1787,8 @@ contains
           config%ppm_contact_steepening, config%ppm_shock_flattening, &
           transport, config%transport_enabled, config%viscosity_enabled, &
           config%thermal_conduction_enabled, config%species_diffusion_enabled, &
-          config%barodiffusion_enabled, step_transport_theta, boundaries)
+          config%barodiffusion_enabled, step_transport_theta, boundaries, &
+          chemistry_integrator=chemistry_integrator)
       else
         call advance_reactive_strang_2d( &
         species, reactions, state, temperature, config%nx, config%ny, &
@@ -1742,7 +1797,7 @@ contains
         config%chemistry_enabled, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, local_ok, step_theta, &
         config%ppm_contact_steepening, config%ppm_shock_flattening, &
-        boundaries=boundaries)
+          boundaries=boundaries, chemistry_integrator=chemistry_integrator)
         step_transport_theta = 1.0_dp
       end if
       if (.not. local_ok) then

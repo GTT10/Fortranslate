@@ -1,3 +1,92 @@
+module pelef_mpi_eb_amr_patch_geometry_mod
+  use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d, build_eb_geometry_2d
+  use amr_eb_hierarchy_2d_mod, only: &
+    amr_eb_patch_2d, build_amr_eb_patch_2d
+  implicit none
+  private
+
+  integer, public :: failing_geometry_calls = 0
+
+  public :: build_patch_geometry
+  public :: build_scheduled_patch_geometry
+  public :: reject_scheduled_patch_geometry
+
+contains
+
+  subroutine build_scheduled_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    logical, intent(out) :: valid
+
+    type(amr_eb_patch_2d) :: local_patch
+
+    call build_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, local_patch, valid)
+  end subroutine build_scheduled_patch_geometry
+
+  subroutine reject_scheduled_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, valid)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    logical, intent(out) :: valid
+
+    failing_geometry_calls = failing_geometry_calls + 1
+    fine_geometry = eb_geometry_2d()
+    valid = root_geometry%is_valid() .and. i_lower <= i_upper .and. &
+      j_lower <= j_upper .and. refinement_ratio >= 2 .and. .false.
+  end subroutine reject_scheduled_patch_geometry
+
+  subroutine build_patch_geometry( &
+      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
+      fine_geometry, patch, valid)
+    type(eb_geometry_2d), intent(in) :: root_geometry
+    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
+    integer, intent(in) :: refinement_ratio
+    type(eb_geometry_2d), intent(out) :: fine_geometry
+    type(amr_eb_patch_2d), intent(out) :: patch
+    logical, intent(out) :: valid
+
+    real(dp), allocatable :: level_set(:, :)
+    real(dp) :: x_lower, x_upper, y_lower, y_upper, local_x, local_y
+    integer :: fine_nx, fine_ny, local_i, local_j
+
+    fine_nx = (i_upper - i_lower + 1) * refinement_ratio
+    fine_ny = (j_upper - j_lower + 1) * refinement_ratio
+    x_lower = root_geometry%x_lower + real(i_lower - 1, dp) * &
+      root_geometry%dx
+    x_upper = root_geometry%x_lower + real(i_upper, dp) * root_geometry%dx
+    y_lower = root_geometry%y_lower + real(j_lower - 1, dp) * &
+      root_geometry%dy
+    y_upper = root_geometry%y_lower + real(j_upper, dp) * root_geometry%dy
+    allocate(level_set(0:fine_nx, 0:fine_ny))
+    do local_j = 0, fine_ny
+      local_y = y_lower + real(local_j, dp) * &
+        (y_upper - y_lower) / real(fine_ny, dp)
+      do local_i = 0, fine_nx
+        local_x = x_lower + real(local_i, dp) * &
+          (x_upper - x_lower) / real(fine_nx, dp)
+        level_set(local_i, local_j) = local_x + local_y - 0.78_dp
+      end do
+    end do
+    call build_eb_geometry_2d( &
+      level_set, x_lower, x_upper, y_lower, y_upper, fine_geometry, valid)
+    if (.not. valid) return
+    call build_amr_eb_patch_2d( &
+      root_geometry, fine_geometry, i_lower, i_upper, j_lower, j_upper, &
+      refinement_ratio, patch, valid)
+  end subroutine build_patch_geometry
+
+end module pelef_mpi_eb_amr_patch_geometry_mod
+
 program pelef_mpi_eb_amr_patch_2d
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -74,6 +163,9 @@ program pelef_mpi_eb_amr_patch_2d
     write_sparse_owned_reactive_eb_patch_set_2d_checkpoint, &
     read_sparse_owned_reactive_eb_topology_2d_checkpoint, &
     write_sparse_owned_reactive_eb_patch_set_2d_csv
+  use pelef_mpi_eb_amr_patch_geometry_mod, only: &
+    failing_geometry_calls, build_patch_geometry, &
+    build_scheduled_patch_geometry, reject_scheduled_patch_geometry
   implicit none
 
   integer, parameter :: coarse_nx = 14, coarse_ny = 14, ratio = 2
@@ -277,7 +369,6 @@ program pelef_mpi_eb_amr_patch_2d
   integer :: scheduled_reference_evaluations, scheduled_regrids
   integer :: scheduled_reference_regrids, scheduled_timestep_transfers
   integer :: scheduled_regrid_transfers, global_scheduled_regrid_transfers
-  integer :: failing_geometry_calls
   integer :: inconsistent_exponent
   integer :: sparse_local_values, sparse_global_values
   integer :: sparse_expected_local_values, sparse_expected_global_values
@@ -3470,77 +3561,6 @@ contains
       if (.not. same) return
     end do
   end function same_patch_topology
-
-  subroutine build_scheduled_patch_geometry( &
-      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
-      fine_geometry, valid)
-    type(eb_geometry_2d), intent(in) :: root_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: fine_geometry
-    logical, intent(out) :: valid
-
-    type(amr_eb_patch_2d) :: local_patch
-
-    call build_patch_geometry( &
-      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
-      fine_geometry, local_patch, valid)
-  end subroutine build_scheduled_patch_geometry
-
-  subroutine reject_scheduled_patch_geometry( &
-      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
-      fine_geometry, valid)
-    type(eb_geometry_2d), intent(in) :: root_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: fine_geometry
-    logical, intent(out) :: valid
-
-    failing_geometry_calls = failing_geometry_calls + 1
-    fine_geometry = eb_geometry_2d()
-    valid = root_geometry%is_valid() .and. i_lower <= i_upper .and. &
-      j_lower <= j_upper .and. refinement_ratio >= 2 .and. .false.
-  end subroutine reject_scheduled_patch_geometry
-
-  subroutine build_patch_geometry( &
-      root_geometry, i_lower, i_upper, j_lower, j_upper, refinement_ratio, &
-      fine_geometry, patch, valid)
-    type(eb_geometry_2d), intent(in) :: root_geometry
-    integer, intent(in) :: i_lower, i_upper, j_lower, j_upper
-    integer, intent(in) :: refinement_ratio
-    type(eb_geometry_2d), intent(out) :: fine_geometry
-    type(amr_eb_patch_2d), intent(out) :: patch
-    logical, intent(out) :: valid
-
-    real(dp), allocatable :: level_set(:, :)
-    real(dp) :: x_lower, x_upper, y_lower, y_upper, local_x, local_y
-    integer :: fine_nx, fine_ny, local_i, local_j
-
-    fine_nx = (i_upper - i_lower + 1) * refinement_ratio
-    fine_ny = (j_upper - j_lower + 1) * refinement_ratio
-    x_lower = root_geometry%x_lower + real(i_lower - 1, dp) * &
-      root_geometry%dx
-    x_upper = root_geometry%x_lower + real(i_upper, dp) * root_geometry%dx
-    y_lower = root_geometry%y_lower + real(j_lower - 1, dp) * &
-      root_geometry%dy
-    y_upper = root_geometry%y_lower + real(j_upper, dp) * root_geometry%dy
-    allocate(level_set(0:fine_nx, 0:fine_ny))
-    do local_j = 0, fine_ny
-      local_y = y_lower + real(local_j, dp) * &
-        (y_upper - y_lower) / real(fine_ny, dp)
-      do local_i = 0, fine_nx
-        local_x = x_lower + real(local_i, dp) * &
-          (x_upper - x_lower) / real(fine_nx, dp)
-        level_set(local_i, local_j) = local_x + local_y - 0.78_dp
-      end do
-    end do
-    call build_eb_geometry_2d( &
-      level_set, x_lower, x_upper, y_lower, y_upper, fine_geometry, valid)
-    if (.not. valid) return
-    call build_amr_eb_patch_2d( &
-      root_geometry, fine_geometry, i_lower, i_upper, j_lower, j_upper, &
-      refinement_ratio, patch, valid)
-  end subroutine build_patch_geometry
 
   subroutine assert_all(condition, message, local_rank)
     logical, intent(in) :: condition

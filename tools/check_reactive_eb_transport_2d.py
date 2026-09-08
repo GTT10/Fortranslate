@@ -9,16 +9,21 @@ import math
 from pathlib import Path
 
 
-def load(path: Path) -> list[dict[str, str]]:
+def load(
+    path: Path, nx: int, ny: int, final_time: float
+) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
-    if len(rows) != 16 * 16:
-        raise AssertionError(f"{path.name}: expected 256 rows, got {len(rows)}")
+    if len(rows) != nx * ny:
+        raise AssertionError(
+            f"{path.name}: expected {nx * ny} rows, got {len(rows)}"
+        )
     species = [name for name in rows[0] if name.startswith("Y_")]
     for row in rows:
         if not all(math.isfinite(float(value)) for value in row.values()):
             raise AssertionError(f"{path.name}: nonfinite value")
-        if abs(float(row["time"]) - 2.0e-7) > 4.0e-20:
+        time_tolerance = max(4.0e-20, 2.0e-13 * abs(final_time))
+        if abs(float(row["time"]) - final_time) > time_tolerance:
             raise AssertionError(f"{path.name}: incorrect final time")
         if int(row["cell_type"]) != 0:
             if float(row["rho"]) <= 0.0 or float(row["temperature"]) <= 0.0:
@@ -33,14 +38,35 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--transport", required=True, type=Path)
+    parser.add_argument("--nx", type=int, default=16)
+    parser.add_argument("--ny", type=int, default=16)
+    parser.add_argument("--final-time", type=float, default=2.0e-7)
+    parser.add_argument("--allow-span-increase", action="store_true")
     args = parser.parse_args()
 
-    reference = load(args.reference)
-    transported = load(args.transport)
+    reference = load(args.reference, args.nx, args.ny, args.final_time)
+    transported = load(args.transport, args.nx, args.ny, args.final_time)
     if [row["cell_type"] for row in reference] != [
         row["cell_type"] for row in transported
     ]:
         raise AssertionError("EB classification changed")
+    state_columns = [
+        "rho",
+        "u",
+        "v",
+        "w",
+        "pressure",
+        "temperature",
+        "rhoE",
+        *(name for name in reference[0] if name.startswith("Y_")),
+    ]
+    for reference_row, transport_row in zip(reference, transported):
+        if int(reference_row["cell_type"]) == 0:
+            for name in state_columns:
+                if reference_row[name] != transport_row[name]:
+                    raise AssertionError(
+                        f"covered storage changed during transport: {name}"
+                    )
     active_reference = [
         float(row["temperature"])
         for row in reference
@@ -53,7 +79,10 @@ def main() -> None:
     ]
     reference_span = max(active_reference) - min(active_reference)
     transport_span = max(active_transport) - min(active_transport)
-    if not transport_span < reference_span - 1.0e-8:
+    if (
+        not args.allow_span_increase
+        and not transport_span < reference_span - 1.0e-8
+    ):
         raise AssertionError(
             f"thermal conduction did not reduce span: {transport_span} >= "
             f"{reference_span}"
