@@ -5,7 +5,7 @@ on:
   pull_request:
     paths:
       - 'src/les/**'
-      - 'tests/*les*'
+      - 'tests/**'
       - 'tools/*les*'
       - '.github/workflows/les-port.yml'
 permissions:
@@ -20,13 +20,21 @@ jobs:
           ref: bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8
           path: upstream
           persist-credentials: false
-      - name: Record exact reference
+      - uses: actions/checkout@v4
+        with:
+          repository: Pele-Suite/PelePhysics
+          ref: 6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b
+          path: physics
+          persist-credentials: false
+      - name: Record exact references
         run: |
           mkdir evidence
           git -C upstream rev-parse HEAD > evidence/commit.txt
           git -C upstream rev-parse HEAD^{tree} > evidence/tree.txt
           git -C upstream archive --format=tar.gz HEAD > evidence/pelec.tar.gz
-          sha256sum upstream/Source/LES.H upstream/Source/LES.cpp > evidence/les-sha256.txt
+          git -C physics rev-parse HEAD > evidence/physics-commit.txt
+          git -C physics archive --format=tar.gz HEAD Source/Utility/Filter license.txt > evidence/filter.tar.gz
+          sha256sum upstream/Source/LES.H upstream/Source/LES.cpp physics/Source/Utility/Filter/Filter.H physics/Source/Utility/Filter/Filter.cpp > evidence/les-sha256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: pelec-les-reference
