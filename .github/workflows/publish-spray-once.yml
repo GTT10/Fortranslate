@@ -26,7 +26,7 @@ jobs:
           assert hashlib.sha256(patch).hexdigest()=='7e86764267102716be78f59630df58ffc2c0e1111cb58c428aae99acb88a26e6'
           (pathlib.Path(os.environ['RUNNER_TEMP'])/'spray.patch').write_bytes(patch)
           PY
-      - name: Apply only to the pinned parent and publish a new feature branch
+      - name: Apply only to the pinned parent and publish source-only feature branch
         shell: bash
         run: |
           set -euo pipefail
@@ -40,13 +40,17 @@ jobs:
           python3 tools/check_project_contract.py --source .
           python3 -m compileall -q tools tests/python tests/spray
           python3 tests/python/test_mechanism_portability.py
+          # The hosted token has contents permission, not workflows permission.
+          # Leave workflow publication to the separately authorized GitHub connector.
+          git restore --staged .github/workflows/spray-ci.yml
+          test "$(git write-tree)" = 456281d7a2c45642251e27d88008ed80e326a2b3
           if git ls-remote --exit-code --heads origin refs/heads/feature/periodic-spray-combustion-0246; then
             echo 'Refusing to overwrite an existing feature branch' >&2
             exit 1
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat: add conservative periodic 3D spray combustion, LES and cell CVODE' -m 'PeleF 0.246.0: single-component parcels, drag, heat and evaporation; conservative CIC two-way coupling; deterministic cone, prescribed injection and mass-CDF diameters; deviatoric SGS transport; transactional native/CVODE reacting cells; exact coupled restart. Add pinned FFCM1_Red methanol integration and Cantera chemistry/refinement oracles. Preserve default-disabled existing solver paths. Experimental periodic serial scope; not full production diesel or AMR/MPI spray validation.'
+          git commit -m 'feat: add conservative periodic 3D spray combustion, LES and cell CVODE' -m 'PeleF 0.246.0: single-component parcels, drag, heat and evaporation; conservative CIC two-way coupling; deterministic cone, prescribed injection and mass-CDF diameters; deviatoric SGS transport; transactional native/CVODE reacting cells; exact coupled restart. Add pinned FFCM1_Red methanol integration and Cantera chemistry/refinement oracles. Preserve default-disabled existing solver paths. Experimental periodic serial scope; not full production diesel or AMR/MPI spray validation. Dedicated workflow is published separately with workflows permission.'
           git push origin HEAD:refs/heads/feature/periodic-spray-combustion-0246
           mkdir -p "$RUNNER_TEMP/spray-publication-evidence"
           git rev-parse HEAD > "$RUNNER_TEMP/spray-publication-evidence/commit.txt"
