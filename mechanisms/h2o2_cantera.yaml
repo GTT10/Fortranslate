@@ -1,7 +1,7 @@
 description: |-
   Hydrogen-Oxygen submechanism extracted from GRI-Mech 3.0.
   Modified from the original to include N2.
-
+  
   Redlich-Kwong coefficients are based on tabulated critical properties or
   estimated according to the method of Joback and Reid, "Estimation of pure-
   component properties from group-contributions," Chem. Eng. Comm. 57 (1987)
