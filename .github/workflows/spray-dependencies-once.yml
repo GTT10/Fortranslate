@@ -1,0 +1,34 @@
+name: Spray dependency snapshot
+on:
+  push:
+    branches: [maintenance/spray-dependencies-20260909]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Download public pinned numerical dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot/wheels
+          python -m pip download --only-binary=:all: cantera==3.2.0 -d snapshot/wheels
+          git clone --filter=blob:none --no-checkout https://github.com/Pele-Suite/PelePhysics.git physics
+          git -C physics checkout --detach 6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b
+          cp physics/Mechanisms/FFCM1_Red/mechanism.yaml snapshot/ffcm1_red.yaml
+          cp physics/license.txt snapshot/PelePhysics-license.txt
+          git -C physics rev-parse HEAD > snapshot/upstream-commit.txt
+          git -C physics rev-parse HEAD:Mechanisms/FFCM1_Red/mechanism.yaml > snapshot/upstream-blob.txt
+          python --version > snapshot/python-version.txt
+          (cd snapshot && sha256sum ffcm1_red.yaml wheels/* > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spray-public-dependencies
+          path: snapshot/
+          retention-days: 30
+          if-no-files-found: error
