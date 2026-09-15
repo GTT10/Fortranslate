@@ -3,12 +3,64 @@
 ! Copyright and redistribution terms: references/pelephysics-spray-license.txt.
 module spray_breakup_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use spray_parcel_mod
   implicit none
   private
-  public :: advance_etab_breakup
+  public :: advance_etab_breakup, split_spray_parcels
 contains
+  subroutine split_spray_parcels(parcels,maximum_multiplicity,maximum_parcels,ok)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), intent(in) :: maximum_multiplicity
+    integer, intent(in) :: maximum_parcels
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: candidate(:)
+    integer, allocatable :: pieces(:)
+    integer :: p,n,total,extra,cursor
+    integer(int64) :: last_id
+    real(dp) :: weight
+    ok=.false.
+    if (.not.allocated(parcels)) return
+    if (.not.ieee_is_finite(maximum_multiplicity).or.maximum_multiplicity<0.or.maximum_multiplicity>1e18_dp) return
+    if (maximum_multiplicity>0.and.maximum_multiplicity<1e-12_dp) return
+    if (maximum_parcels<1.or.maximum_parcels>1000000.or.size(parcels)>maximum_parcels) return
+    if (maximum_multiplicity==0) then
+      ok=.true.;return
+    end if
+    allocate(pieces(size(parcels)));pieces=1;total=size(parcels);last_id=0
+    do p=1,size(parcels)
+      if (.not.valid_spray_parcel(parcels(p))) return
+      if (parcels(p)%id<=last_id) return
+      last_id=parcels(p)%id
+      if (parcels(p)%mass<=0.or.parcels(p)%multiplicity<=maximum_multiplicity) cycle
+      if (parcels(p)%multiplicity/maximum_multiplicity>real(maximum_parcels,dp)) return
+      pieces(p)=ceiling(parcels(p)%multiplicity/maximum_multiplicity)
+      extra=pieces(p)-1
+      if (total>maximum_parcels-extra) return
+      total=total+extra
+    end do
+    if (total==size(parcels)) then
+      ok=.true.;return
+    end if
+    if (last_id>huge(last_id)-int(total-size(parcels),int64)) return
+    allocate(candidate(total)); candidate(:size(parcels))=parcels;cursor=size(parcels)
+    do p=1,size(parcels)
+      if (pieces(p)==1) cycle
+      weight=parcels(p)%multiplicity/real(pieces(p),dp)
+      candidate(p)%multiplicity=weight
+      do n=2,pieces(p)
+        cursor=cursor+1;candidate(cursor)=parcels(p)
+        last_id=last_id+1;candidate(cursor)%id=last_id
+        candidate(cursor)%parent_id=parcels(p)%id
+        candidate(cursor)%multiplicity=weight
+        if (n==pieces(p)) candidate(cursor)%multiplicity=parcels(p)%multiplicity-real(n-1,dp)*weight
+        if (.not.valid_spray_parcel(candidate(cursor))) return
+      end do
+    end do
+    call move_alloc(candidate,parcels);ok=.true.
+  end subroutine
+
   subroutine advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid

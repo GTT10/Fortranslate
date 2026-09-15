@@ -242,9 +242,34 @@ parameters and model identity are bound into checkpoint context. Models without
 breakup retain V1/V2. The damped oscillator advances only the remaining interval
 at each internal step; zero-slip and overdamped states avoid singular formulas.
 
-This ports the representative-size/deformation part, not stochastic creation
-of child parcels with transverse velocities, primary atomization, KH-RT,
-collision/coalescence or experimental breakup qualification. Source hashes,
+The representative-size/deformation update can also partition computational
+parcels as described below. Stochastic transverse child velocities, primary atomization, KH-RT,
+collision/coalescence and experimental breakup qualification remain open. Source hashes,
 license and deliberate scope differences are recorded in
 [the reference manifest](../references/spray_etab.json) and
 [focused evidence](validation/etab-20260915.md).
+
+
+### Computational parcel splitting
+
+For ETAB runs, set `maximum_multiplicity` to a positive upper bound on represented
+droplets per computational parcel. Zero (the default) disables this partition.
+`maximum_parcels` bounds allocated particle storage, up to 1,000,000.
+After a coupling interval, overweight live parcels are partitioned into equal
+weights, with the final child carrying the rounding remainder. Droplet mass,
+position, velocity, temperature and deformation are copied; aggregate mass,
+momentum and energy are conserved. This increases computational parcel count
+without introducing a transverse velocity or dispersion model.
+
+Existing IDs remain fixed. New IDs append in parent order; each new child stores
+the ID of the parcel it was split from. Injection roots have `parent_id=0` and
+later injections continue after the last allocated ID. Restart validates parent
+links and counts roots against injection events, independently of child count.
+The complete split plan is checked against storage and ID limits before arrays
+are replaced; failure rolls back the coupled gas/particle update.
+
+Splitting-enabled checkpoints use V5/V6, storing exact integer parent IDs in
+addition to the ETAB and optional boundary state. The multiplicity/storage
+limits are included in the context; parcel CSVs gain `parent_id`. For example,
+add `maximum_multiplicity=1e7, maximum_parcels=1000` to `etab.nml`.
+See [splitting/restart evidence](validation/spray-splitting-20260915.md).

@@ -41,6 +41,9 @@ contains
     real(dp), allocatable :: boundary_totals(:),boundary_step(:)
     character(len=8) :: breakup_model
     real(dp) :: surface_tension,liquid_viscosity
+    real(dp) :: maximum_multiplicity
+    integer :: maximum_parcels
+    logical :: split_enabled
     logical :: breakup_enabled
     logical :: physical_boundaries
     character(len=32) :: boundary_faces(6)
@@ -51,6 +54,7 @@ contains
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,breakup_model,surface_tension,liquid_viscosity, &
+      maximum_multiplicity,maximum_parcels, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
@@ -61,6 +65,7 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    maximum_multiplicity=0;maximum_parcels=1000000
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     boundary_faces="periodic"
     cells=[4,4,4]; domain_length=0.004_dp
@@ -133,12 +138,15 @@ contains
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
+    options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
+    split_enabled=maximum_multiplicity>0
     options%breakup_model=breakup_model; options%surface_tension=surface_tension
     options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
     if (.not. valid_spray_options(options)) call fail('Invalid parcel integration controls')
+    if (initial_liquid_mass>0.and.parcel_count>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     ! Validate injection geometry even for a zero-mass/gas-only run.
     call inject_cone_parcels(liquid,1.0e-12_dp,1,1_int64,injection_center,injection_axis,injection_speed, &
       cone_angle,drop_diameter,drop_temperature,new_parcels,ok,diameter_shape,diameter_min,diameter_max)
@@ -216,6 +224,10 @@ contains
       context=trim(context)//' etab-size-deformation-v1/'//trim(breakup_model)
       call append_reals([surface_tension,liquid_viscosity])
     end if
+    if (split_enabled) then
+      context=trim(context)//' computational-split-lineage-v1'
+      call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
+    end if
     if (physical_boundaries) then
       context=trim(context)//' specular-outflow-v1'
       do i=1,6
@@ -225,12 +237,13 @@ contains
     if (len_trim(restart_file)>0) then
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled)
       end if
       if (.not. ok) call fail(trim(message))
+      if (size(parcels)>maximum_parcels) call fail('Restart exceeds parcel storage limit')
       if (time>final_time .or. steps>maximum_steps .or. event>1000000) call fail('Restart exceeds requested limits')
       if (any(abs(reference_totals-expected_initial)>1.0e-11_dp* &
           max(abs(expected_initial),1.0e-30_dp))) call fail('Restart initial inventory mismatch')
@@ -238,7 +251,7 @@ contains
       amount=mass_flow_rate*min(real(event,dp)*injection_interval,injection_end-injection_start)
       if (abs(injected_totals(1)-amount)>1.0e-11_dp*max(amount,1.0e-30_dp)) &
         call fail('Restart injection mass ledger mismatch')
-      if (int(size(parcels),int64)/=int(event,int64)*int(parcel_count,int64)+ &
+      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*int(parcel_count,int64)+ &
           int(merge(parcel_count,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
       tolerance=32.0_dp*epsilon(1.0_dp)*max(time,maximum_dt,injection_interval)
       if (mass_flow_rate>0.0_dp) then
@@ -299,7 +312,7 @@ contains
         if (next_event>=injection_end) next_event=huge(1.0_dp)
         if (next_event<=time+tolerance) then
           amount=mass_flow_rate*min(injection_interval,injection_end-next_event)
-          if (size(parcels)+parcel_count>1000000) call fail('Parcel storage limit reached')
+          if (size(parcels)+parcel_count>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
           call inject_cone_parcels(liquid,amount,parcel_count,first_id,injection_center,injection_axis,injection_speed, &
@@ -341,10 +354,10 @@ contains
     if (len_trim(checkpoint_file)>0) then
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled)
       end if
       if (.not. ok) call fail(trim(message))
     end if
@@ -419,7 +432,14 @@ contains
       write(parcel_unit,'(a)',advance='no',iostat=ios) 'id,x,y,z,u,v,w,mass,temperature,multiplicity,diameter'
       if (ios==0) then
         if (breakup_enabled) then
-          write(parcel_unit,'(a)',iostat=ios) ',deformation,deformation_rate'
+          write(parcel_unit,'(a)',advance='no',iostat=ios) ',deformation,deformation_rate'
+          if (ios==0) then
+            if (split_enabled) then
+              write(parcel_unit,'(a)',iostat=ios) ',parent_id'
+            else
+              write(parcel_unit,'(a)',iostat=ios) ''
+            end if
+          end if
         else
           write(parcel_unit,'(a)',iostat=ios) ''
         end if
@@ -432,7 +452,14 @@ contains
           ',',parcels(p)%multiplicity,',',parcel_diameter(parcels(p),liquid)
         if (ios==0) then
           if (breakup_enabled) then
-            write(parcel_unit,'(2(a,es26.17e3))',iostat=ios) ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
+            write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
+            if (ios==0) then
+              if (split_enabled) then
+                write(parcel_unit,'(a,i0)',iostat=ios) ',',parcels(p)%parent_id
+              else
+                write(parcel_unit,'(a)',iostat=ios) ''
+              end if
+            end if
           else
             write(parcel_unit,'(a)',iostat=ios) ''
           end if

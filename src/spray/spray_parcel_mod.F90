@@ -21,8 +21,11 @@ module spray_parcel_mod
     real(dp) :: position(3) = 0.0_dp, velocity(3) = 0.0_dp
     real(dp) :: mass = 0.0_dp, temperature = 0.0_dp, multiplicity = 0.0_dp
     real(dp) :: deformation=0.0_dp,deformation_rate=0.0_dp
+    integer(int64) :: parent_id=0_int64
   end type
   type, public :: spray_options
+    real(dp) :: maximum_multiplicity=0.0_dp
+    integer :: maximum_parcels=1000000
     character(len=8) :: breakup_model='none'
     real(dp) :: surface_tension=0.0_dp,liquid_viscosity=0.0_dp
     logical :: drag = .true., heat = .true., evaporation = .true.
@@ -91,6 +94,7 @@ contains
     ok = .false.
     if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, &
         p%multiplicity,p%deformation,p%deformation_rate]))) return
+    if (p%parent_id<0_int64.or.p%parent_id>=p%id) return
     if (abs(p%deformation)>1e6_dp.or.abs(p%deformation_rate)>1e20_dp) return
     ok = p%id > 0_int64 .and. p%mass >= 0.0_dp .and. p%mass <= 1.0_dp .and. &
       p%temperature >= 1.0_dp .and. p%temperature <= 1.0e5_dp .and. &
@@ -102,6 +106,11 @@ contains
     type(spray_options), intent(in) :: o
     ok = .false.
     if (.not. all(ieee_is_finite([o%max_fractional_change,o%particle_cfl,o%minimum_diameter]))) return
+    if (.not.ieee_is_finite(o%maximum_multiplicity)) return
+    if (o%maximum_multiplicity<0.or.o%maximum_multiplicity>1e18_dp) return
+    if (o%maximum_multiplicity>0.and.o%maximum_multiplicity<1e-12_dp) return
+    if (o%maximum_parcels<1.or.o%maximum_parcels>1000000) return
+    if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
     select case(trim(o%breakup_model))
     case('none')
     case('etab')

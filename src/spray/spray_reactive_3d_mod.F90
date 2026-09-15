@@ -105,7 +105,7 @@ contains
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
-    type(spray_parcel), intent(inout) :: parcels(:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3),dt,rtol,atol,cs,prt,sct
     logical, intent(in) :: chemistry_enabled,transport_enabled
     character(len=*), intent(in) :: chemistry_method
@@ -126,6 +126,7 @@ contains
     faces='periodic'; ledger=0
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
+    if (.not.allocated(parcels)) return
     if (.not.valid_spray_boundary_faces(faces)) return
     if (present(boundary_change)) then
       if (size(boundary_change)/=size(state,1)) return

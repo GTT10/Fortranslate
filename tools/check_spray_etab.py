@@ -16,10 +16,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--split', action='store_true')
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='etab-', dir=args.work_dir.resolve()))
     base = (Path(__file__).resolve().parents[1] / 'cases/spray_3d/etab.nml').read_text()
+    if args.split:
+        base = base.replace('&spray', '&spray\n maximum_multiplicity=10000000, maximum_parcels=1000,\n'
+                            ' mass_flow_rate=1e-5, injection_start=5e-7, injection_end=1.5e-6, injection_interval=5e-7,')
     for mode in ('periodic', 'physical'):
         def run(name, extra=''):
             tag = mode + '_' + name
@@ -42,7 +46,13 @@ def main():
             assert (work / (reference + suffix)).read_bytes() == (work / (resumed + suffix)).read_bytes()
         drops = rows(work / (reference + '.parcels.csv'))
         assert all(float(p['diameter']) < 20e-6 for p in drops)
-        assert abs(sum(float(p['mass']) * float(p['multiplicity']) for p in drops) / 1e-10 - 1) < 1e-12
+        if args.split:
+            assert len(drops) > 4
+            assert sum(int(p['parent_id']) == 0 for p in drops) == 12
+            assert all(float(p['multiplicity']) <= 10000000 * (1 + 1e-14) for p in drops)
+            ids = {int(p['id']) for p in drops}
+            assert all(int(p['parent_id']) == 0 or int(p['parent_id']) in ids for p in drops)
+        assert abs(sum(float(p['mass']) * float(p['multiplicity']) for p in drops) / (1.1e-10 if args.split else 1e-10) - 1) < 1e-12
         row = rows(work / (reference + '.history.csv'))[-1]
         assert row == rows(work / (resumed + '.history.csv'))[-1]
         assert abs(float(row['energy_error'])) < 1e-10 * abs(float(row['total_energy']))

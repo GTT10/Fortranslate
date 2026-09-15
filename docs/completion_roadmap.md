@@ -39,7 +39,8 @@ These are bounded implemented capabilities, not completion of diesel chemistry,
 multicomponent liquids, child-parcel dispersion/KH-RT/collision, inlet boundaries and near-wall turbulence qualification or MPI/AMR particles.
 Regular wall reflection and outflow now include gas/particle surface budgets
 and restart persistence; wall-impact models remain open. ETAB representative-drop
-size/deformation and restart are implemented, with child-parcel dispersion still open.
+size/deformation, bounded computational parcel splitting and restart are implemented;
+physical child-parcel dispersion remains open.
 
 ## Ordered implementation work
 

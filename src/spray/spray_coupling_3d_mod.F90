@@ -8,7 +8,7 @@ module spray_coupling_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_breakup_mod, only: advance_etab_breakup
+  use spray_breakup_mod, only: advance_etab_breakup,split_spray_parcels
   implicit none
   private
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
@@ -233,7 +233,7 @@ contains
     type(spray_options), intent(in) :: options
     real(dp), intent(inout) :: state(:,:,:,:), temperature(:,:,:)
     real(dp), intent(in) :: lower(3), spacing(3), interval
-    type(spray_parcel), intent(inout) :: parcels(:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
@@ -256,6 +256,7 @@ contains
     ledger=0
     if (present(boundary_change)) boundary_change=0
     substeps=0; ok=.false.; message='Invalid spray coupling input'
+    if (.not.allocated(parcels)) return
     if (.not.valid_spray_boundary_faces(faces)) return
     if (any(faces/='periodic').and..not.present(boundary_change)) return
     if (present(boundary_change)) then
@@ -366,6 +367,10 @@ contains
         elapsed=min(interval,elapsed+dt); total_steps=total_steps+1
       end do
     end do
+    call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,local_ok)
+    if (.not.local_ok) then
+      message='Parcel splitting exceeds storage or ID bounds; complete step rolled back';return
+    end if
     state=candidate; temperature=temp; parcels=drops
     if (present(boundary_change)) boundary_change=ledger
     substeps=total_steps; ok=.true.; message=''

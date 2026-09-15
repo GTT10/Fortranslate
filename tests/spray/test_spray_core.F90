@@ -46,6 +46,27 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('split')
+    call make_drops();saved_drops=drops
+    drops%multiplicity=10.0_dp
+    transfer=0
+    do n=1,size(drops)
+      transfer=transfer+parcel_totals(drops(n),liquid)
+    end do
+    call split_spray_parcels(drops,3.0_dp,100,ok)
+    call require(ok.and.size(drops)==16,'child allocation')
+    call require(all(drops%multiplicity<=3.0_dp),'multiplicity cap')
+    call require(all(drops(1:4)%parent_id==0).and.all(drops(5:)%parent_id>0),'parent lineage')
+    do n=1,size(drops)
+      call require(drops(n)%id==int(n,int64),'stable ordered IDs')
+      transfer=transfer-parcel_totals(drops(n),liquid)
+    end do
+    call require(maxval(abs(transfer))<1e-18_dp,'split conserved inventory')
+    saved_drops=drops
+    call split_spray_parcels(drops,1.0_dp,17,ok)
+    call require(.not.ok.and.size(drops)==size(saved_drops).and.all(drops%id==saved_drops%id), &
+      'storage failure preserves IDs and allocation')
+    call require(all(drops%multiplicity==saved_drops%multiplicity),'storage failure preserves weights')
   case('etab')
     options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
     call make_drops(); p=drops(1); p%velocity=0; p%deformation=.1_dp;p%deformation_rate=100
