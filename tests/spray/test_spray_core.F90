@@ -291,6 +291,45 @@ program test_spray_core
     call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
       saved_patch,transfer,solid_energy,ok)
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
+  case('mixture_wall_exchange')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'film mixture component')
+    mixture_y=[.6_dp,.4_dp]
+    call liquid_mixture_properties(mixture_components,mixture_y,350.0_dp,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'initial mixture film properties')
+    wall_patch=spray_wall_film([0.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp],1e-8_dp,350.0_dp, &
+      1e-3_dp,1e-8_dp/(mixture_rho*.25_dp*pi*1e-6_dp),1)
+    saved_patch=wall_patch;component_mass=wall_patch%mass*mixture_y;saved_mass=component_mass
+    evaporated_mass=component_mass*[.01_dp,.02_dp];vapor_h=[1e6_dp,2e6_dp]
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+      1e-6_dp,2e-6_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.wall_patch%mass<saved_patch%mass,'partial mixed film evaporation')
+    call require(all(component_mass==saved_mass-evaporated_mass),'film component loss')
+    call require(maxval(abs(totals0([5+liquid%vapor_index,5+mixture_components(2)%vapor_index])-evaporated_mass)) &
+      <1e-24_dp,'film gas species gain')
+    call liquid_mixture_properties(mixture_components,component_mass/wall_patch%mass,wall_patch%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'remaining film properties')
+    call require(abs(wall_patch%mass*mixture_e+totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp, &
+      'film gas wall energy closure')
+    call require(abs(wall_patch%height*mixture_rho*.25_dp*pi*wall_patch%diameter**2/wall_patch%mass-1)<1e-13_dp, &
+      'film evolving density geometry')
+    wall_patch=saved_patch;component_mass=saved_mass
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,2*saved_mass,vapor_h, &
+      0.0_dp,0.0_dp,1e-15_dp,totals0,heat,ok)
+    call require(.not.ok.and.all(component_mass==saved_mass).and.wall_patch%mass==saved_patch%mass,'film overdraw rollback')
+    call require(all(totals0==0).and.heat==0,'failed film exchange zero budgets')
+    do event_index=1,2
+      wall_patch=saved_patch;component_mass=saved_mass
+      evaporated_mass=merge(saved_mass,.01_dp*saved_mass,event_index==1)
+      call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+        0.0_dp,2e-6_dp,1e-3_dp,totals0,heat,ok)
+      call require(ok.and.wall_patch%mass==0.and.wall_patch%height==0.and.all(component_mass==0),'film terminal inventory')
+      call require(abs(totals0(1)-saved_patch%mass)<1e-24_dp,'terminal film gas mass')
+      call require(abs(totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp,'terminal film energy closure')
+    end do
   case('mixture_wall_event')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

@@ -49,7 +49,9 @@ minimum-diameter removal now return their complete inventories to gas
 and retain their state through splitting and restart
 ([evidence](validation/spray-mixture-kh-20260916.md)). The mixture impact event API now partitions component masses into splash and film
 with wall budgets ([evidence](validation/spray-mixture-wall-event-20260916.md));
-its grid/CLI/film-evolution connection remains open. Per-port compositions now drive initial and
+its grid/CLI/film-rate connection remains open. A supplied film-exchange API now
+updates composition, temperature and height with gas/wall energy closure
+([evidence](validation/spray-mixture-film-exchange-20260916.md)). Per-port compositions now drive initial and
 scheduled injection with component budgets and restart identity
 ([evidence](validation/spray-port-mixture-20260916.md)). Component density/heat-capacity fits, Antoine
 pressure and Clausius surface caps are available in the CLI and restart context

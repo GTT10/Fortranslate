@@ -479,9 +479,27 @@ classification or child/film construction preserves all supplied state arrays.
 
 The caller supplies the dimensionless impact parameters, including wall-to-boiling
 temperature ratio. Mixture boiling-temperature evaluation, planar crossing dispatch,
-film evolution, grid/CLI coupling and mixture-film checkpoint state remain to be
+film transfer rates, grid/CLI coupling and mixture-film checkpoint state remain to be
 connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
 from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
+
+### Mixed-liquid film exchange API
+
+`advance_mixture_wall_film_exchange` accepts component evaporation amounts in kg,
+component vapor enthalpies in J/kg and gas/wall heat amounts in J into a stationary
+film patch. It inverts the remaining mixture energy for temperature and updates
+height at fixed footprint using the new density. `component_mass` stores total kg
+for the patch. Returned gas changes include individual vapor species; `wall_energy`
+is the opposite of supplied wall heat. Momentum exchange is zero for this stationary
+film operation.
+
+Complete evaporation and an evaporation-driven height below `minimum_height` return
+all remaining species and energy to gas. The full inventory convention also applies
+when the final temperature cannot be defined because no liquid remains. Invalid
+component loss or temperature inversion leaves the patch and composition untouched.
+This supplied-exchange API does not yet compute gas/wall transfer rates or connect
+mixed films to the grid driver and checkpoint. See
+[film exchange evidence](validation/spray-mixture-film-exchange-20260916.md).
 
 ## KH-RT representative-drop breakup
 

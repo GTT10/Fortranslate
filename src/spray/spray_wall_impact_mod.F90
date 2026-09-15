@@ -2,7 +2,7 @@
 module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
-  use spray_mixture_mod, only: liquid_mixture_properties,valid_component_inventory
+  use spray_mixture_mod, only: liquid_mixture_properties,liquid_mixture_temperature,valid_component_inventory
   use spray_parcel_mod
   use nasa7_thermo_mod, only: universal_gas_constant
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -28,7 +28,7 @@ module spray_wall_impact_mod
   end type
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
-  public :: resolve_wall_impact,resolve_mixture_wall_impact
+  public :: resolve_wall_impact,resolve_mixture_wall_impact,advance_mixture_wall_film_exchange
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
@@ -142,6 +142,70 @@ contains
     if (mass_rate>0.and.latent<=0) return
     temperature_rate=(gas_heat+wall_heat-mass_rate*latent)/(patch%mass*cp)
     ok=all(ieee_is_finite([mass_rate,gas_heat,wall_heat,temperature_rate]))
+  end subroutine
+
+  ! Supplied component losses are total kg; heat amounts are J into the patch.
+  subroutine advance_mixture_wall_film_exchange(patch,components,component_mass,evaporated_mass,vapor_enthalpy, &
+      gas_heat,wall_heat,minimum_height,gas_change,wall_energy,ok)
+    type(spray_wall_film), intent(inout) :: patch
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(inout) :: component_mass(:)
+    real(dp), intent(in) :: evaporated_mass(:),vapor_enthalpy(:),gas_heat,wall_heat,minimum_height
+    real(dp), intent(out) :: gas_change(:),wall_energy
+    logical, intent(out) :: ok
+    type(spray_wall_film) :: next
+    real(dp) :: remaining(size(component_mass)),loss(size(component_mass)),exchange(size(gas_change))
+    real(dp) :: rho,cp,old_e,new_e,target,t,area,total
+    integer :: n,i
+    logical :: valid
+    gas_change=0;wall_energy=0;ok=.false.;n=size(components)
+    if (n<1.or.n>16.or.size(component_mass)/=n.or.size(evaporated_mass)/=n.or.size(vapor_enthalpy)/=n) return
+    if (.not.valid_wall_film(patch).or.size(gas_change)<6) return
+    if (.not.all(ieee_is_finite(component_mass)).or..not.all(ieee_is_finite(evaporated_mass))) return
+    if (.not.all(ieee_is_finite(vapor_enthalpy)).or. &
+        .not.all(ieee_is_finite([gas_heat,wall_heat,minimum_height]))) return
+    if (any(component_mass<0).or.any(component_mass>1e18_dp).or.any(evaporated_mass<0)) return
+    if (any(evaporated_mass>component_mass).or.any(abs(vapor_enthalpy)>1e15_dp)) return
+    if (max(abs(gas_heat),abs(wall_heat))>min(1e24_dp,1e15_dp*patch%mass)) return
+    if (minimum_height<1e-15_dp.or.minimum_height>1) return
+    total=sum(component_mass)
+    if (abs(total-patch%mass)>32*epsilon(1.0_dp)*n*patch%mass) return
+    call liquid_mixture_properties(components,component_mass/patch%mass,patch%temperature,rho,cp,old_e,valid)
+    if (.not.valid) return
+    do i=1,n
+      if (components(i)%vapor_index>size(gas_change)-5) return
+    end do
+    if (all(evaporated_mass==0).and.gas_heat==0.and.wall_heat==0) then
+      ok=.true.;return
+    end if
+    remaining=component_mass-evaporated_mass;next=patch;next%mass=sum(remaining);new_e=0
+    if (next%mass>0) then
+      target=patch%mass*old_e+gas_heat+wall_heat-sum(evaporated_mass*vapor_enthalpy)
+      if (abs(target)>1e15_dp*next%mass) return
+      t=patch%temperature
+      call liquid_mixture_temperature(components,remaining/next%mass,target/next%mass,t,valid)
+      if (.not.valid) return
+      call liquid_mixture_properties(components,remaining/next%mass,t,rho,cp,new_e,valid)
+      if (.not.valid) return
+      area=.25_dp*pi*patch%diameter**2
+      if (.not.ieee_is_finite(area).or.area<=0) return
+      next%temperature=t;next%height=next%mass/rho/area
+      if (any(evaporated_mass>0).and.next%height<=minimum_height) then
+        next%mass=0;remaining=0;new_e=0
+      end if
+    end if
+    if (next%mass==0) then
+      next%height=0;next%temperature=patch%temperature
+    else
+      if (.not.valid_wall_film(next)) return
+    end if
+    loss=component_mass-remaining;exchange=0
+    do i=1,n
+      exchange(5+components(i)%vapor_index)=loss(i)
+    end do
+    exchange(1)=sum(loss);exchange(5)=patch%mass*old_e-next%mass*new_e+wall_heat
+    if (.not.all(ieee_is_finite(exchange))) return
+    patch=next;component_mass=remaining;gas_change=exchange;wall_energy=-wall_heat;ok=.true.
   end subroutine
 
   subroutine advance_wall_film_frozen(patch,liquid,gas,conductivity,wall_temperature,heat,evaporation,dt, &
