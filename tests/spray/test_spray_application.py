@@ -78,6 +78,11 @@ class SprayApplication(unittest.TestCase):
             self.assertEqual((self.root/f'evolving.{suffix}').read_bytes(),
                              (self.root/f'evolving_resumed.{suffix}').read_bytes())
         self.assertEqual(history[-1], self.history('evolving_resumed')[-1])
+        old_checkpoint = self.root/'evolving_old_skin.chk'
+        old_checkpoint.write_bytes(checkpoint.read_bytes().replace(
+            b'wall-film-evolution-v2-half-skin', b'wall-film-evolution-v1'))
+        result = self.run_case('evolving_old_skin', f"restart_file='{old_checkpoint}',", fail=True, common=settings)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
         result = self.run_case('evolving_changed', f"restart_file='{checkpoint}',", fail=True,
                                common=settings.replace('conductivity=.6', 'conductivity=.7'))
         self.assertIn('incompatible spray checkpoint', result.stdout.lower())

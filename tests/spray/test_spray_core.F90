@@ -28,7 +28,7 @@ program test_spray_core
   real(dp) :: state(15,4,4,4),temp(4,4,4),saved(15,4,4,4),saved_t(4,4,4),rhs(15,4,4,4)
   real(dp) :: wall_t(6),wall_v(3,6)
   real(dp) :: totals0(15),totals1(15),spacing(3),lower(3),weights(8)
-  real(dp) :: primitive(15),binary(10,10)
+  real(dp) :: primitive(15),binary(10,10),skin_y(10)
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
   type(spray_wall_film) :: wall_patch,saved_patch
@@ -541,6 +541,20 @@ program test_spray_core
     ! In a water/nitrogen binary mixture the Stefan coefficient must be D(H2O,N2),
     ! not a molecule-weight-scaled variant of Cantera/PelePhysics conventions.
     call near(film%diffusivity,binary(6,10),1.0e-13_dp,'binary diffusion limit')
+    call build_spray_film(species,transport,primitive,500.0_dp,p,liquid,options,film,ok,wall_skin=.true.)
+    call require(ok,'wall skin properties')
+    call binary_diffusion_coefficients(species,transport,425.0_dp,101325.0_dp,binary,ok)
+    call require(ok,'wall midpoint binary coefficient')
+    call near(film%diffusivity,binary(6,10),1.0e-13_dp,'wall half-temperature rule')
+    skin_y=0;skin_y(6)=.5_dp*(film%surface_fraction+.1_dp);skin_y(10)=1-skin_y(6)
+    expected=101325.0_dp/(mixture_specific_gas_constant(species,skin_y,ok)*425.0_dp)
+    call require(ok,'wall mixture gas constant')
+    call near(film%density,expected,1e-13_dp,'wall half-composition rule')
+    call build_spray_film(species,transport,primitive,300.0_dp,p,liquid,options,film,ok,wall_skin=.true.)
+    call require(ok,'cold gas wall skin')
+    call binary_diffusion_coefficients(species,transport,350.0_dp,101325.0_dp,binary,ok)
+    call require(ok,'cold gas binary coefficient')
+    call near(film%diffusivity,binary(6,10),1e-13_dp,'wall skin clamps negative gas temperature difference')
   case('injection')
     call make_drops()
     expected=sum(drops%mass*drops%multiplicity)

@@ -952,8 +952,12 @@ The default remains static deposition when film evolution is disabled.
 For film area A and thickness h, the update uses gas conductance lambda_g/h,
 wall heat `2*A*lambda_l*(Twall-Tfilm)/h`, and the pinned Chilton-Colburn mass
 transfer correlation with the existing binary-carrier diffusion coefficient.
-The gas skin uses the reference one-third temperature rule with a nonnegative
-hot-gas temperature difference. Local properties/rates are frozen over each
+The gas skin uses the reference coefficient 1/2 for both temperature and vapor
+mass-fraction interpolation, with a nonnegative hot-gas temperature difference.
+The pinned source comment says one-third, but its actual `rule` constant is 1/2.
+Evolving-film checkpoints from the earlier one-third implementation are rejected
+by the `wall-film-evolution-v2-half-skin` context; static-film and droplet-only
+contexts are unchanged. Local properties/rates are frozen over each
 bounded explicit substep. Film heat capacity and liquid energy use the selected
 constant or polynomial models. The footprint stays fixed; thickness is recomputed
 from remaining mass and current liquid density. An evaporating film below the

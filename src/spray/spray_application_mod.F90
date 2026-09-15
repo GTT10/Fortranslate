@@ -660,7 +660,7 @@ contains
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
     if (wall_film_evolution) then
-      context=trim(context)//' wall-film-evolution-v1'
+      context=trim(context)//' wall-film-evolution-v2-half-skin'
       call append_reals([wall_liquid_conductivity,minimum_film_height])
       if (wall_conductivity_model/='constant'.or.port_wall_properties) then
         context=trim(context)//' wall-conductivity-v1 '//trim(wall_conductivity_model)

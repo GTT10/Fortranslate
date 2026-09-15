@@ -196,7 +196,16 @@ contains
     end if
     tf=(2.0_dp*parcel%temperature+gas_temperature)/3.0_dp
     if (present(wall_skin)) then
-      if (wall_skin) tf=parcel%temperature+max(0.0_dp,gas_temperature-parcel%temperature)/3
+      if (wall_skin) then
+        ! WallFilm.H declares rule=1/2 despite its stale one-third-rule comment.
+        tf=parcel%temperature+.5_dp*max(0.0_dp,gas_temperature-parcel%temperature)
+        if (ys>y(v)) then
+          yf(v)=.5_dp*(ys+y(v))
+          do k=1,size(species)
+            if (k/=v) yf(k)=y(k)*(1-yf(v))/(1-y(v))
+          end do
+        end if
+      end if
     end if
     call mixture_mass_properties(species,yf,tf,mw,r,cp,cv,gamma,h,e,s,ok)
     if (.not. ok) return

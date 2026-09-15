@@ -18,5 +18,10 @@
     "path": "Source/Spray/SprayPropertiesPeleMP.H",
     "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd",
     "formula": "lambda_i(T)=a+T*(b+T*(c+T*d)); pure-liquid film temperature, SI coefficients, no mixture averaging or boiling cap"
+  },
+  "film_skin_source": {
+    "path": "Source/Spray/Drag.H",
+    "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",
+    "rule": "WallFilm.H supplies rule=1/2 to calcVaporState; temperature uses nonnegative gas-minus-film difference."
   }
 }

@@ -24,7 +24,9 @@ connected to the regular coupled-step API with wall budgets, stationary film
 heating/evaporation with per-material constant or cubic thermal conductivity,
 CLI inputs/output and coupled checkpoint persistence
 [evidence](validation/wall-film-conductivity-20260916.md). Lateral film transport
-and physical impact qualification remain open.
+and physical impact qualification remain open. The gas-side film skin now uses
+the pinned half-temperature/half-composition rule
+([correction evidence](validation/wall-film-skin-20260916.md)).
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
