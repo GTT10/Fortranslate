@@ -25,6 +25,9 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    logical :: port_state_overrides
+    real(dp) :: injection_port_speeds(16),injection_port_diameters(16),injection_port_temperatures(16)
+    real(dp) :: injection_port_cone_angles(16)
     logical :: independent_port_schedules
     integer :: port_events(16),selected_port,completed,total_events
     real(dp) :: port_mass_flow_rates(16),port_injection_starts(16),port_injection_ends(16),port_injection_intervals(16)
@@ -94,6 +97,7 @@ contains
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
       injection_port_count,injection_port_centers,injection_port_axes,injection_port_fractions, &
+      injection_port_speeds,injection_port_diameters,injection_port_temperatures,injection_port_cone_angles, &
       independent_port_schedules,port_mass_flow_rates,port_injection_starts,port_injection_ends,port_injection_intervals, &
       injection_center,injection_axis,injection_speed,cone_angle, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
@@ -121,6 +125,7 @@ contains
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     diameter_shape=0.0_dp; diameter_min=1.0e-12_dp; diameter_max=1.0_dp
+    injection_port_speeds=-1;injection_port_diameters=-1;injection_port_temperatures=-1;injection_port_cone_angles=-1
     independent_port_schedules=.false.;port_events=0
     port_mass_flow_rates=0;port_injection_starts=0;port_injection_ends=0;port_injection_intervals=0
     injection_port_count=0;injection_port_centers=0;injection_port_axes=0;injection_port_fractions=0
@@ -202,7 +207,19 @@ contains
     if (any(injection_port_centers(:,injection_port_count+1:)/=0).or. &
         any(injection_port_axes(:,injection_port_count+1:)/=0).or. &
         any(injection_port_fractions(injection_port_count+1:)/=0)) call fail('Unused injection port values')
+    if (.not.all(ieee_is_finite([injection_port_speeds,injection_port_diameters, &
+        injection_port_temperatures,injection_port_cone_angles]))) call fail('Nonfinite injection port state')
+    if (any(injection_port_speeds(injection_port_count+1:)/=-1).or. &
+        any(injection_port_diameters(injection_port_count+1:)/=-1).or. &
+        any(injection_port_temperatures(injection_port_count+1:)/=-1).or. &
+        any(injection_port_cone_angles(injection_port_count+1:)/=-1)) call fail('Unused injection port state')
+    port_state_overrides=any(injection_port_speeds/=-1).or.any(injection_port_diameters/=-1).or. &
+      any(injection_port_temperatures/=-1).or.any(injection_port_cone_angles/=-1)
     do port=1,injection_port_count
+      if (injection_port_speeds(port)==-1) injection_port_speeds(port)=injection_speed
+      if (injection_port_diameters(port)==-1) injection_port_diameters(port)=drop_diameter
+      if (injection_port_temperatures(port)==-1) injection_port_temperatures(port)=drop_temperature
+      if (injection_port_cone_angles(port)==-1) injection_port_cone_angles(port)=cone_angle
       if (any(injection_port_centers(:,port)<0).or.any(injection_port_centers(:,port)>=domain_length)) &
         call fail('Injection port outside domain')
     end do
@@ -374,6 +391,11 @@ contains
         reshape(injection_port_axes(:,:injection_port_count),[3*injection_port_count]), &
         injection_port_fractions(:injection_port_count)])
     end if
+    if (port_state_overrides) then
+      context=trim(context)//' injection-port-states-v1'
+      call append_reals([injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
+        injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count)])
+    end if
     if (independent_port_schedules) then
       context=trim(context)//' independent-port-schedules-v1'
       call append_reals([port_mass_flow_rates(:injection_port_count),port_injection_starts(:injection_port_count), &
@@ -538,7 +560,8 @@ contains
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
           call inject_cone_parcels(liquid,amount,parcel_count,first_id,injection_port_centers(:,selected_port), &
-            injection_port_axes(:,selected_port),injection_speed,cone_angle,drop_diameter,drop_temperature, &
+            injection_port_axes(:,selected_port),injection_port_speeds(selected_port),injection_port_cone_angles(selected_port), &
+            injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
             new_parcels,ok,diameter_shape,diameter_min,diameter_max)
           if (.not.ok) call fail('Independent port injection failed')
           do i=1,size(new_parcels)
@@ -645,7 +668,9 @@ contains
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
-          injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max)
+          injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
+          injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
+          injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count))
       end if
     end subroutine inject_ports
     subroutine fail(text)

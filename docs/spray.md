@@ -614,8 +614,8 @@ Each port injects `rate*min(interval,end-event_time)` and creates `parcel_count`
 parcels per event. Events use start+n*interval and occur strictly before end.
 The solver processes all due events before stepping and breaks exact timestamp
 ties by port number. Initial liquid mass still follows `injection_port_fractions`;
-those fractions do not multiply the independent scheduled rates. Material,
-velocity magnitude, temperature and size settings remain shared.
+those fractions do not multiply the independent scheduled rates. Material remains shared. Speed, temperature, diameter and cone angle can be
+overridden per port as described below.
 
 Restart preserves the aggregate event count and reconstructs the per-port
 counts by replaying the deterministic schedule. It checks injected mass,
@@ -624,3 +624,24 @@ arrays are included in checkpoint identity. Replay is bounded by the input's
 one-million-event limit; large restart performance is not qualified.
 See `cases/spray_3d/water_independent_ports.nml` and
 [focused evidence](validation/independent-port-schedules-20260915.md).
+
+## Per-port injection conditions
+
+`injection_port_speeds`, `injection_port_diameters`,
+`injection_port_temperatures` and `injection_port_cone_angles` override the
+corresponding global values for active ports. An entry of -1 (the default)
+inherits its global value; unused entries must remain -1. Units are m/s, m, K
+and radians. The existing range/material checks apply to each resolved port.
+
+Initial injection and both shared and independent schedules use the resolved
+conditions. Different temperatures and diameters produce the corresponding
+single-drop mass and multiplicity, while each event retains its specified
+mass allocation. Momentum and energy ledgers use each generated parcel's own
+velocity and temperature. The liquid, distribution shape and truncation bounds
+remain shared. For a distributed diameter input, the per-port diameter replaces
+the same scale parameter as `drop_diameter`.
+
+Resolved override values participate in restart identity. Without overrides,
+the preceding port checkpoint context remains unchanged. See
+`cases/spray_3d/water_port_states.nml` and
+[focused evidence](validation/injection-port-states-20260915.md).

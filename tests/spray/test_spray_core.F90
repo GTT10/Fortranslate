@@ -48,6 +48,28 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('port_states')
+    port_centers(:,1)=[.001_dp,.001_dp,.001_dp];port_centers(:,2)=[.002_dp,.001_dp,.001_dp]
+    port_axes(:,1)=[1.0_dp,0.0_dp,0.0_dp];port_axes(:,2)=[-1.0_dp,0.0_dp,0.0_dp]
+    port_fractions=[.25_dp,.75_dp]
+    call inject_cone_ports(liquid,1e-9_dp,2,1_int64,port_centers,port_axes,port_fractions, &
+      1.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok,port_speeds=[10.0_dp,20.0_dp], &
+      port_diameters=[1e-5_dp,2e-5_dp],port_temperatures=[300.0_dp,350.0_dp],port_angles=[0.0_dp,0.0_dp])
+    call require(ok.and.size(drops)==4,'distinct port states')
+    call require(all(drops(1:2)%temperature==300).and.all(drops(3:4)%temperature==350),'port temperatures')
+    call require(drops(1)%velocity(1)==10.and.drops(3)%velocity(1)==-20,'port speed and direction')
+    call require(abs(parcel_diameter(drops(1),liquid)/1e-5_dp-1)<1e-13_dp.and. &
+      abs(parcel_diameter(drops(3),liquid)/2e-5_dp-1)<1e-13_dp,'port diameters')
+    transfer=0
+    do n=1,4
+      transfer=transfer+parcel_totals(drops(n),liquid)
+    end do
+    expected=2.5e-10_dp*(liquid_energy(liquid,300.0_dp)+50.0_dp)+ &
+      7.5e-10_dp*(liquid_energy(liquid,350.0_dp)+200.0_dp)
+    call require(abs(transfer(5)/expected-1)<1e-13_dp,'distinct port thermal and kinetic inventory')
+    call inject_cone_ports(liquid,1e-9_dp,2,1_int64,port_centers,port_axes,port_fractions, &
+      1.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok,port_speeds=[10.0_dp])
+    call require(.not.ok.and..not.allocated(drops),'wrong port override dimensions')
   case('ports')
     port_centers(:,1)=[.001_dp,.001_dp,.001_dp];port_centers(:,2)=[.002_dp,.001_dp,.001_dp]
     port_axes(:,1)=[1.0_dp,0.0_dp,0.0_dp];port_axes(:,2)=[-1.0_dp,0.0_dp,0.0_dp]

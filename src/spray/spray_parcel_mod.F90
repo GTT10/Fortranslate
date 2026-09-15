@@ -443,7 +443,8 @@ contains
   end subroutine
 
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
-      half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max)
+      half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
+      port_speeds,port_diameters,port_temperatures,port_angles)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass,centers(:,:),axes(:,:),fractions(:),speed,half_angle,diameter,temperature
     integer, intent(in) :: number
@@ -451,6 +452,8 @@ contains
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: diameter_shape,diameter_min,diameter_max
+    real(dp), intent(in), optional :: port_speeds(:),port_diameters(:),port_temperatures(:),port_angles(:)
+    real(dp) :: local_speed,local_diameter,local_temperature,local_angle
     type(spray_parcel), allocatable :: candidate(:),port_parcels(:)
     integer :: ports,port,offset,total
     real(dp) :: fraction_sum
@@ -463,13 +466,30 @@ contains
     if (any(fractions<=0).or.any(fractions>1)) return
     fraction_sum=sum(fractions)
     if (abs(fraction_sum-1.0_dp)>5e-12_dp) return
+    if (present(port_speeds)) then
+      if (size(port_speeds)/=ports) return
+    end if
+    if (present(port_diameters)) then
+      if (size(port_diameters)/=ports) return
+    end if
+    if (present(port_temperatures)) then
+      if (size(port_temperatures)/=ports) return
+    end if
+    if (present(port_angles)) then
+      if (size(port_angles)/=ports) return
+    end if
     total=ports*number
     if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
     allocate(candidate(total))
     do port=1,ports
       offset=(port-1)*number
+      local_speed=speed;local_diameter=diameter;local_temperature=temperature;local_angle=half_angle
+      if (present(port_speeds)) local_speed=port_speeds(port)
+      if (present(port_diameters)) local_diameter=port_diameters(port)
+      if (present(port_temperatures)) local_temperature=port_temperatures(port)
+      if (present(port_angles)) local_angle=port_angles(port)
       call inject_cone_parcels(liquid,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
-        centers(:,port),axes(:,port),speed,half_angle,diameter,temperature,port_parcels,ok, &
+        centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
         diameter_shape,diameter_min,diameter_max)
       if (.not.ok) return
       candidate(offset+1:offset+number)=port_parcels

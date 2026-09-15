@@ -57,10 +57,38 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_port_state_overrides_restart(self):
+        settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"
+                    "injection_port_speeds=10,20,injection_port_diameters=1e-5,2e-5,"
+                    "injection_port_temperatures=300,350,injection_port_cone_angles=0,0,"
+                    "mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4e-7,injection_interval=2e-7,"
+                    "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        checkpoint = self.root/'port-states.chk'
+        self.run_case('states', common=settings)
+        rows = self.check_balance('states')
+        self.assertEqual(rows[-1]['live_parcels'], 12)
+        with (self.root/'states.parcels.csv').open() as stream:
+            parcels = list(csv.DictReader(stream))
+        for index, parcel in enumerate(parcels):
+            first = index % 4 < 2
+            self.assertEqual(float(parcel['u']), 10 if first else -20)
+            self.assertEqual(float(parcel['temperature']), 300 if first else 350)
+            self.assertAlmostEqual(float(parcel['diameter'])/(1e-5 if first else 2e-5), 1, delta=1e-13)
+        self.run_case('stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'states.{suffix}').read_bytes(),
+                             (self.root/f'resumed.{suffix}').read_bytes())
+        result = self.run_case('changed', f"restart_file='{checkpoint}',",
+                               common=settings.replace('speeds=10,20', 'speeds=10,21'), fail=True)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('invalid_diameter', common=settings.replace('diameters=1e-5,2e-5', 'diameters=1e-5,0'), fail=True)
+
     def test_independent_port_schedule_restart(self):
         settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                     "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,"
-                    "independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                    "injection_port_speeds=10,20,independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
                     "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
                     "port_injection_intervals=2e-7,3e-7,initial_liquid_mass=0,cone_angle=0,"
                     "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
@@ -71,7 +99,7 @@ class SprayApplication(unittest.TestCase):
         with (self.root/'independent.parcels.csv').open() as stream:
             parcels = list(csv.DictReader(stream))
         self.assertEqual([int(p['id']) for p in parcels], list(range(1,9)))
-        self.assertEqual([float(p['u']) > 0 for p in parcels], [True,True,False,False,True,True,False,False])
+        self.assertEqual([float(p['u']) for p in parcels], [10,10,-20,-20,10,10,-20,-20])
         for stop in [1,3]:
             checkpoint = self.root/f'independent{stop}.chk'
             self.run_case(f'stop{stop}', f"stop_after_steps={stop},checkpoint_file='{checkpoint}',", common=settings)
