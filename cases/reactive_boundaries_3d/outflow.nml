@@ -1,0 +1,12 @@
+&reactive_3d
+  nx=4, ny=4, nz=4,
+  final_time=2e-7,
+  problem='entropy_wave',
+  reconstruction='characteristic_plm', riemann_solver='hllc',
+  boundary_condition='outflow',
+  boundary_faces='outflow','outflow','periodic','periodic','slip_wall','slip_wall',
+  initial_velocity_x=100, initial_velocity_y=0, initial_velocity_z=0,
+  wave_number_x=1, wave_number_y=0, wave_number_z=0,
+  chemistry_enabled=.false., transport_enabled=.false.,
+  output_file='outflow.csv'
+/

@@ -30,6 +30,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: thermo_model = "full_h2o2"
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: boundary_condition = "periodic"
+    character(len=32) :: boundary_faces(6) = ""
     logical :: chemistry_enabled = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
     real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
@@ -71,12 +72,40 @@ module simulation_config_reactive_3d_mod
     character(len=512) :: output_file = "reactive_entropy_wave_3d.csv"
   end type reactive_3d_config
 
+  public :: resolved_reactive_boundaries_3d, valid_reactive_boundaries_3d
   public :: read_reactive_3d_configuration
   public :: validate_reactive_3d_configuration
   public :: reactive_3d_mole_fractions
   public :: resolve_reactive_3d_selected_composition
 
 contains
+
+  pure function resolved_reactive_boundaries_3d(config) result(faces)
+    type(reactive_3d_config), intent(in) :: config
+    character(len=32) :: faces(6)
+    integer :: f
+    faces = config%boundary_faces
+    do f = 1, 6
+      if (len_trim(faces(f)) == 0) faces(f) = config%boundary_condition
+    end do
+  end function
+
+  pure logical function valid_reactive_boundaries_3d(faces) result(ok)
+    character(len=*), intent(in) :: faces(6)
+    integer :: f
+    ok = .false.
+    do f = 1, 6
+      select case(trim(faces(f)))
+      case("periodic", "outflow", "slip_wall")
+      case default
+        return
+      end select
+    end do
+    do f = 1, 6, 2
+      if ((faces(f) == "periodic") .neqv. (faces(f+1) == "periodic")) return
+    end do
+    ok = .true.
+  end function
 
   subroutine read_reactive_3d_configuration( &
       path, config, ok, message, allow_selected)
@@ -104,7 +133,7 @@ contains
       composition_species(reactive_3d_max_species)
     character(len=32) :: problem, reconstruction, limiter
     character(len=32) :: thermo_model, riemann_solver
-    character(len=32) :: boundary_condition
+    character(len=32) :: boundary_condition, boundary_faces(6)
     character(len=512) :: output_file
     logical :: chemistry_enabled, transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
@@ -116,7 +145,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, &
       thermo_model, riemann_solver, &
-      boundary_condition, chemistry_enabled, chemistry_relative_tolerance, &
+      boundary_condition, boundary_faces, chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, transport_cfl, &
@@ -148,6 +177,7 @@ contains
     thermo_model = config%thermo_model
     riemann_solver = config%riemann_solver
     boundary_condition = config%boundary_condition
+    boundary_faces = config%boundary_faces
     chemistry_enabled = config%chemistry_enabled
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
     chemistry_absolute_tolerance = config%chemistry_absolute_tolerance
@@ -222,6 +252,7 @@ contains
     config%thermo_model = trim(thermo_model)
     config%riemann_solver = trim(riemann_solver)
     config%boundary_condition = trim(boundary_condition)
+    config%boundary_faces = boundary_faces
     config%chemistry_enabled = chemistry_enabled
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
     config%chemistry_absolute_tolerance = chemistry_absolute_tolerance
@@ -361,8 +392,11 @@ contains
              trim(config%riemann_solver) /= "hllc" .and. &
              trim(config%riemann_solver) /= "pelec") then
       message = "Reactive 3D Riemann solver must be rusanov, hllc, or pelec"
-    else if (trim(config%boundary_condition) /= "periodic") then
-      message = "Reactive 3D currently requires periodic boundaries"
+    else if (.not. valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(config))) then
+      message = "Reactive 3D faces require paired periodic, outflow, or slip_wall boundaries"
+    else if (config%transport_enabled .and. &
+        any(resolved_reactive_boundaries_3d(config) /= "periodic")) then
+      message = "Reactive 3D physical-boundary molecular transport is not implemented"
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else

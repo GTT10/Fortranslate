@@ -8,7 +8,7 @@ module reactive_3d_application_mod
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
@@ -37,7 +37,8 @@ contains
 
     real(dp), allocatable :: x(:), y(:), z(:)
     real(dp), allocatable :: state(:, :, :, :), temperature(:, :, :)
-    real(dp), allocatable :: initial_totals(:), final_totals(:)
+    real(dp), allocatable :: initial_totals(:), final_totals(:), boundary_totals(:), step_boundary_change(:)
+    character(len=32) :: faces(6)
     real(dp), allocatable :: mass_fractions(:), primitive(:)
     real(dp) :: dx, dy, dz, time, dt, hydro_dt, transport_dt
     real(dp) :: base_density, density_l1_error, exact_density
@@ -63,7 +64,9 @@ contains
     allocate(x(config%nx), y(config%ny), z(config%nz))
     allocate(state(nvar, config%nx, config%ny, config%nz))
     allocate(temperature(config%nx, config%ny, config%nz))
-    allocate(initial_totals(nvar), final_totals(nvar))
+    allocate(initial_totals(nvar), final_totals(nvar), boundary_totals(nvar), step_boundary_change(nvar))
+    boundary_totals=0.0_dp
+    faces=resolved_reactive_boundaries_3d(config)
     allocate(mass_fractions(size(species)))
     allocate(primitive(reactive_nprim(size(species))))
     call uniform_cell_centers_3d( &
@@ -99,6 +102,7 @@ contains
     write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
     write(*, '(a,1x,a)') &
       "Boundary condition:", trim(config%boundary_condition)
+    write(*, '(a,6(1x,a))') "Boundary faces (x-/x+/y-/y+/z-/z+):", faces
     write(*, '(a,l2)') "Chemistry: ", config%chemistry_enabled
     if (config%chemistry_enabled) then
       write(*, '(a,es12.5)') &
@@ -158,10 +162,11 @@ contains
         config%viscosity_enabled, config%thermal_conduction_enabled, &
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         step_transport_theta, ok, config%reconstruction, config%limiter, &
-        chemistry_integrator=chemistry_integrator)
+        chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if
+      boundary_totals = boundary_totals + step_boundary_change
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
       time = time + dt
@@ -172,10 +177,10 @@ contains
       state, config%nx, config%ny, config%nz, dx, dy, dz, final_totals, ok)
     if (.not. ok) error stop "Failed to integrate final reactive 3D state"
     maximum_euler_conservation_error = maxval( &
-      abs(final_totals(1:ncons) - initial_totals(1:ncons)) / &
+      abs(final_totals(1:ncons) - initial_totals(1:ncons) - boundary_totals(1:ncons)) / &
         max(1.0_dp, abs(initial_totals(1:ncons))))
     maximum_all_component_conservation_error = maxval( &
-      abs(final_totals - initial_totals) / max(1.0_dp, abs(initial_totals)))
+      abs(final_totals - initial_totals - boundary_totals) / max(1.0_dp, abs(initial_totals)))
     maximum_species_change = maxval(abs( &
       final_totals(6:nvar) - initial_totals(6:nvar)))
     call reactive_extrema_3d( &
@@ -185,7 +190,7 @@ contains
       maximum_closure_error, ok)
     if (.not. ok) error stop "Final reactive 3D state is not physical"
 
-    if (trim(config%problem) == "entropy_wave") then
+    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic")) then
       density_l1_error = 0.0_dp
       do k = 1, config%nz
         do j = 1, config%ny
@@ -206,7 +211,7 @@ contains
     end if
 
     if (maximum_euler_conservation_error > 5.0e-11_dp) then
-      error stop "Reactive 3D periodic conservation gate failed"
+      error stop "Reactive 3D boundary-accounted conservation gate failed"
     end if
     if (.not. config%chemistry_enabled .and. &
         maximum_all_component_conservation_error > 5.0e-11_dp) then
@@ -215,6 +220,7 @@ contains
     if (maximum_closure_error > 5.0e-11_dp) then
       error stop "Reactive 3D species-closure gate failed"
     end if
+    write(*, '(a,*(es24.16,1x))') "Integrated boundary change: ", boundary_totals
     call write_reactive_3d_csv( &
       trim(config%output_file), species, x, y, z, state, temperature, &
       config%nx, config%ny, config%nz, time, ok, message)
@@ -226,7 +232,7 @@ contains
     write(*, '(a,i0)') "Completed steps: ", step
     write(*, '(a,es24.16)') "Final time: ", time
     write(*, '(a,es24.16)') "Base density: ", base_density
-    if (trim(config%problem) == "entropy_wave") then
+    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic")) then
       write(*, '(a,es24.16)') "Density L1 error: ", density_l1_error
     else
       write(*, '(a)') "Density L1 error: not applicable"

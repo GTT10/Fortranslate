@@ -140,7 +140,7 @@ contains
       ok = .false.
       return
     end if
-    config%boundary_condition = "outflow"
+    config%boundary_condition = "unknown"
     call validate_reactive_3d_configuration(config, local_ok, message)
     if (local_ok) then
       ok = .false.

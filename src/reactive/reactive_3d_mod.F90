@@ -1,5 +1,6 @@
 module reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -16,6 +17,7 @@ module reactive_3d_mod
   implicit none
   private
 
+  public :: advance_reactive_boundary_hydro_3d
   public :: compute_reactive_cfl_timestep_3d
   public :: compute_reactive_euler_rhs_3d
   public :: advance_reactive_euler_ssprk2_3d
@@ -1058,7 +1060,7 @@ contains
       dx, dy, dz, dt, riemann_solver, chemistry_enabled, rtol, atol, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator)
+      minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1076,6 +1078,10 @@ contains
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    character(len=32) :: faces(6)
+    real(dp) :: change(size(state,1))
     real(dp) :: stage_transport_theta
     logical :: local_ok
     integer :: nvar
@@ -1083,6 +1089,15 @@ contains
 
     ok = .false.
     minimum_transport_theta = 1.0_dp
+    faces = "periodic"
+    if (present(boundary_faces)) faces = boundary_faces
+    if (present(boundary_change)) then
+      boundary_change = 0.0_dp
+      if (size(boundary_change) /= size(state,1)) return
+    end if
+    change = 0.0_dp
+    if (.not. valid_reactive_boundaries_3d(faces)) return
+    if (transport_enabled .and. any(faces /= "periodic")) return
     selected_reconstruction = "pcm"
     selected_limiter = "mc"
     if (present(reconstruction)) selected_reconstruction = &
@@ -1122,16 +1137,21 @@ contains
       minimum_transport_theta = min( &
         minimum_transport_theta, stage_transport_theta)
     end if
-    select case (trim(selected_reconstruction))
-    case ("pcm")
-      call advance_reactive_euler_ssprk2_3d( &
-        species, candidate_state, candidate_temperature, nx, ny, nz, &
-        dx, dy, dz, dt, riemann_solver, local_ok)
-    case ("characteristic_plm")
-      call advance_reactive_euler_ssprk2_plm_3d( &
-        species, candidate_state, candidate_temperature, nx, ny, nz, &
-        dx, dy, dz, dt, selected_limiter, riemann_solver, local_ok)
-    end select
+    if (any(faces /= "periodic")) then
+      call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
+        [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, change, local_ok)
+    else
+      select case (trim(selected_reconstruction))
+      case ("pcm")
+        call advance_reactive_euler_ssprk2_3d( &
+          species, candidate_state, candidate_temperature, nx, ny, nz, &
+          dx, dy, dz, dt, riemann_solver, local_ok)
+      case ("characteristic_plm")
+        call advance_reactive_euler_ssprk2_plm_3d( &
+          species, candidate_state, candidate_temperature, nx, ny, nz, &
+          dx, dy, dz, dt, selected_limiter, riemann_solver, local_ok)
+      end select
+    end if
     if (.not. local_ok) return
     if (transport_enabled) then
       call advance_reactive_transport_3d( &
@@ -1150,10 +1170,128 @@ contains
         chemistry_integrator=chemistry_integrator)
       if (.not. local_ok) return
     end if
+    if (present(boundary_change)) boundary_change = change
     state = candidate_state
     temperature = candidate_temperature
     ok = .true.
   end subroutine advance_reactive_full_3d
+
+
+  ! Physical face ordering: x-low, x-high, y-low, y-high, z-low, z-high.
+  ! Ghosts are reconstructed at each RK stage. Two layers contain the entire
+  ! PLM stencil at the physical face, so periodic wrapping outside the padded
+  ! array cannot enter a physical-cell flux. Only physical cells are advanced.
+  subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
+      faces,reconstruction,limiter,riemann_solver,boundary_change,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: spacing(3),dt
+    character(len=*), intent(in) :: faces(6),reconstruction,limiter,riemann_solver
+    real(dp), intent(out) :: boundary_change(:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),recovered(:,:,:),rhs(:,:,:,:)
+    real(dp) :: rate0(size(state,1)),rate1(size(state,1))
+    integer :: n(3)
+    logical :: local_ok
+    ok=.false.; boundary_change=0.0_dp
+    n=shape(temperature)
+    if (size(boundary_change) /= size(state,1)) return
+    if (.not. valid_reactive_3d_shapes(state,temperature,reactive_nvar(size(species)),n(1),n(2),n(3))) return
+    if (any(n<2) .or. .not. valid_reactive_boundaries_3d(faces)) return
+    if (.not. all(ieee_is_finite([spacing,dt]))) return
+    if (minval(spacing)<=0.0_dp .or. dt<=0.0_dp) return
+    if (reconstruction/="pcm" .and. reconstruction/="characteristic_plm") return
+    if (limiter/="mc" .and. limiter/="minmod") return
+    allocate(candidate,source=state); allocate(temp,mold=temperature)
+    allocate(recovered,mold=temperature); allocate(rhs,mold=state)
+    call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),temp,local_ok)
+    if (.not.local_ok) return
+    call boundary_rhs(state,temp,rhs,rate0,local_ok)
+    if (.not.local_ok) return
+    candidate=state+dt*rhs
+    call recover_reactive_temperatures_3d(species,candidate,temp,n(1),n(2),n(3),recovered,local_ok)
+    if (.not.local_ok) return
+    temp=recovered
+    call boundary_rhs(candidate,temp,rhs,rate1,local_ok)
+    if (.not.local_ok) return
+    candidate=0.5_dp*state+0.5_dp*(candidate+dt*rhs)
+    call recover_reactive_temperatures_3d(species,candidate,temp,n(1),n(2),n(3),recovered,local_ok)
+    if (.not.local_ok) return
+    boundary_change=0.5_dp*dt*(rate0+rate1)
+    state=candidate; temperature=recovered; ok=.true.
+  contains
+    subroutine boundary_rhs(u,t,du,rate,success)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+      real(dp), intent(out) :: du(:,:,:,:),rate(:)
+      logical, intent(out) :: success
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+      integer :: dims(3),i,j,k,a,idx(3),q(3),face,nv
+      logical :: reflect(3)
+      success=.false.; du=0.0_dp; rate=0.0_dp
+      dims=n+4; nv=size(u,1)
+      allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
+      allocate(fx,mold=ghost); allocate(fy,mold=ghost); allocate(fz,mold=ghost)
+      do k=1,dims(3)
+        do j=1,dims(2)
+          do i=1,dims(1)
+            idx=[i,j,k]-2; q=idx; reflect=.false.
+            do a=1,3
+              if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
+              face=2*a
+              if (idx(a)<1) face=face-1
+              select case(trim(faces(face)))
+              case('periodic')
+                q(a)=modulo(idx(a)-1,n(a))+1
+              case('outflow')
+                q(a)=max(1,min(n(a),idx(a)))
+              case('slip_wall')
+                q(a)=1-idx(a)
+                if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
+                reflect(a)=.true.
+              end select
+            end do
+            ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
+            do a=1,3
+              if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
+            end do
+          end do
+        end do
+      end do
+      if (reconstruction=='pcm') then
+        call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &
+          riemann_solver,fx,fy,fz,success)
+      else
+        call compute_reactive_plm_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &
+          limiter,riemann_solver,fx,fy,fz,success)
+      end if
+      if (.not.success) return
+      do k=3,n(3)+2
+        do j=3,n(2)+2
+          do i=3,n(1)+2
+            du(:,i-2,j-2,k-2)=-(fx(:,i,j,k)-fx(:,i-1,j,k))/spacing(1) &
+              -(fy(:,i,j,k)-fy(:,i,j-1,k))/spacing(2)-(fz(:,i,j,k)-fz(:,i,j,k-1))/spacing(3)
+          end do
+        end do
+      end do
+      ! Surface integral, independent of volume summation used by diagnostics.
+      do k=3,n(3)+2
+        do j=3,n(2)+2
+          rate=rate+(fx(:,2,j,k)-fx(:,n(1)+2,j,k))*spacing(2)*spacing(3)
+        end do
+      end do
+      do k=3,n(3)+2
+        do i=3,n(1)+2
+          rate=rate+(fy(:,i,2,k)-fy(:,i,n(2)+2,k))*spacing(1)*spacing(3)
+        end do
+      end do
+      do j=3,n(2)+2
+        do i=3,n(1)+2
+          rate=rate+(fz(:,i,j,2)-fz(:,i,j,n(3)+2))*spacing(1)*spacing(2)
+        end do
+      end do
+      success=all(ieee_is_finite(du)).and.all(ieee_is_finite(rate))
+    end subroutine boundary_rhs
+  end subroutine advance_reactive_boundary_hydro_3d
 
   subroutine recover_reactive_temperatures_3d( &
       species, state, temperature_guess, nx, ny, nz, temperature, ok)

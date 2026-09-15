@@ -1,0 +1,11 @@
+&reactive_3d
+  nx=4, ny=4, nz=4,
+  final_time=2e-7,
+  problem='reactive_hotspot',
+  reconstruction='characteristic_plm', riemann_solver='hllc',
+  boundary_condition='slip_wall',
+  initial_temperature=1000, hotspot_temperature_rise=100,
+  initial_velocity_x=10, initial_velocity_y=5, initial_velocity_z=-5,
+  chemistry_enabled=.true., transport_enabled=.false.,
+  output_file='closed_reacting.csv'
+/
