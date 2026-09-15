@@ -14,6 +14,7 @@ program test_spray_core
   use spray_coupling_3d_mod
   use les_smagorinsky_3d_mod
   implicit none
+  real(dp) :: port_centers(3,2),port_axes(3,2),port_fractions(2)
   real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
@@ -47,6 +48,31 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('ports')
+    port_centers(:,1)=[.001_dp,.001_dp,.001_dp];port_centers(:,2)=[.002_dp,.001_dp,.001_dp]
+    port_axes(:,1)=[1.0_dp,0.0_dp,0.0_dp];port_axes(:,2)=[-1.0_dp,0.0_dp,0.0_dp]
+    port_fractions=[.25_dp,.75_dp]
+    call inject_cone_ports(liquid,1e-9_dp,3,11_int64,port_centers,port_axes,port_fractions, &
+      10.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok)
+    call require(ok.and.size(drops)==6,'multiport count')
+    transfer=0
+    do n=1,6
+      call require(drops(n)%id==int(n+10,int64),'multiport ordered IDs')
+      transfer=transfer+parcel_totals(drops(n),liquid)
+    end do
+    call require(abs(transfer(1)/1e-9_dp-1)<1e-13_dp,'total injection mass')
+    call require(abs(transfer(2)/(-5e-9_dp)-1)<1e-13_dp,'weighted momentum')
+    call require(abs(sum(drops(1:3)%mass*drops(1:3)%multiplicity)/2.5e-10_dp-1)<1e-13_dp,'first port share')
+    call require(all(drops(1)%position==port_centers(:,1)).and.all(drops(4)%position==port_centers(:,2)), &
+      'port centers')
+    port_axes(:,2)=0
+    call inject_cone_ports(liquid,1e-9_dp,3,11_int64,port_centers,port_axes,port_fractions, &
+      10.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok)
+    call require(.not.ok.and..not.allocated(drops),'invalid later port leaves no partial injection')
+    port_fractions=[.25_dp,.5_dp]
+    call inject_cone_ports(liquid,1e-9_dp,3,11_int64,port_centers,port_axes,port_fractions, &
+      10.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok)
+    call require(.not.ok,'port fractions must close')
   case('surface_cap')
     call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
     call require(.not.ok,'default boiling rejection')

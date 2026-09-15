@@ -580,3 +580,23 @@ This is a near-boiling numerical vapor-state treatment, not a heat-limited
 boiling-rate, supercritical-fluid or bubble-growth model. The upstream Watson
 latent-property correlation is not added here; the supplied reference latent
 heat remains authoritative. See [source and evidence](validation/surface-cap-20260915.md).
+
+## Multiple injection ports
+
+Set `injection_port_count=1..16`, then provide `injection_port_centers(3,n)`,
+`injection_port_axes(3,n)` and `injection_port_fractions(n)`. In a namelist,
+list x/y/z for the first port, then x/y/z for the next. Fractions must be
+positive and sum to one (roundoff is normalized). Unused entries must be zero.
+Each active center must lie inside the domain and each axis must be nonzero.
+
+`initial_liquid_mass` and `mass_flow_rate` are totals over all ports. Each port
+receives its fraction of the event mass and creates `parcel_count` parcels.
+IDs advance in port order, preserving deterministic restart and parent counts.
+The schedule, liquid, temperature, speed, cone angle and diameter distribution
+are shared. Independent schedules/fuels and resolved nozzle flow are not
+introduced by this option. `maximum_parcels` bounds the combined allocation.
+
+The default count zero uses the original single `injection_center`/`injection_axis`
+path and checkpoint context. With active ports, their centers/axes replace the
+single geometry; all port data participate in restart identity. See
+`cases/spray_3d/water_ports.nml` and [focused evidence](validation/injection-ports-20260915.md).

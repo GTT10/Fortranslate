@@ -57,6 +57,27 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_multiport_schedule_restart(self):
+        settings = ("domain_length=.001,.001,.001,injection_port_count=2,"
+                    "injection_port_centers=.0002,.0005,.0005,.0008,.0005,.0005,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"
+                    "mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4.5e-7,injection_interval=1.5e-7,")
+        checkpoint = self.root/'ports.chk'
+        self.run_case('ports', common=settings)
+        rows = self.check_balance('ports')
+        self.assertEqual(rows[-1]['live_parcels'], 16)
+        self.assertAlmostEqual(rows[-1]['injected_mass']/3.5e-11, 1., delta=1e-13)
+        self.run_case('stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'ports.{suffix}').read_bytes(),
+                             (self.root/f'resumed.{suffix}').read_bytes())
+        result = self.run_case('changed', f"restart_file='{checkpoint}',",
+                               common=settings.replace('.25,.75', '.5,.5'), fail=True)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('bad_shares', common=settings.replace('.25,.75', '.25,.5'), fail=True)
+        self.run_case('storage', common=settings+'maximum_parcels=3,', fail=True)
+
     def test_boiling_surface_cap_restart(self):
         settings = "boiling_model='surface-cap',critical_temperature=647,drop_temperature=400,"
         checkpoint = self.root/'surface-cap.chk'

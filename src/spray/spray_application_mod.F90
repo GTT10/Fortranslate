@@ -25,6 +25,8 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    integer :: injection_port_count,parcels_per_event,port
+    real(dp) :: injection_port_centers(3,16),injection_port_axes(3,16),injection_port_fractions(16)
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
     real(dp) :: domain_length(3),gas_temperature,gas_pressure,gas_velocity(3),shear_velocity
@@ -88,6 +90,7 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      injection_port_count,injection_port_centers,injection_port_axes,injection_port_fractions, &
       injection_center,injection_axis,injection_speed,cone_angle, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_enabled,heat_enabled,evaporation_enabled, &
@@ -114,6 +117,7 @@ contains
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     diameter_shape=0.0_dp; diameter_min=1.0e-12_dp; diameter_max=1.0_dp
+    injection_port_count=0;injection_port_centers=0;injection_port_axes=0;injection_port_fractions=0
     injection_center=0.0015_dp; injection_axis=[0.0_dp,0.0_dp,1.0_dp]; injection_speed=10.0_dp; cone_angle=0.1_dp
     mass_flow_rate=0.0_dp; injection_start=0.0_dp; injection_end=1.0e-5_dp; injection_interval=1.0e-6_dp
     final_time=1.0e-5_dp; maximum_dt=1.0e-7_dp; cfl=0.3_dp; maximum_steps=100000; stop_after_steps=0
@@ -182,8 +186,21 @@ contains
       if (injection_end<=injection_start) call fail('Nonzero injection requires a nonempty time window')
       if ((injection_end-injection_start)/injection_interval>1000000.0_dp) call fail('Too many injection events')
     end if
-    if (any(injection_center<0.0_dp) .or. any(injection_center>=domain_length)) &
-      call fail('Injection center must lie in the domain')
+    if (injection_port_count==0) then
+      if (any(injection_center<0.0_dp) .or. any(injection_center>=domain_length)) &
+        call fail('Injection center must lie in the domain')
+    end if
+    if (injection_port_count<0.or.injection_port_count>16) call fail('Invalid injection port count')
+    if (.not.all(ieee_is_finite(injection_port_centers)).or..not.all(ieee_is_finite(injection_port_axes)).or. &
+        .not.all(ieee_is_finite(injection_port_fractions))) call fail('Nonfinite injection ports')
+    if (any(injection_port_centers(:,injection_port_count+1:)/=0).or. &
+        any(injection_port_axes(:,injection_port_count+1:)/=0).or. &
+        any(injection_port_fractions(injection_port_count+1:)/=0)) call fail('Unused injection port values')
+    do port=1,injection_port_count
+      if (any(injection_port_centers(:,port)<0).or.any(injection_port_centers(:,port)>=domain_length)) &
+        call fail('Injection port outside domain')
+    end do
+    parcels_per_event=parcel_count*max(1,injection_port_count)
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
@@ -204,10 +221,9 @@ contains
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
     if (.not. valid_spray_options(options)) call fail('Invalid parcel integration controls')
-    if (initial_liquid_mass>0.and.parcel_count>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
+    if (initial_liquid_mass>0.and.parcels_per_event>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     ! Validate injection geometry even for a zero-mass/gas-only run.
-    call inject_cone_parcels(liquid,1.0e-12_dp,1,1_int64,injection_center,injection_axis,injection_speed, &
-      cone_angle,drop_diameter,drop_temperature,new_parcels,ok,diameter_shape,diameter_min,diameter_max)
+    call inject_ports(1.0e-12_dp,1,1_int64,new_parcels,ok)
     if (.not. ok) call fail('Invalid parcel injection geometry or material state')
     deallocate(new_parcels)
     allocate(x(size(species)),y(size(species)),primitive(reactive_nprim(size(species))))
@@ -293,8 +309,7 @@ contains
     end if
     allocate(parcels(0)); time=0.0_dp; steps=0; event=0; injected_totals=0.0_dp
     if (initial_liquid_mass>0.0_dp) then
-      call inject_cone_parcels(liquid,initial_liquid_mass,parcel_count,1_int64,injection_center,injection_axis, &
-        injection_speed,cone_angle,drop_diameter,drop_temperature,parcels,ok,diameter_shape,diameter_min,diameter_max)
+      call inject_ports(initial_liquid_mass,parcel_count,1_int64,parcels,ok)
       if (.not. ok) call fail('Initial parcel injection failed')
     end if
     call spray_system_totals(state,spacing,parcels,liquid,reference_totals)
@@ -321,6 +336,13 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (injection_port_count>0) then
+      context=trim(context)//' injection-ports-v1'
+      call append_reals([real(injection_port_count,dp), &
+        reshape(injection_port_centers(:,:injection_port_count),[3*injection_port_count]), &
+        reshape(injection_port_axes(:,:injection_port_count),[3*injection_port_count]), &
+        injection_port_fractions(:injection_port_count)])
+    end if
     if (trim(boiling_model)=='surface-cap') then
       context=trim(context)//' boiling-surface-cap-v1'
       call append_reals([critical_temperature])
@@ -394,8 +416,8 @@ contains
       amount=mass_flow_rate*min(real(event,dp)*injection_interval,injection_end-injection_start)
       if (abs(injected_totals(1)-amount)>1.0e-11_dp*max(amount,1.0e-30_dp)) &
         call fail('Restart injection mass ledger mismatch')
-      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*int(parcel_count,int64)+ &
-          int(merge(parcel_count,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
+      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*int(parcels_per_event,int64)+ &
+          int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
       tolerance=32.0_dp*epsilon(1.0_dp)*max(time,maximum_dt,injection_interval)
       if (mass_flow_rate>0.0_dp) then
         next_event=injection_start+real(event,dp)*injection_interval
@@ -458,11 +480,10 @@ contains
         if (next_event>=injection_end) next_event=huge(1.0_dp)
         if (next_event<=time+tolerance) then
           amount=mass_flow_rate*min(injection_interval,injection_end-next_event)
-          if (size(parcels)+parcel_count>maximum_parcels) call fail('Parcel storage limit reached')
+          if (size(parcels)+parcels_per_event>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
-          call inject_cone_parcels(liquid,amount,parcel_count,first_id,injection_center,injection_axis,injection_speed, &
-            cone_angle,drop_diameter,drop_temperature,new_parcels,ok,diameter_shape,diameter_min,diameter_max)
+          call inject_ports(amount,parcel_count,first_id,new_parcels,ok)
           if (.not. ok) call fail('Scheduled parcel injection failed')
           do i=1,size(new_parcels)
             totals5=parcel_totals(new_parcels(i),liquid)
@@ -520,6 +541,21 @@ contains
     call write_snapshots()
     write(*,'(a,es14.6,a,i0,a,i0)') 'Spray run completed: t=',time,', steps=',steps,', parcels=',size(parcels)
   contains
+    subroutine inject_ports(mass,number,id,result,success)
+      real(dp), intent(in) :: mass
+      integer, intent(in) :: number
+      integer(int64), intent(in) :: id
+      type(spray_parcel), allocatable, intent(out) :: result(:)
+      logical, intent(out) :: success
+      if (injection_port_count==0) then
+        call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,injection_speed, &
+          cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max)
+      else
+        call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
+          injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
+          injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max)
+      end if
+    end subroutine inject_ports
     subroutine fail(text)
       character(len=*), intent(in) :: text
       write(*,'(a)') trim(text)

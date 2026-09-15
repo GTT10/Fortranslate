@@ -55,6 +55,7 @@ module spray_parcel_mod
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
+  public :: inject_cone_ports
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
   subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok, &
@@ -440,6 +441,42 @@ contains
       q=p; transfer=0.0_dp
     end if
   end subroutine
+
+  subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
+      half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: total_mass,centers(:,:),axes(:,:),fractions(:),speed,half_angle,diameter,temperature
+    integer, intent(in) :: number
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(out) :: parcels(:)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: diameter_shape,diameter_min,diameter_max
+    type(spray_parcel), allocatable :: candidate(:),port_parcels(:)
+    integer :: ports,port,offset,total
+    real(dp) :: fraction_sum
+    ok=.false.;ports=size(fractions)
+    if (ports<1.or.ports>16.or.number<1) return
+    if (number>1000000/ports) return
+    if (size(centers,1)/=3.or.size(axes,1)/=3) return
+    if (size(centers,2)/=ports.or.size(axes,2)/=ports) return
+    if (.not.all(ieee_is_finite(fractions))) return
+    if (any(fractions<=0).or.any(fractions>1)) return
+    fraction_sum=sum(fractions)
+    if (abs(fraction_sum-1.0_dp)>5e-12_dp) return
+    total=ports*number
+    if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
+    allocate(candidate(total))
+    do port=1,ports
+      offset=(port-1)*number
+      call inject_cone_parcels(liquid,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
+        centers(:,port),axes(:,port),speed,half_angle,diameter,temperature,port_parcels,ok, &
+        diameter_shape,diameter_min,diameter_max)
+      if (.not.ok) return
+      candidate(offset+1:offset+number)=port_parcels
+      deallocate(port_parcels)
+    end do
+    call move_alloc(candidate,parcels)
+  end subroutine inject_cone_ports
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
       half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max)
