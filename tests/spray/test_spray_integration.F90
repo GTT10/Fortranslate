@@ -18,7 +18,7 @@ program test_spray_integration
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_parcel), allocatable :: drops(:),before_drops(:)
-  type(spray_liquid) :: liquid
+  type(spray_liquid) :: liquid,materials(2)
   type(spray_options) :: options
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
@@ -66,6 +66,54 @@ program test_spray_integration
     call require(all(state(6:,:,:,:)>=0.0_dp),'nonnegative chemistry')
     call require(maxval(abs(sum(state(6:,:,:,:),dim=1)-state(1,:,:,:)))<1.0e-12_dp,'species closure')
     call require(maxval(abs(state(15,:,:,:)-before(15,:,:,:)))<1.0e-12_dp,'inert nitrogen unchanged')
+  case('materials')
+    materials(1)=liquid
+    ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.
+    call initialize_spray_liquid(species,'H2O2',1400.0_dp,2600.0_dp,420.0_dp,101325.0_dp,1.5e6_dp,materials(2),ok)
+    call require(ok,'second liquid')
+    drops(2)%material_id=2
+    before_drops=drops
+    call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals0,materials)
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.false.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,materials=materials)
+    call require(ok,trim(message))
+    call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1,materials)
+    call require(abs(totals1(1)-totals0(1))<1e-12_dp*totals0(1),'mixed mass balance')
+    call require(abs(totals1(5)-totals0(5))<1e-12_dp*abs(totals0(5)),'mixed energy balance')
+    call require(maxval(abs(totals1(2:4)-totals0(2:4)))<1e-18_dp,'mixed momentum balance')
+    do i=1,2
+      call require(drops(i)%mass<before_drops(i)%mass,'both liquids evaporate')
+      j=5+materials(i)%vapor_index
+      call require(sum(state(j,:,:,:))>sum(before(j,:,:,:)),'both gas species receive vapor')
+      call require(abs(totals1(j)-totals0(j))<1e-12_dp*abs(totals0(j)),'individual vapor inventory')
+    end do
+    before=state;before_t=temperature
+    drops(2)%material_id=3;before_drops=drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,materials=materials)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'invalid material rollback')
+    call require(all(drops%mass==before_drops%mass).and.drops(2)%material_id==3,'parcel material rollback')
+    drops(2)%material_id=2
+    injected=0;time=2e-7_dp;steps=1;event=0;force=0
+    call write_spray_checkpoint('materials.chk','materials-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message)
+    call require(.not.ok,'legacy checkpoint rejects nondefault material')
+    call write_spray_checkpoint('materials.chk','materials-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,breakup_state=.true.,split_state=.true.,khrt_state=.true., &
+      source_totals=force,material_state=.true.)
+    call require(ok,trim(message))
+    drops%material_id=1
+    call read_spray_checkpoint('materials.chk','materials-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,breakup_state=.true.,split_state=.true.,khrt_state=.true.,source_totals=force)
+    call require(.not.ok.and.all(drops%material_id==1),'material schema mismatch rolls back')
+    call read_spray_checkpoint('materials.chk','materials-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,breakup_state=.true.,split_state=.true.,khrt_state=.true., &
+      source_totals=force,material_state=.true.)
+    call require(ok.and.drops(1)%material_id==1.and.drops(2)%material_id==2,'material roundtrip with optional state')
+    call require(all(state==before).and.all(temperature==before_t),'mixed exact state roundtrip')
+    open(newunit=i,file='materials.chk',status='old');close(i,status='delete')
   case('acceleration')
     options%drag=.false.;options%heat=.false.;options%evaporation=.false.
     accel=[0.0_dp,0.0_dp,-9810.0_dp];dt=2e-7_dp

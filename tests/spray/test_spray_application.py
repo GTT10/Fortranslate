@@ -57,6 +57,47 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_port_materials_restart(self):
+        settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"
+                    "port_vapor_names='H2O','H2O2',port_liquid_densities=1000,1400,"
+                    "port_liquid_cps=4184,2600,port_reference_temperatures=373.15,420,"
+                    "port_latent_heats=2.257e6,1.5e6,")
+        schedules = ["mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4e-7,injection_interval=2e-7,",
+                     "independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                     "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                     "port_injection_intervals=2e-7,3e-7,"]
+        for index, schedule in enumerate(schedules):
+            with self.subTest(schedule=index):
+                name = f'materials{index}'
+                checkpoint = self.root/f'{name}.chk'
+                common = settings+schedule
+                self.run_case(name, common=common)
+                self.check_balance(name)
+                with (self.root/f'{name}.parcels.csv').open() as stream:
+                    parcels = list(csv.DictReader(stream))
+                self.assertEqual({int(p['material_id']) for p in parcels}, {1, 2})
+                for parcel in parcels:
+                    density = 1000 if int(parcel['material_id']) == 1 else 1400
+                    expected_mass = density*math.pi/6*float(parcel['diameter'])**3
+                    self.assertAlmostEqual(float(parcel['mass'])/expected_mass, 1, delta=1e-12)
+                with (self.root/f'{name}.gas.csv').open() as stream:
+                    gas = list(csv.DictReader(stream))
+                for species in ['H2O', 'H2O2']:
+                    self.assertGreater(sum(float(g[f'rhoY_{species}']) for g in gas), 0)
+                self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=common)
+                self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=common)
+                for suffix in ['gas.csv', 'parcels.csv']:
+                    self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                     (self.root/f'{name}resumed.{suffix}').read_bytes())
+                self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+                result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                       common=common.replace('cps=4184,2600', 'cps=4184,2700'))
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('invalid_material', common=settings.replace("'H2O2'", "'unknown'"), fail=True)
+        self.run_case('invalid_material_density', common=settings.replace('1000,1400', '1000,0'), fail=True)
+        self.run_case('unused_material', common="port_vapor_names='H2O',", fail=True)
+
     def test_port_state_overrides_restart(self):
         settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                     "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"

@@ -30,6 +30,7 @@ module spray_parcel_mod
     real(dp) :: deformation=0.0_dp,deformation_rate=0.0_dp
     integer(int64) :: parent_id=0_int64
     real(dp) :: rt_time=-1.0_dp
+    integer :: material_id=1
   end type
   type, public :: spray_options
     real(dp) :: khrt_b0=.61_dp,khrt_b1=7.0_dp,khrt_c3=1.0_dp
@@ -55,6 +56,7 @@ module spray_parcel_mod
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
+  public :: select_spray_liquid
   public :: inject_cone_ports
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
@@ -149,6 +151,7 @@ contains
     ok = .false.
     if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, &
         p%multiplicity,p%deformation,p%deformation_rate,p%rt_time]))) return
+    if (p%material_id<1.or.p%material_id>16) return
     if (p%rt_time < -1.0_dp.or.p%rt_time>1e6_dp) return
     if (p%parent_id<0_int64.or.p%parent_id>=p%id) return
     if (abs(p%deformation)>1e6_dp.or.abs(p%deformation_rate)>1e20_dp) return
@@ -199,6 +202,22 @@ contains
       o%particle_cfl > 0.0_dp .and. o%particle_cfl <= 0.5_dp .and. &
       o%minimum_diameter >= 1.0e-12_dp .and. o%minimum_diameter <= 1.0_dp .and. o%maximum_substeps > 0
   end function
+
+  function select_spray_liquid(parcel,liquid,materials) result(material)
+    type(spray_parcel), intent(in) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_liquid) :: material
+    material=spray_liquid()
+    if (present(materials)) then
+      if (size(materials)<1.or.size(materials)>16) return
+      if (parcel%material_id<1.or.parcel%material_id>size(materials)) return
+      material=materials(parcel%material_id)
+    else
+      if (parcel%material_id/=1) return
+      material=liquid
+    end if
+  end function select_spray_liquid
 
   pure real(dp) function liquid_viscosity_at_temperature(o,temperature) result(mu)
     type(spray_options), intent(in) :: o
@@ -444,8 +463,10 @@ contains
 
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
-      port_speeds,port_diameters,port_temperatures,port_angles)
+      port_speeds,port_diameters,port_temperatures,port_angles,materials)
     type(spray_liquid), intent(in) :: liquid
+    type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_liquid) :: material
     real(dp), intent(in) :: total_mass,centers(:,:),axes(:,:),fractions(:),speed,half_angle,diameter,temperature
     integer, intent(in) :: number
     integer(int64), intent(in) :: first_id
@@ -478,6 +499,9 @@ contains
     if (present(port_angles)) then
       if (size(port_angles)/=ports) return
     end if
+    if (present(materials)) then
+      if (size(materials)/=ports) return
+    end if
     total=ports*number
     if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
     allocate(candidate(total))
@@ -488,10 +512,13 @@ contains
       if (present(port_diameters)) local_diameter=port_diameters(port)
       if (present(port_temperatures)) local_temperature=port_temperatures(port)
       if (present(port_angles)) local_angle=port_angles(port)
-      call inject_cone_parcels(liquid,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
+      material=liquid
+      if (present(materials)) material=materials(port)
+      call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
         diameter_shape,diameter_min,diameter_max)
       if (.not.ok) return
+      if (present(materials)) port_parcels%material_id=port
       candidate(offset+1:offset+number)=port_parcels
       deallocate(port_parcels)
     end do

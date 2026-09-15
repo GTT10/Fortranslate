@@ -28,7 +28,7 @@ merely because the repository has been consolidated.
 
 ## 0.246.0 functional increment
 
-The opt-in regular 3D path now connects single-component parcels, conservative
+The opt-in regular 3D path now connects coexisting single-component liquid populations selected per port, conservative
 mass/momentum/total-energy exchange, drag/heating/evaporation, timed cone
 injection with up to 16 independently configured ports, shared or independent schedules and optional mass-CDF diameters, deviatoric Smagorinsky and coupled checkpoint/restart to the existing
 gas solver. Cell-local CVODE is connected to this CFD path, with a pinned
@@ -52,7 +52,7 @@ Antoine saturation-pressure fits are connected with explicit temperature bounds
 and restart identity. Polynomial liquid density now drives injection, drag,
 evaporation and breakup consistently; inverse-temperature liquid viscosity now
 drives ETAB/KH-RT. An optional near-boiling vapor-state temperature cap follows
-the pinned reference convention. Physical boiling rates and multicomponent liquids remain open.
+the pinned reference convention. Port material identity now routes evaporation to each liquid's gas species and persists through restart. Physical boiling rates and composition-varying mixture droplets remain open.
 
 ## Ordered implementation work
 

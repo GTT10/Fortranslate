@@ -226,10 +226,12 @@ contains
   end subroutine
 
   subroutine advance_spray_coupling_3d(species, transport, liquid, options, state, temperature, &
-      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change)
+      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change,materials)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
+    type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_liquid) :: material
     type(spray_options), intent(in) :: options
     real(dp), intent(inout) :: state(:,:,:,:), temperature(:,:,:)
     real(dp), intent(in) :: lower(3), spacing(3), interval
@@ -274,6 +276,10 @@ contains
     if (maxval(abs(lower)) > 1.0e9_dp .or. interval < 0.0_dp .or. interval > 1.0e6_dp) return
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
+      material=select_spray_liquid(parcels(p),liquid,materials)
+      if (.not.valid_spray_liquid(material)) return
+      if (material%vapor_index>size(species)) return
+      if (trim(species(material%vapor_index)%name)/=trim(material%vapor_name)) return
       if (p > 1) then
         if (parcels(p)%id <= parcels(p-1)%id) then
           message='Parcel IDs must be strictly increasing'; return
@@ -288,6 +294,7 @@ contains
     end if
     volume=product(spacing); total_steps=0
     do p=1,size(drops)
+      material=select_spray_liquid(drops(p),liquid,materials)
       elapsed=0.0_dp
       do while (elapsed < interval .and. drops(p)%mass > 0.0_dp)
         if (total_steps >= options%maximum_substeps) then
@@ -304,16 +311,16 @@ contains
         end do
         call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,local_ok)
         if (.not. local_ok) return
-        call build_spray_film(species,transport,primitive,tg,drops(p),liquid,options,film,local_ok)
+        call build_spray_film(species,transport,primitive,tg,drops(p),material,options,film,local_ok)
         if (.not. local_ok) then
-          message='Unsupported film state (including boiling) or invalid liquid/vapor data'; return
+          message='Unsupported film state (including boiling) or invalid material/vapor data'; return
         end if
         sampled_pressure=primitive(5)
-        call spray_transfer_rates(drops(p),liquid,film,options,invtau,heat,masscoef,local_ok)
+        call spray_transfer_rates(drops(p),material,film,options,invtau,heat,masscoef,local_ok)
         if (.not. local_ok) return
-        d=parcel_diameter(drops(p),liquid); mdot=masscoef*d
-        tdot=(heat*(tg-drops(p)%temperature)-mdot*(film%vapor_enthalpy-liquid_energy(liquid,drops(p)%temperature))) &
-          /(drops(p)%mass*liquid%heat_capacity)
+        d=parcel_diameter(drops(p),material); mdot=masscoef*d
+        tdot=(heat*(tg-drops(p)%temperature)-mdot*(film%vapor_enthalpy-liquid_energy(material,drops(p)%temperature))) &
+          /(drops(p)%mass*material%heat_capacity)
         dt=interval-elapsed
         if (invtau > 0.0_dp) dt=min(dt,options%max_fractional_change/invtau)
         if (mdot > 0.0_dp .and. d > 2.0_dp*options%minimum_diameter) &
@@ -325,16 +332,16 @@ contains
         accepted=.false.
         do attempt=1,30
           if (dt <= 0.0_dp .or. elapsed+dt <= elapsed) exit
-          call advance_parcel_frozen_film(drops(p),liquid,film,options,dt,next,transfer,local_ok)
+          call advance_parcel_frozen_film(drops(p),material,film,options,dt,next,transfer,local_ok)
           if (local_ok .and. next%mass>0.0_dp) then
-            call nasa7_mass_properties(species(liquid%vapor_index),next%temperature,cp,cv,h,e,entropy,local_ok)
+            call nasa7_mass_properties(species(material%vapor_index),next%temperature,cp,cv,h,e,entropy,local_ok)
             if (local_ok .and. options%evaporation) then
-              call saturation_mole_fraction(liquid,species(liquid%vapor_index)%molecular_weight, &
+              call saturation_mole_fraction(material,species(material%vapor_index)%molecular_weight, &
                 next%temperature,sampled_pressure,xsat,local_ok)
             end if
           end if
           if (local_ok) then
-            increase=0.0_dp; increase(1:5)=transfer; increase(5+liquid%vapor_index)=transfer(1)
+            increase=0.0_dp; increase(1:5)=transfer; increase(5+material%vapor_index)=transfer(1)
             do n=1,8
               i=indices(1,n); j=indices(2,n); k=indices(3,n)
               candidate(:,i,j,k)=old_cells(:,n)+weights(n)*increase/volume
@@ -353,17 +360,17 @@ contains
           dt=0.5_dp*dt
         end do
         if (.not. accepted) then
-          message='Spray feedback cannot preserve gas/liquid admissibility; complete update rolled back'; return
+          message='Spray feedback cannot preserve gas/material admissibility; complete update rolled back'; return
         end if
-        call advance_spray_breakup(next,liquid,options,sampled(1),film%gas_velocity, &
+        call advance_spray_breakup(next,material,options,sampled(1),film%gas_velocity, &
           film%density,film%viscosity,dt,local_ok)
         if (.not.local_ok) then
           message='Spray breakup rejected; complete coupling step rolled back'; return
         end if
-        call apply_parcel_boundaries(next,liquid,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
+        call apply_parcel_boundaries(next,material,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
         if (.not.local_ok) return
         ledger(1:5)=ledger(1:5)+exchange
-        ledger(5+liquid%vapor_index)=ledger(5+liquid%vapor_index)+exchange(1)
+        ledger(5+material%vapor_index)=ledger(5+material%vapor_index)+exchange(1)
         drops(p)=next
         elapsed=min(interval,elapsed+dt); total_steps=total_steps+1
       end do
@@ -377,10 +384,12 @@ contains
     substeps=total_steps; ok=.true.; message=''
   end subroutine
 
-  subroutine spray_system_totals(state, spacing, parcels, liquid, totals)
+  subroutine spray_system_totals(state, spacing, parcels, liquid, totals,materials)
     real(dp), intent(in) :: state(:,:,:,:), spacing(3)
     type(spray_parcel), intent(in) :: parcels(:)
     type(spray_liquid), intent(in) :: liquid
+    type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_liquid) :: material
     real(dp), intent(out) :: totals(size(state,1))
     real(dp) :: drop(5)
     integer :: v,p
@@ -388,9 +397,10 @@ contains
       totals(v)=sum(state(v,:,:,:))*product(spacing)
     end do
     do p=1,size(parcels)
-      drop=parcel_totals(parcels(p),liquid)
+      material=select_spray_liquid(parcels(p),liquid,materials)
+      drop=parcel_totals(parcels(p),material)
       totals(1:5)=totals(1:5)+drop
-      totals(5+liquid%vapor_index)=totals(5+liquid%vapor_index)+drop(1)
+      totals(5+material%vapor_index)=totals(5+material%vapor_index)+drop(1)
     end do
   end subroutine
 end module spray_coupling_3d_mod

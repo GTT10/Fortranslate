@@ -79,10 +79,10 @@ contains
     end if
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state
-    logical :: has_breakup,has_split,has_khrt
-    character(len=40) :: expected_magic
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals,material_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state
+    logical :: has_breakup,has_split,has_khrt,has_materials
+    character(len=64) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -96,6 +96,8 @@ contains
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
     integer(c_int) :: status
     logical :: exists,local_ok
+    has_materials=.false.
+    if (present(material_state)) has_materials=material_state
     has_breakup=.false.
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
@@ -108,6 +110,7 @@ contains
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
     end if
+    if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -123,6 +126,7 @@ contains
     if (time < 0.0_dp .or. steps < 0 .or. event < 0 .or. size(parcels)>1000000) return
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
+      if (.not.has_materials.and.parcels(p)%material_id/=1) return
       if (.not.has_split.and.parcels(p)%parent_id/=0) return
       if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
       if (parcels(p)%parent_id>0) then
@@ -178,6 +182,7 @@ contains
       write(unit,'(i0,1x,*(es26.17e3,1x))',iostat=ios) parcels(p)%id,parcels(p)%position,parcels(p)%velocity, &
         parcels(p)%mass,parcels(p)%temperature,parcels(p)%multiplicity
       end if
+      if (has_materials.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%material_id
       if (has_split.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%parent_id
       if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
     end do
@@ -199,10 +204,10 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state
-    logical :: has_breakup,has_split,has_khrt
-    character(len=40) :: expected_magic
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals,material_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state
+    logical :: has_breakup,has_split,has_khrt,has_materials
+    character(len=64) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -220,6 +225,8 @@ contains
     integer :: unit,ios,i,j,k,p,dims(3),got(5),next_steps,next_event
     character(len=16384) :: line
     logical :: local_ok
+    has_materials=.false.
+    if (present(material_state)) has_materials=material_state
     has_breakup=.false.
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
@@ -232,6 +239,7 @@ contains
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
     end if
+    if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -305,6 +313,13 @@ contains
       end if
       drops(p)%mass=row(7); drops(p)%temperature=row(8); drops(p)%multiplicity=row(9)
       if (ios/=0) goto 900
+      if (has_materials) then
+        call read_tokens(unit,tokens(1:1),ios)
+        if (ios/=0) goto 900
+        if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
+        read(tokens(1),*,iostat=ios) drops(p)%material_id
+        if (ios/=0) goto 900
+      end if
       if (has_split) then
         call read_tokens(unit,tokens(1:1),ios)
         if (ios/=0) goto 900

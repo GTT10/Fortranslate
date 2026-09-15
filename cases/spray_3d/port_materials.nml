@@ -1,0 +1,24 @@
+! Two pure-liquid populations. H2O2 properties are illustrative; chemistry is disabled.
+&spray
+ cells=4,4,4, domain_length=.004,.004,.004,
+ gas_temperature=900, gas_pressure=101325,
+ mole_names='N2','','', mole_amounts=1,0,0,
+ chemistry_enabled=.false.,
+ port_vapor_names='H2O','H2O2',port_liquid_densities=1000,1400,port_liquid_cps=4184,2600,
+ port_reference_temperatures=373.15,420,port_latent_heats=2257000,1500000,
+ vapor_name='H2O', liquid_density=1000, liquid_cp=4184,
+ reference_temperature=373.15, reference_pressure=101325, latent_heat=2257000,
+ drop_temperature=330, drop_diameter=20e-6,
+ initial_liquid_mass=1e-10, parcel_count=4,
+ injection_port_count=2,
+ injection_port_speeds=80,120,injection_port_diameters=20e-6,40e-6,
+ injection_port_temperatures=310,340,injection_port_cone_angles=.05,.15,
+ injection_port_centers=.001,.0015,.0015,.003,.0015,.0015,
+ injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,
+ independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,
+ port_injection_starts=0,2e-7,port_injection_ends=1e-6,1.5e-6,port_injection_intervals=3e-7,4e-7,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1,
+ injection_speed=10, cone_angle=.1,
+ final_time=2e-6, maximum_dt=1e-7,
+ output_prefix='port_materials', checkpoint_file='port_materials.chk'
+/

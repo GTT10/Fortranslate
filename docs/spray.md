@@ -70,7 +70,7 @@ is the mass of **one** droplet; its multiplicity multiplies all transfer terms.
 
 ## Models and conventions
 
-SI units are used throughout. The liquid is dilute, spherical, single-component,
+SI units are used throughout. Each liquid population is dilute, spherical, single-component,
 spatially isothermal, with constant or temperature-dependent polynomial density. `vapor_name` must identify a gas
 species in the selected mechanism. Liquid property numbers in the examples
 are illustrative constants, **not** a fitted methanol/water property database.
@@ -637,7 +637,7 @@ Initial injection and both shared and independent schedules use the resolved
 conditions. Different temperatures and diameters produce the corresponding
 single-drop mass and multiplicity, while each event retains its specified
 mass allocation. Momentum and energy ledgers use each generated parcel's own
-velocity and temperature. The liquid, distribution shape and truncation bounds
+velocity and temperature. By default the liquid, distribution shape and truncation bounds
 remain shared. For a distributed diameter input, the per-port diameter replaces
 the same scale parameter as `drop_diameter`.
 
@@ -645,3 +645,33 @@ Resolved override values participate in restart identity. Without overrides,
 the preceding port checkpoint context remains unchanged. See
 `cases/spray_3d/water_port_states.nml` and
 [focused evidence](validation/injection-port-states-20260915.md).
+
+
+## Different pure liquids by injection port
+
+`port_vapor_names(16)`, `port_liquid_densities(16)`, `port_liquid_cps(16)`,
+`port_reference_temperatures(16)`, `port_reference_pressures(16)` and
+`port_latent_heats(16)` override each active port's liquid. Units are SI;
+blank names and numeric -1 inherit the global values. Unused slots must keep
+those defaults. Every vapor name must exist in the configured gas mechanism;
+formation energy is initialized separately from that species' thermodynamics.
+Specifying any override enables material IDs equal to the port number.
+
+Initial injection and both schedule modes retain this identity. Droplet mass,
+heat transfer, evaporation, gas-species feedback, boundary budgets and system
+energy use the selected liquid. Computational splitting copies the identity.
+Parcel CSV adds `material_id`; opt-in checkpoint records retain it and reject
+changed liquid inputs. Default single-liquid checkpoint/output formats remain.
+
+The application currently requires constant density, Clausius saturation pressure
+and `boiling_model='reject'` when port materials are specified. Breakup viscosity,
+surface tension and other breakup controls remain shared. The low-level material
+pool API accepts individual `spray_liquid` records; totals require validated
+parcel IDs and materials, as supplied by injection/coupling or checked after
+application restart. This is coexisting pure-liquid droplets, not a liquid
+mixture with composition-dependent evaporation.
+
+`cases/spray_3d/port_materials.nml` uses H2O and H2O2 in inert nitrogen with
+chemistry disabled. Its second-liquid properties are illustrative integration
+inputs, not a calibrated peroxide model.
+See [focused evidence](validation/port-materials-20260915.md).
