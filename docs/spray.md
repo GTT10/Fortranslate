@@ -388,3 +388,20 @@ CVODE 0D and regular 3D spray executables. The 0D trajectory agrees with an
 independent Cantera reactor, and the coupled chemistry/transport/spray case
 restarts exactly. See [commands and evidence](validation/species-capacity-20260915.md).
 MPI and AMR with more than 32 species have not been newly qualified.
+
+
+## SRI pressure-dependent reactions
+
+Selected mechanism ingestion accepts Cantera `SRI` falloff data with required
+`A`, `B`, `C` and optional `D=1`, `E=0`. The normalized bundle uses
+`type="sri-falloff"` and an `sri` coefficient mapping. SRI is distinct from
+Troe and cannot specify both models. A and C must be nonnegative, D positive,
+and A and C cannot both vanish. All coefficients must be finite.
+
+Fortran evaluates the five-parameter broadening factor using log-sum-exp and
+provides the analytical concentration derivative used by the existing kinetic
+Jacobian. AMR/EB checkpoint mechanism records include the five SRI coefficients
+for SRI reactions; MPI mechanism comparisons include them too. Existing
+non-SRI checkpoint records keep their layout. This extends reaction kinetics,
+not the liquid property model. PLOG, Chebyshev, Tsang and chemically activated
+rates remain open. See [focused evidence](validation/sri-20260915.md).

@@ -3,7 +3,7 @@ module amr_reactive_3d_checkpoint_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: &
-    elementary_reaction, valid_elementary_reaction, &
+    reaction_kind_sri, elementary_reaction, valid_elementary_reaction, &
     valid_arrhenius_rate, valid_troe_parameters
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
@@ -1100,6 +1100,10 @@ contains
         reactions(reaction_index)%troe%temperature_1, &
         reactions(reaction_index)%troe%temperature_2
       if (status /= 0) return
+      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
+        if (status/=0) return
+      end if
       if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
         write(unit, '(*(es27.18e3,1x))', iostat=status) &
           reactions(reaction_index)%third_body_efficiencies
@@ -1130,6 +1134,7 @@ contains
     real(dp), allocatable :: stored_reactants(:), stored_products(:)
     real(dp), allocatable :: stored_efficiencies(:)
     real(dp) :: stored_rates(9), expected_rates(9)
+    real(dp) :: stored_sri(5)
     real(dp) :: stored_troe(4), expected_troe(4)
     real(dp) :: stored_controls(2), expected_controls(2)
     character(len=1024) :: marker, stored_bundle, stored_integrator
@@ -1326,6 +1331,14 @@ contains
       if (.not. all(checkpoint_real_matches(stored_troe, expected_troe))) then
         message = "Selected 3D AMR checkpoint mechanism mismatch"
         return
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+        message="Selected 3D AMR checkpoint mechanism mismatch"
+        read(unit,*,iostat=status) stored_sri
+        if (status/=0) return
+        if (.not.all(ieee_is_finite(stored_sri))) return
+        if (.not.all(checkpoint_real_matches(stored_sri,reactions(reaction_index)%sri))) return
+        message=""
       end if
       if (efficiency_size > 0) then
         allocate(stored_efficiencies(efficiency_size))

@@ -3974,7 +3974,7 @@ contains
       distribution%comm, counts_match, collective_ok)
     if (.not. collective_ok) return
 
-    real_count = 3 * nspecies + 13
+    real_count = 3 * nspecies + 18
     allocate(local_reals(real_count, local_count))
     allocate(root_reals(real_count, local_count))
     allocate(local_integers(4, local_count))
@@ -4032,6 +4032,7 @@ contains
         reactions(reaction_index)%troe%temperature_3, &
         reactions(reaction_index)%troe%temperature_1, &
         reactions(reaction_index)%troe%temperature_2]
+      local_reals(real_index+4:real_index+8,reaction_index)=reactions(reaction_index)%sri
     end do
     root_reals = local_reals
     root_integers = local_integers

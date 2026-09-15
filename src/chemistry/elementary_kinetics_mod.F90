@@ -14,6 +14,7 @@ module elementary_kinetics_mod
   integer, parameter, public :: reaction_kind_elementary = 1
   integer, parameter, public :: reaction_kind_three_body = 2
   integer, parameter, public :: reaction_kind_falloff = 3
+  integer, parameter, public :: reaction_kind_sri = 4
 
   type, public :: arrhenius_rate
     real(dp) :: pre_exponential = 0.0_dp
@@ -40,6 +41,7 @@ module elementary_kinetics_mod
     real(dp), allocatable :: third_body_efficiencies(:)
     type(troe_parameters) :: troe
     logical :: reversible = .true.
+    real(dp) :: sri(5) = [1.0_dp,0.0_dp,1.0_dp,1.0_dp,0.0_dp]
   end type elementary_reaction
 
   public :: valid_arrhenius_rate
@@ -108,11 +110,16 @@ contains
     case (reaction_kind_three_body)
       if (.not. valid_arrhenius_rate(reaction%forward_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
-    case (reaction_kind_falloff)
+    case (reaction_kind_falloff,reaction_kind_sri)
       if (.not. valid_arrhenius_rate(reaction%low_pressure_rate)) return
       if (.not. valid_arrhenius_rate(reaction%high_pressure_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
       if (.not. valid_troe_parameters(reaction%troe)) return
+      if (reaction%kind==reaction_kind_sri) then
+        if (reaction%troe%enabled.or..not.all(ieee_is_finite(reaction%sri))) return
+        if (reaction%sri(1)<0.or.reaction%sri(3)<0.or.reaction%sri(4)<=0) return
+        if (reaction%sri(1)==0.and.reaction%sri(3)==0) return
+      end if
     case default
       return
     end select
@@ -226,6 +233,30 @@ contains
       effective_concentration >= 0.0_dp
   end function effective_third_body_concentration
 
+  ! Cantera 3.2 SRI form: d*T**e*(a*exp(-b/T)+exp(-T/c))**X.
+  real(dp) function sri_falloff_factor(parameters,temperature,reduced_pressure,ok,derivative) result(factor)
+    real(dp), intent(in) :: parameters(5),temperature,reduced_pressure
+    logical, intent(out) :: ok
+    real(dp), intent(out) :: derivative
+    real(dp) :: terms(2),center,lp,x,lf,pivot
+    factor=0;derivative=0;ok=.false.
+    if (.not.all(ieee_is_finite([parameters,temperature,reduced_pressure]))) return
+    if (temperature<=0.or.reduced_pressure<0) return
+    if (parameters(1)<0.or.parameters(3)<0.or.parameters(4)<=0) return
+    if (parameters(1)==0.and.parameters(3)==0) return
+    ! Log-sum-exp avoids underflow of the temperature-dependent center.
+    terms=-huge(1.0_dp)/4
+    if (parameters(1)>0) terms(1)=log(parameters(1))-parameters(2)/temperature
+    if (parameters(3)>0) terms(2)=-temperature/parameters(3)
+    pivot=maxval(terms);center=pivot+log(sum(exp(terms-pivot)))
+    lp=log10(max(reduced_pressure,minimum_reduced_pressure));x=1/(1+lp*lp)
+    lf=log(parameters(4))+parameters(5)*log(temperature)+x*center
+    if (.not.ieee_is_finite(lf).or.abs(lf)>logarithm_limit) return
+    factor=exp(lf)
+    derivative=-2*lp*x*x*center/log(10.0_dp)
+    ok=ieee_is_finite(factor).and.ieee_is_finite(derivative)
+  end function sri_falloff_factor
+
   real(dp) function troe_falloff_factor( &
       parameters, temperature, reduced_pressure, ok, &
       logarithmic_derivative) result(falloff_factor)
@@ -327,7 +358,7 @@ contains
         concentration_derivative = base_rate * &
           reaction%third_body_efficiencies
       end if
-    case (reaction_kind_falloff)
+    case (reaction_kind_falloff,reaction_kind_sri)
       if (.not. valid_efficiencies(reaction, size(concentrations))) then
         ok = .false.
         return
@@ -345,9 +376,13 @@ contains
         reaction, concentrations, ok)
       if (.not. ok) return
       reduced_pressure = low_rate * third_body / high_rate
+      if (reaction%kind==reaction_kind_sri) then
+        falloff_factor=sri_falloff_factor(reaction%sri,temperature,reduced_pressure,ok,log_factor_derivative)
+      else
       falloff_factor = troe_falloff_factor( &
         reaction%troe, temperature, reduced_pressure, ok, &
         log_factor_derivative)
+      end if
       if (.not. ok) return
       rate_constant = high_rate * reduced_pressure / &
         (1.0_dp + reduced_pressure) * falloff_factor

@@ -14,9 +14,9 @@ The accepted mechanism subset is deliberately small:
 * NASA7 species with gas Lennard-Jones transport data;
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
-* Lindemann falloff and falloff reactions with Troe broadening.
+* Lindemann falloff and falloff reactions with Troe or SRI broadening.
 
-PLOG, Chebyshev, SRI, NASA9, non-gas transport, and missing transport are
+PLOG, Chebyshev, NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
 Cantera duplicate reaction ordering is preserved exactly.
 """
@@ -449,15 +449,13 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
     if bool(getattr(rate, "chemically_activated", False)):
         raise ValueError(f"{equation}: chemically-activated rates are unsupported")
-    if rate_subtype in {"sri", "tsang"}:
+    if rate_subtype in {"tsang"}:
         raise ValueError(f"{equation}: {rate_subtype} falloff is unsupported")
 
     if "plog" in combined or "pressure-dependent-arrhenius" in combined:
         raise ValueError(f"{equation}: PLOG reactions are unsupported")
     if "chebyshev" in combined:
         raise ValueError(f"{equation}: Chebyshev reactions are unsupported")
-    if "sri" in combined or _has_key_case_insensitive(raw, "SRI"):
-        raise ValueError(f"{equation}: SRI falloff is unsupported")
     if "tsang" in combined or _has_key_case_insensitive(raw, "Tsang"):
         raise ValueError(f"{equation}: Tsang falloff is unsupported")
     if "chemically-activated" in combined:
@@ -608,7 +606,19 @@ def _reaction_record(
             raw.get("high-P-rate-constant"), f"{equation} high-pressure rate"
         )
         troe = _troe_record(raw, equation)
-        if troe is None:
+        sri = _key_case_insensitive(raw, "SRI")
+        if sri is not None:
+            if troe is not None:
+                raise ValueError(f"{equation}: conflicting falloff models")
+            values = _mapping(sri, f"{equation} SRI")
+            record["sri"] = {k: _as_float(values[k], f"{equation} SRI {k}") for k in ("A", "B", "C")}
+            record["sri"].update({k: _as_float(values.get(k, default), f"{equation} SRI {k}")
+                                  for k, default in [("D", 1.), ("E", 0.)]})
+            a, b, c, d, e = (record["sri"][k] for k in ("A", "B", "C", "D", "E"))
+            if a < 0 or c < 0 or d <= 0 or (a == 0 and c == 0):
+                raise ValueError(f"{equation}: invalid SRI parameters")
+            record["type"] = "sri-falloff"
+        elif troe is None:
             # Require Cantera's explicit rate classification. Missing Troe data
             # must not silently downgrade a malformed/unknown falloff model.
             subtype = str(getattr(getattr(reaction, "rate", None), "sub_type", "")).lower()

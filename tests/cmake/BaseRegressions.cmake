@@ -83,6 +83,10 @@ add_executable(
   unit/test_amr_reactive_3d_checkpoint.F90
 )
 target_link_libraries(test_amr_reactive_3d_checkpoint PRIVATE pelef_core)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sri_checkpoint")
+add_test(NAME unit_amr_reactive_3d_sri_checkpoint COMMAND test_amr_reactive_3d_checkpoint sri)
+set_tests_properties(unit_amr_reactive_3d_sri_checkpoint PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sri_checkpoint")
 add_test(
   NAME unit_amr_reactive_3d_checkpoint
   COMMAND test_amr_reactive_3d_checkpoint

@@ -2,7 +2,7 @@ program test_amr_reactive_3d_checkpoint
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use elementary_kinetics_mod, only: elementary_reaction
+  use elementary_kinetics_mod, only: elementary_reaction,reaction_kind_sri
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
   use gas_transport_mod, only: gas_transport_species
@@ -21,6 +21,7 @@ program test_amr_reactive_3d_checkpoint
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
     read_dynamic_amr_reactive_3d_checkpoint
   implicit none
+  character(len=8) :: variant
 
   integer, parameter :: n = 4, ratio = 2
   character(len=*), parameter :: checkpoint_path = &
@@ -75,6 +76,15 @@ program test_amr_reactive_3d_checkpoint
   call require(ok, "elementary thermodynamics load")
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "elementary mechanism load")
+  call get_command_argument(1,variant)
+  if (variant=='sri') then
+    reactions(2)%kind=reaction_kind_sri
+    reactions(2)%low_pressure_rate=reactions(2)%forward_rate
+    reactions(2)%high_pressure_rate=reactions(2)%forward_rate
+    allocate(reactions(2)%third_body_efficiencies(size(species)))
+    reactions(2)%third_body_efficiencies=1
+    reactions(2)%sri=[1.2_dp,500.0_dp,1000.0_dp,.8_dp,.1_dp]
+  end if
   call load_h2o2_elementary_transport(transport, ok)
   call require(ok, "elementary transport load")
   config = reactive_3d_config()
@@ -499,9 +509,12 @@ program test_amr_reactive_3d_checkpoint
     "selected composition mismatch transaction")
 
   incompatible_reactions = reactions
-  incompatible_reactions(1)%forward_rate%pre_exponential = &
-    1.000001_dp * &
-      incompatible_reactions(1)%forward_rate%pre_exponential
+  if (variant=='sri') then
+    incompatible_reactions(2)%sri(4)=1.01_dp*reactions(2)%sri(4)
+  else
+    incompatible_reactions(1)%forward_rate%pre_exponential = &
+      1.000001_dp * incompatible_reactions(1)%forward_rate%pre_exponential
+  end if
   call read_amr_reactive_3d_checkpoint( &
     selected_checkpoint_path, species, selected_config, amr_config, patch, &
     coarse_state, coarse_temperature, fine_state, fine_temperature, &

@@ -33,7 +33,7 @@ mass/momentum/total-energy exchange, drag/heating/evaporation, timed cone
 injection with optional mass-CDF diameters, deviatoric Smagorinsky and coupled checkpoint/restart to the existing
 gas solver. Cell-local CVODE is connected to this CFD path, with a pinned
 FFCM1_Red liquid-methanol burn fixture and independent Cantera gas-only oracles.
-Chemical labels, single-interval NASA7 and classified Lindemann ingestion are
+Chemical labels, single-interval NASA7 and classified Lindemann/SRI ingestion are
 supported. Selected mechanism capacity is now 128 species; a 53-species GRI-Mech
 0D and coupled-spray case has focused evidence. Large-mechanism MPI/scaling and
 production diesel chemistry remain open. See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).

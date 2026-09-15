@@ -104,6 +104,21 @@ class Lindemann(unittest.TestCase):
         self.assertIn('reaction_kind_falloff', text)
         self.assertNotIn('%troe%enabled = .true.', text)
 
+    def test_sri_import_and_generation(self):
+        r = self.reaction(); r.rate.sub_type = 'SRI'; r.reaction_type = 'falloff-SRI'
+        r.input_data['SRI'] = {'A': 1.2, 'B': 500., 'C': 1000.}
+        record = ingest._reaction_record(r, ['A', 'B'], 0)
+        self.assertEqual(record['type'], 'sri-falloff')
+        self.assertEqual(record['sri']['D'], 1.)
+        self.assertEqual(record['sri']['E'], 0.)
+        data = {'module_name': 'sri_mod', 'loader_name': 'load_sri', 'kernel_name': 'sri_rates',
+                'symbol_prefix': 'sri', 'species': ['A', 'B'], 'reactions': [record]}
+        generator.validate(data)
+        self.assertIn('%sri(5)', generator.generate(data))
+        record['sri']['D'] = -1
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+
     def test_unknown_or_malformed_falloff_not_silently_lindemann(self):
         for subtype, kind in [('Troe', 'falloff-Troe'), ('', 'falloff-Lindemann'),
                               ('Lindemann', 'falloff-unknown'), ('SRI', 'falloff-SRI'),

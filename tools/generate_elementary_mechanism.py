@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-REACTION_TYPES = {"elementary", "three-body", "falloff"}
+REACTION_TYPES = {"elementary", "three-body", "falloff", "sri-falloff"}
 CHEMISTRY_INTEGRATORS = {"explicit", "implicit"}
 TRANSPORT_GEOMETRIES = {"atom": 0, "linear": 1, "nonlinear": 2}
 MAX_SPECIES = 128
@@ -121,6 +121,7 @@ FORTRAN_IMPORTED_IDENTIFIERS = {
     "reaction_kind_elementary",
     "reaction_kind_three_body",
     "reaction_kind_falloff",
+    "reaction_kind_sri",
 }
 # Names in the selected-mechanism probe's host scope and in the generated
 # module's procedure scopes.  Every public name emitted by a bundle is
@@ -495,15 +496,27 @@ def validate(data: dict[str, Any]) -> None:
         reaction_type = reaction.get("type", "elementary")
         if reaction_type not in REACTION_TYPES:
             raise ValueError(f"{equation}: unsupported reaction type")
+        if "sri" in reaction and reaction_type != "sri-falloff":
+            raise ValueError(f"{equation}: SRI requires sri-falloff type")
         for side in ("reactants", "products"):
             if not reaction[side]:
                 raise ValueError(f"{equation}: empty {side}")
             for name, coefficient in reaction[side].items():
                 if name not in species or finite_float(coefficient, equation) <= 0.0:
                     raise ValueError(f"{equation}: invalid {side}")
-        if reaction_type == "falloff":
+        if reaction_type in {"falloff", "sri-falloff"}:
             validate_arrhenius(reaction["low_rate"], equation)
             validate_arrhenius(reaction["high_rate"], equation)
+            if reaction_type == "sri-falloff":
+                if "troe" in reaction:
+                    raise ValueError(f"{equation}: conflicting falloff models")
+                sri = reaction["sri"]
+                values = [finite_float(sri.get(k, default), equation) for k, default in
+                          [("A", None), ("B", None), ("C", None), ("D", 1.), ("E", 0.)]]
+                if values[0] < 0 or values[2] < 0 or values[3] <= 0 or (values[0] == 0 and values[2] == 0):
+                    raise ValueError(f"{equation}: invalid SRI parameters")
+            elif "sri" in reaction:
+                raise ValueError(f"{equation}: SRI requires sri-falloff type")
             troe = reaction.get("troe")
             if troe is not None:
                 alpha = finite_float(troe["A"], equation)
@@ -516,7 +529,7 @@ def validate(data: dict[str, Any]) -> None:
                     raise ValueError(f"{equation}: invalid Troe T2")
         else:
             validate_arrhenius(reaction["arrhenius"], equation)
-        if reaction_type in {"three-body", "falloff"}:
+        if reaction_type in {"three-body", "falloff", "sri-falloff"}:
             default_efficiency = finite_float(
                 reaction.get("default_efficiency", 1.0), equation
             )
@@ -741,7 +754,8 @@ def generate(data: dict[str, Any]) -> str:
         "  use elementary_kinetics_mod, only: &",
         "    elementary_reaction, elementary_production_rates, &",
         "    elementary_mass_fraction_jacobian, reaction_kind_elementary, &",
-        "    reaction_kind_three_body, reaction_kind_falloff",
+        "    reaction_kind_three_body, reaction_kind_falloff" +
+        (", reaction_kind_sri" if any(r.get("type") == "sri-falloff" for r in reactions) else ""),
         "  implicit none",
         "  private",
         "",
@@ -813,6 +827,7 @@ def generate(data: dict[str, Any]) -> str:
         "elementary": "reaction_kind_elementary",
         "three-body": "reaction_kind_three_body",
         "falloff": "reaction_kind_falloff",
+        "sri-falloff": "reaction_kind_sri",
     }
     for r_index, reaction in enumerate(reactions, start=1):
         reaction_type = reaction.get("type", "elementary")
@@ -840,7 +855,7 @@ def generate(data: dict[str, Any]) -> str:
                 f"{fortran_real(float(coefficient))}"
             )
 
-        if reaction_type == "falloff":
+        if reaction_type in {"falloff", "sri-falloff"}:
             emit_rate(
                 lines,
                 f"reactions({r_index})%low_pressure_rate",
@@ -858,7 +873,7 @@ def generate(data: dict[str, Any]) -> str:
                 reaction["arrhenius"],
             )
 
-        if reaction_type in {"three-body", "falloff"}:
+        if reaction_type in {"three-body", "falloff", "sri-falloff"}:
             default_efficiency = float(reaction.get("default_efficiency", 1.0))
             lines += [
                 f"    allocate(reactions({r_index})%third_body_efficiencies({prefix}_nspecies))",
@@ -872,6 +887,11 @@ def generate(data: dict[str, Any]) -> str:
                     f"{fortran_real(float(efficiency))}"
                 )
 
+        if reaction_type == "sri-falloff":
+            values = [reaction["sri"].get(k, default) for k, default in
+                      [("A", None), ("B", None), ("C", None), ("D", 1.), ("E", 0.)]]
+            for k, value in enumerate(values, 1):
+                lines.append(f"    reactions({r_index})%sri({k}) = {fortran_real(float(value))}")
         troe = reaction.get("troe")
         if troe is not None:
             lines += [
