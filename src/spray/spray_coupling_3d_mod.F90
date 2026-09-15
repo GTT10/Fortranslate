@@ -11,8 +11,113 @@ module spray_coupling_3d_mod
   implicit none
   private
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
-  public :: spray_system_totals
+  public :: spray_system_totals, valid_spray_boundary_faces, apply_parcel_boundaries
+  public :: particle_boundary_stencil
 contains
+  pure logical function valid_spray_boundary_faces(faces) result(ok)
+    character(len=*), intent(in) :: faces(6)
+    integer :: a
+    ok=.false.
+    do a=1,6
+      select case(trim(faces(a)))
+      case('periodic','outflow','slip_wall','no_slip_wall')
+      case default
+        return
+      end select
+    end do
+    do a=1,3
+      if ((faces(2*a-1)=='periodic').neqv.(faces(2*a)=='periodic')) return
+    end do
+    ok=.true.
+  end function
+
+  subroutine apply_parcel_boundaries(parcel,liquid,lower,upper,faces,change,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: lower(3),upper(3)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(out) :: change(5)
+    logical, intent(out) :: ok
+    type(spray_parcel) :: candidate
+    real(dp) :: before(5)
+    integer :: a,face,attempt
+    ok=.false.; change=0
+    if (.not.valid_spray_boundary_faces(faces).or..not.valid_spray_parcel(parcel)) return
+    if (.not.all(ieee_is_finite([lower,upper])).or.any(upper<=lower)) return
+    if (.not.valid_spray_liquid(liquid)) return
+    if (maxval(abs([lower,upper]))>1e9_dp) return
+    candidate=parcel; before=parcel_totals(parcel,liquid)
+    do a=1,3
+      if (faces(2*a)=='periodic') then
+        candidate%position(a)=lower(a)+modulo(candidate%position(a)-lower(a),upper(a)-lower(a))
+        cycle
+      end if
+      do attempt=1,32
+        face=0
+        if (candidate%position(a)<lower(a)) face=2*a-1
+        if (candidate%position(a)>=upper(a)) face=2*a
+        if (face==0) exit
+        if (faces(face)=='outflow') then
+          candidate%mass=0
+          candidate%position=max(lower,min(nearest(upper,-1.0_dp),candidate%position))
+          exit
+        end if
+        if (modulo(face,2)==0) then
+          candidate%position(a)=2*upper(a)-candidate%position(a)
+          candidate%position(a)=min(nearest(upper(a),-1.0_dp),candidate%position(a))
+        else
+          candidate%position(a)=2*lower(a)-candidate%position(a)
+        end if
+        candidate%velocity(a)=-candidate%velocity(a)
+      end do
+      if (attempt>32) return
+      if (candidate%mass==0) exit
+    end do
+    change=parcel_totals(candidate,liquid)-before
+    parcel=candidate; ok=.true.
+  end subroutine
+
+  subroutine particle_boundary_stencil(position,lower,spacing,cells,faces,indices,weights,ok)
+    real(dp), intent(in) :: position(3),lower(3),spacing(3)
+    integer, intent(in) :: cells(3)
+    character(len=*), intent(in) :: faces(6)
+    integer, intent(out) :: indices(3,8)
+    real(dp), intent(out) :: weights(8)
+    logical, intent(out) :: ok
+    real(dp) :: coordinate(3),fraction(3)
+    integer :: base(3),offset(3),a,b,c,n,d
+    indices=0; weights=0; ok=.false.
+    if (.not.valid_spray_boundary_faces(faces)) return
+    if (all(faces=='periodic')) then
+      call periodic_particle_stencil(position,lower,spacing,cells,indices,weights,ok)
+      return
+    end if
+    if (any(cells<2).or..not.all(ieee_is_finite([position,lower,spacing]))) return
+    if (any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+    if (maxval(abs(position))>1e9_dp.or.maxval(abs(lower))>1e9_dp) return
+    do d=1,3
+      if (faces(2*d)=='periodic') then
+        coordinate(d)=modulo(position(d)-lower(d),spacing(d)*cells(d))/spacing(d)-0.5_dp
+        base(d)=floor(coordinate(d))
+      else
+        if (position(d)<lower(d).or.position(d)>lower(d)+spacing(d)*cells(d)) return
+        coordinate(d)=max(0.0_dp,min(real(cells(d)-1,dp),(position(d)-lower(d))/spacing(d)-0.5_dp))
+        base(d)=min(cells(d)-2,floor(coordinate(d)))
+      end if
+    end do
+    fraction=coordinate-real(base,dp); n=0
+    do c=0,1
+      do b=0,1
+        do a=0,1
+          n=n+1; offset=[a,b,c]
+          indices(:,n)=modulo(base+offset,cells)+1
+          weights(n)=product(merge(fraction,1.0_dp-fraction,offset==1))
+        end do
+      end do
+    end do
+    ok=abs(sum(weights)-1.0_dp)<1e-14_dp.and.all(weights>=0)
+  end subroutine
+
   subroutine periodic_particle_stencil(position, lower, spacing, cells, indices, weights, ok)
     real(dp), intent(in) :: position(3), lower(3), spacing(3)
     integer, intent(in) :: cells(3)
@@ -120,7 +225,7 @@ contains
   end subroutine
 
   subroutine advance_spray_coupling_3d(species, transport, liquid, options, state, temperature, &
-      lower, spacing, parcels, interval, substeps, ok, message)
+      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
@@ -131,6 +236,10 @@ contains
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    character(len=32) :: faces(6)
+    real(dp) :: ledger(size(state,1)),exchange(5)
     real(dp), allocatable :: candidate(:,:,:,:), temp(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
     type(spray_parcel) :: next
@@ -141,7 +250,16 @@ contains
     real(dp) :: sampled_pressure,cp,cv,h,e,entropy,xsat
     integer :: shape3(3),indices(3,8),p,n,i,j,k,attempt,total_steps
     logical :: local_ok, accepted
+    faces='periodic'
+    if (present(boundary_faces)) faces=boundary_faces
+    ledger=0
+    if (present(boundary_change)) boundary_change=0
     substeps=0; ok=.false.; message='Invalid spray coupling input'
+    if (.not.valid_spray_boundary_faces(faces)) return
+    if (any(faces/='periodic').and..not.present(boundary_change)) return
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=size(state,1)) return
+    end if
     if (size(state,1) /= reactive_nvar(size(species)) .or. size(species) < 2) return
     shape3=shape(temperature)
     if (any(shape3 < 2)) return
@@ -173,7 +291,7 @@ contains
         if (total_steps >= options%maximum_substeps) then
           message='Spray substep limit exceeded; complete update rolled back'; return
         end if
-        call periodic_particle_stencil(drops(p)%position,lower,spacing,shape3,indices,weights,local_ok)
+        call particle_boundary_stencil(drops(p)%position,lower,spacing,shape3,faces,indices,weights,local_ok)
         if (.not. local_ok) return
         sampled=0.0_dp; guess=0.0_dp
         do n=1,8
@@ -235,12 +353,16 @@ contains
         if (.not. accepted) then
           message='Spray feedback cannot preserve gas/liquid admissibility; complete update rolled back'; return
         end if
-        next%position=lower+modulo(next%position-lower,spacing*real(shape3,dp))
+        call apply_parcel_boundaries(next,liquid,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
+        if (.not.local_ok) return
+        ledger(1:5)=ledger(1:5)+exchange
+        ledger(5+liquid%vapor_index)=ledger(5+liquid%vapor_index)+exchange(1)
         drops(p)=next
         elapsed=min(interval,elapsed+dt); total_steps=total_steps+1
       end do
     end do
     state=candidate; temperature=temp; parcels=drops
+    if (present(boundary_change)) boundary_change=ledger
     substeps=total_steps; ok=.true.; message=''
   end subroutine
 

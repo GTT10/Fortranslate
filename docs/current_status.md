@@ -16,7 +16,7 @@ Older milestone prose remains historical detail, not a current global status.
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol fixture | 2--32 species; production diesel-fuel mechanisms and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
-| LES and spray | Opt-in periodic regular 3D single-component parcels; drag/heating/evaporation, conservative two-way coupling, deterministic cone/scheduled injection and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Multicomponent/boiling/breakup/collision, particle MPI/AMR/EB, physical boundaries, calibrated properties and experimental validation |
+| LES and spray | Opt-in regular 3D single-component parcels with periodic/outflow/specular wall boundaries; drag/heating/evaporation, conservative two-way coupling, deterministic cone/scheduled injection and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Multicomponent/boiling/breakup/collision, particle MPI/AMR/EB, inlet/SGS boundary coupling and physical wall-impact models, calibrated properties and experimental validation |
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

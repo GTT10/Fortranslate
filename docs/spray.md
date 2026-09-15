@@ -1,7 +1,7 @@
-# Experimental periodic 3D spray combustion (0.246.0)
+# Experimental regular 3D spray combustion (0.246.0)
 
 This is a working opt-in Eulerian--Lagrangian path, not production diesel-spray
-qualification. It couples the existing regular periodic 3D gas solver to
+qualification. It couples the existing regular 3D gas solver to
 single-component point parcels, molecular transport, a deviatoric Smagorinsky
 closure and native or CVODE cell chemistry. It does not replace the existing
 AMR/EB/MPI applications or claim those features are connected to particles.
@@ -110,7 +110,7 @@ Frozen-film drag and heat relaxation are integrated exponentially, evaporation
 uses a nonnegative diameter-squared update, and parcel steps are limited by
 relative changes, at most a small temperature change, and cell traversal.
 A minimum-diameter event transfers the **entire** residual mass/momentum/energy.
-Particle locations wrap periodically. Gas interpolation and source deposition
+By default particle locations wrap periodically. Gas interpolation and source deposition
 use the same eight cloud-in-cell weights. Inadmissible gas or liquid candidates
 are rejected with step reduction; exhausting the retry/substep limit rolls back
 the entire caller-visible coupled step. Sequential parcel feedback is
@@ -177,8 +177,36 @@ solver version/physics, not an indefinite checkpoint ABI.
 
 Production use still needs calibrated temperature-dependent liquid properties,
 boiling/real-fluid handling, multicomponent liquids, breakup/collision, calibrated size distributions
-and turbulent dispersion, physical injector/wall boundaries, particle
+and turbulent dispersion, physical injector and wall-impact models, particle
 migration with MPI/AMR/EB, scalable output/checkpointing, detailed diesel-fuel
 mechanisms and performance tests. Selected chemistry retains its 2--32-species
 limit and currently supported reaction forms; FFCM1_Red does not represent
 HXN/HMN/AMN. No claim of measured ignition, penetration or liquid length is made.
+
+
+## Regular-grid wall and outflow boundaries
+
+`boundary_faces(6)` in `&spray` uses x-low, x-high, y-low, y-high, z-low,
+z-high order. The default remains periodic. Supported alternatives are
+`outflow`, `slip_wall`, and stationary adiabatic `no_slip_wall` for gas; parcels
+reflect specularly at either wall type. Opposing periodic faces must be paired.
+This ideal reflection is not a sticking, splash, film or impact model.
+
+Physical faces use a clamped, normalized interpolation/deposition stencil with
+unique donor cells; particles never sample the opposite side of a physical wall.
+Outflow removes a parcel's remaining mass, momentum and energy from the system;
+wall reflection transfers normal momentum without changing parcel energy.
+The split step accumulates gas surface fluxes and parcel exchange in one ledger.
+Physical-boundary history adds `boundary_mass`, `boundary_px`, `boundary_py`,
+`boundary_pz`, `boundary_energy`; positive values enter the simulated system.
+The reported conservation errors subtract this ledger and injected inventory.
+
+`wall_reflection.nml` supplies an executable example. Change its faces to
+`outflow` for particle escape. Checkpoint V2 preserves boundary exchange, and
+its context binds all six face types. Periodic runs retain checkpoint V1 and
+their existing history columns. Restart reproduces gas/parcel CSVs and the final
+history row exactly in the focused [boundary checks](validation/spray-boundaries-20260915.md).
+
+Nonperiodic runs currently require `smagorinsky_constant=0`; boundary-aware SGS
+fluxes, inlet reservoirs, moving/isothermal walls, AMR/EB/MPI parcels and physical
+wall-impact models remain open. Injection is still an internal parcel source.

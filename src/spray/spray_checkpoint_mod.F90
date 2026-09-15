@@ -26,7 +26,7 @@ module spray_checkpoint_mod
   end interface
 contains
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message)
+      reference_totals,injected_totals,ok,message,boundary_totals)
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -34,12 +34,17 @@ contains
     integer, intent(in) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    real(dp), intent(in), optional :: boundary_totals(:)
     real(dp), allocatable :: check(:,:,:)
     character(len=:), allocatable :: temporary
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
     integer(c_int) :: status
     logical :: exists,local_ok
     ok=.false.; message='Invalid spray checkpoint state'
+    if (present(boundary_totals)) then
+      if (size(boundary_totals)/=size(state,1)) return
+      if (.not.all(ieee_is_finite(boundary_totals))) return
+    end if
     if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>16384) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
     if (size(reference_totals) /= size(state,1) .or. size(injected_totals) /= size(state,1)) return
@@ -66,12 +71,19 @@ contains
     if (ios/=0) then
       message='Cannot create checkpoint temporary file'; return
     end if
-    write(unit,'(a)',iostat=ios) magic
+    if (present(boundary_totals)) then
+      write(unit,'(a)',iostat=ios) 'PELEF_SPRAY_3D_CHECKPOINT_V2'
+    else
+      write(unit,'(a)',iostat=ios) magic
+    end if
     if (ios==0) write(unit,'(a)',iostat=ios) trim(context)
     if (ios==0) write(unit,*,iostat=ios) size(state,1),dims,size(parcels)
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reference_totals
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) injected_totals
+    if (present(boundary_totals)) then
+      if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) boundary_totals
+    end if
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
@@ -102,7 +114,7 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message)
+      reference_totals,injected_totals,ok,message,boundary_totals)
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -110,6 +122,8 @@ contains
     integer, intent(inout) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    real(dp), intent(inout), optional :: boundary_totals(:)
+    real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
     real(dp) :: next_time,ref(size(state,1)),injected(size(state,1)),row(max(9,size(state,1)+1))
@@ -127,7 +141,12 @@ contains
     if (ios/=0) return
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
-    if (trim(line)/=magic) goto 900
+    if (present(boundary_totals)) then
+      if (trim(line)/='PELEF_SPRAY_3D_CHECKPOINT_V2') goto 900
+      if (size(boundary_totals)/=size(state,1)) goto 900
+    else
+      if (trim(line)/=magic) goto 900
+    end if
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
     if (trim(line)/=trim(context)) goto 900
@@ -151,6 +170,10 @@ contains
     call read_real_row(unit,injected,ios)
     if (ios/=0) goto 900
     if (.not. all(ieee_is_finite([ref,injected]))) goto 900
+    if (present(boundary_totals)) then
+      call read_real_row(unit,boundary,ios)
+      if (ios/=0) goto 900
+    end if
     allocate(candidate,mold=state); allocate(temp,mold=temperature); allocate(check,mold=temperature)
     allocate(drops(got(5)))
     do k=1,dims(3)
@@ -191,6 +214,7 @@ contains
     if (.not. local_ok) return
     if (any(abs(check-temp)>1.0e-9_dp*max(1.0_dp,abs(temp)))) return
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
+    if (present(boundary_totals)) boundary_totals=boundary
     reference_totals=ref; injected_totals=injected; ok=.true.; message=''
     return
 900 continue

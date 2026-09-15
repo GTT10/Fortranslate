@@ -7,7 +7,7 @@ module spray_reactive_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d, advance_reactive_full_3d, recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_coupling_3d_mod, only: advance_spray_coupling_3d
+  use spray_coupling_3d_mod, only: advance_spray_coupling_3d, valid_spray_boundary_faces
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
 #ifdef PELEF_SPRAY_CVODE
   use sundials_constant_volume_reactor_mod, only: cvode_reactor_context, initialize_constant_volume_cvode, &
@@ -98,7 +98,7 @@ contains
 
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
-      reconstruction,riemann_solver)
+      reconstruction,riemann_solver,boundary_faces,boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -115,10 +115,26 @@ contains
     type(spray_parcel), allocatable :: drops(:)
     character(len=*), intent(in), optional :: reconstruction,riemann_solver
     character(len=32) :: selected_reconstruction,selected_riemann
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    character(len=32) :: faces(6)
+    real(dp) :: ledger(size(state,1)),exchange(size(state,1))
     real(dp) :: theta
     integer :: dims(3),substeps,half
     logical :: local_ok
     ok=.false.; message='Invalid coupled spray step'
+    faces='periodic'; ledger=0
+    if (present(boundary_faces)) faces=boundary_faces
+    if (present(boundary_change)) boundary_change=0
+    if (.not.valid_spray_boundary_faces(faces)) return
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=size(state,1)) return
+    end if
+    if (any(faces/='periodic')) then
+      if (.not.present(boundary_change).or.cs/=0.0_dp) then
+        message='Physical spray boundaries require a surface ledger and zero SGS coefficient'; return
+      end if
+    end if
     selected_reconstruction='characteristic_plm'; selected_riemann='hllc'
     if (present(reconstruction)) selected_reconstruction=reconstruction
     if (present(riemann_solver)) selected_riemann=riemann_solver
@@ -131,8 +147,9 @@ contains
     do half=1,2
       if (half == 1) then
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
         if (.not. local_ok) return
+        ledger=ledger+exchange
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok)
         if (.not. local_ok) then
           message='LES step rejected'; return
@@ -145,20 +162,24 @@ contains
       if (half == 1) then
         call advance_reactive_full_3d(species,reactions,transport,candidate,temp,dims(1),dims(2),dims(3), &
           spacing(1),spacing(2),spacing(3),dt,trim(selected_riemann),.false.,rtol,atol,transport_enabled, &
-          .true.,.true.,.true.,.false.,theta,local_ok,trim(selected_reconstruction),'mc',chemistry_integrator='implicit')
+          .true.,.true.,.true.,.false.,theta,local_ok,trim(selected_reconstruction),'mc',chemistry_integrator='implicit', &
+          boundary_faces=faces,boundary_change=exchange)
         if (.not. local_ok) then
           message='Hydro/molecular transport step rejected'; return
         end if
+        ledger=ledger+exchange
       else
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
         if (.not. local_ok) return
+        ledger=ledger+exchange
       end if
     end do
+    if (present(boundary_change)) boundary_change=ledger
     state=candidate; temperature=temp; parcels=drops; ok=.true.; message=''
   end subroutine
 end module spray_reactive_3d_mod

@@ -28,6 +28,7 @@ program test_spray_core
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   integer :: indices(3,8),n,steps
   logical :: ok
+  character(len=32) :: faces(6)
   character(len=64) :: test
   character(len=256) :: message
   call get_command_argument(1,test)
@@ -44,6 +45,24 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('boundaries')
+    faces='slip_wall'
+    call particle_boundary_stencil([0.0_dp,.002_dp,.002_dp],[0.0_dp,0.0_dp,0.0_dp], &
+      [.001_dp,.001_dp,.001_dp],[4,4,4],faces,indices,weights,ok)
+    call require(ok.and.abs(sum(weights)-1.0_dp)<1e-14_dp,'physical stencil partition')
+    do n=1,8
+      if (weights(n)>0) call require(indices(1,n)==1,'no opposite-face interpolation')
+    end do
+    p%id=1; p%position=[.0041_dp,.002_dp,.002_dp]; p%velocity=[10.0_dp,2.0_dp,3.0_dp]
+    p%mass=1e-12_dp; p%temperature=330; p%multiplicity=10
+    q=p
+    call apply_parcel_boundaries(p,liquid,[0.0_dp,0.0_dp,0.0_dp],[.004_dp,.004_dp,.004_dp],faces,transfer,ok)
+    call require(ok.and.abs(p%position(1)-.0039_dp)<1e-15_dp.and.p%velocity(1)==-10,'specular wall')
+    call require(abs(transfer(2)+2e-10_dp)<1e-24_dp.and.transfer(1)==0.and.transfer(5)==0,'wall impulse and energy')
+    faces='outflow'; p=q
+    call apply_parcel_boundaries(p,liquid,[0.0_dp,0.0_dp,0.0_dp],[.004_dp,.004_dp,.004_dp],faces,transfer,ok)
+    call require(ok.and.p%mass==0,'parcel outflow removal')
+    call require(maxval(abs(transfer+parcel_totals(q,liquid)))<1e-24_dp,'outflow inventory')
   case('drag')
     options%heat=.false.; options%evaporation=.false.
     call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)

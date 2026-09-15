@@ -10,7 +10,7 @@ module spray_application_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_primitive_to_conserved
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
   use spray_parcel_mod
-  use spray_coupling_3d_mod, only: spray_system_totals
+  use spray_coupling_3d_mod, only: spray_system_totals, valid_spray_boundary_faces
   use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
   use spray_checkpoint_mod, only: write_spray_checkpoint, read_spray_checkpoint
   implicit none
@@ -38,13 +38,16 @@ contains
     type(spray_liquid) :: liquid
     type(spray_options) :: options
     logical :: chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled,abramzon_sirignano
+    real(dp), allocatable :: boundary_totals(:),boundary_step(:)
+    logical :: physical_boundaries
+    character(len=32) :: boundary_faces(6)
     logical :: ok,exists
     character(len=24) :: mole_names(32),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
     character(len=1024) :: output_prefix,checkpoint_file,restart_file,message
     character(len=16384) :: context
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
-    namelist /spray/ cells,domain_length,hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
+    namelist /spray/ cells,domain_length,boundary_faces,hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
@@ -54,6 +57,7 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    boundary_faces="periodic"
     cells=[4,4,4]; domain_length=0.004_dp
     hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
     gas_temperature=1200.0_dp; gas_pressure=101325.0_dp; gas_velocity=0.0_dp; shear_velocity=0.0_dp
@@ -76,6 +80,9 @@ contains
     read(unit,nml=spray,iostat=ios,iomsg=message)
     close(unit)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
+    if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
+    physical_boundaries=any(boundary_faces/='periodic')
+    if (physical_boundaries.and.smagorinsky_constant/=0.0_dp) call fail('Physical spray boundaries require zero SGS')
     nvar=reactive_nvar(size(species))
     if (nvar<7) call fail('Spray requires 2--32 gas species')
     if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')
@@ -118,7 +125,7 @@ contains
       if ((injection_end-injection_start)/injection_interval>1000000.0_dp) call fail('Too many injection events')
     end if
     if (any(injection_center<0.0_dp) .or. any(injection_center>=domain_length)) &
-      call fail('Injection center must lie in the periodic domain')
+      call fail('Injection center must lie in the domain')
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
@@ -156,6 +163,7 @@ contains
     spacing=domain_length/real(cells,dp); volume=product(spacing)
     allocate(state(nvar,cells(1),cells(2),cells(3)),temperature(cells(1),cells(2),cells(3)))
     allocate(reference_totals(nvar),injected_totals(nvar),totals(nvar))
+    allocate(boundary_totals(nvar),boundary_step(nvar)); boundary_totals=0; boundary_step=0
     primitive(1)=gas_pressure/(gas_constant*gas_temperature); primitive(2:4)=gas_velocity
     primitive(5)=gas_pressure; primitive(6:)=y
     do k=1,cells(3)
@@ -198,9 +206,20 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (physical_boundaries) then
+      context=trim(context)//' specular-outflow-v1'
+      do i=1,6
+        context=trim(context)//' '//trim(boundary_faces(i))
+      end do
+    end if
     if (len_trim(restart_file)>0) then
+      if (physical_boundaries) then
+      call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,boundary_totals)
+      else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message)
+      end if
       if (.not. ok) call fail(trim(message))
       if (time>final_time .or. steps>maximum_steps .or. event>1000000) call fail('Restart exceeds requested limits')
       if (any(abs(reference_totals-expected_initial)>1.0e-11_dp* &
@@ -221,16 +240,16 @@ contains
         if (next_event<injection_end .and. next_event<time-tolerance) call fail('Restart missed an injection event')
       end if
       call spray_system_totals(state,spacing,parcels,liquid,totals)
-      if (abs(totals(1)-reference_totals(1)-injected_totals(1))> &
+      if (abs(totals(1)-reference_totals(1)-injected_totals(1)-boundary_totals(1))> &
           1.0e-9_dp*max(reference_totals(1)+injected_totals(1),1.0e-30_dp)) call fail('Restart mass ledger mismatch')
-      if (abs(totals(5)-reference_totals(5)-injected_totals(5))> &
+      if (abs(totals(5)-reference_totals(5)-injected_totals(5)-boundary_totals(5))> &
           1.0e-9_dp*max(abs(reference_totals(5))+abs(injected_totals(5)),1.0e-20_dp)) &
         call fail('Restart energy ledger mismatch')
       if (any(parcels%id<1_int64)) call fail('Invalid restart parcel IDs')
       do i=1,size(parcels)
         if (parcels(i)%id/=int(i,int64)) call fail('Restart parcel IDs are not canonical')
         if (any(parcels(i)%position<0.0_dp) .or. any(parcels(i)%position>=domain_length)) &
-          call fail('Restart parcel outside periodic domain')
+          call fail('Restart parcel outside domain')
       end do
     end if
     if (len_trim(output_prefix)==0) call fail('Empty output prefix')
@@ -247,8 +266,15 @@ contains
     end if
     open(newunit=history_unit,file=trim(paths(1)),status='new',action='write',iostat=ios)
     if (ios/=0) call fail('Cannot create history output')
-    write(history_unit,'(a)',iostat=ios) 'time,steps,gas_mass,liquid_mass,system_mass,px,py,pz,total_energy,'// &
+    write(history_unit,'(a)',advance='no',iostat=ios) 'time,steps,gas_mass,liquid_mass,system_mass,px,py,pz,total_energy,'// &
       'injected_mass,mass_error,px_error,py_error,pz_error,energy_error,tmin,tmax,live_parcels,smd'
+    if (ios==0) then
+      if (physical_boundaries) then
+        write(history_unit,'(a)',iostat=ios) ',boundary_mass,boundary_px,boundary_py,boundary_pz,boundary_energy'
+      else
+        write(history_unit,'(a)',iostat=ios) ''
+      end if
+    end if
     if (ios/=0) call fail('Cannot write history header')
     call write_history()
     do while(time<final_time)
@@ -289,20 +315,27 @@ contains
       do retry=1,30
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
-          smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver)
+          smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
+          boundary_faces,boundary_step)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit
       end do
       if (.not. ok) call fail('Coupled step failed with rollback: '//trim(message))
+      boundary_totals=boundary_totals+boundary_step
       time=time+dt; steps=steps+1
       call write_history()
     end do
     close(history_unit,iostat=ios)
     if (ios/=0) call fail('History close failed')
     if (len_trim(checkpoint_file)>0) then
+      if (physical_boundaries) then
+      call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,boundary_totals)
+      else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message)
+      end if
       if (.not. ok) call fail(trim(message))
     end if
     call write_snapshots()
@@ -333,11 +366,19 @@ contains
       end do
       smd=0.0_dp
       if (d2>0.0_dp) smd=d3/d2
-      error5=totals(1:5)-reference_totals(1:5)-injected_totals(1:5)
-      write(history_unit,'(es26.17e3,a,i0,15(a,es26.17e3),a,i0,a,es26.17e3)',iostat=ios) time,',',steps, &
+      error5=totals(1:5)-reference_totals(1:5)-injected_totals(1:5)-boundary_totals(1:5)
+      write(history_unit,'(es26.17e3,a,i0,15(a,es26.17e3),a,i0,a,es26.17e3)',advance='no',iostat=ios) time,',',steps, &
         ',',gas_mass,',',liquid_mass,',',totals(1),',',totals(2),',',totals(3),',',totals(4),',',totals(5), &
         ',',injected_totals(1),',',error5(1),',',error5(2),',',error5(3),',',error5(4),',',error5(5), &
         ',',minval(temperature),',',maxval(temperature),',',live,',',smd
+      if (ios==0) then
+        if (physical_boundaries) then
+          write(history_unit,'(5(a,es26.17e3))',iostat=ios) ',',boundary_totals(1),',',boundary_totals(2), &
+            ',',boundary_totals(3),',',boundary_totals(4),',',boundary_totals(5)
+        else
+          write(history_unit,'(a)',iostat=ios) ''
+        end if
+      end if
       if (ios/=0) call fail('History write failed')
     end subroutine
     subroutine write_snapshots()
