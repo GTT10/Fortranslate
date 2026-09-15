@@ -23,7 +23,7 @@ program test_spray_core
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquid,constant_liquid,mixture_components(2)
   real(dp) :: mixture_y(2),mixture_rho,mixture_cp,mixture_e,mixture_t,mixture_e0
-  real(dp) :: component_mass(2),saved_mass(2),evaporated_mass(2),vapor_h(2),mw(2),surface_x(2)
+  real(dp) :: component_mass(2),saved_mass(2),evaporated_mass(2),vapor_h(2),mw(2),surface_x(2),mixture_rates(2)
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options,constant_options
@@ -61,6 +61,67 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('mixture_rates')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'mixture rate component')
+    primitive=0;primitive(1)=1;primitive(2)=5;primitive(5)=101325;primitive(15)=1
+    mixture_y=[1.0_dp,0.0_dp]
+    do n=1,2
+      options%abramzon_sirignano=n==2
+      call build_spray_film(species,transport,primitive,600.0_dp,p,liquid,options,film,ok)
+      call require(ok,'pure comparison film')
+      call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+      call require(ok,'pure comparison rates')
+      call mixture_transfer_rates(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+        value,td,mixture_rates,vapor_h,ok)
+      call require(ok,'pure-limit mixture rates')
+      call require(abs(value/inverse_tau-1)<2e-13_dp,'pure-limit drag agreement')
+      call require(abs(td/heat-1)<2e-13_dp,'pure-limit heat agreement')
+      call require(abs(mixture_rates(1)/(masscoef*parcel_diameter(p,liquid))-1)<2e-13_dp,'pure-limit evaporation')
+      call require(mixture_rates(2)==0,'inactive component has no rate')
+    end do
+    mixture_components(1)%density_model='polynomial'
+    mixture_components(1)%density_coefficients=[1035.0_dp,-.1_dp,0.0_dp,0.0_dp]
+    mixture_components(1)%density_temperature_range=[300.0_dp,600.0_dp]
+    mixture_components(1)%heat_capacity_model='polynomial'
+    mixture_components(1)%heat_capacity_coefficients=[3500.0_dp,2.0_dp,0.0_dp,0.0_dp]
+    mixture_components(1)%heat_capacity_temperature_range=[300.0_dp,600.0_dp]
+    mixture_y=[.8_dp,.2_dp];component_mass=p%mass*mixture_y;saved_mass=component_mass;q=p
+    call mixture_transfer_rates(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+      inverse_tau,heat,mixture_rates,vapor_h,ok)
+    call require(ok.and.all(mixture_rates>0),'two vapor components evaporate')
+    call require(abs(mixture_rates(1)/sum(mixture_rates)-mixture_y(1))>.01_dp,'preferential evaporation')
+    call liquid_mixture_properties(mixture_components,mixture_y,p%temperature,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'mixture initial energy')
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,0.0_dp,totals0,ok)
+    call require(ok.and.all(p%velocity==q%velocity).and.all(p%position==q%position).and. &
+      all(component_mass==saved_mass).and.all(totals0==0),'zero interval preserves mixture exactly')
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e-7_dp,totals0,ok)
+    call require(ok.and.all(component_mass<saved_mass),'frozen gas updates component masses')
+    call require(p%velocity(1)>q%velocity(1).and.p%position(1)>q%position(1),'mixture drag and flight')
+    call liquid_mixture_properties(mixture_components,component_mass/sum(component_mass),p%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'mixture final energy')
+    expected=q%mass*q%multiplicity*(mixture_e0+.5_dp*sum(q%velocity**2))
+    value=p%mass*p%multiplicity*(mixture_e+.5_dp*sum(p%velocity**2))
+    call require(abs(value+totals0(5)-expected)<1e-12_dp*abs(expected),'mixture total energy with drag')
+    call require(abs(p%mass*p%multiplicity+totals0(1)-q%mass*q%multiplicity)<1e-20_dp,'mixture transported mass')
+    call require(maxval(abs(p%mass*p%multiplicity*p%velocity+totals0(2:4)- &
+      q%mass*q%multiplicity*q%velocity))<1e-20_dp,'mixture transported momentum')
+    call require(abs(sum(totals0(6:))-totals0(1))<1e-25_dp,'species sum equals total mass transfer')
+    q=p;saved_mass=component_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e3_dp,totals0,ok)
+    call require(.not.ok.and.all(component_mass==saved_mass).and.all(p%position==q%position).and. &
+      all(p%velocity==q%velocity).and.p%temperature==q%temperature.and.all(totals0==0),'large-step mixture rollback')
+    primitive(15)=.1_dp;primitive(5+mixture_components(2)%vapor_index)=.9_dp
+    call mixture_transfer_rates(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+      inverse_tau,heat,mixture_rates,vapor_h,ok)
+    call require(ok.and.mixture_rates(1)>0.and.mixture_rates(2)==0,'ambient vapor suppresses one component')
   case('mixture_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

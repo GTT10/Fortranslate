@@ -268,10 +268,10 @@ without replacing the outputs.
 
 `advance_mixture_heating` applies a supplied parcel heat amount at fixed composition,
 recovers temperature and returns the opposite actual energy increment for the gas.
-Failure preserves the parcel and returns zero transfer. This API does not yet
-calculate mixture heat-transfer coefficients or advance component evaporation.
+Failure preserves the parcel and returns zero transfer. The transport update
+below supplies mixture heat transfer and component evaporation.
 The CLI still selects one pure liquid per parcel; mixture composition storage,
-transfer-rate closure and coupled restart remain to be connected. The
+CFD integration and coupled restart remain to be connected. The
 reference's optional boiling-temperature property caps are not applied here.
 See [source](../references/spray_mixture.json) and
 [focused evidence](validation/spray-mixture-thermo-20260916.md).
@@ -284,7 +284,8 @@ It rejects a saturated combined surface and leaves outputs unchanged on failure.
 A component's pure saturation pressure may exceed ambient pressure when dilution
 keeps its partial pressure below ambient. Optional per-component surface caps
 use the actual total gas pressure before applying the liquid mole fraction.
-Ambient-vapor suppression and transport coefficients are not calculated here.
+This surface routine returns equilibrium fractions; the film builder below adds
+ambient-vapor suppression and transport coefficients.
 
 `advance_mixture_evaporation` takes a parcel, component masses **per physical
 droplet**, requested evaporated masses on the same basis, component vapor
@@ -303,9 +304,36 @@ its finite entire inventory once, following the existing terminal-drop conventio
 there is no residual liquid temperature to solve or additional heat debit.
 Overdraw, invalid composition, unsupported energy states and invalid species
 indices reject without modifying parcel/component masses and return zero exchange.
-This API consumes already calculated evaporation amounts; a mixture transport-rate
-model and persistent CFD parcel composition are the next connections.
+This API consumes calculated evaporation amounts; the frozen-gas update below
+supplies them. Persistent CFD parcel composition remains to be connected.
 See [component-exchange evidence](validation/spray-mixture-exchange-20260916.md).
+
+### Mixed-liquid film transport and frozen-gas update
+
+`build_mixture_film` combines the liquid surface fractions with the ambient gas.
+A component with surface mole fraction no greater than its ambient fraction has
+zero outward flux. The remaining gas species provide the carrier molecular weight;
+the one-third film rule supplies temperature and composition. Each vapor uses the
+existing carrier-mole harmonic binary diffusivity. Effective diffusivity is the
+surface-mole-weighted average; component evaporation shares are proportional to
+`X_surface_i * D_i`, following the reference's component weighting structure.
+
+`mixture_transfer_rates` applies the existing selectable drag and
+Ranz–Marshall/Abramzon–Sirignano correlations using the actual mixed-liquid density
+and heat capacity. It returns inverse drag time, heat coefficient in W/K,
+component mass rates in kg/s **per physical droplet**, and vapor enthalpies.
+It uses PeleF's carrier molecular weight, binary diffusivities and film-cp heat
+correction; this is not exact upstream coefficient parity.
+
+`advance_mixture_frozen_gas` combines exponential drag, trapezoidal flight,
+heat transfer and component evaporation over a supplied interval. Gas state is
+held fixed during this operation; returned conserved increments include drag
+work and species exchange. It changes the parcel and external component-mass
+array only on success. Overdraw or inadmissible temperatures reject the interval;
+the caller must shorten it. A zero interval preserves state exactly. This remains
+a composable API; particle composition storage, regular-grid feedback, mixture
+wall/breakup handling, CLI and restart are not yet wired to it.
+See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
 ## KH-RT representative-drop breakup
 
