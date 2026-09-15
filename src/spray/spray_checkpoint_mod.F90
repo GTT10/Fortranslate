@@ -5,7 +5,7 @@ module spray_checkpoint_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
-  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_film
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_film,valid_wall_component_inventory
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory
   implicit none
@@ -82,7 +82,7 @@ contains
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -95,7 +95,7 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     real(dp), intent(in), optional :: boundary_totals(:),source_totals(:)
-    real(dp), intent(in), optional :: component_mass(:,:)
+    real(dp), intent(in), optional :: component_mass(:,:),film_component_mass(:,:)
     real(dp), allocatable :: check(:,:,:)
     character(len=:), allocatable :: temporary
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
@@ -132,6 +132,8 @@ contains
       expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
     if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
+    if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
+    if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -156,6 +158,12 @@ contains
       if (size(component_mass,2)/=size(parcels)) return
       do p=1,size(parcels)
         if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
+      end do
+    end if
+    if (present(film_component_mass)) then
+      if (any(shape(film_component_mass)/=[size(component_mass,1),size(wall_films)])) return
+      do p=1,size(wall_films)
+        if (.not.valid_wall_component_inventory(wall_films(p),film_component_mass(:,p))) return
       end do
     end if
     do p=1,size(parcels)
@@ -236,6 +244,9 @@ contains
         write(unit,'(i0)',iostat=ios) wall_films(p)%material_id
         if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) wall_films(p)%position,wall_films(p)%normal, &
           wall_films(p)%mass,wall_films(p)%temperature,wall_films(p)%diameter,wall_films(p)%height
+        if (present(film_component_mass)) then
+          if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) film_component_mass(:,p)
+        end if
       end do
     end if
     if (ios==0) write(unit,'(a)',iostat=ios) 'END_PELEF_SPRAY_CHECKPOINT'
@@ -257,7 +268,7 @@ contains
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -272,8 +283,8 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     real(dp), intent(inout), optional :: boundary_totals(:),source_totals(:)
-    real(dp), allocatable, intent(inout), optional :: component_mass(:,:)
-    real(dp), allocatable :: mass_candidate(:,:)
+    real(dp), allocatable, intent(inout), optional :: component_mass(:,:),film_component_mass(:,:)
+    real(dp), allocatable :: mass_candidate(:,:),film_mass_candidate(:,:)
     integer :: component_count(1)
     real(dp) :: source(size(state,1))
     real(dp) :: boundary(size(state,1))
@@ -317,6 +328,8 @@ contains
       expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
     if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
+    if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
+    if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -441,6 +454,7 @@ contains
       if (ios/=0) goto 900
       if (film_count<0.or.film_count>1000000) goto 900
       allocate(patches(film_count))
+      if (present(film_component_mass)) allocate(film_mass_candidate(component_count(1),film_count))
       do p=1,film_count
         call read_tokens(unit,tokens(1:1),ios)
         if (ios/=0) goto 900
@@ -452,6 +466,11 @@ contains
         patches(p)%position=row(1:3);patches(p)%normal=row(4:6)
         patches(p)%mass=row(7);patches(p)%temperature=row(8);patches(p)%diameter=row(9);patches(p)%height=row(10)
         if (.not.valid_wall_film(patches(p))) goto 900
+        if (present(film_component_mass)) then
+          call read_real_row(unit,film_mass_candidate(:,p),ios)
+          if (ios/=0) goto 900
+          if (.not.valid_wall_component_inventory(patches(p),film_mass_candidate(:,p))) goto 900
+        end if
       end do
     end if
     read(unit,'(a)',iostat=ios) line
@@ -469,6 +488,7 @@ contains
     if (present(source_totals)) source_totals=source
     if (has_films) call move_alloc(patches,wall_films)
     if (present(component_mass)) call move_alloc(mass_candidate,component_mass)
+    if (present(film_component_mass)) call move_alloc(film_mass_candidate,film_component_mass)
     reference_totals=ref; injected_totals=injected; ok=.true.; message=''
     return
 900 continue

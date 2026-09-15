@@ -26,8 +26,9 @@ program test_spray_integration
   character(len=32) :: faces(6)
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
+  real(dp) :: checkpoint_state(15,5,5,5),checkpoint_temperature(5,5,5)
   real(dp) :: force(15),accel(3),dt,expected(3),saved_force(15)
-  real(dp), allocatable :: component_mass(:,:),saved_mass(:,:)
+  real(dp), allocatable :: component_mass(:,:),saved_mass(:,:),film_mass(:,:),saved_film_mass(:,:)
   integer :: i,j,k,iteration,steps,event,record_status
   character(len=16384) :: checkpoint_record
   logical :: ok
@@ -115,6 +116,47 @@ program test_spray_integration
     call require(all(films%mass==saved_films%mass).and.all(films%height==saved_films%height), &
       'exact film checkpoint geometry')
     call require(all(drops%parent_id==before_drops%parent_id),'wall-only parent IDs restored')
+    allocate(component_mass(2,size(drops)),film_mass(2,size(films)))
+    do i=1,size(drops)
+      component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
+    end do
+    do i=1,size(films)
+      film_mass(:,i)=films(i)%mass*[.2_dp,.8_dp]
+    end do
+    saved_mass=component_mass;saved_film_mass=film_mass
+    call write_spray_checkpoint('film-mixture.chk','mixed-film-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films, &
+      component_mass=component_mass,film_component_mass=film_mass)
+    call require(ok,trim(message))
+    film_mass=0
+    call read_spray_checkpoint('film-mixture.chk','mixed-film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films,component_mass=component_mass)
+    call require(.not.ok.and.all(film_mass==0),'cannot omit mixed film inventory')
+    call read_spray_checkpoint('film-mixture.chk','mixed-film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films, &
+      component_mass=component_mass,film_component_mass=film_mass)
+    call require(ok.and.all(film_mass==saved_film_mass).and.all(component_mass==saved_mass),'exact film composition restart')
+    open(newunit=i,file='film-mixture.chk',status='old');j=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if (record_status/=0) exit
+      j=j+1
+    end do
+    rewind(i);open(newunit=k,file='film-mixture-bad.chk',status='replace')
+    do iteration=1,j
+      read(i,'(a)') checkpoint_record
+      if (iteration==j-1) checkpoint_record='-1 0'
+      write(k,'(a)') trim(checkpoint_record)
+    end do
+    close(i);close(k);checkpoint_state=state;checkpoint_temperature=temperature
+    call read_spray_checkpoint('film-mixture-bad.chk','mixed-film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films, &
+      component_mass=component_mass,film_component_mass=film_mass)
+    call require(.not.ok.and.all(state==checkpoint_state).and.all(temperature==checkpoint_temperature), &
+      'bad film composition gas rollback')
+    call require(all(film_mass==saved_film_mass).and.all(component_mass==saved_mass),'bad film composition inventory rollback')
+    open(newunit=i,file='film-mixture.chk',status='old');close(i,status='delete')
+    open(newunit=i,file='film-mixture-bad.chk',status='old');close(i,status='delete')
     open(newunit=i,file='film.chk',status='old');close(i,status='delete')
     state=before;temperature=before_t;deallocate(films);allocate(films(0))
     call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &

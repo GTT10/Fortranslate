@@ -29,6 +29,7 @@ module spray_wall_impact_mod
     real(dp) :: port_conductivities(16)=-1,port_conductivity_coefficients(4,16)=0
     real(dp) :: port_conductivity_temperature_ranges(2,16)=0
   end type
+  public :: valid_wall_component_inventory
   public :: mixture_impact_boiling_temperature,mixture_impact_at_planar_wall
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
@@ -362,6 +363,17 @@ contains
       if (faces(f)/='slip_wall'.and.faces(f)/='no_slip_wall'.and.faces(f)/='isothermal_wall') return
     end do
     ok=.true.
+  end function
+
+  logical function valid_wall_component_inventory(patch,masses) result(ok)
+    type(spray_wall_film), intent(in) :: patch
+    real(dp), intent(in) :: masses(:)
+    integer :: n
+    ok=.false.;n=size(masses)
+    if (n<1.or.n>16.or..not.valid_wall_film(patch)) return
+    if (.not.all(ieee_is_finite(masses))) return
+    if (any(masses<0).or.any(masses>1e18_dp)) return
+    ok=abs(sum(masses)-patch%mass)<=32*epsilon(1.0_dp)*n*patch%mass
   end function
 
   logical function valid_wall_film(f) result(ok)

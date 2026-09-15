@@ -55,7 +55,9 @@ and the reference mass-weighted impact boiling temperature
 updates composition, temperature and height with gas/wall energy closure
 ([evidence](validation/spray-mixture-film-exchange-20260916.md)). Mixed film
 heat/evaporation rates and a frozen-rate update are now available
-([evidence](validation/spray-mixture-film-rates-20260916.md)). Per-port compositions now drive initial and
+([evidence](validation/spray-mixture-film-rates-20260916.md)). The checkpoint API
+now retains film component masses with transactional validation
+([evidence](validation/spray-mixture-film-checkpoint-20260916.md)); application wiring remains open. Per-port compositions now drive initial and
 scheduled injection with component budgets and restart identity
 ([evidence](validation/spray-port-mixture-20260916.md)). Component density/heat-capacity fits, Antoine
 pressure and Clausius surface caps are available in the CLI and restart context

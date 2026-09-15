@@ -478,8 +478,8 @@ energy at that temperature and returns wall momentum/energy exchange. Failed
 classification or child/film construction preserves all supplied state arrays.
 
 The caller supplies the dimensionless impact parameters, including wall-to-boiling
-temperature ratio. The planar dispatcher below evaluates that ratio. Grid/CLI coupling and
-mixture-film checkpoint state remain to be connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
+temperature ratio. The planar dispatcher below evaluates that ratio. Grid/CLI coupling remains to be connected. The checkpoint API below retains
+mixture-film composition. The CLI still rejects mixed-liquid wall impact. There is no entrainment
 from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
 
 ### Mixed-liquid film exchange API
@@ -497,7 +497,7 @@ all remaining species and energy to gas. The full inventory convention also appl
 when the final temperature cannot be defined because no liquid remains. Invalid
 component loss or temperature inversion leaves the patch and composition untouched.
 This supplied-exchange API is used by the frozen-rate update below. Mixed films
-are not yet connected to the grid driver and checkpoint. See
+are not yet connected to the grid driver. See
 [film exchange evidence](validation/spray-mixture-film-exchange-20260916.md).
 
 ### Mixed-liquid film rates and frozen update
@@ -515,7 +515,7 @@ and calls the conservative exchange API. It rejects component overdraw or an
 inadmissible remaining temperature; a grid driver must reduce the step in those
 cases. It retains the full-inventory minimum-height removal policy. Composition
 transport, thermal updates and rates are now available as APIs; grid/CLI feedback
-and mixed-film restart remain open. See
+and application restart wiring remain open. See
 [rate evidence](validation/spray-mixture-film-rates-20260916.md).
 
 ### Mixed-liquid planar wall dispatch
@@ -533,6 +533,21 @@ inversion at local pressure. This empirical impact temperature is not a Raoult
 bubble-point calculation or a physical boiling-rate model. Existing film geometry
 supplies local thickness; film entrainment remains absent. See
 [crossing evidence](validation/spray-mixture-wall-crossing-20260916.md).
+
+### Mixed-film checkpoint API
+
+The checkpoint reader/writer accept `film_component_mass(component,patch)` in kg
+per complete film patch. It accompanies `component_mass`, `film_state=.true.` and
+`wall_films`; the format adds `_FMIX_V1` and a component row after each film record.
+The number and order of components match the particle component matrix. Callers
+must bind the ordered component property table and film settings in the context.
+
+A mixed checkpoint with film state requires this matrix, including a zero-column
+matrix when there are no films. Shape mismatch, negative/nonfinite component mass
+or failure to sum to film mass rejects. Reading validates the complete candidate
+before changing gas, particles, films or either component matrix. Existing pure-film
+and particle-only mixed formats retain their layout. Grid/CLI wiring remains open.
+See [checkpoint evidence](validation/spray-mixture-film-checkpoint-20260916.md).
 
 ## KH-RT representative-drop breakup
 
