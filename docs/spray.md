@@ -207,6 +207,14 @@ its context binds all six face types. Periodic runs retain checkpoint V1 and
 their existing history columns. Restart reproduces gas/parcel CSVs and the final
 history row exactly in the focused [boundary checks](validation/spray-boundaries-20260915.md).
 
-Nonperiodic runs currently require `smagorinsky_constant=0`; boundary-aware SGS
-fluxes, inlet reservoirs, moving/isothermal walls, AMR/EB/MPI parcels and physical
-wall-impact models remain open. Injection is still an internal parcel source.
+Nonperiodic faces also support the deviatoric Smagorinsky model. Physical-face
+stress, heat and species fluxes use mirrored/clamped ghost states; the surface
+ledger includes both LES RK stages in both split half-steps. The diffusion bound
+uses only faces touching physical cells, excluding the artificial outer ghost
+boundary. Set `smagorinsky_constant=.17` and `shear_velocity=10` in the example
+to exercise nonzero SGS. See [focused SGS evidence](validation/sgs-boundaries-20260915.md).
+
+This uses the existing constant-coefficient closure without wall damping or a
+wall function. Near-wall turbulence qualification, inlet reservoirs,
+moving/isothermal spray walls, AMR/EB/MPI parcels and physical wall-impact models
+remain open. Injection is still an internal parcel source.

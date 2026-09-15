@@ -82,7 +82,6 @@ contains
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
     physical_boundaries=any(boundary_faces/='periodic')
-    if (physical_boundaries.and.smagorinsky_constant/=0.0_dp) call fail('Physical spray boundaries require zero SGS')
     nvar=reactive_nvar(size(species))
     if (nvar<7) call fail('Spray requires 2--32 gas species')
     if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')

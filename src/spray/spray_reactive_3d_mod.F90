@@ -131,8 +131,8 @@ contains
       if (size(boundary_change)/=size(state,1)) return
     end if
     if (any(faces/='periodic')) then
-      if (.not.present(boundary_change).or.cs/=0.0_dp) then
-        message='Physical spray boundaries require a surface ledger and zero SGS coefficient'; return
+      if (.not.present(boundary_change)) then
+        message='Physical spray boundaries require a surface ledger'; return
       end if
     end if
     selected_reconstruction='characteristic_plm'; selected_riemann='hllc'
@@ -150,10 +150,11 @@ contains
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
         if (.not. local_ok) return
         ledger=ledger+exchange
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok)
+        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
+        ledger=ledger+exchange
       end if
       if (chemistry_enabled) then
         call advance_spray_chemistry_3d(species,reactions,candidate,temp,0.5_dp*dt,rtol,atol,chemistry_method,local_ok,message)
@@ -169,10 +170,11 @@ contains
         end if
         ledger=ledger+exchange
       else
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok)
+        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
+        ledger=ledger+exchange
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
         if (.not. local_ok) return

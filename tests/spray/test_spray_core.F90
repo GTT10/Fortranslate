@@ -216,6 +216,28 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_boundary')
+    call make_gas(.false.)
+    state(2,:,:,:)=20.0_dp*state(1,:,:,:)
+    state(5,:,:,:)=state(5,:,:,:)+200.0_dp*state(1,:,:,:)
+    saved=state; saved_t=temp
+    faces='periodic'; faces(3:4)='no_slip_wall'
+    call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok,faces,totals0)
+    call require(ok.and.diff>0,'physical SGS flux')
+    mu=state(1,1,1,1)*(.17_dp*spacing(1))**2*(40.0_dp/spacing(2))
+    expected=-4*mu*20.0_dp/spacing(2)*(4*spacing(1))*(4*spacing(3))
+    call near(totals0(2),expected,1e-12_dp,'analytical SGS wall shear')
+    call require(abs(totals0(5))<1e-18_dp,'stationary SGS wall no work')
+    do n=1,15
+      call require(abs(sum(rhs(n,:,:,:))*product(spacing)-totals0(n))< &
+        1e-12_dp*max(1e-12_dp,abs(totals0(n))),'SGS boundary divergence budget')
+    end do
+    call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e-7_dp,ok,faces,totals1)
+    call require(ok,'physical SGS RK update')
+    call near(sum(state(2,:,:,:)-saved(2,:,:,:))*product(spacing),totals1(2),1e-10_dp,'RK wall ledger')
+    state=saved;temp=saved_t
+    call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e6_dp,ok,faces,totals1)
+    call require(.not.ok.and.all(state==saved).and.all(temp==saved_t).and.all(totals1==0),'physical SGS rollback')
   case('les_grid','les_zero','les_reject')
     call make_gas(.true.); saved=state; saved_t=temp
     ke0=sum(0.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))

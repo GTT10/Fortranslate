@@ -36,7 +36,7 @@ FFCM1_Red liquid-methanol burn fixture and independent Cantera gas-only oracles.
 Chemical labels, single-interval NASA7 and classified Lindemann ingestion are
 supported. See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).
 These are bounded implemented capabilities, not completion of diesel chemistry,
-multicomponent liquids, breakup, inlet/SGS boundaries or MPI/AMR particles.
+multicomponent liquids, breakup, inlet boundaries and near-wall turbulence qualification or MPI/AMR particles.
 Regular wall reflection and outflow now include gas/particle surface budgets
 and restart persistence; wall-impact models remain open.
 

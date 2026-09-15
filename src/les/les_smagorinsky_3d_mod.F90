@@ -1,6 +1,7 @@
 module les_smagorinsky_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d
   use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
   use mixture_thermo_mod, only: mixture_mass_properties
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
@@ -34,18 +35,66 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine compute_les_rhs_3d(species, state, temperature, spacing, cs, prt, sct, rhs, maximum_diffusivity, ok)
+  subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
+      boundary_faces,boundary_rate)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
+    real(dp), intent(out) :: rhs(:,:,:,:),maximum_diffusivity
+    logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_rate(:)
+    character(len=32) :: faces(6)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),grhs(:,:,:,:)
+    real(dp) :: rate(size(state,1))
+    integer :: n(3),dims(3),f
+    ok=.false.; rhs=0; maximum_diffusivity=0; faces='periodic'
+    if (present(boundary_rate)) then
+      boundary_rate=0
+      if (size(boundary_rate)/=size(state,1)) return
+    end if
+    if (present(boundary_faces)) faces=boundary_faces
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    do f=1,6
+      select case(trim(faces(f)))
+      case('periodic','outflow','slip_wall','no_slip_wall')
+      case default
+        return
+      end select
+    end do
+    if (all(faces=='periodic')) then
+      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok)
+      return
+    end if
+    n=shape(temperature); dims=n+4
+    if (any(shape(rhs)/=shape(state)).or.any(n<2)) return
+    allocate(ghost(size(state,1),dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
+    allocate(grhs,mold=ghost)
+    call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,ok,viscous_wall=.true.)
+    if (.not.ok) return
+    call compute_les_face_rhs_3d(species,ghost,gt,spacing,cs,prt,sct,grhs,maximum_diffusivity,ok,n,rate)
+    if (.not.ok) return
+    rhs=grhs(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
+    if (present(boundary_rate)) boundary_rate=rate
+  end subroutine
+
+  subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
+      active_cells,boundary_rate)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     real(dp), intent(out) :: rhs(:,:,:,:), maximum_diffusivity
     logical, intent(out) :: ok
+    integer, intent(in), optional :: active_cells(3)
+    real(dp), intent(out), optional :: boundary_rate(:)
+    real(dp) :: rate(size(state,1))
+    logical :: active_face
     real(dp), allocatable :: primitive(:,:,:,:), temps(:,:,:), cp(:,:,:), cv(:,:,:), enthalpies(:,:,:,:)
     real(dp) :: q(reactive_nprim(size(species))), y(size(species)), grad(3,3), tau(3,3), flux(size(state,1))
     real(dp) :: jflux(size(species)),hav(size(species)),r,mw,gamma,h,e,s,cpg,cvg,sound,t,mu,rho,heat_flux
     real(dp) :: face_y(size(species)),uface(3),cpface,cvface,diffusivity,cellvolume
     integer :: dims(3),l(3),ridx(3),lo(3),hi(3),lo2(3),hi2(3),i,j,k,n,a,b
     logical :: local_ok
-    rhs=0.0_dp; maximum_diffusivity=0.0_dp; ok=.false.
+    rhs=0.0_dp; maximum_diffusivity=0.0_dp; ok=.false.; rate=0
+    if (present(boundary_rate)) boundary_rate=0
     dims=shape(temperature)
     if (any(dims < 2)) return
     if (size(state,1) /= reactive_nvar(size(species)) .or. size(species) < 2) return
@@ -82,7 +131,16 @@ contains
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
-            l=[i,j,k]; ridx=l; ridx(a)=modulo(l(a),dims(a))+1
+            l=[i,j,k]
+            if (present(active_cells)) then
+              active_face=l(a)>=2.and.l(a)<=active_cells(a)+2
+              do b=1,3
+                if (b==a) cycle
+                active_face=active_face.and.l(b)>=3.and.l(b)<=active_cells(b)+2
+              end do
+              if (.not.active_face) cycle
+            end if
+            ridx=l; ridx(a)=modulo(l(a),dims(a))+1
             grad(:,a)=(primitive(2:4,ridx(1),ridx(2),ridx(3))-primitive(2:4,i,j,k))/spacing(a)
             do b=1,3
               if (b == a) cycle
@@ -108,6 +166,10 @@ contains
             flux=0.0_dp; flux(2:4)=-tau(:,a)
             flux(5)=-dot_product(uface,tau(:,a))+heat_flux+dot_product(hav,jflux)
             flux(6:)=jflux
+            if (present(active_cells)) then
+              if (l(a)==2) rate=rate+flux*cellvolume/spacing(a)
+              if (l(a)==active_cells(a)+2) rate=rate-flux*cellvolume/spacing(a)
+            end if
             ! One face flux, equal and opposite for both cells: exact telescoping.
             rhs(:,i,j,k)=rhs(:,i,j,k)-flux/spacing(a)
             rhs(:,ridx(1),ridx(2),ridx(3))=rhs(:,ridx(1),ridx(2),ridx(3))+flux/spacing(a)
@@ -118,27 +180,36 @@ contains
         end do
       end do
     end do
+    if (present(boundary_rate)) boundary_rate=rate
     ok=all(ieee_is_finite(rhs)) .and. ieee_is_finite(maximum_diffusivity) .and. cellvolume > 0.0_dp
     if (.not. ok) then
       rhs=0.0_dp; maximum_diffusivity=0.0_dp
     end if
   end subroutine
 
-  subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok)
+  subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok, &
+      boundary_faces,boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),cs,prt,sct,dt
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    real(dp) :: rate1(size(state,1)),rate2(size(state,1))
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
     real(dp) :: diffusivity
     integer :: dims(3)
     logical :: local_ok
     ok=.false.; dims=shape(temperature)
+    if (present(boundary_change)) then
+      boundary_change=0
+      if (size(boundary_change)/=size(state,1)) return
+    end if
     if (.not. ieee_is_finite(dt)) return
     if (dt < 0.0_dp .or. dt > 1.0e6_dp) return
     allocate(rhs,mold=state); allocate(stage,mold=state); allocate(candidate,mold=state)
     allocate(t1,mold=temperature); allocate(t2,mold=temperature)
-    call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok)
+    call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     if (cs == 0.0_dp .or. dt == 0.0_dp) then
@@ -147,12 +218,13 @@ contains
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,dims(1),dims(2),dims(3),t1,local_ok)
     if (.not. local_ok) return
-    call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok)
+    call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     candidate=0.5_dp*(state+stage+dt*rhs)
     call recover_reactive_temperatures_3d(species,candidate,t1,dims(1),dims(2),dims(3),t2,local_ok)
     if (.not. local_ok) return
+    if (present(boundary_change)) boundary_change=0.5_dp*dt*(rate1+rate2)
     state=candidate; temperature=t2; ok=.true.
   end subroutine
 end module les_smagorinsky_3d_mod

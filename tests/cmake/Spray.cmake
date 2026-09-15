@@ -3,13 +3,17 @@ if(PELEF_ENABLE_SPRAY)
     "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py"
     --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_physical_boundaries")
   set_tests_properties(spray_physical_boundary_restart PROPERTIES LABELS "spray" TIMEOUT 600)
+  add_test(NAME spray_sgs_boundary_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --sgs .17
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_sgs_boundaries")
+  set_tests_properties(spray_sgs_boundary_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   add_executable(test_spray_core spray/test_spray_core.F90)
   target_link_libraries(test_spray_core PRIVATE pelef_spray_runtime)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test_spray_core PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
   foreach(spray_case boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
-      les_algebra les_grid les_zero les_reject)
+      les_boundary les_algebra les_grid les_zero les_reject)
     add_test(NAME spray_${spray_case} COMMAND test_spray_core ${spray_case})
     set_tests_properties(spray_${spray_case} PROPERTIES LABELS "spray" TIMEOUT 60)
   endforeach()

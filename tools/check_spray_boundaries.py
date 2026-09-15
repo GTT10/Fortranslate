@@ -11,10 +11,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--sgs', type=float, default=0.0)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d/wall_reflection.nml').read_text()
+    template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
+    if args.sgs:
+        template = template.replace('&spray', '&spray\n shear_velocity=10,')
     for kind in ('wall', 'outflow'):
         def run(name, extra=''):
             tag = kind + '_' + name
