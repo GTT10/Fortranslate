@@ -72,6 +72,7 @@ module simulation_config_reactive_3d_mod
     character(len=512) :: output_file = "reactive_entropy_wave_3d.csv"
   end type reactive_3d_config
 
+  public :: fill_reactive_boundary_ghosts_3d
   public :: resolved_reactive_boundaries_3d, valid_reactive_boundaries_3d
   public :: read_reactive_3d_configuration
   public :: validate_reactive_3d_configuration
@@ -79,6 +80,47 @@ module simulation_config_reactive_3d_mod
   public :: resolve_reactive_3d_selected_composition
 
 contains
+
+  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok)
+    real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
+    logical, intent(out) :: ok
+    integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face
+    logical :: reflect(3)
+    ok=.false.; ghost=0.0_dp; gt=0.0_dp
+    n=shape(t); dims=n+4
+    if (any(n<2) .or. size(u,1)<5) return
+    if (any(shape(u)/=[size(u,1),n]) .or. any(shape(ghost)/=[size(u,1),dims])) return
+    if (any(shape(gt)/=dims) .or. .not.valid_reactive_boundaries_3d(faces)) return
+      do k=1,dims(3)
+        do j=1,dims(2)
+          do i=1,dims(1)
+            idx=[i,j,k]-2; q=idx; reflect=.false.
+            do a=1,3
+              if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
+              face=2*a
+              if (idx(a)<1) face=face-1
+              select case(trim(faces(face)))
+              case('periodic')
+                q(a)=modulo(idx(a)-1,n(a))+1
+              case('outflow')
+                q(a)=max(1,min(n(a),idx(a)))
+              case('slip_wall')
+                q(a)=1-idx(a)
+                if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
+                reflect(a)=.true.
+              end select
+            end do
+            ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
+            do a=1,3
+              if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
+            end do
+          end do
+        end do
+      end do
+    ok=.true.
+  end subroutine fill_reactive_boundary_ghosts_3d
 
   pure function resolved_reactive_boundaries_3d(config) result(faces)
     type(reactive_3d_config), intent(in) :: config
@@ -394,9 +436,6 @@ contains
       message = "Reactive 3D Riemann solver must be rusanov, hllc, or pelec"
     else if (.not. valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(config))) then
       message = "Reactive 3D faces require paired periodic, outflow, or slip_wall boundaries"
-    else if (config%transport_enabled .and. &
-        any(resolved_reactive_boundaries_3d(config) /= "periodic")) then
-      message = "Reactive 3D physical-boundary molecular transport is not implemented"
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else

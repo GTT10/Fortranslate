@@ -1,5 +1,6 @@
 module reactive_transport_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
@@ -1806,11 +1807,94 @@ contains
     ok = .true.
   end subroutine reactive_transport_timestep_3d
 
+  ! Two ghost layers cover the viscous transverse gradients and the adjacent
+  ! species donor budgets. Only physical face fluxes enter the update.
+  subroutine physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),spacing(3),dt
+    integer, intent(in) :: n(3)
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:),theta
+    logical, intent(out) :: ok
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
+    integer :: dims(3),nv
+    dims=n+4; nv=size(u,1)
+    allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
+    allocate(gx,mold=ghost); allocate(gy,mold=ghost); allocate(gz,mold=ghost)
+    call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok)
+    if (.not.ok) return
+    call reactive_transport_fluxes_3d(species,transport,ghost,gt,dims(1),dims(2),dims(3), &
+      spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok)
+    if (.not.ok) return
+    fx=gx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
+    fy=gy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
+    fz=gz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
+  end subroutine
+
+  subroutine physical_transport_budget_3d(fx,fy,fz,n,spacing,dt,change,ok)
+    real(dp), intent(in) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:),spacing(3),dt
+    integer, intent(in) :: n(3)
+    real(dp), intent(out) :: change(:)
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(change)),area,weight
+    integer :: a,b,i,j,k
+    candidate=0.0_dp; change=0.0_dp; ok=.false.
+    do a=1,3
+      b=modulo(a,3)+1
+      call checked_product(spacing(b),spacing(modulo(a+1,3)+1),area,ok)
+      if (.not.ok) return
+      call checked_product(area,dt,weight,ok)
+      if (.not.ok) return
+      select case(a)
+      case(1)
+        do k=1,n(3)
+          do j=1,n(2)
+            call accumulate(fx(:,0,j,k),fx(:,n(1),j,k))
+            if (.not.ok) return
+          end do
+        end do
+      case(2)
+        do k=1,n(3)
+          do i=1,n(1)
+            call accumulate(fy(:,i,0,k),fy(:,i,n(2),k))
+            if (.not.ok) return
+          end do
+        end do
+      case(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            call accumulate(fz(:,i,j,0),fz(:,i,j,n(3)))
+            if (.not.ok) return
+          end do
+        end do
+      end select
+    end do
+    change=candidate
+  contains
+    subroutine accumulate(lower,upper)
+      real(dp), intent(in) :: lower(:),upper(:)
+      real(dp) :: delta,term,value
+      integer :: c
+      do c=1,size(candidate)
+        call checked_difference(lower(c),upper(c),delta,ok)
+        if (.not.ok) return
+        call checked_product(delta,weight,term,ok)
+        if (.not.ok) return
+        call checked_sum(candidate(c),term,value,ok)
+        if (.not.ok) return
+        candidate(c)=value
+      end do
+    end subroutine
+  end subroutine
+
   subroutine reactive_transport_euler_update_3d( &
       species, transport, input_state, input_temperature, nx, ny, nz, &
       dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, output_state, &
-      output_temperature, minimum_theta, ok)
+      output_temperature, minimum_theta, ok, boundary_faces, boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: input_state(:, :, :, :)
@@ -1824,6 +1908,11 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
 
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    character(len=32) :: faces(6)
+    logical :: physical
+    real(dp) :: change(size(input_state,1))
     real(dp), allocatable :: flux_x(:, :, :, :)
     real(dp), allocatable :: flux_y(:, :, :, :)
     real(dp), allocatable :: flux_z(:, :, :, :), primitive(:), candidate_cell(:)
@@ -1838,6 +1927,14 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     nvar = reactive_nvar(size(species))
+    faces='periodic'
+    if (present(boundary_faces)) faces=boundary_faces
+    if (present(boundary_change)) then
+      boundary_change=0.0_dp
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    physical=any(faces/='periodic')
     if (.not. all(ieee_is_finite([dx, dy, dz, dt]))) return
     if (barodiffusion_enabled .and. .not. species_diffusion_enabled) return
     if (.not. valid_transport_shapes_3d( &
@@ -1846,15 +1943,22 @@ contains
         any(shape(output_temperature) /= shape(input_temperature))) return
     if (.not. all(ieee_is_finite(input_state)) .or. &
         .not. all(ieee_is_finite(input_temperature))) return
-    allocate(flux_x(nvar, nx, ny, nz), flux_y(nvar, nx, ny, nz))
-    allocate(flux_z(nvar, nx, ny, nz))
     allocate(primitive(reactive_nprim(size(species))))
     allocate(candidate_cell(nvar))
-    call reactive_transport_fluxes_3d( &
-      species, transport, input_state, input_temperature, nx, ny, nz, &
-      dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, &
-      flux_x, flux_y, flux_z, minimum_theta, local_ok)
+    if (physical) then
+      allocate(flux_x(nvar,0:nx,ny,nz),flux_y(nvar,nx,0:ny,nz),flux_z(nvar,nx,ny,0:nz))
+      call physical_transport_fluxes_3d(species,transport,input_state,input_temperature,[nx,ny,nz], &
+        [dx,dy,dz],dt,faces,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
+        barodiffusion_enabled,flux_x,flux_y,flux_z,minimum_theta,local_ok)
+    else
+      allocate(flux_x(nvar, nx, ny, nz), flux_y(nvar, nx, ny, nz))
+      allocate(flux_z(nvar, nx, ny, nz))
+      call reactive_transport_fluxes_3d( &
+        species, transport, input_state, input_temperature, nx, ny, nz, &
+        dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
+        species_diffusion_enabled, barodiffusion_enabled, &
+        flux_x, flux_y, flux_z, minimum_theta, local_ok)
+    end if
     if (.not. local_ok) then
       call reset_transport_euler_outputs_3d( &
         output_state, output_temperature, minimum_theta)
@@ -1882,10 +1986,13 @@ contains
 
     do k = 1, nz
       previous_k = periodic_index(k - 1, nz)
+      if (physical) previous_k=k-1
       do j = 1, ny
         previous_j = periodic_index(j - 1, ny)
+        if (physical) previous_j=j-1
         do i = 1, nx
           previous_i = periodic_index(i - 1, nx)
+          if (physical) previous_i=i-1
           candidate_cell = input_state(:, i, j, k)
           do component = 1, nvar
             call checked_difference( &
@@ -1997,13 +2104,21 @@ contains
         output_state, output_temperature, minimum_theta)
       return
     end if
+    if (physical) then
+      call physical_transport_budget_3d(flux_x,flux_y,flux_z,[nx,ny,nz],[dx,dy,dz],dt,change,local_ok)
+      if (.not.local_ok) then
+        call reset_transport_euler_outputs_3d(output_state,output_temperature,minimum_theta)
+        return
+      end if
+      if (present(boundary_change)) boundary_change=change
+    end if
     ok = .true.
   end subroutine reactive_transport_euler_update_3d
 
   subroutine advance_reactive_transport_3d( &
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, barodiffusion_enabled, minimum_theta, ok)
+      species_diffusion_enabled, barodiffusion_enabled, minimum_theta, ok, boundary_faces, boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -2014,6 +2129,9 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
 
+    character(len=*), intent(in), optional :: boundary_faces(6)
+    real(dp), intent(out), optional :: boundary_change(:)
+    real(dp) :: change1(size(state,1)),change2(size(state,1)),change(size(state,1))
     real(dp), allocatable :: initial_state(:, :, :, :)
     real(dp), allocatable :: initial_temperature(:, :, :)
     real(dp), allocatable :: stage_state(:, :, :, :)
@@ -2031,6 +2149,13 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     nvar = reactive_nvar(size(species))
+    if (present(boundary_change)) then
+      boundary_change=0.0_dp
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (present(boundary_faces)) then
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+    end if
     if (.not. all(ieee_is_finite([dx, dy, dz, interval]))) return
     if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. dz <= 0.0_dp) return
     if (barodiffusion_enabled .and. .not. species_diffusion_enabled) return
@@ -2058,13 +2183,13 @@ contains
       species, transport, initial_state, initial_temperature, nx, ny, nz, &
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, stage_state, &
-      stage_temperature, theta1, local_ok)
+      stage_temperature, theta1, local_ok, boundary_faces, change1)
     if (.not. local_ok) return
     call reactive_transport_euler_update_3d( &
       species, transport, stage_state, stage_temperature, nx, ny, nz, &
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, euler_state, &
-      euler_temperature, theta2, local_ok)
+      euler_temperature, theta2, local_ok, boundary_faces, change2)
     if (.not. local_ok) return
     if (.not. all(ieee_is_finite(stage_state)) .or. &
         .not. all(ieee_is_finite(stage_temperature)) .or. &
@@ -2117,6 +2242,11 @@ contains
       minimum_theta = 1.0_dp
       return
     end if
+    do component=1,nvar
+      call checked_midpoint(change1(component),change2(component),change(component),local_ok)
+      if (.not.local_ok) return
+    end do
+    if (present(boundary_change)) boundary_change=change
     state = candidate_state
     temperature = candidate_temperature
     ok = .true.

@@ -1,6 +1,6 @@
 module reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -1081,7 +1081,7 @@ contains
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
-    real(dp) :: change(size(state,1))
+    real(dp) :: change(size(state,1)),hydro_change(size(state,1)),transport_change(size(state,1))
     real(dp) :: stage_transport_theta
     logical :: local_ok
     integer :: nvar
@@ -1096,8 +1096,8 @@ contains
       if (size(boundary_change) /= size(state,1)) return
     end if
     change = 0.0_dp
+    hydro_change = 0.0_dp
     if (.not. valid_reactive_boundaries_3d(faces)) return
-    if (transport_enabled .and. any(faces /= "periodic")) return
     selected_reconstruction = "pcm"
     selected_limiter = "mc"
     if (present(reconstruction)) selected_reconstruction = &
@@ -1132,14 +1132,15 @@ contains
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change)
       if (.not. local_ok) return
+      change = change + transport_change
       minimum_transport_theta = min( &
         minimum_transport_theta, stage_transport_theta)
     end if
     if (any(faces /= "periodic")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
-        [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, change, local_ok)
+        [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -1153,13 +1154,15 @@ contains
       end select
     end if
     if (.not. local_ok) return
+    change = change + hydro_change
     if (transport_enabled) then
       call advance_reactive_transport_3d( &
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change)
       if (.not. local_ok) return
+      change = change + transport_change
       minimum_transport_theta = min( &
         minimum_transport_theta, stage_transport_theta)
     end if
@@ -1225,38 +1228,13 @@ contains
       real(dp), intent(out) :: du(:,:,:,:),rate(:)
       logical, intent(out) :: success
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-      integer :: dims(3),i,j,k,a,idx(3),q(3),face,nv
-      logical :: reflect(3)
+      integer :: dims(3),i,j,k,nv
       success=.false.; du=0.0_dp; rate=0.0_dp
       dims=n+4; nv=size(u,1)
       allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
       allocate(fx,mold=ghost); allocate(fy,mold=ghost); allocate(fz,mold=ghost)
-      do k=1,dims(3)
-        do j=1,dims(2)
-          do i=1,dims(1)
-            idx=[i,j,k]-2; q=idx; reflect=.false.
-            do a=1,3
-              if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
-              face=2*a
-              if (idx(a)<1) face=face-1
-              select case(trim(faces(face)))
-              case('periodic')
-                q(a)=modulo(idx(a)-1,n(a))+1
-              case('outflow')
-                q(a)=max(1,min(n(a),idx(a)))
-              case('slip_wall')
-                q(a)=1-idx(a)
-                if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
-                reflect(a)=.true.
-              end select
-            end do
-            ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
-            do a=1,3
-              if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
-            end do
-          end do
-        end do
-      end do
+      call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success)
+      if (.not.success) return
       if (reconstruction=='pcm') then
         call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &
           riemann_solver,fx,fy,fz,success)

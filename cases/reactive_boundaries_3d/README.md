@@ -20,7 +20,11 @@ in `Integrated boundary change`, ordered as density, three momenta, total
 energy, then species densities, integrated over space and time. The
 application subtracts these exchanges before checking conservation. Closed
 wall domains conserve mass and total energy, but the wall can change gas
-momentum. Chemistry is included in the existing transactional split step.
+momentum. Chemistry and molecular transport are included in the existing transactional
+split step. The same boundary ghosts feed viscous stresses, heat conduction,
+species diffusion and barodiffusion. Surface budgets include the two RK stages
+of both transport half-steps. Species donor limiting and enthalpy correction
+use the existing conservative transport operator.
 
 ```sh
 mkdir -p build/boundary-example
@@ -35,8 +39,13 @@ regular-grid hydro/chemistry and boundary-accounted conservation, not physical
 validation against an experiment. The periodic entropy-wave exact-solution
 error is not reported for physical-boundary runs.
 
-Physical-boundary molecular transport is explicitly rejected pending its wall
-and open-face flux implementation. Prescribed inflow, no-slip/isothermal walls,
+`transport.nml` exercises all molecular transport processes with mixed faces.
+The stationary slip wall has zero normal heat/species flux and zero tangential
+traction; its normal viscous traction can change momentum. Outflow extrapolates
+zero normal state gradients, while tangential derivatives still contribute to
+stress and its energy flux.
+
+Prescribed inflow, no-slip/isothermal walls,
 characteristic boundaries, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.

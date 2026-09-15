@@ -29,7 +29,7 @@ program test_reactive_boundaries_3d
   call require(.not.ok,'unpaired periodic config')
   config%boundary_faces=''; config%transport_enabled=.true.
   call validate_reactive_3d_configuration(config,ok,message)
-  call require(.not.ok,'unsupported transport rejected')
+  call require(ok,'physical transport config')
   do r=1,2
     reconstruction='pcm'
     if (r==2) reconstruction='characteristic_plm'
