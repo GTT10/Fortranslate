@@ -975,3 +975,21 @@ for their remaining coupling interval; late failure rolls back the whole step.
 film heating/evaporation. This remains a stationary, fixed-footprint approximation,
 without lateral flow, moving-wall coupling, entrainment or calibrated film
 qualification. See [focused evidence](validation/wall-film-evolution-20260916.md).
+
+
+### PelePhysics drag correlation
+
+`drag_model='pelephysics'` selects the pinned `Drag.H` correlation:
+Cd is 24/Re for 0 < Re <= 1, 24/Re*(1+Re**(2/3)/6) for
+1 < Re <= 1000, and 0.424 above 1000. At zero relative velocity its force
+and rate are zero. With `breakup_model='etab'`, Cd is multiplied by
+`1+2.6432*deformation`, using the parcel's current deformation. A negative
+multiplier rejects the update transactionally. Other breakup models do not
+apply this multiplier.
+
+The default `drag_model='schiller-naumann'` retains the preceding correlation.
+The selected model enters checkpoint identity, so switching drag models on
+restart is rejected. The gas-skin Reynolds number, frozen exponential velocity
+update and conservative mass/momentum/energy exchange are shared by both
+choices. This ports the reference force law, not its complete time integration
+or all spray submodels. See [focused evidence](validation/spray-reference-drag-20260916.md).

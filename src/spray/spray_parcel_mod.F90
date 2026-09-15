@@ -40,6 +40,7 @@ module spray_parcel_mod
     integer :: maximum_parcels=1000000
     character(len=8) :: breakup_model='none'
     real(dp) :: surface_tension=0.0_dp,liquid_viscosity=0.0_dp
+    character(len=24) :: drag_model="schiller-naumann"
     logical :: drag = .true., heat = .true., evaporation = .true.
     logical :: abramzon_sirignano = .true.
     real(dp) :: max_fractional_change = 0.1_dp, particle_cfl = 0.25_dp
@@ -211,6 +212,7 @@ contains
     if (o%maximum_multiplicity>0.and.o%maximum_multiplicity<1e-12_dp) return
     if (o%maximum_parcels<1.or.o%maximum_parcels>1000000) return
     if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
+    if (o%drag_model/="schiller-naumann".and.o%drag_model/="pelephysics") return
     select case(trim(o%breakup_model))
     case('none')
     case('etab','khrt')
@@ -431,6 +433,21 @@ contains
     re=f%density*d*norm2(f%gas_velocity-p%velocity)/f%viscosity
     cdre=24.0_dp*(1.0_dp+0.15_dp*re**0.687_dp)
     if (re >= 1000.0_dp) cdre=0.44_dp*re
+    if (o%drag_model=='pelephysics') then
+      ! Pinned Drag.H: store Cd*Re to avoid division by a vanishing Reynolds number.
+      cdre=0
+      if (re>1000) then
+        cdre=.424_dp*re
+      else if (re>1) then
+        cdre=24*(1+re**(2.0_dp/3)/6)
+      else if (re>0) then
+        cdre=24
+      end if
+      if (o%breakup_model=='etab') then
+        if (1+2.6432_dp*p%deformation<0) return
+        cdre=cdre*(1+2.6432_dp*p%deformation)
+      end if
+    end if
     pr=f%viscosity*f%cp/f%conductivity
     sc=f%viscosity/(f%density*f%diffusivity)
     sh0=2.0_dp+0.6_dp*sqrt(re)*sc**(1.0_dp/3.0_dp)

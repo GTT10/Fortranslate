@@ -487,6 +487,35 @@ program test_spray_core
     call near(q%velocity(1),exp(-expected*dt),1.0e-13_dp,'exponential drag')
     call require(q%mass == p%mass .and. q%temperature == p%temperature,'drag leaves mass and T')
     call exchange_check(p,q,transfer)
+    options%drag_model='pelephysics'
+    do n=1,4
+      select case(n)
+      case(1)
+        value=.5_dp;expected=24
+      case(2)
+        value=100.0_dp;expected=24*(1+100.0_dp**(2.0_dp/3)/6)
+      case(3)
+        value=2000.0_dp;expected=.424_dp*2000
+      case(4)
+        value=0;expected=0
+      end select
+      film%gas_velocity=p%velocity+[value*film%viscosity/(film%density*d),0.0_dp,0.0_dp]
+      expected=3*film%viscosity*expected/(4*liquid%density*d*d)
+      call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+      call require(ok,'PelePhysics drag regime')
+      call near(inverse_tau,expected,1e-13_dp,'PelePhysics drag rate')
+    end do
+    film%gas_velocity=0;options%breakup_model='etab';options%surface_tension=.072_dp
+    options%liquid_viscosity=.001_dp;p%deformation=.2_dp
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok,'deformed drag')
+    p%deformation=0
+    call spray_transfer_rates(p,liquid,film,options,value,heat,masscoef,ok)
+    call require(ok,'spherical drag')
+    call near(inverse_tau,value*(1+2.6432_dp*.2_dp),1e-13_dp,'ETAB drag enhancement')
+    p%deformation=-1
+    call advance_parcel_frozen_film(p,liquid,film,options,dt,q,transfer,ok)
+    call require(.not.ok.and.all(q%velocity==p%velocity).and.all(transfer==0),'negative drag rollback')
   case('heat')
     options%drag=.false.; options%evaporation=.false.; p%velocity=0.0_dp
     call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)

@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "path": "Source/Spray/Drag.H",
+  "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Piecewise drag coefficient and ETAB deformation multiplier; frozen exponential integration and conservative inventory exchange remain PeleF conventions."
+}

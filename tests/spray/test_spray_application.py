@@ -57,6 +57,23 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_pelephysics_drag_restart(self):
+        settings = ("drag_model='pelephysics',breakup_model='etab',surface_tension=.072,liquid_viscosity=.001,"
+                    "injection_speed=100,heat_enabled=.false.,evaporation_enabled=.false.,")
+        checkpoint = self.root/'reference_drag.chk'
+        self.run_case('reference_drag', common=settings)
+        self.check_balance('reference_drag')
+        self.run_case('reference_drag_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('reference_drag_resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'reference_drag.{suffix}').read_bytes(),
+                             (self.root/f'reference_drag_resumed.{suffix}').read_bytes())
+        self.assertEqual(self.history('reference_drag')[-1], self.history('reference_drag_resumed')[-1])
+        result = self.run_case('drag_changed', f"restart_file='{checkpoint}',", fail=True,
+                               common=settings.replace("drag_model='pelephysics'", "drag_model='schiller-naumann'"))
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('drag_unknown', common="drag_model='unknown',", fail=True)
+
     def test_film_evolution_restart(self):
         settings = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
                     "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"

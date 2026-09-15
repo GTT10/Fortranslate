@@ -88,6 +88,7 @@ contains
     type(spray_parcel), allocatable :: parcels(:),new_parcels(:)
     type(spray_liquid) :: liquid
     type(spray_options) :: options
+    character(len=24) :: drag_model
     logical :: chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled,abramzon_sirignano
     real(dp), allocatable :: boundary_totals(:),boundary_step(:)
     character(len=8) :: breakup_model
@@ -147,7 +148,7 @@ contains
       independent_port_schedules,port_mass_flow_rates,port_injection_starts,port_injection_ends,port_injection_intervals, &
       injection_center,injection_axis,injection_speed,cone_angle, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
-      chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_enabled,heat_enabled,evaporation_enabled, &
+      chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
@@ -194,6 +195,7 @@ contains
     mass_flow_rate=0.0_dp; injection_start=0.0_dp; injection_end=1.0e-5_dp; injection_interval=1.0e-6_dp
     final_time=1.0e-5_dp; maximum_dt=1.0e-7_dp; cfl=0.3_dp; maximum_steps=100000; stop_after_steps=0
     chemistry_enabled=.true.; transport_enabled=.true.; chemistry_method='implicit'; rtol=1.0e-7_dp; atol=1.0e-12_dp
+    drag_model="schiller-naumann"
     drag_enabled=.true.; heat_enabled=.true.; evaporation_enabled=.true.; abramzon_sirignano=.true.
     max_fractional_change=0.05_dp; particle_cfl=0.25_dp; minimum_diameter=1.0e-9_dp; maximum_substeps=100000
     smagorinsky_constant=0.0_dp; turbulent_prandtl=0.7_dp; turbulent_schmidt=0.7_dp
@@ -424,6 +426,7 @@ contains
     options%liquid_viscosity_coefficients=liquid_viscosity_coefficients
     options%liquid_viscosity_temperature_range=liquid_viscosity_temperature_range
     options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
+    options%drag_model=drag_model
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
@@ -659,6 +662,7 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (drag_model/='schiller-naumann') context=trim(context)//' drag-model-v1 '//trim(drag_model)
     if (wall_film_evolution) then
       context=trim(context)//' wall-film-evolution-v2-half-skin'
       call append_reals([wall_liquid_conductivity,minimum_film_height])
