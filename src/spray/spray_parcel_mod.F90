@@ -20,8 +20,11 @@ module spray_parcel_mod
     integer(int64) :: id = 0_int64
     real(dp) :: position(3) = 0.0_dp, velocity(3) = 0.0_dp
     real(dp) :: mass = 0.0_dp, temperature = 0.0_dp, multiplicity = 0.0_dp
+    real(dp) :: deformation=0.0_dp,deformation_rate=0.0_dp
   end type
   type, public :: spray_options
+    character(len=8) :: breakup_model='none'
+    real(dp) :: surface_tension=0.0_dp,liquid_viscosity=0.0_dp
     logical :: drag = .true., heat = .true., evaporation = .true.
     logical :: abramzon_sirignano = .true.
     real(dp) :: max_fractional_change = 0.1_dp, particle_cfl = 0.25_dp
@@ -86,7 +89,9 @@ contains
   pure logical function valid_spray_parcel(p) result(ok)
     type(spray_parcel), intent(in) :: p
     ok = .false.
-    if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, p%multiplicity]))) return
+    if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, &
+        p%multiplicity,p%deformation,p%deformation_rate]))) return
+    if (abs(p%deformation)>1e6_dp.or.abs(p%deformation_rate)>1e20_dp) return
     ok = p%id > 0_int64 .and. p%mass >= 0.0_dp .and. p%mass <= 1.0_dp .and. &
       p%temperature >= 1.0_dp .and. p%temperature <= 1.0e5_dp .and. &
       p%multiplicity > 0.0_dp .and. p%multiplicity <= 1.0e18_dp .and. &
@@ -97,6 +102,15 @@ contains
     type(spray_options), intent(in) :: o
     ok = .false.
     if (.not. all(ieee_is_finite([o%max_fractional_change,o%particle_cfl,o%minimum_diameter]))) return
+    select case(trim(o%breakup_model))
+    case('none')
+    case('etab')
+      if (.not.all(ieee_is_finite([o%surface_tension,o%liquid_viscosity]))) return
+      if (o%surface_tension<1e-8_dp.or.o%surface_tension>1e3_dp) return
+      if (o%liquid_viscosity<1e-10_dp.or.o%liquid_viscosity>1e3_dp) return
+    case default
+      return
+    end select
     ok = o%max_fractional_change > 0.0_dp .and. o%max_fractional_change <= 0.25_dp .and. &
       o%particle_cfl > 0.0_dp .and. o%particle_cfl <= 0.5_dp .and. &
       o%minimum_diameter >= 1.0e-12_dp .and. o%minimum_diameter <= 1.0_dp .and. o%maximum_substeps > 0

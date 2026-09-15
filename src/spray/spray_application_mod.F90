@@ -39,6 +39,9 @@ contains
     type(spray_options) :: options
     logical :: chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled,abramzon_sirignano
     real(dp), allocatable :: boundary_totals(:),boundary_step(:)
+    character(len=8) :: breakup_model
+    real(dp) :: surface_tension,liquid_viscosity
+    logical :: breakup_enabled
     logical :: physical_boundaries
     character(len=32) :: boundary_faces(6)
     logical :: ok,exists
@@ -47,7 +50,8 @@ contains
     character(len=16384) :: context
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
-    namelist /spray/ cells,domain_length,boundary_faces,hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
+    namelist /spray/ cells,domain_length,boundary_faces,breakup_model,surface_tension,liquid_viscosity, &
+      hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
@@ -57,6 +61,7 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    breakup_model="none"; surface_tension=0; liquid_viscosity=0
     boundary_faces="periodic"
     cells=[4,4,4]; domain_length=0.004_dp
     hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
@@ -128,6 +133,8 @@ contains
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
+    options%breakup_model=breakup_model; options%surface_tension=surface_tension
+    options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
@@ -205,6 +212,10 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (breakup_enabled) then
+      context=trim(context)//' etab-size-deformation-v1/'//trim(breakup_model)
+      call append_reals([surface_tension,liquid_viscosity])
+    end if
     if (physical_boundaries) then
       context=trim(context)//' specular-outflow-v1'
       do i=1,6
@@ -214,10 +225,10 @@ contains
     if (len_trim(restart_file)>0) then
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled)
       end if
       if (.not. ok) call fail(trim(message))
       if (time>final_time .or. steps>maximum_steps .or. event>1000000) call fail('Restart exceeds requested limits')
@@ -330,10 +341,10 @@ contains
     if (len_trim(checkpoint_file)>0) then
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled)
       end if
       if (.not. ok) call fail(trim(message))
     end if
@@ -405,13 +416,27 @@ contains
       if (ios/=0) call fail('Gas snapshot close failed')
       open(newunit=parcel_unit,file=trim(paths(3)),status='new',action='write',iostat=ios)
       if (ios/=0) call fail('Cannot create parcel snapshot')
-      write(parcel_unit,'(a)',iostat=ios) 'id,x,y,z,u,v,w,mass,temperature,multiplicity,diameter'
+      write(parcel_unit,'(a)',advance='no',iostat=ios) 'id,x,y,z,u,v,w,mass,temperature,multiplicity,diameter'
+      if (ios==0) then
+        if (breakup_enabled) then
+          write(parcel_unit,'(a)',iostat=ios) ',deformation,deformation_rate'
+        else
+          write(parcel_unit,'(a)',iostat=ios) ''
+        end if
+      end if
       if (ios/=0) call fail('Parcel header write failed')
       do p=1,size(parcels)
-        write(parcel_unit,'(i0,10(a,es26.17e3))',iostat=ios) parcels(p)%id,',',parcels(p)%position(1), &
+        write(parcel_unit,'(i0,10(a,es26.17e3))',advance='no',iostat=ios) parcels(p)%id,',',parcels(p)%position(1), &
           ',',parcels(p)%position(2),',',parcels(p)%position(3),',',parcels(p)%velocity(1), &
           ',',parcels(p)%velocity(2),',',parcels(p)%velocity(3),',',parcels(p)%mass,',',parcels(p)%temperature, &
           ',',parcels(p)%multiplicity,',',parcel_diameter(parcels(p),liquid)
+        if (ios==0) then
+          if (breakup_enabled) then
+            write(parcel_unit,'(2(a,es26.17e3))',iostat=ios) ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
+          else
+            write(parcel_unit,'(a)',iostat=ios) ''
+          end if
+        end if
         if (ios/=0) call fail('Parcel snapshot write failed')
       end do
       close(parcel_unit,iostat=ios)

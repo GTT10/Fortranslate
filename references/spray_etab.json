@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "path": "Source/Spray/BreakupSplash/TABBreakup.H",
+  "sha256": "8b806c9fcb2305752f591cea4caa007484a31098e14e57e9cc50286bf2a29d10",
+  "license_path": "references/pelephysics-spray-license.txt",
+  "license_sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2",
+  "scope": "ETAB oscillator and representative-drop size/multiplicity; no stochastic child-parcel velocity dispersion"
+}

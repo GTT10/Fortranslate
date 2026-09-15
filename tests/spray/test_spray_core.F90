@@ -10,10 +10,11 @@ program test_spray_core
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use mixture_transport_mod, only: binary_diffusion_coefficients
   use spray_parcel_mod
+  use spray_breakup_mod
   use spray_coupling_3d_mod
   use les_smagorinsky_3d_mod
   implicit none
-  real(dp) :: value
+  real(dp) :: value,td,omega,wer,initial_mass
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -45,6 +46,34 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('etab')
+    options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    call make_drops(); p=drops(1); p%velocity=0; p%deformation=.1_dp;p%deformation_rate=100
+    q=p; d=.5_dp*parcel_diameter(p,liquid); dt=1e-7_dp
+    td=liquid%density*d*d/(5*options%liquid_viscosity)
+    omega=sqrt(8*options%surface_tension/(liquid%density*d**3)-1/td**2)
+    wer=d*100/options%surface_tension/12
+    expected=wer+exp(-dt/td)*((p%deformation-wer)*cos(omega*dt)+ &
+      (p%deformation_rate+(p%deformation-wer)/td)/omega*sin(omega*dt))
+    call advance_etab_breakup(p,liquid,options,1.0_dp,[10.0_dp,0.0_dp,0.0_dp],dt,ok)
+    call require(ok,'ETAB oscillator')
+    call near(p%deformation,expected,1e-13_dp,'damped forced oscillator')
+    call require(p%mass==q%mass.and.p%multiplicity==q%multiplicity,'subcritical no breakup')
+    p=q;p%deformation=1.1_dp;p%deformation_rate=0
+    value=10.0_dp*300.0_dp**2*d/options%surface_tension
+    expected=exp(-(2.0_dp/9.0_dp)*sqrt(value)*acos(1.0_dp-12.0_dp/value))
+    call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],1e-10_dp,ok)
+    call require(ok,'instant ETAB event')
+    call near(p%mass/q%mass,expected**3,1e-12_dp,'ETAB analytical child mass')
+    p=q;p%deformation=0;p%deformation_rate=0
+    transfer=parcel_totals(p,liquid);initial_mass=p%mass
+    call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],5e-5_dp,ok)
+    call require(ok.and.p%mass<initial_mass.and.p%multiplicity>q%multiplicity,'supercritical ETAB breakup')
+    call require(maxval(abs(parcel_totals(p,liquid)-transfer))<1e-13_dp*maxval(abs(transfer)), &
+      'ETAB inventory conservation')
+    q=p;options%maximum_substeps=1
+    call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],1.0_dp,ok)
+    call require(.not.ok.and.p%mass==q%mass.and.p%deformation==q%deformation,'ETAB substep rollback')
   case('boundaries')
     faces='slip_wall'
     call particle_boundary_stencil([0.0_dp,.002_dp,.002_dp],[0.0_dp,0.0_dp,0.0_dp], &

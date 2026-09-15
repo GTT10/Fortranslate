@@ -25,8 +25,28 @@ module spray_checkpoint_mod
     end function
   end interface
 contains
+  function spray_checkpoint_magic(physical,breakup) result(value)
+    logical, intent(in) :: physical,breakup
+    character(len=40) :: value
+    if (breakup) then
+      if (physical) then
+        value='PELEF_SPRAY_3D_CHECKPOINT_V4'
+      else
+        value='PELEF_SPRAY_3D_CHECKPOINT_V3'
+      end if
+    else
+      if (physical) then
+        value='PELEF_SPRAY_3D_CHECKPOINT_V2'
+      else
+        value=magic
+      end if
+    end if
+  end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals)
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state)
+    logical, intent(in), optional :: breakup_state
+    logical :: has_breakup
+    character(len=40) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -40,6 +60,9 @@ contains
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
     integer(c_int) :: status
     logical :: exists,local_ok
+    has_breakup=.false.
+    if (present(breakup_state)) has_breakup=breakup_state
+    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup)
     ok=.false.; message='Invalid spray checkpoint state'
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -52,6 +75,9 @@ contains
     if (time < 0.0_dp .or. steps < 0 .or. event < 0 .or. size(parcels)>1000000) return
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
+      if (.not.has_breakup) then
+        if (abs(parcels(p)%deformation)>0.or.abs(parcels(p)%deformation_rate)>0) return
+      end if
       if (p>1) then
         if (parcels(p)%id<=parcels(p-1)%id) return
       end if
@@ -71,11 +97,7 @@ contains
     if (ios/=0) then
       message='Cannot create checkpoint temporary file'; return
     end if
-    if (present(boundary_totals)) then
-      write(unit,'(a)',iostat=ios) 'PELEF_SPRAY_3D_CHECKPOINT_V2'
-    else
-      write(unit,'(a)',iostat=ios) magic
-    end if
+    write(unit,'(a)',iostat=ios) trim(expected_magic)
     if (ios==0) write(unit,'(a)',iostat=ios) trim(context)
     if (ios==0) write(unit,*,iostat=ios) size(state,1),dims,size(parcels)
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
@@ -93,8 +115,13 @@ contains
     end do
     do p=1,size(parcels)
       if (ios/=0) exit
+      if (has_breakup) then
+      write(unit,'(i0,1x,*(es26.17e3,1x))',iostat=ios) parcels(p)%id,parcels(p)%position,parcels(p)%velocity, &
+        parcels(p)%mass,parcels(p)%temperature,parcels(p)%multiplicity,parcels(p)%deformation,parcels(p)%deformation_rate
+      else
       write(unit,'(i0,1x,*(es26.17e3,1x))',iostat=ios) parcels(p)%id,parcels(p)%position,parcels(p)%velocity, &
         parcels(p)%mass,parcels(p)%temperature,parcels(p)%multiplicity
+      end if
     end do
     if (ios==0) write(unit,'(a)',iostat=ios) 'END_PELEF_SPRAY_CHECKPOINT'
     close(unit,iostat=close_status)
@@ -114,7 +141,10 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals)
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state)
+    logical, intent(in), optional :: breakup_state
+    logical :: has_breakup
+    character(len=40) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -126,11 +156,14 @@ contains
     real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
-    real(dp) :: next_time,ref(size(state,1)),injected(size(state,1)),row(max(9,size(state,1)+1))
-    character(len=64) :: tokens(10)
+    real(dp) :: next_time,ref(size(state,1)),injected(size(state,1)),row(max(11,size(state,1)+1))
+    character(len=64) :: tokens(12)
     integer :: unit,ios,i,j,k,p,dims(3),got(5),next_steps,next_event
     character(len=16384) :: line
     logical :: local_ok
+    has_breakup=.false.
+    if (present(breakup_state)) has_breakup=breakup_state
+    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup)
     ok=.false.; message='Invalid, truncated or incompatible spray checkpoint'
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -141,11 +174,9 @@ contains
     if (ios/=0) return
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
+    if (trim(line)/=trim(expected_magic)) goto 900
     if (present(boundary_totals)) then
-      if (trim(line)/='PELEF_SPRAY_3D_CHECKPOINT_V2') goto 900
       if (size(boundary_totals)/=size(state,1)) goto 900
-    else
-      if (trim(line)/=magic) goto 900
     end if
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
@@ -186,16 +217,19 @@ contains
       end do
     end do
     do p=1,size(drops)
-      call read_tokens(unit,tokens,ios)
+      call read_tokens(unit,tokens(1:10+merge(2,0,has_breakup)),ios)
       if (ios/=0) goto 900
       if (verify(trim(tokens(1)), '0123456789+-')/=0) goto 900
       read(tokens(1),*,iostat=ios) drops(p)%id
       if (ios/=0) goto 900
-      do i=1,9
+      do i=1,9+merge(2,0,has_breakup)
         read(tokens(i+1),*,iostat=ios) row(i)
         if (ios/=0) goto 900
       end do
       drops(p)%position=row(1:3); drops(p)%velocity=row(4:6)
+      if (has_breakup) then
+        drops(p)%deformation=row(10); drops(p)%deformation_rate=row(11)
+      end if
       drops(p)%mass=row(7); drops(p)%temperature=row(8); drops(p)%multiplicity=row(9)
       if (ios/=0) goto 900
       if (.not. valid_spray_parcel(drops(p))) goto 900

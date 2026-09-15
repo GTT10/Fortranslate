@@ -176,7 +176,7 @@ solver version/physics, not an indefinite checkpoint ABI.
 ## Explicit remaining work
 
 Production use still needs calibrated temperature-dependent liquid properties,
-boiling/real-fluid handling, multicomponent liquids, breakup/collision, calibrated size distributions
+boiling/real-fluid handling, multicomponent liquids, additional breakup/dispersion models and collision, calibrated size distributions
 and turbulent dispersion, physical injector and wall-impact models, particle
 migration with MPI/AMR/EB, scalable output/checkpointing, detailed diesel-fuel
 mechanisms and performance tests. Selected chemistry retains its 2--32-species
@@ -218,3 +218,33 @@ This uses the existing constant-coefficient closure without wall damping or a
 wall function. Near-wall turbulence qualification, inlet reservoirs,
 moving/isothermal spray walls, AMR/EB/MPI parcels and physical wall-impact models
 remain open. Injection is still an internal parcel source.
+
+
+## ETAB representative-drop breakup
+
+Set `breakup_model='etab'`, `surface_tension` (N/m), and `liquid_viscosity`
+(Pa s); both material properties must be positive. The default is `none`.
+`etab.nml` exercises constant illustrative water properties at high gas density
+and relative velocity. These values are a numerical fixture, not a fitted fuel
+property model.
+
+The deformation oscillator and ETAB child-size law follow the pinned
+[PelePhysics TABBreakup.H](https://github.com/Pele-Suite/PelePhysics/blob/6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b/Source/Spray/BreakupSplash/TABBreakup.H).
+Breakup decreases a representative droplet's mass and increases its multiplicity
+at constant parcel inventory, velocity and temperature. It preserves system
+mass, momentum and the existing thermal/kinetic energy convention, which omits
+surface energy. Child radii are bounded by `minimum_diameter/2`; an excessive
+substep count or invalid state rejects the complete coupling step.
+
+`deformation` and `deformation_rate` are included in breakup-enabled parcel CSVs
+and checkpoint V3 (periodic) or V4 (with physical-boundary inventory). Material
+parameters and model identity are bound into checkpoint context. Models without
+breakup retain V1/V2. The damped oscillator advances only the remaining interval
+at each internal step; zero-slip and overdamped states avoid singular formulas.
+
+This ports the representative-size/deformation part, not stochastic creation
+of child parcels with transverse velocities, primary atomization, KH-RT,
+collision/coalescence or experimental breakup qualification. Source hashes,
+license and deliberate scope differences are recorded in
+[the reference manifest](../references/spray_etab.json) and
+[focused evidence](validation/etab-20260915.md).

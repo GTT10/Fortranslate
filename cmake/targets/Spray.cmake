@@ -1,9 +1,12 @@
 # Optional, isolated Lagrangian spray and deviatoric SGS runtime.
 # Default OFF preserves the existing fixed/selected installation contracts.
 if(PELEF_ENABLE_SPRAY)
+  install(FILES "${PROJECT_SOURCE_DIR}/references/pelephysics-spray-license.txt"
+    DESTINATION "share/pelef/licenses")
   function(pelef_add_spray_runtime target base)
     add_library(${target} STATIC
       src/spray/spray_parcel_mod.F90
+      src/spray/spray_breakup_mod.F90
       src/spray/spray_coupling_3d_mod.F90
       src/spray/spray_reactive_3d_mod.F90
       src/spray/spray_checkpoint_mod.F90
