@@ -592,11 +592,35 @@ Each active center must lie inside the domain and each axis must be nonzero.
 `initial_liquid_mass` and `mass_flow_rate` are totals over all ports. Each port
 receives its fraction of the event mass and creates `parcel_count` parcels.
 IDs advance in port order, preserving deterministic restart and parent counts.
-The schedule, liquid, temperature, speed, cone angle and diameter distribution
-are shared. Independent schedules/fuels and resolved nozzle flow are not
-introduced by this option. `maximum_parcels` bounds the combined allocation.
+By default the schedule, liquid, temperature, speed, cone angle and diameter
+distribution are shared. Independent schedules are available below; distinct
+fuels per port and resolved nozzle flow remain outside this path. `maximum_parcels` bounds the combined allocation.
 
 The default count zero uses the original single `injection_center`/`injection_axis`
 path and checkpoint context. With active ports, their centers/axes replace the
 single geometry; all port data participate in restart identity. See
 `cases/spray_3d/water_ports.nml` and [focused evidence](validation/injection-ports-20260915.md).
+
+## Independent port schedules
+
+Set `independent_port_schedules=.true.` with active injection ports, then supply
+`port_mass_flow_rates`, `port_injection_starts`, `port_injection_ends` and
+`port_injection_intervals` in port order. The global `mass_flow_rate` must be
+zero. Each active port needs a positive interval and a nonempty time window.
+A zero rate disables scheduled injection at that port. Unused entries are zero.
+The aggregate input is limited to one million scheduled events.
+
+Each port injects `rate*min(interval,end-event_time)` and creates `parcel_count`
+parcels per event. Events use start+n*interval and occur strictly before end.
+The solver processes all due events before stepping and breaks exact timestamp
+ties by port number. Initial liquid mass still follows `injection_port_fractions`;
+those fractions do not multiply the independent scheduled rates. Material,
+velocity magnitude, temperature and size settings remain shared.
+
+Restart preserves the aggregate event count and reconstructs the per-port
+counts by replaying the deterministic schedule. It checks injected mass,
+parent counts, future events and missed events before continuing. Schedule
+arrays are included in checkpoint identity. Replay is bounded by the input's
+one-million-event limit; large restart performance is not qualified.
+See `cases/spray_3d/water_independent_ports.nml` and
+[focused evidence](validation/independent-port-schedules-20260915.md).

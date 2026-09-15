@@ -25,6 +25,9 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    logical :: independent_port_schedules
+    integer :: port_events(16),selected_port,completed,total_events
+    real(dp) :: port_mass_flow_rates(16),port_injection_starts(16),port_injection_ends(16),port_injection_intervals(16)
     integer :: injection_port_count,parcels_per_event,port
     real(dp) :: injection_port_centers(3,16),injection_port_axes(3,16),injection_port_fractions(16)
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
@@ -91,6 +94,7 @@ contains
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
       injection_port_count,injection_port_centers,injection_port_axes,injection_port_fractions, &
+      independent_port_schedules,port_mass_flow_rates,port_injection_starts,port_injection_ends,port_injection_intervals, &
       injection_center,injection_axis,injection_speed,cone_angle, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_enabled,heat_enabled,evaporation_enabled, &
@@ -117,6 +121,8 @@ contains
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     diameter_shape=0.0_dp; diameter_min=1.0e-12_dp; diameter_max=1.0_dp
+    independent_port_schedules=.false.;port_events=0
+    port_mass_flow_rates=0;port_injection_starts=0;port_injection_ends=0;port_injection_intervals=0
     injection_port_count=0;injection_port_centers=0;injection_port_axes=0;injection_port_fractions=0
     injection_center=0.0015_dp; injection_axis=[0.0_dp,0.0_dp,1.0_dp]; injection_speed=10.0_dp; cone_angle=0.1_dp
     mass_flow_rate=0.0_dp; injection_start=0.0_dp; injection_end=1.0e-5_dp; injection_interval=1.0e-6_dp
@@ -200,6 +206,31 @@ contains
       if (any(injection_port_centers(:,port)<0).or.any(injection_port_centers(:,port)>=domain_length)) &
         call fail('Injection port outside domain')
     end do
+    if (.not.all(ieee_is_finite([port_mass_flow_rates,port_injection_starts,port_injection_ends, &
+        port_injection_intervals]))) call fail('Nonfinite port schedule')
+    if (independent_port_schedules) then
+      if (injection_port_count==0.or.mass_flow_rate/=0) call fail('Independent schedules require ports and zero global flow')
+      if (any(port_mass_flow_rates(injection_port_count+1:)/=0).or. &
+          any(port_injection_starts(injection_port_count+1:)/=0).or. &
+          any(port_injection_ends(injection_port_count+1:)/=0).or. &
+          any(port_injection_intervals(injection_port_count+1:)/=0)) call fail('Unused port schedule values')
+      total_events=0
+      do port=1,injection_port_count
+        if (port_mass_flow_rates(port)<0.or.port_mass_flow_rates(port)>1.or.port_injection_starts(port)<0.or. &
+            port_injection_ends(port)<port_injection_starts(port).or.port_injection_ends(port)>1000.or. &
+            port_injection_intervals(port)<0.or.port_injection_intervals(port)>1000) call fail('Invalid port schedule')
+        if (port_mass_flow_rates(port)==0) cycle
+        if (port_injection_intervals(port)<1e-15_dp.or.port_injection_ends(port)<=port_injection_starts(port)) &
+          call fail('Active port needs a positive interval and time window')
+        amount=(port_injection_ends(port)-port_injection_starts(port))/port_injection_intervals(port)
+        if (amount>1000000) call fail('Too many independent injection events')
+        total_events=total_events+ceiling(amount)
+      end do
+      if (total_events>1000000) call fail('Too many independent injection events')
+    else
+      if (any(port_mass_flow_rates/=0).or.any(port_injection_starts/=0).or.any(port_injection_ends/=0).or. &
+          any(port_injection_intervals/=0)) call fail('Port schedules require independent mode')
+    end if
     parcels_per_event=parcel_count*max(1,injection_port_count)
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
@@ -343,6 +374,11 @@ contains
         reshape(injection_port_axes(:,:injection_port_count),[3*injection_port_count]), &
         injection_port_fractions(:injection_port_count)])
     end if
+    if (independent_port_schedules) then
+      context=trim(context)//' independent-port-schedules-v1'
+      call append_reals([port_mass_flow_rates(:injection_port_count),port_injection_starts(:injection_port_count), &
+        port_injection_ends(:injection_port_count),port_injection_intervals(:injection_port_count)])
+    end if
     if (trim(boiling_model)=='surface-cap') then
       context=trim(context)//' boiling-surface-cap-v1'
       call append_reals([critical_temperature])
@@ -412,12 +448,25 @@ contains
       if (time>final_time .or. steps>maximum_steps .or. event>1000000) call fail('Restart exceeds requested limits')
       if (any(abs(reference_totals-expected_initial)>1.0e-11_dp* &
           max(abs(expected_initial),1.0e-30_dp))) call fail('Restart initial inventory mismatch')
+      if (independent_port_schedules) then
+        amount=0;port_events=0
+        tolerance=32*epsilon(1.0_dp)*max(time,maximum_dt)
+        do completed=1,event
+          call next_port_event(next_event,selected_port)
+          if (selected_port==0) call fail('Restart has an impossible port event')
+          if (next_event>time+tolerance) call fail('Restart port event is in the future')
+          amount=amount+port_mass_flow_rates(selected_port)* &
+            min(port_injection_intervals(selected_port),port_injection_ends(selected_port)-next_event)
+          port_events(selected_port)=port_events(selected_port)+1
+        end do
+        if (abs(injected_totals(1)-amount)>1e-11_dp*max(amount,1e-30_dp)) call fail('Restart port mass ledger mismatch')
+        call next_port_event(next_event,selected_port)
+        if (next_event<time-tolerance) call fail('Restart missed a port event')
+      else
       if (mass_flow_rate==0.0_dp .and. event/=0) call fail('Restart has an impossible injection event')
       amount=mass_flow_rate*min(real(event,dp)*injection_interval,injection_end-injection_start)
       if (abs(injected_totals(1)-amount)>1.0e-11_dp*max(amount,1.0e-30_dp)) &
         call fail('Restart injection mass ledger mismatch')
-      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*int(parcels_per_event,int64)+ &
-          int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
       tolerance=32.0_dp*epsilon(1.0_dp)*max(time,maximum_dt,injection_interval)
       if (mass_flow_rate>0.0_dp) then
         next_event=injection_start+real(event,dp)*injection_interval
@@ -427,6 +476,10 @@ contains
         end if
         if (next_event<injection_end .and. next_event<time-tolerance) call fail('Restart missed an injection event')
       end if
+      end if
+      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*&
+          int(merge(parcel_count,parcels_per_event,independent_port_schedules),int64)+ &
+          int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
       call spray_system_totals(state,spacing,parcels,liquid,totals)
       if (allocated(source_totals)) totals=totals-source_totals
       if (abs(totals(1)-reference_totals(1)-injected_totals(1)-boundary_totals(1))> &
@@ -475,7 +528,29 @@ contains
       end if
       tolerance=16.0_dp*epsilon(1.0_dp)*max(time,maximum_dt,injection_interval)
       next_event=huge(1.0_dp)
-      if (mass_flow_rate>0.0_dp) then
+      if (independent_port_schedules) then
+        tolerance=16*epsilon(1.0_dp)*max(time,maximum_dt)
+        call next_port_event(next_event,selected_port)
+        do while(selected_port>0.and.next_event<=time+tolerance)
+          amount=port_mass_flow_rates(selected_port)* &
+            min(port_injection_intervals(selected_port),port_injection_ends(selected_port)-next_event)
+          if (size(parcels)+parcel_count>maximum_parcels) call fail('Parcel storage limit reached')
+          first_id=1_int64
+          if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
+          call inject_cone_parcels(liquid,amount,parcel_count,first_id,injection_port_centers(:,selected_port), &
+            injection_port_axes(:,selected_port),injection_speed,cone_angle,drop_diameter,drop_temperature, &
+            new_parcels,ok,diameter_shape,diameter_min,diameter_max)
+          if (.not.ok) call fail('Independent port injection failed')
+          do i=1,size(new_parcels)
+            totals5=parcel_totals(new_parcels(i),liquid)
+            injected_totals(1:5)=injected_totals(1:5)+totals5
+            injected_totals(5+liquid%vapor_index)=injected_totals(5+liquid%vapor_index)+totals5(1)
+          end do
+          parcels=[parcels,new_parcels];deallocate(new_parcels)
+          event=event+1;port_events(selected_port)=port_events(selected_port)+1
+          call next_port_event(next_event,selected_port)
+        end do
+      else if (mass_flow_rate>0.0_dp) then
         next_event=injection_start+real(event,dp)*injection_interval
         if (next_event>=injection_end) next_event=huge(1.0_dp)
         if (next_event<=time+tolerance) then
@@ -541,6 +616,23 @@ contains
     call write_snapshots()
     write(*,'(a,es14.6,a,i0,a,i0)') 'Spray run completed: t=',time,', steps=',steps,', parcels=',size(parcels)
   contains
+    subroutine next_port_event(event_time,event_port)
+      real(dp), intent(out) :: event_time
+      integer, intent(out) :: event_port
+      real(dp) :: candidate_time
+      integer :: index
+      event_time=huge(1.0_dp);event_port=0
+      do index=1,injection_port_count
+        if (port_mass_flow_rates(index)<=0) cycle
+        candidate_time=port_injection_starts(index)+real(port_events(index),dp)*port_injection_intervals(index)
+        if (candidate_time>=port_injection_ends(index)) cycle
+        ! Strict comparison breaks simultaneous events by increasing port index.
+        if (candidate_time<event_time) then
+          event_time=candidate_time;event_port=index
+        end if
+      end do
+    end subroutine next_port_event
+
     subroutine inject_ports(mass,number,id,result,success)
       real(dp), intent(in) :: mass
       integer, intent(in) :: number

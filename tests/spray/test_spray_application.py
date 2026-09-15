@@ -57,6 +57,34 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_independent_port_schedule_restart(self):
+        settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,"
+                    "independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                    "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                    "port_injection_intervals=2e-7,3e-7,initial_liquid_mass=0,cone_angle=0,"
+                    "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        self.run_case('independent', common=settings)
+        rows = self.check_balance('independent')
+        self.assertEqual(rows[-1]['live_parcels'], 8)
+        self.assertAlmostEqual(rows[-1]['injected_mass']/1.4e-10, 1., delta=1e-13)
+        with (self.root/'independent.parcels.csv').open() as stream:
+            parcels = list(csv.DictReader(stream))
+        self.assertEqual([int(p['id']) for p in parcels], list(range(1,9)))
+        self.assertEqual([float(p['u']) > 0 for p in parcels], [True,True,False,False,True,True,False,False])
+        for stop in [1,3]:
+            checkpoint = self.root/f'independent{stop}.chk'
+            self.run_case(f'stop{stop}', f"stop_after_steps={stop},checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(f'resumed{stop}', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'independent.{suffix}').read_bytes(),
+                                 (self.root/f'resumed{stop}.{suffix}').read_bytes())
+        result = self.run_case('changed', f"restart_file='{checkpoint}',",
+                               common=settings.replace('1e-4,2e-4', '1e-4,3e-4'), fail=True)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('bad_interval', common=settings.replace('2e-7,3e-7', '0,3e-7'), fail=True)
+        self.run_case('mixed_schedule', common=settings+'mass_flow_rate=1e-4,', fail=True)
+
     def test_multiport_schedule_restart(self):
         settings = ("domain_length=.001,.001,.001,injection_port_count=2,"
                     "injection_port_centers=.0002,.0005,.0005,.0008,.0005,.0005,"
