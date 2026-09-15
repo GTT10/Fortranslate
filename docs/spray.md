@@ -404,16 +404,35 @@ Set `mixture_count` to 1–16 and supply that many entries in:
 | --- | --- |
 | `mixture_vapor_names` | Distinct gas species names |
 | `mixture_fractions` | Initial liquid mass fractions, nonnegative and summing to one |
-| `mixture_densities` | Constant component densities, kg/m³ |
-| `mixture_cps` | Constant component heat capacities, J/(kg K) |
+| `mixture_densities` | Constant-model component densities, kg/m³ |
+| `mixture_cps` | Constant-model component heat capacities, J/(kg K) |
 | `mixture_reference_temperatures` | Component reference temperatures, K |
 | `mixture_reference_pressures` | Reference saturation pressures, Pa; default 101325 |
 | `mixture_latent_heats` | Reference latent heats, J/kg |
 
 These inputs define the component formation-referenced energy and Clausius vapor
 pressure. Unused entries must remain at their defaults. `mixture_count=0` keeps
-the existing pure-liquid mode. Mixture property fits and per-component Antoine or
-boiling-cap inputs are not exposed in this interface yet.
+the existing pure-liquid mode. Component property models can be set independently:
+
+| Input | Values / layout |
+| --- | --- |
+| `mixture_density_models`, `mixture_cp_models` | `constant` (default) or `polynomial` |
+| `mixture_density_coefficients`, `mixture_cp_coefficients` | `(4,16)` cubic coefficients, `a + T*(b + T*(c + T*d))`, SI units, T in K |
+| `mixture_density_temperature_ranges`, `mixture_cp_temperature_ranges` | `(2,16)` valid temperature bounds in K |
+| `mixture_vapor_pressure_models` | `clausius` (default) or `antoine` |
+| `mixture_antoine_coefficients` | `(4,16)` values A,B,C,D for `psat = D*10**(A-B/(T+C))`, Pa and K |
+| `mixture_antoine_temperature_ranges` | `(2,16)` valid temperature bounds in K |
+| `mixture_boiling_models` | `reject` (default) or `surface-cap`, the latter requires Clausius |
+| `mixture_critical_temperatures` | Component critical temperatures in K for surface-cap |
+
+For example, `mixture_cp_coefficients(:,1)=4000,1,0,0` selects the first
+component's coefficient column. Coefficients and ranges for inactive models must
+remain zero, and unused component entries must retain defaults. Component energy
+uses the integrated heat-capacity polynomial relative to its reference temperature.
+The surface cap limits the pure-component vapor-state temperature before Raoult
+partitioning; it does not implement physical mixture boiling. Models, coefficients
+and bounds enter restart identity. Default constant-property contexts are preserved.
+See [component property evidence](validation/spray-mixture-properties-20260916.md).
 
 Initial and scheduled parcels use this common composition. Existing size laws,
 nozzle geometry, per-port temperatures and shared/independent schedules remain

@@ -58,6 +58,53 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_mixture_property_models_restart(self):
+        mixture = ("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                   "mixture_densities=1000,800,mixture_cps=4184,2000,"
+                   "mixture_reference_temperatures=373.15,350,mixture_latent_heats=2257000,1e6,")
+        fits = ("mixture_density_models='polynomial','polynomial',"
+                "mixture_density_coefficients(:,1)=1100,-.3,0,0,"
+                "mixture_density_coefficients(:,2)=950,-.4,0,0,"
+                "mixture_density_temperature_ranges=300,600,300,600,"
+                "mixture_cp_models='polynomial','polynomial',"
+                "mixture_cp_coefficients(:,1)=4000,1,0,0,mixture_cp_coefficients(:,2)=1800,2,0,0,"
+                "mixture_cp_temperature_ranges=300,600,300,600,")
+        pressures = ["mixture_vapor_pressure_models='antoine','clausius',"
+                     "mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,"
+                     "mixture_antoine_temperature_ranges(:,1)=300,600,",
+                     "mixture_boiling_models='surface-cap','surface-cap',mixture_critical_temperatures=647,650,"]
+        for index, pressure in enumerate(pressures):
+            name=f'mixture_fit{index}';common=mixture+fits+pressure
+            if index==1:
+                common+=("injection_port_count=2,injection_port_fractions=.3,.7,"
+                         "injection_port_centers=.001,.002,.002,.003,.002,.002,"
+                         "injection_port_axes=0,0,1,0,0,1,injection_port_temperatures=330,340,"
+                         "mass_flow_rate=1e-5,injection_start=0,injection_end=1e-6,injection_interval=2.5e-7,")
+            checkpoint=self.root/f'{name}.chk';full=self.root/f'{name}_full.chk';resumed=self.root/f'{name}_resumed.chk'
+            self.run_case(name, f"checkpoint_file='{full}',", common=common)
+            history=self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows=list(csv.DictReader(stream))
+            for row in rows:
+                mass=float(row['mass']);temperature=float(row['temperature'])
+                rho=1/(float(row['mass_H2O'])/mass/(1100-.3*temperature)+
+                       float(row['mass_H2O2'])/mass/(950-.4*temperature))
+                self.assertAlmostEqual(float(row['diameter'])/(6*mass/(math.pi*rho))**(1/3),1,places=13)
+            self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=common)
+            self.run_case(name+'_resumed', f"restart_file='{checkpoint}',checkpoint_file='{resumed}',", common=common)
+            self.assertEqual(full.read_bytes(),resumed.read_bytes())
+            self.assertEqual(history[-1],self.history(name+'_resumed')[-1])
+            for suffix in ['gas.csv','parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}_resumed.{suffix}').read_bytes())
+            self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                          common=common.replace('1100,-.3','1101,-.3'))
+        for index, change in enumerate(["mixture_cp_coefficients(:,1)=-4000,0,0,0,",
+                                        'mixture_density_temperature_ranges(:,1)=400,600,',
+                                        'mixture_critical_temperatures(3)=650,',
+                                        "mixture_vapor_pressure_models(3)='antoine',"]):
+            self.run_case(f'mixture_fit_invalid{index}',change,fail=True,common=mixture+fits)
+
     def test_mixture_kh_children_restart(self):
         settings=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
                   "mixture_densities=1000,800,mixture_cps=4184,2000,mixture_reference_temperatures=373.15,350,"

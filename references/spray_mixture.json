@@ -4,8 +4,8 @@
   "path": "Source/Spray/SprayPropertiesPeleMP.H",
   "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Ideal liquid properties, component transport, regular-grid reacting feedback, representative breakup/splitting, composition-inheriting KH shed children, boundary budgets, composition checkpoints and shared-composition CLI/injection.",
-  "boundary": "No excess mixing energy, mixture wall impact, per-port mixture compositions or component property-fit CLI inputs yet. Uses PeleF carrier molecular weight, binary harmonic diffusion and existing heat-transfer convention rather than full upstream coefficient parity.",
+  "scope": "Ideal liquid properties, component transport, regular-grid reacting feedback, representative breakup/splitting, composition-inheriting KH shed children, boundary budgets, composition checkpoints and shared-composition CLI/injection with component property fits, Antoine pressure and Clausius surface caps.",
+  "boundary": "No excess mixing energy, mixture wall impact, per-port mixture compositions or physical mixture boiling yet. Uses PeleF carrier molecular weight, binary harmonic diffusion and existing heat-transfer convention rather than full upstream coefficient parity.",
   "surface_source": {
     "path": "Source/Spray/Drag.H",
     "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",

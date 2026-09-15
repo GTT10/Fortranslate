@@ -31,6 +31,12 @@ contains
     character(len=24) :: mixture_vapor_names(16)
     real(dp) :: mixture_fractions(16),mixture_densities(16),mixture_cps(16),mixture_reference_temperatures(16)
     real(dp) :: mixture_reference_pressures(16),mixture_latent_heats(16)
+    character(len=16) :: mixture_density_models(16),mixture_cp_models(16)
+    character(len=16) :: mixture_vapor_pressure_models(16),mixture_boiling_models(16)
+    real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
+    real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
+    real(dp) :: mixture_antoine_coefficients(4,16),mixture_antoine_temperature_ranges(2,16)
+    real(dp) :: mixture_critical_temperatures(16)
     type(spray_liquid), allocatable :: mixture_components(:)
     real(dp), allocatable :: component_mass(:,:)
     character(len=16) :: liquid_cp_model,port_cp_models(16)
@@ -147,6 +153,10 @@ contains
     integer(int64) :: first_id
     namelist /spray/ mixture_count,mixture_vapor_names,mixture_fractions,mixture_densities,mixture_cps, &
       mixture_reference_temperatures,mixture_reference_pressures,mixture_latent_heats, &
+      mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
+      mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
+      mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
+      mixture_boiling_models,mixture_critical_temperatures, &
       cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
       breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
@@ -225,6 +235,11 @@ contains
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     port_profile_points=0;port_profile_times=0;port_profile_rates=0
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
+    mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
+    mixture_density_coefficients=0;mixture_density_temperature_ranges=0
+    mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
+    mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     mixture_count=0;mixture_vapor_names='';mixture_fractions=0;mixture_densities=0;mixture_cps=0
     mixture_reference_temperatures=0;mixture_reference_pressures=101325;mixture_latent_heats=0
     khrt_children=.false.;khrt_reference_diameter_cubed=0
@@ -494,14 +509,35 @@ contains
         any(mixture_reference_temperatures(mixture_count+1:)/=0).or. &
         any(mixture_reference_pressures(mixture_count+1:)/=101325).or.any(mixture_latent_heats(mixture_count+1:)/=0)) &
       call fail('Unused mixture component entries')
+    if (any(mixture_density_models(mixture_count+1:)/='constant')) call fail('Unused mixture property entries')
+    if (any(mixture_cp_models(mixture_count+1:)/='constant')) call fail('Unused mixture property entries')
+    if (any(mixture_vapor_pressure_models(mixture_count+1:)/='clausius')) call fail('Unused mixture property entries')
+    if (any(mixture_boiling_models(mixture_count+1:)/='reject')) call fail('Unused mixture property entries')
+    if (any(mixture_critical_temperatures(mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_density_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_density_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_cp_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_cp_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_antoine_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_antoine_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (mixture_count>0) then
       if (liquid_cp_model/='constant'.or.liquid_density_model/='constant'.or.boiling_model/='reject'.or. &
-          vapor_pressure_model/='clausius') call fail('Mixture inputs require component constant properties and Clausius pressure')
+          vapor_pressure_model/='clausius') call fail('Use component property models in mixture mode')
       allocate(mixture_components(mixture_count))
       do i=1,mixture_count
         call initialize_spray_liquid(species,trim(mixture_vapor_names(i)),mixture_densities(i),mixture_cps(i), &
-          mixture_reference_temperatures(i),mixture_reference_pressures(i),mixture_latent_heats(i),mixture_components(i),ok)
+          mixture_reference_temperatures(i),mixture_reference_pressures(i),mixture_latent_heats(i),mixture_components(i),ok, &
+          mixture_vapor_pressure_models(i),mixture_antoine_coefficients(:,i),mixture_antoine_temperature_ranges(:,i))
         if (.not.ok) call fail('Invalid mixture component properties')
+        mixture_components(i)%density_model=mixture_density_models(i)
+        mixture_components(i)%density_coefficients=mixture_density_coefficients(:,i)
+        mixture_components(i)%density_temperature_range=mixture_density_temperature_ranges(:,i)
+        mixture_components(i)%heat_capacity_model=mixture_cp_models(i)
+        mixture_components(i)%heat_capacity_coefficients=mixture_cp_coefficients(:,i)
+        mixture_components(i)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,i)
+        mixture_components(i)%boiling_model=mixture_boiling_models(i)
+        mixture_components(i)%critical_temperature=mixture_critical_temperatures(i)
+        if (.not.valid_spray_liquid(mixture_components(i))) call fail('Invalid mixture component property model')
       end do
       liquid=mixture_injection_liquid(drop_temperature)
     else
@@ -870,6 +906,14 @@ contains
         context=trim(context)//' '//trim(mixture_vapor_names(i))
         call append_reals([mixture_fractions(i),mixture_densities(i),mixture_cps(i), &
           mixture_reference_temperatures(i),mixture_reference_pressures(i),mixture_latent_heats(i)])
+        if (mixture_density_models(i)/='constant'.or.mixture_cp_models(i)/='constant'.or. &
+            mixture_vapor_pressure_models(i)/='clausius'.or.mixture_boiling_models(i)/='reject') then
+          context=trim(context)//' component-properties-v1 '//trim(mixture_density_models(i))//' '// &
+            trim(mixture_cp_models(i))//' '//trim(mixture_vapor_pressure_models(i))//' '//trim(mixture_boiling_models(i))
+          call append_reals([mixture_density_coefficients(:,i),mixture_density_temperature_ranges(:,i), &
+            mixture_cp_coefficients(:,i),mixture_cp_temperature_ranges(:,i),mixture_antoine_coefficients(:,i), &
+            mixture_antoine_temperature_ranges(:,i),mixture_critical_temperatures(i)])
+        end if
       end do
     end if
     if (velocity_from_rate) then
@@ -1237,6 +1281,9 @@ contains
       if (.not.valid) call fail('Invalid mixture composition or injection temperature')
       fluid=mixture_components(1);fluid%density=rho;fluid%heat_capacity=cp
       fluid%reference_temperature=t;fluid%reference_energy=e
+      fluid%density_model='constant';fluid%density_coefficients=0;fluid%density_temperature_range=0
+      fluid%heat_capacity_model='constant';fluid%heat_capacity_coefficients=0;fluid%heat_capacity_temperature_range=0
+      fluid%boiling_model='reject';fluid%critical_temperature=0
       if (.not.valid_spray_liquid(fluid)) call fail('Invalid effective injection properties')
     end function
     subroutine current_totals(result)
