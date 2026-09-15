@@ -15,6 +15,9 @@ module spray_parcel_mod
     real(dp) :: density = 0.0_dp, heat_capacity = 0.0_dp
     real(dp) :: reference_temperature = 0.0_dp, reference_pressure = 0.0_dp
     real(dp) :: latent_heat = 0.0_dp, reference_energy = 0.0_dp
+    character(len=16) :: vapor_pressure_model='clausius'
+    real(dp) :: antoine_coefficients(4)=0.0_dp ! A, B [K], C [K], D [Pa]
+    real(dp) :: antoine_temperature_range(2)=0.0_dp
   end type
   type, public :: spray_parcel
     integer(int64) :: id = 0_int64
@@ -48,10 +51,13 @@ module spray_parcel_mod
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
   public :: inject_cone_parcels
 contains
-  subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok)
+  subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok, &
+      vapor_pressure_model, antoine_coefficients, antoine_temperature_range)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: name
     real(dp), intent(in) :: density, cp, tref, pref, latent
+    character(len=*), intent(in), optional :: vapor_pressure_model
+    real(dp), intent(in), optional :: antoine_coefficients(4),antoine_temperature_range(2)
     type(spray_liquid), intent(out) :: liquid
     logical, intent(out) :: ok
     real(dp) :: vgcp, cv, h, e, s
@@ -74,6 +80,9 @@ contains
     call nasa7_mass_properties(species(index), tref, vgcp, cv, h, e, s, ok)
     if (.not. ok) return
     liquid = spray_liquid(trim(name), index, density, cp, tref, pref, latent, h-latent)
+    if (present(vapor_pressure_model)) liquid%vapor_pressure_model=vapor_pressure_model
+    if (present(antoine_coefficients)) liquid%antoine_coefficients=antoine_coefficients
+    if (present(antoine_temperature_range)) liquid%antoine_temperature_range=antoine_temperature_range
     ok = valid_spray_liquid(liquid)
   end subroutine
 
@@ -82,6 +91,21 @@ contains
     ok = .false.
     if (.not. all(ieee_is_finite([l%density, l%heat_capacity, l%reference_temperature, &
         l%reference_pressure, l%latent_heat, l%reference_energy]))) return
+    if (.not.all(ieee_is_finite(l%antoine_coefficients))) return
+    if (.not.all(ieee_is_finite(l%antoine_temperature_range))) return
+    select case(trim(l%vapor_pressure_model))
+    case('clausius')
+      if (any(l%antoine_coefficients/=0).or.any(l%antoine_temperature_range/=0)) return
+    case('antoine')
+      if (maxval(abs(l%antoine_coefficients(1:3)))>1e10_dp) return
+      if (l%antoine_coefficients(2)<=0) return
+      if (l%antoine_coefficients(4)<1e-6_dp.or.l%antoine_coefficients(4)>1e12_dp) return
+      if (l%antoine_temperature_range(1)<1.or.l%antoine_temperature_range(2)>1e5_dp) return
+      if (l%antoine_temperature_range(2)<=l%antoine_temperature_range(1)) return
+      if (l%antoine_temperature_range(1)+l%antoine_coefficients(3)<=0) return
+    case default
+      return
+    end select
     ok = len_trim(l%vapor_name) > 0 .and. l%vapor_index > 0 .and. &
       l%density >= 1.0e-3_dp .and. l%density <= 1.0e5_dp .and. &
       l%heat_capacity >= 1.0_dp .and. l%heat_capacity <= 1.0e8_dp .and. &
@@ -169,8 +193,16 @@ contains
     if (molecular_weight < 1.0e-3_dp .or. molecular_weight > 1.0e5_dp) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
     if (pressure < 1.0e-6_dp .or. pressure > 1.0e12_dp) return
+    if (trim(l%vapor_pressure_model)=='antoine') then
+      if (temperature<l%antoine_temperature_range(1).or.temperature>l%antoine_temperature_range(2)) return
+      ! PelePhysics convention: psat = D*10**(A-B/(T+C)), with T in K.
+      log_fraction=log(l%antoine_coefficients(4)/pressure)+log(10.0_dp)* &
+        (l%antoine_coefficients(1)-l%antoine_coefficients(2)/(temperature+l%antoine_coefficients(3)))
+    else
     log_fraction = log(l%reference_pressure/pressure) + l%latent_heat*molecular_weight/universal_gas_constant * &
       (1.0_dp/l%reference_temperature-1.0_dp/temperature)
+    end if
+    if (.not.ieee_is_finite(log_fraction)) return
     ! This sub-boiling model rejects boiling/supercritical states, not clamps them.
     if (log_fraction >= 0.0_dp) return
     fraction = exp(max(log(tiny(1.0_dp)),log_fraction))

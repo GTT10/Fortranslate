@@ -47,7 +47,9 @@ and restart persistence; isothermal/tangentially moving gas walls include molecu
 and SGS heat/work budgets. Physical parcel wall-impact models remain open. ETAB and KH-RT representative-drop
 size/deformation, bounded computational parcel splitting and restart are implemented;
 physical child-parcel dispersion remains open. Uniform gas/particle acceleration
-now retains external impulse/work separately through coupled restart.
+now retains external impulse/work separately through coupled restart. Single-component
+Antoine saturation-pressure fits are connected with explicit temperature bounds
+and restart identity; boiling and multicomponent liquids remain open.
 
 ## Ordered implementation work
 

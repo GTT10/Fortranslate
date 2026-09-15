@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "path": "Source/Spray/SprayPropertiesPeleMP.H",
+  "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd",
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Single-component Antoine saturation pressure; constant density/cp and sub-boiling evaporation retained",
+  "water_fixture": {
+    "source": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C7732185&Mask=4&Type=ANTOINE&Plot=on",
+    "accessed": "2026-09-15",
+    "temperature_range_K": [
+      273,
+      303
+    ],
+    "coefficients_A_B_C_D": [
+      5.40221,
+      1838.675,
+      -31.737,
+      100000.0
+    ],
+    "pressure_scale_note": "NIST coefficients give bar; D=100000 converts to Pa",
+    "reference": "Bridgeman and Aldrich, 1964; coefficients calculated by NIST"
+  }
+}

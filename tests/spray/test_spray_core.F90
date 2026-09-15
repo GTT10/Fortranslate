@@ -47,6 +47,27 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('antoine')
+    liquid%vapor_pressure_model='antoine'
+    liquid%antoine_coefficients=[5.40221_dp,1838.675_dp,-31.737_dp,1e5_dp]
+    liquid%antoine_temperature_range=[273.0_dp,303.0_dp]
+    do n=0,6
+      td=273.0_dp+5*n
+      call saturation_mole_fraction(liquid,18.015_dp,td,101325.0_dp,value,ok)
+      expected=1e5_dp*10.0_dp**(5.40221_dp-1838.675_dp/(td-31.737_dp))/101325.0_dp
+      call require(ok.and.abs(value/expected-1)<1e-13_dp,'Antoine pressure units and formula')
+    end do
+    call saturation_mole_fraction(liquid,18.015_dp,304.0_dp,101325.0_dp,value,ok)
+    call require(.not.ok,'Antoine range rejection')
+    call saturation_mole_fraction(liquid,18.015_dp,290.0_dp,1.0_dp,value,ok)
+    call require(.not.ok,'Antoine boiling rejection')
+    liquid%antoine_coefficients(3)=-280.0_dp
+    call require(.not.valid_spray_liquid(liquid),'Antoine pole inside range rejected')
+    liquid%antoine_coefficients(3)=-31.737_dp
+    liquid%antoine_coefficients(4)=0
+    call require(.not.valid_spray_liquid(liquid),'Antoine zero pressure scale rejected')
+    liquid%antoine_coefficients(4)=ieee_value(0.0_dp,ieee_quiet_nan)
+    call require(.not.valid_spray_liquid(liquid),'Antoine NaN rejected')
   case('split')
     call make_drops();saved_drops=drops
     drops%multiplicity=10.0_dp

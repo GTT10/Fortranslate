@@ -57,6 +57,24 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_antoine_evaporation_restart_and_coefficients(self):
+        settings = ("vapor_pressure_model='antoine',antoine_coefficients=5.40221,1838.675,-31.737,1e5,"
+                    "antoine_temperature_range=273,303,drop_temperature=290,")
+        checkpoint = self.root/'antoine.chk'
+        self.run_case('antoine', common=settings)
+        rows = self.check_balance('antoine')
+        self.assertLess(rows[-1]['liquid_mass'], rows[0]['liquid_mass'])
+        self.run_case('stopped', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'antoine.{suffix}').read_bytes(),
+                             (self.root/f'resumed.{suffix}').read_bytes())
+        for field, changed in [('5.40221', '5.40222'), ('273,303', '272,303')]:
+            result = self.run_case('mismatch'+field[:3], f"restart_file='{checkpoint}',",
+                                   common=settings.replace(field, changed), fail=True)
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('range', common=settings.replace('drop_temperature=290', 'drop_temperature=310'), fail=True)
+
     def test_evaporation_feedback_and_conservation(self):
         self.run_case('evaporate')
         rows = self.check_balance('evaporate')

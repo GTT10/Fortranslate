@@ -1,0 +1,18 @@
+! Water saturation-pressure fit: NIST 273--303 K Antoine coefficients.
+! Constant density/cp remain illustrative; see references/spray_antoine.json.
+&spray
+ cells=4,4,4, domain_length=.004,.004,.004,
+ gas_temperature=900, gas_pressure=101325,
+ mole_names='N2','','', mole_amounts=1,0,0,
+ chemistry_enabled=.false.,
+ vapor_pressure_model='antoine',
+ antoine_coefficients=5.40221,1838.675,-31.737,1e5,antoine_temperature_range=273,303,
+ vapor_name='H2O', liquid_density=1000, liquid_cp=4184,
+ reference_temperature=373.15, reference_pressure=101325, latent_heat=2257000,
+ drop_temperature=290, drop_diameter=20e-6,
+ initial_liquid_mass=1e-10, parcel_count=4,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1,
+ injection_speed=10, cone_angle=.1,
+ final_time=2e-6, maximum_dt=1e-7,
+ output_prefix='water_antoine', checkpoint_file='water_antoine.chk'
+/

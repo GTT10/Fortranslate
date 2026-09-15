@@ -492,3 +492,24 @@ A phi=0.5, 1100 K, 4 MPa constant-volume ignition case reaches 2478 K at 0.6 ms
 and agrees with Cantera. A separate short coupled case exercises this gas
 mechanism with water parcels and exact restart; it does not supply a liquid
 n-dodecane property model. See [commands and evidence](validation/dodecane-20260915.md).
+
+## Antoine saturation-pressure fits
+
+Set `vapor_pressure_model='antoine'`, `antoine_coefficients=A,B,C,D`, and
+`antoine_temperature_range=Tmin,Tmax` to use
+`psat = D * 10**(A - B/(T+C))`. T, B and C use kelvin; D scales the resulting
+pressure to Pa. For coefficients tabulated in bar, D=100000. The convention
+matches the pinned PelePhysics `SprayPropertiesPeleMP.H` implementation.
+
+The default `vapor_pressure_model='clausius'` retains the existing relation
+and requires the Antoine arrays to be zero. Antoine inputs require finite
+coefficients, positive B/D, ordered positive bounds and T+C>0 throughout the
+interval. Evaluation outside the fit range or at psat>=ambient pressure fails
+transactionally. This does not implement boiling, supercritical evaporation,
+multicomponent liquid properties or temperature-dependent density/cp.
+
+`cases/spray_3d/water_antoine.nml` supplies the NIST water fit for 273--303 K
+and starts droplets at 290 K. The coefficient source and units are recorded in
+[`references/spray_antoine.json`](../references/spray_antoine.json); density/cp
+remain illustrative constants. Changing either coefficients or bounds rejects
+a checkpoint restart. See [focused evidence](validation/antoine-20260915.md).

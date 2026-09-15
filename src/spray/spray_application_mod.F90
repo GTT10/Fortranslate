@@ -29,6 +29,8 @@ contains
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
     real(dp) :: domain_length(3),gas_temperature,gas_pressure,gas_velocity(3),shear_velocity
     real(dp) :: mole_amounts(mechanism_species_capacity),liquid_density,liquid_cp
+    character(len=16) :: vapor_pressure_model
+    real(dp) :: antoine_coefficients(4),antoine_temperature_range(2)
     real(dp) :: reference_temperature,reference_pressure,latent_heat
     real(dp) :: diameter_shape,diameter_min,diameter_max
     real(dp) :: drop_temperature,drop_diameter,initial_liquid_mass,injection_center(3),injection_axis(3)
@@ -74,6 +76,7 @@ contains
       inflow_composition_species,inflow_composition_mole_fractions, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
+      vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
       injection_center,injection_axis,injection_speed,cone_angle, &
@@ -94,6 +97,7 @@ contains
     gas_temperature=1200.0_dp; gas_pressure=101325.0_dp; gas_velocity=0.0_dp; shear_velocity=0.0_dp
     mole_names=''; mole_names(1:3)=[character(len=24)::'H2','O2','N2']
     mole_amounts=0.0_dp; mole_amounts(1:3)=[2.0_dp,1.0_dp,3.76_dp]
+    vapor_pressure_model='clausius';antoine_coefficients=0;antoine_temperature_range=0
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
@@ -169,7 +173,7 @@ contains
     if (any(injection_center<0.0_dp) .or. any(injection_center>=domain_length)) &
       call fail('Injection center must lie in the domain')
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
-      reference_pressure,latent_heat,liquid,ok)
+      reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     split_enabled=maximum_multiplicity>0
@@ -298,6 +302,10 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (trim(vapor_pressure_model)=='antoine') then
+      context=trim(context)//' antoine-v1'
+      call append_reals([antoine_coefficients,antoine_temperature_range])
+    end if
     if (allocated(source_totals)) then
       context=trim(context)//' uniform-acceleration-v1'
       call append_reals(acceleration)
