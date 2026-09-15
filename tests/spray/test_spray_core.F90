@@ -24,6 +24,8 @@ program test_spray_core
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options,constant_options
+  type(spray_khrt_shedding_state) :: shedding,saved_shedding
+  type(spray_khrt_release) :: release
   type(spray_film) :: film
   real(dp) :: state(15,4,4,4),temp(4,4,4),saved(15,4,4,4),saved_t(4,4,4),rhs(15,4,4,4)
   real(dp) :: wall_t(6),wall_v(3,6)
@@ -424,6 +426,37 @@ program test_spray_core
     call require(ok.and.p%rt_time==0,'RT event resets timer')
     call near(p%mass/q%mass,(wavelength/d)**3,1e-13_dp,'RT analytical mass')
     call near(p%mass*p%multiplicity,q%mass*q%multiplicity,1e-14_dp,'RT inventory')
+    call make_drops();p=drops(1);p%velocity=0;q=p;options%khrt_c3=1
+    shedding=spray_khrt_shedding_state()
+    call advance_khrt_shedding(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt, &
+      1e24_dp,shedding,release,ok)
+    call require(ok.and.release%mass==0.and.shedding%shed_volume>0,'KH pending shedding')
+    call near(p%mass*p%multiplicity,q%mass*q%multiplicity,1e-13_dp,'pending mass stays in parent')
+    p=q;shedding=spray_khrt_shedding_state()
+    call advance_khrt_shedding(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt, &
+      1e-25_dp,shedding,release,ok)
+    call require(ok.and.release%mass>0.and.p%mass>0,'KH partial release')
+    call require(shedding%shed_volume==0.and.shedding%initial_count==p%multiplicity,'KH resets shed accumulator')
+    call near(p%mass*p%multiplicity+release%mass,q%mass*q%multiplicity,1e-13_dp,'partial shedding mass')
+    call construct_khrt_children(p,release,[1.0_dp,0.0_dp,0.0_dp],2_int64,saved_drops,solid_energy,ok)
+    call require(ok.and.size(saved_drops)==4,'KH child construction')
+    child_totals=parcel_totals(p,liquid)-parcel_totals(q,liquid)
+    do n=1,4
+      child_totals=child_totals+parcel_totals(saved_drops(n),liquid)
+      call require(saved_drops(n)%parent_id==q%id,'KH child lineage')
+    end do
+    child_totals(5)=child_totals(5)+solid_energy
+    call require(maxval(abs(child_totals))<1e-12_dp,'KH gas parent children conservation')
+    p=q;shedding=spray_khrt_shedding_state()
+    call advance_khrt_shedding(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,1.0_dp, &
+      1e24_dp,shedding,release,ok)
+    call require(ok.and.p%mass==0,'KH full parent release')
+    call near(release%mass,q%mass*q%multiplicity,1e-13_dp,'full shedding mass')
+    saved_shedding=shedding;p=q
+    call advance_khrt_shedding(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt, &
+      -1.0_dp,shedding,release,ok)
+    call require(.not.ok.and.p%mass==q%mass.and.release%mass==0.and. &
+      shedding%shed_volume==saved_shedding%shed_volume,'invalid shedding rollback')
     q=p;options%khrt_b1=-1
     call advance_khrt_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt,ok)
     call require(.not.ok.and.p%mass==q%mass.and.p%rt_time==q%rt_time,'invalid KH coefficient rollback')

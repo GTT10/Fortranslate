@@ -41,8 +41,11 @@ module spray_parcel_mod
     integer(int64) :: parent_id=0_int64
     real(dp) :: rt_time=-1.0_dp
     integer :: material_id=1
+    real(dp) :: khrt_initial_count=0,khrt_shed_volume=0
   end type
   type, public :: spray_options
+    logical :: khrt_children=.false.
+    real(dp) :: khrt_reference_diameter_cubed=0
     real(dp) :: khrt_b0=.61_dp,khrt_b1=7.0_dp,khrt_c3=1.0_dp
     real(dp) :: maximum_multiplicity=0.0_dp
     integer :: maximum_parcels=1000000
@@ -201,6 +204,9 @@ contains
     ok = .false.
     if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, &
         p%multiplicity,p%deformation,p%deformation_rate,p%rt_time]))) return
+    if (.not.all(ieee_is_finite([p%khrt_initial_count,p%khrt_shed_volume]))) return
+    if (p%khrt_initial_count<0.or.p%khrt_initial_count>1e18_dp.or.p%khrt_shed_volume<0.or.p%khrt_shed_volume>1e24_dp) return
+    if (p%khrt_initial_count==0.and.p%khrt_shed_volume/=0) return
     if (p%material_id<1.or.p%material_id>16) return
     if (p%rt_time < -1.0_dp.or.p%rt_time>1e6_dp) return
     if (p%parent_id<0_int64.or.p%parent_id>=p%id) return
@@ -220,6 +226,13 @@ contains
     if (o%maximum_multiplicity>0.and.o%maximum_multiplicity<1e-12_dp) return
     if (o%maximum_parcels<1.or.o%maximum_parcels>1000000) return
     if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
+    if (.not.ieee_is_finite(o%khrt_reference_diameter_cubed)) return
+    if (o%khrt_children) then
+      if (o%breakup_model/='khrt'.or.o%maximum_multiplicity>0) return
+      if (o%khrt_reference_diameter_cubed<=0.or.o%khrt_reference_diameter_cubed>1e24_dp) return
+    else
+      if (o%khrt_reference_diameter_cubed/=0) return
+    end if
     if (o%drag_model/="schiller-naumann".and.o%drag_model/="pelephysics") return
     select case(trim(o%breakup_model))
     case('none')

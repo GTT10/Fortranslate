@@ -86,6 +86,8 @@ contains
     type(spray_nozzle_model) :: nozzle_model
     type(spray_nozzle_model), allocatable :: port_nozzle_models(:)
     logical :: port_nozzle_overrides
+    logical :: khrt_children
+    real(dp) :: khrt_reference_diameter_cubed
     logical :: velocity_from_rate
     real(dp) :: discharge_coefficient,port_discharge_coefficients(16),event_speed
     real(dp) :: nozzle_radius,port_nozzle_radii(16)
@@ -137,7 +139,7 @@ contains
     character(len=1050), allocatable :: paths(:)
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
-      breakup_model,surface_tension,liquid_viscosity, &
+      breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
@@ -214,6 +216,7 @@ contains
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     port_profile_points=0;port_profile_times=0;port_profile_rates=0
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
+    khrt_children=.false.;khrt_reference_diameter_cubed=0
     velocity_from_rate=.false.;discharge_coefficient=1;port_discharge_coefficients=-1
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
@@ -565,7 +568,9 @@ contains
       end do
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
-    split_enabled=maximum_multiplicity>0
+    options%khrt_children=khrt_children;options%khrt_reference_diameter_cubed=khrt_reference_diameter_cubed
+    if (khrt_children.and.impact_enabled) call fail('KH children with wall impact are not supported')
+    split_enabled=maximum_multiplicity>0.or.khrt_children
     lineage_enabled=split_enabled.or.impact_enabled
     options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
     khrt_enabled=trim(breakup_model)=="khrt"
@@ -810,6 +815,10 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (khrt_children) then
+      context=trim(context)//' khrt-shed-children-v1'
+      call append_reals([khrt_reference_diameter_cubed])
+    end if
     if (velocity_from_rate) then
       context=trim(context)//' rate-derived-velocity-v1'
       call append_reals([discharge_coefficient,port_discharge_coefficients(:injection_port_count)])
@@ -896,12 +905,12 @@ contains
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
         film_state=impact_enabled,wall_films=wall_films)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
         film_state=impact_enabled,wall_films=wall_films)
       end if
       if (.not. ok) call fail(trim(message))
@@ -1138,12 +1147,12 @@ contains
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
         film_state=impact_enabled,wall_films=wall_films)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
         film_state=impact_enabled,wall_films=wall_films)
       end if
       if (.not. ok) call fail(trim(message))
@@ -1335,6 +1344,8 @@ contains
       if (ios==0.and.multi_material) write(parcel_unit,'(a)',advance='no',iostat=ios) ',material_id'
       if (ios==0.and.breakup_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',deformation,deformation_rate'
       if (ios==0.and.khrt_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',rt_time'
+      if (ios==0.and.khrt_children) write(parcel_unit,'(a)',advance='no',iostat=ios) &
+        ',khrt_initial_count,khrt_shed_volume'
       if (ios==0.and.lineage_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',parent_id'
       if (ios==0) write(parcel_unit,'(a)',iostat=ios) ''
       if (ios/=0) call fail('Parcel header write failed')
@@ -1347,6 +1358,8 @@ contains
         if (ios==0.and.breakup_enabled) write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) &
           ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
         if (ios==0.and.khrt_enabled) write(parcel_unit,'(a,es26.17e3)',advance='no',iostat=ios) ',',parcels(p)%rt_time
+        if (ios==0.and.khrt_children) write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) &
+          ',',parcels(p)%khrt_initial_count,',',parcels(p)%khrt_shed_volume
         if (ios==0.and.lineage_enabled) write(parcel_unit,'(a,i0)',advance='no',iostat=ios) ',',parcels(p)%parent_id
         if (ios==0) write(parcel_unit,'(a)',iostat=ios) ''
         if (ios/=0) call fail('Parcel snapshot write failed')

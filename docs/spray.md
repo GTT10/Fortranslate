@@ -261,10 +261,9 @@ viscosity; the wave equations use bulk gas density and relative velocity.
 Mass reduction increases multiplicity at fixed represented mass, velocity and
 temperature. The minimum diameter and transactional failure rules still apply.
 
-This implements the upstream `make_new_drops=false` branch. Shed-mass children
-of a distinct radius, transverse velocity dispersion and primary atomization
-remain open. Computational splitting below partitions identical representative
-droplets. Liquid properties are prescribed constants; surface energy is omitted.
+The default implements the upstream `make_new_drops=false` branch. Optional
+KH shed-mass children are described below. Computational splitting partitions
+identical representative droplets. Surface energy is omitted.
 Zero RT acceleration resets an active timer to avoid singular expressions.
 Exact upstream timestep parity and physical validation have not been established.
 
@@ -274,6 +273,41 @@ three coefficients into the restart context. Existing V1--V6 formats are unchang
 See [source provenance](../references/spray_khrt.json) and
 [focused evidence](validation/khrt-20260915.md).
 
+
+### KH shed-mass children
+
+Set `khrt_children=.true.` and positive `khrt_reference_diameter_cubed`
+with `breakup_model='khrt'`. The reference quantity has units of m³ and is
+`mean_over_jets(N_injection * mean_diameter**3)`, matching the upstream
+`avg_inject_mass` normalization despite that variable's name. Supply it explicitly;
+it is neither liquid mass in kg nor an automatically inferred injection dose.
+
+The model accumulates `N_initial * (r_old**3-r_new**3)` during KH events.
+This inventory remains included in the parent until release. The reference's
+3% jet threshold and 90% parent threshold select partial or full release;
+partial release also requires a resolved child radius and sufficient child count.
+The volume denominator's numerical epsilon is converted from cm³ to m³.
+The configured `minimum_diameter` supplies the radius floor, rather than the
+reference's density-dependent minimum-mass rule.
+
+Each release creates four equal-weight children in opposite transverse pairs,
+with speed `0.188 * omega_KH * lambda_KH`. They inherit the parent's position,
+temperature and liquid material, retain `parent_id`, and start fresh breakup states.
+The transverse plane uses the parent velocity (relative gas velocity if stationary).
+Gas energy decreases by the added transverse kinetic energy, closing total energy;
+the paired directions preserve mean momentum. This deterministic quadrature is a
+PeleF choice and does not reproduce the upstream random azimuth/count algorithm.
+Creation occurs at the accepted parcel substep's end; children advance through
+any remaining interval. Failed feedback, capacity checks or later chemistry roll
+back the entire coupled update.
+
+CSV fields `khrt_initial_count` and `khrt_shed_volume` expose the accumulator;
+checkpoint suffix `_SHED_V1` retains it alongside RT time and parent lineage.
+The enable flag and reference quantity participate in restart compatibility.
+For now, this mode requires `maximum_multiplicity=0` and wall impact disabled.
+RT still changes the representative size; it does not itself create children.
+Collision, general turbulent dispersion, primary atomization and physical
+qualification remain open. See [focused evidence](validation/khrt-children-20260916.md).
 
 ### Computational parcel splitting
 

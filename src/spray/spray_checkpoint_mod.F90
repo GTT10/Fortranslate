@@ -81,9 +81,9 @@ contains
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films
+      source_totals,material_state,film_state,wall_films,shedding_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -107,6 +107,8 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
+    has_shedding=.false.
+    if (present(shedding_state)) has_shedding=shedding_state
     has_khrt=.false.
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
@@ -122,6 +124,10 @@ contains
     if (has_films) then
       if (.not.present(wall_films)) return
       expected_magic=trim(expected_magic)//'_FILM_V1'
+    end if
+    if (has_shedding) then
+      if (.not.has_khrt.or..not.has_split) return
+      expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
@@ -146,6 +152,7 @@ contains
       if (.not. valid_spray_parcel(parcels(p))) return
       if (.not.has_materials.and.parcels(p)%material_id/=1) return
       if (.not.(has_split.or.has_films).and.parcels(p)%parent_id/=0) return
+      if (.not.has_shedding.and.(parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0)) return
       if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
       if (parcels(p)%parent_id>0) then
         if (.not.parent_exists(parcels,p)) return
@@ -203,6 +210,8 @@ contains
       if (has_materials.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%material_id
       if ((has_split.or.has_films).and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%parent_id
       if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
+      if (has_shedding.and.ios==0) write(unit,'(2es26.17e3)',iostat=ios) &
+        parcels(p)%khrt_initial_count,parcels(p)%khrt_shed_volume
     end do
     if (has_films.and.ios==0) then
       write(unit,'(i0)',iostat=ios) size(wall_films)
@@ -232,9 +241,9 @@ contains
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films
+      source_totals,material_state,film_state,wall_films,shedding_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -264,6 +273,8 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
+    has_shedding=.false.
+    if (present(shedding_state)) has_shedding=shedding_state
     has_khrt=.false.
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
@@ -281,6 +292,10 @@ contains
     if (has_films) then
       if (.not.present(wall_films)) return
       expected_magic=trim(expected_magic)//'_FILM_V1'
+    end if
+    if (has_shedding) then
+      if (.not.has_khrt.or..not.has_split) return
+      expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
@@ -376,6 +391,11 @@ contains
         call read_real_row(unit,row(1:1),ios)
         if (ios/=0) goto 900
         drops(p)%rt_time=row(1)
+      end if
+      if (has_shedding) then
+        call read_real_row(unit,row(1:2),ios)
+        if (ios/=0) goto 900
+        drops(p)%khrt_initial_count=row(1);drops(p)%khrt_shed_volume=row(2)
       end if
       if (.not. valid_spray_parcel(drops(p))) goto 900
       if (p>1) then

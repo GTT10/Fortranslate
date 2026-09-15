@@ -5,7 +5,7 @@
   "sha256": "0804ee826bf5158e50588b1a4fd9495ae4426e90ba7b4e064c387b9ac8b38f58",
   "license_path": "references/pelephysics-spray-license.txt",
   "license_sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2",
-  "scope": "KH-RT make_new_drops=false representative radius/multiplicity and RT timer; no shed-mass children or transverse dispersion",
+  "scope": "KH-RT representative radius/multiplicity and RT timer, optional KH shed-volume accumulation and child release; four symmetric transverse children with conservative gas-energy debit are a PeleF choice.",
   "defaults": {
     "B0": 0.61,
     "B1": 7,
@@ -19,6 +19,14 @@
     {
       "path": "Source/Spray/Drag.H",
       "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345"
+    },
+    {
+      "path": "Source/Spray/SpraySB.cpp",
+      "sha256": "e540abf90a3e5acd9b91d6f7994c9373ad505bb47f512fa8c5b7c3e536f32382"
+    },
+    {
+      "path": "Source/Spray/SprayParticles.cpp",
+      "sha256": "0e376f77df434ae7eec9fba39ab67af5ad4c20fb4c46529a9ff35b6d978b4d05"
     }
   ]
 }

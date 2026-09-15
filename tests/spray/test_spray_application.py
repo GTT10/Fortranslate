@@ -58,6 +58,40 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_khrt_children_and_accumulation_restart(self):
+        settings = ("breakup_model='khrt',khrt_children=.true.,surface_tension=.072,"
+                    "liquid_viscosity=.001,injection_speed=1000,cone_angle=0,parcel_count=1,"
+                    "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,"
+                    "transport_enabled=.false.,maximum_parcels=1000,")
+        for name, reference in [('children', '1e-25'), ('accumulation', '1e24')]:
+            common = settings + f'khrt_reference_diameter_cubed={reference},'
+            checkpoint = self.root/f'{name}_stop.chk'
+            full = self.root/f'{name}_full.chk'
+            resumed = self.root/f'{name}_resumed.chk'
+            self.run_case(name, f"checkpoint_file='{full}',", common=common)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            if name == 'children':
+                self.assertGreater(len(rows), 1)
+                self.assertTrue(any(int(r['parent_id']) > 0 for r in rows))
+                self.assertTrue(any(abs(float(r['v']))+abs(float(r['w'])) > 0 for r in rows))
+            else:
+                self.assertEqual(len(rows), 1)
+                self.assertGreater(float(rows[0]['khrt_shed_volume']), 0)
+            self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=common)
+            self.run_case(name+'_resumed', f"restart_file='{checkpoint}',checkpoint_file='{resumed}',", common=common)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}_resumed.{suffix}').read_bytes())
+            self.assertEqual(full.read_bytes(), resumed.read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'_resumed')[-1])
+            self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                          common=settings+'khrt_reference_diameter_cubed=1e-12,')
+        for index, change in enumerate(["breakup_model='etab',", 'maximum_multiplicity=1,']):
+            self.run_case(f'children_invalid{index}', change, fail=True,
+                          common=settings+'khrt_reference_diameter_cubed=1e-25,')
+
     def test_pelephysics_drag_restart(self):
         settings = ("drag_model='pelephysics',breakup_model='etab',surface_tension=.072,liquid_viscosity=.001,"
                     "injection_speed=100,heat_enabled=.false.,evaporation_enabled=.false.,")

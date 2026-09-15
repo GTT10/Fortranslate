@@ -10,7 +10,7 @@ module spray_coupling_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_breakup_mod, only: advance_spray_breakup,split_spray_parcels
+  use spray_breakup_mod
   implicit none
   private
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
@@ -250,6 +250,9 @@ contains
     type(spray_liquid) :: material
     type(spray_options), intent(in) :: options
     type(spray_options), intent(in), optional :: breakup_options(:)
+    type(spray_khrt_shedding_state) :: shedding
+    type(spray_khrt_release) :: release
+    real(dp) :: reynolds,dispersion_energy,release_axis(3)
     type(spray_options) :: local_breakup
     type(spray_wall_options), intent(in), optional :: wall_options
     type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
@@ -315,6 +318,7 @@ contains
       end do
     end if
     if (.not.valid_wall_options(impact_settings,faces)) return
+    if (options%khrt_children.and.any(impact_settings%enabled)) return
     if (any(impact_settings%enabled).and..not.present(wall_films)) return
     allocate(patches(0))
     if (present(wall_films)) then
@@ -333,6 +337,7 @@ contains
       if (liquid_heat_capacity_at_temperature(material,patches(p)%temperature)<=0) return
     end do
     do p=1,size(parcels)
+      if (.not.options%khrt_children.and.(parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0)) return
       if (.not. valid_spray_parcel(parcels(p))) return
       material=select_spray_liquid(parcels(p),liquid,materials)
       if (.not.valid_spray_liquid(material)) return
@@ -427,10 +432,47 @@ contains
         if (.not. accepted) then
           message='Spray feedback cannot preserve gas/material admissibility; complete update rolled back'; return
         end if
-        call advance_spray_breakup(next,material,local_breakup,sampled(1),film%gas_velocity, &
-          film%density,film%viscosity,dt,local_ok)
+        release=spray_khrt_release()
+        if (options%khrt_children) then
+          shedding=spray_khrt_shedding_state(next%khrt_initial_count,next%khrt_shed_volume)
+          reynolds=film%density*norm2(film%gas_velocity-next%velocity)*parcel_diameter(next,material)/film%viscosity
+          call advance_khrt_shedding(next,material,local_breakup,sampled(1),film%gas_velocity,reynolds,dt, &
+            options%khrt_reference_diameter_cubed,shedding,release,local_ok)
+          if (local_ok) then
+            next%khrt_initial_count=shedding%initial_count;next%khrt_shed_volume=shedding%shed_volume
+          end if
+        else
+          call advance_spray_breakup(next,material,local_breakup,sampled(1),film%gas_velocity, &
+            film%density,film%viscosity,dt,local_ok)
+        end if
         if (.not.local_ok) then
           message='Spray breakup rejected; complete coupling step rolled back'; return
+        end if
+        if (release%mass>0) then
+          if (size(drops)>options%maximum_parcels-4) return
+          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
+          release_axis=next%velocity
+          if (norm2(release_axis)<1e-12_dp) release_axis=film%gas_velocity-next%velocity
+          call construct_khrt_children(next,release,release_axis,drops(size(drops))%id+1_int64, &
+            spawned,dispersion_energy,local_ok)
+          if (.not.local_ok) return
+          do n=1,8
+            i=indices(1,n);j=indices(2,n);k=indices(3,n)
+            candidate(5,i,j,k)=candidate(5,i,j,k)+weights(n)*dispersion_energy/volume
+            call reactive_conserved_to_primitive(species,candidate(:,i,j,k),temp(i,j,k),primitive,recovered,sound,local_ok)
+            if (.not.local_ok) then
+              message='KH child dispersion energy rejected; complete step rolled back';return
+            end if
+            temp(i,j,k)=recovered
+          end do
+          do n=1,size(spawned)
+            call apply_parcel_boundaries(spawned(n),material,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
+            if (.not.local_ok) return
+            ledger(1:5)=ledger(1:5)+exchange
+            ledger(5+material%vapor_index)=ledger(5+material%vapor_index)+exchange(1)
+          end do
+          starts=[starts,spread(min(interval,elapsed+dt),1,size(spawned))]
+          drops=[drops,spawned]
         end if
         if (any(impact_settings%enabled).and.next%mass>0) then
           if (drops(size(drops))%id>huge(1_int64)-4_int64) return

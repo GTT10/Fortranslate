@@ -9,7 +9,113 @@ module spray_breakup_mod
   implicit none
   private
   public :: advance_etab_breakup, advance_khrt_breakup, advance_spray_breakup, split_spray_parcels
+  type, public :: spray_khrt_shedding_state
+    real(dp) :: initial_count=0,shed_volume=0
+  end type
+  type, public :: spray_khrt_release
+    real(dp) :: mass=0,drop_mass=0,multiplicity=0,diameter=0,tangential_speed=0
+  end type
+  public :: advance_khrt_shedding,construct_khrt_children
 contains
+  subroutine construct_khrt_children(parent,release,axis,first_id,children,gas_energy,ok)
+    type(spray_parcel), intent(in) :: parent
+    type(spray_khrt_release), intent(in) :: release
+    real(dp), intent(in) :: axis(3)
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), intent(out) :: gas_energy
+    logical, intent(out) :: ok
+    type(spray_parcel) :: candidate(4)
+    real(dp) :: normal(3),helper(3),tangent(3),other(3),directions(3,4),energy
+    integer :: n
+    ok=.false.;gas_energy=0
+    if (.not.valid_spray_parcel(parent)) return
+    if (.not.all(ieee_is_finite([axis,release%mass,release%drop_mass,release%multiplicity, &
+        release%diameter,release%tangential_speed]))) return
+    if (norm2(axis)<1e-12_dp.or.maxval(abs(axis))>1e9_dp) return
+    if (first_id<=parent%id.or.first_id>huge(first_id)-3_int64) return
+    if (release%mass<=0.or.release%drop_mass<=0.or.release%drop_mass>1.or.release%multiplicity<=0) return
+    if (release%multiplicity>1e18_dp.or.release%tangential_speed<0.or.release%tangential_speed>1e7_dp) return
+    if (abs(release%mass-release%drop_mass*release%multiplicity)>1e-12_dp*release%mass) return
+    normal=axis/norm2(axis);helper=[1.0_dp,0.0_dp,0.0_dp]
+    if (abs(normal(1))>.9_dp) helper=[0.0_dp,1.0_dp,0.0_dp]
+    tangent=helper-dot_product(helper,normal)*normal;tangent=tangent/norm2(tangent)
+    other=[normal(2)*tangent(3)-normal(3)*tangent(2),normal(3)*tangent(1)-normal(1)*tangent(3), &
+      normal(1)*tangent(2)-normal(2)*tangent(1)]
+    directions(:,1)=tangent;directions(:,2)=-tangent;directions(:,3)=other;directions(:,4)=-other
+    do n=1,4
+      candidate(n)=parent;candidate(n)%id=first_id+int(n-1,int64);candidate(n)%parent_id=parent%id
+      candidate(n)%mass=release%drop_mass;candidate(n)%multiplicity=release%multiplicity/4
+      candidate(n)%velocity=parent%velocity+release%tangential_speed*directions(:,n)
+      candidate(n)%deformation=0;candidate(n)%deformation_rate=0;candidate(n)%rt_time=0
+      candidate(n)%khrt_initial_count=0;candidate(n)%khrt_shed_volume=0
+      if (.not.valid_spray_parcel(candidate(n))) return
+    end do
+    ! Symmetric azimuth quadrature preserves emitted momentum; gas supplies transverse kinetic energy.
+    energy=-.5_dp*release%mass*release%tangential_speed**2
+    if (.not.ieee_is_finite(energy)) return
+    children=candidate;gas_energy=energy;ok=.true.
+  end subroutine
+
+  subroutine advance_khrt_shedding(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt, &
+      reference_diameter_cubed,state,release,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_options), intent(in) :: options
+    real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt,reference_diameter_cubed
+    type(spray_khrt_shedding_state), intent(inout) :: state
+    type(spray_khrt_release), intent(out) :: release
+    logical, intent(out) :: ok
+    type(spray_parcel) :: candidate
+    type(spray_khrt_shedding_state) :: pending
+    type(spray_khrt_release) :: emitted
+    real(dp) :: old_radius,new_radius,rs,wave,frequency,total,rho,ns,remaining
+    release=spray_khrt_release();emitted=release;ok=.false.
+    if (.not.all(ieee_is_finite([reference_diameter_cubed,state%initial_count,state%shed_volume]))) return
+    if (reference_diameter_cubed<=0.or.reference_diameter_cubed>1e24_dp) return
+    if (state%initial_count<0.or.state%initial_count>1e18_dp.or.state%shed_volume<0.or.state%shed_volume>1e24_dp) return
+    if (state%initial_count==0.and.state%shed_volume/=0) return
+    candidate=parcel;pending=state
+    call advance_khrt_breakup(candidate,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok,wave,frequency)
+    if (.not.ok) return
+    ok=.false.
+    if (wave>0) then
+      rho=liquid_density_at_temperature(liquid,parcel%temperature)
+      total=parcel%mass*parcel%multiplicity
+      old_radius=.5_dp*parcel_diameter(parcel,liquid)
+      new_radius=.5_dp*parcel_diameter(candidate,liquid)
+      if (pending%initial_count==0) pending%initial_count=parcel%multiplicity
+      pending%shed_volume=pending%shed_volume+pending%initial_count*max(0.0_dp,old_radius**3-new_radius**3)
+      rs=options%khrt_b0*wave
+      ns=pending%shed_volume/rs**3
+      if (pending%shed_volume/(parcel%multiplicity*old_radius**3)>.9_dp) then
+        rs=max(rs,.5_dp*options%minimum_diameter)
+        emitted%mass=total;candidate%mass=0
+        pending%shed_volume=0;pending%initial_count=0
+      else if (8*pending%shed_volume/max(reference_diameter_cubed,epsilon(1.0_dp)*1e-6_dp)>.03_dp.and. &
+          rs>.5_dp*options%minimum_diameter.and.ns>parcel%multiplicity) then
+        ! pending volume is N*r^3, not kg or geometric sphere volume.
+        emitted%mass=4*acos(-1.0_dp)*rho*pending%shed_volume/3
+        remaining=total-emitted%mass
+        if (remaining<=0) return
+        candidate%multiplicity=remaining/candidate%mass
+        pending%initial_count=candidate%multiplicity;pending%shed_volume=0
+      end if
+      if (emitted%mass>0) then
+        emitted%diameter=2*rs;emitted%drop_mass=4*acos(-1.0_dp)*rho*rs**3/3
+        emitted%multiplicity=emitted%mass/emitted%drop_mass
+        emitted%tangential_speed=.188_dp*frequency*wave
+        if (.not.all(ieee_is_finite([emitted%mass,emitted%drop_mass,emitted%multiplicity,emitted%tangential_speed]))) return
+        if (emitted%drop_mass<=0.or.emitted%drop_mass>1.or.emitted%multiplicity>1e18_dp) return
+        if (emitted%tangential_speed>1e7_dp) return
+      end if
+    end if
+    if (.not.valid_spray_parcel(candidate)) return
+    if (.not.all(ieee_is_finite([pending%initial_count,pending%shed_volume]))) return
+    if (pending%initial_count>1e18_dp.or.pending%shed_volume>1e24_dp) return
+    parcel=candidate;state=pending;release=emitted;ok=.true.
+  end subroutine
+
   subroutine advance_spray_breakup(parcel,liquid,options,gas_density,gas_velocity,film_density,gas_viscosity,dt,ok)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
@@ -32,17 +138,22 @@ contains
   end subroutine
 
   ! ReitzKHRT.H representative-drop branch (make_new_drops=false).
-  subroutine advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok)
+  subroutine advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok,kh_wave,kh_frequency)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
     real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt
+    real(dp), intent(out), optional :: kh_wave,kh_frequency
+    real(dp) :: release_wave,release_frequency
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
     real(dp) :: rho,liquid_mu
     real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total
     logical :: rt_breakup
     real(dp), parameter :: pi=acos(-1.0_dp)
+    if (present(kh_wave)) kh_wave=0
+    if (present(kh_frequency)) kh_frequency=0
+    release_wave=0;release_frequency=0
     ok=.false.
     if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid).or..not.valid_spray_options(options)) return
     if (trim(options%breakup_model)/='khrt') return
@@ -97,6 +208,7 @@ contains
         sqrt(options%surface_tension/(rho*radius**3))
       tau=3.726_dp*options%khrt_b1*radius/(lambda*omega)
       if (options%khrt_b0*lambda<radius.and.we>6) then
+        release_wave=lambda;release_frequency=omega
         rate=dt/tau
         child=(rate*options%khrt_b0*lambda+radius)/(1+rate)
         candidate%rt_time=0
@@ -108,6 +220,8 @@ contains
       candidate%multiplicity=total/candidate%mass
     end if
     if (.not.valid_spray_parcel(candidate)) return
+    if (present(kh_wave)) kh_wave=release_wave
+    if (present(kh_frequency)) kh_frequency=release_frequency
     parcel=candidate;ok=.true.
   end subroutine
 

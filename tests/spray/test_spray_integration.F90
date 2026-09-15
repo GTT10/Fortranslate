@@ -221,6 +221,30 @@ program test_spray_integration
       call require(all(parcel_totals(drops(i),liquid)==parcel_totals(before_drops(i),liquid)),'parcel rollback')
       call require(all(drops(i)%position==before_drops(i)%position),'position rollback')
     end do
+    options%breakup_model='khrt';options%khrt_children=.true.
+    options%khrt_reference_diameter_cubed=1e-25_dp
+    options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    do i=1,size(drops)
+      drops(i)%velocity=[0.0_dp,0.0_dp,1000.0_dp]
+    end do
+    before_drops=drops
+    ! Establish that the same first spray stage actually creates children.
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2.0e-7_dp,.false.,.false.,'implicit', &
+      1.0e-7_dp,1.0e-12_dp,0.0_dp,0.7_dp,0.7_dp,ok,message)
+    call require(ok.and.size(drops)>size(before_drops),'KH children before late failure')
+    state=before;temperature=before_t;drops=before_drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2.0e-7_dp,.true.,.false.,'invalid', &
+      1.0e-7_dp,1.0e-12_dp,0.0_dp,0.7_dp,0.7_dp,ok,message)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'KH gas rollback')
+    call require(size(drops)==size(before_drops),'KH children rollback')
+    call require(all(drops%khrt_initial_count==0).and.all(drops%khrt_shed_volume==0),'KH shedding rollback')
+    do i=1,size(drops)
+      call require(all(parcel_totals(drops(i),liquid)==parcel_totals(before_drops(i),liquid)),'KH parent rollback')
+      call require(all(drops(i)%position==before_drops(i)%position),'KH parent position rollback')
+    end do
   case('checkpoint')
     injected=0.0_dp; time=1.0e-6_dp; steps=3; event=0
     call write_spray_checkpoint('roundtrip.chk','integration-context',species,state,temperature,drops,time,steps,event, &
