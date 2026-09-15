@@ -1,4 +1,5 @@
 module multispecies_state_mod
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use constants_mod, only: density_floor
   use state_indices_mod, only: &
@@ -7,7 +8,7 @@ module multispecies_state_mod
   implicit none
   private
 
-  integer, parameter, public :: max_supported_species = 32
+  integer, parameter, public :: max_supported_species = mechanism_species_capacity
   real(dp), parameter, public :: species_negative_tolerance = 1.0e-12_dp
   real(dp), parameter, public :: species_closure_tolerance = 5.0e-11_dp
   real(dp), parameter, public :: thermodynamic_layout_tolerance = 5.0e-11_dp

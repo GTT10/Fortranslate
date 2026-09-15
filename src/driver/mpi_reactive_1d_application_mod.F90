@@ -1,6 +1,7 @@
 module mpi_reactive_1d_application_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use state_indices_mod, only: irho
   use mpi_domain_1d_mod, only: &
@@ -70,7 +71,7 @@ contains
     integer :: steps, rejected_trials, total_rejected, output_unit
     logical :: ok
 
-    if (size(species) < 2 .or. size(species) > 32 .or. &
+    if (size(species) < 2 .or. size(species) > mechanism_species_capacity .or. &
         size(transport) /= size(species) .or. size(reactions) < 1 .or. &
         len_trim(output_file) == 0 .or. &
         .not. supported_initialization_profile(species)) then

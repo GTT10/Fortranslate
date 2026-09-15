@@ -305,7 +305,7 @@ def validate_checkpoint(
     if len(header) != 3:
         raise SystemExit(f"{path}: invalid 3D AMR checkpoint schema line")
     schema, species_count, variable_count = map(int, header)
-    if schema not in {2, 3, 4, 5} or not 1 <= species_count <= 32 or (
+    if schema not in {2, 3, 4, 5} or not 1 <= species_count <= 128 or (
         variable_count != species_count + 5
     ):
         raise SystemExit(f"{path}: invalid 3D AMR checkpoint dimensions")

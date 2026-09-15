@@ -2,6 +2,7 @@ module mpi_amr_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
@@ -19,7 +20,7 @@ module mpi_amr_reactive_3d_mod
   implicit none
   private
 
-  integer, parameter :: maximum_species_count = 32
+  integer, parameter :: maximum_species_count = mechanism_species_capacity
   integer, parameter :: nasa7_real_count = 18
 
   type, public :: mpi_amr_slab_distribution_3d

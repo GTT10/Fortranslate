@@ -2,6 +2,7 @@ program test_reactive_transport_3d
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_is_finite, ieee_positive_inf, ieee_quiet_nan, ieee_value
   use precision_mod, only: dp
+  use constants_mod, only: mechanism_species_capacity
   use state_indices_mod, only: imx, imz
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -505,7 +506,7 @@ contains
     allocate(zero_state(0), zero_flux(0))
     theta = 31.0_dp
     call reactive_transport_interface_theta_3d( &
-      33, zero_state, zero_flux, 1.0_dp, theta, local_ok)
+      mechanism_species_capacity+1, zero_state, zero_flux, 1.0_dp, theta, local_ok)
     if (local_ok .or. theta /= 0.0_dp) return
 
     do bad_kind = 1, 2

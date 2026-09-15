@@ -16,7 +16,7 @@ from typing import Any
 REACTION_TYPES = {"elementary", "three-body", "falloff"}
 CHEMISTRY_INTEGRATORS = {"explicit", "implicit"}
 TRANSPORT_GEOMETRIES = {"atom": 0, "linear": 1, "nonlinear": 2}
-MAX_SPECIES = 32
+MAX_SPECIES = 128
 MAX_EQUATION_LENGTH = 128
 MAX_FORTRAN_IDENTIFIER_LENGTH = 63
 MAX_FORTRAN_LINE_LENGTH = 100

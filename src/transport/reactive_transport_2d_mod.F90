@@ -1,5 +1,6 @@
 module reactive_transport_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
@@ -1360,7 +1361,7 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     nspecies = size(species)
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     nvar = reactive_nvar(nspecies)
     nprim = reactive_nprim(nspecies)
     if (.not. all(ieee_is_finite([dx, dy, dt]))) return
@@ -1566,7 +1567,7 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     nspecies = size(species)
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     nvar = reactive_nvar(nspecies)
     if (.not. all(ieee_is_finite([dx, dy, dt]))) return
     if (size(transport) /= nspecies .or. nx < 2 .or. ny < 2) return
@@ -1630,7 +1631,7 @@ contains
     maximum_diffusivity = 0.0_dp
     ok = .false.
     nspecies = size(species)
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     if (.not. all(ieee_is_finite([dx, dy, transport_cfl]))) return
     if (size(transport) /= nspecies .or. nx < 1 .or. ny < 1) return
     if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. transport_cfl <= 0.0_dp .or. &
@@ -1745,7 +1746,7 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     nspecies = size(species)
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     nvar = reactive_nvar(nspecies)
     if (size(output_state, 1) /= nvar .or. size(output_state, 2) < nx .or. &
         size(output_state, 3) < ny .or. size(output_temperature, 1) < nx .or. &
@@ -1833,7 +1834,7 @@ contains
     ok = .false.
     minimum_theta = 1.0_dp
     nspecies = size(species)
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     nvar = reactive_nvar(nspecies)
     if (.not. all(ieee_is_finite([dx, dy, interval]))) return
     if (size(transport) /= nspecies .or. nx < 2 .or. ny < 2) return

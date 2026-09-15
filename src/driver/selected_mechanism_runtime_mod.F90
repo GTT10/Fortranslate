@@ -1,5 +1,6 @@
 module selected_mechanism_runtime_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
   use elementary_kinetics_mod, only: &
@@ -40,7 +41,7 @@ contains
     message = ""
     common_temperature_minimum = 0.0_dp
     common_temperature_maximum = 0.0_dp
-    if (expected_species_count < 2 .or. expected_species_count > 32 .or. &
+    if (expected_species_count < 2 .or. expected_species_count > mechanism_species_capacity .or. &
         size(species) /= expected_species_count) then
       message = trim(context) // &
         " mechanism returned an unsupported species count"

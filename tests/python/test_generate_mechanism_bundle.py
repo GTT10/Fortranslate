@@ -913,14 +913,14 @@ class GenerateMechanismBundleTest(unittest.TestCase):
             generator.validate(data)
 
         data = self.bundle()
-        data["species"] = [f"S{index}" for index in range(33)]
+        data["species"] = [f"S{index}" for index in range(generator.MAX_SPECIES + 1)]
         data["reactions"][0] = {
             "equation": "S0 <=> S1",
             "reactants": {"S0": 1.0},
             "products": {"S1": 1.0},
             "arrhenius": {"A": 1.0, "b": 0.0, "Ea": 0.0},
         }
-        with self.assertRaisesRegex(ValueError, "mechanism exceeds 32 species"):
+        with self.assertRaisesRegex(ValueError, f"mechanism exceeds {generator.MAX_SPECIES} species"):
             generator.validate(data)
 
         data = self.bundle()

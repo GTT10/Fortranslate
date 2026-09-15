@@ -2,7 +2,7 @@ module spray_application_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use constants_mod, only: pelef_version
+  use constants_mod, only: pelef_version,mechanism_species_capacity
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species, compatible_transport_database
@@ -28,7 +28,8 @@ contains
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
     real(dp) :: domain_length(3),gas_temperature,gas_pressure,gas_velocity(3),shear_velocity
-    real(dp) :: mole_amounts(32),liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat
+    real(dp) :: mole_amounts(mechanism_species_capacity),liquid_density,liquid_cp
+    real(dp) :: reference_temperature,reference_pressure,latent_heat
     real(dp) :: diameter_shape,diameter_min,diameter_max
     real(dp) :: drop_temperature,drop_diameter,initial_liquid_mass,injection_center(3),injection_axis(3)
     real(dp) :: injection_speed,cone_angle,mass_flow_rate,injection_start,injection_end,injection_interval
@@ -56,12 +57,12 @@ contains
     logical :: physical_boundaries
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6),inflow_t(6),inlet_dt,face_dt,face_diffusivity
     real(dp), allocatable :: inflow_state(:,:),inlet_x(:),inlet_y(:),inlet_cube(:,:,:,:)
-    real(dp) :: inlet_temperature(2,2,2),inflow_composition_mole_fractions(32)
-    character(len=24) :: inflow_composition_species(32)
+    real(dp) :: inlet_temperature(2,2,2),inflow_composition_mole_fractions(mechanism_species_capacity)
+    character(len=24) :: inflow_composition_species(mechanism_species_capacity)
     integer :: inflow_composition_count,face
     character(len=32) :: boundary_faces(6)
     logical :: ok,exists
-    character(len=24) :: mole_names(32),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
+    character(len=24) :: mole_names(mechanism_species_capacity),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
     character(len=1024) :: output_prefix,checkpoint_file,restart_file,message
     character(len=16384) :: context
     character(len=1050) :: paths(3)
@@ -125,7 +126,7 @@ contains
       if (wall_temperature(face)<=0) call fail('Invalid wall temperature')
     end do
     nvar=reactive_nvar(size(species))
-    if (nvar<7) call fail('Spray requires 2--32 gas species')
+    if (nvar<7) call fail('Spray requires 2--128 gas species')
     if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')
     if (trim(hydro_reconstruction)/='pcm' .and. trim(hydro_reconstruction)/='characteristic_plm') &
       call fail('Invalid hydro reconstruction')

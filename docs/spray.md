@@ -179,7 +179,7 @@ Production use still needs calibrated temperature-dependent liquid properties,
 boiling/real-fluid handling, multicomponent liquids, additional breakup/dispersion models and collision, calibrated size distributions
 and turbulent dispersion, physical injector and wall-impact models, particle
 migration with MPI/AMR/EB, scalable output/checkpointing, detailed diesel-fuel
-mechanisms and performance tests. Selected chemistry retains its 2--32-species
+mechanisms and performance tests. Selected chemistry uses a 2--128-species
 limit and currently supported reaction forms; FFCM1_Red does not represent
 HXN/HMN/AMN. No claim of measured ignition, penetration or liquid length is made.
 
@@ -373,3 +373,18 @@ This is a uniform body force, not a hydrostatic well-balanced discretization,
 spatial gravity field, buoyancy closure or particle-only external force model.
 Potential energy is not included in reported energy; external work accounts for
 its effect. See [focused evidence](validation/spray-acceleration-20260915.md).
+
+
+## Larger selected mechanisms
+
+The importer, generator, selected input arrays, reactive state/transport checks
+and MPI species-comparison storage now share a 128-species capacity. Runtime
+Fortran limits use `constants_mod::mechanism_species_capacity`. Reaction and
+thermo families remain restricted to the documented supported forms.
+The capacity is a storage/input bound, not a performance qualification.
+
+A 53-species, 325-reaction GRI-Mech case now runs through the existing selected
+CVODE 0D and regular 3D spray executables. The 0D trajectory agrees with an
+independent Cantera reactor, and the coupled chemistry/transport/spray case
+restarts exactly. See [commands and evidence](validation/species-capacity-20260915.md).
+MPI and AMR with more than 32 species have not been newly qualified.

@@ -1,6 +1,7 @@
 module reactive_transport_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
@@ -302,7 +303,7 @@ contains
 
     theta = 0.0_dp
     ok = .false.
-    if (nspecies < 1 .or. nspecies > 32 .or. &
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity .or. &
         size(base_state) /= reactive_nvar(nspecies) .or. &
         size(face_flux) /= reactive_nvar(nspecies) .or. &
         .not. ieee_is_finite(signed_coefficient) .or. &

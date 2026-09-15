@@ -2,6 +2,7 @@ module constants_mod
   use precision_mod, only: dp
   implicit none
   private
+  integer, parameter, public :: mechanism_species_capacity = 128
   real(dp), parameter, public :: default_gamma = 1.4_dp
   real(dp), parameter, public :: density_floor = 1.0e-12_dp
   real(dp), parameter, public :: pressure_floor = 1.0e-12_dp

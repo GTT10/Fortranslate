@@ -2,6 +2,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -32,7 +33,7 @@ module mpi_amr_sparse_reactive_3d_mod
   integer, parameter :: sparse_halo_right_tag_3d = 3420
   integer, parameter :: sparse_theta_left_tag_3d = 3430
   integer, parameter :: sparse_theta_right_tag_3d = 3440
-  integer, parameter :: sparse_maximum_species_count_3d = 32
+  integer, parameter :: sparse_maximum_species_count_3d = mechanism_species_capacity
   integer, parameter :: sparse_nasa7_real_count_3d = 18
 
   type, public :: mpi_amr_sparse_distribution_3d

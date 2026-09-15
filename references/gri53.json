@@ -1,0 +1,8 @@
+{
+  "source": "Cantera 3.2.0 packaged data/gri30.yaml",
+  "source_sha256": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
+  "bundle_sha256": "21b4d6b6acef57b37a1f3f81c2842924b29149ae59cb3d1f6a160afd46400508",
+  "species": 53,
+  "reactions": 325,
+  "scope": "selected CVODE constant-volume trajectory and regular 3D spray restart; not diesel or MPI qualification"
+}

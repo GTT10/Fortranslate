@@ -1,5 +1,6 @@
 module reactive_1d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor, tiny_speed
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
@@ -101,7 +102,7 @@ contains
 
   pure integer function reactive_nvar(nspecies) result(nvar)
     integer, intent(in) :: nspecies
-    if (nspecies < 1 .or. nspecies > 32) then
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) then
       nvar = 0
     else
       nvar = ncons + nspecies
@@ -110,7 +111,7 @@ contains
 
   pure integer function reactive_nprim(nspecies) result(nvar)
     integer, intent(in) :: nspecies
-    if (nspecies < 1 .or. nspecies > 32) then
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) then
       nvar = 0
     else
       nvar = 5 + nspecies
@@ -119,7 +120,7 @@ contains
 
   pure integer function reactive_species_component(k) result(index)
     integer, intent(in) :: k
-    if (k < 1 .or. k > 32) then
+    if (k < 1 .or. k > mechanism_species_capacity) then
       index = 0
     else
       index = ncons + k
@@ -128,7 +129,7 @@ contains
 
   pure integer function reactive_mass_fraction_component(k) result(index)
     integer, intent(in) :: k
-    if (k < 1 .or. k > 32) then
+    if (k < 1 .or. k > mechanism_species_capacity) then
       index = 0
     else
       index = 5 + k
@@ -159,7 +160,7 @@ contains
     nspecies = size(species)
     if (size(primitive) /= reactive_nprim(nspecies)) return
     if (size(conserved) /= reactive_nvar(nspecies)) return
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     if (.not. all(ieee_is_finite(primitive))) return
 
     rho = primitive(1)
@@ -266,7 +267,7 @@ contains
     nspecies = size(species)
     if (size(conserved) /= reactive_nvar(nspecies)) return
     if (size(primitive) /= reactive_nprim(nspecies)) return
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     if (any(.not. ieee_is_finite(conserved))) return
     if (.not. ieee_is_finite(temperature_guess)) return
     rho = conserved(irho)
@@ -351,7 +352,7 @@ contains
     ok = .false.
     if (size(conserved) /= reactive_nvar(nspecies) .or. &
         size(y) /= nspecies) return
-    if (nspecies < 1 .or. nspecies > 32) return
+    if (nspecies < 1 .or. nspecies > mechanism_species_capacity) return
     if (any(.not. ieee_is_finite(conserved))) return
     rho = conserved(irho)
     if (rho <= density_floor) return

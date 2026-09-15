@@ -1,12 +1,13 @@
 module simulation_config_selected_reactor_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   implicit none
   private
 
   integer, parameter :: species_name_length = 24
-  integer, parameter, public :: selected_reactor_max_species = 32
+  integer, parameter, public :: selected_reactor_max_species = mechanism_species_capacity
 
   type, public :: selected_reactor_config
     character(len=16) :: integrator = "implicit"

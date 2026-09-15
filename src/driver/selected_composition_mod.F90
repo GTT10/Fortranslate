@@ -1,11 +1,12 @@
 module selected_composition_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   implicit none
   private
 
-  integer, parameter, public :: selected_composition_max_species = 32
+  integer, parameter, public :: selected_composition_max_species = mechanism_species_capacity
   integer, parameter, public :: selected_composition_name_length = 24
 
   public :: validate_selected_composition_fields

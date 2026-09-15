@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-MAX_SPECIES = 32
+MAX_SPECIES = 128
 MAX_EQUATION_LENGTH = 128
 REFERENCE_PRESSURE = 101325.0
 SUPPORTED_CANTERA_VERSION = "3.2.0"

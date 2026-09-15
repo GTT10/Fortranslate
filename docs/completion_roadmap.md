@@ -34,7 +34,9 @@ injection with optional mass-CDF diameters, deviatoric Smagorinsky and coupled c
 gas solver. Cell-local CVODE is connected to this CFD path, with a pinned
 FFCM1_Red liquid-methanol burn fixture and independent Cantera gas-only oracles.
 Chemical labels, single-interval NASA7 and classified Lindemann ingestion are
-supported. See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).
+supported. Selected mechanism capacity is now 128 species; a 53-species GRI-Mech
+0D and coupled-spray case has focused evidence. Large-mechanism MPI/scaling and
+production diesel chemistry remain open. See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).
 These are bounded implemented capabilities, not completion of diesel chemistry,
 multicomponent liquids, shed-mass children/dispersion/collision, characteristic inlet models and near-wall turbulence qualification or MPI/AMR particles.
 Regular wall reflection and outflow now include gas/particle surface budgets

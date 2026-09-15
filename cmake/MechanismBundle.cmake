@@ -207,8 +207,8 @@ function(pelef_add_mechanism_bundle)
     message(FATAL_ERROR "selected reactor requires at least two species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_1D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive 1D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive 1D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_1D_NAME AND
       NOT TARGET pelef_selected_reactive_1d_runtime)
@@ -219,8 +219,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_AMR_REACTIVE_1D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected AMR reactive 1D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected AMR reactive 1D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_AMR_REACTIVE_1D_NAME AND
       NOT TARGET pelef_selected_amr_reactive_1d_runtime)
@@ -231,8 +231,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_REACTIVE_2D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive 2D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive 2D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_2D_NAME AND
       NOT TARGET pelef_selected_reactive_2d_runtime)
@@ -243,8 +243,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_2D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive EB 2D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive EB 2D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_2D_NAME AND
       NOT TARGET pelef_selected_reactive_eb_2d_runtime)
@@ -255,8 +255,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_AMR_2D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive EB AMR 2D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive EB AMR 2D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_AMR_2D_NAME AND
       NOT TARGET pelef_selected_reactive_eb_amr_2d_runtime)
@@ -267,8 +267,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_REACTIVE_3D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive 3D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive 3D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_3D_NAME AND
       NOT TARGET pelef_selected_reactive_3d_runtime)
@@ -279,8 +279,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_AMR_REACTIVE_3D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected AMR reactive 3D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected AMR reactive 3D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_AMR_REACTIVE_3D_NAME AND
       NOT TARGET pelef_selected_amr_reactive_3d_runtime)
@@ -291,8 +291,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_3D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected reactive EB 3D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected reactive EB 3D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_3D_NAME AND
       NOT TARGET pelef_selected_reactive_eb_3d_runtime)
@@ -322,8 +322,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_MPI_AMR_REACTIVE_1D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected MPI AMR reactive 1D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected MPI AMR reactive 1D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_MPI_AMR_REACTIVE_1D_NAME AND NOT PELEF_ENABLE_MPI)
     message(
@@ -339,8 +339,8 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_MPI_AMR_REACTIVE_3D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
-    message(FATAL_ERROR "selected MPI AMR reactive 3D requires 2--32 species")
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected MPI AMR reactive 3D requires 2--128 species")
   endif()
   if(PELEF_BUNDLE_MPI_AMR_REACTIVE_3D_NAME AND NOT PELEF_ENABLE_MPI)
     message(
@@ -356,9 +356,9 @@ function(pelef_add_mechanism_bundle)
     )
   endif()
   if(PELEF_BUNDLE_MPI_REACTIVE_EB_PATCH_TREE_2D_NAME AND
-      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 32))
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
     message(
-      FATAL_ERROR "selected sparse MPI reactive EB 2D requires 2--32 species"
+      FATAL_ERROR "selected sparse MPI reactive EB 2D requires 2--128 species"
     )
   endif()
   if(PELEF_BUNDLE_MPI_REACTIVE_EB_PATCH_TREE_2D_NAME AND
