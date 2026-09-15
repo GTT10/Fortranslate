@@ -23,6 +23,7 @@ program test_spray_core
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquid,constant_liquid,mixture_components(2)
   real(dp) :: mixture_y(2),mixture_rho,mixture_cp,mixture_e,mixture_t,mixture_e0
+  real(dp) :: component_mass(2),saved_mass(2),evaporated_mass(2),vapor_h(2),mw(2),surface_x(2)
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options,constant_options
@@ -60,6 +61,56 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('mixture_exchange')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'mixture exchange component')
+    mw=[species(liquid%vapor_index)%molecular_weight,species(mixture_components(2)%vapor_index)%molecular_weight]
+    mixture_y=[.8_dp,.2_dp];surface_x=-1
+    ! Pure component 2 is saturated, but its dilute liquid partial pressure is below ambient.
+    call liquid_mixture_surface(mixture_components,mixture_y,mw,350.0_dp,101325.0_dp,surface_x,ok)
+    call require(ok.and.all(surface_x>0).and.sum(surface_x)<1,'Raoult surface accepts diluted saturation')
+    expected=(mixture_y(2)/mw(2))/sum(mixture_y/mw)
+    call require(abs(surface_x(2)-expected)<1e-14_dp,'Raoult uses mole rather than mass fraction')
+    call saturation_mole_fraction(liquid,mw(1),350.0_dp,101325.0_dp,value,ok)
+    call require(ok.and.abs(surface_x(1)-value*(1-expected))<1e-14_dp,'Raoult partial pressure')
+    surface_x=-1
+    call liquid_mixture_surface(mixture_components,mixture_y,mw,350.0_dp,1.0_dp,surface_x,ok)
+    call require(.not.ok.and.all(surface_x==-1),'saturated mixture output rollback')
+    p%mass=1e-9_dp;p%multiplicity=10;p%temperature=350;q=p
+    component_mass=p%mass*[.3_dp,.7_dp];saved_mass=component_mass
+    evaporated_mass=p%mass*[.05_dp,.02_dp]
+    do n=1,2
+      vapor_h(n)=liquid_energy(mixture_components(n),350.0_dp)+1e6_dp
+    end do
+    expected=sum([(component_mass(n)*liquid_energy(mixture_components(n),350.0_dp),n=1,2)])
+    heat=p%multiplicity*(sum([((component_mass(n)-evaporated_mass(n))* &
+      liquid_energy(mixture_components(n),360.0_dp),n=1,2)])-expected+sum(evaporated_mass*vapor_h))
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,heat,totals0,ok)
+    call require(ok.and.abs(p%temperature-360)<1e-10_dp,'species loss and nonlinear energy update')
+    call require(all(component_mass==saved_mass-evaporated_mass),'individual component losses')
+    call require(abs(p%mass-sum(component_mass))<1e-24_dp,'parcel mass equals component sum')
+    do n=1,2
+      call require(totals0(5+mixture_components(n)%vapor_index)==q%multiplicity*evaporated_mass(n),'gas species routing')
+    end do
+    call require(abs(totals0(1)+p%mass*p%multiplicity-q%mass*q%multiplicity)<1e-23_dp,'mixture mass balance')
+    expected=q%multiplicity*sum(evaporated_mass*vapor_h)-heat+totals0(1)*.5_dp*sum(q%velocity**2)
+    call require(abs(totals0(5)-expected)<1e-12_dp*max(abs(expected),1e-12_dp),'mixture energy exchange')
+    call require(all(totals0(2:4)==totals0(1)*q%velocity),'evaporated momentum')
+    q=p;saved_mass=component_mass;evaporated_mass=component_mass;evaporated_mass(1)=2*component_mass(1)
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,0.0_dp,totals0,ok)
+    call require(.not.ok.and.all(component_mass==saved_mass).and.p%mass==q%mass.and.all(totals0==0),'overdraw rollback')
+    evaporated_mass=[component_mass(1),0.0_dp]
+    heat=p%multiplicity*component_mass(1)*(vapor_h(1)-liquid_energy(mixture_components(1),p%temperature))
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,heat,totals0,ok)
+    call require(ok.and.component_mass(1)==0.and.component_mass(2)>0,'one species completely depleted')
+    call require(abs(p%temperature-q%temperature)<1e-10_dp,'depletion respects remaining composition energy')
+    q=p;evaporated_mass=component_mass
+    expected=q%mass*q%multiplicity*(liquid_energy(mixture_components(2),q%temperature)+.5_dp*sum(q%velocity**2))
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,0.0_dp,totals0,ok)
+    call require(ok.and.p%mass==0.and.all(component_mass==0),'complete mixture evaporation')
+    call require(abs(totals0(5)-expected)<1e-12_dp*max(abs(expected),1e-12_dp),'terminal full inventory transfer')
   case('mixture')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

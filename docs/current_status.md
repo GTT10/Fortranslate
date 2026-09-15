@@ -39,7 +39,10 @@ A mixed-liquid thermodynamic API now evaluates additive-volume density,
 mass-weighted heat capacity/energy and conservative sensible heating with
 energy-to-temperature inversion
 ([evidence](validation/spray-mixture-thermo-20260916.md)). Mixture composition
-storage, component evaporation and CLI/coupled restart remain open.
+storage and CLI/coupled restart remain open. Raoult surface fractions and supplied
+component-mass exchange now return species-resolved conservative gas increments
+([evidence](validation/spray-mixture-exchange-20260916.md)); mixture transport rates
+are not yet connected.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

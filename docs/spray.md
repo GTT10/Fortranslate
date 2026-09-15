@@ -271,10 +271,41 @@ recovers temperature and returns the opposite actual energy increment for the ga
 Failure preserves the parcel and returns zero transfer. This API does not yet
 calculate mixture heat-transfer coefficients or advance component evaporation.
 The CLI still selects one pure liquid per parcel; mixture composition storage,
-species-resolved evaporation and coupled restart remain to be connected. The
+transfer-rate closure and coupled restart remain to be connected. The
 reference's optional boiling-temperature property caps are not applied here.
 See [source](../references/spray_mixture.json) and
 [focused evidence](validation/spray-mixture-thermo-20260916.md).
+
+### Mixed-liquid surface and component exchange
+
+`liquid_mixture_surface` converts mass fractions to liquid mole fractions and
+returns equilibrium surface fractions `X_liquid_i * psat_i / P` (Raoult's law).
+It rejects a saturated combined surface and leaves outputs unchanged on failure.
+A component's pure saturation pressure may exceed ambient pressure when dilution
+keeps its partial pressure below ambient. Optional per-component surface caps
+use the actual total gas pressure before applying the liquid mole fraction.
+Ambient-vapor suppression and transport coefficients are not calculated here.
+
+`advance_mixture_evaporation` takes a parcel, component masses **per physical
+droplet**, requested evaporated masses on the same basis, component vapor
+enthalpies in J/kg, and heat supplied by the gas to the **whole parcel** in J.
+It updates the supplied component-mass array and total droplet mass, recovers the
+remaining mixture temperature, and returns gas conserved-inventory increments
+(mass, three momenta, total energy, followed by gas species masses).
+Components map through their pure-liquid vapor indices; duplicate mappings reject.
+
+For a surviving droplet, the target liquid energy equals old liquid energy plus
+supplied heat minus evaporated vapor enthalpy. The gas receives the actual
+opposite discrete liquid inventory change, including evaporated kinetic energy;
+no separate latent-heat term should be applied again. Velocity and position do
+not change in this exchange operation. A completely evaporated droplet returns
+its finite entire inventory once, following the existing terminal-drop convention;
+there is no residual liquid temperature to solve or additional heat debit.
+Overdraw, invalid composition, unsupported energy states and invalid species
+indices reject without modifying parcel/component masses and return zero exchange.
+This API consumes already calculated evaporation amounts; a mixture transport-rate
+model and persistent CFD parcel composition are the next connections.
+See [component-exchange evidence](validation/spray-mixture-exchange-20260916.md).
 
 ## KH-RT representative-drop breakup
 

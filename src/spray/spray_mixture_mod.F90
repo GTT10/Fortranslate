@@ -8,6 +8,7 @@ module spray_mixture_mod
   implicit none
   private
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
+  public :: liquid_mixture_surface, advance_mixture_evaporation
 contains
   pure logical function valid_composition(components,y) result(ok)
     type(spray_liquid), intent(in) :: components(:)
@@ -103,6 +104,84 @@ contains
       if (step==t) return
       t=step
     end do
+  end subroutine
+
+  subroutine liquid_mixture_surface(components,y,molecular_weights,temperature,pressure,surface_x,ok)
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(in) :: y(:),molecular_weights(:),temperature,pressure
+    real(dp), intent(inout) :: surface_x(:)
+    logical, intent(out) :: ok
+    real(dp) :: liquid_x(size(y)),candidate(size(y)),inverse_weight
+    integer :: i
+    logical :: valid
+    ok=.false.
+    if (.not.valid_composition(components,y)) return
+    if (size(molecular_weights)/=size(y).or.size(surface_x)/=size(y)) return
+    if (.not.all(ieee_is_finite(molecular_weights))) return
+    if (any(molecular_weights<1e-3_dp).or.any(molecular_weights>1e5_dp)) return
+    inverse_weight=sum(y/molecular_weights);liquid_x=(y/molecular_weights)/inverse_weight
+    candidate=0
+    do i=1,size(y)
+      if (y(i)==0) cycle
+      call saturation_mole_fraction(components(i),molecular_weights(i),temperature,pressure,candidate(i),valid,liquid_x(i))
+      if (.not.valid) return
+    end do
+    if (sum(candidate)>=1) return
+    surface_x=candidate;ok=.true.
+  end subroutine
+
+  subroutine advance_mixture_evaporation(parcel,components,component_mass,evaporated_mass,vapor_enthalpy,heat,gas_change,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(inout) :: component_mass(:)
+    real(dp), intent(in) :: evaporated_mass(:),vapor_enthalpy(:),heat
+    real(dp), intent(out) :: gas_change(:)
+    logical, intent(out) :: ok
+    real(dp) :: remaining(size(component_mass)),y(size(component_mass)),exchange(size(gas_change))
+    real(dp) :: old_mass,new_mass,rho,cp,old_e,new_e,target,t,kinetic,drop_heat
+    integer :: i,n
+    logical :: valid
+    type(spray_parcel) :: candidate
+    ok=.false.;gas_change=0;n=size(component_mass)
+    if (n<1.or.n>16.or.size(components)/=n.or.size(evaporated_mass)/=n.or.size(vapor_enthalpy)/=n) return
+    if (size(gas_change)<6.or..not.valid_spray_parcel(parcel)) return
+    if (.not.all(ieee_is_finite(component_mass)).or..not.all(ieee_is_finite(evaporated_mass))) return
+    if (.not.all(ieee_is_finite(vapor_enthalpy)).or..not.ieee_is_finite(heat)) return
+    if (any(component_mass<0).or.any(component_mass>1).or.any(evaporated_mass<0)) return
+    if (any(evaporated_mass>component_mass).or.any(abs(vapor_enthalpy)>1e15_dp)) return
+    old_mass=sum(component_mass)
+    if (old_mass<=tiny(1.0_dp).or.parcel%multiplicity<=tiny(1.0_dp)) return
+    if (abs(old_mass-parcel%mass)>32*epsilon(1.0_dp)*n*old_mass) return
+    if (abs(heat)>min(1e24_dp,1e15_dp*old_mass*parcel%multiplicity)) return
+    y=component_mass/old_mass
+    call liquid_mixture_properties(components,y,parcel%temperature,rho,cp,old_e,valid)
+    if (.not.valid) return
+    remaining=component_mass-evaporated_mass;new_mass=sum(remaining)
+    candidate=parcel;candidate%mass=new_mass;new_e=0
+    if (new_mass>0) then
+      y=remaining/new_mass;drop_heat=heat/parcel%multiplicity
+      target=old_mass*old_e+drop_heat-sum(evaporated_mass*vapor_enthalpy)
+      if (abs(target)>1e15_dp*new_mass) return
+      target=target/new_mass;t=parcel%temperature
+      call liquid_mixture_temperature(components,y,target,t,valid)
+      if (.not.valid) return
+      call liquid_mixture_properties(components,y,t,rho,cp,new_e,valid)
+      if (.not.valid) return
+      candidate%temperature=t
+    else
+      candidate%khrt_initial_count=0;candidate%khrt_shed_volume=0
+    end if
+    if (.not.valid_spray_parcel(candidate)) return
+    exchange=0
+    do i=1,n
+      if (components(i)%vapor_index>size(exchange)-5) return
+      exchange(5+components(i)%vapor_index)=parcel%multiplicity*evaporated_mass(i)
+    end do
+    exchange(1)=sum(exchange(6:));exchange(2:4)=exchange(1)*parcel%velocity
+    kinetic=.5_dp*sum(parcel%velocity**2)
+    exchange(5)=parcel%multiplicity*(old_mass*(old_e+kinetic)-new_mass*(new_e+kinetic))
+    if (.not.all(ieee_is_finite(exchange))) return
+    parcel=candidate;component_mass=remaining;gas_change=exchange;ok=.true.
   end subroutine
 
   subroutine advance_mixture_heating(parcel,components,y,heat,gas_energy,ok)

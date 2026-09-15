@@ -376,12 +376,13 @@ contains
     totals(5) = m*(liquid_energy(l,p%temperature)+0.5_dp*sum(p%velocity**2))
   end function
 
-  subroutine saturation_mole_fraction(l, molecular_weight, temperature, pressure, fraction, ok)
+  subroutine saturation_mole_fraction(l, molecular_weight, temperature, pressure, fraction, ok, liquid_mole_fraction)
     type(spray_liquid), intent(in) :: l
     real(dp), intent(in) :: molecular_weight, temperature, pressure
     real(dp), intent(out) :: fraction
     logical, intent(out) :: ok
-    real(dp) :: log_fraction,surface_temperature,inverse_boiling_temperature,boiling_temperature
+    real(dp), intent(in), optional :: liquid_mole_fraction
+    real(dp) :: log_fraction,surface_temperature,inverse_boiling_temperature,boiling_temperature,liquid_x
     fraction = 0.0_dp
     ok = .false.
     if (.not. valid_spray_liquid(l)) return
@@ -389,6 +390,13 @@ contains
     if (molecular_weight < 1.0e-3_dp .or. molecular_weight > 1.0e5_dp) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
     if (pressure < 1.0e-6_dp .or. pressure > 1.0e12_dp) return
+    liquid_x=1
+    if (present(liquid_mole_fraction)) liquid_x=liquid_mole_fraction
+    if (.not.ieee_is_finite(liquid_x)) return
+    if (liquid_x<0.or.liquid_x>1) return
+    if (liquid_x==0) then
+      ok=.true.;return
+    end if
     surface_temperature=temperature
     if (trim(l%boiling_model)=='surface-cap') then
       inverse_boiling_temperature=1/l%reference_temperature+ &
@@ -411,6 +419,7 @@ contains
     log_fraction = log(l%reference_pressure/pressure) + l%latent_heat*molecular_weight/universal_gas_constant * &
       (1.0_dp/l%reference_temperature-1.0_dp/surface_temperature)
     end if
+    if (liquid_x/=1) log_fraction=log_fraction+log(liquid_x)
     if (.not.ieee_is_finite(log_fraction)) return
     ! Reject saturation unless the explicitly selected surface cap avoided it.
     if (log_fraction >= 0.0_dp) return

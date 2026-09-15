@@ -4,6 +4,11 @@
   "path": "Source/Spray/SprayPropertiesPeleMP.H",
   "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Ideal additive-volume density and mass-weighted liquid heat capacity. Component formation-referenced energies, safeguarded temperature inversion and transactional sensible heating use PeleF energy conventions.",
-  "boundary": "No excess mixing energy, boiling-temperature property cap, composition evolution, mixture evaporation, or CLI mixture selection yet."
+  "scope": "Ideal liquid properties, Raoult surface composition, temperature inversion and conservative supplied component-mass exchange.",
+  "boundary": "No excess mixing energy, mixture transfer-rate closure, persistent mixture parcel storage or CLI/CFD integration yet. Surface caps follow each component only when explicitly configured.",
+  "surface_source": {
+    "path": "Source/Spray/Drag.H",
+    "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",
+    "rule": "X_liquid=(Y/MW)/sum(Y/MW); equilibrium X_surface=X_liquid*psat/P."
+  }
 }
