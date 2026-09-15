@@ -2,9 +2,14 @@ program test_spray_mpi
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
+  use nasa7_thermo_mod, only: nasa7_species
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use spray_parcel_mod
   use spray_mpi_mod
   implicit none
+  type(nasa7_species), allocatable :: species(:)
+  type(spray_liquid) :: liquids(2)
+  real(dp) :: fractions(2),ledger(15),direction(3)
   type(spray_parcel), allocatable :: parcels(:),saved(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   integer :: rank,nranks,ierr,p,target
@@ -82,6 +87,31 @@ program test_spray_mpi
   last_id=int(rank,int64);first_id=-13
   call reserve_spray_ids(MPI_COMM_WORLD,1,last_id,first_id,ok)
   call require(.not.ok.and.last_id==rank.and.first_id==-13,'inconsistent ID history rejected')
+  call load_h2o2_full_thermo(species,ok)
+  call require(ok,'injection thermo')
+  call initialize_spray_liquid(species,'H2O',1000.0_dp,4184.0_dp,373.15_dp,101325.0_dp,2.257e6_dp,liquids(1),ok)
+  call require(ok,'injection water')
+  call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,liquids(2),ok)
+  call require(ok,'injection peroxide')
+  deallocate(parcels,masses);allocate(parcels(0),masses(2,0));last_id=0
+  fractions=[.2_dp+.1_dp*rank,.8_dp-.1_dp*rank]
+  call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),1e-10_dp*rank,rank, &
+    [rank+.25_dp,.25_dp,.25_dp],[0.0_dp,0.0_dp,1.0_dp],10.0_dp,0.0_dp,2e-5_dp,330.0_dp, &
+    100,last_id,parcels,ledger,ok,liquids,fractions,masses)
+  call require(ok.and.size(parcels)==rank.and.last_id==nranks*(nranks-1)/2,'collective mixture injection')
+  call require(abs(ledger(1)-1e-10_dp*rank)<1e-24_dp,'injected total mass')
+  call require(abs(ledger(5+liquids(1)%vapor_index)-ledger(1)*fractions(1))<1e-24_dp,'injected component ledger')
+  do p=1,size(parcels)
+    call require(all(masses(:,p)==parcels(p)%mass*fractions),'injected composition')
+    call require(parcels(p)%id==rank*(rank-1)/2+p,'injected unique IDs')
+  end do
+  saved=parcels;saved_mass=masses;saved_last=last_id;direction=[0.0_dp,0.0_dp,1.0_dp]
+  if (rank==nranks-1) direction=0
+  call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),1e-10_dp,1, &
+    [rank+.25_dp,.25_dp,.25_dp],direction,10.0_dp,0.0_dp,2e-5_dp,330.0_dp, &
+    100,last_id,parcels,ledger,ok,liquids,fractions,masses)
+  call require(.not.ok.and.last_id==saved_last.and.all(ledger==0),'injection failure restores global IDs and ledger')
+  call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'injection failure preserves local inventories')
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)

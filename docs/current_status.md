@@ -85,7 +85,9 @@ feedback and application integration remain open. Collective 64-bit ID reservati
 now rejects overflow and inconsistent rank histories
 ([evidence](validation/spray-mpi-ids-20260916.md)). Collective computational splitting
 now uses these IDs while preserving component and KH inventories
-([evidence](validation/spray-mpi-split-20260916.md)).
+([evidence](validation/spray-mpi-split-20260916.md)). Collective cone injection now
+reserves IDs and retains mixed component budgets with rollback
+([evidence](validation/spray-mpi-injection-20260916.md)).
 
 ## Repository consolidation implemented
 

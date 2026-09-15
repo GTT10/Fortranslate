@@ -4,13 +4,117 @@ module spray_mpi_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_parcel_mod
-  use spray_mixture_mod, only: valid_component_inventory
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_breakup_mod, only: split_spray_parcels
   use spray_partition_mod
   implicit none
   private
-  public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels
+  public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
 contains
+  subroutine inject_mpi_cone_parcels(comm,liquid,total_mass,number,center,axis,speed,half_angle,diameter,temperature, &
+      maximum_parcels,last_id,parcels,injected_totals,ok,components,fractions,component_mass, &
+      diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: total_mass,center(3),axis(3),speed,half_angle,diameter,temperature
+    integer, intent(in) :: number,maximum_parcels
+    integer(int64), intent(inout) :: last_id
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), intent(out) :: injected_totals(:)
+    logical, intent(out) :: ok
+    type(spray_liquid), optional, intent(in) :: components(:)
+    real(dp), optional, intent(in) :: fractions(:)
+    real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), optional, intent(in) :: diameter_shape,diameter_min,diameter_max,diameter_std,nozzle_radius
+    character(len=*), optional, intent(in) :: diameter_weighting,diameter_distribution
+    type(spray_nozzle_model), optional, intent(in) :: nozzle_model
+    type(spray_parcel), allocatable :: candidate(:),born(:)
+    type(spray_liquid) :: material
+    real(dp), allocatable :: masses(:,:)
+    real(dp) :: rho,cp,e,ledger(size(injected_totals)),inventory(5)
+    integer :: p,c,nc,lo,hi,old_count,ierr
+    integer(int64) :: next_id,first_id
+    logical :: valid,agreed,mixed
+    ok=.false.;injected_totals=0;nc=0;mixed=present(components)
+    valid=allocated(parcels).and.maximum_parcels>=1.and.maximum_parcels<=1000000
+    valid=valid.and.number>=0.and.number<=1000000.and.last_id>=0.and.size(injected_totals)>=6
+    valid=valid.and.(mixed.eqv.present(fractions)).and.(mixed.eqv.present(component_mass))
+    if (present(component_mass)) valid=valid.and.allocated(component_mass)
+    if (.not.ieee_is_finite(total_mass)) valid=.false.
+    if (number==0.and.total_mass/=0) valid=.false.
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    old_count=size(parcels);valid=number<=maximum_parcels-old_count
+    material=liquid
+    if (mixed) then
+      nc=size(components)
+      valid=valid.and.nc>=1.and.nc<=16.and.size(fractions)==nc
+      valid=valid.and.all(shape(component_mass)==[nc,old_count])
+      if (valid) then
+        call liquid_mixture_properties(components,fractions,temperature,rho,cp,e,valid)
+        if (valid) then
+          material=components(1);material%density=rho;material%heat_capacity=cp
+          material%reference_temperature=temperature;material%reference_energy=e
+          material%density_model='constant';material%density_coefficients=0;material%density_temperature_range=0
+          material%heat_capacity_model='constant';material%heat_capacity_coefficients=0
+          material%heat_capacity_temperature_range=0;material%boiling_model='reject';material%critical_temperature=0
+        end if
+      end if
+    else
+      valid=valid.and.valid_spray_liquid(material)
+    end if
+    if (valid) then
+      do p=1,old_count
+        valid=valid.and.valid_spray_parcel(parcels(p)).and.parcels(p)%id<=last_id
+        if (p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+        if (mixed) valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
+      end do
+    end if
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(nc,lo,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(nc,hi,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.lo/=hi) return
+    next_id=last_id;first_id=0
+    call reserve_spray_ids(comm,number,next_id,first_id,valid)
+    if (.not.valid) return
+    allocate(born(0));ledger=0
+    if (number>0) call inject_cone_parcels(material,total_mass,number,first_id,center,axis,speed,half_angle,diameter, &
+      temperature,born,valid,diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution, &
+      diameter_std,nozzle_radius,nozzle_model)
+    if (valid) then
+      do p=1,size(born)
+        inventory=parcel_totals(born(p),material);ledger(1:5)=ledger(1:5)+inventory
+        if (mixed) then
+          do c=1,nc
+            if (components(c)%vapor_index>size(ledger)-5) then
+              valid=.false.;exit
+            end if
+            ledger(5+components(c)%vapor_index)=ledger(5+components(c)%vapor_index)+inventory(1)*fractions(c)
+          end do
+        else
+          if (material%vapor_index>size(ledger)-5) then
+            valid=.false.;exit
+          end if
+          ledger(5+material%vapor_index)=ledger(5+material%vapor_index)+inventory(1)
+        end if
+      end do
+    end if
+    valid=valid.and.all(ieee_is_finite(ledger))
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    candidate=[parcels,born]
+    if (mixed) then
+      allocate(masses(nc,size(candidate)));masses(:,:old_count)=component_mass
+      do p=1,size(born)
+        masses(:,old_count+p)=born(p)%mass*fractions
+      end do
+      call move_alloc(masses,component_mass)
+    end if
+    call move_alloc(candidate,parcels);last_id=next_id;injected_totals=ledger;ok=.true.
+  end subroutine
+
   subroutine split_mpi_spray_parcels(comm,parcels,maximum_multiplicity,maximum_parcels,last_id,ok,component_mass)
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)

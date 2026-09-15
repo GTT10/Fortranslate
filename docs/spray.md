@@ -1690,3 +1690,20 @@ caller-owned common convention; column counts must agree across ranks.
 This is computational splitting of represented drop counts, not aerodynamic
 breakup. MPI injection and distributed gas/film coupling remain to be connected.
 See [split evidence](validation/spray-mpi-split-20260916.md).
+
+### Collective cone injection
+
+`inject_mpi_cone_parcels` combines global ID reservation, the existing cone injector
+and a collective commit. Each rank supplies its own injected mass, count, position,
+velocity and size/nozzle options. Zero-count ranks supply zero mass. Optional common
+component tables and rank-local fractions create mixed droplets using density and
+energy evaluated at injection temperature. Component columns append with particles.
+Returned `injected_totals` are local mass, momentum, energy and gas-species amounts;
+the caller sums or records them as appropriate.
+
+A failed local geometry/property check or capacity check preserves every rank's
+particles, component matrix and shared ID mark, returning zero injection budgets.
+Successful injection appends increasing global IDs but does not automatically move
+particles to spatial owners; call migration after injection. Distributed scheduling
+and the MPI CFD application remain open. See
+[injection evidence](validation/spray-mpi-injection-20260916.md).
