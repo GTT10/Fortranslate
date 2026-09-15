@@ -1160,11 +1160,33 @@ still deposited at the beginning of its injection window, as in the existing
 schedule; this is not continuous-in-time particle creation. Zero-dose windows
 advance the schedule without generating parcels. Shared ports split each dose
 by their configured fractions and retain their own liquid/size/nozzle settings.
-The table currently uses the global/shared schedule; independent-port schedules
-remain constant-rate and cannot be combined with this table.
+The global table uses the shared schedule. Independent-port tables are configured
+separately below; a global table cannot be combined with independent mode.
 
 Table data enter checkpoint identity. Restart reconstructs both accumulated
 mass and the number of nonzero batches, including pauses, before accepting
 particle/event counts. Changing a knot or rate rejects restart. A zero point
 count preserves the previous constant-rate behavior. See
 [rate-profile checks](validation/spray-injection-profile-20260916.md).
+
+
+### Independent port rate histories
+
+With `independent_port_schedules=.true.`, each port may use
+`port_profile_points(16)` and corresponding columns of
+`port_profile_times(64,16)` / `port_profile_rates(64,16)`.
+A zero point count retains that port's constant `port_mass_flow_rates` value.
+A positive count (2..64) requires the corresponding constant rate to be zero.
+Table and constant-rate ports may coexist.
+
+Each table must cover its own `port_injection_starts`/`port_injection_ends`
+window, with increasing times and nonnegative rates in the same ranges as the
+global table. Unused points and ports must have zero table entries. Each event
+uses the exact integral over its own port interval; zero-dose events advance
+the schedule without creating parcels. Simultaneous events retain port-index
+ordering. The global table and these independent tables are mutually exclusive.
+
+Tables enter restart identity. Restart replays the merged port event order,
+reconstructs individual window doses and checks aggregate injected mass and
+nonzero-batch parcel counts. See
+[independent profile checks](validation/spray-port-rate-profiles-20260916.md).

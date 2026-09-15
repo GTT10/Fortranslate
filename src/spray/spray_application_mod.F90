@@ -66,6 +66,8 @@ contains
     real(dp) :: port_mass_flow_rates(16),port_injection_starts(16),port_injection_ends(16),port_injection_intervals(16)
     integer :: injection_port_count,parcels_per_event,port
     real(dp) :: injection_port_centers(3,16),injection_port_axes(3,16),injection_port_fractions(16)
+    integer :: port_profile_points(16),profile_batches
+    real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),profile_dose
     integer :: injection_profile_points,expected_batches,profile_event
     real(dp) :: injection_profile_times(64),injection_profile_rates(64),profile_start
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
@@ -167,6 +169,7 @@ contains
       independent_port_schedules,port_mass_flow_rates,port_injection_starts,port_injection_ends,port_injection_intervals, &
       injection_center,injection_axis,injection_speed,cone_angle, &
       injection_profile_points,injection_profile_times,injection_profile_rates, &
+      port_profile_points,port_profile_times,port_profile_rates, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
@@ -206,6 +209,7 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    port_profile_points=0;port_profile_times=0;port_profile_rates=0
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
@@ -404,6 +408,28 @@ contains
     end do
     if (.not.all(ieee_is_finite([port_mass_flow_rates,port_injection_starts,port_injection_ends, &
         port_injection_intervals]))) call fail('Nonfinite port schedule')
+    if (any(port_profile_points<0).or.any(port_profile_points>64).or.any(port_profile_points==1)) &
+      call fail('Port profile requires zero or 2..64 points')
+    if (.not.all(ieee_is_finite(port_profile_times)).or..not.all(ieee_is_finite(port_profile_rates))) &
+      call fail('Nonfinite port profile')
+    if (any(port_profile_points(injection_port_count+1:)/=0)) call fail('Unused port profile')
+    if (any(port_profile_points>0).and..not.independent_port_schedules) &
+      call fail('Port profiles require independent schedules')
+    do port=1,16
+      if (any(port_profile_times(port_profile_points(port)+1:,port)/=0).or. &
+          any(port_profile_rates(port_profile_points(port)+1:,port)/=0)) call fail('Unused port profile entries')
+      if (port_profile_points(port)==0) cycle
+      if (port_mass_flow_rates(port)/=0) call fail('Port profile conflicts with constant rate')
+      if (any(port_profile_times(:,port)<0).or.any(port_profile_times(:,port)>1000).or. &
+          any(port_profile_rates(:,port)<0).or.any(port_profile_rates(:,port)>1)) call fail('Invalid port profile values')
+      do i=2,port_profile_points(port)
+        if (port_profile_times(i,port)<=port_profile_times(i-1,port)) call fail('Port profile times must increase')
+      end do
+      if (port_profile_times(1,port)>port_injection_starts(port).or. &
+          port_profile_times(port_profile_points(port),port)<port_injection_ends(port)) &
+        call fail('Port profile does not cover injection window')
+      port_mass_flow_rates(port)=maxval(port_profile_rates(:port_profile_points(port),port))
+    end do
     if (independent_port_schedules) then
       if (injection_port_count==0.or.mass_flow_rate/=0) call fail('Independent schedules require ports and zero global flow')
       if (any(port_mass_flow_rates(injection_port_count+1:)/=0).or. &
@@ -764,6 +790,13 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (any(port_profile_points>0)) then
+      context=trim(context)//' port-injection-profiles-v1'
+      do port=1,injection_port_count
+        call append_reals([real(port_profile_points(port),dp), &
+          port_profile_times(:port_profile_points(port),port),port_profile_rates(:port_profile_points(port),port)])
+      end do
+    end if
     if (injection_profile_points>0) then
       context=trim(context)//' piecewise-linear-injection-v1'
       call append_reals([real(injection_profile_points,dp),injection_profile_times(:injection_profile_points), &
@@ -886,12 +919,17 @@ contains
       if (independent_port_schedules) then
         amount=0;port_events=0
         tolerance=32*epsilon(1.0_dp)*max(time,maximum_dt)
+        profile_batches=0
         do completed=1,event
           call next_port_event(next_event,selected_port)
           if (selected_port==0) call fail('Restart has an impossible port event')
           if (next_event>time+tolerance) call fail('Restart port event is in the future')
-          amount=amount+port_mass_flow_rates(selected_port)* &
+          profile_dose=port_mass_flow_rates(selected_port)* &
             min(port_injection_intervals(selected_port),port_injection_ends(selected_port)-next_event)
+          if (port_profile_points(selected_port)>0) profile_dose=profile_mass(next_event, &
+            min(port_injection_ends(selected_port),next_event+port_injection_intervals(selected_port)),selected_port)
+          amount=amount+profile_dose
+          if (profile_dose>0) profile_batches=profile_batches+1
           port_events(selected_port)=port_events(selected_port)+1
         end do
         if (abs(injected_totals(1)-amount)>1e-11_dp*max(amount,1e-30_dp)) call fail('Restart port mass ledger mismatch')
@@ -915,6 +953,7 @@ contains
       end if
       end if
       expected_batches=event
+      if (independent_port_schedules.and.any(port_profile_points>0)) expected_batches=profile_batches
       if (injection_profile_points>0) then
         expected_batches=0
         do profile_event=0,event-1
@@ -982,6 +1021,9 @@ contains
         do while(selected_port>0.and.next_event<=time+tolerance)
           amount=port_mass_flow_rates(selected_port)* &
             min(port_injection_intervals(selected_port),port_injection_ends(selected_port)-next_event)
+          if (port_profile_points(selected_port)>0) amount=profile_mass(next_event, &
+            min(port_injection_ends(selected_port),next_event+port_injection_intervals(selected_port)),selected_port)
+          if (amount>0) then
           if (size(parcels)+parcel_count>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
@@ -1003,6 +1045,7 @@ contains
             injected_totals(5+material%vapor_index)=injected_totals(5+material%vapor_index)+totals5(1)
           end do
           parcels=[parcels,new_parcels];deallocate(new_parcels)
+          end if
           event=event+1;port_events(selected_port)=port_events(selected_port)+1
           call next_port_event(next_event,selected_port)
         end do
@@ -1097,18 +1140,26 @@ contains
       end do
     end subroutine next_port_event
 
-    real(dp) function profile_mass(begin_time,end_time) result(mass)
+    real(dp) function profile_mass(begin_time,end_time,profile_port) result(mass)
       real(dp), intent(in) :: begin_time,end_time
+      integer, intent(in), optional :: profile_port
+      real(dp) :: profile_times(64),profile_rates(64)
+      integer :: points
       real(dp) :: lo,hi,flo,fhi,width
       integer :: knot
+      points=injection_profile_points;profile_times=injection_profile_times;profile_rates=injection_profile_rates
+      if (present(profile_port)) then
+        points=port_profile_points(profile_port)
+        profile_times=port_profile_times(:,profile_port);profile_rates=port_profile_rates(:,profile_port)
+      end if
       mass=0
-      do knot=1,injection_profile_points-1
-        lo=max(begin_time,injection_profile_times(knot));hi=min(end_time,injection_profile_times(knot+1))
+      do knot=1,points-1
+        lo=max(begin_time,profile_times(knot));hi=min(end_time,profile_times(knot+1))
         if (hi<=lo) cycle
-        width=injection_profile_times(knot+1)-injection_profile_times(knot)
-        flo=(lo-injection_profile_times(knot))/width;fhi=(hi-injection_profile_times(knot))/width
-        flo=(1-flo)*injection_profile_rates(knot)+flo*injection_profile_rates(knot+1)
-        fhi=(1-fhi)*injection_profile_rates(knot)+fhi*injection_profile_rates(knot+1)
+        width=profile_times(knot+1)-profile_times(knot)
+        flo=(lo-profile_times(knot))/width;fhi=(hi-profile_times(knot))/width
+        flo=(1-flo)*profile_rates(knot)+flo*profile_rates(knot+1)
+        fhi=(1-fhi)*profile_rates(knot)+fhi*profile_rates(knot+1)
         mass=mass+.5_dp*(hi-lo)*(flo+fhi)
       end do
     end function
