@@ -9,6 +9,8 @@ module spray_application_mod
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions, mixture_specific_gas_constant
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_primitive_to_conserved
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
+  use selected_composition_mod, only: resolve_selected_composition
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, valid_spray_boundary_faces
   use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
@@ -46,6 +48,11 @@ contains
     logical :: split_enabled
     logical :: breakup_enabled
     logical :: physical_boundaries
+    real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6),inflow_t(6),inlet_dt,face_dt,face_diffusivity
+    real(dp), allocatable :: inflow_state(:,:),inlet_x(:),inlet_y(:),inlet_cube(:,:,:,:)
+    real(dp) :: inlet_temperature(2,2,2),inflow_composition_mole_fractions(32)
+    character(len=24) :: inflow_composition_species(32)
+    integer :: inflow_composition_count,face
     character(len=32) :: boundary_faces(6)
     logical :: ok,exists
     character(len=24) :: mole_names(32),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
@@ -55,6 +62,8 @@ contains
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,breakup_model,surface_tension,liquid_viscosity, &
       maximum_multiplicity,maximum_parcels, &
+      inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
+      inflow_composition_species,inflow_composition_mole_fractions, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
@@ -65,6 +74,8 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    inflow_temperature=1200;inflow_pressure=101325;inflow_velocity=0
+    inflow_composition_count=0;inflow_composition_species="";inflow_composition_mole_fractions=0
     maximum_multiplicity=0;maximum_parcels=1000000
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     boundary_faces="periodic"
@@ -190,6 +201,46 @@ contains
         end do
       end do
     end do
+    allocate(inflow_state(nvar,6),inlet_x(size(species)),inlet_y(size(species)),inlet_cube(nvar,2,2,2))
+    inflow_state=0;inflow_t=0;inlet_dt=huge(1.0_dp);inlet_x=x
+    if (any(boundary_faces=='inflow')) then
+      if (inflow_composition_count/=0) then
+        call resolve_selected_composition('Spray inflow',inflow_composition_count,inflow_composition_species, &
+          inflow_composition_mole_fractions,species,inlet_x,ok,message)
+        if (.not.ok) call fail(trim(message))
+      end if
+      call mass_fractions_from_mole_fractions(species,inlet_x,inlet_y,ok)
+      if (.not.ok) call fail('Invalid inlet composition')
+      gas_constant=mixture_specific_gas_constant(species,inlet_y,ok)
+      if (.not.ok) call fail('Invalid inlet gas constant')
+      do face=1,6
+        if (boundary_faces(face)/='inflow') cycle
+        if (.not.all(ieee_is_finite([inflow_temperature(face),inflow_pressure(face),inflow_velocity(:,face)]))) &
+          call fail('Nonfinite inlet state')
+        if (min(inflow_temperature(face),inflow_pressure(face))<=0.or.maxval(abs(inflow_velocity(:,face)))>1e7_dp) &
+          call fail('Invalid inlet state')
+        primitive=0
+        primitive(1)=inflow_pressure(face)/(gas_constant*inflow_temperature(face))
+        primitive(2:4)=inflow_velocity(:,face);primitive(5)=inflow_pressure(face);primitive(6:)=inlet_y
+        call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound,ok)
+        if (.not.ok) call fail('Invalid inlet thermodynamics')
+        inlet_dt=min(inlet_dt,cfl/sum((abs(primitive(2:4))+sound)/spacing))
+        if (transport_enabled) then
+          do k=1,2
+            do j=1,2
+              do i=1,2
+                inlet_cube(:,i,j,k)=inflow_state(:,face)
+              end do
+            end do
+          end do
+          inlet_temperature=inflow_t(face)
+          call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2, &
+            spacing(1),spacing(2),spacing(3),.2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok)
+          if (.not.ok) call fail('Invalid inlet transport timestep')
+          inlet_dt=min(inlet_dt,face_dt)
+        end if
+      end do
+    end if
     allocate(parcels(0)); time=0.0_dp; steps=0; event=0; injected_totals=0.0_dp
     if (initial_liquid_mass>0.0_dp) then
       call inject_cone_parcels(liquid,initial_liquid_mass,parcel_count,1_int64,injection_center,injection_axis, &
@@ -232,6 +283,14 @@ contains
       context=trim(context)//' specular-outflow-v1'
       do i=1,6
         context=trim(context)//' '//trim(boundary_faces(i))
+      end do
+    end if
+    if (any(boundary_faces=='inflow')) then
+      context=trim(context)//' gas-reservoir-v1'
+      call append_reals(inlet_x)
+      do face=1,6
+        if (boundary_faces(face)=='inflow') &
+          call append_reals([inflow_temperature(face),inflow_pressure(face),inflow_velocity(:,face)])
       end do
     end if
     if (len_trim(restart_file)>0) then
@@ -331,7 +390,7 @@ contains
       call compute_reactive_cfl_timestep_3d(species,state,temperature,cells(1),cells(2),cells(3), &
         spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
       if (.not. ok) call fail('Cannot compute gas CFL step')
-      dt=min(maximum_dt,cfl_dt,final_time-time)
+      dt=min(maximum_dt,cfl_dt,inlet_dt,final_time-time)
       if (next_event>time) dt=min(dt,next_event-time)
       ! Avoid a spurious vanishing final step from accumulated roundoff.
       if (abs(final_time-(time+dt)) <= 8.0_dp*epsilon(1.0_dp)*max(abs(final_time),abs(time))) dt=final_time-time
@@ -339,7 +398,7 @@ contains
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
-          boundary_faces,boundary_step)
+          boundary_faces,boundary_step,inflow_state,inflow_t)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit

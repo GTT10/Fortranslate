@@ -2,6 +2,7 @@
 """Check coupled wall/outflow budgets and physical-boundary checkpoint replay."""
 import argparse
 import csv
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,18 +12,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--inflow', action='store_true')
     parser.add_argument('--sgs', type=float, default=0.0)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
-    template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d/wall_reflection.nml').read_text()
+    case = 'inflow.nml' if args.inflow else 'wall_reflection.nml'
+    template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.sgs:
         template = template.replace('&spray', '&spray\n shear_velocity=10,')
-    for kind in ('wall', 'outflow'):
+    for kind in (('inflow',) if args.inflow else ('wall', 'outflow')):
         def run(name, extra=''):
             tag = kind + '_' + name
-            config = template.replace("output_prefix='wall_reflection'", f"output_prefix='{tag}'")
+            config = re.sub(r"output_prefix='[^']*'", f"output_prefix='{tag}'", template)
             if kind == 'outflow':
                 config = config.replace("'slip_wall'", "'outflow'")
             config = config.replace('&spray', '&spray\n' + extra)
@@ -50,15 +53,20 @@ def main():
         assert abs(float(row['energy_error'])) < 1e-9 * energy
         for axis in ('px', 'py', 'pz'):
             assert abs(float(row[axis + '_error'])) < 1e-9 * mass * 100
-        if kind == 'outflow':
+        if kind == 'inflow':
+            assert float(row['boundary_mass']) > 0
+            with (work / (ref + '.gas.csv')).open() as stream:
+                assert sum(float(cell['rhoY_H2']) for cell in csv.DictReader(stream)) > 0
+        elif kind == 'outflow':
             assert int(row['live_parcels']) == 0
             assert float(row['boundary_mass']) < -5e-11
         else:
             assert int(row['live_parcels']) == 2
             assert float(row['boundary_pz']) < -1e-9
-        if kind == 'wall':
+        if kind in ('wall', 'inflow'):
             bad_input = (work / (resumed + '.nml')).read_text()
-            bad_input = bad_input.replace("'slip_wall'", "'outflow'")
+            bad_input = (bad_input.replace("'slip_wall'", "'outflow'") if kind == "wall"
+                         else bad_input.replace("inflow_temperature(1)=1100", "inflow_temperature(1)=1101"))
             bad_input = bad_input.replace(resumed, 'changed_faces')
             bad_path = work / 'changed_faces.nml'
             bad_path.write_text(bad_input)

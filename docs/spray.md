@@ -188,7 +188,7 @@ HXN/HMN/AMN. No claim of measured ignition, penetration or liquid length is made
 
 `boundary_faces(6)` in `&spray` uses x-low, x-high, y-low, y-high, z-low,
 z-high order. The default remains periodic. Supported alternatives are
-`outflow`, `slip_wall`, and stationary adiabatic `no_slip_wall` for gas; parcels
+`inflow`, `outflow`, `slip_wall`, and stationary adiabatic `no_slip_wall` for gas; parcels
 reflect specularly at either wall type. Opposing periodic faces must be paired.
 This ideal reflection is not a sticking, splash, film or impact model.
 
@@ -215,7 +215,7 @@ boundary. Set `smagorinsky_constant=.17` and `shear_velocity=10` in the example
 to exercise nonzero SGS. See [focused SGS evidence](validation/sgs-boundaries-20260915.md).
 
 This uses the existing constant-coefficient closure without wall damping or a
-wall function. Near-wall turbulence qualification, inlet reservoirs,
+wall function. Near-wall turbulence qualification, characteristic inlet models,
 moving/isothermal spray walls, AMR/EB/MPI parcels and physical wall-impact models
 remain open. Injection is still an internal parcel source.
 
@@ -273,3 +273,31 @@ addition to the ETAB and optional boundary state. The multiplicity/storage
 limits are included in the context; parcel CSVs gain `parent_id`. For example,
 add `maximum_multiplicity=1e7, maximum_parcels=1000` to `etab.nml`.
 See [splitting/restart evidence](validation/spray-splitting-20260915.md).
+
+
+## Gas reservoir inlet
+
+Use `boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic'`
+with `inflow_temperature(1)`, `inflow_pressure(1)` and `inflow_velocity(:,1)`
+for an x-low gas reservoir. The six-face ordering is unchanged. The defaults are
+1200 K, 101325 Pa and zero velocity; active inlet values must be finite and
+thermodynamically valid. The state is prescribed in ghost cells for hydro,
+molecular transport and SGS. This is not a characteristic nonreflecting inlet
+or a specified numerical mass-flux boundary.
+
+Inlet composition defaults to the initial gas mixture. Override it with
+`inflow_composition_count`, `inflow_composition_species(32)` and
+`inflow_composition_mole_fractions(32)`, using named species of the loaded
+mechanism. A shared inlet mixture applies to all inlet faces; thermodynamic
+state and velocity may differ by face. `inflow.nml` exercises an H2/O2/N2
+reservoir feeding initially pure N2 with evaporating water parcels, molecular
+transport and Cs=0.17.
+
+The timestep is capped by the inlet wave speed and, when enabled, its molecular
+diffusion limit. Gas convective/diffusive/SGS exchange joins the surface ledger;
+all active inlet settings and resolved composition bind checkpoint context.
+Particles crossing out through an inlet leave the system and are accounted as
+particle outflow. A gas inlet does not create parcels; parcel injection remains
+controlled by the existing separate source schedule.
+
+See [inlet restart and conservation evidence](validation/spray-inflow-20260915.md).

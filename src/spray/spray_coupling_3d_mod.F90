@@ -21,7 +21,7 @@ contains
     ok=.false.
     do a=1,6
       select case(trim(faces(a)))
-      case('periodic','outflow','slip_wall','no_slip_wall')
+      case('periodic','outflow','inflow','slip_wall','no_slip_wall')
       case default
         return
       end select
@@ -58,7 +58,7 @@ contains
         if (candidate%position(a)<lower(a)) face=2*a-1
         if (candidate%position(a)>=upper(a)) face=2*a
         if (face==0) exit
-        if (faces(face)=='outflow') then
+        if (faces(face)=='outflow'.or.faces(face)=='inflow') then
           candidate%mass=0
           candidate%position=max(lower,min(nearest(upper,-1.0_dp),candidate%position))
           exit

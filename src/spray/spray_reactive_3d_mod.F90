@@ -98,7 +98,7 @@ contains
 
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
-      reconstruction,riemann_solver,boundary_faces,boundary_change)
+      reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -115,6 +115,7 @@ contains
     type(spray_parcel), allocatable :: drops(:)
     character(len=*), intent(in), optional :: reconstruction,riemann_solver
     character(len=32) :: selected_reconstruction,selected_riemann
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -151,7 +152,8 @@ contains
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
         if (.not. local_ok) return
         ledger=ledger+exchange
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange)
+        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
+          inflow_state,inflow_temperature)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
@@ -165,13 +167,14 @@ contains
         call advance_reactive_full_3d(species,reactions,transport,candidate,temp,dims(1),dims(2),dims(3), &
           spacing(1),spacing(2),spacing(3),dt,trim(selected_riemann),.false.,rtol,atol,transport_enabled, &
           .true.,.true.,.true.,.false.,theta,local_ok,trim(selected_reconstruction),'mc',chemistry_integrator='implicit', &
-          boundary_faces=faces,boundary_change=exchange)
+          boundary_faces=faces,boundary_change=exchange,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
         if (.not. local_ok) then
           message='Hydro/molecular transport step rejected'; return
         end if
         ledger=ledger+exchange
       else
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange)
+        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
+          inflow_state,inflow_temperature)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if

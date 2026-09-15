@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_inflow_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --inflow
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_inflow_restart")
+  set_tests_properties(spray_inflow_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   add_test(NAME spray_split_restart COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_spray_etab.py"
     --split --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_split_restart")
   set_tests_properties(spray_split_restart PROPERTIES LABELS "spray" TIMEOUT 900)

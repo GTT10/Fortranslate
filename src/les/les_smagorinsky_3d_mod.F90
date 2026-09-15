@@ -36,11 +36,12 @@ contains
   end subroutine
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      boundary_faces,boundary_rate)
+      boundary_faces,boundary_rate,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     real(dp), intent(out) :: rhs(:,:,:,:),maximum_diffusivity
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_rate(:)
     character(len=32) :: faces(6)
@@ -56,7 +57,7 @@ contains
     if (.not.valid_reactive_boundaries_3d(faces)) return
     do f=1,6
       select case(trim(faces(f)))
-      case('periodic','outflow','slip_wall','no_slip_wall')
+      case('periodic','outflow','inflow','slip_wall','no_slip_wall')
       case default
         return
       end select
@@ -69,7 +70,8 @@ contains
     if (any(shape(rhs)/=shape(state)).or.any(n<2)) return
     allocate(ghost(size(state,1),dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
     allocate(grhs,mold=ghost)
-    call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,ok,viscous_wall=.true.)
+    call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,ok,viscous_wall=.true., &
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature)
     if (.not.ok) return
     call compute_les_face_rhs_3d(species,ghost,gt,spacing,cs,prt,sct,grhs,maximum_diffusivity,ok,n,rate)
     if (.not.ok) return
@@ -188,11 +190,12 @@ contains
   end subroutine
 
   subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok, &
-      boundary_faces,boundary_change)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),cs,prt,sct,dt
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     real(dp) :: rate1(size(state,1)),rate2(size(state,1))
@@ -209,7 +212,8 @@ contains
     if (dt < 0.0_dp .or. dt > 1.0e6_dp) return
     allocate(rhs,mold=state); allocate(stage,mold=state); allocate(candidate,mold=state)
     allocate(t1,mold=temperature); allocate(t2,mold=temperature)
-    call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1)
+    call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1, &
+      inflow_state,inflow_temperature)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     if (cs == 0.0_dp .or. dt == 0.0_dp) then
@@ -218,7 +222,8 @@ contains
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,dims(1),dims(2),dims(3),t1,local_ok)
     if (.not. local_ok) return
-    call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2)
+    call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2, &
+      inflow_state,inflow_temperature)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     candidate=0.5_dp*(state+stage+dt*rhs)

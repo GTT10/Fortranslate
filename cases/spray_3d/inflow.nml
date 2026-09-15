@@ -1,0 +1,18 @@
+! Prescribed gas reservoir with inert water parcels; SI units.
+&spray
+ cells=4,4,4, domain_length=.004,.004,.004,
+ boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic',
+ inflow_temperature(1)=1100,inflow_pressure(1)=101325,inflow_velocity(:,1)=200,0,0,
+ inflow_composition_count=3,
+ inflow_composition_species='H2','O2','N2',inflow_composition_mole_fractions=.02,.20,.78,
+ gas_temperature=900,gas_pressure=101325,
+ mole_names='N2','','',mole_amounts=1,0,0,
+ chemistry_enabled=.false.,transport_enabled=.true.,smagorinsky_constant=.17,
+ drag_enabled=.true.,heat_enabled=.true.,evaporation_enabled=.true.,
+ vapor_name='H2O',liquid_density=1000,liquid_cp=4184,
+ reference_temperature=373.15,reference_pressure=101325,latent_heat=2257000,
+ drop_temperature=330,drop_diameter=20e-6,initial_liquid_mass=1e-10,parcel_count=2,
+ injection_center=.001,.002,.002,injection_axis=1,0,0,injection_speed=10,cone_angle=0,
+ final_time=6e-7,maximum_dt=1e-7,
+ output_prefix='inflow'
+/
