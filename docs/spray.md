@@ -472,3 +472,23 @@ Zero pressure, malformed tables and unrepresentable logarithmic rates fail.
 The matrix, shape and bounds participate in MPI mechanism comparisons and
 AMR/EB checkpoint contexts. Existing reaction kinds retain their checkpoint
 layouts. See [the focused Chebyshev evidence](validation/chebyshev-20260915.md).
+
+## Lu n-dodecane gas mechanism
+
+`prepare_spray_reference.py --fuel dodecane` prepares the pinned 53-species,
+268-reaction Lu mechanism using the same source/license checks as the default
+methanol reference. Configure the selected bundle with its generated JSON and
+original YAML. The importer and runtime preserve finite Troe A values outside
+(0,1), including A=1, and signed T2; T1/T3 remain positive and the evaluated
+center must be positive and representable.
+
+The selected CVODE path now evaluates negative Newton trial concentrations
+through a nonnegative extension and matching Jacobian columns. Accepted states
+retain the previous composition, conservation and CVODE constraints. This
+allows trace species to approach zero during stiff ignition without rejecting
+the internal Newton iteration prematurely.
+
+A phi=0.5, 1100 K, 4 MPa constant-volume ignition case reaches 2478 K at 0.6 ms
+and agrees with Cantera. A separate short coupled case exercises this gas
+mechanism with water parcels and exact restart; it does not supply a liquid
+n-dodecane property model. See [commands and evidence](validation/dodecane-20260915.md).

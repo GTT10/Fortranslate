@@ -91,10 +91,8 @@ contains
       valid = .true.
       return
     end if
-    valid = parameters%alpha > 0.0_dp .and. parameters%alpha < 1.0_dp .and. &
-      parameters%temperature_3 > 0.0_dp .and. &
+    valid = parameters%temperature_3 > 0.0_dp .and. &
       parameters%temperature_1 > 0.0_dp .and. &
-      parameters%temperature_2 >= 0.0_dp .and. &
       all(ieee_is_finite([parameters%alpha, parameters%temperature_3, &
         parameters%temperature_1, parameters%temperature_2]))
   end function valid_troe_parameters
@@ -432,7 +430,11 @@ contains
     f_center = (1.0_dp - parameters%alpha) * &
       exp(-temperature / parameters%temperature_3) + &
       parameters%alpha * exp(-temperature / parameters%temperature_1)
-    if (parameters%temperature_2 > 0.0_dp) then
+    if (parameters%temperature_2 /= 0.0_dp) then
+      if (-parameters%temperature_2/temperature > logarithm_limit) then
+        ok=.false.
+        return
+      end if
       f_center = f_center + exp(-parameters%temperature_2 / temperature)
     end if
     end if

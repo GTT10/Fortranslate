@@ -13,7 +13,7 @@ def main():
     import numpy as np
     parser=argparse.ArgumentParser()
     parser.add_argument('--activated',action='store_true')
-    parser.add_argument('--model',choices=['sri','troe','lindemann','tsang'],default='sri')
+    parser.add_argument('--model',choices=['sri','troe','troe-lu','lindemann','tsang'],default='sri')
     parser.add_argument('--build-dir',type=Path,required=True)
     parser.add_argument('--work-dir',type=Path,required=True)
     args=parser.parse_args()
@@ -27,6 +27,7 @@ def main():
         'high-P-rate-constant':{'A':3e9,'b':.2,'Ea':2e6},
         'SRI':{'A':1.2,'B':500.,'C':1000.,'D':.8,'E':.1}}
     if args.model != 'sri': del data['SRI']
+    if args.model == 'troe-lu': data['Troe']={'A':1.9816,'T3':5383.7,'T1':4.2932,'T2':-.0795}
     if args.model == 'troe': data['Troe']={'A':.6,'T3':100.,'T1':1000.,'T2':5000.}
     if args.model == 'tsang': data['Tsang']={'A':.4,'B':1e-4}
     reaction=ct.Reaction.from_dict(data,parent)

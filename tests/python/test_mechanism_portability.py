@@ -92,6 +92,19 @@ class Lindemann(unittest.TestCase):
                                            'low-P-rate-constant': {'A': 2., 'b': 0., 'Ea': 0.},
                                            'high-P-rate-constant': {'A': 3., 'b': 0., 'Ea': 0.}})
 
+    def test_lu_troe_coefficients_preserved(self):
+        reaction = self.reaction()
+        reaction.reaction_type = 'falloff-Troe'
+        reaction.rate.sub_type = 'Troe'
+        for alpha in [0., 1., 1.9816]:
+            reaction.input_data['Troe'] = {'A': alpha, 'T3': 5383.7, 'T1': 4.2932, 'T2': -.0795}
+            record = ingest._reaction_record(reaction, ['A', 'B'], 0)
+            self.assertEqual(record['troe'], reaction.input_data['Troe'])
+            data = {'module_name': 'lu_mod', 'loader_name': 'load_lu', 'kernel_name': 'lu_rates',
+                    'symbol_prefix': 'lu', 'species': ['A', 'B'], 'reactions': [record]}
+            generator.validate(data)
+            self.assertIn('%troe%temperature_2 = -', generator.generate(data))
+
     def test_chebyshev_import_generation_and_invalid_tables(self):
         reaction = self.reaction()
         reaction.reaction_type = 'Chebyshev'

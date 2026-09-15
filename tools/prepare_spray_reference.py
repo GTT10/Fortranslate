@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fetch or verify the pinned, optional FFCM1_Red source and generate a bundle.
+"""Fetch or verify a pinned, optional fuel mechanism and generate a bundle.
 
 This never writes into mechanisms/ or changes a configured source. The
-reference mechanism is a methanol integration fixture, not a diesel mechanism.
+references are FFCM1_Red methanol and Lu n-dodecane gas mechanisms.
 """
 from __future__ import annotations
 
@@ -42,13 +42,16 @@ def preserve(path: Path, data: bytes) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fuel', choices=['methanol', 'dodecane'], default='methanol')
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--yaml', type=Path, help='Offline, exact pinned YAML bytes')
     parser.add_argument('--license', type=Path, help='Offline, exact upstream license bytes')
     args = parser.parse_args()
     if bool(args.yaml) != bool(args.license):
         parser.error('--yaml and --license must be supplied together')
-    manifest = json.loads((ROOT/'references/spray_methanol.json').read_text())
+    reference = 'spray_methanol.json' if args.fuel == 'methanol' else 'dodecane_lu.json'
+    manifest = json.loads((ROOT/'references'/reference).read_text())
+    prefix = manifest['symbol_prefix']
     data = {}
     for key, entry in manifest['files'].items():
         local = getattr(args, key)
@@ -67,15 +70,18 @@ def main() -> int:
     for key, entry in manifest['files'].items():
         preserve(out/entry['basename'], data[key])
     bundle = build_bundle(out/manifest['files']['yaml']['basename'], phase=manifest['phase'],
-                          module_name='ffcm1_red_mechanism_mod', symbol_prefix='ffcm1_red',
+                          module_name=prefix+'_mechanism_mod', symbol_prefix=prefix,
                           chemistry_integrator='implicit',
-                          description='Pinned FFCM1_Red: optional methanol spray verification, not diesel validation')
+                          description=('Pinned FFCM1_Red: optional methanol spray verification, not diesel validation'
+                                       if args.fuel == 'methanol' else
+                                       'Pinned Lu n-dodecane: gas chemistry integration, not experimental spray validation'))
     validate(bundle)
     if len(bundle['species']) != manifest['species_count'] or len(bundle['reactions']) != manifest['reaction_count']:
         raise ValueError('Unexpected normalized mechanism dimensions')
-    preserve(out/'ffcm1_red.json', (json.dumps(bundle, indent=2, sort_keys=True, allow_nan=False)+'\n').encode())
+    preserve(out/(prefix+'.json'), (json.dumps(bundle, indent=2, sort_keys=True, allow_nan=False)+'\n').encode())
     preserve(out/'upstream.json', (json.dumps(manifest, indent=2)+'\n').encode())
-    print(f"PASS: {out/'ffcm1_red.json'} (21 species, 124 reactions; source and license verified)")
+    print(f"PASS: {out/(prefix+'.json')} ({manifest['species_count']} species, "
+          f"{manifest['reaction_count']} reactions; source and license verified)")
     return 0
 
 

@@ -535,7 +535,7 @@ contains
         .not. associated(reduced_rhs)) return
     if (size(reduced_state) /= size(context%independent_species) .or. &
         size(reduced_rhs) /= size(context%independent_species)) return
-    call reconstruct_full_state( &
+    call reconstruct_trial_state( &
       context, reduced_state, context%full_state, state_ok)
     if (.not. state_ok) then
       status = 1_c_int
@@ -575,7 +575,7 @@ contains
     real(dp) :: recovered_temperature
     type(cvode_context_storage), pointer :: context
     logical :: state_ok
-    integer :: reduced_size
+    integer :: reduced_size, column
 
     status = -1_c_int
     call resolve_callback_context(user_data, context, state_ok)
@@ -585,7 +585,7 @@ contains
     if (.not. associated(reduced_state)) return
     reduced_size = size(context%independent_species)
     if (size(reduced_state) /= reduced_size) return
-    call reconstruct_full_state( &
+    call reconstruct_trial_state( &
       context, reduced_state, context%full_state, state_ok)
     if (.not. state_ok) then
       status = 1_c_int
@@ -604,6 +604,11 @@ contains
       FSUNDenseMatrix_Data(jacobian_matrix)
     if (.not. associated(matrix_values)) return
     matrix_values = real(context%jacobian, c_double)
+    ! The trial-state extension clips negative independent coordinates; its
+    ! derivative in those coordinates is zero. Accepted states are untouched.
+    do column=1,reduced_size
+      if (reduced_state(column)<0.0_c_double) matrix_values(:,column)=0.0_c_double
+    end do
     context%temperature_guess = recovered_temperature
     if (.not. ieee_is_finite(real(time, dp))) then
       status = -1_c_int
@@ -615,6 +620,23 @@ contains
     if (associated(FN_VGetArrayPointer(temporary_2))) continue
     if (associated(FN_VGetArrayPointer(temporary_3))) continue
   end function pelef_cvode_jacobian_callback
+
+  subroutine reconstruct_trial_state(context, reduced_state, full_state, ok)
+    type(cvode_context_storage), intent(in) :: context
+    real(c_double), intent(in) :: reduced_state(:)
+    real(dp), intent(out) :: full_state(:)
+    logical, intent(out) :: ok
+    real(c_double) :: nonnegative_state(size(reduced_state))
+
+    ! Newton iterates can leave the physical simplex before CVODE applies
+    ! its solution constraints. Extend the RHS to negative trial coordinates
+    ! without relaxing the accepted-state composition/conservation checks.
+    ok=all(ieee_is_finite(real(reduced_state,dp)))
+    full_state=0.0_dp
+    if (.not.ok) return
+    nonnegative_state=max(reduced_state,0.0_c_double)
+    call reconstruct_full_state(context,nonnegative_state,full_state,ok)
+  end subroutine reconstruct_trial_state
 
   subroutine reconstruct_full_state(context, reduced_state, full_state, ok)
     type(cvode_context_storage), intent(in) :: context

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Pele-Suite/PelePhysics.git",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "phase": "gas",
+  "symbol_prefix": "dodecane_lu",
+  "species_count": 53,
+  "reaction_count": 268,
+  "files": {
+    "yaml": {
+      "path": "Mechanisms/dodecane_lu/mechanism.yaml",
+      "basename": "dodecane_lu.yaml",
+      "git_blob": "d3344d263e6c1a1360c6ef520af1c90a9cd951f9",
+      "sha256": "8d3f5c76020972468f272113362b7ae788acd2c7fc0a8a10cbcd9760a01fb9d2"
+    },
+    "license": {
+      "path": "license.txt",
+      "basename": "PelePhysics-license.txt",
+      "sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2"
+    }
+  },
+  "note": "Pinned gas-phase n-dodecane integration reference. No liquid property model or experimental validation is provided."
+}

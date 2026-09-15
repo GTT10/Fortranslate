@@ -560,14 +560,11 @@ def validate(data: dict[str, Any]) -> None:
                 raise ValueError(f"{equation}: SRI requires sri-falloff type")
             troe = reaction.get("troe")
             if troe is not None:
-                alpha = finite_float(troe["A"], equation)
-                if not 0.0 < alpha < 1.0:
-                    raise ValueError(f"{equation}: invalid Troe A")
+                finite_float(troe["A"], equation)
                 if (finite_float(troe["T3"], equation) <= 0.0 or
                         finite_float(troe["T1"], equation) <= 0.0):
                     raise ValueError(f"{equation}: invalid Troe temperatures")
-                if finite_float(troe.get("T2", 0.0), equation) < 0.0:
-                    raise ValueError(f"{equation}: invalid Troe T2")
+                finite_float(troe.get("T2", 0.0), equation)
         else:
             validate_arrhenius(reaction["arrhenius"], equation)
         if reaction_type in ({"three-body"} | FALLOFF_TYPES):

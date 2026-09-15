@@ -545,10 +545,8 @@ def _troe_record(raw: Mapping[str, Any], equation: str) -> dict[str, float] | No
         "A": _as_float(values["A"], f"{equation} Troe A"),
         "T3": _positive(values["T3"], f"{equation} Troe T3"),
         "T1": _positive(values["T1"], f"{equation} Troe T1"),
-        "T2": _nonnegative(values.get("T2", 0.0), f"{equation} Troe T2"),
+        "T2": _as_float(values.get("T2", 0.0), f"{equation} Troe T2"),
     }
-    if not 0.0 < result["A"] < 1.0:
-        raise ValueError(f"{equation} Troe A: expected a value between zero and one")
     return result
 
 
