@@ -511,6 +511,52 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_nozzle_profiles_and_swirl(self):
+        base = ("parcel_count=8,nozzle_radius=3e-4,nozzle_profile='hollow',swirl_angle=.3,hollow_spread=.1,"
+                "injection_speed=10,cone_angle=.2,injection_center=.002,.002,.002,injection_axis=0,0,1,"
+                "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.002,.002,.003,.002,.002,"
+                 "injection_port_axes=0,0,1,0,0,1,injection_port_fractions=.5,.5,"
+                 "port_nozzle_profiles='solid','hollow',port_swirl_angles=-.4,.4,port_hollow_spreads=0,.1,")
+        independent = (ports+"initial_liquid_mass=0,independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                       "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                       "port_injection_intervals=2e-7,3e-7,")
+        for index, schedule in enumerate(['', ports, independent]):
+            name = f'profile{index}'
+            settings = base+schedule
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            for start in range(0, len(rows), 8):
+                batch = rows[start:start+8]
+                solid = index > 0 and float(batch[0]['x']) < .002
+                center_x = .002 if index == 0 else (.001 if solid else .003)
+                swirl = .3 if index == 0 else (-.4 if solid else .4)
+                for q, row in enumerate(batch):
+                    u,v,w = [float(row[k]) for k in ['u','v','w']]
+                    age = (float(row['z'])-.002)/w
+                    dx,dy = float(row['x'])-age*u-center_x, float(row['y'])-age*v-.002
+                    radius = math.hypot(dx,dy)
+                    theta = .2*(q+.5)/8 if solid else .2+.1*((q+.5)/8-.5)
+                    self.assertAlmostEqual(radius/3e-4, (q+.5)/8 if solid else 1, delta=5e-14)
+                    self.assertAlmostEqual(w/10, math.cos(theta), delta=2e-14)
+                    self.assertAlmostEqual(math.sqrt(u*u+v*v+w*w), 10, delta=2e-13)
+                    self.assertAlmostEqual((dx*u+dy*v)/radius, 10*math.sin(theta)*math.cos(swirl), delta=2e-12)
+                    self.assertAlmostEqual((dx*v-dy*u)/radius, 10*math.sin(theta)*math.sin(swirl), delta=2e-12)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('swirl_angle=.3', 'swirl_angle=.35'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('profile_zero_radius', common=base+'nozzle_radius=0,', fail=True)
+        self.run_case('profile_bad_angle', common=base+'swirl_angle=4,', fail=True)
+        self.run_case('profile_unused', common=base+"port_nozzle_profiles(1)='solid',", fail=True)
+
     def test_finite_nozzle_restart(self):
         base = ("parcel_count=8,nozzle_radius=3e-4,injection_speed=0,drag_enabled=.false.,"
                 "heat_enabled=.false.,evaporation_enabled=.false.,")

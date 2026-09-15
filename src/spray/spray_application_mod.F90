@@ -77,6 +77,11 @@ contains
     character(len=16) :: vapor_pressure_model
     real(dp) :: antoine_coefficients(4),antoine_temperature_range(2)
     real(dp) :: reference_temperature,reference_pressure,latent_heat
+    character(len=16) :: nozzle_profile,port_nozzle_profiles(16)
+    real(dp) :: swirl_angle,hollow_spread,port_swirl_angles(16),port_hollow_spreads(16)
+    type(spray_nozzle_model) :: nozzle_model
+    type(spray_nozzle_model), allocatable :: port_nozzle_models(:)
+    logical :: port_nozzle_overrides
     real(dp) :: nozzle_radius,port_nozzle_radii(16)
     logical :: port_radius_overrides
     character(len=16) :: diameter_weighting,diameter_distribution
@@ -139,6 +144,7 @@ contains
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,diameter_weighting,initial_liquid_mass,parcel_count, &
       diameter_distribution,diameter_std,nozzle_radius,port_nozzle_radii, &
+      nozzle_profile,swirl_angle,hollow_spread,port_nozzle_profiles,port_swirl_angles,port_hollow_spreads, &
       port_diameter_distributions,port_diameter_weightings,port_diameter_stds, &
       port_diameter_shapes,port_diameter_minima,port_diameter_maxima, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
@@ -197,6 +203,8 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
+    port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
     nozzle_radius=0;port_nozzle_radii=-1
     port_diameter_distributions='';port_diameter_weightings=''
     port_diameter_stds=-1;port_diameter_shapes=-1;port_diameter_minima=-1;port_diameter_maxima=-1
@@ -310,6 +318,20 @@ contains
     end if
     if (injection_port_count<0.or.injection_port_count>16) call fail('Invalid injection port count')
     if (any(port_nozzle_radii(injection_port_count+1:)/=-1)) call fail('Unused port nozzle radius')
+    nozzle_model=spray_nozzle_model(nozzle_profile,swirl_angle,hollow_spread)
+    if (.not.all(ieee_is_finite([swirl_angle,hollow_spread,port_swirl_angles,port_hollow_spreads]))) &
+      call fail('Nonfinite nozzle model')
+    if (any(port_nozzle_profiles(injection_port_count+1:)/='').or. &
+        any(port_swirl_angles(injection_port_count+1:)/=-999).or. &
+        any(port_hollow_spreads(injection_port_count+1:)/=-1)) call fail('Unused port nozzle model')
+    port_nozzle_overrides=any(port_nozzle_profiles/='').or.any(port_swirl_angles/=-999).or.any(port_hollow_spreads/=-1)
+    allocate(port_nozzle_models(injection_port_count))
+    do port=1,injection_port_count
+      if (port_nozzle_profiles(port)=='') port_nozzle_profiles(port)=nozzle_profile
+      if (port_swirl_angles(port)==-999) port_swirl_angles(port)=swirl_angle
+      if (port_hollow_spreads(port)==-1) port_hollow_spreads(port)=hollow_spread
+      port_nozzle_models(port)=spray_nozzle_model(port_nozzle_profiles(port),port_swirl_angles(port),port_hollow_spreads(port))
+    end do
     port_radius_overrides=any(port_nozzle_radii/=-1)
     do port=1,injection_port_count
       if (port_nozzle_radii(port)==-1) port_nozzle_radii(port)=nozzle_radius
@@ -721,6 +743,14 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (nozzle_profile/='legacy'.or.swirl_angle/=0.or.hollow_spread/=0.or.port_nozzle_overrides) then
+      context=trim(context)//' nozzle-profile-v1 '//trim(nozzle_profile)
+      call append_reals([swirl_angle,hollow_spread])
+      do port=1,injection_port_count
+        context=trim(context)//' '//trim(port_nozzle_models(port)%profile)
+        call append_reals([port_nozzle_models(port)%swirl,port_nozzle_models(port)%spread])
+      end do
+    end if
     if (nozzle_radius>0.or.port_radius_overrides) then
       context=trim(context)//' finite-nozzle-radius-v1'
       call append_reals([nozzle_radius,port_nozzle_radii(:injection_port_count)])
@@ -925,7 +955,8 @@ contains
             injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
             new_parcels,ok,port_sizes(selected_port)%shape,port_sizes(selected_port)%minimum, &
             port_sizes(selected_port)%maximum,port_sizes(selected_port)%weighting, &
-            port_sizes(selected_port)%distribution,port_sizes(selected_port)%std,port_nozzle_radii(selected_port))
+            port_sizes(selected_port)%distribution,port_sizes(selected_port)%std,port_nozzle_radii(selected_port), &
+            port_nozzle_models(selected_port))
           if (.not.ok) call fail('Independent port injection failed')
           if (multi_material) new_parcels%material_id=selected_port
           do i=1,size(new_parcels)
@@ -1046,7 +1077,7 @@ contains
       if (injection_port_count==0) then
         call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,injection_speed, &
           cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
-          diameter_weighting,diameter_distribution,diameter_std,nozzle_radius)
+          diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
@@ -1054,7 +1085,7 @@ contains
           injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
           materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes,nozzle_radius, &
-          port_nozzle_radii(:injection_port_count))
+          port_nozzle_radii(:injection_port_count),nozzle_model,port_nozzle_models)
       end if
     end subroutine inject_ports
     subroutine fail(text)

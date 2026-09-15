@@ -25,6 +25,10 @@ module spray_parcel_mod
     character(len=16) :: heat_capacity_model='constant'
     real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
   end type
+  type, public :: spray_nozzle_model
+    character(len=16) :: profile='legacy'
+    real(dp) :: swirl=0,spread=0
+  end type
   type, public :: spray_size_options
     character(len=16) :: distribution='weibull',weighting='mass'
     real(dp) :: std=0,shape=0,minimum=1e-12_dp,maximum=1
@@ -559,8 +563,11 @@ contains
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
       port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting, &
-      diameter_distribution,diameter_std,port_size_options,nozzle_radius,port_nozzle_radii)
+      diameter_distribution,diameter_std,port_size_options,nozzle_radius,port_nozzle_radii, &
+      nozzle_model,port_nozzle_models)
     type(spray_liquid), intent(in) :: liquid
+    type(spray_nozzle_model), intent(in), optional :: nozzle_model,port_nozzle_models(:)
+    type(spray_nozzle_model) :: local_nozzle
     real(dp), intent(in), optional :: nozzle_radius,port_nozzle_radii(:)
     real(dp) :: local_radius
     type(spray_size_options), intent(in), optional :: port_size_options(:)
@@ -609,6 +616,9 @@ contains
     if (present(port_nozzle_radii)) then
       if (size(port_nozzle_radii)/=ports) return
     end if
+    if (present(port_nozzle_models)) then
+      if (size(port_nozzle_models)/=ports) return
+    end if
     total=ports*number
     if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
     allocate(candidate(total))
@@ -619,6 +629,9 @@ contains
       if (present(port_diameters)) local_diameter=port_diameters(port)
       if (present(port_temperatures)) local_temperature=port_temperatures(port)
       if (present(port_angles)) local_angle=port_angles(port)
+      local_nozzle=spray_nozzle_model()
+      if (present(nozzle_model)) local_nozzle=nozzle_model
+      if (present(port_nozzle_models)) local_nozzle=port_nozzle_models(port)
       local_radius=0
       if (present(nozzle_radius)) local_radius=nozzle_radius
       if (present(port_nozzle_radii)) local_radius=port_nozzle_radii(port)
@@ -628,11 +641,12 @@ contains
         call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
           centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
           port_size_options(port)%shape,port_size_options(port)%minimum,port_size_options(port)%maximum, &
-          port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std,local_radius)
+          port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std, &
+          local_radius,local_nozzle)
       else
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
-        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,local_radius)
+        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,local_radius,local_nozzle)
       end if
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
@@ -644,12 +658,15 @@ contains
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
       half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max, &
-      diameter_weighting,diameter_distribution,diameter_std,nozzle_radius)
+      diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass, center(3), axis(3), speed, half_angle, diameter, temperature
     integer, intent(in) :: number
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
+    type(spray_nozzle_model), intent(in), optional :: nozzle_model
+    type(spray_nozzle_model) :: model
+    real(dp) :: direction_angle,spread_angle
     real(dp), intent(in), optional :: nozzle_radius
     real(dp) :: radius,radial_position,position(3)
     logical, intent(out) :: ok
@@ -685,6 +702,13 @@ contains
     if (present(nozzle_radius)) radius=nozzle_radius
     if (.not.ieee_is_finite(radius)) return
     if (radius<0.or.radius>1e9_dp) return
+    model=spray_nozzle_model()
+    if (present(nozzle_model)) model=nozzle_model
+    if (model%profile/='legacy'.and.model%profile/='solid'.and.model%profile/='hollow') return
+    if (.not.all(ieee_is_finite([model%swirl,model%spread]))) return
+    if (abs(model%swirl)>pi.or.model%spread<0.or.model%spread>pi) return
+    if (model%profile/='hollow'.and.model%spread/=0) return
+    if (model%profile/='legacy'.and.radius<=0) return
     weighting='mass'
     if (present(diameter_weighting)) then
       if (diameter_weighting/='mass'.and.diameter_weighting/='number') return
@@ -812,15 +836,23 @@ contains
       ! Deterministic equal-solid-angle quadrature, not a stochastic turbulence model.
       cosine=1.0_dp-(1.0_dp-cos(half_angle))*(real(i,dp)-0.5_dp)/real(number,dp)
       sine=sqrt(max(0.0_dp,1.0_dp-cosine*cosine))
+      if (model%profile/='legacy') then
+        spread_angle=half_angle*(real(i,dp)-.5_dp)/real(number,dp)
+        if (model%profile=='hollow') spread_angle=half_angle+ &
+          model%spread*((real(i,dp)-.5_dp)/real(number,dp)-.5_dp)
+        cosine=cos(spread_angle);sine=sin(spread_angle)
+      end if
       angle=2.0_dp*pi*modulo(real(first_id-1_int64+int(i,int64),dp)*0.6180339887498949_dp,1.0_dp)
       position=center
       if (radius>0) then
         ! SprayInjection.H samples radius linearly, not uniformly in disk area.
         radial_position=radius*(real(i,dp)-.5_dp)/real(number,dp)
+        if (model%profile=="hollow") radial_position=radius
         position=center+radial_position*(cos(angle)*e1+sin(angle)*e2)
       end if
+      direction_angle=angle+model%swirl
       parcels(i)=spray_parcel(first_id+int(i-1,int64),position, &
-        speed*(cosine*ez+sine*(cos(angle)*e1+sin(angle)*e2)),m,temperature,weight)
+        speed*(cosine*ez+sine*(cos(direction_angle)*e1+sin(direction_angle)*e2)),m,temperature,weight)
       if (.not. valid_spray_parcel(parcels(i))) then
         deallocate(parcels); return
       end if

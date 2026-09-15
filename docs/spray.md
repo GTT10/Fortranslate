@@ -1114,6 +1114,33 @@ geometry rejects restart, while default point contexts remain unchanged.
 
 The Fortran injectors accept optional `nozzle_radius` and, for multi-port use,
 `port_nozzle_radii` (complete values, no inheritance sentinel). This ports
-finite outlet geometry and radial sampling; hollow jets, swirl, time-varying
-geometry and reference random trajectories remain open. See
+finite outlet geometry and radial sampling. Hollow and swirl options are below;
+time-varying geometry and reference random trajectories remain open. See
 [geometry/restart checks](validation/spray-nozzle-20260916.md).
+
+
+### Solid/hollow nozzle profiles and swirl
+
+`nozzle_profile='legacy'` retains the original equal-solid-angle velocity cone.
+`'solid'` selects the source's linear relation between radius fraction q and
+velocity inclination: r=R*q and theta=`cone_angle`*q. `'hollow'` places all
+parcels at r=R and uses theta=`cone_angle`+`hollow_spread`*(q-.5). Both new
+profiles require positive nozzle radius. Here q=(i-.5)/N, a deterministic
+midpoint replacement for the source's random samples. Hollow inclination
+spread defaults to zero and is allowed in [0,pi] radians; it can produce
+negative or backward inclinations for sufficiently wide spreads, as in the
+source. Non-hollow profiles require zero `hollow_spread`.
+
+`swirl_angle` rotates velocity azimuth relative to the outlet position azimuth
+without changing speed or axial velocity. It defaults to zero and must lie in
+[-pi,pi] radians. All these application angles are radians; the upstream jet
+input uses degrees. `cone_angle` remains a half-angle.
+
+Per-port overrides are `port_nozzle_profiles(16)` (blank inherits),
+`port_swirl_angles(16)` (-999 inherits), and `port_hollow_spreads(16)`
+(-1 inherits). Inheritance is independent: a solid override under a hollow
+global profile must explicitly clear any inherited spread. The selectors and
+angles enter restart identity. Existing default contexts are unchanged.
+The Fortran injectors accept optional `spray_nozzle_model` records, globally
+or as a complete array per port. See
+[profile/swirl checks](validation/spray-nozzle-profile-20260916.md).

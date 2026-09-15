@@ -9,8 +9,12 @@
     {
       "path": "Source/Spray/SprayJet.H",
       "sha256": "2036c604a5c076da258a50f2a1dd2375b2c19504bb3c6117522cc4fce78fbd1d"
+    },
+    {
+      "path": "Source/Spray/SprayJet.cpp",
+      "sha256": "7d806d234c3a4cfc45e75bcee779262b91f62101e4bd7179b2019865b4650b67"
     }
   ],
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Circular outlet in the plane normal to the jet axis, linear radial sampling; deterministic quadrature and existing velocity-cone model retained."
+  "scope": "Circular solid/hollow outlet, radial or hollow spread and azimuthal swirl; deterministic quadrature, with legacy velocity cone retained as default."
 }
