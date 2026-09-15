@@ -1088,3 +1088,32 @@ changed settings reject restart. The Fortran multi-port API accepts an optional
 `spray_size_options` array, one complete record per port. This changes size
 statistics, without requiring distinct liquid material IDs.
 See [per-port checks](validation/spray-port-sizes-20260916.md).
+
+
+### Finite circular nozzle outlets
+
+`nozzle_radius` defaults to zero (point injection). A positive value in meters
+places injection positions in the circular outlet plane perpendicular to the
+specified injection axis. `port_nozzle_radii(16)` defaults to -1, inheriting the
+global radius; zero explicitly selects a point outlet for that port.
+
+Following pinned `SprayInjection.H`, the radius fraction is sampled linearly:
+`r/R=(i-.5)/N`. This is uniform in radius, not uniform in disk area. Azimuth uses
+the existing deterministic ID-based sequence and the same transverse basis as
+the velocity cone. Each injected batch retains its previous mass and velocity
+rules. The nozzle is a parcel source; it does not carve a gas inflow opening
+or replace gas boundary conditions.
+
+The application checks the entire disk's Cartesian extents before running:
+`extent_j=R*sqrt(1-axis_unit_j**2)`. The lower edge may touch zero; the upper
+edge must remain strictly below the domain extent. This applies even with
+periodic gas boundaries. Negative/nonfinite radii and unused port overrides
+are rejected. Initial, shared and independently scheduled injection all use
+the resolved radii. Positive/overridden radii enter restart identity; changed
+geometry rejects restart, while default point contexts remain unchanged.
+
+The Fortran injectors accept optional `nozzle_radius` and, for multi-port use,
+`port_nozzle_radii` (complete values, no inheritance sentinel). This ports
+finite outlet geometry and radial sampling; hollow jets, swirl, time-varying
+geometry and reference random trajectories remain open. See
+[geometry/restart checks](validation/spray-nozzle-20260916.md).

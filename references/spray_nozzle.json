@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "sources": [
+    {
+      "path": "Source/Spray/SprayInjection.H",
+      "sha256": "b59f5d90f829f919bfb13009d364e1b4d757054409002893a5466647964651e1"
+    },
+    {
+      "path": "Source/Spray/SprayJet.H",
+      "sha256": "2036c604a5c076da258a50f2a1dd2375b2c19504bb3c6117522cc4fce78fbd1d"
+    }
+  ],
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Circular outlet in the plane normal to the jet axis, linear radial sampling; deterministic quadrature and existing velocity-cone model retained."
+}

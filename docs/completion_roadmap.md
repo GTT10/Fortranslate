@@ -30,7 +30,7 @@ merely because the repository has been consolidated.
 
 The opt-in regular 3D path now connects coexisting single-component liquid populations selected per port, conservative
 mass/momentum/total-energy exchange, drag/heating/evaporation, timed cone
-injection with up to 16 independently configured ports, shared or independent schedules and optional per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared diameters, deviatoric Smagorinsky and coupled checkpoint/restart to the existing
+injection from point or finite circular outlets with up to 16 independently configured ports, shared or independent schedules and optional per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared diameters, deviatoric Smagorinsky and coupled checkpoint/restart to the existing
 gas solver. Cell-local CVODE is connected to this CFD path, with a pinned
 FFCM1_Red liquid-methanol burn fixture and independent Cantera gas-only oracles.
 Chemical labels, single-interval NASA7 and classified Lindemann/SRI/Tsang, chemically activated, PLOG and Chebyshev ingestion are

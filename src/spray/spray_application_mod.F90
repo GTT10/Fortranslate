@@ -77,6 +77,8 @@ contains
     character(len=16) :: vapor_pressure_model
     real(dp) :: antoine_coefficients(4),antoine_temperature_range(2)
     real(dp) :: reference_temperature,reference_pressure,latent_heat
+    real(dp) :: nozzle_radius,port_nozzle_radii(16)
+    logical :: port_radius_overrides
     character(len=16) :: diameter_weighting,diameter_distribution
     character(len=16) :: port_diameter_distributions(16),port_diameter_weightings(16)
     real(dp) :: port_diameter_stds(16),port_diameter_shapes(16),port_diameter_minima(16),port_diameter_maxima(16)
@@ -136,7 +138,7 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,diameter_weighting,initial_liquid_mass,parcel_count, &
-      diameter_distribution,diameter_std, &
+      diameter_distribution,diameter_std,nozzle_radius,port_nozzle_radii, &
       port_diameter_distributions,port_diameter_weightings,port_diameter_stds, &
       port_diameter_shapes,port_diameter_minima,port_diameter_maxima, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
@@ -195,6 +197,7 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    nozzle_radius=0;port_nozzle_radii=-1
     port_diameter_distributions='';port_diameter_weightings=''
     port_diameter_stds=-1;port_diameter_shapes=-1;port_diameter_minima=-1;port_diameter_maxima=-1
     diameter_distribution='weibull';diameter_std=0
@@ -297,11 +300,22 @@ contains
       if (injection_end<=injection_start) call fail('Nonzero injection requires a nonempty time window')
       if ((injection_end-injection_start)/injection_interval>1000000.0_dp) call fail('Too many injection events')
     end if
+    if (.not.all(ieee_is_finite([nozzle_radius,port_nozzle_radii]))) call fail('Nonfinite nozzle radius')
+    if (nozzle_radius<0.or.nozzle_radius>1e9_dp) call fail('Invalid nozzle radius')
     if (injection_port_count==0) then
+      if (.not.nozzle_inside_domain(injection_center,injection_axis,nozzle_radius)) &
+        call fail('Nozzle disk outside domain or invalid axis')
       if (any(injection_center<0.0_dp) .or. any(injection_center>=domain_length)) &
         call fail('Injection center must lie in the domain')
     end if
     if (injection_port_count<0.or.injection_port_count>16) call fail('Invalid injection port count')
+    if (any(port_nozzle_radii(injection_port_count+1:)/=-1)) call fail('Unused port nozzle radius')
+    port_radius_overrides=any(port_nozzle_radii/=-1)
+    do port=1,injection_port_count
+      if (port_nozzle_radii(port)==-1) port_nozzle_radii(port)=nozzle_radius
+      if (.not.nozzle_inside_domain(injection_port_centers(:,port),injection_port_axes(:,port),port_nozzle_radii(port))) &
+        call fail('Port nozzle disk outside domain or invalid radius/axis')
+    end do
     if (.not.all(ieee_is_finite(injection_port_centers)).or..not.all(ieee_is_finite(injection_port_axes)).or. &
         .not.all(ieee_is_finite(injection_port_fractions))) call fail('Nonfinite injection ports')
     if (any(injection_port_centers(:,injection_port_count+1:)/=0).or. &
@@ -707,6 +721,10 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (nozzle_radius>0.or.port_radius_overrides) then
+      context=trim(context)//' finite-nozzle-radius-v1'
+      call append_reals([nozzle_radius,port_nozzle_radii(:injection_port_count)])
+    end if
     if (port_size_overrides) then
       context=trim(context)//' port-diameter-distributions-v1'
       do port=1,injection_port_count
@@ -907,7 +925,7 @@ contains
             injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
             new_parcels,ok,port_sizes(selected_port)%shape,port_sizes(selected_port)%minimum, &
             port_sizes(selected_port)%maximum,port_sizes(selected_port)%weighting, &
-            port_sizes(selected_port)%distribution,port_sizes(selected_port)%std)
+            port_sizes(selected_port)%distribution,port_sizes(selected_port)%std,port_nozzle_radii(selected_port))
           if (.not.ok) call fail('Independent port injection failed')
           if (multi_material) new_parcels%material_id=selected_port
           do i=1,size(new_parcels)
@@ -1007,6 +1025,18 @@ contains
       end do
     end subroutine next_port_event
 
+    logical function nozzle_inside_domain(center,axis,radius) result(valid)
+      real(dp), intent(in) :: center(3),axis(3),radius
+      real(dp) :: normal(3),extent(3)
+      valid=.false.
+      if (.not.all(ieee_is_finite([center,axis,radius]))) return
+      if (radius<0.or.radius>1e9_dp.or.maxval(abs(axis))>1e9_dp) return
+      if (norm2(axis)<=1e-12_dp) return
+      normal=axis/norm2(axis)
+      extent=radius*sqrt(max(0.0_dp,1-normal**2))
+      valid=all(center-extent>=0).and.all(center+extent<domain_length)
+    end function
+
     subroutine inject_ports(mass,number,id,result,success)
       real(dp), intent(in) :: mass
       integer, intent(in) :: number
@@ -1016,14 +1046,15 @@ contains
       if (injection_port_count==0) then
         call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,injection_speed, &
           cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
-          diameter_weighting,diameter_distribution,diameter_std)
+          diameter_weighting,diameter_distribution,diameter_std,nozzle_radius)
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
           injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
           injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
-          materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes)
+          materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes,nozzle_radius, &
+          port_nozzle_radii(:injection_port_count))
       end if
     end subroutine inject_ports
     subroutine fail(text)

@@ -511,6 +511,47 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_finite_nozzle_restart(self):
+        base = ("parcel_count=8,nozzle_radius=3e-4,injection_speed=0,drag_enabled=.false.,"
+                "heat_enabled=.false.,evaporation_enabled=.false.,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.002,.002,.003,.002,.002,"
+                 "injection_port_axes=0,0,1,1,0,0,injection_port_fractions=.5,.5,port_nozzle_radii=2e-4,4e-4,")
+        independent = (ports+"initial_liquid_mass=0,independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                       "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                       "port_injection_intervals=2e-7,3e-7,")
+        for index, schedule in enumerate(["injection_center=.002,.002,.002,injection_axis=1,2,3,", ports, independent]):
+            name = f'nozzle{index}'
+            settings = base+schedule
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            for start in range(0, len(rows), 8):
+                batch = rows[start:start+8]
+                if index == 0:
+                    center, axis, radius = [.002]*3, [1,2,3], 3e-4
+                elif float(batch[0]['x']) < .002:
+                    center, axis, radius = [.001,.002,.002], [0,0,1], 2e-4
+                else:
+                    center, axis, radius = [.003,.002,.002], [1,0,0], 4e-4
+                for q, row in enumerate(batch):
+                    delta = [float(row[k])-center[j] for j, k in enumerate(['x','y','z'])]
+                    self.assertLess(abs(sum(d*a for d,a in zip(delta,axis))), 1e-17)
+                    self.assertAlmostEqual(math.sqrt(sum(d*d for d in delta))/radius, (q+.5)/8, delta=2e-14)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            changed = settings.replace('radius=3e-4', 'radius=3.1e-4') if index == 0 else settings.replace('radii=2e-4', 'radii=2.1e-4')
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True, common=changed)
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('nozzle_negative', common='nozzle_radius=-1,', fail=True)
+        self.run_case('nozzle_outside', common='nozzle_radius=.003,', fail=True)
+        self.run_case('nozzle_unused', common='port_nozzle_radii(1)=1e-4,', fail=True)
+
     def test_port_size_distributions(self):
         base = ("parcel_count=8,injection_port_count=2,injection_port_centers=.001,.001,.001,.003,.001,.001,"
                 "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.4,.6,injection_speed=0,"

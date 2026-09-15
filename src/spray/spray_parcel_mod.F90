@@ -559,8 +559,10 @@ contains
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
       port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting, &
-      diameter_distribution,diameter_std,port_size_options)
+      diameter_distribution,diameter_std,port_size_options,nozzle_radius,port_nozzle_radii)
     type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in), optional :: nozzle_radius,port_nozzle_radii(:)
+    real(dp) :: local_radius
     type(spray_size_options), intent(in), optional :: port_size_options(:)
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid) :: material
@@ -604,6 +606,9 @@ contains
     if (present(port_size_options)) then
       if (size(port_size_options)/=ports) return
     end if
+    if (present(port_nozzle_radii)) then
+      if (size(port_nozzle_radii)/=ports) return
+    end if
     total=ports*number
     if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
     allocate(candidate(total))
@@ -614,17 +619,20 @@ contains
       if (present(port_diameters)) local_diameter=port_diameters(port)
       if (present(port_temperatures)) local_temperature=port_temperatures(port)
       if (present(port_angles)) local_angle=port_angles(port)
+      local_radius=0
+      if (present(nozzle_radius)) local_radius=nozzle_radius
+      if (present(port_nozzle_radii)) local_radius=port_nozzle_radii(port)
       material=liquid
       if (present(materials)) material=materials(port)
       if (present(port_size_options)) then
         call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
           centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
           port_size_options(port)%shape,port_size_options(port)%minimum,port_size_options(port)%maximum, &
-          port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std)
+          port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std,local_radius)
       else
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
-        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std)
+        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,local_radius)
       end if
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
@@ -636,12 +644,14 @@ contains
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
       half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max, &
-      diameter_weighting,diameter_distribution,diameter_std)
+      diameter_weighting,diameter_distribution,diameter_std,nozzle_radius)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass, center(3), axis(3), speed, half_angle, diameter, temperature
     integer, intent(in) :: number
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
+    real(dp), intent(in), optional :: nozzle_radius
+    real(dp) :: radius,radial_position,position(3)
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: diameter_weighting,diameter_distribution
     real(dp), intent(in), optional :: diameter_std
@@ -671,6 +681,10 @@ contains
     if (liquid_heat_capacity_at_temperature(liquid,temperature)<=0) return
     rho=liquid_density_at_temperature(liquid,temperature)
     if (rho<=0) return
+    radius=0
+    if (present(nozzle_radius)) radius=nozzle_radius
+    if (.not.ieee_is_finite(radius)) return
+    if (radius<0.or.radius>1e9_dp) return
     weighting='mass'
     if (present(diameter_weighting)) then
       if (diameter_weighting/='mass'.and.diameter_weighting/='number') return
@@ -799,7 +813,13 @@ contains
       cosine=1.0_dp-(1.0_dp-cos(half_angle))*(real(i,dp)-0.5_dp)/real(number,dp)
       sine=sqrt(max(0.0_dp,1.0_dp-cosine*cosine))
       angle=2.0_dp*pi*modulo(real(first_id-1_int64+int(i,int64),dp)*0.6180339887498949_dp,1.0_dp)
-      parcels(i)=spray_parcel(first_id+int(i-1,int64),center, &
+      position=center
+      if (radius>0) then
+        ! SprayInjection.H samples radius linearly, not uniformly in disk area.
+        radial_position=radius*(real(i,dp)-.5_dp)/real(number,dp)
+        position=center+radial_position*(cos(angle)*e1+sin(angle)*e2)
+      end if
+      parcels(i)=spray_parcel(first_id+int(i-1,int64),position, &
         speed*(cosine*ez+sine*(cos(angle)*e1+sin(angle)*e2)),m,temperature,weight)
       if (.not. valid_spray_parcel(parcels(i))) then
         deallocate(parcels); return
