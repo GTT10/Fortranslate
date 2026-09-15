@@ -24,6 +24,7 @@ program test_spray_core
   type(spray_options) :: options
   type(spray_film) :: film
   real(dp) :: state(15,4,4,4),temp(4,4,4),saved(15,4,4,4),saved_t(4,4,4),rhs(15,4,4,4)
+  real(dp) :: wall_t(6),wall_v(3,6)
   real(dp) :: totals0(15),totals1(15),spacing(3),lower(3),weights(8)
   real(dp) :: primitive(15),binary(10,10)
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
@@ -316,6 +317,21 @@ program test_spray_core
     state=saved;temp=saved_t
     call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e6_dp,ok,faces,totals1)
     call require(.not.ok.and.all(state==saved).and.all(temp==saved_t).and.all(totals1==0),'physical SGS rollback')
+    wall_v=0;wall_v(1,3:4)=10;wall_t=temp(1,1,1)
+    faces(3:4)='isothermal_wall'
+    call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok,faces,totals0, &
+      wall_temperature=wall_t,wall_velocity=wall_v)
+    call require(ok,'moving isothermal SGS wall')
+    call near(totals0(5),10*totals0(2),1e-12_dp,'SGS wall mechanical work')
+    wall_t=wall_t+100
+    call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok,faces,totals1, &
+      wall_temperature=wall_t,wall_velocity=wall_v)
+    call require(ok.and.totals1(5)>totals0(5),'hot wall adds SGS heat')
+    call near(sum(rhs(5,:,:,:))*product(spacing),totals1(5),1e-12_dp,'thermal SGS wall ledger')
+    wall_v(2,3)=1
+    call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e-7_dp,ok,faces,totals1, &
+      wall_temperature=wall_t,wall_velocity=wall_v)
+    call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'normal wall motion rejects transactionally')
   case('les_grid','les_zero','les_reject')
     call make_gas(.true.); saved=state; saved_t=temp
     ke0=sum(0.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))

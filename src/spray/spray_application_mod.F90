@@ -10,7 +10,8 @@ module spray_application_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_primitive_to_conserved
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
   use selected_composition_mod, only: resolve_selected_composition
-  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
+  use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, valid_spray_boundary_faces
   use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
@@ -49,6 +50,7 @@ contains
     real(dp) :: khrt_b0,khrt_b1,khrt_c3
     logical :: khrt_enabled
     logical :: breakup_enabled
+    real(dp) :: wall_temperature(6),wall_velocity(3,6),wall_dt
     logical :: physical_boundaries
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6),inflow_t(6),inlet_dt,face_dt,face_diffusivity
     real(dp), allocatable :: inflow_state(:,:),inlet_x(:),inlet_y(:),inlet_cube(:,:,:,:)
@@ -62,7 +64,8 @@ contains
     character(len=16384) :: context
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
-    namelist /spray/ cells,domain_length,boundary_faces,breakup_model,surface_tension,liquid_viscosity, &
+    namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity, &
+      breakup_model,surface_tension,liquid_viscosity, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
       inflow_composition_species,inflow_composition_mole_fractions, &
@@ -81,7 +84,7 @@ contains
     khrt_b0=.61_dp;khrt_b1=7.0_dp;khrt_c3=1.0_dp
     maximum_multiplicity=0;maximum_parcels=1000000
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
-    boundary_faces="periodic"
+    boundary_faces="periodic";wall_temperature=300;wall_velocity=0
     cells=[4,4,4]; domain_length=0.004_dp
     hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
     gas_temperature=1200.0_dp; gas_pressure=101325.0_dp; gas_velocity=0.0_dp; shear_velocity=0.0_dp
@@ -106,6 +109,16 @@ contains
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
     physical_boundaries=any(boundary_faces/='periodic')
+    if (.not.valid_wall_velocity_3d(boundary_faces,wall_velocity)) call fail('Invalid tangential wall velocity')
+    if (maxval(abs(wall_velocity))>1e7_dp) call fail('Excessive wall velocity')
+    if (any(boundary_faces=='isothermal_wall').and..not.transport_enabled) &
+      call fail('Isothermal walls require molecular transport')
+    if (any(abs(wall_velocity)>0).and..not.transport_enabled) call fail('Moving walls require molecular transport')
+    do face=1,6
+      if (boundary_faces(face)/='isothermal_wall') cycle
+      if (.not.ieee_is_finite(wall_temperature(face))) call fail('Invalid wall temperature')
+      if (wall_temperature(face)<=0) call fail('Invalid wall temperature')
+    end do
     nvar=reactive_nvar(size(species))
     if (nvar<7) call fail('Spray requires 2--32 gas species')
     if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')
@@ -295,6 +308,13 @@ contains
         context=trim(context)//' '//trim(boundary_faces(i))
       end do
     end if
+    if (any(boundary_faces=='isothermal_wall').or.any(abs(wall_velocity)>0)) then
+      context=trim(context)//' spray-wall-thermal-motion-v1'
+      call append_reals(reshape(wall_velocity,[18]))
+      do face=1,6
+        if (boundary_faces(face)=='isothermal_wall') call append_reals([wall_temperature(face)])
+      end do
+    end if
     if (any(boundary_faces=='inflow')) then
       context=trim(context)//' gas-reservoir-v1'
       call append_reals(inlet_x)
@@ -403,6 +423,12 @@ contains
         spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
       if (.not. ok) call fail('Cannot compute gas CFL step')
       dt=min(maximum_dt,cfl_dt,inlet_dt,final_time-time)
+      if (any(boundary_faces=='isothermal_wall')) then
+        call reactive_isothermal_timestep_3d(species,transport,state,temperature,spacing, &
+          boundary_faces,wall_temperature,0.1_dp,wall_dt,ok)
+        if (.not.ok) call fail('Invalid isothermal wall timestep')
+        dt=min(dt,wall_dt)
+      end if
       if (next_event>time) dt=min(dt,next_event-time)
       ! Avoid a spurious vanishing final step from accumulated roundoff.
       if (abs(final_time-(time+dt)) <= 8.0_dp*epsilon(1.0_dp)*max(abs(final_time),abs(time))) dt=final_time-time
@@ -410,7 +436,7 @@ contains
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
-          boundary_faces,boundary_step,inflow_state,inflow_t)
+          boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit

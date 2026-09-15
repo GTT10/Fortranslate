@@ -38,7 +38,8 @@ supported. See [scope and commands](spray.md) and [acceptance gates](validation/
 These are bounded implemented capabilities, not completion of diesel chemistry,
 multicomponent liquids, shed-mass children/dispersion/collision, characteristic inlet models and near-wall turbulence qualification or MPI/AMR particles.
 Regular wall reflection and outflow now include gas/particle surface budgets
-and restart persistence; wall-impact models remain open. ETAB and KH-RT representative-drop
+and restart persistence; isothermal/tangentially moving gas walls include molecular
+and SGS heat/work budgets. Physical parcel wall-impact models remain open. ETAB and KH-RT representative-drop
 size/deformation, bounded computational parcel splitting and restart are implemented;
 physical child-parcel dispersion remains open.
 

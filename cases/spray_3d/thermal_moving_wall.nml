@@ -1,0 +1,18 @@
+! Heated tangentially moving gas wall with specular parcel reflection; SI units.
+&spray
+ wall_temperature=1000,1000,1000,1000,1000,1000,wall_velocity(1,6)=10,
+ cells=4,4,4, domain_length=.004,.004,.004,
+ boundary_faces='isothermal_wall','isothermal_wall','isothermal_wall','isothermal_wall','isothermal_wall','isothermal_wall',
+ gas_temperature=900, gas_pressure=101325,
+ mole_names='N2','','', mole_amounts=1,0,0,
+ chemistry_enabled=.false.,transport_enabled=.true.,smagorinsky_constant=0,
+ drag_enabled=.true.,heat_enabled=.false.,evaporation_enabled=.false.,
+ vapor_name='H2O', liquid_density=1000, liquid_cp=4184,
+ reference_temperature=373.15, reference_pressure=101325, latent_heat=2257000,
+ drop_temperature=330, drop_diameter=20e-6,
+ initial_liquid_mass=1e-10, parcel_count=2,
+ injection_center=.002,.002,.003995, injection_axis=0,0,1,
+ injection_speed=100, cone_angle=0,
+ final_time=6e-7,maximum_dt=1e-7,
+ output_prefix='thermal_moving_wall'
+/

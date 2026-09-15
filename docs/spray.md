@@ -188,8 +188,8 @@ HXN/HMN/AMN. No claim of measured ignition, penetration or liquid length is made
 
 `boundary_faces(6)` in `&spray` uses x-low, x-high, y-low, y-high, z-low,
 z-high order. The default remains periodic. Supported alternatives are
-`inflow`, `outflow`, `slip_wall`, and stationary adiabatic `no_slip_wall` for gas; parcels
-reflect specularly at either wall type. Opposing periodic faces must be paired.
+`inflow`, `outflow`, `slip_wall`, `no_slip_wall`, and `isothermal_wall` for gas; parcels
+reflect specularly at each wall type. Opposing periodic faces must be paired.
 This ideal reflection is not a sticking, splash, film or impact model.
 
 Physical faces use a clamped, normalized interpolation/deposition stencil with
@@ -216,7 +216,7 @@ to exercise nonzero SGS. See [focused SGS evidence](validation/sgs-boundaries-20
 
 This uses the existing constant-coefficient closure without wall damping or a
 wall function. Near-wall turbulence qualification, characteristic inlet models,
-moving/isothermal spray walls, AMR/EB/MPI parcels and physical wall-impact models
+AMR/EB/MPI parcels and physical wall-impact models
 remain open. Injection is still an internal parcel source.
 
 
@@ -326,3 +326,26 @@ particle outflow. A gas inlet does not create parcels; parcel injection remains
 controlled by the existing separate source schedule.
 
 See [inlet restart and conservation evidence](validation/spray-inflow-20260915.md).
+
+
+## Isothermal and tangentially moving walls
+
+`wall_temperature(6)` specifies kelvin for `isothermal_wall` faces.
+`wall_velocity(3,6)` specifies a tangential velocity on `no_slip_wall` or
+`isothermal_wall` faces; its normal component must be zero. Defaults are
+300 K and zero velocity. Heated or moving walls require molecular transport.
+`thermal_moving_wall.nml` supplies a small executable case.
+
+Molecular wall heat transfer and viscous work use the existing regular-grid
+transport operator. SGS uses the same reflected wall velocity and applies a
+wall-to-cell thermal gradient over half a cell. Thermal gradients enter the
+SGS timestep limit; the molecular wall limit also caps the application step.
+All wall fluxes enter the accumulated momentum/energy ledger. Active wall
+parameters bind restart context, so changed wall motion or temperature rejects
+an incompatible restart.
+
+Parcel impact remains specular: normal velocity reverses, tangential velocity
+and temperature remain unchanged. Wall heat exchange with droplets, splash,
+adhesion, roughness and wall-function calibration remain open. The gas wall
+motion is tangential motion at a fixed boundary, not moving geometry.
+See [focused checks](validation/spray-thermal-wall-20260915.md).

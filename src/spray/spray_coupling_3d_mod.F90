@@ -21,7 +21,7 @@ contains
     ok=.false.
     do a=1,6
       select case(trim(faces(a)))
-      case('periodic','outflow','inflow','slip_wall','no_slip_wall')
+      case('periodic','outflow','inflow','slip_wall','no_slip_wall','isothermal_wall')
       case default
         return
       end select

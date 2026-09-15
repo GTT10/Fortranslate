@@ -79,6 +79,7 @@ module simulation_config_reactive_3d_mod
     character(len=512) :: output_file = "reactive_entropy_wave_3d.csv"
   end type reactive_3d_config
 
+  public :: valid_wall_velocity_3d
   public :: fill_reactive_boundary_ghosts_3d
   public :: resolved_reactive_boundaries_3d, valid_reactive_boundaries_3d
   public :: read_reactive_3d_configuration

@@ -1,4 +1,10 @@
 if(PELEF_ENABLE_SPRAY)
+  foreach(wall_sgs 0 .17)
+    add_test(NAME spray_thermal_wall_${wall_sgs} COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --thermal-wall --sgs ${wall_sgs}
+      --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_thermal_wall_${wall_sgs}")
+    set_tests_properties(spray_thermal_wall_${wall_sgs} PROPERTIES LABELS "spray" TIMEOUT 600)
+  endforeach()
   add_test(NAME spray_inflow_restart COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --inflow
     --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_inflow_restart")

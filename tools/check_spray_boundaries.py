@@ -13,16 +13,17 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--inflow', action='store_true')
+    parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--sgs', type=float, default=0.0)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
-    case = 'inflow.nml' if args.inflow else 'wall_reflection.nml'
+    case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.sgs:
         template = template.replace('&spray', '&spray\n shear_velocity=10,')
-    for kind in (('inflow',) if args.inflow else ('wall', 'outflow')):
+    for kind in (('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))):
         def run(name, extra=''):
             tag = kind + '_' + name
             config = re.sub(r"output_prefix='[^']*'", f"output_prefix='{tag}'", template)
@@ -57,14 +58,19 @@ def main():
             assert float(row['boundary_mass']) > 0
             with (work / (ref + '.gas.csv')).open() as stream:
                 assert sum(float(cell['rhoY_H2']) for cell in csv.DictReader(stream)) > 0
+        elif kind == 'thermal_wall':
+            assert float(row['boundary_energy']) > 0
+            assert int(row['live_parcels']) == 2
         elif kind == 'outflow':
             assert int(row['live_parcels']) == 0
             assert float(row['boundary_mass']) < -5e-11
         else:
             assert int(row['live_parcels']) == 2
             assert float(row['boundary_pz']) < -1e-9
-        if kind in ('wall', 'inflow'):
+        if kind in ('wall', 'inflow', 'thermal_wall'):
             bad_input = (work / (resumed + '.nml')).read_text()
+            if kind == 'thermal_wall':
+                bad_input = bad_input.replace('wall_velocity(1,6)=10', 'wall_velocity(1,6)=11')
             bad_input = (bad_input.replace("'slip_wall'", "'outflow'") if kind == "wall"
                          else bad_input.replace("inflow_temperature(1)=1100", "inflow_temperature(1)=1101"))
             bad_input = bad_input.replace(resumed, 'changed_faces')
