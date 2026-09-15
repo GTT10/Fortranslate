@@ -20,10 +20,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
-connected by a transactional standalone impact event with wall budgets
-[evidence](validation/wall-impact-event-20260916.md). Wall-film evolution
-and CFD boundary/restart coupling remain open; the application still uses its existing
-parcel boundary handling.
+connected to the regular coupled-step API with wall budgets and retained static
+film patches [evidence](validation/wall-impact-coupling-20260916.md). Wall-film
+evolution, application input/output and checkpoint persistence remain open; the
+CLI application still uses its existing parcel boundary handling.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

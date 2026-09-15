@@ -1,6 +1,7 @@
 module spray_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use spray_wall_impact_mod, only: spray_wall_options,spray_wall_film
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -99,13 +100,16 @@ contains
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options)
+      wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_options), intent(in), optional :: breakup_options(:)
+    type(spray_wall_options), intent(in), optional :: wall_options
+    type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
+    type(spray_wall_film), allocatable :: patches(:)
     type(spray_options), intent(in) :: options
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -161,6 +165,17 @@ contains
     dims=shape(temperature)
     if (size(state,1)/=reactive_nvar(size(species)).or.any(shape(state(1,:,:,:))/=dims)) return
     if (any(spacing<=0).or..not.all(ieee_is_finite(spacing))) return
+    allocate(patches(0))
+    if (present(wall_options)) then
+      if (any(wall_options%enabled).and..not.present(wall_films)) return
+      if (any(wall_options%enabled).and.present(wall_velocity)) then
+        if (any(wall_velocity/=0)) return
+      end if
+    end if
+    if (present(wall_films)) then
+      if (.not.allocated(wall_films)) return
+      patches=wall_films
+    end if
     allocate(candidate,source=state); allocate(temp,source=temperature); allocate(drops,source=parcels)
     if (any(accel/=0)) then
       call force_kick(candidate,drops,0.5_dp*dt,local_ok)
@@ -171,7 +186,7 @@ contains
     do half=1,2
       if (half == 1) then
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
         if (.not. local_ok) return
         ledger=ledger+exchange
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
@@ -203,7 +218,7 @@ contains
         end if
         ledger=ledger+exchange
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
         if (.not. local_ok) return
         ledger=ledger+exchange
       end if
@@ -214,7 +229,8 @@ contains
     end if
     if (present(source_change)) source_change=force_ledger
     if (present(boundary_change)) boundary_change=ledger
-    state=candidate; temperature=temp; parcels=drops; ok=.true.; message=''
+    state=candidate; temperature=temp; parcels=drops
+    if (present(wall_films)) call move_alloc(patches,wall_films); ok=.true.; message=''
   contains
     subroutine force_kick(gas,particles,interval,accepted)
       real(dp), intent(inout) :: gas(:,:,:,:)

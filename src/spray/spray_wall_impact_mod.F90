@@ -3,6 +3,7 @@ module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_parcel_mod
+  use nasa7_thermo_mod, only: universal_gas_constant
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -13,10 +14,117 @@ module spray_wall_impact_mod
     real(dp) :: position(3)=0,normal(3)=0,mass=0,temperature=0,diameter=0,height=0
     integer :: material_id=1
   end type
+  type, public :: spray_wall_options
+    logical :: enabled(6)=.false.
+    real(dp) :: temperature(6)=300,contact_angle=1.0471975511965977_dp
+    integer :: maximum_films=1000000
+  end type
+  public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: resolve_wall_impact
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
+  logical function valid_wall_options(o,faces) result(ok)
+    type(spray_wall_options), intent(in) :: o
+    character(len=*), intent(in) :: faces(6)
+    integer :: f
+    ok=.false.
+    if (.not.all(ieee_is_finite([o%temperature,o%contact_angle]))) return
+    if (any(o%temperature<1).or.any(o%temperature>1e5_dp)) return
+    if (o%contact_angle<1e-6_dp.or.o%contact_angle>pi-1e-6_dp) return
+    if (o%maximum_films<1.or.o%maximum_films>1000000) return
+    do f=1,6
+      if (.not.o%enabled(f)) cycle
+      if (faces(f)/='slip_wall'.and.faces(f)/='no_slip_wall'.and.faces(f)/='isothermal_wall') return
+    end do
+    ok=.true.
+  end function
+
+  logical function valid_wall_film(f) result(ok)
+    type(spray_wall_film), intent(in) :: f
+    ok=.false.
+    if (.not.all(ieee_is_finite([f%position,f%normal,f%mass,f%temperature,f%diameter,f%height]))) return
+    if (maxval(abs(f%position))>1e9_dp.or.maxval(abs(f%normal))>1) return
+    ok=abs(sum(f%normal**2)-1)<1e-12_dp.and.f%mass>0.and.f%mass<=1e18_dp.and. &
+      f%temperature>=1.and.f%temperature<=1e5_dp.and.f%diameter>0.and.f%height>0.and. &
+      f%material_id>=1.and.f%material_id<=16
+  end function
+
+  subroutine impact_at_planar_wall(parent,previous,liquid,properties,molecular_weight,pressure,lower,upper, &
+      settings,films,first_id,children,deposit,wall,hit,ok)
+    type(spray_parcel), intent(inout) :: parent
+    real(dp), intent(in) :: previous(3),molecular_weight,pressure,lower(3),upper(3)
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_options), intent(in) :: properties
+    type(spray_wall_options), intent(in) :: settings
+    type(spray_wall_film), intent(in) :: films(:)
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    type(spray_wall_film), intent(out) :: deposit
+    real(dp), intent(out) :: wall(5)
+    logical, intent(out) :: hit,ok
+    real(dp) :: fraction,earliest,location(3),normal(3),delta(3),boundary,boil,denom,rho,mu,d,un,we,re,kv,kcrit,thickness
+    integer :: a,face,f,regime
+    wall=0;hit=.false.;ok=.false.;deposit=spray_wall_film()
+    if (.not.all(ieee_is_finite([previous,lower,upper,pressure,molecular_weight]))) return
+    if (any(upper<=lower).or.pressure<1.or.pressure>1e10_dp.or.molecular_weight<=0) return
+    if (any(previous<lower).or.any(previous>=upper)) return
+    delta=parent%position-previous;earliest=2;face=0
+    do a=1,3
+      f=0;boundary=0
+      if (parent%position(a)<lower(a)) then
+        f=2*a-1;boundary=lower(a)
+      else if (parent%position(a)>=upper(a)) then
+        f=2*a;boundary=upper(a)
+      end if
+      if (f==0.or.delta(a)==0) cycle
+      fraction=(boundary-previous(a))/delta(a)
+      if (fraction<earliest) then
+        earliest=fraction;face=f
+      end if
+    end do
+    if (face==0) then
+      ok=.true.;return
+    end if
+    if (.not.settings%enabled(face).or.parent%mass<=0) then
+      ok=.true.;return
+    end if
+    location=previous+earliest*delta;normal=0;a=(face+1)/2
+    normal(a)=merge(1.0_dp,-1.0_dp,modulo(face,2)==1)
+    location(a)=merge(lower(a),upper(a),modulo(face,2)==1)
+    if (liquid%vapor_pressure_model=='antoine') then
+      denom=liquid%antoine_coefficients(1)-log10(pressure/liquid%antoine_coefficients(4))
+      if (denom<=0) return
+      boil=liquid%antoine_coefficients(2)/denom-liquid%antoine_coefficients(3)
+      if (boil<liquid%antoine_temperature_range(1).or.boil>liquid%antoine_temperature_range(2)) return
+    else
+      denom=1/liquid%reference_temperature-log(pressure/liquid%reference_pressure)* &
+        universal_gas_constant/(liquid%latent_heat*molecular_weight)
+      if (denom<=0) return
+      boil=1/denom
+    end if
+    if (boil<1.or.boil>1e5_dp) return
+    if (.not.ieee_is_finite(properties%surface_tension)) return
+    rho=liquid_density_at_temperature(liquid,parent%temperature)
+    mu=liquid_viscosity_at_temperature(properties,parent%temperature);d=parcel_diameter(parent,liquid)
+    if (rho<=0.or.mu<=0.or.d<=0.or.properties%surface_tension<1e-8_dp.or.properties%surface_tension>1e3_dp) return
+    un=abs(dot_product(parent%velocity,normal))
+    we=rho*d*un**2/properties%surface_tension;re=un*d*rho/mu
+    kv=sqrt(we*sqrt(re))
+    kcrit=(26.788_dp*log(pressure*1e-5_dp)+33.546_dp)*exp(-.006_dp*(settings%temperature(face)-260))+36
+    if (kcrit<0) return
+    thickness=0
+    do f=1,size(films)
+      if (maxval(abs(films(f)%normal-normal))>1e-12_dp) cycle
+      delta=location-films(f)%position
+      if (abs(dot_product(delta,normal))>1e-10_dp*maxval(upper-lower)) cycle
+      if (norm2(delta)<=.5_dp*films(f)%diameter) thickness=thickness+films(f)%height
+    end do
+    call resolve_wall_impact(parent,liquid,location,normal,kv,settings%temperature(face)/boil,kcrit,thickness/d, &
+      we,re,settings%contact_angle,first_id,children,deposit,wall,regime,ok)
+    hit=ok
+  end subroutine
+
   pure function cross(a,b) result(c)
     real(dp), intent(in) :: a(3),b(3)
     real(dp) :: c(3)

@@ -848,3 +848,36 @@ results (empty when absent); a caller must append or accumulate them into its
 persistent state. Gas coupling, wall-film evolution and checkpoint persistence
 are not yet wired into the application. See
 [event checks](validation/wall-impact-event-20260916.md).
+
+
+### Coupled-step wall impact API
+
+`advance_spray_coupling_3d` and `advance_spray_reactive_3d` accept optional
+`wall_options` (`spray_wall_options`) and an allocated `wall_films` array.
+Enable individual faces with `enabled(6)`, provide wall temperatures (K), a
+contact angle (radians), and a maximum film-patch count. Enabled faces must be
+slip, no-slip or isothermal gas walls. Coupled impact currently requires stationary
+walls. Surface tension and viscosity come from the selected per-material breakup
+properties, or global spray options even when aerodynamic breakup is disabled.
+
+The first crossed plane is identified from the parcel substep's position segment.
+Impact is applied at that substep's end; retained parents and children are placed
+inside the domain and advanced for the remaining coupling interval. This shares
+the current first-order particle substep approximation; exact hit-time integration
+and simultaneous corner-impact resolution are not claimed. New descendants count
+against existing parcel/substep limits. Invalid impact, storage overflow or later
+chemistry/flow failure rolls back gas, all parcels, film patches and budgets.
+
+Boiling temperature is inverted from the selected saturation model at sampled
+gas pressure: Clausius with reference latent heat, or Antoine strictly within its
+fit range. Kv uses the incident normal speed, current liquid density, viscosity
+and diameter; Kcrit uses gas pressure converted from Pa to bar. Existing stationary
+patches covering the impact point contribute their summed heights to the wet-film
+ratio. Patches are appended individually without merging or evolving them.
+
+`spray_system_totals(...,wall_films=...)` includes film mass, material-resolved
+species inventory and integrated liquid energy. The boundary ledger includes
+signed wall impulse/energy exchange; deposited liquid remains in system mass.
+This is currently a library API capability. Namelist switches, film CSV output
+and coupled checkpoint records still need application integration. See
+[focused coupling checks](validation/wall-impact-coupling-20260916.md).

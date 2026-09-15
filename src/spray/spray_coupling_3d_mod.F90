@@ -1,6 +1,8 @@
 module spray_coupling_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: int64
+  use spray_wall_impact_mod
   use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
   use gas_transport_mod, only: gas_transport_species, compatible_transport_database
   use mixture_thermo_mod, only: mixture_mass_properties
@@ -226,7 +228,8 @@ contains
   end subroutine
 
   subroutine advance_spray_coupling_3d(species, transport, liquid, options, state, temperature, &
-      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change,materials,breakup_options)
+      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change,materials,breakup_options, &
+      wall_options,wall_films)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
@@ -235,6 +238,16 @@ contains
     type(spray_options), intent(in) :: options
     type(spray_options), intent(in), optional :: breakup_options(:)
     type(spray_options) :: local_breakup
+    type(spray_wall_options), intent(in), optional :: wall_options
+    type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
+    type(spray_wall_options) :: impact_settings
+    type(spray_wall_film), allocatable :: patches(:)
+    type(spray_wall_film) :: deposit
+    type(spray_parcel), allocatable :: spawned(:)
+    type(spray_parcel) :: identity
+    real(dp), allocatable :: starts(:)
+    real(dp) :: wall_exchange(5)
+    logical :: hit
     real(dp), intent(inout) :: state(:,:,:,:), temperature(:,:,:)
     real(dp), intent(in) :: lower(3), spacing(3), interval
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -255,6 +268,8 @@ contains
     real(dp) :: sampled_pressure,cp,cv,h,e,entropy,xsat
     integer :: shape3(3),indices(3,8),p,n,i,j,k,attempt,total_steps
     logical :: local_ok, accepted
+    impact_settings=spray_wall_options()
+    if (present(wall_options)) impact_settings=wall_options
     faces='periodic'
     if (present(boundary_faces)) faces=boundary_faces
     ledger=0
@@ -284,6 +299,23 @@ contains
         if (breakup_options(p)%breakup_model/=options%breakup_model) return
       end do
     end if
+    if (.not.valid_wall_options(impact_settings,faces)) return
+    if (any(impact_settings%enabled).and..not.present(wall_films)) return
+    allocate(patches(0))
+    if (present(wall_films)) then
+      if (.not.allocated(wall_films)) return
+      patches=wall_films
+    end if
+    if (size(patches)>impact_settings%maximum_films) return
+    do p=1,size(patches)
+      if (.not.valid_wall_film(patches(p))) return
+      identity=spray_parcel();identity%material_id=patches(p)%material_id
+      material=select_spray_liquid(identity,liquid,materials)
+      if (.not.valid_spray_liquid(material)) return
+      if (material%vapor_index>size(species)) return
+      if (trim(species(material%vapor_index)%name)/=trim(material%vapor_name)) return
+      if (liquid_heat_capacity_at_temperature(material,patches(p)%temperature)<=0) return
+    end do
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
       material=select_spray_liquid(parcels(p),liquid,materials)
@@ -303,7 +335,8 @@ contains
       ok=.true.; message=''; return
     end if
     volume=product(spacing); total_steps=0
-    do p=1,size(drops)
+    allocate(starts(size(drops)));starts=0;p=1
+    do while(p<=size(drops))
       material=select_spray_liquid(drops(p),liquid,materials)
       local_breakup=options
       if (present(breakup_options)) then
@@ -311,7 +344,7 @@ contains
         local_breakup%minimum_diameter=options%minimum_diameter
         local_breakup%maximum_substeps=options%maximum_substeps
       end if
-      elapsed=0.0_dp
+      elapsed=starts(p)
       do while (elapsed < interval .and. drops(p)%mass > 0.0_dp)
         if (total_steps >= options%maximum_substeps) then
           message='Spray substep limit exceeded; complete update rolled back'; return
@@ -383,6 +416,30 @@ contains
         if (.not.local_ok) then
           message='Spray breakup rejected; complete coupling step rolled back'; return
         end if
+        if (any(impact_settings%enabled).and.next%mass>0) then
+          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
+          call impact_at_planar_wall(next,drops(p)%position,material,local_breakup, &
+            species(material%vapor_index)%molecular_weight,sampled_pressure,lower,lower+spacing*real(shape3,dp), &
+            impact_settings,patches,drops(size(drops))%id+1_int64,spawned,deposit,wall_exchange,hit,local_ok)
+          if (.not.local_ok) then
+            message='Wall impact rejected; complete coupling step rolled back';return
+          end if
+          if (hit) then
+            if (size(drops)+size(spawned)>options%maximum_parcels) return
+            do n=1,size(spawned)
+              if (any(spawned(n)%position<lower).or.any(spawned(n)%position>=lower+spacing*real(shape3,dp))) return
+            end do
+            if (size(spawned)>0) then
+              starts=[starts,spread(min(interval,elapsed+dt),1,size(spawned))]
+              drops=[drops,spawned]
+            end if
+            if (deposit%mass>0) then
+              if (size(patches)>=impact_settings%maximum_films) return
+              patches=[patches,deposit]
+            end if
+            ledger(1:5)=ledger(1:5)-wall_exchange
+          end if
+        end if
         call apply_parcel_boundaries(next,material,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
         if (.not.local_ok) return
         ledger(1:5)=ledger(1:5)+exchange
@@ -390,21 +447,25 @@ contains
         drops(p)=next
         elapsed=min(interval,elapsed+dt); total_steps=total_steps+1
       end do
+      p=p+1
     end do
     call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,local_ok)
     if (.not.local_ok) then
       message='Parcel splitting exceeds storage or ID bounds; complete step rolled back';return
     end if
     state=candidate; temperature=temp; parcels=drops
+    if (present(wall_films)) call move_alloc(patches,wall_films)
     if (present(boundary_change)) boundary_change=ledger
     substeps=total_steps; ok=.true.; message=''
   end subroutine
 
-  subroutine spray_system_totals(state, spacing, parcels, liquid, totals,materials)
+  subroutine spray_system_totals(state, spacing, parcels, liquid, totals,materials,wall_films)
     real(dp), intent(in) :: state(:,:,:,:), spacing(3)
     type(spray_parcel), intent(in) :: parcels(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_wall_film), intent(in), optional :: wall_films(:)
+    type(spray_parcel) :: identity
     type(spray_liquid) :: material
     real(dp), intent(out) :: totals(size(state,1))
     real(dp) :: drop(5)
@@ -418,5 +479,14 @@ contains
       totals(1:5)=totals(1:5)+drop
       totals(5+material%vapor_index)=totals(5+material%vapor_index)+drop(1)
     end do
+    if (present(wall_films)) then
+      do p=1,size(wall_films)
+        identity=spray_parcel();identity%material_id=wall_films(p)%material_id
+        material=select_spray_liquid(identity,liquid,materials)
+        drop=wall_film_totals(wall_films(p),material)
+        totals(1:5)=totals(1:5)+drop
+        totals(5+material%vapor_index)=totals(5+material%vapor_index)+drop(1)
+      end do
+    end if
   end subroutine
 end module spray_coupling_3d_mod

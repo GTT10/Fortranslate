@@ -9,6 +9,7 @@ program test_spray_integration
   use transport_database_mod, only: load_h2o2_full_transport
   use mixture_thermo_mod, only: mixture_specific_gas_constant, mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: reactive_primitive_to_conserved
+  use spray_wall_impact_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals
   use spray_reactive_3d_mod
@@ -20,6 +21,9 @@ program test_spray_integration
   type(spray_parcel), allocatable :: drops(:),before_drops(:)
   type(spray_liquid) :: liquid,materials(2)
   type(spray_options) :: options
+  type(spray_wall_options) :: wall_options
+  type(spray_wall_film), allocatable :: films(:),saved_films(:)
+  character(len=32) :: faces(6)
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
   real(dp) :: force(15),accel(3),dt,expected(3)
@@ -66,6 +70,45 @@ program test_spray_integration
     call require(all(state(6:,:,:,:)>=0.0_dp),'nonnegative chemistry')
     call require(maxval(abs(sum(state(6:,:,:,:),dim=1)-state(1,:,:,:)))<1.0e-12_dp,'species closure')
     call require(maxval(abs(state(15,:,:,:)-before(15,:,:,:)))<1.0e-12_dp,'inert nitrogen unchanged')
+  case('wall_coupling')
+    allocate(films(0))
+    faces='periodic';faces(5:6)='no_slip_wall'
+    wall_options%enabled(5)=.true.
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    do iteration=1,2
+      state=before;temperature=before_t;deallocate(films);allocate(films(0))
+      call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
+        [0.0_dp,0.0_dp,-1.0_dp],merge(10.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+      call require(ok,'wall injection')
+      call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals0,wall_films=films)
+      call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+        [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.false.,.false.,'implicit', &
+        1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+        wall_options=wall_options,wall_films=films)
+      call require(ok,trim(message))
+      call require(size(films)==1.and.drops(1)%mass==0,'deposition retained in coupled state')
+      if (iteration==1) call require(size(drops)==1,'low speed fully deposits')
+      if (iteration==2) then
+        call require(size(drops)==5.and.all(drops(2:)%mass>0),'high speed creates four children')
+        call require(all(drops(2:)%parent_id==1),'coupled child lineage')
+      end if
+      call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1,wall_films=films)
+      call require(abs(totals1(1)-totals0(1))<1e-12_dp*totals0(1),'gas/drop/film mass conservation')
+      call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'coupled film energy ledger')
+      call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'coupled wall impulse')
+    end do
+    state=before;temperature=before_t;deallocate(films);allocate(films(0))
+    call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
+      [0.0_dp,0.0_dp,-1.0_dp],300.0_dp,0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+    before_drops=drops;saved_films=films
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.false.,'invalid', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+      wall_options=wall_options,wall_films=films)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'late chemistry gas rollback')
+    call require(size(films)==0.and.size(drops)==1.and.all(force==0),'film and child rollback')
+    call require(all(drops%mass==before_drops%mass),'parent mass rollback')
   case('materials')
     materials(1)=liquid
     ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.
