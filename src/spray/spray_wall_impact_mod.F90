@@ -13,6 +13,7 @@ module spray_wall_impact_mod
     real(dp) :: position(3)=0,normal(3)=0,mass=0,temperature=0,diameter=0,height=0
     integer :: material_id=1
   end type
+  public :: resolve_wall_impact
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
@@ -21,6 +22,83 @@ contains
     real(dp) :: c(3)
     c=[a(2)*b(3)-a(3)*b(2),a(3)*b(1)-a(1)*b(3),a(1)*b(2)-a(2)*b(1)]
   end function
+
+  subroutine resolve_wall_impact(parent,liquid,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
+      contact_angle,first_id,children,film,wall,regime,ok)
+    type(spray_parcel), intent(inout) :: parent
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: location(3),normal(3),kv,tstar,kcrit,film_ratio,weber,reynolds,contact_angle
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    type(spray_wall_film), intent(inout) :: film
+    real(dp), intent(out) :: wall(5)
+    integer, intent(out) :: regime
+    logical, intent(out) :: ok
+    type(spray_parcel) :: next
+    type(spray_parcel), allocatable :: spawned(:)
+    type(spray_wall_film) :: deposited
+    real(dp) :: un,ut,speed,alpha,ms,dm,restitution,remaining,psi(3),beta(3),helper(3),budget(5),total(5)
+    integer :: kind,i,axis
+    logical :: valid
+    wall=0;regime=-1;ok=.false.
+    if (.not.valid_spray_parcel(parent).or..not.valid_spray_liquid(liquid)) return
+    if (.not.all(ieee_is_finite([location,normal,weber,reynolds,contact_angle]))) return
+    if (maxval(abs(location))>1e9_dp.or.maxval(abs(normal))>1) return
+    if (abs(sum(normal**2)-1)>1e-12_dp.or.parent%mass<=0) return
+    if (liquid_heat_capacity_at_temperature(liquid,parent%temperature)<=0.or. &
+        liquid_density_at_temperature(liquid,parent%temperature)<=0) return
+    un=dot_product(parent%velocity,normal);speed=norm2(parent%velocity)
+    if (un>=0.or.speed<=0) return
+    ut=norm2(parent%velocity-un*normal);alpha=max(pi/6,asin(min(1.0_dp,abs(un)/speed)))
+    call classify_wall_impact(kv,tstar,alpha,kcrit,film_ratio,kind,ms,dm,valid)
+    if (.not.valid) return
+    ! The reference wet branch leaves dm unset. Close its incident-mass budget
+    ! by depositing the unsplashed fraction; no entrainment from existing film.
+    if (kind==impact_wet) dm=1-ms
+    next=parent;allocate(spawned(0))
+    if (ms>0) then
+      call construct_splash_children(parent,liquid,location,normal,kv,film_ratio,ms,first_id,spawned,budget,valid)
+      if (.not.valid) return
+    end if
+    if (dm>0) then
+      call construct_wall_film(parent,liquid,location,normal,dm,weber,reynolds,contact_angle,deposited,budget,valid)
+      if (.not.valid) return
+    end if
+    remaining=max(0.0_dp,1-ms-dm);next%mass=parent%mass*remaining
+    next%position=location
+    if (remaining>0) then
+      select case(kind)
+      case(impact_rebound)
+        restitution=.823_dp*exp(-.0019835_dp*kv**1.6_dp)
+        next%velocity=parent%velocity-(1+restitution)*un*normal
+      case(impact_thermal)
+        psi=cross(-parent%velocity,normal)
+        if (norm2(psi)<1e-5_dp) psi=cross(-parent%velocity+1.0_dp,normal)
+        if (norm2(psi)<1e-12_dp) then
+          axis=minloc(abs(normal),dim=1);helper=0;helper(axis)=1;psi=cross(helper,normal)
+        end if
+        psi=psi/norm2(psi);beta=cross(psi,normal);beta=beta/norm2(beta)
+        next%velocity=(1.5_dp*sqrt(3.0_dp)*ut/pi)*beta+ &
+          (.0028_dp*kv*exp(-.0062_dp*kv)*speed)*normal
+        next%deformation=0;next%deformation_rate=0;next%rt_time=-1
+      case default
+        return
+      end select
+      next%position=location+parcel_diameter(next,liquid)*normal
+    end if
+    if (.not.valid_spray_parcel(next)) return
+    total=parcel_totals(next,liquid)
+    do i=1,size(spawned)
+      total=total+parcel_totals(spawned(i),liquid)
+    end do
+    if (deposited%mass>0) total=total+wall_film_totals(deposited,liquid)
+    budget=parcel_totals(parent,liquid)-total
+    if (.not.all(ieee_is_finite(budget))) return
+    if (abs(budget(1))>1e-12_dp*parent%mass*parent%multiplicity) return
+    budget(1)=0
+    parent=next;film=deposited;call move_alloc(spawned,children)
+    wall=budget;regime=kind;ok=.true.
+  end subroutine
 
   subroutine construct_splash_children(parent,liquid,location,normal,kv,film_ratio,fraction,first_id,children,wall,ok)
     type(spray_parcel), intent(in) :: parent

@@ -4,9 +4,10 @@
   "path": "Source/Spray/BreakupSplash/AhamedSplash.H",
   "sha256": "37ddd95a06bc96d6c2b1e740cf583a872335efc787b56a4cce80211f4381cb92",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Ahamed classification, splash correlations, child-parcel construction and cylindrical deposition patch; no CFD boundary, film evolution or restart coupling yet",
+  "scope": "Transactional six-regime impact event with parent, children, deposition patch and wall budget; no CFD boundary, film evolution or restart coupling yet",
   "child_source": {
     "path": "Source/Spray/SpraySB.cpp",
     "sha256": "e540abf90a3e5acd9b91d6f7994c9373ad505bb47f512fa8c5b7c3e536f32382"
-  }
+  },
+  "wet_mass_closure": "Deposit 1-ms for wet splash because the pinned classifier leaves dm unset; no entrainment from existing film."
 }

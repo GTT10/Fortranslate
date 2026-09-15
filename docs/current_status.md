@@ -20,8 +20,8 @@ Older milestone prose remains historical detail, not a current global status.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
-available as standalone Fortran kernels with pinned C++ comparison
-[evidence](validation/wall-impact-state-20260916.md). Wall-film evolution
+connected by a transactional standalone impact event with wall budgets
+[evidence](validation/wall-impact-event-20260916.md). Wall-film evolution
 and CFD boundary/restart coupling remain open; the application still uses its existing
 parcel boundary handling.
 

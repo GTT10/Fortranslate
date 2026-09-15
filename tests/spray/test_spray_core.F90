@@ -33,6 +33,8 @@ program test_spray_core
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
   type(spray_wall_film) :: wall_patch,saved_patch
   real(dp) :: child_totals(5),film_budget(5)
+  real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
+  integer :: impact_kinds(6),event_index
   integer :: regime
   integer :: indices(3,8),n,steps
   logical :: ok
@@ -53,6 +55,45 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('wall_event')
+    p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2;q=p
+    impact_kv=[79.0_dp,79.0_dp,150.0_dp,150.0_dp,150.0_dp,300.0_dp]
+    impact_tstar=[1.0_dp,1.1_dp,1.0_dp,1.1_dp,1.0_dp,1.0_dp]
+    impact_film=[0.0_dp,0.0_dp,0.0_dp,0.0_dp,.2_dp,.03_dp]
+    impact_kinds=[impact_deposit,impact_rebound,impact_dry,impact_thermal,impact_spread,impact_wet]
+    do event_index=1,6
+      p=q
+      call resolve_wall_impact(p,liquid,q%position,[0.0_dp,0.0_dp,1.0_dp],impact_kv(event_index), &
+        impact_tstar(event_index),80.0_dp,impact_film(event_index),100.0_dp,1000.0_dp,pi/3, &
+        2_int64,drops,wall_patch,transfer,regime,ok)
+      if (.not.ok) print *, 'rejected impact case',event_index
+      call require(ok.and.regime==impact_kinds(event_index),'complete impact regime dispatch')
+      child_totals=parcel_totals(p,liquid)
+      do n=1,size(drops)
+        child_totals=child_totals+parcel_totals(drops(n),liquid)
+      end do
+      if (wall_patch%mass>0) child_totals=child_totals+wall_film_totals(wall_patch,liquid)
+      call require(abs(child_totals(1)/(q%mass*q%multiplicity)-1)<1e-13_dp,'event total mass')
+      call require(maxval(abs(child_totals+transfer-parcel_totals(q,liquid)))<1e-12_dp,'event wall budget')
+      if (p%mass>0) call require(p%velocity(3)>0,'retained parent leaves wall')
+      if (regime==impact_rebound) then
+        expected=.823_dp*exp(-.0019835_dp*79.0_dp**1.6_dp)*20
+        call require(abs(p%velocity(3)-expected)<1e-13_dp.and.size(drops)==0,'reference rebound restitution')
+      end if
+      if (regime==impact_thermal) call require(p%mass>0.and.size(drops)==4.and.wall_patch%mass==0,'thermal split')
+      if (regime==impact_dry.or.regime==impact_wet) &
+        call require(p%mass==0.and.size(drops)==4.and.wall_patch%mass>0,'splash plus deposition')
+    end do
+    saved_drops=drops;saved_patch=wall_patch;p=q
+    call resolve_wall_impact(p,liquid,q%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,1.0_dp,80.0_dp, &
+      .03_dp,100.0_dp,1000.0_dp,pi/3,2_int64,drops,wall_patch,transfer,regime,ok)
+    call require(.not.ok.and.regime==-1.and.all(transfer==0),'reject inward wet-splash child velocity')
+    call require(p%mass==q%mass.and.all(drops%mass==saved_drops%mass),'wet velocity failure rollback')
+    call resolve_wall_impact(p,liquid,q%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,1.0_dp,80.0_dp, &
+      0.0_dp,100.0_dp,0.0_dp,pi/3,2_int64,drops,wall_patch,transfer,regime,ok)
+    call require(.not.ok.and.regime==-1.and.all(transfer==0),'late deposition failure')
+    call require(p%mass==q%mass.and.all(p%velocity==q%velocity),'parent event rollback')
+    call require(all(drops%mass==saved_drops%mass).and.wall_patch%mass==saved_patch%mass,'children and film rollback')
   case('wall_state')
     p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2
     call construct_splash_children(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,0.0_dp,.5_dp, &

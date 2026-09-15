@@ -820,3 +820,31 @@ routines leave the input parent unchanged and commit destination state only on
 success. There is no application switch yet; these routines do not by themselves
 handle gas feedback, boundary crossings, domain ownership or coupled restart.
 See [state/conservation checks](validation/wall-impact-state-20260916.md).
+
+
+### Complete standalone impact event
+
+`resolve_wall_impact` accepts an incident parent, impact point, outward unit
+normal, dimensionless impact parameters, contact angle and child ID range.
+It classifies the event, generates children/deposition, updates the parent and
+returns the signed wall budget in a single transaction. Rebound retains the
+parent with the pinned velocity restitution coefficient; thermal breakup retains
+the unsplashed parent with the reference mean splash velocity. Deposition and
+spreading put all mass in a film patch. Dry splash divides mass between children
+and deposition. Retained parents are placed one remaining-droplet diameter
+outward from the supplied impact point. The caller remains responsible for
+remaining flight time, domain checks and globally unused child IDs.
+
+For wet splash, the pinned classifier leaves the deposition fraction at zero.
+This event API explicitly deposits `1-ms`, where `ms` is its splashed fraction,
+so incident mass closes with children and film. It does not entrain mass from
+an existing film. This is an explicit closure extending the incomplete reference
+branch, not a claim of exact wet-impact parity or physical validation.
+
+Invalid distributions, inward child velocities and invalid film geometry reject
+the entire event, preserving parent, child array and film output and zeroing the
+wall budget. Successful calls replace the film/children output with this event's
+results (empty when absent); a caller must append or accumulate them into its
+persistent state. Gas coupling, wall-film evolution and checkpoint persistence
+are not yet wired into the application. See
+[event checks](validation/wall-impact-event-20260916.md).
