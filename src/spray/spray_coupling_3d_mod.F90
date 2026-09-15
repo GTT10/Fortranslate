@@ -10,12 +10,13 @@ module spray_coupling_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
+  use spray_mixture_mod
   use spray_breakup_mod
   implicit none
   private
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
   public :: spray_system_totals, valid_spray_boundary_faces, apply_parcel_boundaries
-  public :: particle_boundary_stencil
+  public :: particle_boundary_stencil, advance_mixture_coupling_3d, mixture_system_totals
 contains
   pure logical function valid_spray_boundary_faces(faces) result(ok)
     character(len=*), intent(in) :: faces(6)
@@ -601,6 +602,216 @@ contains
       end if
       event_ok=.true.
     end subroutine
+  end subroutine
+
+  subroutine advance_mixture_coupling_3d(species,transport,components,options,state,temperature,lower,spacing, &
+      parcels,component_mass,interval,substeps,ok,message,boundary_faces,boundary_change)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),interval
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    integer, intent(out) :: substeps
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:),split_masses(:,:)
+    type(spray_parcel), allocatable :: drops(:)
+    type(spray_parcel) :: next
+    type(spray_liquid) :: effective
+    type(spray_film) :: mixture_film
+    real(dp) :: y(size(components)),rates(size(components)),hv(size(components)),next_mass(size(components))
+    real(dp) :: before_boundary(size(components)),rho,cp,e,heat,invtau,tdot,elapsed,dt,speed,old_mass,volume
+    real(dp) :: sampled(size(state,1)),primitive(size(state,1)),old_cells(size(state,1),8),old_t(8)
+    real(dp) :: change(size(state,1)),ledger(size(state,1)),weights(8),exchange(5),tg,recovered,sound,guess
+    integer :: shape3(3),indices(3,8),p,n,i,j,k,attempt,count,old_count,parent,v
+    character(len=32) :: faces(6)
+    logical :: valid,accepted
+    ok=.false.;substeps=0;message='Invalid mixture coupling state'
+    if (present(boundary_change)) boundary_change=0
+    if (.not.allocated(parcels).or..not.allocated(component_mass)) return
+    if (.not.valid_spray_options(options).or.options%khrt_children) return
+    if (size(components)<1.or.size(components)>min(16,size(species))) return
+    if (any(shape(component_mass)/=[size(components),size(parcels)])) return
+    if (size(state,1)/=5+size(species).or.size(parcels)>options%maximum_parcels) return
+    shape3=shape(temperature)
+    if (any(shape3<2).or.any(shape(state(1,:,:,:))/=shape3)) return
+    if (.not.all(ieee_is_finite([lower,spacing,interval]))) return
+    if (interval<0.or.interval>1e6_dp.or.any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+    faces='periodic'
+    if (present(boundary_faces)) faces=boundary_faces
+    if (.not.valid_spray_boundary_faces(faces)) return
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=size(state,1)) return
+    end if
+    do p=1,size(parcels)
+      if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
+      if (parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0) return
+      if (p>1) then
+        if (parcels(p)%id<=parcels(p-1)%id) return
+      end if
+    end do
+    gas=state;temp=temperature
+    call recover_reactive_temperatures_3d(species,state,temperature,shape3(1),shape3(2),shape3(3),temp,valid)
+    if (.not.valid) return
+    if (any(abs(temp-temperature)>1e-9_dp*max(1.0_dp,abs(temperature)))) return
+    temp=temperature;drops=parcels;masses=component_mass;ledger=0;count=0;volume=product(spacing)
+    do p=1,size(drops)
+      elapsed=0
+      do while(elapsed<interval.and.drops(p)%mass>0)
+        if (count>=options%maximum_substeps) then
+          message='Mixture substep limit; complete update rolled back';return
+        end if
+        call particle_boundary_stencil(drops(p)%position,lower,spacing,shape3,faces,indices,weights,valid)
+        if (.not.valid) return
+        sampled=0;guess=0
+        do n=1,8
+          i=indices(1,n);j=indices(2,n);k=indices(3,n)
+          old_cells(:,n)=gas(:,i,j,k);old_t(n)=temp(i,j,k)
+          sampled=sampled+weights(n)*old_cells(:,n);guess=guess+weights(n)*old_t(n)
+        end do
+        call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
+        if (.not.valid) return
+        y=masses(:,p)/sum(masses(:,p))
+        call mixture_transfer_rates(species,transport,primitive,tg,drops(p),components,y,options, &
+          invtau,heat,rates,hv,valid)
+        if (.not.valid) return
+        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid)
+        if (.not.valid) return
+        dt=interval-elapsed
+        if (invtau>0) dt=min(dt,options%max_fractional_change/invtau)
+        tdot=heat*(tg-drops(p)%temperature)
+        do n=1,size(components)
+          if (rates(n)>0) dt=min(dt,options%max_fractional_change*masses(n,p)/rates(n))
+          tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
+        end do
+        tdot=tdot/(drops(p)%mass*cp)
+        if (abs(tdot)>0) dt=min(dt,min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot))
+        speed=max(maxval(abs(drops(p)%velocity)),maxval(abs(primitive(2:4))))
+        if (speed>0) dt=min(dt,options%particle_cfl*minval(spacing)/speed)
+        accepted=.false.
+        do attempt=1,30
+          if (dt<=0.or.elapsed+dt<=elapsed) exit
+          next=drops(p);next_mass=masses(:,p)
+          call advance_mixture_frozen_gas(species,transport,primitive,tg,next,components,next_mass,options,dt,change,valid)
+          if (valid) then
+            do n=1,8
+              i=indices(1,n);j=indices(2,n);k=indices(3,n)
+              gas(:,i,j,k)=old_cells(:,n)+weights(n)*change/volume
+              call reactive_conserved_to_primitive(species,gas(:,i,j,k),old_t(n),primitive,recovered,sound,valid)
+              if (.not.valid) exit
+              temp(i,j,k)=recovered
+            end do
+          end if
+          if (valid) then
+            accepted=.true.;exit
+          end if
+          do n=1,8
+            i=indices(1,n);j=indices(2,n);k=indices(3,n)
+            gas(:,i,j,k)=old_cells(:,n);temp(i,j,k)=old_t(n)
+          end do
+          call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
+          if (.not.valid) return
+          dt=.5_dp*dt
+        end do
+        if (.not.accepted) then
+          message='Mixture feedback rejected; complete update rolled back';return
+        end if
+        if (next%mass>0) then
+          y=next_mass/sum(next_mass)
+          call liquid_mixture_properties(components,y,next%temperature,rho,cp,e,valid)
+          if (.not.valid) return
+        end if
+        effective=components(1);effective%density=rho;effective%density_model='constant'
+        effective%density_coefficients=0;effective%density_temperature_range=0
+        effective%heat_capacity=cp;effective%heat_capacity_model='constant'
+        effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+        effective%reference_temperature=next%temperature;effective%reference_energy=e
+        effective%boiling_model='reject';effective%critical_temperature=0
+        old_mass=next%mass
+        ! Restore the sampled primitive: the feedback recovery above used it as scratch.
+        call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
+        if (.not.valid) return
+        if (next%mass>0.and.options%breakup_model/='none') then
+          call build_mixture_film(species,transport,primitive,tg,next,components,y,options,mixture_film,rates,hv,valid)
+          if (.not.valid) return
+          call advance_spray_breakup(next,effective,options,sampled(1),primitive(2:4),mixture_film%density, &
+            mixture_film%viscosity,dt,valid)
+          if (.not.valid) return
+          next_mass=next_mass*(next%mass/old_mass)
+        end if
+        before_boundary=next_mass
+        call apply_parcel_boundaries(next,effective,lower,lower+spacing*real(shape3,dp),faces,exchange,valid)
+        if (.not.valid) return
+        if (next%mass==0) next_mass=0
+        ledger(1:5)=ledger(1:5)+exchange
+        do n=1,size(components)
+          v=components(n)%vapor_index
+          ledger(5+v)=ledger(5+v)+next%multiplicity*(next_mass(n)-before_boundary(n))
+        end do
+        drops(p)=next;masses(:,p)=next_mass;elapsed=min(interval,elapsed+dt);count=count+1
+      end do
+    end do
+    old_count=size(drops)
+    call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,valid)
+    if (.not.valid) return
+    if (size(drops)>old_count) then
+      allocate(split_masses(size(components),size(drops)));split_masses(:,:old_count)=masses;parent=1
+      do p=old_count+1,size(drops)
+        do while(parent<old_count)
+          if (drops(parent)%id>=drops(p)%parent_id) exit
+          parent=parent+1
+        end do
+        if (drops(parent)%id/=drops(p)%parent_id) return
+        split_masses(:,p)=masses(:,parent)
+      end do
+      call move_alloc(split_masses,masses)
+    end if
+    state=gas;temperature=temp;parcels=drops;call move_alloc(masses,component_mass)
+    if (present(boundary_change)) boundary_change=ledger
+    substeps=count;ok=.true.;message=''
+  end subroutine
+
+  subroutine mixture_system_totals(state,spacing,parcels,components,component_mass,totals,ok)
+    real(dp), intent(in) :: state(:,:,:,:),spacing(3),component_mass(:,:)
+    type(spray_parcel), intent(in) :: parcels(:)
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(inout) :: totals(:)
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(state,1)),y(size(components)),rho,cp,e,m
+    integer :: p,n,v
+    logical :: valid
+    ok=.false.
+    if (size(totals)/=size(state,1).or.size(components)<1.or.size(components)>16) return
+    if (any(shape(component_mass)/=[size(components),size(parcels)])) return
+    if (.not.all(ieee_is_finite(spacing)).or.any(spacing<=0)) return
+    do n=1,size(components)
+      if (.not.valid_spray_liquid(components(n))) return
+      if (components(n)%vapor_index>size(state,1)-5) return
+    end do
+    do n=1,size(candidate)
+      candidate(n)=sum(state(n,:,:,:))*product(spacing)
+    end do
+    do p=1,size(parcels)
+      if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
+      if (parcels(p)%mass==0) cycle
+      y=component_mass(:,p)/sum(component_mass(:,p))
+      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid)
+      if (.not.valid) return
+      m=parcels(p)%mass*parcels(p)%multiplicity
+      candidate(1)=candidate(1)+m;candidate(2:4)=candidate(2:4)+m*parcels(p)%velocity
+      candidate(5)=candidate(5)+m*(e+.5_dp*sum(parcels(p)%velocity**2))
+      do n=1,size(components)
+        v=components(n)%vapor_index
+        candidate(5+v)=candidate(5+v)+parcels(p)%multiplicity*component_mass(n,p)
+      end do
+    end do
+    if (.not.all(ieee_is_finite(candidate))) return
+    totals=candidate;ok=.true.
   end subroutine
 
   subroutine spray_system_totals(state, spacing, parcels, liquid, totals,materials,wall_films)

@@ -7,6 +7,7 @@ module spray_checkpoint_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_film
   use spray_parcel_mod
+  use spray_mixture_mod, only: valid_component_inventory
   implicit none
   private
   character(len=*), parameter :: magic='PELEF_SPRAY_3D_CHECKPOINT_V1'
@@ -81,7 +82,7 @@ contains
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -94,6 +95,7 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     real(dp), intent(in), optional :: boundary_totals(:),source_totals(:)
+    real(dp), intent(in), optional :: component_mass(:,:)
     real(dp), allocatable :: check(:,:,:)
     character(len=:), allocatable :: temporary
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
@@ -129,6 +131,7 @@ contains
       if (.not.has_khrt.or..not.has_split) return
       expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
+    if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -146,6 +149,13 @@ contains
       if (size(wall_films)>1000000) return
       do p=1,size(wall_films)
         if (.not.valid_wall_film(wall_films(p))) return
+      end do
+    end if
+    if (present(component_mass)) then
+      if (size(component_mass,1)<1.or.size(component_mass,1)>min(16,size(species))) return
+      if (size(component_mass,2)/=size(parcels)) return
+      do p=1,size(parcels)
+        if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
       end do
     end if
     do p=1,size(parcels)
@@ -182,6 +192,9 @@ contains
     write(unit,'(a)',iostat=ios) trim(expected_magic)
     if (ios==0) write(unit,'(a)',iostat=ios) trim(context)
     if (ios==0) write(unit,*,iostat=ios) size(state,1),dims,size(parcels)
+    if (present(component_mass)) then
+      if (ios==0) write(unit,'(i0)',iostat=ios) size(component_mass,1)
+    end if
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reference_totals
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) injected_totals
@@ -212,6 +225,9 @@ contains
       if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
       if (has_shedding.and.ios==0) write(unit,'(2es26.17e3)',iostat=ios) &
         parcels(p)%khrt_initial_count,parcels(p)%khrt_shed_volume
+      if (present(component_mass)) then
+        if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) component_mass(:,p)
+      end if
     end do
     if (has_films.and.ios==0) then
       write(unit,'(i0)',iostat=ios) size(wall_films)
@@ -241,7 +257,7 @@ contains
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -256,6 +272,9 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     real(dp), intent(inout), optional :: boundary_totals(:),source_totals(:)
+    real(dp), allocatable, intent(inout), optional :: component_mass(:,:)
+    real(dp), allocatable :: mass_candidate(:,:)
+    integer :: component_count(1)
     real(dp) :: source(size(state,1))
     real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
@@ -297,6 +316,7 @@ contains
       if (.not.has_khrt.or..not.has_split) return
       expected_magic=trim(expected_magic)//'_SHED_V1'
     end if
+    if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -318,6 +338,12 @@ contains
     if (ios/=0) goto 900
     if (any(got(1:4)/=[size(state,1),dims])) goto 900
     if (got(5)<0 .or. got(5)>1000000) goto 900
+    if (present(component_mass)) then
+      call read_integer_row(unit,component_count,ios)
+      if (ios/=0) goto 900
+      if (component_count(1)<1.or.component_count(1)>min(16,size(species))) goto 900
+      allocate(mass_candidate(component_count(1),got(5)))
+    end if
     call read_tokens(unit,tokens(1:3),ios)
     if (ios/=0) goto 900
     read(tokens(1),*,iostat=ios) next_time
@@ -397,6 +423,11 @@ contains
         if (ios/=0) goto 900
         drops(p)%khrt_initial_count=row(1);drops(p)%khrt_shed_volume=row(2)
       end if
+      if (present(component_mass)) then
+        call read_real_row(unit,mass_candidate(:,p),ios)
+        if (ios/=0) goto 900
+        if (.not.valid_component_inventory(drops(p),mass_candidate(:,p))) goto 900
+      end if
       if (.not. valid_spray_parcel(drops(p))) goto 900
       if (p>1) then
         if (drops(p)%id<=drops(p-1)%id) goto 900
@@ -437,6 +468,7 @@ contains
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source
     if (has_films) call move_alloc(patches,wall_films)
+    if (present(component_mass)) call move_alloc(mass_candidate,component_mass)
     reference_totals=ref; injected_totals=injected; ok=.true.; message=''
     return
 900 continue

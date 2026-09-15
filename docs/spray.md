@@ -270,8 +270,9 @@ without replacing the outputs.
 recovers temperature and returns the opposite actual energy increment for the gas.
 Failure preserves the parcel and returns zero transfer. The transport update
 below supplies mixture heat transfer and component evaporation.
-The CLI still selects one pure liquid per parcel; mixture composition storage,
-CFD integration and coupled restart remain to be connected. The
+The CLI still selects one pure liquid per parcel. The mixture grid API below
+retains component masses and supports their checkpoint persistence; application
+input and the combined hydro/chemistry driver remain to be connected. The
 reference's optional boiling-temperature property caps are not applied here.
 See [source](../references/spray_mixture.json) and
 [focused evidence](validation/spray-mixture-thermo-20260916.md).
@@ -305,7 +306,7 @@ there is no residual liquid temperature to solve or additional heat debit.
 Overdraw, invalid composition, unsupported energy states and invalid species
 indices reject without modifying parcel/component masses and return zero exchange.
 This API consumes calculated evaporation amounts; the frozen-gas update below
-supplies them. Persistent CFD parcel composition remains to be connected.
+supplies them. The grid API below retains component masses alongside the parcel array.
 See [component-exchange evidence](validation/spray-mixture-exchange-20260916.md).
 
 ### Mixed-liquid film transport and frozen-gas update
@@ -331,9 +332,41 @@ held fixed during this operation; returned conserved increments include drag
 work and species exchange. It changes the parcel and external component-mass
 array only on success. Overdraw or inadmissible temperatures reject the interval;
 the caller must shorten it. A zero interval preserves state exactly. This remains
-a composable API; particle composition storage, regular-grid feedback, mixture
-wall/breakup handling, CLI and restart are not yet wired to it.
+a composable API used by the grid coupling below; wall impact, KH shed children,
+CLI and the combined hydro/chemistry driver remain to be connected.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
+
+### Mixed-liquid grid coupling and composition restart
+
+`advance_mixture_coupling_3d` advances a parcel array and a persistent
+`component_mass(component,parcel)` array together with a regular 3D gas grid.
+All parcels use the supplied ordered component table. Each column stores masses
+per physical droplet and must sum to that parcel's droplet mass. The routine
+samples gas with the existing particle stencil, limits drag/temperature/component
+changes and particle travel, and halves rejected feedback intervals. Gas,
+particle, component and boundary states commit only after the full update succeeds.
+
+The boundary API supports periodic wrapping, specular wall reflection and
+outflow/inflow removal. Boundary budgets include each component's species mass;
+`mixture_system_totals` includes both gas and liquid inventories on the same basis.
+ETAB/KHRT representative-size updates preserve composition while scaling droplet
+mass and multiplicity. Their surface tension and liquid viscosity must be supplied
+as mixture properties through the existing options. Computational splitting copies
+component masses per droplet into its descendants. KH shed-mass children and
+wall-impact/film conversion are not connected to this mixed-liquid route yet.
+
+Both checkpoint routines accept optional `component_mass`. The `_MIX_V1` suffix
+adds a component count after grid dimensions and a component-mass row after each
+parcel record. Counts, shapes, nonnegative finite masses and parcel-mass closure
+are checked. A reader without composition output rejects this format; invalid
+reads preserve existing state. The caller's restart context must identify the
+ordered component properties and mixture settings, as with existing pure-liquid
+checkpoint contexts. The reader commits the allocated component matrix together
+with the gas and parcel state.
+
+These are regular-grid coupling/checkpoint APIs. Mixture namelist input, scheduled
+injection and the combined hydro/chemistry application driver remain open.
+See [grid/restart evidence](validation/spray-mixture-grid-20260916.md).
 
 ## KH-RT representative-drop breakup
 

@@ -35,16 +35,11 @@ splitting now partitions the KH inventories
 now consumes crossed parcels before KH release, with coupled film/lineage restart
 ([evidence](validation/khrt-wall-20260916.md)); wet-impact correlation limits remain.
 
-A mixed-liquid thermodynamic API now evaluates additive-volume density,
-mass-weighted heat capacity/energy and conservative sensible heating with
-energy-to-temperature inversion
-([evidence](validation/spray-mixture-thermo-20260916.md)). Mixture composition
-storage and CLI/coupled restart remain open. Raoult surface fractions and supplied
-component-mass exchange now return species-resolved conservative gas increments
-([evidence](validation/spray-mixture-exchange-20260916.md)). Diffusion-weighted
-component rates and a conservative frozen-gas drag/heating/evaporation API are
-connected ([evidence](validation/spray-mixture-rates-20260916.md)); grid coupling
-and persistent composition remain open.
+The mixed-liquid API now covers mixture properties, component transport,
+regular-grid feedback, component-specific boundary budgets, representative
+breakup/splitting and composition checkpoint persistence
+([evidence](validation/spray-mixture-grid-20260916.md)). Mixture CLI/injection,
+the combined hydro/chemistry driver, wall impact and KH shed children remain open.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

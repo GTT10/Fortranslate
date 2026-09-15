@@ -59,8 +59,10 @@ drives ETAB/KH-RT. The pinned piecewise drag law and ETAB deformation multiplier
 the pinned reference convention. Port material identity now routes evaporation to each liquid's gas species and persists through restart; density/pressure fits, vapor-state caps and breakup viscosity/surface tension can be set independently per port. Polynomial liquid heat capacity now supplies the thermal update and integrated liquid energy, including per-port fits. Mixed-liquid density, heat capacity, stored energy and fixed-composition heating
 now have a shared thermodynamic API. Raoult surface partitioning and supplied
 component-mass evaporation exchange, diffusion-weighted rates and a conservative
-frozen-gas transport update are implemented. Persistent composition, grid coupling,
-mixture wall/breakup handling, CLI/coupled restart and physical boiling rates remain open.
+frozen-gas transport update are implemented. Regular-grid feedback, persistent
+component masses, boundary budgets, representative breakup/splitting and composition
+checkpoint APIs are connected. Mixture wall impact/KH shed children, CLI/injection,
+combined hydro/chemistry stepping and physical boiling rates remain open.
 
 ## Ordered implementation work
 

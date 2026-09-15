@@ -13,8 +13,18 @@ module spray_mixture_mod
   private
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
-  public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas
+  public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory
 contains
+  pure logical function valid_component_inventory(parcel,masses) result(ok)
+    type(spray_parcel), intent(in) :: parcel
+    real(dp), intent(in) :: masses(:)
+    ok=.false.
+    if (.not.valid_spray_parcel(parcel).or.size(masses)<1.or.size(masses)>16) return
+    if (.not.all(ieee_is_finite(masses))) return
+    if (any(masses<0).or.any(masses>1)) return
+    ok=abs(sum(masses)-parcel%mass)<=32*epsilon(1.0_dp)*size(masses)*parcel%mass
+  end function
+
   pure logical function valid_composition(components,y) result(ok)
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(in) :: y(:)

@@ -11,7 +11,7 @@ program test_spray_integration
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use spray_wall_impact_mod
   use spray_parcel_mod
-  use spray_coupling_3d_mod, only: spray_system_totals
+  use spray_coupling_3d_mod, only: spray_system_totals,advance_mixture_coupling_3d,mixture_system_totals
   use spray_reactive_3d_mod
   use spray_checkpoint_mod
   implicit none
@@ -27,7 +27,9 @@ program test_spray_integration
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
   real(dp) :: force(15),accel(3),dt,expected(3)
-  integer :: i,j,k,iteration,steps,event
+  real(dp), allocatable :: component_mass(:,:),saved_mass(:,:)
+  integer :: i,j,k,iteration,steps,event,record_status
+  character(len=16384) :: checkpoint_record
   logical :: ok
   character(len=32) :: which,method
   character(len=256) :: message
@@ -130,6 +132,106 @@ program test_spray_integration
     call require(all(drops%mass==before_drops%mass),'parent mass rollback')
     call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
       all(drops%khrt_shed_volume==before_drops%khrt_shed_volume),'wall/KH inventory rollback')
+  case('mixture_grid')
+    materials(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
+    call require(ok,'mixture grid components')
+    allocate(component_mass(2,size(drops)))
+    do i=1,size(drops)
+      component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
+    end do
+    saved_mass=component_mass
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'initial mixture inventory')
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(ok,trim(message))
+    call require(all(component_mass<saved_mass),'both liquid species evaporate into grid')
+    call require(sum(state(5+materials(1)%vapor_index,:,:,:))>0.and. &
+      sum(state(5+materials(2)%vapor_index,:,:,:))>0,'two vapor sources reach gas cells')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok,'updated mixture inventory')
+    call require(abs(totals1(1)-totals0(1))<1e-12_dp*totals0(1),'mixture grid mass conservation')
+    call require(maxval(abs(totals1(2:4)-totals0(2:4)))<1e-18_dp,'mixture grid momentum conservation')
+    call require(abs(totals1(5)-totals0(5))<1e-12_dp*abs(totals0(5)),'mixture grid energy conservation')
+    do i=1,2
+      j=5+materials(i)%vapor_index
+      call require(abs(totals1(j)-totals0(j))<1e-12_dp*totals0(j),'component inventory conservation')
+    end do
+    time=2e-7_dp;event=0;injected=0
+    call write_spray_checkpoint('mixture.chk','mixture-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,component_mass=component_mass)
+    call require(ok,trim(message))
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(ok,trim(message))
+    before=state;before_t=temperature;before_drops=drops;saved_mass=component_mass
+    call read_spray_checkpoint('mixture.chk','mixture-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message)
+    call require(.not.ok.and.all(state==before),'mixture checkpoint cannot silently drop composition')
+    open(newunit=i,file='mixture.chk',status='old',action='read')
+    open(newunit=j,file='mixture-bad.chk',status='new',action='write')
+    k=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if (record_status/=0) exit
+      k=k+1
+      if (k==size(temperature)+9) checkpoint_record='0 0' ! First parcel's component mass record.
+      write(j,'(a)') trim(checkpoint_record)
+    end do
+    close(i);close(j)
+    call read_spray_checkpoint('mixture-bad.chk','mixture-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,component_mass=component_mass)
+    call require(.not.ok.and.all(state==before).and.all(component_mass==saved_mass),'malformed component state rollback')
+    open(newunit=i,file='mixture-bad.chk',status='old');close(i,status='delete')
+    call read_spray_checkpoint('mixture.chk','mixture-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,component_mass=component_mass)
+    call require(ok,trim(message))
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(ok,trim(message))
+    call require(all(state==before).and.all(temperature==before_t),'mixture restart gas equality')
+    call require(all(component_mass==saved_mass).and.all(drops%mass==before_drops%mass),'mixture restart composition equality')
+    do i=1,size(drops)
+      call require(all(drops(i)%position==before_drops(i)%position).and. &
+        all(drops(i)%velocity==before_drops(i)%velocity).and. &
+        drops(i)%temperature==before_drops(i)%temperature,'mixture restart particle equality')
+    end do
+    open(newunit=i,file='mixture.chk',status='old');close(i,status='delete')
+    options%maximum_substeps=1
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,1e-4_dp,steps,ok,message, &
+      boundary_change=force)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'mixture grid late rollback')
+    call require(all(component_mass==saved_mass).and.all(force==0),'mixture component and boundary rollback')
+    options%maximum_substeps=100000;options%heat=.false.;options%evaporation=.false.;options%drag=.false.
+    faces='periodic';faces(1:2)='outflow'
+    do i=1,size(drops)
+      drops(i)%position(1)=.004999_dp;drops(i)%velocity=[100.0_dp,0.0_dp,0.0_dp]
+    end do
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'outflow mixture inventory')
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message, &
+      boundary_faces=faces,boundary_change=force)
+    call require(ok.and.all(drops%mass==0).and.all(component_mass==0),'mixed parcel outflow clears components')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok.and.maxval(abs(totals1-totals0-force))<1e-12_dp,'mixture outflow ledger')
+    drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
+    options%breakup_model='khrt';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=10
+    do i=1,size(drops)
+      drops(i)%velocity=[1000.0_dp,0.0_dp,0.0_dp]
+    end do
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'breakup mixture inventory')
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(ok,trim(message))
+    call require(size(drops)>size(before_drops).and.all(drops%multiplicity<=10),'mixture computational splitting')
+    call require(size(component_mass,2)==size(drops),'split component columns follow parcel lineage')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp,'mixture breakup/splitting conservation')
   case('materials')
     materials(1)=liquid
     ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.
