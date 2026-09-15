@@ -32,7 +32,7 @@ program test_spray_core
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
   type(spray_wall_film) :: wall_patch,saved_patch
-  real(dp) :: child_totals(5),film_budget(5)
+  real(dp) :: child_totals(5),film_budget(5),film_mdot,film_qgas,film_qwall,film_tdot,solid_energy
   real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
   integer :: impact_kinds(6),event_index
   integer :: regime
@@ -55,6 +55,29 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('film_evolution')
+    call construct_wall_film(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],.6_dp,100.0_dp,1000.0_dp,pi/3, &
+      wall_patch,film_budget,ok)
+    call require(ok,'initial evolving film')
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.false., &
+      film_mdot,film_qgas,film_qwall,film_tdot,ok)
+    call require(ok.and.film_mdot==0.and.film_qgas>0.and.film_qwall>0,'film receives gas and wall heat')
+    dt=1e-8_dp
+    call advance_wall_film_frozen(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.false.,dt,1e-7_dp, &
+      saved_patch,transfer,solid_energy,ok)
+    call require(ok.and.saved_patch%mass==wall_patch%mass,'pure film heating')
+    call require(abs(saved_patch%temperature-wall_patch%temperature-dt*film_tdot)<1e-12_dp,'explicit thermal rate')
+    child_totals=wall_film_totals(saved_patch,liquid)-wall_film_totals(wall_patch,liquid)+transfer
+    call require(abs(child_totals(5)+solid_energy)<1e-12_dp,'gas film wall energy closure')
+    call require(abs(solid_energy+dt*film_qwall)<1e-15_dp,'wall heat ledger')
+    call advance_wall_film_frozen(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
+      saved_patch,transfer,solid_energy,ok)
+    call require(ok.and.saved_patch%mass<wall_patch%mass.and.transfer(1)>0,'film evaporation supplies gas mass')
+    call require(saved_patch%diameter==wall_patch%diameter,'film footprint fixed')
+    call require(abs(saved_patch%mass+transfer(1)-wall_patch%mass)<1e-20_dp,'film mass closure')
+    call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
+      saved_patch,transfer,solid_energy,ok)
+    call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
   case('wall_event')
     p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2;q=p
     impact_kv=[79.0_dp,79.0_dp,150.0_dp,150.0_dp,150.0_dp,300.0_dp]

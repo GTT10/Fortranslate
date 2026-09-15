@@ -781,8 +781,8 @@ ratio. Velocity inputs/outputs use m/s. Azimuthal fractions are fractions of
 incident mass, summing to the supplied splashed fraction when accepted.
 
 These correlation routines are used by the optional wall-impact coupling below.
-Child and film-patch constructors are also exposed separately. Wall-film
-evolution remains open. Inputs are checked for finite/bounded
+Child and film-patch constructors are also exposed separately. Lateral wall-film
+transport remains open. Inputs are checked for finite/bounded
 values. Negative mass fractions produced by the reference fits return failure
 and zero mass outputs; they are not clipped into a different distribution.
 In particular, thick-film azimuth fits can produce negative fractions even
@@ -808,8 +808,9 @@ or invalid mass distributions reject without replacing an existing child array.
 deposited fraction, incident Weber/Reynolds numbers and contact angle in radians.
 It retains liquid mass, temperature, material ID, location, normal, film diameter
 and thickness. Geometry uses the pinned modified Pasandideh-Fard expression for
-the coalesced parcel population. These are individual deposited patches; merging,
-wall heat transfer and subsequent film motion/evaporation are not implemented.
+the coalesced parcel population. These are individual deposited patches. The
+optional thermal/evaporation update below evolves each patch; merging and lateral
+film motion remain open.
 
 Both routines return a signed five-component wall budget: mass, three momentum
 components and total energy, positive toward the wall. Mass remains entirely in
@@ -847,7 +848,7 @@ the entire event, preserving parent, child array and film output and zeroing the
 wall budget. Successful calls replace the film/children output with this event's
 results (empty when absent); a caller must append or accumulate them into its
 persistent state. Regular gas coupling and checkpoint persistence are wired into
-the application below; wall-film evolution remains open. See
+the application below; lateral film transport remains open. See
 [event checks](validation/wall-impact-event-20260916.md).
 
 
@@ -874,7 +875,8 @@ gas pressure: Clausius with reference latent heat, or Antoine strictly within it
 fit range. Kv uses the incident normal speed, current liquid density, viscosity
 and diameter; Kcrit uses gas pressure converted from Pa to bar. Existing stationary
 patches covering the impact point contribute their summed heights to the wet-film
-ratio. Patches are appended individually without merging or evolving them.
+ratio. Patches are appended individually. Their optional thermal/evaporation
+update is described below; they are not merged.
 
 `spray_system_totals(...,wall_films=...)` includes film mass, material-resolved
 species inventory and integrated liquid energy. The boundary ledger includes
@@ -909,3 +911,37 @@ explicitly enabled, preventing accidental loss of deposition state.
 producing four descendants and a static deposited patch. Liquid properties are
 illustrative and gas chemistry/transport and evaporation are disabled to isolate
 impact bookkeeping. See [CLI/restart evidence](validation/wall-impact-application-20260916.md).
+
+
+### Stationary film heating and evaporation
+
+Set `wall_film_evolution=.true.` and supply `wall_liquid_conductivity` in
+W/(m K). This currently specifies one positive constant conductivity shared by
+all film materials; per-material conductivity fits are not implemented.
+`minimum_film_height` defaults to 1e-7 m (the reference 1e-5 cm cutoff). These
+inputs enter checkpoint identity. Existing `heat_enabled` controls gas/wall
+heating, and `evaporation_enabled` controls film mass loss as well as droplets.
+The default remains static deposition when film evolution is disabled.
+
+For film area A and thickness h, the update uses gas conductance lambda_g/h,
+wall heat `2*A*lambda_l*(Twall-Tfilm)/h`, and the pinned Chilton-Colburn mass
+transfer correlation with the existing binary-carrier diffusion coefficient.
+The gas skin uses the reference one-third temperature rule with a nonnegative
+hot-gas temperature difference. Local properties/rates are frozen over each
+bounded explicit substep. Film heat capacity and liquid energy use the selected
+constant or polynomial models. The footprint stays fixed; thickness is recomputed
+from remaining mass and current liquid density. An evaporating film below the
+cutoff transfers its complete remainder to gas and is removed from the patch list.
+
+Wall heat is a separate signed boundary-energy contribution. Gas receives the
+discrete film energy loss plus heat supplied by the wall, and vapor enters the
+selected species with zero injected momentum for stationary film. This preserves
+the established formation-energy convention; it is not a byte-for-byte port of
+the reference energy-source bookkeeping. Gas admissibility and film property
+bounds are checked before a substep commits. Newly deposited films only evolve
+for their remaining coupling interval; late failure rolls back the whole step.
+
+`cases/spray_3d/wall_film_evaporation.nml` demonstrates deposition followed by
+film heating/evaporation. This remains a stationary, fixed-footprint approximation,
+without lateral flow, moving-wall coupling, entrainment or calibrated film
+qualification. See [focused evidence](validation/wall-film-evolution-20260916.md).

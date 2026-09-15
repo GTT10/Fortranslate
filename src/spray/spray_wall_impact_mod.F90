@@ -18,12 +18,94 @@ module spray_wall_impact_mod
     logical :: enabled(6)=.false.
     real(dp) :: temperature(6)=300,contact_angle=1.0471975511965977_dp
     integer :: maximum_films=1000000
+    logical :: evolve=.false.
+    real(dp) :: liquid_conductivity=0,minimum_height=1e-7_dp
   end type
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
+  public :: wall_film_transfer_rates,advance_wall_film_frozen
   public :: resolve_wall_impact
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
+  subroutine wall_film_transfer_rates(patch,liquid,gas,conductivity,wall_temperature,heat,evaporation, &
+      mass_rate,gas_heat,wall_heat,temperature_rate,ok)
+    type(spray_wall_film), intent(in) :: patch
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_film), intent(in) :: gas
+    real(dp), intent(in) :: conductivity,wall_temperature
+    logical, intent(in) :: heat,evaporation
+    real(dp), intent(out) :: mass_rate,gas_heat,wall_heat,temperature_rate
+    logical, intent(out) :: ok
+    real(dp) :: area,h,bm,cp,latent
+    mass_rate=0;gas_heat=0;wall_heat=0;temperature_rate=0;ok=.false.
+    if (.not.valid_wall_film(patch).or..not.valid_spray_liquid(liquid)) return
+    if (.not.all(ieee_is_finite([conductivity,wall_temperature,gas%conductivity,gas%cp,gas%density, &
+        gas%diffusivity,gas%gas_temperature,gas%surface_fraction,gas%ambient_fraction,gas%vapor_enthalpy]))) return
+    if (conductivity<=0.or.conductivity>1e4_dp.or.wall_temperature<1.or.wall_temperature>1e5_dp) return
+    if (gas%conductivity<=0.or.gas%conductivity>1e4_dp.or.gas%cp<1.or.gas%cp>1e8_dp) return
+    if (gas%density<=0.or.gas%density>1e8_dp.or.gas%diffusivity<=0.or.gas%diffusivity>1e4_dp) return
+    if (gas%gas_temperature<1.or.gas%gas_temperature>1e5_dp) return
+    if (gas%surface_fraction<0.or.gas%surface_fraction>=1.or.gas%ambient_fraction<0.or.gas%ambient_fraction>1) return
+    cp=liquid_heat_capacity_at_temperature(liquid,patch%temperature)
+    if (cp<=0.or.patch%height<1e-15_dp.or.patch%diameter>1e9_dp) return
+    area=.25_dp*pi*patch%diameter**2;h=gas%conductivity/patch%height
+    if (heat) then
+      gas_heat=area*h*(gas%gas_temperature-patch%temperature)
+      wall_heat=2*area*conductivity*(wall_temperature-patch%temperature)/patch%height
+    end if
+    if (evaporation) then
+      bm=max(0.0_dp,(gas%surface_fraction-gas%ambient_fraction)/(1-gas%surface_fraction))
+      mass_rate=area*h*(gas%conductivity/gas%cp)**(1.0_dp/3)*log(1+bm)/gas%conductivity* &
+        (gas%density*gas%diffusivity)**(2.0_dp/3)
+    end if
+    latent=gas%vapor_enthalpy-liquid_energy(liquid,patch%temperature)
+    if (mass_rate>0.and.latent<=0) return
+    temperature_rate=(gas_heat+wall_heat-mass_rate*latent)/(patch%mass*cp)
+    ok=all(ieee_is_finite([mass_rate,gas_heat,wall_heat,temperature_rate]))
+  end subroutine
+
+  subroutine advance_wall_film_frozen(patch,liquid,gas,conductivity,wall_temperature,heat,evaporation,dt, &
+      minimum_height,next,gas_change,wall_energy,ok)
+    type(spray_wall_film), intent(in) :: patch
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_film), intent(in) :: gas
+    real(dp), intent(in) :: conductivity,wall_temperature,dt,minimum_height
+    logical, intent(in) :: heat,evaporation
+    type(spray_wall_film), intent(out) :: next
+    real(dp), intent(out) :: gas_change(5),wall_energy
+    logical, intent(out) :: ok
+    type(spray_wall_film) :: candidate
+    real(dp) :: mdot,qgas,qwall,tdot,rho,area
+    next=patch;gas_change=0;wall_energy=0;ok=.false.
+    if (.not.all(ieee_is_finite([dt,minimum_height]))) return
+    if (dt<0.or.dt>1e6_dp.or.minimum_height<1e-15_dp.or.minimum_height>1) return
+    call wall_film_transfer_rates(patch,liquid,gas,conductivity,wall_temperature,heat,evaporation,mdot,qgas,qwall,tdot,ok)
+    if (.not.ok.or.dt==0) return
+    ok=.false.;candidate=patch
+    candidate%mass=max(0.0_dp,patch%mass-dt*mdot)
+    if (candidate%mass>0) then
+      candidate%temperature=patch%temperature+dt*tdot
+      if (liquid_heat_capacity_at_temperature(liquid,candidate%temperature)<=0) return
+      rho=liquid_density_at_temperature(liquid,candidate%temperature)
+      if (rho<=0) return
+      area=.25_dp*pi*patch%diameter**2
+      candidate%height=candidate%mass/(rho*area)
+      if (mdot>0.and.candidate%height<=minimum_height) candidate%mass=0
+    end if
+    if (candidate%mass==0) then
+      candidate%height=0;candidate%temperature=patch%temperature
+    else
+      if (.not.valid_wall_film(candidate)) return
+    end if
+    gas_change=wall_film_totals(patch,liquid)-wall_film_totals(candidate,liquid)
+    gas_change(5)=gas_change(5)+qwall*dt
+    wall_energy=-qwall*dt
+    if (.not.all(ieee_is_finite([gas_change,wall_energy]))) then
+      gas_change=0;wall_energy=0;return
+    end if
+    next=candidate;ok=.true.
+  end subroutine
+
   logical function valid_wall_options(o,faces) result(ok)
     type(spray_wall_options), intent(in) :: o
     character(len=*), intent(in) :: faces(6)
@@ -33,6 +115,11 @@ contains
     if (any(o%temperature<1).or.any(o%temperature>1e5_dp)) return
     if (o%contact_angle<1e-6_dp.or.o%contact_angle>pi-1e-6_dp) return
     if (o%maximum_films<1.or.o%maximum_films>1000000) return
+    if (.not.all(ieee_is_finite([o%liquid_conductivity,o%minimum_height]))) return
+    if (o%minimum_height<1e-15_dp.or.o%minimum_height>1) return
+    if (o%evolve) then
+      if (.not.any(o%enabled).or.o%liquid_conductivity<=0.or.o%liquid_conductivity>1e4_dp) return
+    end if
     do f=1,6
       if (.not.o%enabled(f)) cycle
       if (faces(f)/='slip_wall'.and.faces(f)/='no_slip_wall'.and.faces(f)/='isothermal_wall') return

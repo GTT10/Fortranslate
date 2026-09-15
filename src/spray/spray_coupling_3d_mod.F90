@@ -151,7 +151,7 @@ contains
     ok=abs(sum(weights)-1.0_dp) < 1.0e-14_dp .and. all(weights >= 0.0_dp)
   end subroutine
 
-  subroutine build_spray_film(species, transport, primitive, gas_temperature, parcel, liquid, options, film, ok)
+  subroutine build_spray_film(species, transport, primitive, gas_temperature, parcel, liquid, options, film, ok,wall_skin)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: primitive(:), gas_temperature
@@ -160,6 +160,7 @@ contains
     type(spray_options), intent(in) :: options
     type(spray_film), intent(out) :: film
     logical, intent(out) :: ok
+    logical, intent(in), optional :: wall_skin
     real(dp) :: y(size(species)), yf(size(species)), diffusion(size(species)), tf
     real(dp) :: binary(size(species),size(species)),carrier_sum,resistance
     real(dp) :: xs,ys,carrier_weight,carrier_inverse,cv,h,e,s,mw,r,cp,gamma,species_cp
@@ -194,6 +195,9 @@ contains
       yf(v)=(2.0_dp*ys+y(v))/3.0_dp
     end if
     tf=(2.0_dp*parcel%temperature+gas_temperature)/3.0_dp
+    if (present(wall_skin)) then
+      if (wall_skin) tf=parcel%temperature+max(0.0_dp,gas_temperature-parcel%temperature)/3
+    end if
     call mixture_mass_properties(species,yf,tf,mw,r,cp,cv,gamma,h,e,s,ok)
     if (.not. ok) return
     film%density=primitive(5)/(r*tf)
@@ -242,11 +246,12 @@ contains
     type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
     type(spray_wall_options) :: impact_settings
     type(spray_wall_film), allocatable :: patches(:)
-    type(spray_wall_film) :: deposit
+    type(spray_wall_film) :: deposit,next_patch
     type(spray_parcel), allocatable :: spawned(:)
     type(spray_parcel) :: identity
-    real(dp), allocatable :: starts(:)
-    real(dp) :: wall_exchange(5)
+    real(dp), allocatable :: starts(:),film_starts(:)
+    real(dp) :: wall_exchange(5),wall_energy,film_mass_rate,film_gas_heat,film_wall_heat,film_temperature_rate
+    integer :: patch_index,wall_face,axis
     logical :: hit
     real(dp), intent(inout) :: state(:,:,:,:), temperature(:,:,:)
     real(dp), intent(in) :: lower(3), spacing(3), interval
@@ -307,6 +312,7 @@ contains
       patches=wall_films
     end if
     if (size(patches)>impact_settings%maximum_films) return
+    allocate(film_starts(size(patches)));film_starts=0
     do p=1,size(patches)
       if (.not.valid_wall_film(patches(p))) return
       identity=spray_parcel();identity%material_id=patches(p)%material_id
@@ -436,6 +442,7 @@ contains
             if (deposit%mass>0) then
               if (size(patches)>=impact_settings%maximum_films) return
               patches=[patches,deposit]
+              film_starts=[film_starts,min(interval,elapsed+dt)]
             end if
             ledger(1:5)=ledger(1:5)-wall_exchange
           end if
@@ -449,6 +456,73 @@ contains
       end do
       p=p+1
     end do
+    if (impact_settings%evolve) then
+      do patch_index=1,size(patches)
+        identity=spray_parcel();identity%id=1;identity%material_id=patches(patch_index)%material_id
+        identity%position=patches(patch_index)%position;identity%multiplicity=1
+        material=select_spray_liquid(identity,liquid,materials)
+        axis=maxloc(abs(patches(patch_index)%normal),dim=1)
+        wall_face=2*axis-merge(1,0,patches(patch_index)%normal(axis)>0)
+        if (.not.impact_settings%enabled(wall_face)) return
+        elapsed=film_starts(patch_index)
+        do while(elapsed<interval.and.patches(patch_index)%mass>0)
+          if (total_steps>=options%maximum_substeps) return
+          ! This proxy supplies only temperature/composition to gas-film property evaluation.
+          identity%mass=min(patches(patch_index)%mass,1.0_dp);identity%temperature=patches(patch_index)%temperature
+          call particle_boundary_stencil(identity%position,lower,spacing,shape3,faces,indices,weights,local_ok)
+          if (.not.local_ok) return
+          sampled=0;guess=0
+          do n=1,8
+            i=indices(1,n);j=indices(2,n);k=indices(3,n)
+            old_cells(:,n)=candidate(:,i,j,k);old_t(n)=temp(i,j,k)
+            sampled=sampled+weights(n)*old_cells(:,n);guess=guess+weights(n)*old_t(n)
+          end do
+          call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,local_ok)
+          if (.not.local_ok) return
+          call build_spray_film(species,transport,primitive,tg,identity,material,options,film,local_ok,wall_skin=.true.)
+          if (.not.local_ok) return
+          call wall_film_transfer_rates(patches(patch_index),material,film,impact_settings%liquid_conductivity, &
+            impact_settings%temperature(wall_face),options%heat,options%evaporation,film_mass_rate,film_gas_heat, &
+            film_wall_heat,film_temperature_rate,local_ok)
+          if (.not.local_ok) return
+          dt=interval-elapsed
+          if (film_mass_rate>0) dt=min(dt,options%max_fractional_change*patches(patch_index)%mass/film_mass_rate)
+          if (abs(film_temperature_rate)>0) dt=min(dt, &
+            min(2.0_dp,options%max_fractional_change*identity%temperature)/abs(film_temperature_rate))
+          accepted=.false.
+          do attempt=1,30
+            if (dt<=0.or.elapsed+dt<=elapsed) exit
+            call advance_wall_film_frozen(patches(patch_index),material,film,impact_settings%liquid_conductivity, &
+              impact_settings%temperature(wall_face),options%heat,options%evaporation,dt,impact_settings%minimum_height, &
+              next_patch,transfer,wall_energy,local_ok)
+            if (local_ok) then
+              increase=0;increase(1:5)=transfer;increase(5+material%vapor_index)=transfer(1)
+              do n=1,8
+                i=indices(1,n);j=indices(2,n);k=indices(3,n)
+                candidate(:,i,j,k)=old_cells(:,n)+weights(n)*increase/volume
+                call reactive_conserved_to_primitive(species,candidate(:,i,j,k),old_t(n),primitive,recovered,sound,local_ok)
+                if (.not.local_ok) exit
+                temp(i,j,k)=recovered
+              end do
+            end if
+            if (local_ok) then
+              accepted=.true.;exit
+            end if
+            do n=1,8
+              i=indices(1,n);j=indices(2,n);k=indices(3,n)
+              candidate(:,i,j,k)=old_cells(:,n);temp(i,j,k)=old_t(n)
+            end do
+            dt=.5_dp*dt
+          end do
+          if (.not.accepted) then
+            message='Film evolution rejected; complete coupling step rolled back';return
+          end if
+          patches(patch_index)=next_patch;ledger(5)=ledger(5)-wall_energy
+          elapsed=min(interval,elapsed+dt);total_steps=total_steps+1
+        end do
+      end do
+      patches=pack(patches,patches%mass>0)
+    end if
     call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,local_ok)
     if (.not.local_ok) then
       message='Parcel splitting exceeds storage or ID bounds; complete step rolled back';return

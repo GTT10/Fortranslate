@@ -57,6 +57,41 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_film_evolution_restart(self):
+        settings = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+                    "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
+                    "wall_film_evolution=.true.,wall_liquid_conductivity=.6,wall_temperature=340,340,340,340,340,340,"
+                    "surface_tension=.072,liquid_viscosity=.001,injection_speed=10,"
+                    "injection_center=.002,.002,5e-7,injection_axis=0,0,-1,cone_angle=0,parcel_count=1,"
+                    "mole_names='N2','','',mole_amounts=1,0,0,gas_temperature=900,"
+                    "drag_enabled=.false.,transport_enabled=.false.,")
+        checkpoint = self.root/'evolving.chk'
+        self.run_case('evolving', common=settings)
+        history = self.check_balance('evolving')
+        self.assertGreater(history[-1]['film_mass'], 0)
+        self.assertLess(history[-1]['film_mass'], max(r['film_mass'] for r in history))
+        with (self.root/'evolving.gas.csv').open() as stream:
+            self.assertGreater(sum(float(r['rhoY_H2O']) for r in csv.DictReader(stream)), 0)
+        self.run_case('evolving_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('evolving_resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
+            self.assertEqual((self.root/f'evolving.{suffix}').read_bytes(),
+                             (self.root/f'evolving_resumed.{suffix}').read_bytes())
+        self.assertEqual(history[-1], self.history('evolving_resumed')[-1])
+        result = self.run_case('evolving_changed', f"restart_file='{checkpoint}',", fail=True,
+                               common=settings.replace('conductivity=.6', 'conductivity=.7'))
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('evolving_bad_lambda', common=settings.replace('conductivity=.6', 'conductivity=0'), fail=True)
+        vanishing = settings+'minimum_film_height=1e-3,'
+        empty_checkpoint = self.root/'vanishing.chk'
+        self.run_case('vanishing', common=vanishing)
+        self.assertEqual(self.check_balance('vanishing')[-1]['film_mass'], 0)
+        self.run_case('vanishing_stop', f"stop_after_steps=3,checkpoint_file='{empty_checkpoint}',", common=vanishing)
+        self.run_case('vanishing_resumed', f"restart_file='{empty_checkpoint}',", common=vanishing)
+        for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
+            self.assertEqual((self.root/f'vanishing.{suffix}').read_bytes(),
+                             (self.root/f'vanishing_resumed.{suffix}').read_bytes())
+
     def test_wall_film_restart(self):
         common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
                   "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"

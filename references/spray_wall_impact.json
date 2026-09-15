@@ -4,10 +4,14 @@
   "path": "Source/Spray/BreakupSplash/AhamedSplash.H",
   "sha256": "37ddd95a06bc96d6c2b1e740cf583a872335efc787b56a4cce80211f4381cb92",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Regular coupled planar wall impacts with static film patches, CLI and checkpoint persistence; film evolution remains open",
+  "scope": "Regular coupled planar impacts and stationary film heating/evaporation with CLI and checkpoint persistence; lateral film transport remains open",
   "child_source": {
     "path": "Source/Spray/SpraySB.cpp",
     "sha256": "e540abf90a3e5acd9b91d6f7994c9373ad505bb47f512fa8c5b7c3e536f32382"
   },
-  "wet_mass_closure": "Deposit 1-ms for wet splash because the pinned classifier leaves dm unset; no entrainment from existing film."
+  "wet_mass_closure": "Deposit 1-ms for wet splash because the pinned classifier leaves dm unset; no entrainment from existing film.",
+  "film_evolution_source": {
+    "path": "Source/Spray/BreakupSplash/WallFilm.H",
+    "sha256": "6b8f1156555058059ab21c023444a662c3bc1f7d23f3173b83ccc92eeb0e51e5"
+  }
 }

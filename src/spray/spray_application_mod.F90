@@ -29,6 +29,8 @@ contains
     character(len=16) :: liquid_cp_model,port_cp_models(16)
     real(dp) :: liquid_cp_coefficients(4),liquid_cp_temperature_range(2)
     real(dp) :: port_cp_coefficients(4,16),port_cp_temperature_ranges(2,16)
+    logical :: wall_film_evolution
+    real(dp) :: wall_liquid_conductivity,minimum_film_height
     logical :: wall_impact_faces(6),impact_enabled,lineage_enabled
     real(dp) :: wall_contact_angle
     integer :: maximum_wall_films,film_unit
@@ -122,6 +124,7 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
       wall_impact_faces,wall_contact_angle,maximum_wall_films, &
       liquid_cp_model,liquid_cp_coefficients,liquid_cp_temperature_range, &
       port_cp_models,port_cp_coefficients,port_cp_temperature_ranges, &
@@ -140,6 +143,7 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    wall_film_evolution=.false.;wall_liquid_conductivity=0;minimum_film_height=1e-7_dp
     wall_impact_faces=.false.;wall_contact_angle=acos(-1.0_dp)/3;maximum_wall_films=1000000
     allocate(wall_films(0))
     liquid_cp_model='constant';liquid_cp_coefficients=0;liquid_cp_temperature_range=0
@@ -193,6 +197,8 @@ contains
     if (maxval(abs(acceleration))>1e6_dp) call fail('Excessive acceleration')
     physical_boundaries=any(boundary_faces/='periodic')
     impact_enabled=any(wall_impact_faces)
+    wall_options%evolve=wall_film_evolution;wall_options%liquid_conductivity=wall_liquid_conductivity
+    wall_options%minimum_height=minimum_film_height
     wall_options%enabled=wall_impact_faces;wall_options%temperature=wall_temperature
     wall_options%contact_angle=wall_contact_angle;wall_options%maximum_films=maximum_wall_films
     if (.not.valid_wall_options(wall_options,boundary_faces)) call fail('Invalid wall impact settings')
@@ -626,6 +632,10 @@ contains
     if (split_enabled) then
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
+    end if
+    if (wall_film_evolution) then
+      context=trim(context)//' wall-film-evolution-v1'
+      call append_reals([wall_liquid_conductivity,minimum_film_height])
     end if
     if (impact_enabled) then
       context=trim(context)//' wall-impact-film-v1'
