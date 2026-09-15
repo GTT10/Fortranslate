@@ -57,6 +57,48 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_wall_film_restart(self):
+        common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+                  "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
+                  "surface_tension=.072,liquid_viscosity=.001,"
+                  "injection_center=.002,.002,5e-7,injection_axis=0,0,-1,cone_angle=0,parcel_count=1,"
+                  "mole_names='N2','','',mole_amounts=1,0,0,gas_temperature=900,"
+                  "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,transport_enabled=.false.,")
+        for speed in [10, 300]:
+            name = f'wall{speed}'
+            settings = common+f'injection_speed={speed},'
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            history = self.check_balance(name)
+            self.assertGreater(history[-1]['film_mass'], 0)
+            with (self.root/f'{name}.films.csv').open() as stream:
+                films = list(csv.DictReader(stream))
+            self.assertEqual(len(films), 1)
+            self.assertAlmostEqual(sum(float(f['mass']) for f in films)/history[-1]['film_mass'], 1, delta=1e-13)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                parcels = list(csv.DictReader(stream))
+            self.assertEqual(len(parcels), 1 if speed == 10 else 5)
+            if speed == 300:
+                self.assertEqual([int(p['parent_id']) for p in parcels], [0, 1, 1, 1, 1])
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(history[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',wall_contact_angle=1.1,",
+                                   common=settings, fail=True)
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+            lines = checkpoint.read_text().splitlines()
+            values = lines[-2].split()
+            values[-1] = '-1'
+            lines[-2] = ' '.join(values)
+            bad = self.root/f'{name}_bad.chk'
+            bad.write_text('\n'.join(lines)+'\n')
+            self.run_case(name+'bad', f"restart_file='{bad}',", common=settings, fail=True)
+        self.run_case('impact_bad_face', common='wall_impact_faces=.true.,', fail=True)
+        self.run_case('impact_bad_sigma', common=common.replace('surface_tension=.072', 'surface_tension=0'), fail=True)
+
     def test_heat_capacity_models_restart(self):
         cases = ["liquid_cp_model='polynomial',liquid_cp_coefficients=4000,4,0,0,liquid_cp_temperature_range=300,600,",
                  "injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"

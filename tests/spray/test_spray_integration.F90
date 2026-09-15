@@ -98,6 +98,22 @@ program test_spray_integration
       call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'coupled film energy ledger')
       call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'coupled wall impulse')
     end do
+    saved_films=films;before_drops=drops
+    time=2e-7_dp;steps=1;event=0;injected=0
+    call write_spray_checkpoint('film.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(ok,trim(message))
+    deallocate(films);allocate(films(0));deallocate(drops);allocate(drops(0))
+    call read_spray_checkpoint('film.chk','wrong-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(.not.ok.and.size(films)==0.and.size(drops)==0,'film checkpoint rejection transaction')
+    call read_spray_checkpoint('film.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(ok.and.size(films)==1.and.size(drops)==5,'film and splash lineage checkpoint')
+    call require(all(films%mass==saved_films%mass).and.all(films%height==saved_films%height), &
+      'exact film checkpoint geometry')
+    call require(all(drops%parent_id==before_drops%parent_id),'wall-only parent IDs restored')
+    open(newunit=i,file='film.chk',status='old');close(i,status='delete')
     state=before;temperature=before_t;deallocate(films);allocate(films(0))
     call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
       [0.0_dp,0.0_dp,-1.0_dp],300.0_dp,0.0_dp,2e-5_dp,330.0_dp,drops,ok)

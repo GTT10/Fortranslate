@@ -16,14 +16,14 @@ Older milestone prose remains historical detail, not a current global status.
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
-| LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup with bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection with up to 16 independently configured ports, and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Mixture droplets/boiling, shed-mass children/dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence and physical wall-impact models, calibrated properties and experimental validation |
+| LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup with bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection with up to 16 independently configured ports, and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Mixture droplets/boiling, shed-mass children/dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, wall-film evolution and impact qualification, calibrated properties and experimental validation |
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
 connected to the regular coupled-step API with wall budgets and retained static
-film patches [evidence](validation/wall-impact-coupling-20260916.md). Wall-film
-evolution, application input/output and checkpoint persistence remain open; the
-CLI application still uses its existing parcel boundary handling.
+film patches, CLI inputs/output and coupled checkpoint persistence
+[evidence](validation/wall-impact-application-20260916.md). Wall-film evolution
+and physical impact qualification remain open.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

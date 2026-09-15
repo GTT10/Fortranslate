@@ -769,7 +769,7 @@ The tests use an illustrative `cp=4000+4*T` fit over 300--600 K, with no claim
 of measured liquid properties. See [focused evidence](validation/liquid-heat-capacity-20260916.md).
 
 
-## Ahamed wall-impact kernel (not yet coupled)
+## Ahamed wall-impact correlations
 
 `spray_wall_impact_mod` ports three routines from the pinned PelePhysics
 `AhamedSplash.H`: impact-regime selection, five splash-velocity components and
@@ -780,9 +780,9 @@ degrees in radians), critical impact parameter and film-thickness/drop-diameter
 ratio. Velocity inputs/outputs use m/s. Azimuthal fractions are fractions of
 incident mass, summing to the supplied splashed fraction when accepted.
 
-These routines currently form a standalone kernel. They do not change the application's parcel boundaries. Child construction and
-film-patch construction now have the standalone APIs described below; boundary
-events, wall-film evolution and restart state must still be connected. Inputs are checked for finite/bounded
+These correlation routines are used by the optional wall-impact coupling below.
+Child and film-patch constructors are also exposed separately. Wall-film
+evolution remains open. Inputs are checked for finite/bounded
 values. Negative mass fractions produced by the reference fits return failure
 and zero mass outputs; they are not clipped into a different distribution.
 In particular, thick-film azimuth fits can produce negative fractions even
@@ -817,8 +817,9 @@ children or the film (wall-budget mass is zero). Momentum and energy are the
 incident selected fraction's inventory minus the constructed inventory. The
 caller must remove that selected fraction from the parent exactly once. The
 routines leave the input parent unchanged and commit destination state only on
-success. There is no application switch yet; these routines do not by themselves
-handle gas feedback, boundary crossings, domain ownership or coupled restart.
+success. The constructors alone do not handle gas feedback, boundary crossings,
+domain ownership or coupled restart; the coupled-step and application layers
+below supply those connections for regular stationary walls.
 See [state/conservation checks](validation/wall-impact-state-20260916.md).
 
 
@@ -845,8 +846,8 @@ Invalid distributions, inward child velocities and invalid film geometry reject
 the entire event, preserving parent, child array and film output and zeroing the
 wall budget. Successful calls replace the film/children output with this event's
 results (empty when absent); a caller must append or accumulate them into its
-persistent state. Gas coupling, wall-film evolution and checkpoint persistence
-are not yet wired into the application. See
+persistent state. Regular gas coupling and checkpoint persistence are wired into
+the application below; wall-film evolution remains open. See
 [event checks](validation/wall-impact-event-20260916.md).
 
 
@@ -878,6 +879,33 @@ ratio. Patches are appended individually without merging or evolving them.
 `spray_system_totals(...,wall_films=...)` includes film mass, material-resolved
 species inventory and integrated liquid energy. The boundary ledger includes
 signed wall impulse/energy exchange; deposited liquid remains in system mass.
-This is currently a library API capability. Namelist switches, film CSV output
-and coupled checkpoint records still need application integration. See
+This capability is also exposed by the application inputs below. See
 [focused coupling checks](validation/wall-impact-coupling-20260916.md).
+
+
+### Wall-impact application and restart
+
+Set `wall_impact_faces(6)` in x-low/x-high/y-low/y-high/z-low/z-high order to
+enable Ahamed impacts on chosen stationary wall faces. Specify positive
+`surface_tension` and `liquid_viscosity` (or per-port overrides), even with
+`breakup_model='none'`. The existing `wall_temperature(6)` supplies impact wall
+temperature, including on adiabatic gas walls. `wall_contact_angle` defaults to
+pi/3 radians; `maximum_wall_films` defaults to one million patches. Aerodynamic
+breakup can remain disabled while wall impacts generate descendants.
+
+Impact-enabled runs write `.films.csv` with material ID, location, normal, mass,
+temperature, diameter and height. History adds `film_mass`; `liquid_mass` remains
+airborne parcel mass and `system_mass` includes gas, parcels and films. Parcel
+CSV adds `parent_id` even without aerodynamic breakup or computational splitting.
+
+The opt-in `_FILM_V1` checkpoint suffix stores the film count, all film records
+and parcel lineage. Restart validates material identity, physical bounds,
+attachment to enabled walls, mass/volume consistency and aggregate inventories.
+Changes to impact settings reject restart. Film-free formats retain their prior
+layout. The writer rejects nonempty supplied films unless film serialization is
+explicitly enabled, preventing accidental loss of deposition state.
+
+`cases/spray_3d/wall_splash.nml` runs a 300 m/s water parcel into the low-z wall,
+producing four descendants and a static deposited patch. Liquid properties are
+illustrative and gas chemistry/transport and evaporation are disabled to isolate
+impact bookkeeping. See [CLI/restart evidence](validation/wall-impact-application-20260916.md).

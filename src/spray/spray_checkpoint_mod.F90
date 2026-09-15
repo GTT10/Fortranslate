@@ -5,6 +5,7 @@ module spray_checkpoint_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_film
   use spray_parcel_mod
   implicit none
   private
@@ -79,14 +80,16 @@ contains
     end if
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals,material_state)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state
-    logical :: has_breakup,has_split,has_khrt,has_materials
-    character(len=64) :: expected_magic
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
+      source_totals,material_state,film_state,wall_films)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films
+    character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
     type(spray_parcel), intent(in) :: parcels(:)
+    type(spray_wall_film), intent(in), optional :: wall_films(:)
     integer, intent(in) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
@@ -96,6 +99,8 @@ contains
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
     integer(c_int) :: status
     logical :: exists,local_ok
+    has_films=.false.
+    if (present(film_state)) has_films=film_state
     has_materials=.false.
     if (present(material_state)) has_materials=material_state
     has_breakup=.false.
@@ -106,11 +111,18 @@ contains
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid spray checkpoint state'
+    if (present(wall_films).and..not.has_films) then
+      if (size(wall_films)>0) return
+    end if
     if (present(source_totals)) then
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
     end if
     if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
+    if (has_films) then
+      if (.not.present(wall_films)) return
+      expected_magic=trim(expected_magic)//'_FILM_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -124,10 +136,16 @@ contains
     if (size(reference_totals) /= size(state,1) .or. size(injected_totals) /= size(state,1)) return
     if (.not. all(ieee_is_finite([time,reference_totals,injected_totals]))) return
     if (time < 0.0_dp .or. steps < 0 .or. event < 0 .or. size(parcels)>1000000) return
+    if (has_films) then
+      if (size(wall_films)>1000000) return
+      do p=1,size(wall_films)
+        if (.not.valid_wall_film(wall_films(p))) return
+      end do
+    end if
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
       if (.not.has_materials.and.parcels(p)%material_id/=1) return
-      if (.not.has_split.and.parcels(p)%parent_id/=0) return
+      if (.not.(has_split.or.has_films).and.parcels(p)%parent_id/=0) return
       if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
       if (parcels(p)%parent_id>0) then
         if (.not.parent_exists(parcels,p)) return
@@ -183,9 +201,18 @@ contains
         parcels(p)%mass,parcels(p)%temperature,parcels(p)%multiplicity
       end if
       if (has_materials.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%material_id
-      if (has_split.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%parent_id
+      if ((has_split.or.has_films).and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%parent_id
       if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
     end do
+    if (has_films.and.ios==0) then
+      write(unit,'(i0)',iostat=ios) size(wall_films)
+      do p=1,size(wall_films)
+        if (ios/=0) exit
+        write(unit,'(i0)',iostat=ios) wall_films(p)%material_id
+        if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) wall_films(p)%position,wall_films(p)%normal, &
+          wall_films(p)%mass,wall_films(p)%temperature,wall_films(p)%diameter,wall_films(p)%height
+      end do
+    end if
     if (ios==0) write(unit,'(a)',iostat=ios) 'END_PELEF_SPRAY_CHECKPOINT'
     close(unit,iostat=close_status)
     if (ios/=0 .or. close_status/=0) then
@@ -204,14 +231,18 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals,material_state)
-    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state
-    logical :: has_breakup,has_split,has_khrt,has_materials
-    character(len=64) :: expected_magic
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
+      source_totals,material_state,film_state,wall_films)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films
+    character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
+    type(spray_wall_film), allocatable :: patches(:)
+    integer :: film_count
     integer, intent(inout) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
@@ -225,6 +256,8 @@ contains
     integer :: unit,ios,i,j,k,p,dims(3),got(5),next_steps,next_event
     character(len=16384) :: line
     logical :: local_ok
+    has_films=.false.
+    if (present(film_state)) has_films=film_state
     has_materials=.false.
     if (present(material_state)) has_materials=material_state
     has_breakup=.false.
@@ -235,11 +268,20 @@ contains
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid, truncated or incompatible spray checkpoint'
+    if (present(wall_films).and..not.has_films) then
+      if (allocated(wall_films)) then
+        if (size(wall_films)>0) return
+      end if
+    end if
     if (present(source_totals)) then
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
     end if
     if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
+    if (has_films) then
+      if (.not.present(wall_films)) return
+      expected_magic=trim(expected_magic)//'_FILM_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -320,7 +362,7 @@ contains
         read(tokens(1),*,iostat=ios) drops(p)%material_id
         if (ios/=0) goto 900
       end if
-      if (has_split) then
+      if (has_split.or.has_films) then
         call read_tokens(unit,tokens(1:1),ios)
         if (ios/=0) goto 900
         if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
@@ -340,6 +382,27 @@ contains
         if (drops(p)%id<=drops(p-1)%id) goto 900
       end if
     end do
+    if (has_films) then
+      call read_tokens(unit,tokens(1:1),ios)
+      if (ios/=0) goto 900
+      if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
+      read(tokens(1),*,iostat=ios) film_count
+      if (ios/=0) goto 900
+      if (film_count<0.or.film_count>1000000) goto 900
+      allocate(patches(film_count))
+      do p=1,film_count
+        call read_tokens(unit,tokens(1:1),ios)
+        if (ios/=0) goto 900
+        if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
+        read(tokens(1),*,iostat=ios) patches(p)%material_id
+        if (ios/=0) goto 900
+        call read_real_row(unit,row(1:10),ios)
+        if (ios/=0) goto 900
+        patches(p)%position=row(1:3);patches(p)%normal=row(4:6)
+        patches(p)%mass=row(7);patches(p)%temperature=row(8);patches(p)%diameter=row(9);patches(p)%height=row(10)
+        if (.not.valid_wall_film(patches(p))) goto 900
+      end do
+    end if
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
     if (trim(line)/='END_PELEF_SPRAY_CHECKPOINT') goto 900
@@ -353,6 +416,7 @@ contains
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source
+    if (has_films) call move_alloc(patches,wall_films)
     reference_totals=ref; injected_totals=injected; ok=.true.; message=''
     return
 900 continue

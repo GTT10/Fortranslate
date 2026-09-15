@@ -12,6 +12,7 @@ module spray_application_mod
   use selected_composition_mod, only: resolve_selected_composition
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
   use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d
+  use spray_wall_impact_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, valid_spray_boundary_faces
   use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
@@ -28,6 +29,12 @@ contains
     character(len=16) :: liquid_cp_model,port_cp_models(16)
     real(dp) :: liquid_cp_coefficients(4),liquid_cp_temperature_range(2)
     real(dp) :: port_cp_coefficients(4,16),port_cp_temperature_ranges(2,16)
+    logical :: wall_impact_faces(6),impact_enabled,lineage_enabled
+    real(dp) :: wall_contact_angle
+    integer :: maximum_wall_films,film_unit
+    type(spray_wall_options) :: wall_options
+    type(spray_wall_film), allocatable :: wall_films(:)
+    type(spray_parcel) :: film_identity
     logical :: port_cp_overrides
     logical :: port_breakup_properties
     real(dp) :: port_surface_tensions(16),port_liquid_viscosities(16)
@@ -100,7 +107,7 @@ contains
     character(len=24) :: mole_names(mechanism_species_capacity),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
     character(len=1024) :: output_prefix,checkpoint_file,restart_file,message
     character(len=16384) :: context
-    character(len=1050) :: paths(3)
+    character(len=1050), allocatable :: paths(:)
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
       breakup_model,surface_tension,liquid_viscosity, &
@@ -115,6 +122,7 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      wall_impact_faces,wall_contact_angle,maximum_wall_films, &
       liquid_cp_model,liquid_cp_coefficients,liquid_cp_temperature_range, &
       port_cp_models,port_cp_coefficients,port_cp_temperature_ranges, &
       port_surface_tensions,port_liquid_viscosities,port_viscosity_models, &
@@ -132,6 +140,8 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    wall_impact_faces=.false.;wall_contact_angle=acos(-1.0_dp)/3;maximum_wall_films=1000000
+    allocate(wall_films(0))
     liquid_cp_model='constant';liquid_cp_coefficients=0;liquid_cp_temperature_range=0
     port_cp_models='constant';port_cp_coefficients=0;port_cp_temperature_ranges=0
     port_surface_tensions=-1;port_liquid_viscosities=-1;port_viscosity_models=''
@@ -182,6 +192,11 @@ contains
     if (.not.all(ieee_is_finite(acceleration))) call fail('Invalid acceleration')
     if (maxval(abs(acceleration))>1e6_dp) call fail('Excessive acceleration')
     physical_boundaries=any(boundary_faces/='periodic')
+    impact_enabled=any(wall_impact_faces)
+    wall_options%enabled=wall_impact_faces;wall_options%temperature=wall_temperature
+    wall_options%contact_angle=wall_contact_angle;wall_options%maximum_films=maximum_wall_films
+    if (.not.valid_wall_options(wall_options,boundary_faces)) call fail('Invalid wall impact settings')
+    if (impact_enabled.and.any(wall_velocity/=0)) call fail('Wall impact requires stationary walls')
     if (.not.valid_wall_velocity_3d(boundary_faces,wall_velocity)) call fail('Invalid tangential wall velocity')
     if (maxval(abs(wall_velocity))>1e7_dp) call fail('Excessive wall velocity')
     if (any(boundary_faces=='isothermal_wall').and..not.transport_enabled) &
@@ -330,7 +345,8 @@ contains
         any(port_viscosity_temperature_ranges(:,injection_port_count+1:)/=0)) call fail('Unused port breakup property')
     port_breakup_properties=any(port_surface_tensions/=-1).or.any(port_liquid_viscosities/=-1).or. &
       any(port_viscosity_models/='').or.any(port_viscosity_coefficients/=0).or.any(port_viscosity_temperature_ranges/=0)
-    if (port_breakup_properties.and.breakup_model=='none') call fail('Port breakup properties require breakup')
+    if (port_breakup_properties.and.breakup_model=='none'.and..not.impact_enabled) &
+      call fail('Port breakup properties require breakup or wall impact')
     if (.not.all(ieee_is_finite(port_cp_coefficients)).or. &
         .not.all(ieee_is_finite(port_cp_temperature_ranges))) call fail('Nonfinite port heat capacity')
     if (any(port_cp_models(injection_port_count+1:)/='constant').or. &
@@ -368,6 +384,7 @@ contains
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     split_enabled=maximum_multiplicity>0
+    lineage_enabled=split_enabled.or.impact_enabled
     options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
     khrt_enabled=trim(breakup_model)=="khrt"
     options%breakup_model=breakup_model; options%surface_tension=surface_tension
@@ -396,6 +413,17 @@ contains
         if (liquid_viscosity_at_temperature(breakup_options(port),injection_port_temperatures(port))<=0) &
           call fail('Port injection outside viscosity range')
       end do
+    end if
+    if (impact_enabled) then
+      block
+        type(spray_options) :: checked_properties
+        do port=1,max(1,injection_port_count)
+          checked_properties=options
+          if (allocated(breakup_options)) checked_properties=breakup_options(port)
+          checked_properties%breakup_model='etab'
+          if (.not.valid_spray_options(checked_properties)) call fail('Invalid wall liquid surface tension or viscosity')
+        end do
+      end block
     end if
     if (initial_liquid_mass>0.and.parcels_per_event>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     ! Validate injection geometry even for a zero-mass/gas-only run.
@@ -488,7 +516,7 @@ contains
       call inject_ports(initial_liquid_mass,parcel_count,1_int64,parcels,ok)
       if (.not. ok) call fail('Initial parcel injection failed')
     end if
-    call spray_system_totals(state,spacing,parcels,liquid,reference_totals,materials)
+    call spray_system_totals(state,spacing,parcels,liquid,reference_totals,materials,wall_films)
     expected_initial=reference_totals
     ! The checkpoint contract includes every physical, injection and step-control
     ! input. Paths, requested stop time/count and output scheduling are not physics.
@@ -599,6 +627,13 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (impact_enabled) then
+      context=trim(context)//' wall-impact-film-v1'
+      call append_reals([merge(1.0_dp,0.0_dp,wall_impact_faces),wall_temperature,wall_contact_angle, &
+        real(maximum_wall_films,dp),real(maximum_parcels,dp),surface_tension,liquid_viscosity])
+      context=trim(context)//' '//trim(liquid_viscosity_model)
+      call append_reals([liquid_viscosity_coefficients,liquid_viscosity_temperature_range])
+    end if
     if (physical_boundaries) then
       context=trim(context)//' specular-outflow-v1'
       do i=1,6
@@ -624,16 +659,41 @@ contains
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material)
+        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material)
+        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films)
       end if
       if (.not. ok) call fail(trim(message))
       do i=1,size(parcels)
         material=select_spray_liquid(parcels(i),liquid,materials)
         if (.not.valid_spray_liquid(material)) call fail('Restart material ID outside configured pool')
+      end do
+      if (size(wall_films)>maximum_wall_films) call fail('Restart exceeds film storage limit')
+      do i=1,size(wall_films)
+        film_identity=spray_parcel();film_identity%material_id=wall_films(i)%material_id
+        material=select_spray_liquid(film_identity,liquid,materials)
+        if (.not.valid_spray_liquid(material)) call fail('Invalid restart film material')
+        if (liquid_heat_capacity_at_temperature(material,wall_films(i)%temperature)<=0) &
+          call fail('Invalid restart film temperature')
+        amount=liquid_density_at_temperature(material,wall_films(i)%temperature)* &
+          acos(-1.0_dp)*.25_dp*wall_films(i)%diameter**2*wall_films(i)%height
+        if (abs(amount-wall_films(i)%mass)>1e-10_dp*wall_films(i)%mass) call fail('Restart film volume mismatch')
+        if (any(wall_films(i)%position<0).or.any(wall_films(i)%position>domain_length)) &
+          call fail('Restart film outside domain')
+        exists=.false.
+        do face=1,6
+          if (.not.wall_impact_faces(face)) cycle
+          j=(face+1)/2
+          amount=merge(0.0_dp,domain_length(j),modulo(face,2)==1)
+          if (abs(wall_films(i)%position(j)-amount)>1e-12_dp*domain_length(j)) cycle
+          if (abs(wall_films(i)%normal(j)-merge(1.0_dp,-1.0_dp,modulo(face,2)==1))>1e-12_dp) cycle
+          exists=.true.
+        end do
+        if (.not.exists) call fail('Restart film not attached to an enabled wall')
       end do
       if (size(parcels)>maximum_parcels) call fail('Restart exceeds parcel storage limit')
       if (time>final_time .or. steps>maximum_steps .or. event>1000000) call fail('Restart exceeds requested limits')
@@ -671,7 +731,7 @@ contains
       if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*&
           int(merge(parcel_count,parcels_per_event,independent_port_schedules),int64)+ &
           int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
-      call spray_system_totals(state,spacing,parcels,liquid,totals,materials)
+      call spray_system_totals(state,spacing,parcels,liquid,totals,materials,wall_films)
       if (allocated(source_totals)) totals=totals-source_totals
       if (abs(totals(1)-reference_totals(1)-injected_totals(1)-boundary_totals(1))> &
           1.0e-9_dp*max(reference_totals(1)+injected_totals(1),1.0e-30_dp)) call fail('Restart mass ledger mismatch')
@@ -688,7 +748,8 @@ contains
     if (len_trim(output_prefix)==0) call fail('Empty output prefix')
     paths=[character(len=1050)::trim(output_prefix)//'.history.csv', &
       trim(output_prefix)//'.gas.csv',trim(output_prefix)//'.parcels.csv']
-    do i=1,3
+    if (impact_enabled) paths=[character(len=1050)::paths,trim(output_prefix)//'.films.csv']
+    do i=1,size(paths)
       inquire(file=trim(paths(i)),exist=exists)
       if (exists) call fail('Output exists; refusing to overwrite: '//trim(paths(i)))
     end do
@@ -701,6 +762,7 @@ contains
     if (ios/=0) call fail('Cannot create history output')
     write(history_unit,'(a)',advance='no',iostat=ios) 'time,steps,gas_mass,liquid_mass,system_mass,px,py,pz,total_energy,'// &
       'injected_mass,mass_error,px_error,py_error,pz_error,energy_error,tmin,tmax,live_parcels,smd'
+    if (ios==0.and.impact_enabled) write(history_unit,'(a)',advance='no',iostat=ios) ',film_mass'
     if (ios==0.and.allocated(source_totals)) write(history_unit,'(a)',advance='no',iostat=ios) &
       ',source_px,source_py,source_pz,source_energy'
     if (ios==0) then
@@ -786,7 +848,7 @@ contains
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
-          breakup_options)
+          breakup_options,wall_options,wall_films)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit
@@ -803,11 +865,13 @@ contains
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material)
+        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material)
+        khrt_state=khrt_enabled,source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films)
       end if
       if (.not. ok) call fail(trim(message))
     end if
@@ -863,7 +927,7 @@ contains
     subroutine write_history()
       real(dp) :: gas_mass,liquid_mass,error5(5),d2,d3,d,multiplicity,smd
       integer :: p,live
-      call spray_system_totals(state,spacing,parcels,liquid,totals,materials)
+      call spray_system_totals(state,spacing,parcels,liquid,totals,materials,wall_films)
       gas_mass=sum(state(1,:,:,:))*volume; liquid_mass=0.0_dp; d2=0.0_dp; d3=0.0_dp; live=0
       do p=1,size(parcels)
         liquid_mass=liquid_mass+parcels(p)%mass*parcels(p)%multiplicity
@@ -880,6 +944,8 @@ contains
         ',',gas_mass,',',liquid_mass,',',totals(1),',',totals(2),',',totals(3),',',totals(4),',',totals(5), &
         ',',injected_totals(1),',',error5(1),',',error5(2),',',error5(3),',',error5(4),',',error5(5), &
         ',',minval(temperature),',',maxval(temperature),',',live,',',smd
+      if (ios==0.and.impact_enabled) write(history_unit,'(a,es26.17e3)',advance='no',iostat=ios) &
+        ',',sum(wall_films%mass)
       if (ios==0.and.allocated(source_totals)) write(history_unit,'(4(a,es26.17e3))',advance='no',iostat=ios) &
         ',',source_totals(2),',',source_totals(3),',',source_totals(4),',',source_totals(5)
       if (ios==0) then
@@ -919,21 +985,10 @@ contains
       if (ios/=0) call fail('Cannot create parcel snapshot')
       write(parcel_unit,'(a)',advance='no',iostat=ios) 'id,x,y,z,u,v,w,mass,temperature,multiplicity,diameter'
       if (ios==0.and.multi_material) write(parcel_unit,'(a)',advance='no',iostat=ios) ',material_id'
-      if (ios==0) then
-        if (breakup_enabled) then
-          write(parcel_unit,'(a)',advance='no',iostat=ios) ',deformation,deformation_rate'
-          if (ios==0.and.khrt_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',rt_time'
-          if (ios==0) then
-            if (split_enabled) then
-              write(parcel_unit,'(a)',iostat=ios) ',parent_id'
-            else
-              write(parcel_unit,'(a)',iostat=ios) ''
-            end if
-          end if
-        else
-          write(parcel_unit,'(a)',iostat=ios) ''
-        end if
-      end if
+      if (ios==0.and.breakup_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',deformation,deformation_rate'
+      if (ios==0.and.khrt_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',rt_time'
+      if (ios==0.and.lineage_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',parent_id'
+      if (ios==0) write(parcel_unit,'(a)',iostat=ios) ''
       if (ios/=0) call fail('Parcel header write failed')
       do p=1,size(parcels)
         write(parcel_unit,'(i0,10(a,es26.17e3))',advance='no',iostat=ios) parcels(p)%id,',',parcels(p)%position(1), &
@@ -941,26 +996,30 @@ contains
           ',',parcels(p)%velocity(2),',',parcels(p)%velocity(3),',',parcels(p)%mass,',',parcels(p)%temperature, &
           ',',parcels(p)%multiplicity,',',parcel_diameter(parcels(p),select_spray_liquid(parcels(p),liquid,materials))
         if (ios==0.and.multi_material) write(parcel_unit,'(a,i0)',advance='no',iostat=ios) ',',parcels(p)%material_id
-        if (ios==0) then
-          if (breakup_enabled) then
-            write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
-            if (ios==0.and.khrt_enabled) &
-              write(parcel_unit,'(a,es26.17e3)',advance='no',iostat=ios) ',',parcels(p)%rt_time
-            if (ios==0) then
-              if (split_enabled) then
-                write(parcel_unit,'(a,i0)',iostat=ios) ',',parcels(p)%parent_id
-              else
-                write(parcel_unit,'(a)',iostat=ios) ''
-              end if
-            end if
-          else
-            write(parcel_unit,'(a)',iostat=ios) ''
-          end if
-        end if
+        if (ios==0.and.breakup_enabled) write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) &
+          ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
+        if (ios==0.and.khrt_enabled) write(parcel_unit,'(a,es26.17e3)',advance='no',iostat=ios) ',',parcels(p)%rt_time
+        if (ios==0.and.lineage_enabled) write(parcel_unit,'(a,i0)',advance='no',iostat=ios) ',',parcels(p)%parent_id
+        if (ios==0) write(parcel_unit,'(a)',iostat=ios) ''
         if (ios/=0) call fail('Parcel snapshot write failed')
       end do
       close(parcel_unit,iostat=ios)
       if (ios/=0) call fail('Parcel snapshot close failed')
+      if (impact_enabled) then
+        open(newunit=film_unit,file=trim(paths(4)),status='new',action='write',iostat=ios)
+        if (ios/=0) call fail('Cannot create film snapshot')
+        write(film_unit,'(a)',iostat=ios) 'material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+        do p=1,size(wall_films)
+          if (ios/=0) exit
+          write(film_unit,'(i0,10(a,es26.17e3))',iostat=ios) wall_films(p)%material_id, &
+            ',',wall_films(p)%position(1),',',wall_films(p)%position(2),',',wall_films(p)%position(3), &
+            ',',wall_films(p)%normal(1),',',wall_films(p)%normal(2),',',wall_films(p)%normal(3), &
+            ',',wall_films(p)%mass,',',wall_films(p)%temperature,',',wall_films(p)%diameter,',',wall_films(p)%height
+        end do
+        if (ios/=0) call fail('Film snapshot write failed')
+        close(film_unit,iostat=ios)
+        if (ios/=0) call fail('Film snapshot close failed')
+      end if
     end subroutine
   end subroutine run_spray_application
 end module spray_application_mod

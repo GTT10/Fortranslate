@@ -1,0 +1,15 @@
+! Planar stationary wall splash with static deposition; illustrative liquid properties.
+&spray
+ cells=2,2,2,hydro_reconstruction='pcm',domain_length=.004,.004,.004,
+ boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',
+ wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,
+ wall_temperature=300,300,300,300,300,300,wall_contact_angle=1.0471975511965977,
+ surface_tension=.072,liquid_viscosity=.001,
+ gas_temperature=900,gas_pressure=101325,mole_names='N2','','',mole_amounts=1,0,0,
+ chemistry_enabled=.false.,transport_enabled=.false.,
+ drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,
+ injection_center=.002,.002,5e-7,injection_axis=0,0,-1,injection_speed=300,cone_angle=0,
+ initial_liquid_mass=1e-10,parcel_count=1,drop_temperature=330,drop_diameter=20e-6,
+ final_time=1e-6,maximum_dt=1e-7,
+ output_prefix='wall_splash',checkpoint_file='wall_splash.chk'
+/
