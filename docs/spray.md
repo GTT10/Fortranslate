@@ -780,10 +780,9 @@ degrees in radians), critical impact parameter and film-thickness/drop-diameter
 ratio. Velocity inputs/outputs use m/s. Azimuthal fractions are fractions of
 incident mass, summing to the supplied splashed fraction when accepted.
 
-These routines currently form a standalone kernel. They do not change the
-application's parcel boundaries, accumulate wall liquid, generate children or
-exchange wall momentum/energy. Those operations must be connected with their
-own conservation and restart state. Inputs are checked for finite/bounded
+These routines currently form a standalone kernel. They do not change the application's parcel boundaries. Child construction and
+film-patch construction now have the standalone APIs described below; boundary
+events, wall-film evolution and restart state must still be connected. Inputs are checked for finite/bounded
 values. Negative mass fractions produced by the reference fits return failure
 and zero mass outputs; they are not clipped into a different distribution.
 In particular, thick-film azimuth fits can produce negative fractions even
@@ -792,3 +791,32 @@ values; classification and child generation must interpret them together.
 
 See [pinned source](../references/spray_wall_impact.json) and
 [focused C++ comparison](validation/wall-impact-kernel-20260916.md).
+
+
+### Splash children and deposited film patches
+
+`construct_splash_children` constructs four descendants for a supplied splashed
+fraction. Their droplet masses follow the four azimuthal fractions; multiplicity,
+temperature and material identity are inherited. IDs start from a supplied unused
+ID and `parent_id` retains the incident parcel ID. Deformation and RT timers reset.
+Velocities use the reference tangent basis and splash components; children start
+one child diameter outward from the impact point. A coordinate-axis fallback
+handles the reference's degenerate tangent case. Negative outgoing normal speed
+or invalid mass distributions reject without replacing an existing child array.
+
+`construct_wall_film` constructs a stationary cylindrical patch from a supplied
+deposited fraction, incident Weber/Reynolds numbers and contact angle in radians.
+It retains liquid mass, temperature, material ID, location, normal, film diameter
+and thickness. Geometry uses the pinned modified Pasandideh-Fard expression for
+the coalesced parcel population. These are individual deposited patches; merging,
+wall heat transfer and subsequent film motion/evaporation are not implemented.
+
+Both routines return a signed five-component wall budget: mass, three momentum
+components and total energy, positive toward the wall. Mass remains entirely in
+children or the film (wall-budget mass is zero). Momentum and energy are the
+incident selected fraction's inventory minus the constructed inventory. The
+caller must remove that selected fraction from the parent exactly once. The
+routines leave the input parent unchanged and commit destination state only on
+success. There is no application switch yet; these routines do not by themselves
+handle gas feedback, boundary crossings, domain ownership or coupled restart.
+See [state/conservation checks](validation/wall-impact-state-20260916.md).

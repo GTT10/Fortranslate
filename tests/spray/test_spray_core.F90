@@ -31,6 +31,8 @@ program test_spray_core
   real(dp) :: primitive(15),binary(10,10)
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
+  type(spray_wall_film) :: wall_patch,saved_patch
+  real(dp) :: child_totals(5),film_budget(5)
   integer :: regime
   integer :: indices(3,8),n,steps
   logical :: ok
@@ -51,6 +53,38 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('wall_state')
+    p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2
+    call construct_splash_children(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,0.0_dp,.5_dp, &
+      2_int64,drops,transfer,ok)
+    call require(ok.and.size(drops)==4,'construct four splash children')
+    child_totals=0
+    do n=1,4
+      call require(drops(n)%id==n+1.and.drops(n)%parent_id==p%id.and.drops(n)%material_id==2,'child identity')
+      call require(drops(n)%multiplicity==p%multiplicity.and.drops(n)%temperature==p%temperature,'child population')
+      call require(drops(n)%mass==.125_dp*p%mass,'normal impact equal dry mass partition')
+      call require(drops(n)%velocity(3)>0.and.drops(n)%position(3)>p%position(3),'outgoing splash')
+      child_totals=child_totals+parcel_totals(drops(n),liquid)
+    end do
+    call require(maxval(abs(child_totals+transfer-.5_dp*parcel_totals(p,liquid)))<1e-12_dp,'splash wall balance')
+    saved_drops=drops
+    call construct_splash_children(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,.2_dp,.5_dp, &
+      2_int64,drops,transfer,ok)
+    call require(.not.ok.and.all(transfer==0).and.all(drops%mass==saved_drops%mass),'negative child fit rolls back')
+    call construct_wall_film(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],.6_dp,100.0_dp,1000.0_dp,pi/3, &
+      wall_patch,film_budget,ok)
+    call require(ok.and.wall_patch%material_id==2,'construct deposited film')
+    call require(abs(wall_patch%diameter/.0014595751300262862_dp-1)<1e-13_dp,'pinned film diameter')
+    call require(abs(wall_patch%height/1.8776173162247343e-5_dp-1)<1e-13_dp,'pinned film height')
+    call require(abs(.25_dp*pi*wall_patch%diameter**2*wall_patch%height*liquid%density/wall_patch%mass-1)<1e-13_dp, &
+      'cylindrical volume conserves deposited mass')
+    child_totals=wall_film_totals(wall_patch,liquid)
+    call require(maxval(abs(child_totals+film_budget-.6_dp*parcel_totals(p,liquid)))<1e-12_dp,'film wall balance')
+    call require(film_budget(5)>0.and.film_budget(3)==0,'stationary film transfers incident kinetic energy')
+    saved_patch=wall_patch
+    call construct_wall_film(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],.6_dp,100.0_dp,0.0_dp,pi/3, &
+      wall_patch,film_budget,ok)
+    call require(.not.ok.and.wall_patch%mass==saved_patch%mass.and.all(film_budget==0),'invalid film rolls back')
   case('wall_impact')
     call classify_wall_impact(150.0_dp,1.0_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
     call require(ok.and.regime==impact_dry,'dry splash regime')
