@@ -4,5 +4,10 @@
   "path": "Source/Spray/SprayJet.H",
   "sha256": "2036c604a5c076da258a50f2a1dd2375b2c19504bb3c6117522cc4fce78fbd1d",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Piecewise-linear rate-of-injection interpolation; exact interval integration and deterministic shared-schedule batches are PeleF choices."
+  "scope": "Piecewise-linear rate-of-injection interpolation; exact interval integration and deterministic shared-schedule batches are PeleF choices.",
+  "velocity_source": {
+    "path": "Source/Spray/SprayJet.cpp",
+    "sha256": "7d806d234c3a4cfc45e75bcee779262b91f62101e4bd7179b2019865b4650b67",
+    "formula": "velocity=mdot/(rho*jet_area*discharge_coefficient)"
+  }
 }

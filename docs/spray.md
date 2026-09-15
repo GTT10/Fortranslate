@@ -1190,3 +1190,28 @@ Tables enter restart identity. Restart replays the merged port event order,
 reconstructs individual window doses and checks aggregate injected mass and
 nonzero-batch parcel counts. See
 [independent profile checks](validation/spray-port-rate-profiles-20260916.md).
+
+
+### Velocity from injection rate
+
+`velocity_from_rate=.true.` derives scheduled injection speed from
+`U=mdot/(rho*pi*nozzle_radius**2*discharge_coefficient)`, following the pinned
+`SprayJet::readROI` relation. `discharge_coefficient` defaults to 1 and must be
+in [1e-6,1]; `port_discharge_coefficients(16)` defaults to -1, inheriting the
+global value. Each active configuration requires a nozzle radius of at least
+1e-12 m. Density is evaluated from that port's liquid model at its injection
+temperature. Derived speed is checked against the injector's existing limit.
+
+Here mdot is the integrated dose divided by the batch window duration. Shared
+ports use their assigned fractions; independent ports use their own constant
+or tabulated rates and intervals. The flow-derived speed replaces prescribed
+`injection_speed`/port speeds in this mode; cone, hollow and swirl settings still
+set its direction. The application probes peak-rate speeds before running.
+
+This mode requires `initial_liquid_mass=0` because an initial inventory has no
+associated injection window. Coefficients are otherwise unused and cannot be
+set away from their defaults when the mode is disabled. Mode and coefficients
+enter restart identity. The default prescribed-speed behavior retains its
+context. Each batch still has one speed and is emitted at the window start;
+continuous momentum-flux equivalence is not claimed. See
+[flow-derived velocity checks](validation/spray-rate-velocity-20260916.md).

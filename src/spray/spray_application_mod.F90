@@ -86,6 +86,8 @@ contains
     type(spray_nozzle_model) :: nozzle_model
     type(spray_nozzle_model), allocatable :: port_nozzle_models(:)
     logical :: port_nozzle_overrides
+    logical :: velocity_from_rate
+    real(dp) :: discharge_coefficient,port_discharge_coefficients(16),event_speed
     real(dp) :: nozzle_radius,port_nozzle_radii(16)
     logical :: port_radius_overrides
     character(len=16) :: diameter_weighting,diameter_distribution
@@ -149,6 +151,7 @@ contains
       drop_diameter,diameter_shape,diameter_min,diameter_max,diameter_weighting,initial_liquid_mass,parcel_count, &
       diameter_distribution,diameter_std,nozzle_radius,port_nozzle_radii, &
       nozzle_profile,swirl_angle,hollow_spread,port_nozzle_profiles,port_swirl_angles,port_hollow_spreads, &
+      velocity_from_rate,discharge_coefficient,port_discharge_coefficients, &
       port_diameter_distributions,port_diameter_weightings,port_diameter_stds, &
       port_diameter_shapes,port_diameter_minima,port_diameter_maxima, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
@@ -211,6 +214,7 @@ contains
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
     port_profile_points=0;port_profile_times=0;port_profile_rates=0
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
+    velocity_from_rate=.false.;discharge_coefficient=1;port_discharge_coefficients=-1
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
     nozzle_radius=0;port_nozzle_radii=-1
@@ -357,9 +361,25 @@ contains
       if (port_hollow_spreads(port)==-1) port_hollow_spreads(port)=hollow_spread
       port_nozzle_models(port)=spray_nozzle_model(port_nozzle_profiles(port),port_swirl_angles(port),port_hollow_spreads(port))
     end do
+    if (.not.all(ieee_is_finite([discharge_coefficient,port_discharge_coefficients]))) &
+      call fail('Nonfinite discharge coefficient')
+    if (any(port_discharge_coefficients(injection_port_count+1:)/=-1)) call fail('Unused port discharge coefficient')
+    if (.not.velocity_from_rate.and.(discharge_coefficient/=1.or.any(port_discharge_coefficients/=-1))) &
+      call fail('Discharge coefficients require rate-derived velocity')
+    if (velocity_from_rate) then
+      if (initial_liquid_mass/=0) call fail('Rate-derived velocity requires scheduled-only injection')
+      if (discharge_coefficient<1e-6_dp.or.discharge_coefficient>1) call fail('Invalid discharge coefficient')
+      if (injection_port_count==0.and.nozzle_radius<1e-12_dp) call fail('Rate-derived velocity needs finite nozzle radius')
+    end if
+    do port=1,injection_port_count
+      if (port_discharge_coefficients(port)==-1) port_discharge_coefficients(port)=discharge_coefficient
+      if (port_discharge_coefficients(port)<1e-6_dp.or.port_discharge_coefficients(port)>1) &
+        call fail('Invalid port discharge coefficient')
+    end do
     port_radius_overrides=any(port_nozzle_radii/=-1)
     do port=1,injection_port_count
       if (port_nozzle_radii(port)==-1) port_nozzle_radii(port)=nozzle_radius
+      if (velocity_from_rate.and.port_nozzle_radii(port)<1e-12_dp) call fail('Rate-derived port needs finite radius')
       if (.not.nozzle_inside_domain(injection_port_centers(:,port),injection_port_axes(:,port),port_nozzle_radii(port))) &
         call fail('Port nozzle disk outside domain or invalid radius/axis')
     end do
@@ -790,6 +810,10 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (velocity_from_rate) then
+      context=trim(context)//' rate-derived-velocity-v1'
+      call append_reals([discharge_coefficient,port_discharge_coefficients(:injection_port_count)])
+    end if
     if (any(port_profile_points>0)) then
       context=trim(context)//' port-injection-profiles-v1'
       do port=1,injection_port_count
@@ -1029,8 +1053,11 @@ contains
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
           material=liquid
           if (multi_material) material=materials(selected_port)
+          event_speed=injection_port_speeds(selected_port)
+          if (velocity_from_rate) event_speed=rate_velocity(amount/ &
+            min(port_injection_intervals(selected_port),port_injection_ends(selected_port)-next_event),selected_port)
           call inject_cone_parcels(material,amount,parcel_count,first_id,injection_port_centers(:,selected_port), &
-            injection_port_axes(:,selected_port),injection_port_speeds(selected_port),injection_port_cone_angles(selected_port), &
+            injection_port_axes(:,selected_port),event_speed,injection_port_cone_angles(selected_port), &
             injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
             new_parcels,ok,port_sizes(selected_port)%shape,port_sizes(selected_port)%minimum, &
             port_sizes(selected_port)%maximum,port_sizes(selected_port)%weighting, &
@@ -1059,7 +1086,8 @@ contains
           if (size(parcels)+parcels_per_event>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
-          call inject_ports(amount,parcel_count,first_id,new_parcels,ok)
+          call inject_ports(amount,parcel_count,first_id,new_parcels,ok, &
+            amount/min(injection_interval,injection_end-next_event))
           if (.not. ok) call fail('Scheduled parcel injection failed')
           do i=1,size(new_parcels)
             material=select_spray_liquid(new_parcels(i),liquid,materials)
@@ -1176,21 +1204,57 @@ contains
       valid=all(center-extent>=0).and.all(center+extent<domain_length)
     end function
 
-    subroutine inject_ports(mass,number,id,result,success)
+    real(dp) function rate_velocity(rate,index) result(speed)
+      real(dp), intent(in) :: rate
+      integer, intent(in) :: index
+      type(spray_liquid) :: fluid
+      real(dp) :: density,radius,coefficient,t
+      fluid=liquid;t=drop_temperature;radius=nozzle_radius;coefficient=discharge_coefficient
+      if (index>0) then
+        if (allocated(materials)) fluid=materials(index)
+        t=injection_port_temperatures(index);radius=port_nozzle_radii(index)
+        coefficient=port_discharge_coefficients(index)
+      end if
+      speed=-1;density=liquid_density_at_temperature(fluid,t)
+      if (density<=0) return
+      speed=rate/(density*acos(-1.0_dp)*radius**2*coefficient)
+    end function
+
+    subroutine inject_ports(mass,number,id,result,success,batch_rate)
+      real(dp), intent(in), optional :: batch_rate
+      real(dp) :: speed,port_speeds(16),rate
+      integer :: index
       real(dp), intent(in) :: mass
       integer, intent(in) :: number
       integer(int64), intent(in) :: id
       type(spray_parcel), allocatable, intent(out) :: result(:)
       logical, intent(out) :: success
+      speed=injection_speed;port_speeds=injection_port_speeds
+      if (velocity_from_rate) then
+        rate=mass_flow_rate
+        if (present(batch_rate)) rate=batch_rate
+        if (injection_port_count==0) then
+          speed=rate_velocity(rate,0)
+        else
+          do index=1,injection_port_count
+            if (independent_port_schedules) then
+              port_speeds(index)=rate_velocity(port_mass_flow_rates(index),index)
+            else
+              port_speeds(index)=rate_velocity(rate*injection_port_fractions(index)/ &
+                sum(injection_port_fractions(:injection_port_count)),index)
+            end if
+          end do
+        end if
+      end if
       if (injection_port_count==0) then
-        call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,injection_speed, &
+        call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,speed, &
           cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
           diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
-          injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
-          injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
+          speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
+          port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
           materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes,nozzle_radius, &
           port_nozzle_radii(:injection_port_count),nozzle_model,port_nozzle_models)

@@ -511,6 +511,50 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_rate_derived_injection_velocity(self):
+        base = ("initial_liquid_mass=0,velocity_from_rate=.true.,discharge_coefficient=.5,nozzle_radius=1e-4,"
+                "injection_axis=1,0,0,cone_angle=0,injection_start=0,injection_end=8e-7,injection_interval=1e-7,"
+                "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        shared = ("injection_profile_points=2,injection_profile_times=0,8e-7,injection_profile_rates=1e-4,2e-4,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.002,.002,.003,.002,.002,"
+                 "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.3,.7,"
+                 "port_nozzle_radii=1e-4,2e-4,port_discharge_coefficients=.5,.8,port_liquid_densities=1000,800,")
+        independent = (ports+"independent_port_schedules=.true.,port_injection_starts=0,0,"
+                       "port_injection_ends=8e-7,8e-7,port_injection_intervals=1e-7,2e-7,"
+                       "port_profile_points=2,0,port_profile_times(:,1)=0,8e-7,"
+                       "port_profile_rates(:,1)=1e-4,2e-4,port_mass_flow_rates=0,1e-4,")
+        for index, schedule in enumerate([shared, shared+ports, independent]):
+            name = f'rate_velocity{index}'
+            settings = base+schedule
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            speeds = []
+            for row in rows:
+                port2 = index > 0 and int(row['material_id']) == 2
+                radius, density, cd = (2e-4, 800, .8) if port2 else (1e-4, 1000, .5)
+                duration = 2e-7 if index == 2 and port2 else 1e-7
+                rate = 2*float(row['mass'])*float(row['multiplicity'])/duration
+                expected = rate/(density*math.pi*radius**2*cd)
+                speed = math.sqrt(sum(float(row[k])**2 for k in ['u','v','w']))
+                self.assertAlmostEqual(speed/expected, 1, delta=2e-13)
+                speeds.append(speed)
+            self.assertGreater(max(speeds), min(speeds))
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('discharge_coefficient=.5', 'discharge_coefficient=.6'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('rate_velocity_point', common=base+shared+'nozzle_radius=0,', fail=True)
+        self.run_case('rate_velocity_cd', common=base+shared+'discharge_coefficient=0,', fail=True)
+        self.run_case('rate_velocity_initial', common=base+shared+'initial_liquid_mass=1e-10,', fail=True)
+
     def test_independent_port_rate_profiles(self):
         base = ("initial_liquid_mass=0,injection_port_count=2,independent_port_schedules=.true.,"
                 "injection_port_centers=.001,.001,.001,.003,.001,.001,injection_port_axes=1,0,0,-1,0,0,"
