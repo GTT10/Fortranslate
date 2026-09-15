@@ -51,5 +51,6 @@ program pelef_spray_3d_selected
     error stop 2
   end if
 
-  call run_spray_application(trim(input_path),species,reactions,transport,'@PELEF_BUNDLE_BUNDLE_SHA256@')
+  call run_spray_application(trim(input_path),species,reactions,transport, &
+    '@PELEF_BUNDLE_BUNDLE_SHA256@')
 end program

@@ -20,5 +20,6 @@ program pelef_spray_3d
   if (.not. ok) error stop 'Cannot load fixed mechanism'
   call load_h2o2_full_transport(transport,ok)
   if (.not. ok) error stop 'Cannot load fixed transport'
-  call run_spray_application(trim(input_path),species,reactions,transport,'@PELEF_SPRAY_FIXED_SHA256@')
+  call run_spray_application(trim(input_path),species,reactions,transport, &
+    '@PELEF_SPRAY_FIXED_SHA256@')
 end program
