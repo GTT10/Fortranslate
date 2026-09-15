@@ -270,9 +270,9 @@ without replacing the outputs.
 recovers temperature and returns the opposite actual energy increment for the gas.
 Failure preserves the parcel and returns zero transfer. The transport update
 below supplies mixture heat transfer and component evaporation.
-The CLI still selects one pure liquid per parcel. The mixture grid API below
-retains component masses and supports their checkpoint persistence and combined
-hydro/chemistry stepping; application inputs remain to be connected. The
+The CLI supports a shared mixed-liquid composition using the inputs below. The
+mixture grid API retains component masses and supports their checkpoint persistence
+and combined hydro/chemistry stepping. The
 reference's optional boiling-temperature property caps are not applied here.
 See [source](../references/spray_mixture.json) and
 [focused evidence](validation/spray-mixture-thermo-20260916.md).
@@ -333,7 +333,7 @@ work and species exchange. It changes the parcel and external component-mass
 array only on success. Overdraw or inadmissible temperatures reject the interval;
 the caller must shorten it. A zero interval preserves state exactly. This remains
 a composable API used by the grid coupling below; wall impact, KH shed children,
-CLI and scheduled mixture injection remain to be connected.
+per-port mixture compositions remain open.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
 ### Mixed-liquid grid coupling and composition restart
@@ -364,8 +364,8 @@ ordered component properties and mixture settings, as with existing pure-liquid
 checkpoint contexts. The reader commits the allocated component matrix together
 with the gas and parcel state.
 
-These are regular-grid coupling/checkpoint APIs. Mixture namelist input and
-scheduled injection remain open.
+These regular-grid coupling/checkpoint APIs are used by the mixture namelist
+and scheduled injection path below.
 See [grid/restart evidence](validation/spray-mixture-grid-20260916.md).
 
 ### Mixed-liquid reacting-flow step
@@ -383,6 +383,44 @@ film state reject until mixture film composition is implemented. No new chemistr
 backend or time-order accuracy claim is introduced. The focused check exercises
 the native implicit backend, not a new CVODE qualification. See
 [reacting-mixture evidence](validation/spray-mixture-reactive-20260916.md).
+
+### Mixed-liquid application inputs
+
+Set `mixture_count` to 1–16 and supply that many entries in:
+
+| Input | Meaning / units |
+| --- | --- |
+| `mixture_vapor_names` | Distinct gas species names |
+| `mixture_fractions` | Initial liquid mass fractions, nonnegative and summing to one |
+| `mixture_densities` | Constant component densities, kg/m³ |
+| `mixture_cps` | Constant component heat capacities, J/(kg K) |
+| `mixture_reference_temperatures` | Component reference temperatures, K |
+| `mixture_reference_pressures` | Reference saturation pressures, Pa; default 101325 |
+| `mixture_latent_heats` | Reference latent heats, J/kg |
+
+These inputs define the component formation-referenced energy and Clausius vapor
+pressure. Unused entries must remain at their defaults. `mixture_count=0` keeps
+the existing pure-liquid mode. Mixture property fits and per-component Antoine or
+boiling-cap inputs are not exposed in this interface yet.
+
+Initial and scheduled parcels use this common composition. Existing size laws,
+nozzle geometry, per-port temperatures and shared/independent schedules remain
+available. Injection density and energy use the actual mixture at each port's
+injection temperature; rate-derived velocity uses that density. New component
+masses append alongside each injected parcel, with species-resolved mass ledgers.
+Per-port pure-liquid property overrides, KH shed children and particle wall impact
+cannot be combined with mixture mode. Prescribed mixture viscosity/surface tension
+still permit representative ETAB/KHRT and computational splitting.
+
+Parcel CSVs add `mass_<species>` columns in kg per physical droplet. Their sum is
+`mass`; `diameter` and Sauter mean diameter use the evolving mixture density.
+The ordered component table and initial fractions enter restart compatibility.
+Changed composition/properties reject restart, and checkpoints retain every
+parcel's evolved component masses.
+
+[mixture.nml](../cases/spray_3d/mixture.nml) is a small synthetic example. The
+illustrative H2O/H2O2 properties demonstrate software behavior, not a validated
+liquid blend. See [CLI/injection evidence](validation/spray-mixture-cli-20260916.md).
 
 ## KH-RT representative-drop breakup
 

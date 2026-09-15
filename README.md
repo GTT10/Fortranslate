@@ -10,7 +10,7 @@ in [the reference manifest](references/pelec_baseline.json).
 
 The `0.246.0` milestone contains the previous reacting-flow, transport,
 MPI and bounded AMR/embedded-boundary paths plus an **opt-in experimental
-periodic 3D reacting-spray application**: single-component Lagrangian parcels,
+periodic 3D reacting-spray application**: single-component and mixed-liquid Lagrangian parcels,
 drag/heating/evaporation, conservative two-way exchange, scheduled injection,
 restart, deviatoric Smagorinsky fluxes and cell-local CVODE chemistry.
 A pinned 21-species methanol mechanism exercises liquid-fuel combustion.

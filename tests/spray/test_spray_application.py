@@ -58,6 +58,50 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_mixture_cli_injection_and_restart(self):
+        mixture = ("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                   "mixture_densities=1000,800,mixture_cps=4184,2000,"
+                   "mixture_reference_temperatures=373.15,350,mixture_latent_heats=2257000,1e6,")
+        for name, settings in [
+                ('mixture_initial', ''),
+                ('mixture_ports', "injection_port_count=2,injection_port_fractions=.3,.7,"
+                 "injection_port_centers=.001,.002,.002,.003,.002,.002,"
+                 "injection_port_axes=0,0,1,0,0,1,injection_port_temperatures=330,340,mass_flow_rate=1e-5,"
+                 "injection_start=0,injection_end=1e-6,injection_interval=2.5e-7,"),
+                ('mixture_independent', "initial_liquid_mass=0,independent_port_schedules=.true.,"
+                 "injection_port_count=2,injection_port_fractions=.5,.5,"
+                 "injection_port_centers=.001,.002,.002,.003,.002,.002,injection_port_axes=0,0,1,0,0,1,"
+                 "injection_port_temperatures=330,340,port_mass_flow_rates=1e-5,2e-5,"
+                 "port_injection_starts=0,0,port_injection_ends=1e-6,1e-6,port_injection_intervals=2.5e-7,5e-7,"
+                 "velocity_from_rate=.true.,nozzle_radius=5e-5,port_discharge_coefficients=.8,.6,")]:
+            common = mixture+settings
+            checkpoint=self.root/(name+'_stop.chk');full=self.root/(name+'_full.chk');resumed=self.root/(name+'_resumed.chk')
+            self.run_case(name, f"checkpoint_file='{full}',", common=common)
+            history=self.check_balance(name)
+            with (self.root/(name+'.parcels.csv')).open() as stream:
+                rows=list(csv.DictReader(stream))
+            for row in rows:
+                self.assertAlmostEqual((float(row['mass_H2O'])+float(row['mass_H2O2']))/float(row['mass']), 1, places=13)
+                rho=1/(float(row['mass_H2O'])/float(row['mass'])/1000+
+                       float(row['mass_H2O2'])/float(row['mass'])/800)
+                self.assertAlmostEqual(float(row['diameter'])/(6*float(row['mass'])/(math.pi*rho))**(1/3), 1, places=13)
+            self.assertTrue(any(abs(float(r['mass_H2O2'])/float(r['mass'])-.4)>1e-8 for r in rows))
+            if name!='mixture_initial':
+                self.assertEqual({int(r['material_id']) for r in rows}, {1,2})
+                self.assertAlmostEqual(history[-1]['injected_mass']/(3e-11 if name=='mixture_independent' else 1e-11), 1, places=13)
+            self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=common)
+            self.run_case(name+'_resumed', f"restart_file='{checkpoint}',checkpoint_file='{resumed}',", common=common)
+            for suffix in ['gas.csv','parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}_resumed.{suffix}').read_bytes())
+            self.assertEqual(full.read_bytes(),resumed.read_bytes())
+            self.assertEqual(history[-1],self.history(name+'_resumed')[-1])
+            self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                          common=common.replace('mixture_fractions=.6,.4','mixture_fractions=.5,.5'))
+        for i, change in enumerate(['mixture_fractions=.4,.4,','mixture_densities=0,800,',
+                                    "mixture_vapor_names='H2O','H2O',",'mixture_fractions(3)=.1,']):
+            self.run_case(f'mixture_invalid{i}',change,fail=True,common=mixture)
+
     def test_khrt_children_and_accumulation_restart(self):
         settings = ("breakup_model='khrt',khrt_children=.true.,surface_tension=.072,"
                     "liquid_viscosity=.001,injection_speed=1000,cone_angle=0,parcel_count=1,"
