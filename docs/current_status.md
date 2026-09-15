@@ -18,6 +18,12 @@ Older milestone prose remains historical detail, not a current global status.
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
 | LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup with bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection with up to 16 independently configured ports, and mass-CDF size distributions, deviatoric Smagorinsky, coupled restart | Mixture droplets/boiling, shed-mass children/dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence and physical wall-impact models, calibrated properties and experimental validation |
 
+Ahamed wall-impact classification, splash velocities and azimuthal mass
+fractions are available as a standalone Fortran kernel with pinned C++ comparison
+[evidence](validation/wall-impact-kernel-20260916.md). Wall-film accumulation
+and child-parcel coupling remain open; the application still uses its existing
+parcel boundary handling.
+
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
 license remains an owner decision.

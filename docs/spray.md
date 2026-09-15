@@ -767,3 +767,28 @@ and intervals enter checkpoint identity; default constant-cp formats remain.
 
 The tests use an illustrative `cp=4000+4*T` fit over 300--600 K, with no claim
 of measured liquid properties. See [focused evidence](validation/liquid-heat-capacity-20260916.md).
+
+
+## Ahamed wall-impact kernel (not yet coupled)
+
+`spray_wall_impact_mod` ports three routines from the pinned PelePhysics
+`AhamedSplash.H`: impact-regime selection, five splash-velocity components and
+four azimuthal mass fractions. Regimes cover rebound, deposition, dry splash,
+thermal breakup, spreading and wet splash. The API accepts the dimensionless
+impact parameter `Kv`, wall/boiling temperature ratio, impact angle (30--90
+degrees in radians), critical impact parameter and film-thickness/drop-diameter
+ratio. Velocity inputs/outputs use m/s. Azimuthal fractions are fractions of
+incident mass, summing to the supplied splashed fraction when accepted.
+
+These routines currently form a standalone kernel. They do not change the
+application's parcel boundaries, accumulate wall liquid, generate children or
+exchange wall momentum/energy. Those operations must be connected with their
+own conservation and restart state. Inputs are checked for finite/bounded
+values. Negative mass fractions produced by the reference fits return failure
+and zero mass outputs; they are not clipped into a different distribution.
+In particular, thick-film azimuth fits can produce negative fractions even
+within the reference angle range. Velocity outputs preserve signed correlation
+values; classification and child generation must interpret them together.
+
+See [pinned source](../references/spray_wall_impact.json) and
+[focused C++ comparison](validation/wall-impact-kernel-20260916.md).

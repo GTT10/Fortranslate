@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "path": "Source/Spray/BreakupSplash/AhamedSplash.H",
+  "sha256": "37ddd95a06bc96d6c2b1e740cf583a872335efc787b56a4cce80211f4381cb92",
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Ahamed classification, splash velocity components and azimuthal mass fractions; no wall-film or child-parcel coupling yet"
+}

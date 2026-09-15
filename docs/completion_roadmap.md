@@ -44,7 +44,7 @@ These are bounded implemented capabilities, not completion of diesel chemistry,
 multicomponent liquids, shed-mass children/dispersion/collision, characteristic inlet models and near-wall turbulence qualification or MPI/AMR particles.
 Regular wall reflection and outflow now include gas/particle surface budgets
 and restart persistence; isothermal/tangentially moving gas walls include molecular
-and SGS heat/work budgets. Physical parcel wall-impact models remain open. ETAB and KH-RT representative-drop
+and SGS heat/work budgets. The Ahamed impact-regime, splash-velocity and mass-distribution kernel is ported; wall-film accumulation, child-parcel creation and physical parcel wall-impact coupling remain open. ETAB and KH-RT representative-drop
 size/deformation, bounded computational parcel splitting and restart are implemented;
 physical child-parcel dispersion remains open. Uniform gas/particle acceleration
 now retains external impulse/work separately through coupled restart. Single-component

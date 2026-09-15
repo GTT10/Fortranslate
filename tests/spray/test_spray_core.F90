@@ -10,6 +10,7 @@ program test_spray_core
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use mixture_transport_mod, only: binary_diffusion_coefficients
   use spray_parcel_mod
+  use spray_wall_impact_mod
   use spray_breakup_mod
   use spray_coupling_3d_mod
   use les_smagorinsky_3d_mod
@@ -29,6 +30,8 @@ program test_spray_core
   real(dp) :: totals0(15),totals1(15),spacing(3),lower(3),weights(8)
   real(dp) :: primitive(15),binary(10,10)
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
+  real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
+  integer :: regime
   integer :: indices(3,8),n,steps
   logical :: ok
   character(len=32) :: faces(6)
@@ -48,6 +51,40 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('wall_impact')
+    call classify_wall_impact(150.0_dp,1.0_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_dry,'dry splash regime')
+    call require(abs(splash_mass-.14206181552235969_dp)<1e-14_dp,'pinned dry splash fraction')
+    call require(splash_mass+deposited_mass==1,'dry splash/deposit closure')
+    call splash_velocity_components(-20.0_dp,10.0_dp,150.0_dp,0.0_dp,splash_vel,ok)
+    call require(ok.and.maxval(abs(splash_vel-[20.701826903833513_dp,8.6602540378443873_dp, &
+      -5.7018269038335125_dp,12.701826903833513_dp,3.3142511671214492_dp]))<1e-13_dp,'pinned dry velocities')
+    call splash_mass_fractions(pi/6,.5_dp,0.0_dp,azimuth_mass,ok)
+    call require(ok.and.maxval(abs(azimuth_mass-[.125_dp,.21160254037844389_dp, &
+      .125_dp,.038397459621556107_dp]))<1e-14_dp,'pinned dry azimuth masses')
+    call classify_wall_impact(150.0_dp,1.0_dp,pi/6,80.0_dp,.03_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_wet.and.abs(splash_mass-.26793114657822259_dp)<1e-14_dp,'pinned thin wet splash')
+    call splash_velocity_components(-20.0_dp,10.0_dp,150.0_dp,.03_dp,splash_vel,ok)
+    call require(ok.and.maxval(abs(splash_vel-[3.2235_dp,1.0_dp,.1065_dp,.8235_dp,.2931_dp]))<1e-14_dp, &
+      'pinned thin film velocities')
+    call splash_velocity_components(-20.0_dp,10.0_dp,150.0_dp,.07_dp,splash_vel,ok)
+    call require(ok.and.maxval(abs(splash_vel-[3.556_dp,1.0_dp,-.226_dp,1.156_dp,1.012_dp]))<1e-14_dp, &
+      'pinned intermediate film velocities')
+    call splash_mass_fractions(pi/6,.5_dp,.03_dp,azimuth_mass,ok)
+    call require(ok.and.maxval(abs(azimuth_mass-[.10595_dp,.2505_dp,.10595_dp,.0376_dp]))<1e-14_dp, &
+      'pinned thin film azimuth masses')
+    call classify_wall_impact(150.0_dp,1.0_dp,pi/6,80.0_dp,.2_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_spread.and.deposited_mass==1,'wet spreading')
+    call splash_mass_fractions(pi/6,.5_dp,.2_dp,azimuth_mass,ok)
+    call require(.not.ok.and.all(azimuth_mass==0),'reject negative upstream thick-film azimuth fraction')
+    call classify_wall_impact(79.0_dp,1.0_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_deposit.and.deposited_mass==1,'cold deposition')
+    call classify_wall_impact(79.0_dp,1.1_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_rebound.and.splash_mass==0.and.deposited_mass==0,'hot rebound')
+    call classify_wall_impact(150.0_dp,1.1_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_thermal.and.splash_mass>0.and.deposited_mass==0,'thermal breakup')
+    call classify_wall_impact(-1.0_dp,1.0_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
+    call require(.not.ok.and.regime==-1,'invalid impact rejected')
   case('heat_capacity')
     liquid%heat_capacity_model='polynomial'
     liquid%heat_capacity_coefficients=[4000.0_dp,4.0_dp,0.0_dp,0.0_dp]
