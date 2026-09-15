@@ -511,6 +511,36 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_piecewise_injection_profile(self):
+        base = ("initial_liquid_mass=0,injection_profile_points=5,"
+                "injection_profile_times=0,2e-7,4e-7,6e-7,8e-7,injection_profile_rates=0,1e-4,0,0,2e-4,"
+                "injection_start=0,injection_end=8e-7,injection_interval=1e-7,"
+                "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.003,.001,.001,"
+                 "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,")
+        for index, settings in enumerate([base, base+ports]):
+            name = f'rate_profile{index}'
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            history = self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 12*(index+1))
+            mass = sum(float(r['mass'])*float(r['multiplicity']) for r in rows)
+            self.assertAlmostEqual(mass/4e-11, 1, delta=2e-13)
+            self.run_case(name+'stop', f"stop_after_steps=6,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(history[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('rates=0,1e-4', 'rates=0,1.1e-4'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('profile_bad_times', common=base.replace('0,2e-7,4e-7', '0,0,4e-7'), fail=True)
+        self.run_case('profile_bad_rates', common=base.replace('rates=0,1e-4', 'rates=0,-1e-4'), fail=True)
+        self.run_case('profile_conflict', common=base+'mass_flow_rate=1e-4,', fail=True)
+
     def test_nozzle_profiles_and_swirl(self):
         base = ("parcel_count=8,nozzle_radius=3e-4,nozzle_profile='hollow',swirl_angle=.3,hollow_spread=.1,"
                 "injection_speed=10,cone_angle=.2,injection_center=.002,.002,.002,injection_axis=0,0,1,"

@@ -1144,3 +1144,27 @@ angles enter restart identity. Existing default contexts are unchanged.
 The Fortran injectors accept optional `spray_nozzle_model` records, globally
 or as a complete array per port. See
 [profile/swirl checks](validation/spray-nozzle-profile-20260916.md).
+
+
+### Time-dependent rate of injection
+
+Set `injection_profile_points` to 2..64, with matching
+`injection_profile_times(64)` in seconds and `injection_profile_rates(64)` in
+kg/s. Times must strictly increase, cover the entire injection window and lie
+in [0,1000] s; rates must lie in [0,1] kg/s. Entries after the declared count
+must be zero. `mass_flow_rate` must be zero when the table is supplied.
+
+The injector linearly interpolates between knots and integrates each scheduled
+window exactly by trapezoids, including partial knot intervals. A batch is
+still deposited at the beginning of its injection window, as in the existing
+schedule; this is not continuous-in-time particle creation. Zero-dose windows
+advance the schedule without generating parcels. Shared ports split each dose
+by their configured fractions and retain their own liquid/size/nozzle settings.
+The table currently uses the global/shared schedule; independent-port schedules
+remain constant-rate and cannot be combined with this table.
+
+Table data enter checkpoint identity. Restart reconstructs both accumulated
+mass and the number of nonzero batches, including pauses, before accepting
+particle/event counts. Changing a knot or rate rejects restart. A zero point
+count preserves the previous constant-rate behavior. See
+[rate-profile checks](validation/spray-injection-profile-20260916.md).

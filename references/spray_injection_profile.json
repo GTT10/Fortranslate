@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "path": "Source/Spray/SprayJet.H",
+  "sha256": "2036c604a5c076da258a50f2a1dd2375b2c19504bb3c6117522cc4fce78fbd1d",
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Piecewise-linear rate-of-injection interpolation; exact interval integration and deterministic shared-schedule batches are PeleF choices."
+}

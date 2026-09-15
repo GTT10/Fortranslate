@@ -66,6 +66,8 @@ contains
     real(dp) :: port_mass_flow_rates(16),port_injection_starts(16),port_injection_ends(16),port_injection_intervals(16)
     integer :: injection_port_count,parcels_per_event,port
     real(dp) :: injection_port_centers(3,16),injection_port_axes(3,16),injection_port_fractions(16)
+    integer :: injection_profile_points,expected_batches,profile_event
+    real(dp) :: injection_profile_times(64),injection_profile_rates(64),profile_start
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
     real(dp) :: domain_length(3),gas_temperature,gas_pressure,gas_velocity(3),shear_velocity
@@ -164,6 +166,7 @@ contains
       injection_port_speeds,injection_port_diameters,injection_port_temperatures,injection_port_cone_angles, &
       independent_port_schedules,port_mass_flow_rates,port_injection_starts,port_injection_ends,port_injection_intervals, &
       injection_center,injection_axis,injection_speed,cone_angle, &
+      injection_profile_points,injection_profile_times,injection_profile_rates, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
@@ -203,6 +206,7 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
     nozzle_radius=0;port_nozzle_radii=-1
@@ -301,6 +305,23 @@ contains
       call fail('CVODE spray backend not built; enable PELEF_ENABLE_SUNDIALS')
     if (initial_liquid_mass<0.0_dp .or. initial_liquid_mass>1.0_dp .or. &
         parcel_count<1 .or. parcel_count>100000) call fail('Invalid initial injection')
+    if (injection_profile_points<0.or.injection_profile_points>64.or.injection_profile_points==1) &
+      call fail('Injection profile requires zero or 2..64 points')
+    if (.not.all(ieee_is_finite([injection_profile_times,injection_profile_rates]))) &
+      call fail('Nonfinite injection profile')
+    if (any(injection_profile_times(injection_profile_points+1:)/=0).or. &
+        any(injection_profile_rates(injection_profile_points+1:)/=0)) call fail('Unused injection profile entries')
+    if (injection_profile_points>0) then
+      if (mass_flow_rate/=0.or.independent_port_schedules) call fail('Profile requires zero global rate and shared schedule')
+      if (any(injection_profile_times<0).or.any(injection_profile_times>1000).or. &
+          any(injection_profile_rates<0).or.any(injection_profile_rates>1)) call fail('Invalid injection profile values')
+      do i=2,injection_profile_points
+        if (injection_profile_times(i)<=injection_profile_times(i-1)) call fail('Injection profile times must increase')
+      end do
+      if (injection_profile_times(1)>injection_start.or. &
+          injection_profile_times(injection_profile_points)<injection_end) call fail('Profile does not cover injection window')
+      mass_flow_rate=maxval(injection_profile_rates(:injection_profile_points))
+    end if
     if (mass_flow_rate<0.0_dp .or. mass_flow_rate>1.0_dp .or. injection_start<0.0_dp .or. &
         injection_end<injection_start .or. injection_end>1000.0_dp .or. &
         injection_interval<1.0e-15_dp .or. injection_interval>1000.0_dp) call fail('Invalid injection schedule')
@@ -743,6 +764,11 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (injection_profile_points>0) then
+      context=trim(context)//' piecewise-linear-injection-v1'
+      call append_reals([real(injection_profile_points,dp),injection_profile_times(:injection_profile_points), &
+        injection_profile_rates(:injection_profile_points)])
+    end if
     if (nozzle_profile/='legacy'.or.swirl_angle/=0.or.hollow_spread/=0.or.port_nozzle_overrides) then
       context=trim(context)//' nozzle-profile-v1 '//trim(nozzle_profile)
       call append_reals([swirl_angle,hollow_spread])
@@ -874,6 +900,8 @@ contains
       else
       if (mass_flow_rate==0.0_dp .and. event/=0) call fail('Restart has an impossible injection event')
       amount=mass_flow_rate*min(real(event,dp)*injection_interval,injection_end-injection_start)
+      if (injection_profile_points>0) amount=profile_mass(injection_start, &
+        min(injection_end,injection_start+real(event,dp)*injection_interval))
       if (abs(injected_totals(1)-amount)>1.0e-11_dp*max(amount,1.0e-30_dp)) &
         call fail('Restart injection mass ledger mismatch')
       tolerance=32.0_dp*epsilon(1.0_dp)*max(time,maximum_dt,injection_interval)
@@ -886,7 +914,16 @@ contains
         if (next_event<injection_end .and. next_event<time-tolerance) call fail('Restart missed an injection event')
       end if
       end if
-      if (int(count(parcels%parent_id==0_int64),int64)/=int(event,int64)*&
+      expected_batches=event
+      if (injection_profile_points>0) then
+        expected_batches=0
+        do profile_event=0,event-1
+          profile_start=injection_start+real(profile_event,dp)*injection_interval
+          if (profile_mass(profile_start,min(injection_end,profile_start+injection_interval))>0) &
+            expected_batches=expected_batches+1
+        end do
+      end if
+      if (int(count(parcels%parent_id==0_int64),int64)/=int(expected_batches,int64)*&
           int(merge(parcel_count,parcels_per_event,independent_port_schedules),int64)+ &
           int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
       call spray_system_totals(state,spacing,parcels,liquid,totals,materials,wall_films)
@@ -974,6 +1011,8 @@ contains
         if (next_event>=injection_end) next_event=huge(1.0_dp)
         if (next_event<=time+tolerance) then
           amount=mass_flow_rate*min(injection_interval,injection_end-next_event)
+          if (injection_profile_points>0) amount=profile_mass(next_event,min(injection_end,next_event+injection_interval))
+          if (amount>0) then
           if (size(parcels)+parcels_per_event>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
@@ -985,7 +1024,9 @@ contains
             injected_totals(1:5)=injected_totals(1:5)+totals5
             injected_totals(5+material%vapor_index)=injected_totals(5+material%vapor_index)+totals5(1)
           end do
-          parcels=[parcels,new_parcels]; deallocate(new_parcels); event=event+1
+          parcels=[parcels,new_parcels]; deallocate(new_parcels)
+          end if
+          event=event+1
           next_event=injection_start+real(event,dp)*injection_interval
           if (next_event>=injection_end) next_event=huge(1.0_dp)
         end if
@@ -1055,6 +1096,22 @@ contains
         end if
       end do
     end subroutine next_port_event
+
+    real(dp) function profile_mass(begin_time,end_time) result(mass)
+      real(dp), intent(in) :: begin_time,end_time
+      real(dp) :: lo,hi,flo,fhi,width
+      integer :: knot
+      mass=0
+      do knot=1,injection_profile_points-1
+        lo=max(begin_time,injection_profile_times(knot));hi=min(end_time,injection_profile_times(knot+1))
+        if (hi<=lo) cycle
+        width=injection_profile_times(knot+1)-injection_profile_times(knot)
+        flo=(lo-injection_profile_times(knot))/width;fhi=(hi-injection_profile_times(knot))/width
+        flo=(1-flo)*injection_profile_rates(knot)+flo*injection_profile_rates(knot+1)
+        fhi=(1-fhi)*injection_profile_rates(knot)+fhi*injection_profile_rates(knot+1)
+        mass=mass+.5_dp*(hi-lo)*(flo+fhi)
+      end do
+    end function
 
     logical function nozzle_inside_domain(center,axis,radius) result(valid)
       real(dp), intent(in) :: center(3),axis(3),radius
