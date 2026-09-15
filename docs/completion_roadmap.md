@@ -41,7 +41,8 @@ Regular wall reflection and outflow now include gas/particle surface budgets
 and restart persistence; isothermal/tangentially moving gas walls include molecular
 and SGS heat/work budgets. Physical parcel wall-impact models remain open. ETAB and KH-RT representative-drop
 size/deformation, bounded computational parcel splitting and restart are implemented;
-physical child-parcel dispersion remains open.
+physical child-parcel dispersion remains open. Uniform gas/particle acceleration
+now retains external impulse/work separately through coupled restart.
 
 ## Ordered implementation work
 

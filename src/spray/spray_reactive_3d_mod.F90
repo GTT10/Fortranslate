@@ -98,7 +98,8 @@ contains
 
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
-      reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
+      wall_temperature,wall_velocity,acceleration,source_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -118,13 +119,26 @@ contains
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
+    real(dp), intent(in), optional :: acceleration(3)
+    real(dp), intent(out), optional :: source_change(:)
+    real(dp) :: force_ledger(size(state,1)),accel(3)
     character(len=32) :: faces(6)
     real(dp) :: ledger(size(state,1)),exchange(size(state,1))
     real(dp) :: theta
     integer :: dims(3),substeps,half
     logical :: local_ok
     ok=.false.; message='Invalid coupled spray step'
-    faces='periodic'; ledger=0
+    faces='periodic'; ledger=0;force_ledger=0;accel=0
+    if (present(source_change)) then
+      source_change=0
+      if (size(source_change)/=size(state,1)) return
+    end if
+    if (present(acceleration)) accel=acceleration
+    if (.not.all(ieee_is_finite(accel))) return
+    if (maxval(abs(accel))>1e6_dp) return
+    if (any(accel/=0).and..not.present(source_change)) then
+      message='External acceleration requires a source ledger'; return
+    end if
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
     if (.not.allocated(parcels)) return
@@ -143,7 +157,13 @@ contains
     if (.not. all(ieee_is_finite([dt,rtol,atol,cs,prt,sct]))) return
     if (dt <= 0.0_dp .or. dt > 1.0e6_dp) return
     dims=shape(temperature)
+    if (size(state,1)/=reactive_nvar(size(species)).or.any(shape(state(1,:,:,:))/=dims)) return
+    if (any(spacing<=0).or..not.all(ieee_is_finite(spacing))) return
     allocate(candidate,source=state); allocate(temp,source=temperature); allocate(drops,source=parcels)
+    if (any(accel/=0)) then
+      call force_kick(candidate,drops,0.5_dp*dt,local_ok)
+      if (.not.local_ok) return
+    end if
     ! Symmetric operator ordering; the nonlinear frozen-film parcel integrator
     ! remains first order in its substep. No second-order spray claim is implied.
     do half=1,2
@@ -186,7 +206,51 @@ contains
         ledger=ledger+exchange
       end if
     end do
+    if (any(accel/=0)) then
+      call force_kick(candidate,drops,0.5_dp*dt,local_ok)
+      if (.not.local_ok) return
+    end if
+    if (present(source_change)) source_change=force_ledger
     if (present(boundary_change)) boundary_change=ledger
     state=candidate; temperature=temp; parcels=drops; ok=.true.; message=''
+  contains
+    subroutine force_kick(gas,particles,interval,accepted)
+      real(dp), intent(inout) :: gas(:,:,:,:)
+      type(spray_parcel), intent(inout) :: particles(:)
+      real(dp), intent(in) :: interval
+      logical, intent(out) :: accepted
+      real(dp) :: dv(3),momentum(3),energy,mass,velocity(3),volume
+      real(dp) :: checked_t(size(gas,2),size(gas,3),size(gas,4))
+      integer :: i,j,k,p
+      accepted=.false.;dv=interval*accel;volume=product(spacing)
+      do k=1,size(gas,4)
+        do j=1,size(gas,3)
+          do i=1,size(gas,2)
+            mass=gas(1,i,j,k)
+            if (mass<=0.or..not.ieee_is_finite(mass)) return
+            if (maxval(abs(gas(2:4,i,j,k)/mass+dv))>1e7_dp) return
+            momentum=mass*dv
+            energy=dot_product(gas(2:4,i,j,k)+0.5_dp*momentum,dv)
+            gas(2:4,i,j,k)=gas(2:4,i,j,k)+momentum
+            gas(5,i,j,k)=gas(5,i,j,k)+energy
+            force_ledger(2:4)=force_ledger(2:4)+volume*momentum
+            force_ledger(5)=force_ledger(5)+volume*energy
+          end do
+        end do
+      end do
+      do p=1,size(particles)
+        if (particles(p)%mass<=0) cycle
+        mass=particles(p)%mass*particles(p)%multiplicity
+        velocity=particles(p)%velocity
+        particles(p)%velocity=velocity+dv
+        force_ledger(2:4)=force_ledger(2:4)+mass*dv
+        force_ledger(5)=force_ledger(5)+mass*dot_product(velocity+0.5_dp*dv,dv)
+        if (.not.valid_spray_parcel(particles(p))) return
+      end do
+      if (.not.all(ieee_is_finite(gas)).or..not.all(ieee_is_finite(force_ledger))) return
+      call recover_reactive_temperatures_3d(species,gas,temp,size(gas,2),size(gas,3),size(gas,4),checked_t,accepted)
+      if (.not.accepted) return
+      accepted=all(abs(checked_t-temp)<=1e-9_dp*max(1.0_dp,abs(temp)))
+    end subroutine
   end subroutine
 end module spray_reactive_3d_mod

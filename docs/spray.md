@@ -349,3 +349,27 @@ and temperature remain unchanged. Wall heat exchange with droplets, splash,
 adhesion, roughness and wall-function calibration remain open. The gas wall
 motion is tangential motion at a fixed boundary, not moving geometry.
 See [focused checks](validation/spray-thermal-wall-20260915.md).
+
+
+## Uniform external acceleration
+
+`acceleration=0,0,-9.81` applies a prescribed constant acceleration in m/s² to
+both gas and droplets; the default is zero. See `acceleration.nml`. Two exact
+half-step velocity kicks surround the coupled operators. Gas total energy
+receives the corresponding kinetic work; droplet temperature is unchanged.
+The midpoint particle drift is exact for constant acceleration without drag.
+The overall evaporating, coupled method retains its existing accuracy limits.
+
+External impulse and work are separate from gas/liquid feedback and physical
+boundary exchange. History gains `source_px`, `source_py`, `source_pz` and
+`source_energy`; conservation residuals subtract these accumulated sources.
+Checkpoints with acceleration append `_FORCE_V1` to their existing format tag
+and store a source ledger. The acceleration vector binds restart context.
+Zero-acceleration files retain their previous format. Step rejection rolls back
+both phases and external-source increments. The timestep includes an
+acceleration displacement limit, and kicks check thermal-state recovery.
+
+This is a uniform body force, not a hydrostatic well-balanced discretization,
+spatial gravity field, buoyancy closure or particle-only external force model.
+Potential energy is not included in reported energy; external work accounts for
+its effect. See [focused evidence](validation/spray-acceleration-20260915.md).

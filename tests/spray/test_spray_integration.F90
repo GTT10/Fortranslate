@@ -22,6 +22,7 @@ program test_spray_integration
   type(spray_options) :: options
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
+  real(dp) :: force(15),accel(3),dt,expected(3)
   integer :: i,j,k,iteration,steps,event
   logical :: ok
   character(len=32) :: which,method
@@ -65,6 +66,32 @@ program test_spray_integration
     call require(all(state(6:,:,:,:)>=0.0_dp),'nonnegative chemistry')
     call require(maxval(abs(sum(state(6:,:,:,:),dim=1)-state(1,:,:,:)))<1.0e-12_dp,'species closure')
     call require(maxval(abs(state(15,:,:,:)-before(15,:,:,:)))<1.0e-12_dp,'inert nitrogen unchanged')
+  case('acceleration')
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    accel=[0.0_dp,0.0_dp,-9810.0_dp];dt=2e-7_dp
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],dt,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force)
+    call require(ok,trim(message))
+    do i=1,size(drops)
+      expected=before_drops(i)%velocity+accel*dt
+      call require(maxval(abs(drops(i)%velocity-expected))<1e-13_dp,'ballistic velocity')
+      expected=before_drops(i)%position+before_drops(i)%velocity*dt+0.5_dp*accel*dt**2
+      call require(maxval(abs(drops(i)%position-expected))<1e-16_dp,'ballistic position')
+    end do
+    call require(maxval(abs(state(4,:,:,:)/state(1,:,:,:)-accel(3)*dt))<1e-13_dp,'gas acceleration')
+    call require(maxval(abs(temperature-before_t))<1e-8_dp,'force preserves thermal energy')
+    call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1)
+    call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'external impulse ledger')
+    call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'external work ledger')
+    before=state;before_t=temperature;before_drops=drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],dt,.true.,.false.,'invalid', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force)
+    call require(.not.ok.and.all(state==before).and.all(force==0),'force kick rolls back after later failure')
+    do i=1,size(drops)
+      call require(all(drops(i)%velocity==before_drops(i)%velocity),'force parcel rollback')
+    end do
   case('coupled')
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
       [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2.0e-7_dp,.true.,.true.,'implicit', &

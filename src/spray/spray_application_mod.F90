@@ -51,6 +51,8 @@ contains
     logical :: khrt_enabled
     logical :: breakup_enabled
     real(dp) :: wall_temperature(6),wall_velocity(3,6),wall_dt
+    real(dp) :: acceleration(3)
+    real(dp), allocatable :: source_totals(:),source_step(:)
     logical :: physical_boundaries
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6),inflow_t(6),inlet_dt,face_dt,face_diffusivity
     real(dp), allocatable :: inflow_state(:,:),inlet_x(:),inlet_y(:),inlet_cube(:,:,:,:)
@@ -64,7 +66,7 @@ contains
     character(len=16384) :: context
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
-    namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity, &
+    namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
       breakup_model,surface_tension,liquid_viscosity, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
@@ -84,6 +86,7 @@ contains
     khrt_b0=.61_dp;khrt_b1=7.0_dp;khrt_c3=1.0_dp
     maximum_multiplicity=0;maximum_parcels=1000000
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
+    acceleration=0
     boundary_faces="periodic";wall_temperature=300;wall_velocity=0
     cells=[4,4,4]; domain_length=0.004_dp
     hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
@@ -108,6 +111,8 @@ contains
     close(unit)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
+    if (.not.all(ieee_is_finite(acceleration))) call fail('Invalid acceleration')
+    if (maxval(abs(acceleration))>1e6_dp) call fail('Excessive acceleration')
     physical_boundaries=any(boundary_faces/='periodic')
     if (.not.valid_wall_velocity_3d(boundary_faces,wall_velocity)) call fail('Invalid tangential wall velocity')
     if (maxval(abs(wall_velocity))>1e7_dp) call fail('Excessive wall velocity')
@@ -206,6 +211,9 @@ contains
     spacing=domain_length/real(cells,dp); volume=product(spacing)
     allocate(state(nvar,cells(1),cells(2),cells(3)),temperature(cells(1),cells(2),cells(3)))
     allocate(reference_totals(nvar),injected_totals(nvar),totals(nvar))
+    if (any(acceleration/=0)) then
+      allocate(source_totals(nvar),source_step(nvar));source_totals=0;source_step=0
+    end if
     allocate(boundary_totals(nvar),boundary_step(nvar)); boundary_totals=0; boundary_step=0
     primitive(1)=gas_pressure/(gas_constant*gas_temperature); primitive(2:4)=gas_velocity
     primitive(5)=gas_pressure; primitive(6:)=y
@@ -289,6 +297,10 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (allocated(source_totals)) then
+      context=trim(context)//' uniform-acceleration-v1'
+      call append_reals(acceleration)
+    end if
     if (breakup_enabled) then
       if (khrt_enabled) then
         context=trim(context)//' khrt-representative-v1'
@@ -327,11 +339,11 @@ contains
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled)
+        khrt_state=khrt_enabled,source_totals=source_totals)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled)
+        khrt_state=khrt_enabled,source_totals=source_totals)
       end if
       if (.not. ok) call fail(trim(message))
       if (size(parcels)>maximum_parcels) call fail('Restart exceeds parcel storage limit')
@@ -354,6 +366,7 @@ contains
         if (next_event<injection_end .and. next_event<time-tolerance) call fail('Restart missed an injection event')
       end if
       call spray_system_totals(state,spacing,parcels,liquid,totals)
+      if (allocated(source_totals)) totals=totals-source_totals
       if (abs(totals(1)-reference_totals(1)-injected_totals(1)-boundary_totals(1))> &
           1.0e-9_dp*max(reference_totals(1)+injected_totals(1),1.0e-30_dp)) call fail('Restart mass ledger mismatch')
       if (abs(totals(5)-reference_totals(5)-injected_totals(5)-boundary_totals(5))> &
@@ -382,6 +395,8 @@ contains
     if (ios/=0) call fail('Cannot create history output')
     write(history_unit,'(a)',advance='no',iostat=ios) 'time,steps,gas_mass,liquid_mass,system_mass,px,py,pz,total_energy,'// &
       'injected_mass,mass_error,px_error,py_error,pz_error,energy_error,tmin,tmax,live_parcels,smd'
+    if (ios==0.and.allocated(source_totals)) write(history_unit,'(a)',advance='no',iostat=ios) &
+      ',source_px,source_py,source_pz,source_energy'
     if (ios==0) then
       if (physical_boundaries) then
         write(history_unit,'(a)',iostat=ios) ',boundary_mass,boundary_px,boundary_py,boundary_pz,boundary_energy'
@@ -423,6 +438,7 @@ contains
         spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
       if (.not. ok) call fail('Cannot compute gas CFL step')
       dt=min(maximum_dt,cfl_dt,inlet_dt,final_time-time)
+      if (any(acceleration/=0)) dt=min(dt,0.5_dp*cfl_dt,sqrt(cfl*minval(spacing)/maxval(abs(acceleration))))
       if (any(boundary_faces=='isothermal_wall')) then
         call reactive_isothermal_timestep_3d(species,transport,state,temperature,spacing, &
           boundary_faces,wall_temperature,0.1_dp,wall_dt,ok)
@@ -436,12 +452,13 @@ contains
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
-          boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity)
+          boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit
       end do
       if (.not. ok) call fail('Coupled step failed with rollback: '//trim(message))
+      if (allocated(source_totals)) source_totals=source_totals+source_step
       boundary_totals=boundary_totals+boundary_step
       time=time+dt; steps=steps+1
       call write_history()
@@ -452,11 +469,11 @@ contains
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled)
+        khrt_state=khrt_enabled,source_totals=source_totals)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled)
+        khrt_state=khrt_enabled,source_totals=source_totals)
       end if
       if (.not. ok) call fail(trim(message))
     end if
@@ -489,10 +506,13 @@ contains
       smd=0.0_dp
       if (d2>0.0_dp) smd=d3/d2
       error5=totals(1:5)-reference_totals(1:5)-injected_totals(1:5)-boundary_totals(1:5)
+      if (allocated(source_totals)) error5=error5-source_totals(1:5)
       write(history_unit,'(es26.17e3,a,i0,15(a,es26.17e3),a,i0,a,es26.17e3)',advance='no',iostat=ios) time,',',steps, &
         ',',gas_mass,',',liquid_mass,',',totals(1),',',totals(2),',',totals(3),',',totals(4),',',totals(5), &
         ',',injected_totals(1),',',error5(1),',',error5(2),',',error5(3),',',error5(4),',',error5(5), &
         ',',minval(temperature),',',maxval(temperature),',',live,',',smd
+      if (ios==0.and.allocated(source_totals)) write(history_unit,'(4(a,es26.17e3))',advance='no',iostat=ios) &
+        ',',source_totals(2),',',source_totals(3),',',source_totals(4),',',source_totals(5)
       if (ios==0) then
         if (physical_boundaries) then
           write(history_unit,'(5(a,es26.17e3))',iostat=ios) ',',boundary_totals(1),',',boundary_totals(2), &

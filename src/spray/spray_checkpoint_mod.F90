@@ -79,7 +79,7 @@ contains
     end if
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state)
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state
     logical :: has_breakup,has_split,has_khrt
     character(len=40) :: expected_magic
@@ -90,7 +90,7 @@ contains
     integer, intent(in) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    real(dp), intent(in), optional :: boundary_totals(:)
+    real(dp), intent(in), optional :: boundary_totals(:),source_totals(:)
     real(dp), allocatable :: check(:,:,:)
     character(len=:), allocatable :: temporary
     integer :: unit,ios,close_status,i,j,k,p,dims(3)
@@ -104,10 +104,17 @@ contains
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid spray checkpoint state'
+    if (present(source_totals)) then
+      expected_magic=trim(expected_magic)//'_FORCE_V1'
+      if (size(source_totals)/=size(state,1)) return
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
       if (.not.all(ieee_is_finite(boundary_totals))) return
+    end if
+    if (present(source_totals)) then
+      if (.not.all(ieee_is_finite(source_totals))) return
     end if
     if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>16384) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -152,6 +159,9 @@ contains
     if (present(boundary_totals)) then
       if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) boundary_totals
     end if
+    if (present(source_totals)) then
+      if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) source_totals
+    end if
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
@@ -189,7 +199,7 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state)
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state,source_totals)
     logical, intent(in), optional :: breakup_state,split_state,khrt_state
     logical :: has_breakup,has_split,has_khrt
     character(len=40) :: expected_magic
@@ -200,7 +210,8 @@ contains
     integer, intent(inout) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    real(dp), intent(inout), optional :: boundary_totals(:)
+    real(dp), intent(inout), optional :: boundary_totals(:),source_totals(:)
+    real(dp) :: source(size(state,1))
     real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
@@ -217,6 +228,10 @@ contains
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid, truncated or incompatible spray checkpoint'
+    if (present(source_totals)) then
+      expected_magic=trim(expected_magic)//'_FORCE_V1'
+      if (size(source_totals)/=size(state,1)) return
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -257,6 +272,11 @@ contains
     if (present(boundary_totals)) then
       call read_real_row(unit,boundary,ios)
       if (ios/=0) goto 900
+    end if
+    if (present(source_totals)) then
+      call read_real_row(unit,source,ios)
+      if (ios/=0) goto 900
+      if (.not.all(ieee_is_finite(source))) goto 900
     end if
     allocate(candidate,mold=state); allocate(temp,mold=temperature); allocate(check,mold=temperature)
     allocate(drops(got(5)))
@@ -317,6 +337,7 @@ contains
     if (any(abs(check-temp)>1.0e-9_dp*max(1.0_dp,abs(temp)))) return
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
+    if (present(source_totals)) source_totals=source
     reference_totals=ref; injected_totals=injected; ok=.true.; message=''
     return
 900 continue

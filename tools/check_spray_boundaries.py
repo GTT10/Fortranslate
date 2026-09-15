@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--inflow', action='store_true')
     parser.add_argument('--thermal-wall', action='store_true')
+    parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -21,6 +22,8 @@ def main():
     case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
+    if args.acceleration:
+        template = template.replace('&spray', f'&spray\n acceleration(3)={args.acceleration},')
     if args.sgs:
         template = template.replace('&spray', '&spray\n shear_velocity=10,')
     for kind in (('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))):
@@ -48,6 +51,8 @@ def main():
                 return list(csv.DictReader(stream))[-1]
         row = last(ref)
         assert row == last(resumed), 'resumed history ledger'
+        if args.acceleration:
+            assert float(row['source_pz']) < 0
         mass = float(row['system_mass']) + abs(float(row['boundary_mass']))
         energy = abs(float(row['total_energy'])) + abs(float(row['boundary_energy']))
         assert abs(float(row['mass_error'])) < 1e-9 * mass
@@ -73,6 +78,9 @@ def main():
                 bad_input = bad_input.replace('wall_velocity(1,6)=10', 'wall_velocity(1,6)=11')
             bad_input = (bad_input.replace("'slip_wall'", "'outflow'") if kind == "wall"
                          else bad_input.replace("inflow_temperature(1)=1100", "inflow_temperature(1)=1101"))
+            if args.acceleration:
+                bad_input = (work / (resumed + '.nml')).read_text().replace(
+                    f'acceleration(3)={args.acceleration}', f'acceleration(3)={args.acceleration + 1}')
             bad_input = bad_input.replace(resumed, 'changed_faces')
             bad_path = work / 'changed_faces.nml'
             bad_path.write_text(bad_input)

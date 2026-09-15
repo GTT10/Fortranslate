@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_acceleration_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --acceleration -9810
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_acceleration")
+  set_tests_properties(spray_acceleration_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   foreach(wall_sgs 0 .17)
     add_test(NAME spray_thermal_wall_${wall_sgs} COMMAND "${Python3_EXECUTABLE}"
       "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --thermal-wall --sgs ${wall_sgs}
@@ -49,7 +53,7 @@ if(PELEF_ENABLE_SPRAY)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test_spray_integration PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
-  foreach(spray_case native coupled rollback checkpoint)
+  foreach(spray_case native coupled rollback checkpoint acceleration)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/spray_${spray_case}")
     add_test(NAME spray_integration_${spray_case} COMMAND test_spray_integration ${spray_case})
     set_tests_properties(spray_integration_${spray_case} PROPERTIES LABELS "spray"
