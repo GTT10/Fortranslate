@@ -403,7 +403,7 @@ provides the analytical concentration derivative used by the existing kinetic
 Jacobian. AMR/EB checkpoint mechanism records include the five SRI coefficients
 for SRI reactions; MPI mechanism comparisons include them too. Existing
 non-SRI checkpoint records keep their layout. This extends reaction kinetics,
-not the liquid property model. PLOG and Chebyshev rates remain open. See [focused evidence](validation/sri-20260915.md).
+not the liquid property model. Chebyshev rates remain open. See [focused evidence](validation/sri-20260915.md).
 
 
 ## Chemically activated reactions
@@ -436,3 +436,24 @@ Tsang has separate reaction kinds and coefficient storage. AMR/EB checkpoint
 records and MPI mechanism comparisons include both coefficients. Legacy
 non-Tsang checkpoint layouts are preserved. See
 [focused evidence](validation/tsang-20260915.md).
+
+
+## PLOG pressure interpolation
+
+The importer accepts Cantera `pressure-dependent-Arrhenius` reactions and emits
+normalized `type="plog"` with ordered `plog` entries containing P (Pa), A, b and
+Ea (J/kmol). Up to 64 entries per reaction are stored. Equal-pressure entries
+remain separate so their temperature-dependent rates can be summed at runtime.
+Signed A coefficients are supported when each pressure group's total is positive.
+Nonpositive group totals or unrepresentable rates reject the calculation.
+
+The runtime sums each group using scaled signed exponentials, then interpolates
+log(rate) against log(pressure). Outside the supplied pressure interval it uses
+the nearest endpoint rate. Pressure is R*T*sum(concentrations); its analytic
+concentration derivative feeds the existing Jacobian. Internal knot derivatives
+use the right interval, and endpoint branches have zero pressure derivative;
+these derivatives need not be continuous at knots.
+
+PLOG count and coefficients participate in MPI mechanism comparison and
+AMR/EB checkpoint records. Existing non-PLOG checkpoint records retain their
+layout. See [focused evidence](validation/plog-20260915.md).

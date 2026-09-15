@@ -3,6 +3,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
   use constants_mod, only: mechanism_species_capacity
+  use elementary_kinetics_mod, only: plog_capacity
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -3974,7 +3975,7 @@ contains
       distribution%comm, counts_match, collective_ok)
     if (.not. collective_ok) return
 
-    real_count = 3 * nspecies + 20
+    real_count = 3 * nspecies + 21 + 4*plog_capacity
     allocate(local_reals(real_count, local_count))
     allocate(root_reals(real_count, local_count))
     allocate(local_integers(4, local_count))
@@ -4034,6 +4035,9 @@ contains
         reactions(reaction_index)%troe%temperature_2]
       local_reals(real_index+4:real_index+8,reaction_index)=reactions(reaction_index)%sri
       local_reals(real_index+9:real_index+10,reaction_index)=reactions(reaction_index)%tsang
+      local_reals(real_index+11,reaction_index)=real(reactions(reaction_index)%plog_count,dp)
+      local_reals(real_index+12:real_index+11+4*plog_capacity,reaction_index)= &
+        reshape(reactions(reaction_index)%plog,[4*plog_capacity])
     end do
     root_reals = local_reals
     root_integers = local_integers

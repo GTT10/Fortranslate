@@ -2,6 +2,7 @@ module mpi_amr_reactive_3d_application_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: error_unit, int64
   use mpi_f08
+  use elementary_kinetics_mod, only: plog_capacity
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
@@ -977,7 +978,7 @@ contains
     allocate(troe_enabled(nreactions))
     allocate(species_values(18 * nspecies))
     allocate(transport_values(5 * nspecies))
-    reaction_stride = 3 * nspecies + 20
+    reaction_stride = 3 * nspecies + 21 + 4*plog_capacity
     allocate(reaction_values(reaction_stride * nreactions))
     species_values = 0.0_dp
     transport_values = 0.0_dp
@@ -1047,6 +1048,9 @@ contains
         reactions(reaction_index)%troe%temperature_2]
       reaction_values(value_offset+14:value_offset+18)=reactions(reaction_index)%sri
       reaction_values(value_offset+19:value_offset+20)=reactions(reaction_index)%tsang
+      reaction_values(value_offset+21)=real(reactions(reaction_index)%plog_count,dp)
+      reaction_values(value_offset+22:value_offset+21+4*plog_capacity)= &
+        reshape(reactions(reaction_index)%plog,[4*plog_capacity])
     end do
     local_ok = all(ieee_is_finite(species_values))
     if (local_ok) local_ok = all(ieee_is_finite(transport_values))

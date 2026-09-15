@@ -1,6 +1,7 @@
 module amr_reactive_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
+  use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: &
@@ -1040,7 +1041,7 @@ contains
     real(dp), intent(in) :: relative_tolerance, absolute_tolerance
     integer, intent(out) :: status
 
-    integer :: reaction_index, efficiency_size
+    integer :: reaction_index, efficiency_size,plog_index
 
     status = 0
     write(unit, '(a)', iostat=status) "SELECTED_CONTEXT"
@@ -1111,6 +1112,14 @@ contains
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
         if (status/=0) return
       end if
+      if (reactions(reaction_index)%kind==reaction_kind_plog) then
+        write(unit,'(i0)',iostat=status) reactions(reaction_index)%plog_count
+        if (status/=0) return
+        do plog_index=1,reactions(reaction_index)%plog_count
+          write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%plog(:,plog_index)
+          if (status/=0) return
+        end do
+      end if
       if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
         write(unit, '(*(es27.18e3,1x))', iostat=status) &
           reactions(reaction_index)%third_body_efficiencies
@@ -1141,6 +1150,8 @@ contains
     real(dp), allocatable :: stored_reactants(:), stored_products(:)
     real(dp), allocatable :: stored_efficiencies(:)
     real(dp) :: stored_rates(9), expected_rates(9)
+    real(dp) :: stored_plog(4)
+    integer :: stored_plog_count
     real(dp) :: stored_tsang(2)
     real(dp) :: stored_sri(5)
     real(dp) :: stored_troe(4), expected_troe(4)
@@ -1149,7 +1160,7 @@ contains
     character(len=1024) :: stored_equation
     integer :: status, stored_composition_size, stored_reaction_count
     integer :: stored_header(6), expected_header(6)
-    integer :: stored_troe_enabled, reaction_index, efficiency_size
+    integer :: stored_troe_enabled, reaction_index, efficiency_size,plog_index
 
     ok = .false.
     message = ""
@@ -1356,6 +1367,19 @@ contains
         if (status/=0) return
         if (.not.all(ieee_is_finite(stored_tsang))) return
         if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) return
+        message=""
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_plog) then
+        message="Selected 3D AMR checkpoint mechanism mismatch"
+        read(unit,*,iostat=status) stored_plog_count
+        if (status/=0) return
+        if (stored_plog_count/=reactions(reaction_index)%plog_count) return
+        do plog_index=1,stored_plog_count
+          read(unit,*,iostat=status) stored_plog
+          if (status/=0) return
+          if (.not.all(ieee_is_finite(stored_plog))) return
+          if (.not.all(checkpoint_real_matches(stored_plog,reactions(reaction_index)%plog(:,plog_index)))) return
+        end do
         message=""
       end if
       if (efficiency_size > 0) then

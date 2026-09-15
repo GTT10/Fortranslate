@@ -1,6 +1,7 @@
 module reactive_eb_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
+  use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
   use constants_mod, only: density_floor
   use state_indices_mod, only: irho, iet
@@ -58,7 +59,7 @@ contains
     character(len=*), intent(in), optional :: chemistry_integrator
     real(dp), intent(in), optional :: base_mole_fractions(:)
 
-    integer :: unit, status, nvar, species_index, reaction_index
+    integer :: unit, status, nvar, species_index, reaction_index,plog_index
     integer :: efficiency_size
     integer :: transport_index, i, j, k, schema
     real(dp) :: diagnostic_values(3)
@@ -232,6 +233,14 @@ contains
           reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
         if (status/=0) go to 900
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_plog) then
+        write(unit,'(i0)',iostat=status) reactions(reaction_index)%plog_count
+        if (status/=0) go to 900
+        do plog_index=1,reactions(reaction_index)%plog_count
+          write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%plog(:,plog_index)
+          if (status/=0) go to 900
+        end do
       end if
       if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
         write(unit, '(*(es27.18e3,1x))', iostat=status) &
@@ -426,6 +435,8 @@ contains
     real(dp) :: candidate_element_integrals(3)
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
+    real(dp) :: stored_plog(4)
+    integer :: stored_plog_count
     real(dp) :: stored_tsang(2)
     real(dp) :: stored_sri(5)
     real(dp) :: stored_troe_values(4), expected_troe_values(4)
@@ -443,7 +454,7 @@ contains
     integer :: stored_config_flags(n_config_flags)
     integer :: stored_geometry_dims(3), stored_state_shape(3)
     integer :: stored_troe_enabled, stored_steps
-    integer :: unit, status, nvar, species_index, reaction_index
+    integer :: unit, status, nvar, species_index, reaction_index,plog_index
     integer :: transport_index, i, j, k, l
     integer :: stored_kind, stored_reversible, stored_has_efficiency
     integer :: stored_efficiency_size, stored_reactant_size
@@ -699,6 +710,17 @@ contains
         if (status/=0) go to 900
         if (.not.all(ieee_is_finite(stored_tsang))) go to 900
         if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) go to 900
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_plog) then
+        read(unit,*,iostat=status) stored_plog_count
+        if (status/=0) go to 900
+        if (stored_plog_count/=reactions(reaction_index)%plog_count) go to 900
+        do plog_index=1,stored_plog_count
+          read(unit,*,iostat=status) stored_plog
+          if (status/=0) go to 900
+          if (.not.all(ieee_is_finite(stored_plog))) go to 900
+          if (.not.all(checkpoint_real_matches(stored_plog,reactions(reaction_index)%plog(:,plog_index)))) go to 900
+        end do
       end if
       if (stored_has_efficiency == 1) then
         allocate(stored_efficiencies(size(species)))

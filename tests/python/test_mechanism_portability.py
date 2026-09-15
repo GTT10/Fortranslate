@@ -152,6 +152,27 @@ class Lindemann(unittest.TestCase):
         with self.assertRaises(ValueError):
             generator.validate(data)
 
+    def test_plog_import_signed_duplicate_and_generation(self):
+        r = self.reaction();r.reaction_type = 'pressure-dependent-Arrhenius'
+        r.input_data = {'type': 'pressure-dependent-Arrhenius', 'rate-constants': [
+            {'P': 1e5, 'A': 3., 'b': 0., 'Ea': 0.},
+            {'P': 1e4, 'A': 2., 'b': 0., 'Ea': 0.},
+            {'P': 1e5, 'A': -1., 'b': 0., 'Ea': 0.}]}
+        record = ingest._reaction_record(r, ['A', 'B'], 0)
+        self.assertEqual(record['type'], 'plog')
+        self.assertEqual([r['P'] for r in record['plog']], [1e4, 1e5, 1e5])
+        self.assertEqual(record['plog'][-1]['A'], -1.)
+        data = {'module_name': 'pl_mod', 'loader_name': 'load_pl', 'kernel_name': 'pl_rates',
+                'symbol_prefix': 'pl', 'species': ['A', 'B'], 'reactions': [record]}
+        generator.validate(data)
+        self.assertIn('%plog_count = 3', generator.generate(data))
+        record['plog'][0]['P'] = 1e6
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+        record['plog'] = [record['plog'][0]]*65
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+
     def test_unknown_or_malformed_falloff_not_silently_lindemann(self):
         for subtype, kind in [('Troe', 'falloff-Troe'), ('', 'falloff-Lindemann'),
                               ('Lindemann', 'falloff-unknown'), ('SRI', 'falloff-SRI'),

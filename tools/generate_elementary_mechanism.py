@@ -17,7 +17,7 @@ FALLOFF_TYPES = {"falloff", "sri-falloff", "chemically-activated", "sri-chemical
 TSANG_TYPES = {"tsang-falloff", "tsang-chemically-activated"}
 FALLOFF_TYPES |= TSANG_TYPES
 SRI_TYPES = {"sri-falloff", "sri-chemically-activated"}
-REACTION_TYPES = {"elementary", "three-body"} | FALLOFF_TYPES
+REACTION_TYPES = {"elementary", "three-body", "plog"} | FALLOFF_TYPES
 CHEMISTRY_INTEGRATORS = {"explicit", "implicit"}
 TRANSPORT_GEOMETRIES = {"atom": 0, "linear": 1, "nonlinear": 2}
 MAX_SPECIES = 128
@@ -130,6 +130,7 @@ FORTRAN_IMPORTED_IDENTIFIERS = {
     "reaction_kind_sri_activated",
     "reaction_kind_tsang",
     "reaction_kind_tsang_activated",
+    "reaction_kind_plog",
 }
 # Names in the selected-mechanism probe's host scope and in the generated
 # module's procedure scopes.  Every public name emitted by a bundle is
@@ -522,7 +523,17 @@ def validate(data: dict[str, Any]) -> None:
             for name, coefficient in reaction[side].items():
                 if name not in species or finite_float(coefficient, equation) <= 0.0:
                     raise ValueError(f"{equation}: invalid {side}")
-        if reaction_type in FALLOFF_TYPES:
+        if reaction_type == "plog":
+            rates = reaction["plog"]
+            if not 1 <= len(rates) <= 64:
+                raise ValueError(f"{equation}: PLOG requires 1--64 rate entries")
+            previous = 0.
+            for entry in rates:
+                values = [finite_float(entry[k], equation) for k in ("P", "A", "b", "Ea")]
+                if values[0] <= 0 or values[0] < previous:
+                    raise ValueError(f"{equation}: PLOG pressures must be positive and ordered")
+                previous = values[0]
+        elif reaction_type in FALLOFF_TYPES:
             validate_arrhenius(reaction["low_rate"], equation)
             validate_arrhenius(reaction["high_rate"], equation)
             if reaction_type in SRI_TYPES:
@@ -778,6 +789,8 @@ def generate(data: dict[str, Any]) -> str:
           if any("chemically-activated" in r.get("type", "") for r in reactions) else []),
         *(["  use elementary_kinetics_mod, only: reaction_kind_tsang, reaction_kind_tsang_activated"]
           if any(r.get("type") in TSANG_TYPES for r in reactions) else []),
+        *(["  use elementary_kinetics_mod, only: reaction_kind_plog"]
+          if any(r.get("type") == "plog" for r in reactions) else []),
         "  implicit none",
         "  private",
         "",
@@ -846,6 +859,7 @@ def generate(data: dict[str, Any]) -> str:
     ]
 
     kind_symbol = {
+        "plog": "reaction_kind_plog",
         "elementary": "reaction_kind_elementary",
         "three-body": "reaction_kind_three_body",
         "falloff": "reaction_kind_falloff",
@@ -881,7 +895,12 @@ def generate(data: dict[str, Any]) -> str:
                 f"{fortran_real(float(coefficient))}"
             )
 
-        if reaction_type in FALLOFF_TYPES:
+        if reaction_type == "plog":
+            lines.append(f"    reactions({r_index})%plog_count = {len(reaction['plog'])}")
+            for j, entry in enumerate(reaction['plog'], 1):
+                for k, key in enumerate(("P", "A", "b", "Ea"), 1):
+                    lines.append(f"    reactions({r_index})%plog({k},{j}) = {fortran_real(float(entry[key]))}")
+        elif reaction_type in FALLOFF_TYPES:
             emit_rate(
                 lines,
                 f"reactions({r_index})%low_pressure_rate",

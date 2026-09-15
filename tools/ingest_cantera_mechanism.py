@@ -14,9 +14,10 @@ The accepted mechanism subset is deliberately small:
 * NASA7 species with gas Lennard-Jones transport data;
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
-* Lindemann, Troe, SRI, or Tsang falloff and chemically activated reactions.
+* Lindemann, Troe, SRI, or Tsang falloff and chemically activated reactions;
+* pressure-dependent Arrhenius (PLOG), with up to 64 rate entries.
 
-PLOG, Chebyshev, NASA9, non-gas transport, and missing transport are
+Chebyshev, NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
 Cantera duplicate reaction ordering is preserved exactly.
 """
@@ -448,8 +449,6 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
     ):
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
 
-    if "plog" in combined or "pressure-dependent-arrhenius" in combined:
-        raise ValueError(f"{equation}: PLOG reactions are unsupported")
     if "chebyshev" in combined:
         raise ValueError(f"{equation}: Chebyshev reactions are unsupported")
     if any(_has_key_case_insensitive(raw, key) for key in (
@@ -461,6 +460,8 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
     )):
         raise ValueError(f"{equation}: explicit reverse rates are unsupported")
 
+    if "plog" in combined or "pressure-dependent-arrhenius" in combined:
+        return "plog"
     if "chemically-activated" in combined or bool(getattr(rate, "chemically_activated", False)):
         return "chemically-activated"
     if reaction_type in {"three-body", "three-body-arrhenius"}:
@@ -592,7 +593,14 @@ def _reaction_record(
     if species_compositions is not None:
         _validate_element_balance(record, species_compositions)
 
-    if kind in {"falloff", "chemically-activated"}:
+    if kind == "plog":
+        rates = raw.get("rate-constants", [])
+        if not 1 <= len(rates) <= 64:
+            raise ValueError(f"{equation}: PLOG requires 1--64 rate entries")
+        record["plog"] = [{"P": _positive(r["P"], equation),
+                           **{k: _as_float(r[k], equation) for k in ("A", "b", "Ea")}} for r in rates]
+        record["plog"].sort(key=lambda r: r["P"])
+    elif kind in {"falloff", "chemically-activated"}:
         record["low_rate"] = _arrhenius_record(
             raw.get("low-P-rate-constant"), f"{equation} low-pressure rate"
         )

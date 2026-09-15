@@ -19,6 +19,8 @@ module elementary_kinetics_mod
   integer, parameter, public :: reaction_kind_sri_activated = 6
   integer, parameter, public :: reaction_kind_tsang = 7
   integer, parameter, public :: reaction_kind_tsang_activated = 8
+  integer, parameter, public :: reaction_kind_plog = 9
+  integer, parameter, public :: plog_capacity = 64
 
   type, public :: arrhenius_rate
     real(dp) :: pre_exponential = 0.0_dp
@@ -47,6 +49,8 @@ module elementary_kinetics_mod
     logical :: reversible = .true.
     real(dp) :: sri(5) = [1.0_dp,0.0_dp,1.0_dp,1.0_dp,0.0_dp]
     real(dp) :: tsang(2) = [1.0_dp,0.0_dp]
+    integer :: plog_count=0
+    real(dp) :: plog(4,plog_capacity)=0.0_dp ! pressure [Pa], A, b, Ea [J/kmol]
   end type elementary_reaction
 
   public :: valid_arrhenius_rate
@@ -110,6 +114,8 @@ contains
         reaction%reactant_stoich)) <= 0.0_dp) return
 
     select case (reaction%kind)
+    case (reaction_kind_plog)
+      if (.not.valid_plog_table(reaction)) return
     case (reaction_kind_elementary)
       if (.not. valid_arrhenius_rate(reaction%forward_rate)) return
     case (reaction_kind_three_body)
@@ -147,6 +153,72 @@ contains
     valid = all(ieee_is_finite(reaction%third_body_efficiencies)) .and. &
       all(reaction%third_body_efficiencies >= 0.0_dp)
   end function valid_efficiencies
+
+  logical function valid_plog_table(reaction) result(ok)
+    type(elementary_reaction), intent(in) :: reaction
+    integer :: i,n
+    ok=.false.;n=reaction%plog_count
+    if (n<1.or.n>plog_capacity) return
+    if (.not.all(ieee_is_finite(reaction%plog(:,1:n)))) return
+    if (any(reaction%plog(1,1:n)<=0)) return
+    do i=2,n
+      if (reaction%plog(1,i)<reaction%plog(1,i-1)) return
+    end do
+    ok=.true.
+  end function
+
+  subroutine plog_forward_rate(reaction,temperature,total_concentration,rate,derivative,ok)
+    type(elementary_reaction), intent(in) :: reaction
+    real(dp), intent(in) :: temperature,total_concentration
+    real(dp), intent(out) :: rate,derivative
+    logical, intent(out) :: ok
+    real(dp) :: pressures(plog_capacity),logs(plog_capacity),terms(plog_capacity),weights(plog_capacity)
+    real(dp) :: pivot,total,pressure,slope,log_rate,a
+    integer :: i,j,first,n,groups,g
+    rate=0;derivative=0;ok=.false.
+    if (.not.valid_plog_table(reaction)) return
+    if (.not.all(ieee_is_finite([temperature,total_concentration]))) return
+    if (temperature<=0.or.total_concentration<0) return
+    n=reaction%plog_count;groups=0;i=1
+    do while(i<=n)
+      first=i;groups=groups+1;pressures(groups)=reaction%plog(1,i)
+      do
+        a=reaction%plog(2,i);weights(i)=0;terms(i)=-huge(1.0_dp)/4
+        if (a/=0) then
+          weights(i)=sign(1.0_dp,a)
+          terms(i)=log(abs(a))+reaction%plog(3,i)*log(temperature)- &
+            reaction%plog(4,i)/(universal_gas_constant*temperature)
+        end if
+        i=i+1
+        if (i>n) exit
+        if (reaction%plog(1,i)/=pressures(groups)) exit
+      end do
+      j=i-1;pivot=maxval(terms(first:j))
+      total=sum(weights(first:j)*exp(terms(first:j)-pivot))
+      if (total<=0.or..not.ieee_is_finite(total)) return
+      logs(groups)=pivot+log(total)
+    end do
+    pressure=universal_gas_constant*temperature*total_concentration
+    if (.not.ieee_is_finite(pressure)) return
+    slope=0
+    if (pressure<=pressures(1)) then
+      log_rate=logs(1)
+    else if (pressure>=pressures(groups)) then
+      log_rate=logs(groups)
+    else
+      g=1
+      do while(g<groups-1)
+        if (pressure<pressures(g+1)) exit
+        g=g+1
+      end do
+      slope=(logs(g+1)-logs(g))/(log(pressures(g+1))-log(pressures(g)))
+      log_rate=logs(g)+slope*(log(pressure)-log(pressures(g)))
+    end if
+    if (.not.ieee_is_finite(log_rate).or.abs(log_rate)>logarithm_limit) return
+    rate=exp(log_rate)
+    if (slope/=0.and.total_concentration>0) derivative=rate*slope/total_concentration
+    ok=ieee_is_finite(rate).and.ieee_is_finite(derivative)
+  end subroutine
 
   real(dp) function arrhenius_rate_constant(rate, temperature, ok) &
       result(rate_constant)
@@ -354,6 +426,9 @@ contains
     if (.not. ok) return
 
     select case (reaction%kind)
+    case (reaction_kind_plog)
+      call plog_forward_rate(reaction,temperature,sum(concentrations),rate_constant,derivative_wrt_pressure,ok)
+      if (present(concentration_derivative)) concentration_derivative=derivative_wrt_pressure
     case (reaction_kind_elementary)
       rate_constant = arrhenius_rate_constant( &
         reaction%forward_rate, temperature, ok)
