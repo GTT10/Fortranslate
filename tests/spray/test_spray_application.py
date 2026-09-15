@@ -57,6 +57,42 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_port_property_models_restart(self):
+        settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,"
+                    "injection_port_temperatures=290,400,"
+                    "port_density_models='polynomial','constant',"
+                    "port_density_coefficients(:,1)=1150,-.5,0,0,port_density_temperature_ranges(:,1)=280,500,"
+                    "port_vapor_pressure_models='antoine','clausius',"
+                    "port_antoine_coefficients(:,1)=5.40221,1838.675,-31.737,1e5,"
+                    "port_antoine_temperature_ranges(:,1)=273,303,"
+                    "port_boiling_models='reject','surface-cap',port_critical_temperatures=0,647,"
+                    "mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4e-7,injection_interval=2e-7,")
+        checkpoint = self.root/'fits.chk'
+        self.run_case('fits', common=settings)
+        self.check_balance('fits')
+        with (self.root/'fits.parcels.csv').open() as stream:
+            parcels = list(csv.DictReader(stream))
+        self.assertEqual({int(p['material_id']) for p in parcels}, {1, 2})
+        for parcel in parcels:
+            density = 1150-.5*float(parcel['temperature']) if int(parcel['material_id']) == 1 else 1000
+            expected_mass = density*math.pi/6*float(parcel['diameter'])**3
+            self.assertAlmostEqual(float(parcel['mass'])/expected_mass, 1, delta=1e-12)
+        self.run_case('fits_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('fits_resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'fits.{suffix}').read_bytes(),
+                             (self.root/f'fits_resumed.{suffix}').read_bytes())
+        self.assertEqual(self.history('fits')[-1], self.history('fits_resumed')[-1])
+        for index, (old, new) in enumerate([('1150,-.5', '1151,-.5'), ('5.40221', '5.40222'), ('0,647', '0,648')]):
+            result = self.run_case(f'fits_changed{index}', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace(old, new))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('fits_bad_range', common=settings.replace('273,303', '273,280'), fail=True)
+        self.run_case('fits_bad_cap', common=settings.replace("'reject','surface-cap'", "'surface-cap','surface-cap'"),
+                      fail=True)
+        self.run_case('fits_unused', common='port_density_coefficients(1,1)=1000,', fail=True)
+
     def test_port_materials_restart(self):
         settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                     "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"

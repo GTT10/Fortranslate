@@ -25,6 +25,10 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    logical :: port_property_models
+    character(len=16) :: port_density_models(16),port_vapor_pressure_models(16),port_boiling_models(16)
+    real(dp) :: port_density_coefficients(4,16),port_density_temperature_ranges(2,16)
+    real(dp) :: port_antoine_coefficients(4,16),port_antoine_temperature_ranges(2,16),port_critical_temperatures(16)
     logical :: multi_material
     character(len=24) :: port_vapor_names(16)
     real(dp) :: port_liquid_densities(16),port_liquid_cps(16),port_reference_temperatures(16)
@@ -102,6 +106,8 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      port_density_models,port_vapor_pressure_models,port_boiling_models,port_critical_temperatures, &
+      port_density_coefficients,port_density_temperature_ranges,port_antoine_coefficients,port_antoine_temperature_ranges, &
       port_vapor_names,port_liquid_densities,port_liquid_cps,port_reference_temperatures, &
       port_reference_pressures,port_latent_heats, &
       injection_port_count,injection_port_centers,injection_port_axes,injection_port_fractions, &
@@ -113,6 +119,9 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    port_density_models='constant';port_vapor_pressure_models='clausius';port_boiling_models='reject'
+    port_density_coefficients=0;port_density_temperature_ranges=0
+    port_antoine_coefficients=0;port_antoine_temperature_ranges=0;port_critical_temperatures=0
     port_vapor_names='';port_liquid_densities=-1;port_liquid_cps=-1
     port_reference_temperatures=-1;port_reference_pressures=-1;port_latent_heats=-1
     inflow_temperature=1200;inflow_pressure=101325;inflow_velocity=0
@@ -274,12 +283,27 @@ contains
         any(port_reference_temperatures(injection_port_count+1:)/=-1).or. &
         any(port_reference_pressures(injection_port_count+1:)/=-1).or. &
         any(port_latent_heats(injection_port_count+1:)/=-1)) call fail('Unused port material')
-    multi_material=any(port_vapor_names/='').or.any(port_liquid_densities/=-1).or.any(port_liquid_cps/=-1).or. &
+    if (.not.all(ieee_is_finite(port_density_coefficients)).or. &
+        .not.all(ieee_is_finite(port_density_temperature_ranges)).or. &
+        .not.all(ieee_is_finite(port_antoine_coefficients)).or. &
+        .not.all(ieee_is_finite(port_antoine_temperature_ranges)).or. &
+        .not.all(ieee_is_finite(port_critical_temperatures))) call fail('Nonfinite port property model')
+    if (any(port_density_models(injection_port_count+1:)/='constant').or. &
+        any(port_vapor_pressure_models(injection_port_count+1:)/='clausius').or. &
+        any(port_boiling_models(injection_port_count+1:)/='reject').or. &
+        any(port_density_coefficients(:,injection_port_count+1:)/=0).or. &
+        any(port_density_temperature_ranges(:,injection_port_count+1:)/=0).or. &
+        any(port_antoine_coefficients(:,injection_port_count+1:)/=0).or. &
+        any(port_antoine_temperature_ranges(:,injection_port_count+1:)/=0).or. &
+        any(port_critical_temperatures(injection_port_count+1:)/=0)) call fail('Unused port property model')
+    port_property_models=any(port_density_models/='constant').or.any(port_vapor_pressure_models/='clausius').or. &
+      any(port_boiling_models/='reject').or.any(port_density_coefficients/=0).or. &
+      any(port_density_temperature_ranges/=0).or.any(port_antoine_coefficients/=0).or. &
+      any(port_antoine_temperature_ranges/=0).or.any(port_critical_temperatures/=0)
+    multi_material=port_property_models.or.any(port_vapor_names/='').or. &
+      any(port_liquid_densities/=-1).or.any(port_liquid_cps/=-1).or. &
       any(port_reference_temperatures/=-1).or.any(port_reference_pressures/=-1).or.any(port_latent_heats/=-1)
     if (multi_material) then
-      ! Per-material fits require their own input schema; never reuse one fluid's fit silently.
-      if (liquid_density_model/='constant'.or.vapor_pressure_model/='clausius'.or.boiling_model/='reject') &
-        call fail('Port materials require constant density, Clausius pressure and reject boiling model')
       allocate(materials(injection_port_count))
       do port=1,injection_port_count
         if (port_vapor_names(port)=='') port_vapor_names(port)=vapor_name
@@ -290,8 +314,15 @@ contains
         if (port_latent_heats(port)==-1) port_latent_heats(port)=latent_heat
         call initialize_spray_liquid(species,trim(port_vapor_names(port)),port_liquid_densities(port), &
           port_liquid_cps(port),port_reference_temperatures(port),port_reference_pressures(port), &
-          port_latent_heats(port),materials(port),ok)
+          port_latent_heats(port),materials(port),ok,port_vapor_pressure_models(port), &
+          port_antoine_coefficients(:,port),port_antoine_temperature_ranges(:,port))
         if (.not.ok) call fail('Invalid port liquid/vapor thermodynamics')
+        materials(port)%density_model=port_density_models(port)
+        materials(port)%density_coefficients=port_density_coefficients(:,port)
+        materials(port)%density_temperature_range=port_density_temperature_ranges(:,port)
+        materials(port)%boiling_model=port_boiling_models(port)
+        materials(port)%critical_temperature=port_critical_temperatures(port)
+        if (.not.valid_spray_liquid(materials(port))) call fail('Invalid port property model')
       end do
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
@@ -435,6 +466,16 @@ contains
         context=trim(context)//' '//trim(materials(port)%vapor_name)
         call append_reals([materials(port)%density,materials(port)%heat_capacity, &
           materials(port)%reference_temperature,materials(port)%reference_pressure,materials(port)%latent_heat])
+      end do
+    end if
+    if (port_property_models) then
+      context=trim(context)//' port-property-models-v1'
+      do port=1,injection_port_count
+        context=trim(context)//' '//trim(materials(port)%density_model)//' '// &
+          trim(materials(port)%vapor_pressure_model)//' '//trim(materials(port)%boiling_model)
+        call append_reals([materials(port)%density_coefficients,materials(port)%density_temperature_range, &
+          materials(port)%antoine_coefficients,materials(port)%antoine_temperature_range, &
+          materials(port)%critical_temperature])
       end do
     end if
     if (port_state_overrides) then

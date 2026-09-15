@@ -663,9 +663,9 @@ energy use the selected liquid. Computational splitting copies the identity.
 Parcel CSV adds `material_id`; opt-in checkpoint records retain it and reject
 changed liquid inputs. Default single-liquid checkpoint/output formats remain.
 
-The application currently requires constant density, Clausius saturation pressure
-and `boiling_model='reject'` when port materials are specified. Breakup viscosity,
-surface tension and other breakup controls remain shared. The low-level material
+Each port can also select its density and saturation-pressure models and
+near-boiling cap, as described below. Breakup viscosity, surface tension and
+other breakup controls remain shared. The low-level material
 pool API accepts individual `spray_liquid` records; totals require validated
 parcel IDs and materials, as supplied by injection/coupling or checked after
 application restart. This is coexisting pure-liquid droplets, not a liquid
@@ -675,3 +675,36 @@ mixture with composition-dependent evaporation.
 chemistry disabled. Its second-liquid properties are illustrative integration
 inputs, not a calibrated peroxide model.
 See [focused evidence](validation/port-materials-20260915.md).
+
+
+### Property models per port
+
+The following arrays select individual liquid models (up to 16 ports):
+
+| Input | Shape | Default |
+| --- | --- | --- |
+| `port_density_models` | 16 | `constant` |
+| `port_density_coefficients` | 4,16 | 0 |
+| `port_density_temperature_ranges` | 2,16 | 0 |
+| `port_vapor_pressure_models` | 16 | `clausius` |
+| `port_antoine_coefficients` | 4,16 | 0 |
+| `port_antoine_temperature_ranges` | 2,16 | 0 |
+| `port_boiling_models` | 16 | `reject` |
+| `port_critical_temperatures` | 16 | 0 |
+
+Select `polynomial`, `antoine` or `surface-cap` as for the corresponding global
+model. Coefficients, SI units, bounds and rejection rules are identical.
+For example, `port_density_coefficients(:,2)=1150,-.5,0,0` and
+`port_density_temperature_ranges(:,2)=280,500` supply the second port's
+illustrative linear density fit after selecting its `polynomial` model.
+
+Any nondefault port model input activates per-port material identity even if
+all vapor names inherit the global name. Port model fields have their own
+explicit defaults; they do not inherit global fitted coefficients or model
+selectors. This prevents a fit for one global liquid from being applied to a
+different port liquid implicitly. Unused slots retain the defaults. A cap still
+requires Clausius pressure and a critical temperature above the liquid reference
+temperature; Antoine and cap cannot be combined for the same material.
+All port model fields participate in restart identity when enabled. Default
+material contexts remain compatible. See
+[focused evidence](validation/port-property-models-20260915.md).
