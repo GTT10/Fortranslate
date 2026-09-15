@@ -606,12 +606,24 @@ contains
   end subroutine
 
   subroutine advance_mixture_coupling_3d(species,transport,components,options,state,temperature,lower,spacing, &
-      parcels,component_mass,interval,substeps,ok,message,boundary_faces,boundary_change)
+      parcels,component_mass,interval,substeps,ok,message,boundary_faces,boundary_change, &
+      wall_options,wall_films,film_component_mass)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
+    type(spray_wall_options), optional, intent(in) :: wall_options
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_component_mass(:,:)
+    type(spray_wall_options) :: impact_settings
+    type(spray_options) :: film_options
+    type(spray_wall_film), allocatable :: patches(:)
+    type(spray_wall_film) :: deposit
+    real(dp), allocatable :: patch_mass(:,:),child_mass(:,:),film_starts(:)
+    integer :: film_steps
+    logical :: hit
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp) :: deposited_mass(size(components)),wall_exchange(5),film_ledger(size(state,1)),mw(size(components))
     real(dp), intent(in) :: lower(3),spacing(3),interval
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
@@ -650,6 +662,27 @@ contains
     faces='periodic'
     if (present(boundary_faces)) faces=boundary_faces
     if (.not.valid_spray_boundary_faces(faces)) return
+    impact_settings=spray_wall_options()
+    if (present(wall_options)) impact_settings=wall_options
+    if (.not.valid_wall_options(impact_settings,faces)) return
+    if (present(wall_films).neqv.present(film_component_mass)) return
+    if (any(impact_settings%enabled).and..not.present(wall_films)) return
+    allocate(patches(0),patch_mass(size(components),0))
+    if (present(wall_films)) then
+      if (.not.allocated(wall_films).or..not.allocated(film_component_mass)) return
+      if (any(shape(film_component_mass)/=[size(components),size(wall_films)])) return
+      patches=wall_films;patch_mass=film_component_mass
+    end if
+    if (size(patches)>impact_settings%maximum_films) return
+    do p=1,size(patches)
+      if (.not.valid_wall_component_inventory(patches(p),patch_mass(:,p))) return
+    end do
+    allocate(film_starts(size(patches)));film_starts=0
+    do p=1,size(components)
+      if (.not.valid_spray_liquid(components(p))) return
+      if (components(p)%vapor_index>size(species)) return
+      mw(p)=species(components(p)%vapor_index)%molecular_weight
+    end do
     if (present(boundary_change)) then
       if (size(boundary_change)/=size(state,1)) return
     end if
@@ -743,8 +776,38 @@ contains
         ! Restore the sampled primitive: the feedback recovery above used it as scratch.
         call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
         if (.not.valid) return
+        hit=.false.
+        if (any(impact_settings%enabled).and.next%mass>0) then
+          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
+          call mixture_impact_at_planar_wall(next,drops(p)%position,components,next_mass,options,mw,primitive(5), &
+            lower,lower+spacing*real(shape3,dp),impact_settings,patches,drops(size(drops))%id+1_int64,children,child_mass, &
+            deposit,deposited_mass,wall_exchange,hit,valid)
+          if (.not.valid) then
+            message='Mixed wall impact rejected; complete update rolled back';return
+          end if
+          if (hit) then
+            if (size(children)>options%maximum_parcels-size(drops)) return
+            do n=1,size(children)
+              if (any(children(n)%position<lower).or.any(children(n)%position>=lower+spacing*real(shape3,dp))) return
+            end do
+            if (size(children)>0) then
+              old_count=size(drops)
+              allocate(split_masses(size(components),old_count+size(children)))
+              split_masses(:,:old_count)=masses;split_masses(:,old_count+1:)=child_mass
+              call move_alloc(split_masses,masses)
+              starts=[starts,spread(min(interval,elapsed+dt),1,size(children))];drops=[drops,children]
+            end if
+            if (deposit%mass>0) then
+              if (size(patches)>=impact_settings%maximum_films) return
+              patch_mass=reshape([reshape(patch_mass,[size(patch_mass)]),deposited_mass], &
+                [size(components),size(patches)+1])
+              patches=[patches,deposit];film_starts=[film_starts,min(interval,elapsed+dt)]
+            end if
+            ledger(1:5)=ledger(1:5)-wall_exchange
+          end if
+        end if
         release=spray_khrt_release()
-        if (next%mass>0.and.options%breakup_model/='none') then
+        if (next%mass>0.and.options%breakup_model/='none'.and..not.hit) then
           call build_mixture_film(species,transport,primitive,tg,next,components,y,options,mixture_film,rates,hv,valid)
           if (.not.valid) return
           if (options%khrt_children) then
@@ -809,6 +872,16 @@ contains
       end do
       p=p+1
     end do
+    if (size(patches)>0.and.impact_settings%evolve) then
+      film_options=options;film_options%maximum_substeps=max(1,options%maximum_substeps-count)
+      call advance_mixture_film_coupling_3d(species,transport,components,film_options,impact_settings,gas,temp, &
+        patches,patch_mass,lower,spacing,interval,faces,film_steps,film_ledger,valid,message,film_starts)
+      if (.not.valid) return
+      if (film_steps>options%maximum_substeps-count) then
+        message='Mixed particle/film substep limit; complete update rolled back';return
+      end if
+      count=count+film_steps;ledger=ledger+film_ledger
+    end if
     old_count=size(drops)
     call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,valid)
     if (.not.valid) return
@@ -825,6 +898,9 @@ contains
       call move_alloc(split_masses,masses)
     end if
     state=gas;temperature=temp;parcels=drops;call move_alloc(masses,component_mass)
+    if (present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_component_mass)
+    end if
     if (present(boundary_change)) boundary_change=ledger
     substeps=count;ok=.true.;message=''
   end subroutine

@@ -363,7 +363,7 @@ component masses per droplet into its descendants. Optional KH shed-mass childre
 inherit the parent composition, with conservative transverse kinetic energy debited
 from gas. Children advance through the remaining step; capacity or gas-state failure
 rolls back the entire update. KH accumulators and composition survive computational
-splitting and restart. Wall-impact/film conversion remains unconnected.
+splitting and restart. Wall-impact/film conversion is available through the optional coupled arguments below.
 See [mixed KH evidence](validation/spray-mixture-kh-20260916.md).
 
 Both checkpoint routines accept optional `component_mass`. The `_MIX_V1` suffix
@@ -565,6 +565,22 @@ together. `mixture_system_totals` accepts optional `wall_films` and `film_mass` 
 include stationary-film mass, species and internal energy. This API is ready for
 connection to particle impact and reactive/CLI stepping; those connections remain
 open. See [grid evidence](validation/spray-mixture-film-grid-20260916.md).
+
+### Combined mixed-particle and wall-film update
+
+`advance_mixture_coupling_3d` accepts optional `wall_options`, `wall_films` and
+`film_component_mass`. The two film arrays must accompany each other. Enabled wall
+impact requires these arrays, even when initially empty. It processes the accepted
+particle flight's first wall crossing before aerodynamic breakup; a hit skips
+breakup for that substep. Splash children and deposited patches inherit the incident
+composition and start at the accepted substep's end.
+
+After particle flight, stationary films exchange mass and energy with the grid for
+their remaining interval. Particle and film substeps share the configured budget.
+Capacity failure, inadmissible impact or rejected film feedback rolls back the entire
+particle/gas/film update. Boundary ledgers combine wall impulse/energy and wall heat.
+Reactive-driver and CLI wiring remain open. See
+[combined evidence](validation/spray-mixture-wall-coupled-20260916.md).
 
 ## KH-RT representative-drop breakup
 

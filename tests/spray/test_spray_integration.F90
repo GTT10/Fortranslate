@@ -175,6 +175,51 @@ program test_spray_integration
     call require(all(drops%mass==before_drops%mass),'parent mass rollback')
     call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
       all(drops%khrt_shed_volume==before_drops%khrt_shed_volume),'wall/KH inventory rollback')
+  case('mixture_wall_coupling')
+    materials(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
+    call require(ok,'mixed impact component')
+    allocate(component_mass(2,1),films(0),film_mass(2,0))
+    faces='slip_wall';wall_options%enabled=.true.;wall_options%evolve=.true.
+    wall_options%liquid_conductivity=.6_dp;wall_options%temperature=300
+    options%heat=.false.;options%evaporation=.false.;options%drag=.false.
+    options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    do iteration=1,2
+      options%heat=iteration==1;options%evaporation=iteration==1
+      state=before;temperature=before_t
+      deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+      call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
+        [0.0_dp,0.0_dp,-1.0_dp],merge(10.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+      call require(ok,'mixed wall injection')
+      component_mass=reshape(drops(1)%mass*[.6_dp,.4_dp],[2,1])
+      call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok,films,film_mass)
+      call require(ok,'mixed wall initial totals')
+      call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+        [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message, &
+        faces,force,wall_options,films,film_mass)
+      call require(ok,trim(message))
+      call require(size(films)==1.and.drops(1)%mass==0,'mixed wall deposited patch')
+      if (iteration==1) call require(size(drops)==1,'mixed low speed deposition')
+      if (iteration==2) call require(size(drops)==5,'mixed high speed splash')
+      if (iteration==2) call require(maxval(abs(film_mass(:,1)/films(1)%mass-[.6_dp,.4_dp]))<1e-13_dp, &
+        'deposited composition')
+      if (iteration==1) call require(films(1)%temperature/=330.0_dp,'new film heats during remaining interval')
+      call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok,films,film_mass)
+      call require(ok.and.maxval(abs(totals1-totals0-force))<1e-12_dp,'mixed impact total closure')
+      call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'mixed impact wall momentum')
+    end do
+    state=before;temperature=before_t;deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+    call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
+      [0.0_dp,0.0_dp,-1.0_dp],300.0_dp,0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+    component_mass=reshape(drops(1)%mass*[.6_dp,.4_dp],[2,1]);saved_mass=component_mass;before_drops=drops
+    options%maximum_parcels=1
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message, &
+      faces,force,wall_options,films,film_mass)
+    call require(.not.ok.and.steps==0.and.all(force==0),'mixed splash capacity rejects')
+    call require(all(state==before).and.all(temperature==before_t).and.all(component_mass==saved_mass), &
+      'mixed splash capacity gas/component rollback')
+    call require(size(films)==0.and.size(film_mass,2)==0.and.all(drops%mass==before_drops%mass),'mixed splash film rollback')
   case('mixture_film_grid')
     materials(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
