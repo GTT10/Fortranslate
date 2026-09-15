@@ -124,7 +124,7 @@ contains
   end subroutine
 
   subroutine build_mixture_film(species,transport,primitive,gas_temperature,parcel,components,y,options, &
-      film,mass_weights,vapor_h,ok)
+      film,mass_weights,vapor_h,ok,wall_skin)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_parcel), intent(in) :: parcel
@@ -133,6 +133,7 @@ contains
     real(dp), intent(in) :: primitive(:),gas_temperature,y(:)
     type(spray_film), intent(out) :: film
     real(dp), intent(out) :: mass_weights(:),vapor_h(:)
+    logical, optional, intent(in) :: wall_skin
     logical, intent(out) :: ok
     real(dp) :: xs(size(y)),mw_liq(size(y)),diff_weights(size(y)),enthalpy(size(y))
     real(dp) :: yf(size(species)),yg(size(species)),xg(size(species)),ys(size(species)),mw_g(size(species))
@@ -186,6 +187,18 @@ contains
       where (.not.active) yf=yg*(1-sum(yf,mask=active))/carrier_y
     end if
     tf=(2*parcel%temperature+gas_temperature)/3
+    if (present(wall_skin)) then
+      if (wall_skin) then
+        tf=parcel%temperature+.5_dp*max(0.0_dp,gas_temperature-parcel%temperature)
+        if (sum_x>0) then
+          do i=1,size(y)
+            v=components(i)%vapor_index
+            if (active(v)) yf(v)=.5_dp*(ys(v)+yg(v))
+          end do
+          where (.not.active) yf=yg*(1-sum(yf,mask=active))/carrier_y
+        end if
+      end if
+    end if
     call mixture_mass_properties(species,yf,tf,mw,r,cp,cv,gamma,h,e,entropy,valid)
     if (.not.valid) return
     candidate%density=primitive(5)/(r*tf);candidate%cp=cp

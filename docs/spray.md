@@ -479,7 +479,7 @@ classification or child/film construction preserves all supplied state arrays.
 
 The caller supplies the dimensionless impact parameters, including wall-to-boiling
 temperature ratio. Mixture boiling-temperature evaluation, planar crossing dispatch,
-film transfer rates, grid/CLI coupling and mixture-film checkpoint state remain to be
+grid/CLI coupling and mixture-film checkpoint state remain to be
 connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
 from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
 
@@ -497,9 +497,27 @@ Complete evaporation and an evaporation-driven height below `minimum_height` ret
 all remaining species and energy to gas. The full inventory convention also applies
 when the final temperature cannot be defined because no liquid remains. Invalid
 component loss or temperature inversion leaves the patch and composition untouched.
-This supplied-exchange API does not yet compute gas/wall transfer rates or connect
-mixed films to the grid driver and checkpoint. See
+This supplied-exchange API is used by the frozen-rate update below. Mixed films
+are not yet connected to the grid driver and checkpoint. See
 [film exchange evidence](validation/spray-mixture-film-exchange-20260916.md).
+
+### Mixed-liquid film rates and frozen update
+
+`mixture_wall_film_rates` evaluates Raoult surface fractions and diffusion-weighted
+component evaporation through the existing stationary-film correlation. Gas-side
+properties use the wall half-composition rule and
+`Tskin = Tfilm + 0.5*max(0,Tgas-Tfilm)`. Gas and wall heat rates use the film thickness
+and supplied liquid conductivity. The temperature-rate estimate subtracts each
+component's evaporation rate times its own vapor-minus-liquid enthalpy, divided by
+the film mass and mixture heat capacity.
+
+`advance_mixture_wall_film_frozen` holds these rates fixed over a supplied interval
+and calls the conservative exchange API. It rejects component overdraw or an
+inadmissible remaining temperature; a grid driver must reduce the step in those
+cases. It retains the full-inventory minimum-height removal policy. Composition
+transport, thermal updates and rates are now available as APIs; wall crossing,
+grid/CLI feedback and mixed-film restart remain open. See
+[rate evidence](validation/spray-mixture-film-rates-20260916.md).
 
 ## KH-RT representative-drop breakup
 

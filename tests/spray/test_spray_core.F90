@@ -291,6 +291,49 @@ program test_spray_core
     call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
       saved_patch,transfer,solid_energy,ok)
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
+  case('mixture_wall_rates')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'film rate component')
+    mixture_y=[.6_dp,.4_dp]
+    call liquid_mixture_properties(mixture_components,mixture_y,350.0_dp,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'film rate properties')
+    wall_patch=spray_wall_film([0.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp],1e-8_dp,350.0_dp, &
+      1e-3_dp,1e-8_dp/(mixture_rho*.25_dp*pi*1e-6_dp),1)
+    component_mass=wall_patch%mass*mixture_y;saved_mass=component_mass;saved_patch=wall_patch
+    primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok.and.all(mixture_rates>0).and.heat>0.and.value>0,'mixed film heat and evaporation rates')
+    expected=(heat+value-sum(mixture_rates*(vapor_h-[liquid_energy(mixture_components(1),350.0_dp), &
+      liquid_energy(mixture_components(2),350.0_dp)])))/(wall_patch%mass*mixture_cp)
+    call require(abs(td-expected)<1e-12_dp*max(1.0_dp,abs(expected)),'composition-aware film cooling')
+    dt=1e-10_dp
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,dt,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.wall_patch%mass<saved_patch%mass,'frozen mixed film update')
+    call require(maxval(abs(component_mass-(saved_mass-mixture_rates*dt)))<1e-24_dp,'frozen film component rates')
+    call liquid_mixture_properties(mixture_components,component_mass/wall_patch%mass,wall_patch%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'updated film energy')
+    call require(abs(wall_patch%mass*mixture_e+totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp, &
+      'frozen film gas wall closure')
+    wall_patch=saved_patch;component_mass=saved_mass
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,1.0_dp,1e-15_dp,totals0,heat,ok)
+    call require(.not.ok.and.all(component_mass==saved_mass).and.wall_patch%mass==saved_patch%mass,'film large step rollback')
+    mixture_y=[1.0_dp,0.0_dp];component_mass=wall_patch%mass*mixture_y
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok.and.mixture_rates(2)==0,'pure limit inactive component')
+    p%temperature=wall_patch%temperature
+    call build_spray_film(species,transport,primitive,600.0_dp,p,liquid,options,film,ok,wall_skin=.true.)
+    call require(ok,'pure film skin')
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,masscoef, &
+      transfer(1),transfer(2),transfer(3),ok)
+    call require(ok.and.abs(mixture_rates(1)/masscoef-1)<1e-12_dp,'pure limit film mass rate')
+    call require(abs(heat/transfer(1)-1)<1e-12_dp.and.value==transfer(2),'pure limit heat rates')
   case('mixture_wall_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

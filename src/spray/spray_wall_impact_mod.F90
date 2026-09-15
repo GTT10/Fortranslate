@@ -2,7 +2,10 @@
 module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
-  use spray_mixture_mod, only: liquid_mixture_properties,liquid_mixture_temperature,valid_component_inventory
+  use spray_mixture_mod, only: liquid_mixture_properties,liquid_mixture_temperature,valid_component_inventory, &
+    build_mixture_film
+  use nasa7_thermo_mod, only: nasa7_species
+  use gas_transport_mod, only: gas_transport_species
   use spray_parcel_mod
   use nasa7_thermo_mod, only: universal_gas_constant
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -28,6 +31,7 @@ module spray_wall_impact_mod
   end type
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
+  public :: mixture_wall_film_rates,advance_mixture_wall_film_frozen
   public :: resolve_wall_impact,resolve_mixture_wall_impact,advance_mixture_wall_film_exchange
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
@@ -142,6 +146,77 @@ contains
     if (mass_rate>0.and.latent<=0) return
     temperature_rate=(gas_heat+wall_heat-mass_rate*latent)/(patch%mass*cp)
     ok=all(ieee_is_finite([mass_rate,gas_heat,wall_heat,temperature_rate]))
+  end subroutine
+
+  subroutine mixture_wall_film_rates(patch,components,component_mass,species,transport,primitive,gas_temperature, &
+      options,conductivity,wall_temperature,mass_rate,vapor_h,gas_heat,wall_heat,temperature_rate,ok)
+    type(spray_wall_film), intent(in) :: patch
+    type(spray_liquid), intent(in) :: components(:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_options), intent(in) :: options
+    real(dp), intent(in) :: component_mass(:),primitive(:),gas_temperature,conductivity,wall_temperature
+    real(dp), intent(out) :: mass_rate(:),vapor_h(:),gas_heat,wall_heat,temperature_rate
+    logical, intent(out) :: ok
+    type(spray_parcel) :: identity
+    type(spray_film) :: skin
+    type(spray_liquid) :: effective
+    real(dp) :: y(size(components)),weights(size(components)),hv(size(components)),rho,cp,e,mdot,qg,qw,tdot,latent
+    integer :: i,n
+    logical :: valid
+    mass_rate=0;vapor_h=0;gas_heat=0;wall_heat=0;temperature_rate=0;ok=.false.;n=size(components)
+    if (.not.valid_wall_film(patch).or.size(component_mass)/=n.or.size(mass_rate)/=n.or.size(vapor_h)/=n) return
+    if (.not.all(ieee_is_finite(component_mass))) return
+    if (any(component_mass<0).or.any(component_mass>1e18_dp)) return
+    if (abs(sum(component_mass)-patch%mass)>32*epsilon(1.0_dp)*n*patch%mass) return
+    y=component_mass/patch%mass
+    call liquid_mixture_properties(components,y,patch%temperature,rho,cp,e,valid)
+    if (.not.valid) return
+    identity=spray_parcel(1_int64,patch%position,[0.0_dp,0.0_dp,0.0_dp], &
+      min(1.0_dp,patch%mass),patch%temperature,max(1.0_dp,patch%mass))
+    call build_mixture_film(species,transport,primitive,gas_temperature,identity,components,y,options, &
+      skin,weights,hv,valid,wall_skin=.true.)
+    if (.not.valid) return
+    effective=components(1);effective%density=rho;effective%heat_capacity=cp
+    effective%reference_temperature=patch%temperature;effective%reference_energy=e
+    effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
+    effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
+    effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    if (sum(weights)>0) skin%vapor_enthalpy=sum(weights*hv)
+    call wall_film_transfer_rates(patch,effective,skin,conductivity,wall_temperature,options%heat,options%evaporation, &
+      mdot,qg,qw,tdot,valid)
+    if (.not.valid) return
+    latent=0
+    do i=1,n
+      if (weights(i)==0) cycle
+      latent=latent+weights(i)*(hv(i)-liquid_energy(components(i),patch%temperature))
+    end do
+    tdot=(qg+qw-mdot*latent)/(patch%mass*cp)
+    if (.not.ieee_is_finite(tdot)) return
+    mass_rate=mdot*weights;vapor_h=hv;gas_heat=qg;wall_heat=qw;temperature_rate=tdot;ok=.true.
+  end subroutine
+
+  subroutine advance_mixture_wall_film_frozen(patch,components,component_mass,species,transport,primitive,gas_temperature, &
+      options,conductivity,wall_temperature,dt,minimum_height,gas_change,wall_energy,ok)
+    type(spray_wall_film), intent(inout) :: patch
+    type(spray_liquid), intent(in) :: components(:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_options), intent(in) :: options
+    real(dp), intent(inout) :: component_mass(:)
+    real(dp), intent(in) :: primitive(:),gas_temperature,conductivity,wall_temperature,dt,minimum_height
+    real(dp), intent(out) :: gas_change(:),wall_energy
+    logical, intent(out) :: ok
+    real(dp) :: rates(size(components)),hv(size(components)),qgas,qwall,tdot
+    logical :: valid
+    gas_change=0;wall_energy=0;ok=.false.
+    if (.not.ieee_is_finite(dt)) return
+    if (dt<0.or.dt>1e6_dp) return
+    call mixture_wall_film_rates(patch,components,component_mass,species,transport,primitive,gas_temperature, &
+      options,conductivity,wall_temperature,rates,hv,qgas,qwall,tdot,valid)
+    if (.not.valid) return
+    call advance_mixture_wall_film_exchange(patch,components,component_mass,rates*dt,hv,qgas*dt,qwall*dt, &
+      minimum_height,gas_change,wall_energy,ok)
   end subroutine
 
   ! Supplied component losses are total kg; heat amounts are J into the patch.
