@@ -39,6 +39,8 @@ program test_spray_core
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
   type(spray_wall_film) :: wall_patch,saved_patch
+  type(spray_wall_film) :: empty_films(0)
+  logical :: hit
   type(spray_wall_options) :: wall_settings
   real(dp) :: child_totals(5),film_budget(5),film_mdot,film_qgas,film_qwall,film_tdot,solid_energy
   real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
@@ -291,6 +293,36 @@ program test_spray_core
     call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
       saved_patch,transfer,solid_energy,ok)
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
+  case('mixture_wall_crossing')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'crossing mixture component')
+    mixture_y=[.6_dp,.4_dp];mw=species([liquid%vapor_index,mixture_components(2)%vapor_index])%molecular_weight
+    call mixture_impact_boiling_temperature(mixture_components,mixture_y,mw,101325.0_dp,value,ok)
+    call require(ok.and.abs(value-(.6_dp*373.15_dp+.4_dp*350.0_dp))<1e-12_dp,'reference weighted impact boiling')
+    options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    wall_settings%enabled=.true.;wall_settings%temperature=300
+    q=p;p%position(3)=-1e-5_dp;p%velocity=[0.0_dp,0.0_dp,-.1_dp]
+    component_mass=p%mass*mixture_y;saved_mass=component_mass
+    call mixture_impact_at_planar_wall(p,q%position,mixture_components,component_mass,options,mw,101325.0_dp, &
+      [0.0_dp,0.0_dp,0.0_dp],[.004_dp,.004_dp,.004_dp],wall_settings,empty_films,2_int64, &
+      drops,child_component_mass,wall_patch,film_component_mass,transfer,hit,ok)
+    call require(ok.and.hit.and.p%mass==0.and.size(drops)==0,'crossing deposits mixture')
+    call require(maxval(abs(film_component_mass-q%multiplicity*saved_mass))<1e-22_dp,'crossing film components')
+    call require(all(wall_patch%normal==[0.0_dp,0.0_dp,1.0_dp]).and.wall_patch%position(3)==0,'crossing wall geometry')
+    saved_patch=wall_patch;saved_film_mass=film_component_mass
+    p=q;component_mass=saved_mass
+    call mixture_impact_at_planar_wall(p,q%position,mixture_components,component_mass,options,mw,101325.0_dp, &
+      [0.0_dp,0.0_dp,0.0_dp],[.004_dp,.004_dp,.004_dp],wall_settings,empty_films,2_int64, &
+      drops,child_component_mass,wall_patch,film_component_mass,transfer,hit,ok)
+    call require(ok.and..not.hit.and.all(component_mass==saved_mass),'no crossing retains mixture')
+    p%position(3)=-1e-5_dp;p%velocity=[0.0_dp,0.0_dp,-.1_dp]
+    call mixture_impact_at_planar_wall(p,q%position,mixture_components,component_mass,options,mw,-1.0_dp, &
+      [0.0_dp,0.0_dp,0.0_dp],[.004_dp,.004_dp,.004_dp],wall_settings,empty_films,2_int64, &
+      drops,child_component_mass,wall_patch,film_component_mass,transfer,hit,ok)
+    call require(.not.ok.and..not.hit.and.all(component_mass==saved_mass).and.p%mass==q%mass,'crossing failure rollback')
+    call require(all(film_component_mass==saved_film_mass).and.wall_patch%mass==saved_patch%mass,'crossing film rollback')
   case('mixture_wall_rates')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

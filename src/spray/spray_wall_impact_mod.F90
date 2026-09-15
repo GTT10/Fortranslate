@@ -29,6 +29,7 @@ module spray_wall_impact_mod
     real(dp) :: port_conductivities(16)=-1,port_conductivity_coefficients(4,16)=0
     real(dp) :: port_conductivity_temperature_ranges(2,16)=0
   end type
+  public :: mixture_impact_boiling_temperature,mixture_impact_at_planar_wall
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
   public :: mixture_wall_film_rates,advance_mixture_wall_film_frozen
@@ -373,8 +374,97 @@ contains
       f%material_id>=1.and.f%material_id<=16
   end function
 
+  ! AhamedSplash uses the mass-weighted pure-component boiling temperatures.
+  subroutine mixture_impact_boiling_temperature(components,y,molecular_weights,pressure,temperature,ok)
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(in) :: y(:),molecular_weights(:),pressure
+    real(dp), intent(out) :: temperature
+    logical, intent(out) :: ok
+    real(dp) :: denom,boil,total
+    integer :: i
+    temperature=0;ok=.false.
+    if (size(molecular_weights)/=size(components).or.size(y)/=size(components)) return
+    if (.not.all(ieee_is_finite(molecular_weights)).or..not.ieee_is_finite(pressure)) return
+    if (any(molecular_weights<1e-3_dp).or.any(molecular_weights>1e5_dp).or.pressure<1.or.pressure>1e10_dp) return
+    ! Validate composition/property records without requiring overlapping fit temperatures.
+    if (size(y)<1.or.size(y)>16.or..not.all(ieee_is_finite(y))) return
+    if (any(y<0).or.abs(sum(y)-1)>1e-12_dp) return
+    total=0
+    do i=1,size(y)
+      if (.not.valid_spray_liquid(components(i))) return
+      if (y(i)==0) cycle
+      if (components(i)%vapor_pressure_model=='antoine') then
+        denom=components(i)%antoine_coefficients(1)-log10(pressure/components(i)%antoine_coefficients(4))
+        if (denom<=0) return
+        boil=components(i)%antoine_coefficients(2)/denom-components(i)%antoine_coefficients(3)
+        if (boil<components(i)%antoine_temperature_range(1).or.boil>components(i)%antoine_temperature_range(2)) return
+      else
+        denom=1/components(i)%reference_temperature-log(pressure/components(i)%reference_pressure)* &
+          universal_gas_constant/(components(i)%latent_heat*molecular_weights(i))
+        if (denom<=0) return
+        boil=1/denom
+      end if
+      if (.not.ieee_is_finite(boil)) return
+      if (boil<1.or.boil>1e5_dp) return
+      total=total+y(i)*boil
+    end do
+    temperature=total;ok=.true.
+  end subroutine
+
+  subroutine mixture_impact_at_planar_wall(parent,previous,components,component_mass,properties,molecular_weights, &
+      pressure,lower,upper,settings,films,first_id,children,child_mass,deposit,film_mass,wall,hit,ok)
+    type(spray_parcel), intent(inout) :: parent
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(inout) :: component_mass(:),film_mass(:)
+    real(dp), intent(in) :: previous(3),molecular_weights(:),pressure,lower(3),upper(3)
+    type(spray_options), intent(in) :: properties
+    type(spray_wall_options), intent(in) :: settings
+    type(spray_wall_film), intent(in) :: films(:)
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), allocatable, intent(inout) :: child_mass(:,:)
+    type(spray_wall_film), intent(inout) :: deposit
+    real(dp), intent(out) :: wall(5)
+    logical, intent(out) :: hit,ok
+    type(spray_liquid) :: effective
+    type(spray_parcel) :: next
+    type(spray_parcel), allocatable :: spawned(:)
+    type(spray_wall_film) :: deposited
+    real(dp), allocatable :: spawned_mass(:,:)
+    real(dp) :: y(size(components)),rho,cp,e,boil,budget(5)
+    logical :: valid,crossed
+    integer :: n
+    wall=0;hit=.false.;ok=.false.
+    if (size(component_mass)/=size(components).or.size(film_mass)/=size(components)) return
+    if (.not.valid_component_inventory(parent,component_mass).or.parent%mass<=0) return
+    y=component_mass/parent%mass
+    call liquid_mixture_properties(components,y,parent%temperature,rho,cp,e,valid)
+    if (.not.valid) return
+    call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure,boil,valid)
+    if (.not.valid) return
+    effective=components(1);effective%density=rho;effective%heat_capacity=cp
+    effective%reference_temperature=parent%temperature;effective%reference_energy=e
+    effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
+    effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
+    effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    next=parent
+    call impact_at_planar_wall(next,previous,effective,properties,molecular_weights(1),pressure,lower,upper,settings, &
+      films,first_id,spawned,deposited,budget,crossed,valid,boiling_temperature=boil)
+    if (.not.valid) return
+    if (.not.crossed) then
+      ok=.true.;return
+    end if
+    allocate(spawned_mass(size(components),size(spawned)))
+    do n=1,size(spawned)
+      spawned_mass(:,n)=spawned(n)%mass*y
+    end do
+    component_mass=next%mass*y;film_mass=deposited%mass*y
+    parent=next;deposit=deposited;wall=budget;hit=.true.;ok=.true.
+    call move_alloc(spawned,children);call move_alloc(spawned_mass,child_mass)
+  end subroutine
+
   subroutine impact_at_planar_wall(parent,previous,liquid,properties,molecular_weight,pressure,lower,upper, &
-      settings,films,first_id,children,deposit,wall,hit,ok)
+      settings,films,first_id,children,deposit,wall,hit,ok,boiling_temperature)
     type(spray_parcel), intent(inout) :: parent
     real(dp), intent(in) :: previous(3),molecular_weight,pressure,lower(3),upper(3)
     type(spray_liquid), intent(in) :: liquid
@@ -385,6 +475,7 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: children(:)
     type(spray_wall_film), intent(out) :: deposit
     real(dp), intent(out) :: wall(5)
+    real(dp), optional, intent(in) :: boiling_temperature
     logical, intent(out) :: hit,ok
     real(dp) :: fraction,earliest,location(3),normal(3),delta(3),boundary,boil,denom,rho,mu,d,un,we,re,kv,kcrit,thickness
     integer :: a,face,f,regime
@@ -415,7 +506,10 @@ contains
     location=previous+earliest*delta;normal=0;a=(face+1)/2
     normal(a)=merge(1.0_dp,-1.0_dp,modulo(face,2)==1)
     location(a)=merge(lower(a),upper(a),modulo(face,2)==1)
-    if (liquid%vapor_pressure_model=='antoine') then
+    if (present(boiling_temperature)) then
+      if (.not.ieee_is_finite(boiling_temperature)) return
+      boil=boiling_temperature
+    else if (liquid%vapor_pressure_model=='antoine') then
       denom=liquid%antoine_coefficients(1)-log10(pressure/liquid%antoine_coefficients(4))
       if (denom<=0) return
       boil=liquid%antoine_coefficients(2)/denom-liquid%antoine_coefficients(3)

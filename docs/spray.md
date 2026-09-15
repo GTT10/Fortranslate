@@ -478,9 +478,8 @@ energy at that temperature and returns wall momentum/energy exchange. Failed
 classification or child/film construction preserves all supplied state arrays.
 
 The caller supplies the dimensionless impact parameters, including wall-to-boiling
-temperature ratio. Mixture boiling-temperature evaluation, planar crossing dispatch,
-grid/CLI coupling and mixture-film checkpoint state remain to be
-connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
+temperature ratio. The planar dispatcher below evaluates that ratio. Grid/CLI coupling and
+mixture-film checkpoint state remain to be connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
 from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
 
 ### Mixed-liquid film exchange API
@@ -515,9 +514,25 @@ the film mass and mixture heat capacity.
 and calls the conservative exchange API. It rejects component overdraw or an
 inadmissible remaining temperature; a grid driver must reduce the step in those
 cases. It retains the full-inventory minimum-height removal policy. Composition
-transport, thermal updates and rates are now available as APIs; wall crossing,
-grid/CLI feedback and mixed-film restart remain open. See
+transport, thermal updates and rates are now available as APIs; grid/CLI feedback
+and mixed-film restart remain open. See
 [rate evidence](validation/spray-mixture-film-rates-20260916.md).
+
+### Mixed-liquid planar wall dispatch
+
+`mixture_impact_at_planar_wall` finds the earliest crossed box face, calculates
+impact parameters with the current mixture density and prescribed mixture viscosity
+and surface tension, and dispatches the existing impact event. Outgoing parcel
+component arrays use kg per drop; deposition components use whole-patch kg.
+No crossing leaves the supplied state unchanged; failed dispatch rolls back.
+
+`mixture_impact_boiling_temperature` uses the mass-weighted pure-component boiling
+temperatures for the wall-temperature ratio, following pinned `boilT_mix` and
+AhamedSplash. Component temperatures use the existing Clausius or bounded Antoine
+inversion at local pressure. This empirical impact temperature is not a Raoult
+bubble-point calculation or a physical boiling-rate model. Existing film geometry
+supplies local thickness; film entrainment remains absent. See
+[crossing evidence](validation/spray-mixture-wall-crossing-20260916.md).
 
 ## KH-RT representative-drop breakup
 
