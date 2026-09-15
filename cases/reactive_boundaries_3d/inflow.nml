@@ -1,0 +1,15 @@
+&reactive_3d
+  nx=4, ny=4, nz=4,
+  final_time=2e-7,
+  problem='uniform_reactor',
+  reconstruction='characteristic_plm', riemann_solver='hllc',
+  boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic',
+  inflow_temperature(1)=1200, inflow_pressure(1)=101325,
+  inflow_velocity(:,1)=100,0,0,
+  inflow_composition_count=3,
+  inflow_composition_species='H2','O2','N2',
+  inflow_composition_mole_fractions=.2,.2,.6,
+  initial_velocity_x=0, initial_velocity_y=0, initial_velocity_z=0,
+  chemistry_enabled=.false., transport_enabled=.true.,
+  output_file='inflow.csv'
+/

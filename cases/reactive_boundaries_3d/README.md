@@ -5,6 +5,29 @@ conditions in `boundary_faces`, ordered **x-low, x-high, y-low, y-high,
 z-low, z-high**. Empty entries inherit `boundary_condition` (default
 `periodic`). Opposing periodic faces must be paired.
 
+- `inflow`: prescribed, time-independent reservoir state, specified by
+  `inflow_temperature(6)`, `inflow_pressure(6)` and `inflow_velocity(3,6)`.
+  Values use SI units and the same six-face order. The shared inflow composition
+  defaults to the initial mixture; override it with `inflow_composition_count`,
+  `inflow_composition_species` and `inflow_composition_mole_fractions` (species
+  names, not mechanism indices). Both fixed and selected mechanisms resolve
+  those names against their loaded species. For example:
+
+  ```fortran
+  boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic'
+  inflow_temperature(1)=1200, inflow_pressure(1)=101325
+  inflow_velocity(:,1)=100,0,0
+  inflow_composition_count=3
+  inflow_composition_species='H2','O2','N2'
+  inflow_composition_mole_fractions=.2,.2,.6
+  ```
+
+  This prescribes ghost states for the Riemann and transport fluxes; it is not
+  a characteristic subsonic inlet or a prescribed numerical mass-flow rate.
+  At intersecting inflow faces, z takes precedence over y over x for corner
+  ghosts; wall reflections then apply. Avoid conflicting reservoir states at
+  adjacent inlets unless this corner convention is intended. The timestep
+  also accounts for inlet wave speeds and inlet transport diffusivity.
 - `outflow`: copy the nearest physical cell into ghost cells (zero-gradient
   extrapolation). This is not characteristic or non-reflecting outflow and
   does not prescribe a backflow state.
@@ -53,7 +76,11 @@ stress and its energy flux.
 y walls with periodic x/z faces. Viscosity transfers momentum to the walls
 and converts kinetic energy to internal energy; total gas energy is conserved.
 
-Prescribed inflow, moving/isothermal walls,
+`inflow.nml` exercises reservoir injection with molecular transport and an
+independent inlet composition. The boundary ledger accounts for both convective
+and diffusive exchange with the reservoir.
+
+Moving/isothermal walls,
 characteristic boundaries, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.

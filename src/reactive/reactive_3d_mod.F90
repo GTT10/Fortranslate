@@ -1060,7 +1060,8 @@ contains
       dx, dy, dz, dt, riemann_solver, chemistry_enabled, rtol, atol, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, boundary_change)
+      minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
+      boundary_change, inflow_state, inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1078,6 +1079,7 @@ contains
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -1132,7 +1134,7 @@ contains
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, inflow_state, inflow_temperature)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1140,7 +1142,8 @@ contains
     end if
     if (any(faces /= "periodic")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
-        [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok)
+        [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
+        inflow_state, inflow_temperature)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -1160,7 +1163,7 @@ contains
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, inflow_state, inflow_temperature)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1185,7 +1188,8 @@ contains
   ! PLM stencil at the physical face, so periodic wrapping outside the padded
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
-      faces,reconstruction,limiter,riemann_solver,boundary_change,ok)
+      faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
@@ -1233,7 +1237,8 @@ contains
       dims=n+4; nv=size(u,1)
       allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
       allocate(fx,mold=ghost); allocate(fy,mold=ghost); allocate(fz,mold=ghost)
-      call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success)
+      call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       if (.not.success) return
       if (reconstruction=='pcm') then
         call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &

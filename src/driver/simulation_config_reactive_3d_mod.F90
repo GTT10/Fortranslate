@@ -31,6 +31,11 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: boundary_condition = "periodic"
     character(len=32) :: boundary_faces(6) = ""
+    real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
+    real(dp) :: inflow_velocity(3,6)=0.0_dp
+    integer :: inflow_composition_count=0
+    character(len=selected_composition_name_length) :: inflow_composition_species(reactive_3d_max_species)=''
+    real(dp) :: inflow_composition_mole_fractions(reactive_3d_max_species)=0.0_dp
     logical :: chemistry_enabled = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
     real(dp) :: chemistry_absolute_tolerance = 1.0e-12_dp
@@ -81,26 +86,32 @@ module simulation_config_reactive_3d_mod
 
 contains
 
-  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall)
+  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall,inflow_state,inflow_temperature)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     logical, intent(in), optional :: viscous_wall
     logical :: use_viscous_wall
-    integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face
+    integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face,inlet
     logical :: reflect(3)
     ok=.false.; ghost=0.0_dp; gt=0.0_dp
     use_viscous_wall=.false.
     if (present(viscous_wall)) use_viscous_wall=viscous_wall
     n=shape(t); dims=n+4
+    if (any(faces=='inflow')) then
+      if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if (any(shape(inflow_state)/=[size(u,1),6]).or.size(inflow_temperature)/=6) return
+      if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
+    end if
     if (any(n<2) .or. size(u,1)<5) return
     if (any(shape(u)/=[size(u,1),n]) .or. any(shape(ghost)/=[size(u,1),dims])) return
     if (any(shape(gt)/=dims) .or. .not.valid_reactive_boundaries_3d(faces)) return
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
-            idx=[i,j,k]-2; q=idx; reflect=.false.
+            idx=[i,j,k]-2; q=idx; reflect=.false.; inlet=0
             do a=1,3
               if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
               face=2*a
@@ -108,6 +119,9 @@ contains
               select case(trim(faces(face)))
               case('periodic')
                 q(a)=modulo(idx(a)-1,n(a))+1
+              case('inflow')
+                inlet=face
+                q(a)=max(1,min(n(a),idx(a)))
               case('outflow')
                 q(a)=max(1,min(n(a),idx(a)))
               case('slip_wall','no_slip_wall')
@@ -123,6 +137,9 @@ contains
               end select
             end do
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
+            if (inlet>0) then
+              ghost(:,i,j,k)=inflow_state(:,inlet); gt(i,j,k)=inflow_temperature(inlet)
+            end if
             do a=1,3
               if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
             end do
@@ -148,7 +165,7 @@ contains
     ok = .false.
     do f = 1, 6
       select case(trim(faces(f)))
-      case("periodic", "outflow", "slip_wall", "no_slip_wall")
+      case("periodic", "outflow", "slip_wall", "no_slip_wall", "inflow")
       case default
         return
       end select
@@ -180,7 +197,10 @@ contains
     real(dp) :: x_h2, x_h, x_o, x_o2, x_oh, x_h2o
     real(dp) :: x_ho2, x_h2o2, x_ar, x_n2
     real(dp) :: composition_mole_fractions(reactive_3d_max_species)
-    integer :: composition_count
+    integer :: composition_count,inflow_composition_count
+    real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6)
+    real(dp) :: inflow_composition_mole_fractions(reactive_3d_max_species)
+    character(len=selected_composition_name_length) :: inflow_composition_species(reactive_3d_max_species)
     character(len=selected_composition_name_length) :: &
       composition_species(reactive_3d_max_species)
     character(len=32) :: problem, reconstruction, limiter
@@ -197,7 +217,9 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, &
       thermo_model, riemann_solver, &
-      boundary_condition, boundary_faces, chemistry_enabled, chemistry_relative_tolerance, &
+      boundary_condition, boundary_faces, inflow_temperature, inflow_pressure, inflow_velocity, &
+      inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
+      chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, transport_cfl, &
@@ -229,6 +251,12 @@ contains
     thermo_model = config%thermo_model
     riemann_solver = config%riemann_solver
     boundary_condition = config%boundary_condition
+    inflow_temperature = config%inflow_temperature
+    inflow_pressure = config%inflow_pressure
+    inflow_velocity = config%inflow_velocity
+    inflow_composition_count = config%inflow_composition_count
+    inflow_composition_species = config%inflow_composition_species
+    inflow_composition_mole_fractions = config%inflow_composition_mole_fractions
     boundary_faces = config%boundary_faces
     chemistry_enabled = config%chemistry_enabled
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -304,6 +332,12 @@ contains
     config%thermo_model = trim(thermo_model)
     config%riemann_solver = trim(riemann_solver)
     config%boundary_condition = trim(boundary_condition)
+    config%inflow_temperature = inflow_temperature
+    config%inflow_pressure = inflow_pressure
+    config%inflow_velocity = inflow_velocity
+    config%inflow_composition_count = inflow_composition_count
+    config%inflow_composition_species = inflow_composition_species
+    config%inflow_composition_mole_fractions = inflow_composition_mole_fractions
     config%boundary_faces = boundary_faces
     config%chemistry_enabled = chemistry_enabled
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
@@ -355,12 +389,31 @@ contains
 
     real(dp) :: mole_sum
     logical :: selected_allowed, selected_model
+    integer :: face
+    character(len=32) :: faces(6)
 
     ok = .false.
     message = ""
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
+    faces=resolved_reactive_boundaries_3d(config)
+    do face=1,6
+      if (faces(face)/='inflow') cycle
+      if (.not.all(ieee_is_finite([config%inflow_temperature(face),config%inflow_pressure(face), &
+          config%inflow_velocity(:,face)]))) then
+        message='Inflow thermodynamic state and velocity must be finite'; return
+      end if
+      if (min(config%inflow_temperature(face),config%inflow_pressure(face))<=0.0_dp) then
+        message='Inflow temperature and pressure must be positive'; return
+      end if
+    end do
+    if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
+      call validate_selected_composition_fields('Inflow',config%inflow_composition_count, &
+        config%inflow_composition_species,config%inflow_composition_mole_fractions,ok,message)
+      if (.not.ok) return
+      ok=.false.
+    end if
     if (config%nx < 4 .or. config%ny < 4 .or. config%nz < 4) then
       message = "Reactive 3D grid extents must all be at least 4"
     else if (config%maximum_steps <= 0) then
@@ -445,7 +498,7 @@ contains
              trim(config%riemann_solver) /= "pelec") then
       message = "Reactive 3D Riemann solver must be rusanov, hllc, or pelec"
     else if (.not. valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(config))) then
-      message = "Reactive 3D faces require paired periodic, outflow, slip_wall, or no_slip_wall boundaries"
+      message = "Reactive 3D faces require periodic pairs, outflow, inflow, slip_wall, or no_slip_wall"
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else

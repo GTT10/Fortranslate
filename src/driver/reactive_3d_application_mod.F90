@@ -7,7 +7,9 @@ module reactive_3d_application_mod
   use gas_transport_mod, only: gas_transport_species
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: &
-    reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
+    reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, reactive_primitive_to_conserved
+  use mixture_thermo_mod, only: mixture_density, mass_fractions_from_mole_fractions
+  use selected_composition_mod, only: resolve_selected_composition
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
@@ -39,6 +41,9 @@ contains
     real(dp), allocatable :: state(:, :, :, :), temperature(:, :, :)
     real(dp), allocatable :: initial_totals(:), final_totals(:), boundary_totals(:), step_boundary_change(:)
     character(len=32) :: faces(6)
+    real(dp), allocatable :: inflow_state(:,:),inflow_y(:),inflow_x(:),inlet_cube(:,:,:,:)
+    real(dp) :: inflow_t(6),inlet_temperature(2,2,2)
+    real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity
     real(dp), allocatable :: mass_fractions(:), primitive(:)
     real(dp) :: dx, dy, dz, time, dt, hydro_dt, transport_dt
     real(dp) :: base_density, density_l1_error, exact_density
@@ -53,7 +58,7 @@ contains
     real(dp) :: minimum_transport_theta, step_transport_theta
     character(len=1024) :: message
     logical :: ok, cell_ok
-    integer :: step, i, j, k, nvar
+    integer :: step, i, j, k, nvar, face
 
     if (size(species) < 1 .or. size(reactions) < 1 .or. &
         size(transport) /= size(species) .or. &
@@ -82,6 +87,49 @@ contains
       state, config%nx, config%ny, config%nz, dx, dy, dz, &
       initial_totals, ok)
     if (.not. ok) error stop "Failed to integrate initial reactive 3D state"
+
+    allocate(inflow_state(nvar,6),inflow_y(size(species)),inflow_x(size(species)))
+    allocate(inlet_cube(nvar,2,2,2))
+    inflow_state=0.0_dp; inflow_t=0.0_dp
+    inlet_dt=huge(1.0_dp); inlet_transport_dt=huge(1.0_dp); inlet_diffusivity=0.0_dp
+    inflow_y=mass_fractions
+    if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
+      call resolve_selected_composition('Inflow',config%inflow_composition_count, &
+        config%inflow_composition_species,config%inflow_composition_mole_fractions,species,inflow_x,ok,message)
+      if (.not.ok) then
+        write(*,'(a)') trim(message)
+        error stop 'Invalid inflow composition'
+      end if
+      call mass_fractions_from_mole_fractions(species,inflow_x,inflow_y,ok)
+      if (.not.ok) error stop 'Invalid inflow mass fractions'
+    end if
+    do face=1,6
+      if (faces(face)/='inflow') cycle
+      primitive=0.0_dp
+      primitive(1)=mixture_density(species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      if (.not.ok) error stop 'Invalid inflow density'
+      primitive(2:4)=config%inflow_velocity(:,face); primitive(5)=config%inflow_pressure(face)
+      primitive(6:)=inflow_y
+      call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
+      if (.not.ok) error stop 'Invalid inflow thermodynamics'
+      inlet_dt=min(inlet_dt,config%cfl/sum((abs(primitive(2:4))+sound_speed)/[dx,dy,dz]))
+      if (config%transport_enabled) then
+        do k=1,2
+          do j=1,2
+            do i=1,2
+              inlet_cube(:,i,j,k)=inflow_state(:,face)
+            end do
+          end do
+        end do
+        inlet_temperature=inflow_t(face)
+        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
+          config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled,face_dt,face_diffusivity,ok)
+        if (.not.ok) error stop 'Invalid inflow transport timestep'
+        inlet_transport_dt=min(inlet_transport_dt,face_dt)
+        inlet_diffusivity=max(inlet_diffusivity,face_diffusivity)
+      end if
+    end do
 
     write(*, '(a)') &
       "PeleF " // pelef_version // " " // trim(application_label)
@@ -136,7 +184,7 @@ contains
         species, state, temperature, config%nx, config%ny, config%nz, &
         dx, dy, dz, config%cfl, hydro_dt, ok)
       if (.not. ok) error stop "Failed to compute reactive 3D CFL timestep"
-      dt = hydro_dt
+      dt = min(hydro_dt,inlet_dt)
       if (config%transport_enabled) then
         call reactive_transport_timestep_3d( &
           species, transport, state, temperature, &
@@ -148,9 +196,9 @@ contains
         if (.not. ok) then
           error stop "Failed to compute reactive 3D transport step"
         end if
-        dt = min(dt, transport_dt)
+        dt = min(dt, transport_dt, inlet_transport_dt)
         maximum_diffusivity = max( &
-          maximum_diffusivity, step_maximum_diffusivity)
+          maximum_diffusivity, step_maximum_diffusivity, inlet_diffusivity)
       end if
       dt = min(dt, config%final_time - time)
       call advance_reactive_full_3d( &
@@ -162,7 +210,8 @@ contains
         config%viscosity_enabled, config%thermal_conduction_enabled, &
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         step_transport_theta, ok, config%reconstruction, config%limiter, &
-        chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change)
+        chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
+        inflow_state=inflow_state,inflow_temperature=inflow_t)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if
