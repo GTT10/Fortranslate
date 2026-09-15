@@ -16,6 +16,8 @@ program test_spray_mpi
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   integer :: rank,nranks,ierr,p,target,first(3),dims(3),cells(3),i,j,k,n,indices(3,8)
   real(dp), allocatable :: field(:,:,:,:),positions(:,:),samples(:,:),saved_samples(:,:)
+  real(dp), allocatable :: contributions(:,:),reference(:,:,:,:),saved_field(:,:,:,:)
+  integer :: source
   real(dp) :: weights(8),expected_value
   character(len=16) :: faces(6)
   integer(int64) :: last_id,first_id,saved_last
@@ -152,6 +154,38 @@ program test_spray_mpi
   call sample_mpi_spray_field(MPI_COMM_WORLD,field,positions,[0.0_dp,0.0_dp,0.0_dp], &
     [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,samples,ok)
   call require(.not.ok.and.all(samples==saved_samples),'one-rank invalid sample preserves every result')
+  deallocate(positions);allocate(positions(3,3),contributions(2,3),reference(2,cells(1),cells(2),cells(3)))
+  positions(:,1)=[2.9_dp,1.3_dp,.7_dp]
+  positions(:,2)=[real(cells(1),dp)-.25_dp,2.5_dp,1.0_dp]
+  positions(:,3)=[-.25_dp,.1_dp,.1_dp]
+  contributions(1,:)=real(rank+1,dp);contributions(2,:)=-2*real(rank+1,dp)
+  reference=0;field=0
+  do source=0,nranks-1
+    do p=1,3
+      call particle_boundary_stencil(positions(:,p),[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp], &
+        cells,faces,indices,weights,ok)
+      call require(ok,'serial deposition stencil')
+      do n=1,8
+        i=indices(1,n);j=indices(2,n);k=indices(3,n)
+        reference(:,i,j,k)=reference(:,i,j,k)+weights(n)*[real(source+1,dp),-2*real(source+1,dp)]
+      end do
+    end do
+  end do
+  call deposit_mpi_spray_field(MPI_COMM_WORLD,field,positions,contributions,[0.0_dp,0.0_dp,0.0_dp], &
+    [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(ok,'distributed deposition')
+  call require(all(field==reference(:,first(1)+1:first(1)+dims(1),:,:)),'distributed versus serial deposition')
+  if (rank==0) then
+    positions=positions(:,:0);contributions=contributions(:,:0)
+  end if
+  call deposit_mpi_spray_field(MPI_COMM_WORLD,field,positions,contributions,[0.0_dp,0.0_dp,0.0_dp], &
+    [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(ok,'empty depositing rank')
+  saved_field=field
+  if (rank==nranks-1) positions(2,1)=-1
+  call deposit_mpi_spray_field(MPI_COMM_WORLD,field,positions,contributions,[0.0_dp,0.0_dp,0.0_dp], &
+    [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(.not.ok.and.all(field==saved_field),'invalid deposition collective rollback')
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)

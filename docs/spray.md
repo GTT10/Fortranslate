@@ -1724,3 +1724,18 @@ indices reject collectively while preserving previous sample arrays. These are
 interpolated conserved fields; thermodynamic recovery remains the caller's job.
 Distributed feedback deposition and time stepping remain open. See
 [sampling evidence](validation/spray-mpi-sampling-20260916.md).
+
+### Distributed feedback deposition
+
+`deposit_mpi_spray_field` distributes local particle inventory increments through
+the same eight-cell stencil. It routes indices and weighted contributions to cell
+owners, divides by cell volume and adds to local field candidates. It needs no root
+or whole-grid copy. Sources are accumulated in sending-rank order, then local
+particle/stencil order; changed-rank floating-point parity is not implied.
+
+The geometry, field-width and request limits match sampling. Empty source ranks
+are supported. Invalid input, request routing or floating-point overflow rejects
+collectively and preserves every local field. This is a generic conservative
+field operation: gas positivity, species closure and temperature recovery must be
+checked by the future coupled driver before committing its particle candidates.
+See [deposition evidence](validation/spray-mpi-deposition-20260916.md).

@@ -108,7 +108,8 @@ restores local ID ordering, with collective input/capacity rejection. Distribute
 gas feedback, film ownership and application restart remain. A collective ID
 reservation, collective computational splitting and cone injection are implemented;
 distributed scheduling and aerodynamic-breakup driver wiring remain. Owner-routed
-particle field sampling is implemented; feedback deposition and stepping remain.
+particle field sampling and feedback deposition are implemented; coupled
+thermodynamic stepping remains.
 
 ## Contract for every increment
 
