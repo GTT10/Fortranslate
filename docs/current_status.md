@@ -21,8 +21,9 @@ Older milestone prose remains historical detail, not a current global status.
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
 connected to the regular coupled-step API with wall budgets, stationary film
-heating/evaporation, CLI inputs/output and coupled checkpoint persistence
-[evidence](validation/wall-film-evolution-20260916.md). Lateral film transport
+heating/evaporation with per-material constant or cubic thermal conductivity,
+CLI inputs/output and coupled checkpoint persistence
+[evidence](validation/wall-film-conductivity-20260916.md). Lateral film transport
 and physical impact qualification remain open.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish

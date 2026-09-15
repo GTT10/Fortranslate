@@ -92,6 +92,44 @@ class SprayApplication(unittest.TestCase):
             self.assertEqual((self.root/f'vanishing.{suffix}').read_bytes(),
                              (self.root/f'vanishing_resumed.{suffix}').read_bytes())
 
+    def test_film_conductivity_models(self):
+        common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+                  "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
+                  "wall_film_evolution=.true.,wall_liquid_conductivity=.6,wall_temperature=340,340,340,340,340,340,"
+                  "surface_tension=.072,liquid_viscosity=.001,injection_speed=10,cone_angle=0,parcel_count=1,"
+                  "mole_names='N2','','',mole_amounts=1,0,0,gas_temperature=900,"
+                  "drag_enabled=.false.,transport_enabled=.false.,evaporation_enabled=.false.,")
+        cases = [common+"injection_center=.002,.002,5e-7,injection_axis=0,0,-1,"
+                 "wall_conductivity_model='polynomial',wall_conductivity_coefficients=.1,.001,0,0,"
+                 "wall_conductivity_temperature_range=300,600,",
+                 common+"injection_port_count=2,injection_port_centers=.001,.001,5e-7,.003,.001,5e-7,"
+                 "injection_port_axes=0,0,-1,0,0,-1,injection_port_fractions=.5,.5,"
+                 "port_wall_conductivity_models='polynomial','constant',port_wall_conductivities(2)=.1,"
+                 "port_wall_conductivity_coefficients(:,1)=.1,.001,0,0,"
+                 "port_wall_conductivity_temperature_ranges(:,1)=300,600,"]
+        for index, settings in enumerate(cases):
+            name = f'lambda{index}'
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('=.1,.001,0,0', '=.2,.001,0,0'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        with (self.root/'lambda1.films.csv').open() as stream:
+            films = {int(r['material_id']): r for r in csv.DictReader(stream)}
+        self.assertEqual(set(films), {1, 2})
+        self.assertGreater(float(films[1]['temperature']), float(films[2]['temperature']))
+        self.run_case('lambda_outside', common=cases[0].replace('300,600', '400,600'), fail=True)
+        self.run_case('lambda_negative_interior', common=cases[0].replace('=.1,.001,0,0', '=15.5,-.08,.0001,0'),
+                      fail=True)
+        self.run_case('lambda_unused_port', common=cases[0]+'port_wall_conductivities(3)=.5,', fail=True)
+
     def test_wall_film_restart(self):
         common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
                   "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"

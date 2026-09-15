@@ -29,6 +29,11 @@ contains
     character(len=16) :: liquid_cp_model,port_cp_models(16)
     real(dp) :: liquid_cp_coefficients(4),liquid_cp_temperature_range(2)
     real(dp) :: port_cp_coefficients(4,16),port_cp_temperature_ranges(2,16)
+    character(len=16) :: wall_conductivity_model,port_wall_conductivity_models(16)
+    real(dp) :: wall_conductivity_coefficients(4),wall_conductivity_temperature_range(2)
+    real(dp) :: port_wall_conductivities(16),port_wall_conductivity_coefficients(4,16)
+    real(dp) :: port_wall_conductivity_temperature_ranges(2,16)
+    logical :: port_wall_properties
     logical :: wall_film_evolution
     real(dp) :: wall_liquid_conductivity,minimum_film_height
     logical :: wall_impact_faces(6),impact_enabled,lineage_enabled
@@ -125,6 +130,9 @@ contains
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
+      wall_conductivity_model,wall_conductivity_coefficients,wall_conductivity_temperature_range, &
+      port_wall_conductivities,port_wall_conductivity_models, &
+      port_wall_conductivity_coefficients,port_wall_conductivity_temperature_ranges, &
       wall_impact_faces,wall_contact_angle,maximum_wall_films, &
       liquid_cp_model,liquid_cp_coefficients,liquid_cp_temperature_range, &
       port_cp_models,port_cp_coefficients,port_cp_temperature_ranges, &
@@ -143,6 +151,9 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    wall_conductivity_model='constant';wall_conductivity_coefficients=0;wall_conductivity_temperature_range=0
+    port_wall_conductivities=-1;port_wall_conductivity_models=''
+    port_wall_conductivity_coefficients=0;port_wall_conductivity_temperature_ranges=0
     wall_film_evolution=.false.;wall_liquid_conductivity=0;minimum_film_height=1e-7_dp
     wall_impact_faces=.false.;wall_contact_angle=acos(-1.0_dp)/3;maximum_wall_films=1000000
     allocate(wall_films(0))
@@ -198,6 +209,13 @@ contains
     physical_boundaries=any(boundary_faces/='periodic')
     impact_enabled=any(wall_impact_faces)
     wall_options%evolve=wall_film_evolution;wall_options%liquid_conductivity=wall_liquid_conductivity
+    wall_options%conductivity_model=wall_conductivity_model
+    wall_options%conductivity_coefficients=wall_conductivity_coefficients
+    wall_options%conductivity_temperature_range=wall_conductivity_temperature_range
+    wall_options%port_conductivities=port_wall_conductivities
+    wall_options%port_conductivity_models=port_wall_conductivity_models
+    wall_options%port_conductivity_coefficients=port_wall_conductivity_coefficients
+    wall_options%port_conductivity_temperature_ranges=port_wall_conductivity_temperature_ranges
     wall_options%minimum_height=minimum_film_height
     wall_options%enabled=wall_impact_faces;wall_options%temperature=wall_temperature
     wall_options%contact_angle=wall_contact_angle;wall_options%maximum_films=maximum_wall_films
@@ -359,7 +377,15 @@ contains
         any(port_cp_coefficients(:,injection_port_count+1:)/=0).or. &
         any(port_cp_temperature_ranges(:,injection_port_count+1:)/=0)) call fail('Unused port heat capacity')
     port_cp_overrides=any(port_cp_models/='constant').or.any(port_cp_coefficients/=0).or.any(port_cp_temperature_ranges/=0)
-    multi_material=port_cp_overrides.or.port_breakup_properties.or.port_property_models.or. &
+    if (any(port_wall_conductivities(injection_port_count+1:)/=-1).or. &
+        any(port_wall_conductivity_models(injection_port_count+1:)/='').or. &
+        any(port_wall_conductivity_coefficients(:,injection_port_count+1:)/=0).or. &
+        any(port_wall_conductivity_temperature_ranges(:,injection_port_count+1:)/=0)) &
+      call fail('Unused port wall conductivity')
+    port_wall_properties=any(port_wall_conductivities/=-1).or.any(port_wall_conductivity_models/='')
+    if ((port_wall_properties.or.wall_conductivity_model/='constant').and..not.wall_film_evolution) &
+      call fail('Wall conductivity models require film evolution')
+    multi_material=port_wall_properties.or.port_cp_overrides.or.port_breakup_properties.or.port_property_models.or. &
       any(port_vapor_names/='').or. &
       any(port_liquid_densities/=-1).or.any(port_liquid_cps/=-1).or. &
       any(port_reference_temperatures/=-1).or.any(port_reference_pressures/=-1).or.any(port_latent_heats/=-1)
@@ -636,6 +662,15 @@ contains
     if (wall_film_evolution) then
       context=trim(context)//' wall-film-evolution-v1'
       call append_reals([wall_liquid_conductivity,minimum_film_height])
+      if (wall_conductivity_model/='constant'.or.port_wall_properties) then
+        context=trim(context)//' wall-conductivity-v1 '//trim(wall_conductivity_model)
+        call append_reals([wall_conductivity_coefficients,wall_conductivity_temperature_range])
+        do port=1,injection_port_count
+          context=trim(context)//' ['//trim(port_wall_conductivity_models(port))//']'
+          call append_reals([port_wall_conductivities(port),port_wall_conductivity_coefficients(:,port), &
+            port_wall_conductivity_temperature_ranges(:,port)])
+        end do
+      end if
     end if
     if (impact_enabled) then
       context=trim(context)//' wall-impact-film-v1'
@@ -689,6 +724,10 @@ contains
         if (.not.valid_spray_liquid(material)) call fail('Invalid restart film material')
         if (liquid_heat_capacity_at_temperature(material,wall_films(i)%temperature)<=0) &
           call fail('Invalid restart film temperature')
+        if (wall_film_evolution) then
+          if (wall_liquid_conductivity_at_temperature(wall_options,wall_films(i)%material_id, &
+              wall_films(i)%temperature)<=0) call fail('Invalid restart film conductivity temperature')
+        end if
         amount=liquid_density_at_temperature(material,wall_films(i)%temperature)* &
           acos(-1.0_dp)*.25_dp*wall_films(i)%diameter**2*wall_films(i)%height
         if (abs(amount-wall_films(i)%mass)>1e-10_dp*wall_films(i)%mass) call fail('Restart film volume mismatch')

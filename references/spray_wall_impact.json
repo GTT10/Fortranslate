@@ -13,5 +13,10 @@
   "film_evolution_source": {
     "path": "Source/Spray/BreakupSplash/WallFilm.H",
     "sha256": "6b8f1156555058059ab21c023444a662c3bc1f7d23f3173b83ccc92eeb0e51e5"
+  },
+  "liquid_conductivity_source": {
+    "path": "Source/Spray/SprayPropertiesPeleMP.H",
+    "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd",
+    "formula": "lambda_i(T)=a+T*(b+T*(c+T*d)); pure-liquid film temperature, SI coefficients, no mixture averaging or boiling cap"
   }
 }

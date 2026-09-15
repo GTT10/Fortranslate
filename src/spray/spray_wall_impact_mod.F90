@@ -20,13 +20,92 @@ module spray_wall_impact_mod
     integer :: maximum_films=1000000
     logical :: evolve=.false.
     real(dp) :: liquid_conductivity=0,minimum_height=1e-7_dp
+    character(len=16) :: conductivity_model='constant',port_conductivity_models(16)=''
+    real(dp) :: conductivity_coefficients(4)=0,conductivity_temperature_range(2)=0
+    real(dp) :: port_conductivities(16)=-1,port_conductivity_coefficients(4,16)=0
+    real(dp) :: port_conductivity_temperature_ranges(2,16)=0
   end type
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
-  public :: wall_film_transfer_rates,advance_wall_film_frozen
+  public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
   public :: resolve_wall_impact
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
+  real(dp) function wall_liquid_conductivity_at_temperature(o,material_id,t) result(value)
+    type(spray_wall_options), intent(in) :: o
+    integer, intent(in) :: material_id
+    real(dp), intent(in) :: t
+    character(len=16) :: model
+    real(dp) :: coefficients(4),bounds(2),constant
+    value=0
+    if (material_id<1.or.material_id>16.or..not.ieee_is_finite(t)) return
+    if (t<1.or.t>1e5_dp) return
+    model=o%conductivity_model;coefficients=o%conductivity_coefficients
+    bounds=o%conductivity_temperature_range;constant=o%liquid_conductivity
+    if (o%port_conductivities(material_id)/=-1) constant=o%port_conductivities(material_id)
+    if (o%port_conductivity_models(material_id)/='') then
+      model=o%port_conductivity_models(material_id)
+      coefficients=o%port_conductivity_coefficients(:,material_id)
+      bounds=o%port_conductivity_temperature_ranges(:,material_id)
+    end if
+    select case(model)
+    case('constant')
+      value=constant
+    case('polynomial')
+      if (t<bounds(1).or.t>bounds(2)) return
+      if (.not.all(ieee_is_finite(coefficients))) return
+      if (maxval(abs(coefficients))>1e20_dp) return
+      value=coefficients(1)+t*(coefficients(2)+t*(coefficients(3)+t*coefficients(4)))
+    end select
+    if (.not.ieee_is_finite(value)) value=0
+    if (value<=0.or.value>1e4_dp) value=0
+  end function
+
+  logical function valid_conductivity_model(model,constant,coefficients,bounds,required) result(ok)
+    character(len=*), intent(in) :: model
+    real(dp), intent(in) :: constant,coefficients(4),bounds(2)
+    logical, intent(in) :: required
+    type(spray_wall_options) :: probe
+    real(dp) :: a,b,c,disc,q,roots(2)
+    integer :: i
+    ok=.false.
+    if (.not.all(ieee_is_finite([constant,coefficients,bounds]))) return
+    select case(model)
+    case('constant')
+      if (any(coefficients/=0).or.any(bounds/=0)) return
+      if (required.and.(constant<=0.or.constant>1e4_dp)) return
+    case('polynomial')
+      if (maxval(abs(coefficients))>1e20_dp) return
+      if (bounds(1)<1.or.bounds(2)>1e5_dp.or.bounds(2)<=bounds(1)) return
+      probe%conductivity_model=model;probe%conductivity_coefficients=coefficients
+      probe%conductivity_temperature_range=bounds
+      do i=1,2
+        if (wall_liquid_conductivity_at_temperature(probe,1,bounds(i))<=0) return
+      end do
+      ! A cubic can become negative between positive endpoints: inspect stationary points.
+      a=3*coefficients(4);b=2*coefficients(3);c=coefficients(2);roots=bounds(1)
+      if (a/=0) then
+        disc=b*b-4*a*c
+        if (disc>=0) then
+          q=-.5_dp*(b+sign(sqrt(disc),b))
+          if (abs(q)<=abs(a)*1e5_dp) roots(1)=q/a
+          if (q/=0) then
+            if (abs(c)<=abs(q)*1e5_dp) roots(2)=c/q
+          end if
+        end if
+      else if (b/=0) then
+        if (abs(c)<=abs(b)*1e5_dp) roots(1)=-c/b
+      end if
+      do i=1,2
+        if (roots(i)<bounds(1).or.roots(i)>bounds(2)) cycle
+        if (wall_liquid_conductivity_at_temperature(probe,1,roots(i))<=0) return
+      end do
+    case default
+      return
+    end select
+    ok=.true.
+  end function
+
   subroutine wall_film_transfer_rates(patch,liquid,gas,conductivity,wall_temperature,heat,evaporation, &
       mass_rate,gas_heat,wall_heat,temperature_rate,ok)
     type(spray_wall_film), intent(in) :: patch
@@ -110,6 +189,7 @@ contains
     type(spray_wall_options), intent(in) :: o
     character(len=*), intent(in) :: faces(6)
     integer :: f
+    real(dp) :: constant
     ok=.false.
     if (.not.all(ieee_is_finite([o%temperature,o%contact_angle]))) return
     if (any(o%temperature<1).or.any(o%temperature>1e5_dp)) return
@@ -118,8 +198,24 @@ contains
     if (.not.all(ieee_is_finite([o%liquid_conductivity,o%minimum_height]))) return
     if (o%minimum_height<1e-15_dp.or.o%minimum_height>1) return
     if (o%evolve) then
-      if (.not.any(o%enabled).or.o%liquid_conductivity<=0.or.o%liquid_conductivity>1e4_dp) return
+      if (.not.any(o%enabled)) return
     end if
+    if (.not.valid_conductivity_model(o%conductivity_model,o%liquid_conductivity, &
+        o%conductivity_coefficients,o%conductivity_temperature_range,o%evolve)) return
+    do f=1,16
+      constant=o%port_conductivities(f)
+      if (.not.ieee_is_finite(constant)) return
+      if (constant/=-1.and.(constant<=0.or.constant>1e4_dp)) return
+      if (constant==-1) constant=o%liquid_conductivity
+      if (o%port_conductivity_models(f)=='') then
+        if (any(o%port_conductivity_coefficients(:,f)/=0).or. &
+            any(o%port_conductivity_temperature_ranges(:,f)/=0)) return
+        if (o%port_conductivities(f)/=-1.and.o%conductivity_model/='constant') return
+      else
+        if (.not.valid_conductivity_model(o%port_conductivity_models(f),constant, &
+            o%port_conductivity_coefficients(:,f),o%port_conductivity_temperature_ranges(:,f),o%evolve)) return
+      end if
+    end do
     do f=1,6
       if (.not.o%enabled(f)) cycle
       if (faces(f)/='slip_wall'.and.faces(f)/='no_slip_wall'.and.faces(f)/='isothermal_wall') return

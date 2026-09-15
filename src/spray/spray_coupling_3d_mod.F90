@@ -250,6 +250,7 @@ contains
     type(spray_parcel), allocatable :: spawned(:)
     type(spray_parcel) :: identity
     real(dp), allocatable :: starts(:),film_starts(:)
+    real(dp) :: film_conductivity
     real(dp) :: wall_exchange(5),wall_energy,film_mass_rate,film_gas_heat,film_wall_heat,film_temperature_rate
     integer :: patch_index,wall_face,axis
     logical :: hit
@@ -481,7 +482,9 @@ contains
           if (.not.local_ok) return
           call build_spray_film(species,transport,primitive,tg,identity,material,options,film,local_ok,wall_skin=.true.)
           if (.not.local_ok) return
-          call wall_film_transfer_rates(patches(patch_index),material,film,impact_settings%liquid_conductivity, &
+          film_conductivity=wall_liquid_conductivity_at_temperature(impact_settings, &
+            patches(patch_index)%material_id,patches(patch_index)%temperature)
+          call wall_film_transfer_rates(patches(patch_index),material,film,film_conductivity, &
             impact_settings%temperature(wall_face),options%heat,options%evaporation,film_mass_rate,film_gas_heat, &
             film_wall_heat,film_temperature_rate,local_ok)
           if (.not.local_ok) return
@@ -492,9 +495,11 @@ contains
           accepted=.false.
           do attempt=1,30
             if (dt<=0.or.elapsed+dt<=elapsed) exit
-            call advance_wall_film_frozen(patches(patch_index),material,film,impact_settings%liquid_conductivity, &
+            call advance_wall_film_frozen(patches(patch_index),material,film,film_conductivity, &
               impact_settings%temperature(wall_face),options%heat,options%evaporation,dt,impact_settings%minimum_height, &
               next_patch,transfer,wall_energy,local_ok)
+            if (local_ok.and.next_patch%mass>0) local_ok= &
+              wall_liquid_conductivity_at_temperature(impact_settings,next_patch%material_id,next_patch%temperature)>0
             if (local_ok) then
               increase=0;increase(1:5)=transfer;increase(5+material%vapor_index)=transfer(1)
               do n=1,8

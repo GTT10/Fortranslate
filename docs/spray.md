@@ -916,8 +916,34 @@ impact bookkeeping. See [CLI/restart evidence](validation/wall-impact-applicatio
 ### Stationary film heating and evaporation
 
 Set `wall_film_evolution=.true.` and supply `wall_liquid_conductivity` in
-W/(m K). This currently specifies one positive constant conductivity shared by
-all film materials; per-material conductivity fits are not implemented.
+W/(m K) for the default constant model. For temperature dependence, set
+`wall_conductivity_model='polynomial'`, `wall_conductivity_coefficients(4)` and
+`wall_conductivity_temperature_range(2)`. The pinned PelePhysics cubic is
+`lambda(T)=a+b*T+c*T**2+d*T**3`, with T in kelvin and coefficients in SI units.
+The fit must stay positive and at most 1e4 W/(m K) throughout its stated interval;
+endpoints and interior extrema are checked. Film updates outside the interval
+are rejected transactionally, including candidate temperatures.
+
+For explicit injection ports, `port_wall_conductivities(16)` overrides the scalar
+(default -1 inherits it). `port_wall_conductivity_models(16)` defaults to blank,
+which inherits the complete global model. An explicit `constant` or `polynomial`
+uses that port's `port_wall_conductivity_coefficients(4,16)` and
+`port_wall_conductivity_temperature_ranges(2,16)` (both default zero).
+A scalar override of an inherited polynomial requires explicit `constant`.
+The global default must remain valid even when ports override it. Unused port
+settings are rejected; overrides assign distinct material IDs even if vapor
+species and other liquid properties match. The conductivity is evaluated at
+film temperature each substep, without mixture averaging or a boiling cap.
+
+For example, a fit can be specified with:
+```fortran
+ wall_conductivity_model='polynomial',
+ wall_conductivity_coefficients=.1,.001,0,0,
+ wall_conductivity_temperature_range=300,600,
+```
+These are illustrative coefficients, not a calibrated liquid dataset. See
+[conductivity and restart checks](validation/wall-film-conductivity-20260916.md).
+
 `minimum_film_height` defaults to 1e-7 m (the reference 1e-5 cm cutoff). These
 inputs enter checkpoint identity. Existing `heat_enabled` controls gas/wall
 heating, and `evaporation_enabled` controls film mass loss as well as droplets.

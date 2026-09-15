@@ -32,6 +32,7 @@ program test_spray_core
   real(dp) :: inverse_tau,heat,masscoef,transfer(5),expected,dt,d,grad(3,3),stress(3,3),mu,diff,ke0,ke1
   real(dp) :: splash_mass,deposited_mass,splash_vel(5),azimuth_mass(4)
   type(spray_wall_film) :: wall_patch,saved_patch
+  type(spray_wall_options) :: wall_settings
   real(dp) :: child_totals(5),film_budget(5),film_mdot,film_qgas,film_qwall,film_tdot,solid_energy
   real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
   integer :: impact_kinds(6),event_index
@@ -56,6 +57,20 @@ program test_spray_core
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
   case('film_evolution')
+    faces='no_slip_wall';wall_settings%enabled(5)=.true.;wall_settings%evolve=.true.
+    wall_settings%conductivity_model='polynomial'
+    wall_settings%conductivity_coefficients=[.1_dp,.001_dp,1e-6_dp,1e-9_dp]
+    wall_settings%conductivity_temperature_range=[300.0_dp,600.0_dp]
+    call require(valid_wall_options(wall_settings,faces),'valid cubic conductivity')
+    call require(abs(wall_liquid_conductivity_at_temperature(wall_settings,1,400.0_dp)-.724_dp)<1e-14_dp,'cubic lambda')
+    wall_settings%port_conductivity_models(2)='constant';wall_settings%port_conductivities(2)=.2_dp
+    call require(valid_wall_options(wall_settings,faces),'port constant replaces global fit')
+    call require(abs(wall_liquid_conductivity_at_temperature(wall_settings,2,400.0_dp)-.2_dp)<1e-14_dp,'port lambda')
+    call require(wall_liquid_conductivity_at_temperature(wall_settings,1,299.0_dp)==0,'lambda range rejection')
+    call require(wall_liquid_conductivity_at_temperature(wall_settings,0,400.0_dp)==0,'lambda material rejection')
+    wall_settings%conductivity_coefficients=[15.5_dp,-.08_dp,.0001_dp,0.0_dp]
+    call require(.not.valid_wall_options(wall_settings,faces),'reject negative interior with positive endpoints')
+
     call construct_wall_film(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],.6_dp,100.0_dp,1000.0_dp,pi/3, &
       wall_patch,film_budget,ok)
     call require(ok,'initial evolving film')
