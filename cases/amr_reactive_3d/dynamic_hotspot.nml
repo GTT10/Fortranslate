@@ -1,0 +1,18 @@
+&reactive_3d
+  nx=8, ny=8, nz=8,
+  final_time=2e-6,
+  problem='reactive_hotspot', thermo_model='full_h2o2',
+  reconstruction='characteristic_plm', limiter='mc', riemann_solver='hllc',
+  initial_temperature=1000, hotspot_temperature_rise=300,
+  hotspot_center_x=.00375,hotspot_center_y=.005,hotspot_center_z=.005,hotspot_width=.0012,
+  initial_velocity_x=300,initial_velocity_y=0,initial_velocity_z=0,
+  chemistry_enabled=.false.,transport_enabled=.false.
+/
+&amr_reactive_3d
+  refinement_ratio=2,
+  coarse_i_lower=3,coarse_i_upper=6,
+  coarse_j_lower=3,coarse_j_upper=6,
+  coarse_k_lower=3,coarse_k_upper=6,
+  regrid_interval_steps=1,regrid_temperature_threshold=1080,regrid_buffer_cells=1,
+  coarse_output_file='dynamic_coarse.csv',fine_output_file='dynamic_fine.csv'
+/

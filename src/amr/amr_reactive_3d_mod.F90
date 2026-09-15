@@ -21,10 +21,11 @@ module amr_reactive_3d_mod
     advance_reactive_chemistry_3d, &
     recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: &
-    amr_patch_3d, average_down_3d, composite_integrals_amr_3d
+    amr_patch_3d, initialize_amr_patch_3d, average_down_3d, composite_integrals_amr_3d
   implicit none
   private
 
+  public :: regrid_amr_reactive_3d, temperature_tag_patch_3d
   public :: compute_amr_reactive_cfl_timestep_3d
   public :: composite_element_integrals_amr_3d
   public :: element_integrals_from_reactive_integrals_3d
@@ -37,6 +38,140 @@ module amr_reactive_3d_mod
   public :: interpolate_coarse_fine_ghost_plm_3d
 
 contains
+  subroutine regrid_amr_reactive_3d(species,patch,coarse,ct,fine,ft,next_patch,ok,reconstruction,limiter)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(inout) :: patch
+    type(amr_patch_3d), intent(in) :: next_patch
+    real(dp), intent(inout) :: coarse(:,:,:,:),ct(:,:,:)
+    real(dp), allocatable, intent(inout) :: fine(:,:,:,:),ft(:,:,:)
+    logical, intent(out) :: ok
+    character(len=*), intent(in) :: reconstruction,limiter
+    real(dp), allocatable :: c(:,:,:,:),tc(:,:,:),f(:,:,:,:),tf(:,:,:),old_tf(:,:,:),old_tc(:,:,:)
+    real(dp) :: slope(size(coarse,1),3),q(reactive_nprim(size(species)))
+    real(dp) :: offset(3),theta,temperature,sound,initial(size(coarse,1)),final(size(coarse,1))
+    integer :: n(3),lo(3),oldlo(3),i,j,k,ci,cj,ck,ii,jj,kk,oldidx(3),v,r,attempt
+    logical :: local_ok,physical
+    ok=.false.
+    if (.not.patch%is_strictly_interior().or..not.next_patch%is_strictly_interior()) return
+    n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    if (any(n/=[next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz])) return
+    if (patch%refinement_ratio/=next_patch%refinement_ratio) return
+    if (.not.allocated(fine).or..not.allocated(ft)) return
+    if (reconstruction/='pcm'.and.reconstruction/='characteristic_plm') return
+    if (limiter/='mc'.and.limiter/='minmod') return
+    allocate(tc,mold=ct); allocate(old_tc,mold=ct); allocate(old_tf,mold=ft)
+    call recover_reactive_temperatures_3d(species,coarse,ct,n(1),n(2),n(3),tc,local_ok)
+    if (.not.local_ok) return
+    call recover_reactive_temperatures_3d(species,fine,ft,patch%fine_nx(),patch%fine_ny(), &
+      patch%fine_nz(),old_tf,local_ok)
+    if (.not.local_ok) return
+    call composite_integrals_amr_3d(coarse,fine,patch,1.0_dp,1.0_dp,1.0_dp,initial,local_ok)
+    if (.not.local_ok) return
+    allocate(c,source=coarse)
+    call average_down_3d(c,fine,patch,local_ok)
+    if (.not.local_ok) return
+    call recover_reactive_temperatures_3d(species,c,ct,n(1),n(2),n(3),tc,local_ok)
+    if (.not.local_ok) return
+    r=patch%refinement_ratio
+    lo=[next_patch%coarse_i_lower,next_patch%coarse_j_lower,next_patch%coarse_k_lower]
+    oldlo=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
+    allocate(f(size(c,1),next_patch%fine_nx(),next_patch%fine_ny(),next_patch%fine_nz()))
+    allocate(tf(next_patch%fine_nx(),next_patch%fine_ny(),next_patch%fine_nz()))
+    do ck=next_patch%coarse_k_lower,next_patch%coarse_k_upper
+      do cj=next_patch%coarse_j_lower,next_patch%coarse_j_upper
+        do ci=next_patch%coarse_i_lower,next_patch%coarse_i_upper
+          slope=0.0_dp
+          if (reconstruction=='characteristic_plm') then
+            do v=1,size(c,1)
+              call limited_slope(c(v,ci,cj,ck)-c(v,ci-1,cj,ck),c(v,ci+1,cj,ck)-c(v,ci,cj,ck), &
+                limiter,slope(v,1),local_ok)
+              call limited_slope(c(v,ci,cj,ck)-c(v,ci,cj-1,ck),c(v,ci,cj+1,ck)-c(v,ci,cj,ck), &
+                limiter,slope(v,2),local_ok)
+              call limited_slope(c(v,ci,cj,ck)-c(v,ci,cj,ck-1),c(v,ci,cj,ck+1)-c(v,ci,cj,ck), &
+                limiter,slope(v,3),local_ok)
+            end do
+            ! Species closure is an algebraic constraint on density slopes.
+            slope(1,:)=sum(slope(6:,:),dim=1)
+          end if
+          theta=1.0_dp
+          do attempt=0,60
+            if (attempt==60) theta=0.0_dp
+            physical=.true.
+            do kk=1,r
+              k=(ck-lo(3))*r+kk
+              do jj=1,r
+                j=(cj-lo(2))*r+jj
+                do ii=1,r
+                  i=(ci-lo(1))*r+ii
+                  offset=(real([ii,jj,kk],dp)-0.5_dp)/real(r,dp)-0.5_dp
+                  f(:,i,j,k)=c(:,ci,cj,ck)+theta*matmul(slope,offset)
+                  if (minval(f(6:,i,j,k))<0.0_dp) physical=.false.
+                  call reactive_conserved_to_primitive(species,f(:,i,j,k),tc(ci,cj,ck),q,temperature,sound,local_ok)
+                  if (.not.local_ok) physical=.false.
+                  tf(i,j,k)=temperature
+                end do
+              end do
+            end do
+            if (physical) exit
+            theta=0.5_dp*theta
+          end do
+          if (.not.physical) return
+        end do
+      end do
+    end do
+    ! Reuse all overlap cells exactly; restriction above retains derefined data.
+    do k=1,size(f,4)
+      do j=1,size(f,3)
+        do i=1,size(f,2)
+          oldidx=(lo-oldlo)*r+[i,j,k]
+          if (any(oldidx<1).or.any(oldidx>[size(fine,2),size(fine,3),size(fine,4)])) cycle
+          f(:,i,j,k)=fine(:,oldidx(1),oldidx(2),oldidx(3))
+          tf(i,j,k)=old_tf(oldidx(1),oldidx(2),oldidx(3))
+        end do
+      end do
+    end do
+    call average_down_3d(c,f,next_patch,local_ok)
+    if (.not.local_ok) return
+    call recover_reactive_temperatures_3d(species,c,tc,n(1),n(2),n(3),old_tc,local_ok)
+    if (.not.local_ok) return
+    call composite_integrals_amr_3d(c,f,next_patch,1.0_dp,1.0_dp,1.0_dp,final,local_ok)
+    if (.not.local_ok) return
+    if (maxval(abs(final-initial)/max(1.0_dp,abs(initial)))>5e-12_dp) return
+    coarse=c; ct=old_tc; call move_alloc(f,fine); call move_alloc(tf,ft); patch=next_patch; ok=.true.
+  end subroutine regrid_amr_reactive_3d
+
+  subroutine temperature_tag_patch_3d(patch,t,threshold,buffer,next_patch,changed,ok)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: t(:,:,:),threshold
+    integer, intent(in) :: buffer
+    type(amr_patch_3d), intent(out) :: next_patch
+    logical, intent(out) :: changed,ok
+    integer :: n(3),lo(3),hi(3),i,j,k
+    next_patch=patch; changed=.false.; ok=.false.
+    if (.not.patch%is_strictly_interior()) return
+    n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    if (any(shape(t)/=n).or.buffer<0.or.buffer>maxval(n)) return
+    if (.not.ieee_is_finite(threshold).or..not.all(ieee_is_finite(t))) return
+    lo=n; hi=0
+    do k=2,n(3)-1
+      do j=2,n(2)-1
+        do i=2,n(1)-1
+          if (t(i,j,k)<threshold) cycle
+          lo=min(lo,[i,j,k]); hi=max(hi,[i,j,k])
+        end do
+      end do
+    end do
+    if (all(hi>0)) then
+      lo=max(2,lo-buffer); hi=min(n-1,hi+buffer)
+      call initialize_amr_patch_3d(n(1),n(2),n(3),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        patch%refinement_ratio,next_patch,ok)
+      if (.not.ok) return
+      changed=any(lo/=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]).or. &
+        any(hi/=[patch%coarse_i_upper,patch%coarse_j_upper,patch%coarse_k_upper])
+    end if
+    ok=.true.
+  end subroutine temperature_tag_patch_3d
+
 
   subroutine composite_element_integrals_amr_3d( &
       species, patch, coarse_state, fine_state, dx, dy, dz, elements, ok)

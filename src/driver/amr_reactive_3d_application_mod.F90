@@ -21,7 +21,7 @@ module amr_reactive_3d_application_mod
   use amr_reactive_3d_mod, only: &
     compute_amr_reactive_cfl_timestep_3d, &
     composite_element_integrals_amr_3d, &
-    element_integrals_from_reactive_integrals_3d
+    element_integrals_from_reactive_integrals_3d, regrid_amr_reactive_3d, temperature_tag_patch_3d
   use amr_reactive_transport_3d_mod, only: &
     compute_amr_reactive_transport_timestep_3d, &
     advance_amr_reactive_full_3d
@@ -50,7 +50,9 @@ contains
     character(len=*), intent(in), optional :: chemistry_integrator
 
     type(reactive_3d_config) :: fine_config
-    type(amr_patch_3d) :: patch
+    type(amr_patch_3d) :: patch,next_patch
+    logical :: patch_changed
+    integer :: regrid_count
     real(dp), allocatable :: coarse_state(:, :, :, :)
     real(dp), allocatable :: fine_state(:, :, :, :)
     real(dp), allocatable :: coarse_temperature(:, :, :)
@@ -250,7 +252,27 @@ contains
     end if
 
     stopped_after_checkpoint = .false.
+    regrid_count=0
     do while (time < config%final_time)
+      if (amr_config%regrid_interval_steps>0) then
+        if (mod(step,amr_config%regrid_interval_steps)==0) then
+          call temperature_tag_patch_3d(patch,coarse_temperature,amr_config%regrid_temperature_threshold, &
+            amr_config%regrid_buffer_cells,next_patch,patch_changed,ok)
+          if (.not.ok) error stop '3D AMR temperature tagging failed'
+          if (patch_changed) then
+            call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+              next_patch,ok,config%reconstruction,config%limiter)
+            if (.not.ok) error stop '3D AMR conservative regrid rejected'
+            deallocate(xf,yf,zf)
+            allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
+            call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
+            regrid_count=regrid_count+1
+            write(*,'(a,i0,a,6(i0,1x))') 'Regrid at step ',step,': ', &
+              patch%coarse_i_lower,patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
+              patch%coarse_k_lower,patch%coarse_k_upper
+          end if
+        end if
+      end if
       if (step >= config%maximum_steps) then
         error stop "Maximum step count reached before 3D AMR final_time"
       end if
@@ -399,6 +421,7 @@ contains
     if (max(coarse_closure, fine_closure) > 5.0e-11_dp) then
       error stop "3D AMR species-closure gate failed"
     end if
+    write(*,'(a,i0)') "Completed regrids: ",regrid_count
     call write_reactive_3d_csv( &
       trim(amr_config%coarse_output_file), species, x, y, z, &
       coarse_state, coarse_temperature, config%nx, config%ny, config%nz, &

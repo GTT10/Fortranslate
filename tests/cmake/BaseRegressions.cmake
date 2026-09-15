@@ -831,3 +831,13 @@ endforeach()
 add_executable(test_reactive_boundary_transport_3d unit/test_reactive_boundary_transport_3d.F90)
 target_link_libraries(test_reactive_boundary_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_boundary_transport_3d COMMAND test_reactive_boundary_transport_3d)
+
+add_executable(test_amr_regrid_3d unit/test_amr_regrid_3d.F90)
+target_link_libraries(test_amr_regrid_3d PRIVATE pelef_core)
+add_test(NAME unit_amr_regrid_3d COMMAND test_amr_regrid_3d)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_dynamic_3d")
+add_test(NAME amr_dynamic_hotspot_3d COMMAND pelef_amr_reactive_3d
+  "${PROJECT_SOURCE_DIR}/cases/amr_reactive_3d/dynamic_hotspot.nml")
+set_tests_properties(amr_dynamic_hotspot_3d PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_dynamic_3d" TIMEOUT 300
+  PASS_REGULAR_EXPRESSION "Regrid at step [1-9][0-9]*:")

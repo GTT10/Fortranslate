@@ -1,9 +1,13 @@
 module simulation_config_amr_reactive_3d_mod
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
   implicit none
   private
 
   type, public :: amr_reactive_3d_config
+    integer :: regrid_interval_steps=0, regrid_buffer_cells=1
+    real(dp) :: regrid_temperature_threshold=1100.0_dp
     integer :: refinement_ratio = 2
     integer :: coarse_i_lower = 3
     integer :: coarse_i_upper = 6
@@ -36,7 +40,8 @@ contains
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected
 
-    integer :: refinement_ratio
+    integer :: refinement_ratio,regrid_interval_steps,regrid_buffer_cells
+    real(dp) :: regrid_temperature_threshold
     integer :: coarse_i_lower, coarse_i_upper
     integer :: coarse_j_lower, coarse_j_upper
     integer :: coarse_k_lower, coarse_k_upper
@@ -47,12 +52,16 @@ contains
     logical :: stop_after_checkpoint, selected_allowed
 
     namelist /amr_reactive_3d/ &
-      refinement_ratio, coarse_i_lower, coarse_i_upper, &
+      refinement_ratio, regrid_interval_steps, regrid_buffer_cells, regrid_temperature_threshold, &
+      coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, coarse_k_lower, coarse_k_upper, &
       coarse_output_file, fine_output_file, checkpoint_interval_steps, &
       stop_after_checkpoint, checkpoint_file, restart_file
 
     config = amr_reactive_3d_config()
+    regrid_interval_steps=config%regrid_interval_steps
+    regrid_buffer_cells=config%regrid_buffer_cells
+    regrid_temperature_threshold=config%regrid_temperature_threshold
     refinement_ratio = config%refinement_ratio
     coarse_i_lower = config%coarse_i_lower
     coarse_i_upper = config%coarse_i_upper
@@ -83,6 +92,9 @@ contains
         "Could not read &amr_reactive_3d from:", trim(path)
       return
     end if
+    config%regrid_interval_steps=regrid_interval_steps
+    config%regrid_buffer_cells=regrid_buffer_cells
+    config%regrid_temperature_threshold=regrid_temperature_threshold
     config%refinement_ratio = refinement_ratio
     config%coarse_i_lower = coarse_i_lower
     config%coarse_i_upper = coarse_i_upper
@@ -115,7 +127,7 @@ contains
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(base_config%thermo_model) == "selected"
-    if (trim(base_config%boundary_condition) /= "periodic") then
+    if (any(resolved_reactive_boundaries_3d(base_config) /= "periodic")) then
       message = "Static 3D AMR currently requires periodic boundaries"
     else if (trim(base_config%reconstruction) /= "pcm" .and. &
              trim(base_config%reconstruction) /= "characteristic_plm") then
@@ -132,6 +144,16 @@ contains
              (config%checkpoint_interval_steps > 0 .or. &
               len_trim(config%restart_file) > 0)) then
       message = "Static 3D AMR chemistry restart is not yet supported"
+    else if (config%regrid_interval_steps<0.or.config%regrid_buffer_cells<0.or. &
+        config%regrid_buffer_cells>max(base_config%nx,base_config%ny,base_config%nz)) then
+      message='Invalid 3D AMR regrid interval or buffer'
+    else if (.not.ieee_is_finite(config%regrid_temperature_threshold)) then
+      message='Regrid temperature threshold must be finite'
+    else if (config%regrid_temperature_threshold<=0.0_dp) then
+      message='Regrid temperature threshold must be positive'
+    else if (config%regrid_interval_steps>0.and. &
+        (config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0)) then
+      message='Dynamic 3D AMR checkpoint/restart is not implemented'
     else if (config%refinement_ratio < 2) then
       message = "3D AMR refinement_ratio must be at least two"
     else if (config%coarse_i_lower <= 1 .or. &

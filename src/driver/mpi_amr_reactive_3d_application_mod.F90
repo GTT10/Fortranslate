@@ -117,6 +117,8 @@ contains
       call collective_require( &
         ok, "Selected sparse MPI 3D AMR context is incomplete", 2)
     end if
+    call collective_require(amr_config%regrid_interval_steps==0, &
+      "Dynamic 3D AMR regridding is not implemented for MPI",2)
     ok = size(species) > 0 .and. size(reactions) > 0
     if (ok) ok = size(base_mole_fractions) == size(species)
     if (ok) ok = size(transport) == size(species)

@@ -69,6 +69,10 @@ contains
 
     ok = .false.
     message = ""
+    if (amr_config%regrid_interval_steps>0) then
+      message='Dynamic 3D AMR checkpoint context is not implemented'
+      return
+    end if
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions) .or. &
@@ -348,6 +352,10 @@ contains
 
     ok = .false.
     message = ""
+    if (amr_config%regrid_interval_steps>0) then
+      message='Dynamic 3D AMR checkpoint context is not implemented'
+      return
+    end if
     candidate_maximum_transport_diffusivity = 0.0_dp
     candidate_minimum_transport_theta = 1.0_dp
     nvar = reactive_nvar(size(species))

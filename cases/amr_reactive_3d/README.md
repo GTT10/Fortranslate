@@ -118,3 +118,30 @@ elementary/full-H2/O2 chemistry and periodic coarse boundaries. Selected
 mechanisms, chemistry restart, molecular transport, CTU/PPM, dynamic
 regridding, scalable I/O, embedded boundaries, and boundary-touching patches
 remain outside this case.
+
+
+## Temperature-driven regridding (serial)
+
+Set `regrid_interval_steps>0` in `&amr_reactive_3d` to rebuild the single
+ratio-preserving interior patch at synchronized coarse steps, including step
+zero. Cells at or above `regrid_temperature_threshold` (kelvin) define a
+bounding box, enlarged by `regrid_buffer_cells` and clipped to the strictly
+interior coarse cells. Empty tags retain the current patch; complete removal
+of the fine level is not implemented.
+
+The previous fine solution is averaged into the coarse grid before remapping.
+Overlapping fine cells are copied exactly. Newly refined cells use constant
+prolongation for PCM, or conservative component-wise limited-linear prolongation
+for characteristic PLM. Density slopes equal the sum of species slopes;
+a common per-parent slope factor is reduced until every child is nonnegative
+and thermodynamically admissible. The symmetric child offsets preserve parent
+averages. This transfer is not a new characteristic reconstruction scheme.
+Coarse/fine temperatures are recovered from conserved state and the whole
+remap commits only after the composite conservation check passes.
+
+`dynamic_hotspot.nml` shows regridding during advection. Both serial front ends
+use this path; chemistry/transport operators continue to use the current patch.
+Dynamic checkpoint/restart and MPI regridding are explicitly rejected until
+geometry/event persistence and distributed ownership updates are implemented.
+Multipatch/multilevel regridding, physical coarse boundaries and 3D EB coupling
+remain open. The default interval zero preserves static runs.
