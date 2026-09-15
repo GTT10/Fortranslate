@@ -107,7 +107,8 @@ Particle Cartesian MPI migration now preserves parcel/component payloads and
 restores local ID ordering, with collective input/capacity rejection. Distributed
 gas feedback, film ownership and application restart remain. A collective ID
 reservation, collective computational splitting and cone injection are implemented;
-distributed scheduling and aerodynamic-breakup driver wiring remain.
+distributed scheduling and aerodynamic-breakup driver wiring remain. Owner-routed
+particle field sampling is implemented; feedback deposition and stepping remain.
 
 ## Contract for every increment
 

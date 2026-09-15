@@ -6,11 +6,135 @@ module spray_mpi_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_breakup_mod, only: split_spray_parcels
+  use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
+  public :: sample_mpi_spray_field
 contains
+  subroutine sample_mpi_spray_field(comm,field,positions,lower,spacing,cells,parts,faces,samples,ok)
+    type(MPI_Comm), intent(in) :: comm
+    real(dp), intent(in) :: field(:,:,:,:),positions(:,:),lower(3),spacing(3)
+    integer, intent(in) :: cells(3),parts(3)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), allocatable, intent(inout) :: samples(:,:)
+    logical, intent(out) :: ok
+    integer :: rank,nranks,ierr,nvar,np,nrequests,nreceived,p,n,r,q,i,cell(3),first(3),local_cells(3)
+    integer :: config(13),minimum(13),maximum(13),indices(3,8)
+    integer, allocatable :: owners(:),requests(:,:),incoming(:,:),counts(:),offsets(:),received(:),displacements(:),cursor(:)
+    integer, allocatable :: order(:)
+    real(dp), allocatable :: weights(:),packed(:,:),answers(:,:),candidate(:,:)
+    real(dp) :: w(8),bounds(6),minbounds(6),maxbounds(6),center(3)
+    logical :: valid,agreed,periodic(3)
+    ok=.false.;np=size(positions,2);nvar=size(field,1)
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=size(positions,1)==3.and.np<=125000.and.nvar>=1.and.nvar<=256
+    valid=valid.and.valid_spray_boundary_faces(faces).and.all(ieee_is_finite([lower,spacing]))
+    valid=valid.and.all(ieee_is_finite(positions)).and.all(ieee_is_finite(field))
+    call agree()
+    if (.not.agreed) return
+    config(1:6)=[cells,parts];config(13)=nvar
+    do i=1,6
+      select case(trim(faces(i)))
+      case('periodic');config(6+i)=1
+      case('inflow');config(6+i)=2
+      case('outflow');config(6+i)=3
+      case('slip_wall');config(6+i)=4
+      case('no_slip_wall');config(6+i)=5
+      case('isothermal_wall');config(6+i)=6
+      end select
+    end do
+    bounds=[lower,spacing]
+    call MPI_Allreduce(config,minimum,13,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,maximum,13,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,minbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,maxbounds,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call spray_cartesian_block(cells,parts,rank,first,local_cells,valid)
+    valid=valid.and.all(minimum==maximum).and.all(minbounds==maxbounds)
+    if (valid) valid=product(parts)==nranks.and.all(shape(field(1,:,:,:))==local_cells).and.all(cells>=2)
+    call agree()
+    if (.not.agreed) return
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    nrequests=8*np
+    allocate(owners(nrequests),requests(3,nrequests),weights(nrequests),order(nrequests))
+    allocate(counts(nranks),offsets(nranks),received(nranks),displacements(nranks),cursor(nranks));counts=0
+    do p=1,np
+      call particle_boundary_stencil(positions(:,p),lower,spacing,cells,faces,indices,w,valid)
+      if (.not.valid) exit
+      do n=1,8
+        q=8*(p-1)+n;center=lower+(real(indices(:,n),dp)-.5_dp)*spacing
+        r=spray_cartesian_owner(center,lower,spacing,cells,parts,periodic)
+        if (r<0) then
+          valid=.false.;exit
+        end if
+        owners(q)=r+1;weights(q)=w(n);counts(r+1)=counts(r+1)+1
+      end do
+      if (.not.valid) exit
+    end do
+    call agree()
+    if (.not.agreed) return
+    offsets(1)=0
+    do r=2,nranks
+      offsets(r)=offsets(r-1)+counts(r-1)
+    end do
+    cursor=offsets
+    do p=1,np
+      call particle_boundary_stencil(positions(:,p),lower,spacing,cells,faces,indices,w,valid)
+      do n=1,8
+        q=8*(p-1)+n;r=owners(q);cursor(r)=cursor(r)+1
+        requests(:,cursor(r))=indices(:,n);order(q)=cursor(r)
+      end do
+    end do
+    call MPI_Alltoall(counts,1,MPI_INTEGER,received,1,MPI_INTEGER,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=sum(int(received,int64))<=1000000_int64
+    call agree()
+    if (.not.agreed) return
+    nreceived=sum(received);displacements(1)=0
+    do r=2,nranks
+      displacements(r)=displacements(r-1)+received(r-1)
+    end do
+    allocate(incoming(3,nreceived),packed(nvar,nreceived),answers(nvar,nrequests),candidate(nvar,np))
+    call MPI_Alltoallv(requests,3*counts,3*offsets,MPI_INTEGER, &
+      incoming,3*received,3*displacements,MPI_INTEGER,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    do q=1,nreceived
+      cell=incoming(:,q)-first
+      if (any(cell<1).or.any(cell>local_cells)) then
+        valid=.false.;exit
+      end if
+      packed(:,q)=field(:,cell(1),cell(2),cell(3))
+    end do
+    call agree()
+    if (.not.agreed) return
+    call MPI_Alltoallv(packed,nvar*received,nvar*displacements,MPI_DOUBLE_PRECISION, &
+      answers,nvar*counts,nvar*offsets,MPI_DOUBLE_PRECISION,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    candidate=0
+    do p=1,np
+      do n=1,8
+        q=8*(p-1)+n;candidate(:,p)=candidate(:,p)+weights(q)*answers(:,order(q))
+      end do
+    end do
+    valid=all(ieee_is_finite(candidate))
+    call agree()
+    if (.not.agreed) return
+    call move_alloc(candidate,samples);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine inject_mpi_cone_parcels(comm,liquid,total_mass,number,center,axis,speed,half_angle,diameter,temperature, &
       maximum_parcels,last_id,parcels,injected_totals,ok,components,fractions,component_mass, &
       diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)

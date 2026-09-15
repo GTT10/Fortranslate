@@ -87,7 +87,9 @@ now rejects overflow and inconsistent rank histories
 now uses these IDs while preserving component and KH inventories
 ([evidence](validation/spray-mpi-split-20260916.md)). Collective cone injection now
 reserves IDs and retains mixed component budgets with rollback
-([evidence](validation/spray-mpi-injection-20260916.md)).
+([evidence](validation/spray-mpi-injection-20260916.md)). Distributed field sampling
+now requests only interpolation cells from owner ranks and matches the serial
+stencil ([evidence](validation/spray-mpi-sampling-20260916.md)).
 
 ## Repository consolidation implemented
 

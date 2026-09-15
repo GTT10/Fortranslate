@@ -7,8 +7,26 @@ module spray_partition_mod
   use spray_mixture_mod, only: valid_component_inventory
   implicit none
   private
-  public :: spray_cartesian_owner,partition_spray_parcels
+  public :: spray_cartesian_owner,partition_spray_parcels,spray_cartesian_block
 contains
+  subroutine spray_cartesian_block(cells,parts,rank,first,counts,ok)
+    integer, intent(in) :: cells(3),parts(3),rank
+    integer, intent(out) :: first(3),counts(3)
+    logical, intent(out) :: ok
+    integer :: coordinate(3),a,base,extra
+    first=0;counts=0;ok=.false.
+    if (spray_cartesian_owner([0.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],cells,parts,[.false.,.false.,.false.])<0) return
+    if (rank<0.or.rank>=product(parts)) return
+    coordinate=[modulo(rank,parts(1)),modulo(rank/parts(1),parts(2)),rank/(parts(1)*parts(2))]
+    do a=1,3
+      base=cells(a)/parts(a);extra=modulo(cells(a),parts(a))
+      counts(a)=base+merge(1,0,coordinate(a)<extra)
+      first(a)=coordinate(a)*base+min(coordinate(a),extra)
+    end do
+    ok=.true.
+  end subroutine
+
   integer function spray_cartesian_owner(position,lower,spacing,cells,parts,periodic) result(rank)
     real(dp), intent(in) :: position(3),lower(3),spacing(3)
     integer, intent(in) :: cells(3),parts(3)

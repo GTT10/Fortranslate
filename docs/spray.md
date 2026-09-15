@@ -1707,3 +1707,20 @@ Successful injection appends increasing global IDs but does not automatically mo
 particles to spatial owners; call migration after injection. Distributed scheduling
 and the MPI CFD application remain open. See
 [injection evidence](validation/spray-mpi-injection-20260916.md).
+
+### Distributed gas-field sampling
+
+`sample_mpi_spray_field` takes each rank's Cartesian cell block and local particle
+positions. It sends the eight interpolation-cell indices to their owning ranks and
+returns only the requested field values, then evaluates the ordinary particle
+stencil locally. No root or replicated whole-grid field is required.
+
+All ranks must agree on global cells, spacing, lower corner, Cartesian parts,
+boundary faces and field width. `spray_cartesian_block` supplies zero-based first
+cells and local extents. Empty requesting ranks are supported. This bounded API
+accepts up to 125000 local positions, 256 fields and one million incoming cell
+requests per rank. Invalid configuration, positions, field values or received
+indices reject collectively while preserving previous sample arrays. These are
+interpolated conserved fields; thermodynamic recovery remains the caller's job.
+Distributed feedback deposition and time stepping remain open. See
+[sampling evidence](validation/spray-mpi-sampling-20260916.md).
