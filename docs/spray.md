@@ -1753,3 +1753,25 @@ are inherited from field deposition.
 The caller still owns particle candidates, time-step retries and the combined
 particle/gas commit. This API does not itself advance particles or chemistry.
 See [gas feedback evidence](validation/spray-mpi-gas-20260916.md).
+
+### Distributed periodic mixed-particle coupling
+
+`advance_mpi_mixture_coupling` connects owner-routed sampling, mixture drag,
+heating/evaporation, gas deposition and temperature recovery over a supplied
+interval. Ranks choose a common minimum of particle drag, thermal, component
+loss and flight limits. Each trial advances all local particles from the same
+sampled gas, then accumulates feedback collectively. A rejected trial halves the
+common step (up to 30 attempts). Exhaustion or final migration failure preserves
+all caller gas, temperatures, particles and component inventories; `substeps` is
+zero on failure. Accepted intervals remove evaporated particles and migrate
+survivors, retaining IDs and component columns.
+
+This is a synchronous particle update, so equality to the serial coupler's
+particle-by-particle feedback order is not claimed. Each rank needs identical
+ordered species/transport/component tables and interval; it can start with no
+particles. Existing sampling limits apply (125000 local particles, at most 255
+conserved fields because temperature occupies one extra sampled field). Only
+periodic boundaries and `breakup_model='none'` are currently supported; unsupported
+breakup is rejected. Wall events, distributed breakup, gas hydro/chemistry stepping,
+injection scheduling and the MPI CLI remain to be connected. See
+[coupling evidence](validation/spray-mpi-coupling-20260916.md).

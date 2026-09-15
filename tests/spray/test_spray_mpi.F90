@@ -6,13 +6,19 @@ program test_spray_mpi
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use gas_transport_mod, only: gas_transport_species
+  use transport_database_mod, only: load_h2o2_full_transport
   use spray_parcel_mod
   use spray_mpi_mod
   use spray_partition_mod, only: spray_cartesian_block
-  use spray_coupling_3d_mod, only: particle_boundary_stencil
+  use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(spray_liquid) :: liquids(2)
+  type(gas_transport_species), allocatable :: transport(:)
+  type(spray_options) :: options
+  real(dp) :: local_totals(15),before(15),after(15)
+  integer :: steps
   real(dp) :: fractions(2),ledger(15),direction(3)
   type(spray_parcel), allocatable :: parcels(:),saved(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
@@ -229,6 +235,46 @@ program test_spray_mpi
     [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'negative species rolls back all owners')
+  call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
+  ! Existing injected parcels include an empty rank and move to their spatial owners.
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'initial coupled totals')
+  call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  options%heat=.false.;options%evaporation=.false.
+  saved=parcels;saved_mass=masses;saved_field=field;saved_temperature=temperature
+  options%maximum_substeps=1
+  call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
+    parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],.01_dp,steps,ok)
+  call require(.not.ok.and.steps==0,'coupling substep exhaustion rejects interval')
+  call require(all(field==saved_field).and.all(temperature==saved_temperature).and.all(masses==saved_mass), &
+    'coupling exhaustion preserves gas and composition')
+  do p=1,size(parcels)
+    call require(all(parcels(p)%position==saved(p)%position).and.all(parcels(p)%velocity==saved(p)%velocity), &
+      'coupling exhaustion preserves particles')
+  end do
+  options%maximum_substeps=100000
+  call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
+    parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-4_dp,steps,ok)
+  call require(ok.and.steps>0,'coupled MPI mixture advancement')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'final coupled totals')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))),'MPI gas particle inventory conservation')
+  do p=1,size(parcels)
+    call require(parcels(p)%velocity(3)<10.0_dp,'coupled drag changes velocity')
+  end do
+  options%heat=.true.;options%evaporation=.true.
+  before=after
+  call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
+    parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-7_dp,steps,ok)
+  call require(ok.and.steps>0,'coupled mixture heating and evaporation')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'evaporating coupled totals')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))),'MPI evaporating inventory conservation')
+  local_totals=0;local_totals(1)=sum(field(5+liquids(1)%vapor_index,:,:,:))
+  call MPI_Allreduce(local_totals(1),after(1),1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(after(1)>0,'liquid vapor reaches distributed gas')
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)

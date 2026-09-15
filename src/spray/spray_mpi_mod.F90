@@ -4,17 +4,169 @@ module spray_mpi_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
+  use gas_transport_mod, only: gas_transport_species
+  use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
+    advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction
   use spray_breakup_mod, only: split_spray_parcels
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
+  public :: advance_mpi_mixture_coupling
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &
+      parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),interval
+    integer, intent(in) :: cells(3),parts(3)
+    integer, intent(out) :: substeps
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:)
+    real(dp), allocatable :: masses(:,:),next_mass(:,:),kept_mass(:,:),positions(:,:),field(:,:,:,:),samples(:,:)
+    real(dp), allocatable :: primitive(:,:),tg(:),change(:,:)
+    real(dp) :: elapsed,dt,local_dt,min_interval,max_interval,sound,invtau,heat,rho,cp,e,tdot,speed
+    real(dp) :: y(size(components)),rates(size(components)),hv(size(components)),length(3)
+    integer :: p,n,np,nvar,nc,ierr,attempt,count_steps,kept,min_nc,max_nc
+    logical :: valid,agreed,accepted
+    character(len=8), parameter :: faces(6)='periodic'
+    ok=.false.;substeps=0
+    valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.ieee_is_finite(interval)
+    valid=valid.and.interval>=0.and.interval<=1e6_dp
+    ! Wall events and breakup require their own distributed candidate inventories.
+    valid=valid.and.options%breakup_model=='none'.and..not.options%khrt_children
+    valid=valid.and.size(components)>=1.and.size(components)<=16
+    call agree()
+    if (.not.agreed) return
+    np=size(parcels);nc=size(components);nvar=size(state,1)
+    valid=size(component_mass,1)==nc.and.size(component_mass,2)==np.and.np<=125000
+    valid=valid.and.size(transport)==size(species)
+    call MPI_Allreduce(interval,min_interval,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(interval,max_interval,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(nc,min_nc,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(nc,max_nc,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=valid.and.min_interval==max_interval.and.min_nc==max_nc
+    call agree()
+    if (.not.agreed) return
+    do p=1,np
+      valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
+      if (p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+    end do
+    do n=1,nc
+      valid=valid.and.valid_spray_liquid(components(n)).and.components(n)%vapor_index<=size(species)
+    end do
+    call agree()
+    if (.not.agreed) return
+    gas=state;temp=temperature;drops=parcels;masses=component_mass
+    allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np))
+    do p=1,np
+      positions(:,p)=drops(p)%position
+    end do
+    change=0
+    ! This collective also validates geometry and the original gas on every rank.
+    call deposit_mpi_spray_gas(comm,species,gas,temp,positions,change,lower,spacing,cells,parts,faces,valid)
+    if (.not.valid) return
+    length=spacing*real(cells,dp);elapsed=0;count_steps=0
+    do while(elapsed<interval)
+      valid=count_steps<options%maximum_substeps
+      call agree()
+      if (.not.agreed) return
+      ! Sample the temperature guess alongside conserved variables in one exchange.
+      if (allocated(field)) deallocate(field)
+      allocate(field(nvar+1,size(gas,2),size(gas,3),size(gas,4)))
+      field(:nvar,:,:,:)=gas;field(nvar+1,:,:,:)=temp
+      do p=1,np
+        positions(:,p)=drops(p)%position
+      end do
+      call sample_mpi_spray_field(comm,field,positions,lower,spacing,cells,parts,faces,samples,valid)
+      if (.not.valid) return
+      local_dt=interval-elapsed
+      do p=1,np
+        if (drops(p)%mass<=0) cycle
+        call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive(:,p),tg(p),sound,valid)
+        if (.not.valid) exit
+        y=masses(:,p)/drops(p)%mass
+        call mixture_transfer_rates(species,transport,primitive(:,p),tg(p),drops(p),components,y,options, &
+          invtau,heat,rates,hv,valid)
+        if (.not.valid) exit
+        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid)
+        if (.not.valid) exit
+        if (invtau>0) local_dt=min(local_dt,options%max_fractional_change/invtau)
+        tdot=heat*(tg(p)-drops(p)%temperature)
+        do n=1,nc
+          if (rates(n)>0.and.y(n)>mixture_trace_fraction) &
+            local_dt=min(local_dt,options%max_fractional_change*masses(n,p)/rates(n))
+          tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
+        end do
+        tdot=tdot/(drops(p)%mass*cp)
+        if (abs(tdot)>0) local_dt=min(local_dt,min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot))
+        speed=max(maxval(abs(drops(p)%velocity)),maxval(abs(primitive(2:4,p))))
+        if (speed>0) local_dt=min(local_dt,options%particle_cfl*minval(spacing)/speed)
+      end do
+      call agree()
+      if (.not.agreed) return
+      call MPI_Allreduce(local_dt,dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      accepted=.false.
+      do attempt=1,30
+        if (dt<=0.or.elapsed+dt<=elapsed) exit
+        trial=drops;next_mass=masses;change=0;valid=.true.
+        do p=1,np
+          if (drops(p)%mass<=0) cycle
+          call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
+            next_mass(:,p),options,dt,change(:,p),valid)
+          if (.not.valid) exit
+          trial(p)%position=lower+modulo(trial(p)%position-lower,length)
+        end do
+        call agree()
+        if (agreed) then
+          next_gas=gas;next_temp=temp
+          call deposit_mpi_spray_gas(comm,species,next_gas,next_temp,positions,change,lower,spacing,cells,parts,faces,valid)
+          if (valid) then
+            accepted=.true.;exit
+          end if
+        end if
+        dt=.5_dp*dt
+      end do
+      if (.not.accepted) return
+      drops=trial;masses=next_mass;gas=next_gas;temp=next_temp
+      elapsed=elapsed+dt;count_steps=count_steps+1
+    end do
+    kept=count(drops%mass>0);allocate(survivors(kept),kept_mass(nc,kept));kept=0
+    do p=1,np
+      if (drops(p)%mass<=0) cycle
+      kept=kept+1;survivors(kept)=drops(p);kept_mass(:,kept)=masses(:,p)
+    end do
+    call migrate_spray_parcels(comm,survivors,lower,spacing,cells,parts,[.true.,.true.,.true.], &
+      options%maximum_parcels,valid,kept_mass)
+    if (.not.valid) return
+    state=gas;temperature=temp
+    call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
+    substeps=count_steps;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine deposit_mpi_spray_gas(comm,species,state,temperature,positions,contributions, &
       lower,spacing,cells,parts,faces,ok)
     type(MPI_Comm), intent(in) :: comm
