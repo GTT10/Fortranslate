@@ -57,6 +57,23 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_viscosity_temperature_restart(self):
+        settings = ("breakup_model='khrt',surface_tension=.072,"
+                    "liquid_viscosity_model='inverse-temperature',liquid_viscosity_coefficients=.0002,.2,10,100,"
+                    "liquid_viscosity_temperature_range=250,600,injection_speed=200,")
+        checkpoint = self.root/'viscosity.chk'
+        self.run_case('viscosity', common=settings)
+        self.check_balance('viscosity')
+        self.run_case('stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'viscosity.{suffix}').read_bytes(),
+                             (self.root/f'resumed.{suffix}').read_bytes())
+        result = self.run_case('changed', f"restart_file='{checkpoint}',",
+                               common=settings.replace('.0002', '.0003'), fail=True)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('invalid_viscosity', common=settings.replace('250,600', '250,300'), fail=True)
+
     def test_density_polynomial_restart(self):
         settings = ("liquid_density_model='polynomial',liquid_density_coefficients=1200,-.5,0,0,"
                     "liquid_density_temperature_range=250,600,")

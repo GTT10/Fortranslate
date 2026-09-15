@@ -40,6 +40,8 @@ module spray_parcel_mod
     real(dp) :: max_fractional_change = 0.1_dp, particle_cfl = 0.25_dp
     real(dp) :: minimum_diameter = 1.0e-9_dp
     integer :: maximum_substeps = 100000
+    character(len=24) :: liquid_viscosity_model='constant'
+    real(dp) :: liquid_viscosity_coefficients(4)=0.0_dp,liquid_viscosity_temperature_range(2)=0.0_dp
   end type
   type, public :: spray_film
     real(dp) :: density = 0.0_dp, viscosity = 0.0_dp
@@ -51,7 +53,7 @@ module spray_parcel_mod
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
-  public :: inject_cone_parcels, liquid_density_at_temperature
+  public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
   subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok, &
       vapor_pressure_model, antoine_coefficients, antoine_temperature_range)
@@ -157,7 +159,22 @@ contains
     case('etab','khrt')
       if (.not.all(ieee_is_finite([o%surface_tension,o%liquid_viscosity]))) return
       if (o%surface_tension<1e-8_dp.or.o%surface_tension>1e3_dp) return
-      if (o%liquid_viscosity<1e-10_dp.or.o%liquid_viscosity>1e3_dp) return
+      if (trim(o%liquid_viscosity_model)=='constant') then
+        if (o%liquid_viscosity<1e-10_dp.or.o%liquid_viscosity>1e3_dp) return
+      end if
+    case default
+      return
+    end select
+    if (.not.all(ieee_is_finite(o%liquid_viscosity_coefficients))) return
+    if (.not.all(ieee_is_finite(o%liquid_viscosity_temperature_range))) return
+    select case(trim(o%liquid_viscosity_model))
+    case('constant')
+      if (any(o%liquid_viscosity_coefficients/=0).or.any(o%liquid_viscosity_temperature_range/=0)) return
+    case('inverse-temperature')
+      if (trim(o%breakup_model)=='none') return
+      if (maxval(abs(o%liquid_viscosity_coefficients))>1e20_dp) return
+      if (o%liquid_viscosity_temperature_range(1)<1.or.o%liquid_viscosity_temperature_range(2)>1e5_dp) return
+      if (o%liquid_viscosity_temperature_range(2)<=o%liquid_viscosity_temperature_range(1)) return
     case default
       return
     end select
@@ -168,6 +185,25 @@ contains
     ok = o%max_fractional_change > 0.0_dp .and. o%max_fractional_change <= 0.25_dp .and. &
       o%particle_cfl > 0.0_dp .and. o%particle_cfl <= 0.5_dp .and. &
       o%minimum_diameter >= 1.0e-12_dp .and. o%minimum_diameter <= 1.0_dp .and. o%maximum_substeps > 0
+  end function
+
+  pure real(dp) function liquid_viscosity_at_temperature(o,temperature) result(mu)
+    type(spray_options), intent(in) :: o
+    real(dp), intent(in) :: temperature
+    real(dp) :: candidate
+    mu=0.0_dp
+    if (.not.valid_spray_options(o).or..not.ieee_is_finite(temperature)) return
+    if (temperature<1.or.temperature>1e5_dp) return
+    candidate=o%liquid_viscosity
+    if (trim(o%liquid_viscosity_model)=='inverse-temperature') then
+      if (temperature<o%liquid_viscosity_temperature_range(1).or. &
+          temperature>o%liquid_viscosity_temperature_range(2)) return
+      candidate=o%liquid_viscosity_coefficients(1)+((o%liquid_viscosity_coefficients(4)/temperature+ &
+        o%liquid_viscosity_coefficients(3))/temperature+o%liquid_viscosity_coefficients(2))/temperature
+    end if
+    if (.not.ieee_is_finite(candidate)) return
+    if (candidate<1e-10_dp.or.candidate>1e3_dp) return
+    mu=candidate
   end function
 
   pure real(dp) function liquid_density_at_temperature(l,temperature) result(rho)

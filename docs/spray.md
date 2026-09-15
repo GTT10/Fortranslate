@@ -538,3 +538,24 @@ The default constant-density path retains its checkpoint context.
 `cases/spray_3d/water_density.nml` uses an illustrative linear polynomial to
 exercise the implementation, not calibrated water properties. See
 [focused evidence](validation/liquid-density-20260915.md).
+
+## Temperature-dependent liquid viscosity for breakup
+
+`liquid_viscosity_model='inverse-temperature'` selects
+`mu(T)=a+b/T+c/T**2+d/T**3` with `liquid_viscosity_coefficients=a,b,c,d` and
+`liquid_viscosity_temperature_range=Tmin,Tmax`. Use kelvin and coefficients
+that return Pa s. The convention matches pinned PelePhysics `MPLiqProps::mu_i`.
+ETAB damping and KH-RT's Ohnesorge number use this viscosity at the current
+droplet temperature. The model requires an enabled breakup model. It can be
+combined with temperature-dependent density.
+
+The default remains `liquid_viscosity_model='constant'`, using
+`liquid_viscosity`; its new coefficient/range arrays must be zero. With the
+inverse-temperature model, the scalar is retained in input identity but the
+fit determines viscosity. Evaluations outside the temperature range or outside
+1e-10--1e3 Pa s fail transactionally. Fit coefficients and bounds participate
+in restart identity. No positivity proof across the whole fit range is implied.
+
+`cases/spray_3d/water_viscosity.nml` exercises combined density/viscosity and
+KH-RT using illustrative coefficients, not a calibrated water model. See
+[focused evidence](validation/liquid-viscosity-20260915.md).

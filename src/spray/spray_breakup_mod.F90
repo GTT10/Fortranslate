@@ -39,7 +39,7 @@ contains
     real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
-    real(dp) :: rho
+    real(dp) :: rho,liquid_mu
     real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total
     logical :: rt_breakup
     real(dp), parameter :: pi=acos(-1.0_dp)
@@ -54,6 +54,8 @@ contains
     end if
     rho=liquid_density_at_temperature(liquid,parcel%temperature)
     if (rho<=0) return
+    liquid_mu=liquid_viscosity_at_temperature(options,parcel%temperature)
+    if (liquid_mu<=0) return
     candidate=parcel;radius=.5_dp*parcel_diameter(parcel,liquid);child=radius
     if (radius<=.5_dp*options%minimum_diameter) then
       ok=.true.;return
@@ -69,7 +71,7 @@ contains
       cd=24/re
     end if
     we=gas_density*speed**2*radius/options%surface_tension
-    z=options%liquid_viscosity/sqrt(rho*radius*options%surface_tension)
+    z=liquid_mu/sqrt(rho*radius*options%surface_tension)
     t=z*sqrt(we);rt_breakup=.false.
     if (candidate%rt_time>=0) then
       acceleration=.375_dp*cd*gas_density*speed**2/(rho*radius)
@@ -167,7 +169,7 @@ contains
     real(dp), intent(in) :: gas_density,gas_velocity(3),dt
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
-    real(dp) :: rho
+    real(dp) :: rho,liquid_mu
     real(dp) :: radius,child,td,omega2,omega,we,wer,amplitude,y,ydot,yn,ydn
     real(dp) :: elapsed,step,speed,phi,angle,event_time,kbr,etb,ratio,total_mass
     real(dp), parameter :: pi=acos(-1.0_dp)
@@ -182,13 +184,15 @@ contains
     end if
     rho=liquid_density_at_temperature(liquid,parcel%temperature)
     if (rho<=0) return
+    liquid_mu=liquid_viscosity_at_temperature(options,parcel%temperature)
+    if (liquid_mu<=0) return
     candidate=parcel; radius=0.5_dp*parcel_diameter(parcel,liquid)
     speed=sqrt(sum((gas_velocity-parcel%velocity)**2))
     total_mass=parcel%mass*parcel%multiplicity
     y=parcel%deformation; ydot=parcel%deformation_rate; elapsed=0
     do iteration=1,options%maximum_substeps
       if (elapsed>=dt.or.radius<=0.5_dp*options%minimum_diameter) exit
-      td=rho*radius**2/(5.0_dp*options%liquid_viscosity)
+      td=rho*radius**2/(5.0_dp*liquid_mu)
       omega2=8.0_dp*options%surface_tension/(rho*radius**3)-1.0_dp/td**2
       if (omega2<=0) then
         y=0; ydot=0; elapsed=dt; exit

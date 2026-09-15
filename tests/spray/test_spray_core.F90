@@ -21,7 +21,7 @@ program test_spray_core
   type(spray_liquid) :: liquid,constant_liquid
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
-  type(spray_options) :: options
+  type(spray_options) :: options,constant_options
   type(spray_film) :: film
   real(dp) :: state(15,4,4,4),temp(4,4,4),saved(15,4,4,4),saved_t(4,4,4),rhs(15,4,4,4)
   real(dp) :: wall_t(6),wall_v(3,6)
@@ -47,6 +47,38 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('viscosity')
+    options%breakup_model='etab';options%surface_tension=.072_dp
+    options%liquid_viscosity_model='inverse-temperature'
+    options%liquid_viscosity_coefficients=[0.0002_dp,.2_dp,10.0_dp,100.0_dp]
+    options%liquid_viscosity_temperature_range=[250.0_dp,600.0_dp]
+    do n=0,7
+      td=250.0_dp+50*n
+      expected=.0002_dp+.2_dp/td+10.0_dp/td**2+100.0_dp/td**3
+      call require(abs(liquid_viscosity_at_temperature(options,td)/expected-1)<1e-13_dp,'viscosity equation')
+    end do
+    do n=1,2
+      if (n==2) options%breakup_model='khrt'
+      constant_options=options;constant_options%liquid_viscosity_model='constant'
+      constant_options%liquid_viscosity=liquid_viscosity_at_temperature(options,p%temperature)
+      constant_options%liquid_viscosity_coefficients=0;constant_options%liquid_viscosity_temperature_range=0
+      q=p
+      call advance_spray_breakup(p,liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],20.0_dp,1e-5_dp,1e-5_dp,ok)
+      call require(ok,'temperature-dependent viscosity breakup')
+      call advance_spray_breakup(q,liquid,constant_options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp], &
+        20.0_dp,1e-5_dp,1e-5_dp,ok)
+      call require(ok.and.p%mass==q%mass.and.p%deformation==q%deformation.and.p%multiplicity==q%multiplicity, &
+        'breakup uses current liquid viscosity')
+    end do
+    options%liquid_viscosity_temperature_range=[250.0_dp,300.0_dp]
+    q=p
+    call advance_spray_breakup(p,liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],20.0_dp,1e-5_dp,1e-5_dp,ok)
+    call require(.not.ok.and.p%mass==q%mass.and.p%rt_time==q%rt_time,'viscosity range rollback')
+    options%liquid_viscosity_temperature_range=[250.0_dp,600.0_dp]
+    options%liquid_viscosity_coefficients=-1
+    call require(liquid_viscosity_at_temperature(options,350.0_dp)==0,'negative viscosity rejected')
+    options%liquid_viscosity_coefficients=ieee_value(0.0_dp,ieee_quiet_nan)
+    call require(.not.valid_spray_options(options),'NaN viscosity rejected')
   case('density')
     liquid%density_model='polynomial'
     liquid%density_coefficients=[1200.0_dp,-.5_dp,0.0_dp,0.0_dp]

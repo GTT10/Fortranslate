@@ -48,6 +48,8 @@ contains
     logical :: chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled,abramzon_sirignano
     real(dp), allocatable :: boundary_totals(:),boundary_step(:)
     character(len=8) :: breakup_model
+    character(len=24) :: liquid_viscosity_model
+    real(dp) :: liquid_viscosity_coefficients(4),liquid_viscosity_temperature_range(2)
     real(dp) :: surface_tension,liquid_viscosity
     real(dp) :: maximum_multiplicity
     integer :: maximum_parcels
@@ -73,6 +75,7 @@ contains
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
       breakup_model,surface_tension,liquid_viscosity, &
+      liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
       inflow_composition_species,inflow_composition_mole_fractions, &
@@ -92,6 +95,7 @@ contains
     inflow_composition_count=0;inflow_composition_species="";inflow_composition_mole_fractions=0
     khrt_b0=.61_dp;khrt_b1=7.0_dp;khrt_c3=1.0_dp
     maximum_multiplicity=0;maximum_parcels=1000000
+    liquid_viscosity_model='constant';liquid_viscosity_coefficients=0;liquid_viscosity_temperature_range=0
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     acceleration=0
     boundary_faces="periodic";wall_temperature=300;wall_velocity=0
@@ -187,6 +191,9 @@ contains
     options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
     khrt_enabled=trim(breakup_model)=="khrt"
     options%breakup_model=breakup_model; options%surface_tension=surface_tension
+    options%liquid_viscosity_model=liquid_viscosity_model
+    options%liquid_viscosity_coefficients=liquid_viscosity_coefficients
+    options%liquid_viscosity_temperature_range=liquid_viscosity_temperature_range
     options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
@@ -329,6 +336,10 @@ contains
       context=trim(context)//' etab-size-deformation-v1/'//trim(breakup_model)
       end if
       call append_reals([surface_tension,liquid_viscosity])
+      if (trim(liquid_viscosity_model)=='inverse-temperature') then
+        context=trim(context)//' liquid-viscosity-inverse-temperature-v1'
+        call append_reals([liquid_viscosity_coefficients,liquid_viscosity_temperature_range])
+      end if
     end if
     if (split_enabled) then
       context=trim(context)//' computational-split-lineage-v1'

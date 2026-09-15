@@ -1,0 +1,21 @@
+! Temperature-dependent liquid density and viscosity with KH-RT.
+! Coefficients are illustrative, not calibrated water property fits.
+&spray
+ cells=4,4,4, domain_length=.004,.004,.004,
+ gas_temperature=900, gas_pressure=4e6,
+ mole_names='N2','','', mole_amounts=1,0,0,
+ chemistry_enabled=.false.,
+ breakup_model='khrt',surface_tension=.072,
+ liquid_viscosity_model='inverse-temperature',liquid_viscosity_coefficients=.0002,.2,10,100,
+ liquid_viscosity_temperature_range=250,600,
+ liquid_density_model='polynomial',liquid_density_coefficients=1200,-.5,0,0,
+ liquid_density_temperature_range=250,600,
+ vapor_name='H2O', liquid_density=1000, liquid_cp=4184,
+ reference_temperature=373.15, reference_pressure=101325, latent_heat=2257000,
+ drop_temperature=330, drop_diameter=80e-6,
+ initial_liquid_mass=1e-10, parcel_count=4,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1,
+ injection_speed=200, cone_angle=.1,
+ final_time=2e-6, maximum_dt=1e-7,
+ output_prefix='water_viscosity', checkpoint_file='water_viscosity.chk'
+/

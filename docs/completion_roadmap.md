@@ -50,7 +50,8 @@ physical child-parcel dispersion remains open. Uniform gas/particle acceleration
 now retains external impulse/work separately through coupled restart. Single-component
 Antoine saturation-pressure fits are connected with explicit temperature bounds
 and restart identity. Polynomial liquid density now drives injection, drag,
-evaporation and breakup consistently; boiling and multicomponent liquids remain open.
+evaporation and breakup consistently; inverse-temperature liquid viscosity now
+drives ETAB/KH-RT. Boiling and multicomponent liquids remain open.
 
 ## Ordered implementation work
 
