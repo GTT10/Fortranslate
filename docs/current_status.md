@@ -99,6 +99,10 @@ whole-interval rollback ([evidence](validation/spray-mpi-coupling-20260916.md)).
 Distributed wall/breakup events, reactive gas stepping and application integration
 remain open.
 
+The spray CVODE branch now builds after removal of misplaced wall-film setup;
+focused native/CVODE chemistry tests pass
+([repair evidence](validation/spray-cvode-build-repair-20260916.md)).
+
 ## Repository consolidation implemented
 
 The README is an entry point rather than a chronological implementation log.

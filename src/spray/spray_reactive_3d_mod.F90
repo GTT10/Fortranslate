@@ -58,17 +58,7 @@ contains
 #ifndef PELEF_SPRAY_CVODE
       message='CVODE requested but this spray runtime was built without SUNDIALS'
 #else
-      if ((present(component_mass).and.present(wall_films)).neqv.present(film_component_mass)) then
-      message='Mixed wall films require film component storage';return
-    end if
-    if (present(component_mass)) then
-      allocate(mixture_film_mass(size(mixture_components),0))
-      if (present(film_component_mass)) then
-        if (.not.allocated(film_component_mass)) return
-        mixture_film_mass=film_component_mass
-      end if
-    end if
-    allocate(candidate,source=state); allocate(temp,source=temperature); allocate(check_t,mold=temperature)
+      allocate(candidate,source=state); allocate(temp,source=temperature); allocate(check_t,mold=temperature)
       call recover_reactive_temperatures_3d(species,state,temperature,dims(1),dims(2),dims(3),check_t,local_ok)
       if (.not. local_ok) return
       if (interval == 0.0_dp) then
