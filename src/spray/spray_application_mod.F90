@@ -30,7 +30,7 @@ contains
     integer :: mixture_count
     character(len=24) :: mixture_vapor_names(16)
     real(dp) :: mixture_fractions(16),mixture_densities(16),mixture_cps(16),mixture_reference_temperatures(16)
-    real(dp) :: mixture_reference_pressures(16),mixture_latent_heats(16)
+    real(dp) :: mixture_reference_pressures(16),mixture_latent_heats(16),port_mixture_fractions(16,16)
     character(len=16) :: mixture_density_models(16),mixture_cp_models(16)
     character(len=16) :: mixture_vapor_pressure_models(16),mixture_boiling_models(16)
     real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
@@ -151,7 +151,7 @@ contains
     character(len=16384) :: context
     character(len=1050), allocatable :: paths(:)
     integer(int64) :: first_id
-    namelist /spray/ mixture_count,mixture_vapor_names,mixture_fractions,mixture_densities,mixture_cps, &
+    namelist /spray/ port_mixture_fractions,mixture_count,mixture_vapor_names,mixture_fractions,mixture_densities,mixture_cps, &
       mixture_reference_temperatures,mixture_reference_pressures,mixture_latent_heats, &
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
@@ -240,6 +240,7 @@ contains
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
+    port_mixture_fractions=0
     mixture_count=0;mixture_vapor_names='';mixture_fractions=0;mixture_densities=0;mixture_cps=0
     mixture_reference_temperatures=0;mixture_reference_pressures=101325;mixture_latent_heats=0
     khrt_children=.false.;khrt_reference_diameter_cubed=0
@@ -520,6 +521,14 @@ contains
     if (any(mixture_cp_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_antoine_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_antoine_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (.not.all(ieee_is_finite(port_mixture_fractions))) call fail('Nonfinite port mixture fractions')
+    if (any(port_mixture_fractions<0).or.any(port_mixture_fractions>1)) call fail('Invalid port mixture fractions')
+    if (any(port_mixture_fractions(mixture_count+1:,:)/=0).or. &
+        any(port_mixture_fractions(:,injection_port_count+1:)/=0)) call fail('Unused port mixture fractions')
+    do port=1,injection_port_count
+      if (all(port_mixture_fractions(:,port)==0)) cycle
+      if (abs(sum(port_mixture_fractions(:,port))-1.0_dp)>1e-12_dp) call fail('Port mixture fractions must sum to one')
+    end do
     if (mixture_count>0) then
       if (liquid_cp_model/='constant'.or.liquid_density_model/='constant'.or.boiling_model/='reject'.or. &
           vapor_pressure_model/='clausius') call fail('Use component property models in mixture mode')
@@ -684,7 +693,7 @@ contains
       if (injection_port_count>0) then
         allocate(materials(injection_port_count));multi_material=.true.
         do port=1,injection_port_count
-          materials(port)=mixture_injection_liquid(injection_port_temperatures(port))
+          materials(port)=mixture_injection_liquid(injection_port_temperatures(port),port)
         end do
       end if
     end if
@@ -781,7 +790,7 @@ contains
     if (mixture_count>0) then
       allocate(component_mass(mixture_count,size(parcels)))
       do i=1,size(parcels)
-        component_mass(:,i)=parcels(i)%mass*mixture_fractions(:mixture_count)
+        component_mass(:,i)=parcels(i)%mass*injection_composition(parcels(i)%material_id)
       end do
     end if
     call current_totals(reference_totals)
@@ -900,6 +909,12 @@ contains
       call append_reals([khrt_reference_diameter_cubed])
     end if
     if (mixture_count>0) then
+      if (any(port_mixture_fractions/=0)) then
+        context=trim(context)//' port-mixture-composition-v1'
+        do port=1,injection_port_count
+          call append_reals(injection_composition(port))
+        end do
+      end if
       context=trim(context)//' '//mixture_evolution_id
       call append_reals([real(mixture_count,dp)])
       do i=1,mixture_count
@@ -1272,12 +1287,22 @@ contains
         film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass)
       end if
     end subroutine
-    function mixture_injection_liquid(t) result(fluid)
+    function injection_composition(port_id) result(fractions)
+      integer, intent(in) :: port_id
+      real(dp) :: fractions(mixture_count)
+      fractions=mixture_fractions(:mixture_count)
+      if (port_id<1.or.port_id>injection_port_count) return
+      if (any(port_mixture_fractions(:,port_id)/=0)) fractions=port_mixture_fractions(:mixture_count,port_id)
+    end function
+    function mixture_injection_liquid(t,port_id) result(fluid)
       real(dp), intent(in) :: t
+      integer, optional, intent(in) :: port_id
       type(spray_liquid) :: fluid
-      real(dp) :: rho,cp,e
+      real(dp) :: rho,cp,e,fractions(mixture_count)
       logical :: valid
-      call liquid_mixture_properties(mixture_components,mixture_fractions(:mixture_count),t,rho,cp,e,valid)
+      fractions=mixture_fractions(:mixture_count)
+      if (present(port_id)) fractions=injection_composition(port_id)
+      call liquid_mixture_properties(mixture_components,fractions,t,rho,cp,e,valid)
       if (.not.valid) call fail('Invalid mixture composition or injection temperature')
       fluid=mixture_components(1);fluid%density=rho;fluid%heat_capacity=cp
       fluid%reference_temperature=t;fluid%reference_energy=e
@@ -1312,6 +1337,7 @@ contains
     end function
     subroutine append_injected()
       real(dp), allocatable :: updated(:,:)
+      real(dp) :: fractions(mixture_count)
       integer :: n,c,old_count
       old_count=size(parcels)
       if (mixture_count>0) then
@@ -1323,10 +1349,11 @@ contains
         totals5=parcel_totals(new_parcels(n),material)
         injected_totals(1:5)=injected_totals(1:5)+totals5
         if (mixture_count>0) then
-          updated(:,old_count+n)=new_parcels(n)%mass*mixture_fractions(:mixture_count)
+          fractions=injection_composition(new_parcels(n)%material_id)
+          updated(:,old_count+n)=new_parcels(n)%mass*fractions
           do c=1,mixture_count
             i=5+mixture_components(c)%vapor_index
-            injected_totals(i)=injected_totals(i)+totals5(1)*mixture_fractions(c)
+            injected_totals(i)=injected_totals(i)+totals5(1)*fractions(c)
           end do
         else
           i=5+material%vapor_index

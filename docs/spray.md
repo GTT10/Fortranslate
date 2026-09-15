@@ -270,7 +270,7 @@ without replacing the outputs.
 recovers temperature and returns the opposite actual energy increment for the gas.
 Failure preserves the parcel and returns zero transfer. The transport update
 below supplies mixture heat transfer and component evaporation.
-The CLI supports a shared mixed-liquid composition using the inputs below. The
+The CLI supports shared or per-port mixed-liquid compositions using the inputs below. The
 mixture grid API retains component masses and supports their checkpoint persistence
 and combined hydro/chemistry stepping. The
 reference's optional boiling-temperature property caps are not applied here.
@@ -340,8 +340,7 @@ retained. If evaporation reduces the predicted mixture diameter below
 finite-inventory convention. These transfers conserve mass and energy rather
 than discarding small species and renormalizing their survivors.
 A zero interval preserves state exactly. This remains
-a composable API used by the grid coupling below; wall impact and
-per-port mixture compositions remain open.
+a composable API used by the grid coupling below; mixture wall impact remains open.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
 ### Mixed-liquid grid coupling and composition restart
@@ -434,7 +433,19 @@ partitioning; it does not implement physical mixture boiling. Models, coefficien
 and bounds enter restart identity. Default constant-property contexts are preserved.
 See [component property evidence](validation/spray-mixture-properties-20260916.md).
 
-Initial and scheduled parcels use this common composition. Existing size laws,
+Initial and scheduled parcels use `mixture_fractions` by default. To override a
+port, set `port_mixture_fractions(component,port)`, a `(16,16)` array. For example,
+`port_mixture_fractions(1:2,1)=.2,.8` assigns the first port a 20/80 mass blend.
+Each nonzero column must be nonnegative and sum to one; an all-zero column inherits
+the shared composition. Rows beyond `mixture_count` and columns beyond
+`injection_port_count` must stay zero. Components may be absent from individual
+ports; every port uses the same ordered component property table. Keep a valid
+shared composition even when overriding all active ports.
+
+Both initial and scheduled injections use each port's selected composition for
+density, energy, component inventories and rate-derived velocity. Restart identity
+includes active port compositions. See [port-composition evidence](validation/spray-port-mixture-20260916.md).
+Existing size laws,
 nozzle geometry, per-port temperatures and shared/independent schedules remain
 available. Injection density and energy use the actual mixture at each port's
 injection temperature; rate-derived velocity uses that density. New component
