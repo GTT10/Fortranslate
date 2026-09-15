@@ -250,6 +250,32 @@ license and deliberate scope differences are recorded in
 [focused evidence](validation/etab-20260915.md).
 
 
+## Mixed-liquid thermodynamic API
+
+`spray_mixture_mod` provides the shared thermodynamic operations for up to 16
+components of one liquid droplet, distinct from the existing per-port pure liquids.
+It accepts pure-component property records and normalized mass fractions.
+Density uses additive specific volume, `1/rho = sum(Y_i/rho_i)`; heat capacity
+and stored liquid energy use `sum(Y_i*cp_i)` and `sum(Y_i*e_i)`. Each component's
+energy retains its mechanism formation reference. No excess mixing energy is added.
+
+`liquid_mixture_properties` evaluates these quantities at a common temperature.
+`liquid_mixture_temperature` inverts the energy with bracketed Newton iteration,
+inside the active components' common density/heat-capacity fit ranges. Zero-mass
+components do not constrain the temperature range. Non-normalized fractions,
+duplicate component species, invalid properties or unreachable energies reject
+without replacing the outputs.
+
+`advance_mixture_heating` applies a supplied parcel heat amount at fixed composition,
+recovers temperature and returns the opposite actual energy increment for the gas.
+Failure preserves the parcel and returns zero transfer. This API does not yet
+calculate mixture heat-transfer coefficients or advance component evaporation.
+The CLI still selects one pure liquid per parcel; mixture composition storage,
+species-resolved evaporation and coupled restart remain to be connected. The
+reference's optional boiling-temperature property caps are not applied here.
+See [source](../references/spray_mixture.json) and
+[focused evidence](validation/spray-mixture-thermo-20260916.md).
+
 ## KH-RT representative-drop breakup
 
 Set `breakup_model='khrt'` with positive `surface_tension` and

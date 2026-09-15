@@ -9,6 +9,7 @@ program test_spray_core
   use mixture_thermo_mod, only: mixture_specific_gas_constant
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use mixture_transport_mod, only: binary_diffusion_coefficients
+  use spray_mixture_mod
   use spray_parcel_mod
   use spray_wall_impact_mod
   use spray_breakup_mod
@@ -20,7 +21,8 @@ program test_spray_core
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
-  type(spray_liquid) :: liquid,constant_liquid
+  type(spray_liquid) :: liquid,constant_liquid,mixture_components(2)
+  real(dp) :: mixture_y(2),mixture_rho,mixture_cp,mixture_e,mixture_t,mixture_e0
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options,constant_options
@@ -58,6 +60,46 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('mixture')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'illustrative second mixture component')
+    mixture_y=[.25_dp,.75_dp];mixture_t=330
+    call liquid_mixture_properties(mixture_components,mixture_y,mixture_t,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'mixture properties')
+    call require(abs(mixture_rho/(1/(.25_dp/1000+.75_dp/800))-1)<1e-14_dp,'additive liquid volume')
+    call require(abs(mixture_cp-(.25_dp*4184+.75_dp*2000))<1e-12_dp,'mass weighted cp')
+    expected=.25_dp*liquid_energy(liquid,330.0_dp)+.75_dp*liquid_energy(mixture_components(2),330.0_dp)
+    call require(abs(mixture_e-expected)<1e-9_dp,'common formation energy reference')
+    mixture_t=1000
+    call liquid_mixture_temperature(mixture_components,mixture_y,mixture_e,mixture_t,ok)
+    call require(ok.and.abs(mixture_t-330)<1e-10_dp,'mixture energy inversion')
+    mixture_components(2)%heat_capacity_model='polynomial'
+    mixture_components(2)%heat_capacity_coefficients=[1000.0_dp,2.0_dp,.001_dp,0.0_dp]
+    mixture_components(2)%heat_capacity_temperature_range=[300.0_dp,600.0_dp]
+    call require(valid_spray_liquid(mixture_components(2)),'polynomial component')
+    p%temperature=330;q=p
+    call liquid_mixture_properties(mixture_components,mixture_y,p%temperature,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'initial polynomial mixture')
+    call liquid_mixture_properties(mixture_components,mixture_y,450.0_dp,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'target polynomial mixture')
+    heat=p%mass*p%multiplicity*(mixture_e-mixture_e0)
+    call advance_mixture_heating(p,mixture_components,mixture_y,heat,solid_energy,ok)
+    call require(ok.and.abs(p%temperature-450)<1e-10_dp,'composition-aware nonlinear heating')
+    call require(abs(solid_energy+heat)<1e-12_dp*abs(heat),'mixture sensible energy closure')
+    call require(p%mass==q%mass.and.p%multiplicity==q%multiplicity,'heating preserves liquid mass')
+    q=p
+    call advance_mixture_heating(p,mixture_components,mixture_y,1e10_dp,solid_energy,ok)
+    call require(.not.ok.and.p%temperature==q%temperature.and.solid_energy==0,'out of range heat rollback')
+    mixture_t=330
+    call liquid_mixture_temperature(mixture_components,mixture_y,1e15_dp,mixture_t,ok)
+    call require(.not.ok.and.mixture_t==330,'unreachable energy preserves temperature')
+    mixture_rho=-1;mixture_cp=-2;mixture_e=-3
+    call liquid_mixture_properties(mixture_components,[.25_dp,.7_dp],330.0_dp,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(.not.ok.and.mixture_rho==-1.and.mixture_cp==-2.and.mixture_e==-3,'composition rejection transaction')
+    call liquid_mixture_properties(mixture_components,[1.0_dp,0.0_dp],700.0_dp,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok.and.mixture_rho==1000.and.mixture_cp==4184,'pure limit ignores inactive fit range')
   case('film_evolution')
     faces='no_slip_wall';wall_settings%enabled(5)=.true.;wall_settings%evolve=.true.
     wall_settings%conductivity_model='polynomial'

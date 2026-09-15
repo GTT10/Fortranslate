@@ -6,6 +6,7 @@ if(PELEF_ENABLE_SPRAY)
   function(pelef_add_spray_runtime target base)
     add_library(${target} STATIC
       src/spray/spray_parcel_mod.F90
+      src/spray/spray_mixture_mod.F90
       src/spray/spray_wall_impact_mod.F90
       src/spray/spray_breakup_mod.F90
       src/spray/spray_coupling_3d_mod.F90

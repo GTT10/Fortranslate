@@ -35,6 +35,12 @@ splitting now partitions the KH inventories
 now consumes crossed parcels before KH release, with coupled film/lineage restart
 ([evidence](validation/khrt-wall-20260916.md)); wet-impact correlation limits remain.
 
+A mixed-liquid thermodynamic API now evaluates additive-volume density,
+mass-weighted heat capacity/energy and conservative sensible heating with
+energy-to-temperature inversion
+([evidence](validation/spray-mixture-thermo-20260916.md)). Mixture composition
+storage, component evaporation and CLI/coupled restart remain open.
+
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
 license remains an owner decision.
