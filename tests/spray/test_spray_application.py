@@ -58,6 +58,41 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_mixture_kh_children_restart(self):
+        settings=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                  "mixture_densities=1000,800,mixture_cps=4184,2000,mixture_reference_temperatures=373.15,350,"
+                  "mixture_latent_heats=2257000,1e6,breakup_model='khrt',khrt_children=.true.,"
+                  "surface_tension=.072,liquid_viscosity=.001,injection_speed=1000,cone_angle=0,parcel_count=1,"
+                  "heat_enabled=.false.,evaporation_enabled=.false.,drag_enabled=.false.,transport_enabled=.false.,"
+                  "maximum_multiplicity=10,maximum_parcels=1000,")
+        for name,reference in [('mixed_children','1e-25'),('mixed_accumulation','1e24')]:
+            common=settings+f'khrt_reference_diameter_cubed={reference},'
+            stop=self.root/(name+'_stop.chk');full=self.root/(name+'_full.chk');resumed=self.root/(name+'_resumed.chk')
+            self.run_case(name,f"checkpoint_file='{full}',",common=common)
+            history=self.check_balance(name)
+            with (self.root/(name+'.parcels.csv')).open() as stream:
+                rows=list(csv.DictReader(stream))
+            self.assertGreater(len(rows),1)
+            self.assertTrue(any(int(r['parent_id'])>0 for r in rows))
+            for row in rows:
+                if float(row['mass'])==0:
+                    self.assertEqual(float(row['mass_H2O'])+float(row['mass_H2O2']),0)
+                else:
+                    self.assertAlmostEqual(float(row['mass_H2O'])/float(row['mass']),.6,places=13)
+                    self.assertAlmostEqual(float(row['mass_H2O2'])/float(row['mass']),.4,places=13)
+                    self.assertLessEqual(float(row['multiplicity']),10)
+            if name=='mixed_children':
+                self.assertTrue(any(abs(float(r['u']))+abs(float(r['v']))>1e-5 for r in rows))
+            else:
+                self.assertTrue(any(float(r['khrt_shed_volume'])>0 for r in rows))
+            self.run_case(name+'_stop',f"stop_after_steps=3,checkpoint_file='{stop}',",common=common)
+            self.run_case(name+'_resumed',f"restart_file='{stop}',checkpoint_file='{resumed}',",common=common)
+            self.assertEqual(full.read_bytes(),resumed.read_bytes())
+            for suffix in ['gas.csv','parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}_resumed.{suffix}').read_bytes())
+            self.assertEqual(history[-1],self.history(name+'_resumed')[-1])
+
     def test_mixture_terminal_restart(self):
         settings=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
                   "mixture_densities=1000,800,mixture_cps=4184,2000,mixture_reference_temperatures=373.15,350,"

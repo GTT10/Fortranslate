@@ -63,9 +63,10 @@ frozen-gas transport update are implemented. Regular-grid feedback, persistent
 component masses, boundary budgets, representative breakup/splitting and composition
 checkpoint APIs are connected. Combined hydro/transport/LES/chemistry stepping
 now retains mixture composition through accepted updates and rollback. Mixture
-wall impact/KH shed children, per-port compositions, CLI property fits and physical
+wall impact, per-port compositions, CLI property fits and physical
 boiling rates remain open. Shared-composition CLI inputs, initial/scheduled injection,
-component output and restart are now connected.
+component output and restart are now connected. Mixed KH shed children preserve
+composition and conservative transverse energy through coupling, splitting and restart.
 
 ## Ordered implementation work
 

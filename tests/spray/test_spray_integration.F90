@@ -296,6 +296,26 @@ program test_spray_integration
     call require(size(component_mass,2)==size(drops),'split component columns follow parcel lineage')
     call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
     call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp,'mixture breakup/splitting conservation')
+    drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
+    options%khrt_children=.true.;options%khrt_reference_diameter_cubed=1e-25_dp;options%maximum_multiplicity=0
+    do i=1,size(drops)
+      drops(i)%velocity=[1000.0_dp,0.0_dp,0.0_dp]
+    end do
+    before_drops=drops
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'mixed KH initial totals')
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(ok.and.size(drops)>size(before_drops),'mixed KH children created')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp,'mixed KH gas/child conservation')
+    drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
+    options%maximum_parcels=size(drops)
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'mixed KH capacity gas rollback')
+    call require(size(drops)==size(before_drops).and.all(component_mass==saved_mass),'mixed KH capacity composition rollback')
+    call require(all(drops%khrt_shed_volume==0).and.all(drops%mass==before_drops%mass),'mixed KH parent rollback')
   case('materials')
     materials(1)=liquid
     ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.

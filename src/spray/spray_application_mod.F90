@@ -643,8 +643,8 @@ contains
     end if
     if (initial_liquid_mass>0.and.parcels_per_event>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     if (mixture_count>0) then
-      if (multi_material.or.khrt_children.or.impact_enabled) &
-        call fail('Mixture mode cannot use pure-port properties, KH shed children or wall impact')
+      if (multi_material.or.impact_enabled) &
+        call fail('Mixture mode cannot use pure-port properties or wall impact')
       if (injection_port_count>0) then
         allocate(materials(injection_port_count));multi_material=.true.
         do port=1,injection_port_count

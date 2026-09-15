@@ -620,7 +620,11 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:),split_masses(:,:)
-    type(spray_parcel), allocatable :: drops(:)
+    type(spray_parcel), allocatable :: drops(:),children(:)
+    type(spray_khrt_shedding_state) :: shedding
+    type(spray_khrt_release) :: release
+    real(dp), allocatable :: starts(:)
+    real(dp) :: reynolds,dispersion_energy,release_axis(3)
     type(spray_parcel) :: next
     type(spray_liquid) :: effective
     type(spray_film) :: mixture_film
@@ -634,7 +638,7 @@ contains
     ok=.false.;substeps=0;message='Invalid mixture coupling state'
     if (present(boundary_change)) boundary_change=0
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
-    if (.not.valid_spray_options(options).or.options%khrt_children) return
+    if (.not.valid_spray_options(options)) return
     if (size(components)<1.or.size(components)>min(16,size(species))) return
     if (any(shape(component_mass)/=[size(components),size(parcels)])) return
     if (size(state,1)/=5+size(species).or.size(parcels)>options%maximum_parcels) return
@@ -650,7 +654,7 @@ contains
     end if
     do p=1,size(parcels)
       if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
-      if (parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0) return
+      if (.not.options%khrt_children.and.(parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0)) return
       if (p>1) then
         if (parcels(p)%id<=parcels(p-1)%id) return
       end if
@@ -660,8 +664,9 @@ contains
     if (.not.valid) return
     if (any(abs(temp-temperature)>1e-9_dp*max(1.0_dp,abs(temperature)))) return
     temp=temperature;drops=parcels;masses=component_mass;ledger=0;count=0;volume=product(spacing)
-    do p=1,size(drops)
-      elapsed=0
+    allocate(starts(size(drops)));starts=0;p=1
+    do while(p<=size(drops))
+      elapsed=starts(p)
       do while(elapsed<interval.and.drops(p)%mass>0)
         if (count>=options%maximum_substeps) then
           message='Mixture substep limit; complete update rolled back';return
@@ -737,13 +742,58 @@ contains
         ! Restore the sampled primitive: the feedback recovery above used it as scratch.
         call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
         if (.not.valid) return
+        release=spray_khrt_release()
         if (next%mass>0.and.options%breakup_model/='none') then
           call build_mixture_film(species,transport,primitive,tg,next,components,y,options,mixture_film,rates,hv,valid)
           if (.not.valid) return
-          call advance_spray_breakup(next,effective,options,sampled(1),primitive(2:4),mixture_film%density, &
-            mixture_film%viscosity,dt,valid)
+          if (options%khrt_children) then
+            shedding=spray_khrt_shedding_state(next%khrt_initial_count,next%khrt_shed_volume)
+            reynolds=mixture_film%density*norm2(primitive(2:4)-next%velocity)* &
+              parcel_diameter(next,effective)/mixture_film%viscosity
+            call advance_khrt_shedding(next,effective,options,sampled(1),primitive(2:4),reynolds,dt, &
+              options%khrt_reference_diameter_cubed,shedding,release,valid)
+            if (valid) then
+              next%khrt_initial_count=shedding%initial_count;next%khrt_shed_volume=shedding%shed_volume
+            end if
+          else
+            call advance_spray_breakup(next,effective,options,sampled(1),primitive(2:4),mixture_film%density, &
+              mixture_film%viscosity,dt,valid)
+          end if
           if (.not.valid) return
           next_mass=next_mass*(next%mass/old_mass)
+        end if
+        if (release%mass>0) then
+          if (size(drops)>options%maximum_parcels-4) then
+            message='Mixture KH children exceed parcel limit; complete update rolled back';return
+          end if
+          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
+          release_axis=next%velocity
+          if (norm2(release_axis)<1e-12_dp) release_axis=primitive(2:4)-next%velocity
+          call construct_khrt_children(next,release,release_axis,drops(size(drops))%id+1_int64,children,dispersion_energy,valid)
+          if (.not.valid) return
+          do n=1,8
+            i=indices(1,n);j=indices(2,n);k=indices(3,n)
+            gas(5,i,j,k)=gas(5,i,j,k)+weights(n)*dispersion_energy/volume
+            call reactive_conserved_to_primitive(species,gas(:,i,j,k),temp(i,j,k),primitive,recovered,sound,valid)
+            if (.not.valid) then
+              message='Mixture KH dispersion energy rejected; complete update rolled back';return
+            end if
+            temp(i,j,k)=recovered
+          end do
+          old_count=size(drops)
+          allocate(split_masses(size(components),old_count+size(children)));split_masses(:,:old_count)=masses
+          do n=1,size(children)
+            call apply_parcel_boundaries(children(n),effective,lower,lower+spacing*real(shape3,dp),faces,exchange,valid)
+            if (.not.valid) return
+            ledger(1:5)=ledger(1:5)+exchange
+            do v=1,size(components)
+              ledger(5+components(v)%vapor_index)=ledger(5+components(v)%vapor_index)+exchange(1)*y(v)
+            end do
+            split_masses(:,old_count+n)=children(n)%mass*y
+          end do
+          call move_alloc(split_masses,masses)
+          starts=[starts,spread(min(interval,elapsed+dt),1,size(children))]
+          drops=[drops,children]
         end if
         before_boundary=next_mass
         call apply_parcel_boundaries(next,effective,lower,lower+spacing*real(shape3,dp),faces,exchange,valid)
@@ -756,6 +806,7 @@ contains
         end do
         drops(p)=next;masses(:,p)=next_mass;elapsed=min(interval,elapsed+dt);count=count+1
       end do
+      p=p+1
     end do
     old_count=size(drops)
     call split_spray_parcels(drops,options%maximum_multiplicity,options%maximum_parcels,valid)

@@ -340,7 +340,7 @@ retained. If evaporation reduces the predicted mixture diameter below
 finite-inventory convention. These transfers conserve mass and energy rather
 than discarding small species and renormalizing their survivors.
 A zero interval preserves state exactly. This remains
-a composable API used by the grid coupling below; wall impact, KH shed children,
+a composable API used by the grid coupling below; wall impact and
 per-port mixture compositions remain open.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
@@ -360,8 +360,12 @@ outflow/inflow removal. Boundary budgets include each component's species mass;
 ETAB/KHRT representative-size updates preserve composition while scaling droplet
 mass and multiplicity. Their surface tension and liquid viscosity must be supplied
 as mixture properties through the existing options. Computational splitting copies
-component masses per droplet into its descendants. KH shed-mass children and
-wall-impact/film conversion are not connected to this mixed-liquid route yet.
+component masses per droplet into its descendants. Optional KH shed-mass children
+inherit the parent composition, with conservative transverse kinetic energy debited
+from gas. Children advance through the remaining step; capacity or gas-state failure
+rolls back the entire update. KH accumulators and composition survive computational
+splitting and restart. Wall-impact/film conversion remains unconnected.
+See [mixed KH evidence](validation/spray-mixture-kh-20260916.md).
 
 Both checkpoint routines accept optional `component_mass`. The `_MIX_V1` suffix
 adds a component count after grid dimensions and a component-mass row after each
@@ -416,9 +420,9 @@ nozzle geometry, per-port temperatures and shared/independent schedules remain
 available. Injection density and energy use the actual mixture at each port's
 injection temperature; rate-derived velocity uses that density. New component
 masses append alongside each injected parcel, with species-resolved mass ledgers.
-Per-port pure-liquid property overrides, KH shed children and particle wall impact
-cannot be combined with mixture mode. Prescribed mixture viscosity/surface tension
-still permit representative ETAB/KHRT and computational splitting.
+Per-port pure-liquid property overrides and particle wall impact cannot be combined
+with mixture mode. Prescribed mixture viscosity/surface tension permit representative
+ETAB/KHRT, KH shed children and computational splitting.
 
 Parcel CSVs add `mass_<species>` columns in kg per physical droplet. Their sum is
 `mass`; `diameter` and Sauter mean diameter use the evolving mixture density.
