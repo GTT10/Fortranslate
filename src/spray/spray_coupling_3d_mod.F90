@@ -8,7 +8,7 @@ module spray_coupling_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_breakup_mod, only: advance_etab_breakup,split_spray_parcels
+  use spray_breakup_mod, only: advance_spray_breakup,split_spray_parcels
   implicit none
   private
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
@@ -355,9 +355,10 @@ contains
         if (.not. accepted) then
           message='Spray feedback cannot preserve gas/liquid admissibility; complete update rolled back'; return
         end if
-        call advance_etab_breakup(next,liquid,options,sampled(1),film%gas_velocity,dt,local_ok)
+        call advance_spray_breakup(next,liquid,options,sampled(1),film%gas_velocity, &
+          film%density,film%viscosity,dt,local_ok)
         if (.not.local_ok) then
-          message='ETAB breakup rejected; complete coupling step rolled back'; return
+          message='Spray breakup rejected; complete coupling step rolled back'; return
         end if
         call apply_parcel_boundaries(next,liquid,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
         if (.not.local_ok) return

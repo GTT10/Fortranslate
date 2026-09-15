@@ -41,10 +41,24 @@ contains
       end if
     end do
   end function
-  function spray_checkpoint_magic(physical,breakup,split) result(value)
-    logical, intent(in) :: physical,breakup,split
+  function spray_checkpoint_magic(physical,breakup,split,khrt) result(value)
+    logical, intent(in) :: physical,breakup,split,khrt
     character(len=40) :: value
-    if (split) then
+    if (khrt) then
+      if (split) then
+        if (physical) then
+          value='PELEF_SPRAY_3D_CHECKPOINT_V10'
+        else
+          value='PELEF_SPRAY_3D_CHECKPOINT_V9'
+        end if
+      else
+        if (physical) then
+          value='PELEF_SPRAY_3D_CHECKPOINT_V8'
+        else
+          value='PELEF_SPRAY_3D_CHECKPOINT_V7'
+        end if
+      end if
+    else if (split) then
       if (physical) then
         value='PELEF_SPRAY_3D_CHECKPOINT_V6'
       else
@@ -65,9 +79,9 @@ contains
     end if
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state)
-    logical, intent(in), optional :: breakup_state,split_state
-    logical :: has_breakup,has_split
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state
+    logical :: has_breakup,has_split,has_khrt
     character(len=40) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -86,9 +100,11 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
-    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split)
+    has_khrt=.false.
+    if (present(khrt_state)) has_khrt=khrt_state
+    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid spray checkpoint state'
-    if (has_split.and..not.has_breakup) return
+    if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
       if (.not.all(ieee_is_finite(boundary_totals))) return
@@ -101,6 +117,7 @@ contains
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
       if (.not.has_split.and.parcels(p)%parent_id/=0) return
+      if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
       if (parcels(p)%parent_id>0) then
         if (.not.parent_exists(parcels,p)) return
       end if
@@ -152,6 +169,7 @@ contains
         parcels(p)%mass,parcels(p)%temperature,parcels(p)%multiplicity
       end if
       if (has_split.and.ios==0) write(unit,'(i0)',iostat=ios) parcels(p)%parent_id
+      if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
     end do
     if (ios==0) write(unit,'(a)',iostat=ios) 'END_PELEF_SPRAY_CHECKPOINT'
     close(unit,iostat=close_status)
@@ -171,9 +189,9 @@ contains
   end subroutine
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
-      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state)
-    logical, intent(in), optional :: breakup_state,split_state
-    logical :: has_breakup,has_split
+      reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state)
+    logical, intent(in), optional :: breakup_state,split_state,khrt_state
+    logical :: has_breakup,has_split,has_khrt
     character(len=40) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -195,9 +213,11 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
-    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split)
+    has_khrt=.false.
+    if (present(khrt_state)) has_khrt=khrt_state
+    expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid, truncated or incompatible spray checkpoint'
-    if (has_split.and..not.has_breakup) return
+    if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
     if (size(reference_totals)/=size(state,1) .or. size(injected_totals)/=size(state,1)) return
@@ -274,6 +294,11 @@ contains
         if (drops(p)%parent_id>0) then
           if (.not.parent_exists(drops,p)) goto 900
         end if
+      end if
+      if (has_khrt) then
+        call read_real_row(unit,row(1:1),ios)
+        if (ios/=0) goto 900
+        drops(p)%rt_time=row(1)
       end if
       if (.not. valid_spray_parcel(drops(p))) goto 900
       if (p>1) then

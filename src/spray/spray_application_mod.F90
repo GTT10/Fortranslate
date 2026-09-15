@@ -46,6 +46,8 @@ contains
     real(dp) :: maximum_multiplicity
     integer :: maximum_parcels
     logical :: split_enabled
+    real(dp) :: khrt_b0,khrt_b1,khrt_c3
+    logical :: khrt_enabled
     logical :: breakup_enabled
     logical :: physical_boundaries
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6),inflow_t(6),inlet_dt,face_dt,face_diffusivity
@@ -61,7 +63,7 @@ contains
     character(len=1050) :: paths(3)
     integer(int64) :: first_id
     namelist /spray/ cells,domain_length,boundary_faces,breakup_model,surface_tension,liquid_viscosity, &
-      maximum_multiplicity,maximum_parcels, &
+      maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
       inflow_composition_species,inflow_composition_mole_fractions, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
@@ -76,6 +78,7 @@ contains
 
     inflow_temperature=1200;inflow_pressure=101325;inflow_velocity=0
     inflow_composition_count=0;inflow_composition_species="";inflow_composition_mole_fractions=0
+    khrt_b0=.61_dp;khrt_b1=7.0_dp;khrt_c3=1.0_dp
     maximum_multiplicity=0;maximum_parcels=1000000
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     boundary_faces="periodic"
@@ -151,6 +154,8 @@ contains
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     split_enabled=maximum_multiplicity>0
+    options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
+    khrt_enabled=trim(breakup_model)=="khrt"
     options%breakup_model=breakup_model; options%surface_tension=surface_tension
     options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
@@ -272,7 +277,12 @@ contains
       context=trim(context)//' '//trim(flags)
     end block
     if (breakup_enabled) then
+      if (khrt_enabled) then
+        context=trim(context)//' khrt-representative-v1'
+        call append_reals([khrt_b0,khrt_b1,khrt_c3])
+      else
       context=trim(context)//' etab-size-deformation-v1/'//trim(breakup_model)
+      end if
       call append_reals([surface_tension,liquid_viscosity])
     end if
     if (split_enabled) then
@@ -296,10 +306,12 @@ contains
     if (len_trim(restart_file)>0) then
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
+        khrt_state=khrt_enabled)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
+        khrt_state=khrt_enabled)
       end if
       if (.not. ok) call fail(trim(message))
       if (size(parcels)>maximum_parcels) call fail('Restart exceeds parcel storage limit')
@@ -413,10 +425,12 @@ contains
     if (len_trim(checkpoint_file)>0) then
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled)
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
+        khrt_state=khrt_enabled)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled)
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
+        khrt_state=khrt_enabled)
       end if
       if (.not. ok) call fail(trim(message))
     end if
@@ -492,6 +506,7 @@ contains
       if (ios==0) then
         if (breakup_enabled) then
           write(parcel_unit,'(a)',advance='no',iostat=ios) ',deformation,deformation_rate'
+          if (ios==0.and.khrt_enabled) write(parcel_unit,'(a)',advance='no',iostat=ios) ',rt_time'
           if (ios==0) then
             if (split_enabled) then
               write(parcel_unit,'(a)',iostat=ios) ',parent_id'
@@ -512,6 +527,8 @@ contains
         if (ios==0) then
           if (breakup_enabled) then
             write(parcel_unit,'(2(a,es26.17e3))',advance='no',iostat=ios) ',',parcels(p)%deformation,',',parcels(p)%deformation_rate
+            if (ios==0.and.khrt_enabled) &
+              write(parcel_unit,'(a,es26.17e3)',advance='no',iostat=ios) ',',parcels(p)%rt_time
             if (ios==0) then
               if (split_enabled) then
                 write(parcel_unit,'(a,i0)',iostat=ios) ',',parcels(p)%parent_id

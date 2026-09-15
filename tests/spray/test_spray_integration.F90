@@ -106,6 +106,15 @@ program test_spray_integration
     call require(all(state==before) .and. all(temperature==before_t),'restart exact state')
     call require(all(totals0==totals1) .and. size(drops)==2 .and. steps==3,'restart metadata')
     open(newunit=i,file='roundtrip.chk',status='old'); close(i,status='delete')
+    drops%rt_time=3.125e-6_dp
+    call write_spray_checkpoint('khrt-roundtrip.chk','khrt-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,breakup_state=.true.,khrt_state=.true.)
+    call require(ok,trim(message))
+    drops%rt_time=-1
+    call read_spray_checkpoint('khrt-roundtrip.chk','khrt-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,breakup_state=.true.,khrt_state=.true.)
+    call require(ok.and.all(drops%rt_time==3.125e-6_dp),'nonzero RT timer roundtrip')
+    open(newunit=i,file='khrt-roundtrip.chk',status='old'); close(i,status='delete')
   case default
     error stop 'unknown integration test'
   end select

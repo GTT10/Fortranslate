@@ -14,7 +14,7 @@ program test_spray_core
   use spray_coupling_3d_mod
   use les_smagorinsky_3d_mod
   implicit none
-  real(dp) :: value,td,omega,wer,initial_mass
+  real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -67,6 +67,34 @@ program test_spray_core
     call require(.not.ok.and.size(drops)==size(saved_drops).and.all(drops%id==saved_drops%id), &
       'storage failure preserves IDs and allocation')
     call require(all(drops%multiplicity==saved_drops%multiplicity),'storage failure preserves weights')
+  case('khrt')
+    options%breakup_model='khrt';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    call make_drops();p=drops(1);p%velocity=0;q=p
+    dt=1e-7_dp;d=.5_dp*parcel_diameter(p,liquid)
+    call advance_khrt_breakup(p,liquid,options,10.0_dp,[0.0_dp,0.0_dp,0.0_dp],0.0_dp,dt,ok)
+    call require(ok.and.p%mass==q%mass.and.p%rt_time==-1,'zero slip unchanged')
+    value=10*300.0_dp**2*d/options%surface_tension
+    z=options%liquid_viscosity/sqrt(liquid%density*d*options%surface_tension);tkh=z*sqrt(value)
+    wavelength=d*9.02_dp*(1+.45_dp*sqrt(z))*(1+.4_dp*tkh**.7_dp)/(1+.865_dp*value**1.67_dp)**.6_dp
+    omega=(.34_dp+.385_dp*value**1.5_dp)/((1+z)*(1+1.4_dp*tkh**.6_dp))* &
+      sqrt(options%surface_tension/(liquid%density*d**3))
+    tau=3.726_dp*options%khrt_b1*d/(wavelength*omega)
+    expected=((dt/tau*options%khrt_b0*wavelength+d)/(1+dt/tau)/d)**3
+    call advance_khrt_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt,ok)
+    call require(ok.and.p%rt_time==0,'KH enables RT timer')
+    call near(p%mass/q%mass,expected,1e-13_dp,'KH analytical mass')
+    call near(p%mass*p%multiplicity,q%mass*q%multiplicity,1e-14_dp,'KH inventory')
+    p=q;p%rt_time=1e-3_dp;options%khrt_c3=.1_dp
+    acceleration=.375_dp*.424_dp*10*300.0_dp**2/(liquid%density*d)
+    wavelength=options%khrt_c3*pi/sqrt(acceleration*(liquid%density-10)/(3*options%surface_tension))
+    call require(wavelength<d,'RT unstable wavelength')
+    call advance_khrt_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt,ok)
+    call require(ok.and.p%rt_time==0,'RT event resets timer')
+    call near(p%mass/q%mass,(wavelength/d)**3,1e-13_dp,'RT analytical mass')
+    call near(p%mass*p%multiplicity,q%mass*q%multiplicity,1e-14_dp,'RT inventory')
+    q=p;options%khrt_b1=-1
+    call advance_khrt_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],2000.0_dp,dt,ok)
+    call require(.not.ok.and.p%mass==q%mass.and.p%rt_time==q%rt_time,'invalid KH coefficient rollback')
   case('etab')
     options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
     call make_drops(); p=drops(1); p%velocity=0; p%deformation=.1_dp;p%deformation_rate=100

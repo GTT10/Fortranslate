@@ -1,4 +1,4 @@
-! ETAB size/deformation equations adapted from PelePhysics TABBreakup.H,
+! Breakup equations adapted from PelePhysics TABBreakup.H and ReitzKHRT.H,
 ! revision 6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b.
 ! Copyright and redistribution terms: references/pelephysics-spray-license.txt.
 module spray_breakup_mod
@@ -8,8 +8,104 @@ module spray_breakup_mod
   use spray_parcel_mod
   implicit none
   private
-  public :: advance_etab_breakup, split_spray_parcels
+  public :: advance_etab_breakup, advance_khrt_breakup, advance_spray_breakup, split_spray_parcels
 contains
+  subroutine advance_spray_breakup(parcel,liquid,options,gas_density,gas_velocity,film_density,gas_viscosity,dt,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_options), intent(in) :: options
+    real(dp), intent(in) :: gas_density,gas_velocity(3),film_density,gas_viscosity,dt
+    logical, intent(out) :: ok
+    real(dp) :: reynolds
+    if (trim(options%breakup_model)=='khrt') then
+      ok=.false.
+      if (.not.all(ieee_is_finite([film_density,gas_viscosity]))) return
+      if (film_density<=0.or.film_density>1e8_dp.or.gas_viscosity<1e-12_dp.or.gas_viscosity>1e3_dp) return
+      if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid)) return
+      if (.not.all(ieee_is_finite(gas_velocity))) return
+      if (maxval(abs(gas_velocity))>1e7_dp) return
+      reynolds=film_density*sqrt(sum((gas_velocity-parcel%velocity)**2))*parcel_diameter(parcel,liquid)/gas_viscosity
+      call advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds,dt,ok)
+    else
+      call advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
+    end if
+  end subroutine
+
+  ! ReitzKHRT.H representative-drop branch (make_new_drops=false).
+  subroutine advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_options), intent(in) :: options
+    real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt
+    logical, intent(out) :: ok
+    type(spray_parcel) :: candidate
+    real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total
+    logical :: rt_breakup
+    real(dp), parameter :: pi=acos(-1.0_dp)
+    ok=.false.
+    if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid).or..not.valid_spray_options(options)) return
+    if (trim(options%breakup_model)/='khrt') return
+    if (.not.all(ieee_is_finite([gas_density,gas_velocity,reynolds_number,dt]))) return
+    if (gas_density<=0.or.gas_density>1e8_dp.or.reynolds_number<0.or.reynolds_number>1e30_dp) return
+    if (maxval(abs(gas_velocity))>1e7_dp.or.dt<0.or.dt>1e6_dp) return
+    if (parcel%mass<=0.or.dt==0) then
+      ok=.true.;return
+    end if
+    candidate=parcel;radius=.5_dp*parcel_diameter(parcel,liquid);child=radius
+    if (radius<=.5_dp*options%minimum_diameter) then
+      ok=.true.;return
+    end if
+    speed=sqrt(sum((gas_velocity-parcel%velocity)**2));total=parcel%mass*parcel%multiplicity
+    re=reynolds_number
+    cd=0
+    if (re>1000) then
+      cd=.424_dp
+    else if (re>1) then
+      cd=24/re*(1+re**(2.0_dp/3.0_dp)/6)
+    else if (re>0) then
+      cd=24/re
+    end if
+    we=gas_density*speed**2*radius/options%surface_tension
+    z=options%liquid_viscosity/sqrt(liquid%density*radius*options%surface_tension)
+    t=z*sqrt(we);rt_breakup=.false.
+    if (candidate%rt_time>=0) then
+      acceleration=.375_dp*cd*gas_density*speed**2/(liquid%density*radius)
+      momdiff=acceleration*(liquid%density-gas_density)
+      if (momdiff>0) then
+        omega=sqrt(2/(3*sqrt(3*options%surface_tension))*momdiff*sqrt(momdiff)/(liquid%density+gas_density))
+        lambda=options%khrt_c3*pi/sqrt(momdiff/(3*options%surface_tension))
+        if (radius<lambda) then
+          candidate%rt_time=0
+        else
+          candidate%rt_time=candidate%rt_time+dt
+        end if
+        if (candidate%rt_time>1/omega.and.lambda<radius) then
+          child=lambda;candidate%rt_time=0;rt_breakup=.true.
+        end if
+      else
+        candidate%rt_time=0
+      end if
+    end if
+    if (.not.rt_breakup) then
+      lambda=radius*9.02_dp*(1+.45_dp*sqrt(z))*(1+.4_dp*t**.7_dp)/(1+.865_dp*we**1.67_dp)**.6_dp
+      omega=(.34_dp+.385_dp*we*sqrt(we))/((1+z)*(1+1.4_dp*t**.6_dp))* &
+        sqrt(options%surface_tension/(liquid%density*radius**3))
+      tau=3.726_dp*options%khrt_b1*radius/(lambda*omega)
+      if (options%khrt_b0*lambda<radius.and.we>6) then
+        rate=dt/tau
+        child=(rate*options%khrt_b0*lambda+radius)/(1+rate)
+        candidate%rt_time=0
+      end if
+    end if
+    child=max(.5_dp*options%minimum_diameter,child)
+    if (child<radius) then
+      candidate%mass=parcel%mass*(child/radius)**3
+      candidate%multiplicity=total/candidate%mass
+    end if
+    if (.not.valid_spray_parcel(candidate)) return
+    parcel=candidate;ok=.true.
+  end subroutine
+
   subroutine split_spray_parcels(parcels,maximum_multiplicity,maximum_parcels,ok)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: maximum_multiplicity
@@ -76,6 +172,7 @@ contains
     if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid).or..not.valid_spray_options(options)) return
     if (.not.all(ieee_is_finite([gas_density,gas_velocity,dt]))) return
     if (gas_density<=0.or.gas_density>1e8_dp.or.maxval(abs(gas_velocity))>1e7_dp.or.dt<0.or.dt>1e6_dp) return
+    if (trim(options%breakup_model)=='khrt') return
     if (trim(options%breakup_model)=='none'.or.parcel%mass<=0.or.dt==0) then
       ok=.true.; return
     end if

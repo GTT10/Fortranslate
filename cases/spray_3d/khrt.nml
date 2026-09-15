@@ -1,0 +1,18 @@
+! KH-RT representative-drop breakup, constant illustrative water properties; SI units.
+&spray
+ khrt_b0=.61,khrt_b1=7,khrt_c3=1,
+ breakup_model="khrt",surface_tension=.072,liquid_viscosity=.001,
+ drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,transport_enabled=.false.,
+ cells=4,4,4, domain_length=.004,.004,.004,
+ gas_temperature=900, gas_pressure=10000000,
+ mole_names='N2','','', mole_amounts=1,0,0,
+ chemistry_enabled=.false.,
+ vapor_name='H2O', liquid_density=1000, liquid_cp=4184,
+ reference_temperature=373.15, reference_pressure=101325, latent_heat=2257000,
+ drop_temperature=330, drop_diameter=20e-6,
+ initial_liquid_mass=1e-10, parcel_count=4,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1,
+ injection_speed=500, cone_angle=0,
+ final_time=2e-6, maximum_dt=1e-7,
+ output_prefix='khrt'
+/

@@ -6,6 +6,17 @@ if(PELEF_ENABLE_SPRAY)
   add_test(NAME spray_split_restart COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_spray_etab.py"
     --split --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_split_restart")
   set_tests_properties(spray_split_restart PROPERTIES LABELS "spray" TIMEOUT 900)
+  foreach(khrt_variant plain split)
+    set(khrt_args)
+    if(khrt_variant STREQUAL "split")
+      set(khrt_args --split)
+    endif()
+    add_test(NAME spray_khrt_${khrt_variant}_restart COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/check_spray_etab.py" --model khrt ${khrt_args}
+      --executable "$<TARGET_FILE:pelef_spray_3d>"
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_khrt_${khrt_variant}_restart")
+    set_tests_properties(spray_khrt_${khrt_variant}_restart PROPERTIES LABELS "spray" TIMEOUT 900)
+  endforeach()
   add_test(NAME spray_etab_restart COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_spray_etab.py"
     --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_etab_restart")
   set_tests_properties(spray_etab_restart PROPERTIES LABELS "spray" TIMEOUT 900)
@@ -22,7 +33,7 @@ if(PELEF_ENABLE_SPRAY)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test_spray_core PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
-  foreach(spray_case split etab boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
+  foreach(spray_case split khrt etab boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
       les_boundary les_algebra les_grid les_zero les_reject)
     add_test(NAME spray_${spray_case} COMMAND test_spray_core ${spray_case})
     set_tests_properties(spray_${spray_case} PROPERTIES LABELS "spray" TIMEOUT 60)

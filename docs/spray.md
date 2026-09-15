@@ -243,21 +243,46 @@ breakup retain V1/V2. The damped oscillator advances only the remaining interval
 at each internal step; zero-slip and overdamped states avoid singular formulas.
 
 The representative-size/deformation update can also partition computational
-parcels as described below. Stochastic transverse child velocities, primary atomization, KH-RT,
+parcels as described below. Stochastic transverse child velocities, primary atomization,
 collision/coalescence and experimental breakup qualification remain open. Source hashes,
 license and deliberate scope differences are recorded in
 [the reference manifest](../references/spray_etab.json) and
 [focused evidence](validation/etab-20260915.md).
 
 
+## KH-RT representative-drop breakup
+
+Set `breakup_model='khrt'` with positive `surface_tension` and
+`liquid_viscosity`. `khrt.nml` uses the pinned PelePhysics defaults
+`khrt_b0=.61`, `khrt_b1=7`, `khrt_c3=1`. KH waves relax the representative
+radius; RT instability uses a persistent waiting time, initialized to -1
+and enabled by the first KH event. The Reynolds number uses film density and
+viscosity; the wave equations use bulk gas density and relative velocity.
+Mass reduction increases multiplicity at fixed represented mass, velocity and
+temperature. The minimum diameter and transactional failure rules still apply.
+
+This implements the upstream `make_new_drops=false` branch. Shed-mass children
+of a distinct radius, transverse velocity dispersion and primary atomization
+remain open. Computational splitting below partitions identical representative
+droplets. Liquid properties are prescribed constants; surface energy is omitted.
+Zero RT acceleration resets an active timer to avoid singular expressions.
+Exact upstream timestep parity and physical validation have not been established.
+
+Parcel CSVs include `rt_time`. KH-RT checkpoints use V7/V8 (periodic/physical)
+or V9/V10 with computational splitting, retaining the RT timer and binding all
+three coefficients into the restart context. Existing V1--V6 formats are unchanged.
+See [source provenance](../references/spray_khrt.json) and
+[focused evidence](validation/khrt-20260915.md).
+
+
 ### Computational parcel splitting
 
-For ETAB runs, set `maximum_multiplicity` to a positive upper bound on represented
+For ETAB or KH-RT runs, set `maximum_multiplicity` to a positive upper bound on represented
 droplets per computational parcel. Zero (the default) disables this partition.
 `maximum_parcels` bounds allocated particle storage, up to 1,000,000.
 After a coupling interval, overweight live parcels are partitioned into equal
 weights, with the final child carrying the rounding remainder. Droplet mass,
-position, velocity, temperature and deformation are copied; aggregate mass,
+position, velocity, temperature, deformation and RT timer are copied; aggregate mass,
 momentum and energy are conserved. This increases computational parcel count
 without introducing a transverse velocity or dispersion model.
 
@@ -268,7 +293,7 @@ links and counts roots against injection events, independently of child count.
 The complete split plan is checked against storage and ID limits before arrays
 are replaced; failure rolls back the coupled gas/particle update.
 
-Splitting-enabled checkpoints use V5/V6, storing exact integer parent IDs in
+ETAB splitting-enabled checkpoints use V5/V6, storing exact integer parent IDs in
 addition to the ETAB and optional boundary state. The multiplicity/storage
 limits are included in the context; parcel CSVs gain `parent_id`. For example,
 add `maximum_multiplicity=1e7, maximum_parcels=1000` to `etab.nml`.

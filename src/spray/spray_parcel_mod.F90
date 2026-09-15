@@ -22,8 +22,10 @@ module spray_parcel_mod
     real(dp) :: mass = 0.0_dp, temperature = 0.0_dp, multiplicity = 0.0_dp
     real(dp) :: deformation=0.0_dp,deformation_rate=0.0_dp
     integer(int64) :: parent_id=0_int64
+    real(dp) :: rt_time=-1.0_dp
   end type
   type, public :: spray_options
+    real(dp) :: khrt_b0=.61_dp,khrt_b1=7.0_dp,khrt_c3=1.0_dp
     real(dp) :: maximum_multiplicity=0.0_dp
     integer :: maximum_parcels=1000000
     character(len=8) :: breakup_model='none'
@@ -93,7 +95,8 @@ contains
     type(spray_parcel), intent(in) :: p
     ok = .false.
     if (.not. all(ieee_is_finite([p%position, p%velocity, p%mass, p%temperature, &
-        p%multiplicity,p%deformation,p%deformation_rate]))) return
+        p%multiplicity,p%deformation,p%deformation_rate,p%rt_time]))) return
+    if (p%rt_time < -1.0_dp.or.p%rt_time>1e6_dp) return
     if (p%parent_id<0_int64.or.p%parent_id>=p%id) return
     if (abs(p%deformation)>1e6_dp.or.abs(p%deformation_rate)>1e20_dp) return
     ok = p%id > 0_int64 .and. p%mass >= 0.0_dp .and. p%mass <= 1.0_dp .and. &
@@ -113,13 +116,17 @@ contains
     if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
     select case(trim(o%breakup_model))
     case('none')
-    case('etab')
+    case('etab','khrt')
       if (.not.all(ieee_is_finite([o%surface_tension,o%liquid_viscosity]))) return
       if (o%surface_tension<1e-8_dp.or.o%surface_tension>1e3_dp) return
       if (o%liquid_viscosity<1e-10_dp.or.o%liquid_viscosity>1e3_dp) return
     case default
       return
     end select
+    if (trim(o%breakup_model)=='khrt') then
+      if (.not.all(ieee_is_finite([o%khrt_b0,o%khrt_b1,o%khrt_c3]))) return
+      if (min(o%khrt_b0,o%khrt_b1,o%khrt_c3)<1e-6_dp.or.max(o%khrt_b0,o%khrt_b1,o%khrt_c3)>1e3_dp) return
+    end if
     ok = o%max_fractional_change > 0.0_dp .and. o%max_fractional_change <= 0.25_dp .and. &
       o%particle_cfl > 0.0_dp .and. o%particle_cfl <= 0.5_dp .and. &
       o%minimum_diameter >= 1.0e-12_dp .and. o%minimum_diameter <= 1.0_dp .and. o%maximum_substeps > 0
