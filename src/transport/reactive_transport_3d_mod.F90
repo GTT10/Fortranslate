@@ -1824,7 +1824,7 @@ contains
     dims=n+4; nv=size(u,1)
     allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
     allocate(gx,mold=ghost); allocate(gy,mold=ghost); allocate(gz,mold=ghost)
-    call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok)
+    call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall=.true.)
     if (.not.ok) return
     call reactive_transport_fluxes_3d(species,transport,ghost,gt,dims(1),dims(2),dims(3), &
       spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok)

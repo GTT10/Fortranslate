@@ -81,14 +81,18 @@ module simulation_config_reactive_3d_mod
 
 contains
 
-  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok)
+  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
+    logical, intent(in), optional :: viscous_wall
+    logical :: use_viscous_wall
     integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face
     logical :: reflect(3)
     ok=.false.; ghost=0.0_dp; gt=0.0_dp
+    use_viscous_wall=.false.
+    if (present(viscous_wall)) use_viscous_wall=viscous_wall
     n=shape(t); dims=n+4
     if (any(n<2) .or. size(u,1)<5) return
     if (any(shape(u)/=[size(u,1),n]) .or. any(shape(ghost)/=[size(u,1),dims])) return
@@ -106,10 +110,16 @@ contains
                 q(a)=modulo(idx(a)-1,n(a))+1
               case('outflow')
                 q(a)=max(1,min(n(a),idx(a)))
-              case('slip_wall')
+              case('slip_wall','no_slip_wall')
                 q(a)=1-idx(a)
                 if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
-                reflect(a)=.true.
+                ! Only diffusive fluxes impose tangential no-slip. Euler fluxes
+                ! keep mirror-normal states to avoid numerical wall shear.
+                if (faces(face)=='no_slip_wall'.and.use_viscous_wall) then
+                  reflect=.not.reflect
+                else
+                  reflect(a)=.not.reflect(a)
+                end if
               end select
             end do
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
@@ -138,7 +148,7 @@ contains
     ok = .false.
     do f = 1, 6
       select case(trim(faces(f)))
-      case("periodic", "outflow", "slip_wall")
+      case("periodic", "outflow", "slip_wall", "no_slip_wall")
       case default
         return
       end select
@@ -435,7 +445,7 @@ contains
              trim(config%riemann_solver) /= "pelec") then
       message = "Reactive 3D Riemann solver must be rusanov, hllc, or pelec"
     else if (.not. valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(config))) then
-      message = "Reactive 3D faces require paired periodic, outflow, or slip_wall boundaries"
+      message = "Reactive 3D faces require paired periodic, outflow, slip_wall, or no_slip_wall boundaries"
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else

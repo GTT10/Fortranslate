@@ -35,10 +35,11 @@ program test_reactive_boundaries_3d
     if (r==2) reconstruction='characteristic_plm'
     do s=1,3
       solver=solvers(s)
-      do b=1,3
+      do b=1,4
         faces='outflow'
         if (b==2) faces='slip_wall'
         if (b==3) faces(3:6)='periodic'
+        if (b==4) faces='no_slip_wall'
         do k=1,4
           do j=1,4
             do i=1,4
@@ -60,7 +61,7 @@ program test_reactive_boundaries_3d
         call require(ok,'final integrals')
         call require(maxval(abs(total1-total0-change)/max(1.0_dp,abs(total0)))<2e-12_dp,'surface budget')
         call require(any(u/=before),'nontrivial evolution')
-        if (b==2) then
+        if (b==2.or.b==4) then
           call require(maxval(abs(change([1,5,6,7,8,9,10,11,12])))<1e-10_dp,'impermeable adiabatic walls')
           call require(maxval(abs(change(2:4)))>1e-5_dp,'wall pressure changes momentum')
         end if

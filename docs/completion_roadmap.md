@@ -52,9 +52,9 @@ These are dependencies, not permission to bundle several physical models into
 one PR. Existing regular 3D and static two-level AMR foundations must not be
 reimplemented. Their restrictions remain explicit in current status.
 
-Regular 3D hydro/chemistry/molecular transport now accepts per-face outflow and slip-wall conditions
+Regular 3D hydro/chemistry/molecular transport now accepts per-face outflow, slip-wall and stationary adiabatic no-slip conditions
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
-Prescribed inflow/no-slip, AMR/EB and particle boundary coupling
+Prescribed inflow/moving/isothermal walls, AMR/EB and particle boundary coupling
 remain part of the completion work.
 
 ## Contract for every increment

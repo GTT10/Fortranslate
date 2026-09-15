@@ -11,7 +11,7 @@ Older milestone prose remains historical detail, not a current global status.
 
 | Area | Implemented subset | Still open |
 | --- | --- | --- |
-| Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, outflow and slip-wall boundaries | Prescribed inflow/no-slip, general 3D boundary/coupling qualification |
+| Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, outflow, slip-wall and stationary adiabatic no-slip boundaries | Prescribed inflow/moving/isothermal walls, general 3D boundary/coupling qualification |
 | 3D AMR | Static, strictly interior, periodic, ratio-two two-level hierarchy; fixed/selected chemistry/transport; sparse MPI; transport-aware restart | Dynamic topology, multiple general patches/levels, physical coarse boundaries |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol fixture | 2--32 species; production diesel-fuel mechanisms and sparse/performance qualification |

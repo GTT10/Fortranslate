@@ -11,6 +11,10 @@ z-low, z-high**. Empty entries inherit `boundary_condition` (default
 - `slip_wall`: mirror the normal momentum and extrapolate thermodynamic and
   tangential states by reflection. The inviscid wall is impermeable and
   adiabatic; it exerts pressure forces on the gas.
+- `no_slip_wall`: stationary, impermeable, adiabatic wall. The transport
+  operator reflects all three velocity components, imposing zero face velocity
+  while allowing viscous wall shear. The Euler operator reflects only normal
+  momentum so its numerical dissipation does not add artificial wall friction.
 - `periodic`: wrap cell states from the opposite side.
 
 PCM and characteristic PLM use the existing Rusanov, HLLC or PeleC Riemann
@@ -21,7 +25,7 @@ energy, then species densities, integrated over space and time. The
 application subtracts these exchanges before checking conservation. Closed
 wall domains conserve mass and total energy, but the wall can change gas
 momentum. Chemistry and molecular transport are included in the existing transactional
-split step. The same boundary ghosts feed viscous stresses, heat conduction,
+split step. A shared ghost-fill routine supplies viscous stresses, heat conduction,
 species diffusion and barodiffusion. Surface budgets include the two RK stages
 of both transport half-steps. Species donor limiting and enthalpy correction
 use the existing conservative transport operator.
@@ -45,7 +49,11 @@ traction; its normal viscous traction can change momentum. Outflow extrapolates
 zero normal state gradients, while tangential derivatives still contribute to
 stress and its energy flux.
 
-Prescribed inflow, no-slip/isothermal walls,
+`no_slip.nml` advances initially uniform tangential flow between stationary
+y walls with periodic x/z faces. Viscosity transfers momentum to the walls
+and converts kinetic energy to internal energy; total gas energy is conserved.
+
+Prescribed inflow, moving/isothermal walls,
 characteristic boundaries, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.
