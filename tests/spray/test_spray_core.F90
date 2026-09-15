@@ -48,6 +48,32 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('heat_capacity')
+    liquid%heat_capacity_model='polynomial'
+    liquid%heat_capacity_coefficients=[4000.0_dp,4.0_dp,0.0_dp,0.0_dp]
+    liquid%heat_capacity_temperature_range=[300.0_dp,600.0_dp]
+    call require(valid_spray_liquid(liquid),'valid cp fit')
+    call require(liquid_heat_capacity_at_temperature(liquid,350.0_dp)==5400,'cp evaluation')
+    expected=4000*(350.0_dp-373.15_dp)+2*(350.0_dp**2-373.15_dp**2)
+    call require(abs(liquid_energy(liquid,350.0_dp)-liquid%reference_energy-expected)<1e-8_dp,'integrated cp energy')
+    expected=(liquid_energy(liquid,350.001_dp)-liquid_energy(liquid,349.999_dp))/.002_dp
+    call require(abs(expected-5400)<1e-5_dp,'energy derivative equals cp')
+    options%drag=.false.;options%evaporation=.false.
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok,'cp heat rate')
+    dt=1e-5_dp
+    expected=film%gas_temperature+(p%temperature-film%gas_temperature)*exp(-heat*dt/(p%mass*5400))
+    call advance_parcel_frozen_film(p,liquid,film,options,dt,q,transfer,ok)
+    call require(ok.and.abs(q%temperature-expected)<1e-12_dp,'local cp heating update')
+    call require(abs(transfer(5)+p%mass*p%multiplicity* &
+      (liquid_energy(liquid,q%temperature)-liquid_energy(liquid,p%temperature)))<1e-12_dp,'integrated energy transfer')
+    constant_liquid=liquid
+    liquid%heat_capacity_coefficients=[202499.0_dp,-900.0_dp,1.0_dp,0.0_dp]
+    call require(.not.valid_spray_liquid(liquid),'reject negative interior cp extremum')
+    liquid=constant_liquid
+    call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,p%position,[0.0_dp,0.0_dp,1.0_dp], &
+      1.0_dp,0.0_dp,1e-5_dp,290.0_dp,drops,ok)
+    call require(.not.ok,'reject injection outside cp interval')
   case('port_states')
     port_centers(:,1)=[.001_dp,.001_dp,.001_dp];port_centers(:,2)=[.002_dp,.001_dp,.001_dp]
     port_axes(:,1)=[1.0_dp,0.0_dp,0.0_dp];port_axes(:,2)=[-1.0_dp,0.0_dp,0.0_dp]

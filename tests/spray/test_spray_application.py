@@ -57,6 +57,30 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_heat_capacity_models_restart(self):
+        cases = ["liquid_cp_model='polynomial',liquid_cp_coefficients=4000,4,0,0,liquid_cp_temperature_range=300,600,",
+                 "injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                 "injection_port_axes=1,0,0,1,0,0,injection_port_fractions=.5,.5,"
+                 "port_cp_models='polynomial','constant',port_cp_coefficients(:,1)=4000,4,0,0,"
+                 "port_cp_temperature_ranges(:,1)=300,600,"]
+        for index, settings in enumerate(cases):
+            name = f'cp{index}'
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('4000,4', '4100,4'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('cp_bad_range', common=cases[0].replace('300,600', '350,600'), fail=True)
+        self.run_case('cp_bad_shape', common=cases[0].replace('4000,4,0,0', '202499,-900,1,0'), fail=True)
+        self.run_case('cp_unused', common='port_cp_coefficients(1,1)=4000,', fail=True)
+
     def test_port_breakup_properties_restart(self):
         common = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                   "injection_port_axes=1,0,0,1,0,0,injection_port_fractions=.5,.5,"

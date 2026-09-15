@@ -22,6 +22,8 @@ module spray_parcel_mod
     real(dp) :: density_coefficients(4)=0.0_dp, density_temperature_range(2)=0.0_dp
     character(len=16) :: boiling_model='reject'
     real(dp) :: critical_temperature=0.0_dp
+    character(len=16) :: heat_capacity_model='constant'
+    real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
   end type
   type, public :: spray_parcel
     integer(int64) :: id = 0_int64
@@ -56,6 +58,7 @@ module spray_parcel_mod
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
+  public :: liquid_heat_capacity_at_temperature
   public :: select_spray_liquid
   public :: inject_cone_ports
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
@@ -97,6 +100,8 @@ contains
 
   pure logical function valid_spray_liquid(l) result(ok)
     type(spray_liquid), intent(in) :: l
+    real(dp) :: a,b,c,disc,t,roots(2)
+    integer :: i
     ok = .false.
     if (.not. all(ieee_is_finite([l%density, l%heat_capacity, l%reference_temperature, &
         l%reference_pressure, l%latent_heat, l%reference_energy]))) return
@@ -134,6 +139,42 @@ contains
       if (maxval(abs(l%density_coefficients))>1e10_dp) return
       if (l%density_temperature_range(1)<1.or.l%density_temperature_range(2)>1e5_dp) return
       if (l%density_temperature_range(2)<=l%density_temperature_range(1)) return
+    case default
+      return
+    end select
+    if (.not.all(ieee_is_finite(l%heat_capacity_coefficients)).or. &
+        .not.all(ieee_is_finite(l%heat_capacity_temperature_range))) return
+    select case(trim(l%heat_capacity_model))
+    case('constant')
+      if (any(l%heat_capacity_coefficients/=0).or.any(l%heat_capacity_temperature_range/=0)) return
+    case('polynomial')
+      if (maxval(abs(l%heat_capacity_coefficients))>1e10_dp) return
+      if (l%heat_capacity_temperature_range(1)<1.or.l%heat_capacity_temperature_range(2)>1e5_dp) return
+      if (l%heat_capacity_temperature_range(2)<=l%heat_capacity_temperature_range(1)) return
+      if (l%reference_temperature<l%heat_capacity_temperature_range(1).or. &
+          l%reference_temperature>l%heat_capacity_temperature_range(2)) return
+      do i=1,2
+        if (liquid_heat_capacity_at_temperature(l,l%heat_capacity_temperature_range(i))<=0) return
+      end do
+      ! Check interior extrema as well as endpoints so the integrated energy is monotone.
+      a=3*l%heat_capacity_coefficients(4);b=2*l%heat_capacity_coefficients(3);c=l%heat_capacity_coefficients(2)
+      roots=l%heat_capacity_temperature_range(1)
+      if (a/=0) then
+        disc=b*b-4*a*c
+        if (disc>=0) then
+          t=-0.5_dp*(b+sign(sqrt(disc),b))
+          if (abs(t)<=abs(a)*1e5_dp) roots(1)=t/a
+          if (t/=0) then
+            if (abs(c)<=abs(t)*1e5_dp) roots(2)=c/t
+          end if
+        end if
+      else if (b/=0) then
+        if (abs(c)<=abs(b)*1e5_dp) roots(1)=-c/b
+      end if
+      do i=1,2
+        if (roots(i)<l%heat_capacity_temperature_range(1).or.roots(i)>l%heat_capacity_temperature_range(2)) cycle
+        if (liquid_heat_capacity_at_temperature(l,roots(i))<=0) return
+      end do
     case default
       return
     end select
@@ -267,10 +308,39 @@ contains
     if (p%mass > 0.0_dp) d = (6.0_dp*p%mass/(pi*rho))**(1.0_dp/3.0_dp)
   end function
 
+  pure real(dp) function liquid_heat_capacity_at_temperature(l,temperature) result(cp)
+    type(spray_liquid), intent(in) :: l
+    real(dp), intent(in) :: temperature
+    cp=0
+    if (.not.ieee_is_finite(temperature)) return
+    if (temperature<1.or.temperature>1e5_dp) return
+    select case(trim(l%heat_capacity_model))
+    case('constant')
+      cp=l%heat_capacity
+    case('polynomial')
+      if (temperature<l%heat_capacity_temperature_range(1).or.temperature>l%heat_capacity_temperature_range(2)) return
+      cp=l%heat_capacity_coefficients(1)+temperature*(l%heat_capacity_coefficients(2)+ &
+        temperature*(l%heat_capacity_coefficients(3)+temperature*l%heat_capacity_coefficients(4)))
+    end select
+    if (.not.ieee_is_finite(cp)) then
+      cp=0
+    else if (cp<1.or.cp>1e8_dp) then
+      cp=0
+    end if
+  end function
+
   pure real(dp) function liquid_energy(l, temperature) result(e)
     type(spray_liquid), intent(in) :: l
     real(dp), intent(in) :: temperature
+    real(dp) :: t,r
     e = l%reference_energy + l%heat_capacity*(temperature-l%reference_temperature)
+    if (l%heat_capacity_model=='polynomial') then
+      t=temperature;r=l%reference_temperature
+      e=l%reference_energy+(t-r)*(l%heat_capacity_coefficients(1)+ &
+        l%heat_capacity_coefficients(2)*(t+r)/2+ &
+        l%heat_capacity_coefficients(3)*(t*t+t*r+r*r)/3+ &
+        l%heat_capacity_coefficients(4)*(t+r)*(t*t+r*r)/4)
+    end if
   end function
 
   pure function parcel_totals(p, l) result(totals)
@@ -353,6 +423,7 @@ contains
     if (p%mass == 0.0_dp) then
       ok=.true.; return
     end if
+    if (liquid_heat_capacity_at_temperature(l,p%temperature)<=0) return
     rho=liquid_density_at_temperature(l,p%temperature)
     if (rho<=0) return
     d=parcel_diameter(p,l)
@@ -409,7 +480,7 @@ contains
     real(dp), intent(out) :: transfer(5)
     logical, intent(out) :: ok
     real(dp) :: rho
-    real(dp) :: invtau, heat, masscoef, d, d2, dm, mbar, decay, latent, rate, equilibrium
+    real(dp) :: invtau, heat, masscoef, d, d2, dm, mbar, decay, latent, rate, equilibrium,liquid_cp
     q=p; transfer=0.0_dp; ok=.false.
     if (.not. ieee_is_finite(dt)) return
     if (dt < 0.0_dp .or. dt > 1.0e6_dp) return
@@ -417,6 +488,7 @@ contains
     if (.not. ok) return
     if (dt == 0.0_dp .or. p%mass == 0.0_dp) return
     ok=.false.
+    if (liquid_heat_capacity_at_temperature(l,p%temperature)<=0) return
     rho=liquid_density_at_temperature(l,p%temperature)
     if (rho<=0) return
     d=parcel_diameter(p,l)
@@ -435,20 +507,22 @@ contains
       if (masscoef > 0.0_dp .and. latent <= 0.0_dp) then
         q=p; return
       end if
+      liquid_cp=liquid_heat_capacity_at_temperature(l,p%temperature)
       rate=dm/dt
       if (heat > 0.0_dp) then
         equilibrium=f%gas_temperature-rate*latent/heat
-        decay=exp(-min(700.0_dp,heat*dt/(mbar*l%heat_capacity)))
+        decay=exp(-min(700.0_dp,heat*dt/(mbar*liquid_cp)))
         q%temperature=equilibrium+(p%temperature-equilibrium)*decay
       else
-        q%temperature=p%temperature-dm*latent/(mbar*l%heat_capacity)
+        q%temperature=p%temperature-dm*latent/(mbar*liquid_cp)
       end if
     end if
     if (.not. valid_spray_parcel(q)) then
       q=p; return
     end if
     if (q%mass>0) then
-      if (liquid_density_at_temperature(l,q%temperature)<=0) then
+      if (liquid_density_at_temperature(l,q%temperature)<=0.or. &
+          liquid_heat_capacity_at_temperature(l,q%temperature)<=0) then
         q=p; return
       end if
     end if
@@ -549,6 +623,7 @@ contains
     if (diameter < 1.0e-12_dp .or. diameter > 1.0_dp) return
     if (half_angle < 0.0_dp .or. half_angle > 0.5_dp*pi) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
+    if (liquid_heat_capacity_at_temperature(liquid,temperature)<=0) return
     rho=liquid_density_at_temperature(liquid,temperature)
     if (rho<=0) return
     shape=0.0_dp; dlo=1.0e-12_dp; dhi=1.0_dp

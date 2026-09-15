@@ -76,7 +76,7 @@ species in the selected mechanism. Liquid property numbers in the examples
 are illustrative constants, **not** a fitted methanol/water property database.
 
 The reference energy is `e_l(Tref) = h_v(Tref) - Lref`, using the selected
-mechanism's NASA7 gas enthalpy. Thereafter `e_l(T) = e_l(Tref)+cp_l*(T-Tref)` and
+mechanism's NASA7 gas enthalpy. Thereafter `e_l(T) = e_l(Tref)+integral(cp_l(T), Tref, T)` and
 the latent heat in the droplet energy equation is `h_v(T)-e_l(T)`. The
 incompressible liquid pressure-work correction and surface energy are neglected.
 This choice aligns chemical formation-energy references across phases. The
@@ -506,7 +506,7 @@ and requires the Antoine arrays to be zero. Antoine inputs require finite
 coefficients, positive B/D, ordered positive bounds and T+C>0 throughout the
 interval. Evaluation outside the fit range or at psat>=ambient pressure fails
 transactionally. This does not implement boiling, supercritical evaporation,
-multicomponent liquid properties or temperature-dependent heat capacity.
+multicomponent liquid properties. Temperature-dependent heat capacity is configured separately below.
 
 `cases/spray_3d/water_antoine.nml` supplies the NIST water fit for 273--303 K
 and starts droplets at 290 K. The coefficient source and units are recorded in
@@ -527,8 +527,7 @@ Injection converts specified diameter to mass at the injection temperature.
 Drag, frozen-film evaporation and ETAB/KH-RT use the current droplet density.
 Evaporation freezes density over each substep, while the resulting diameter
 uses the updated temperature. Heating can therefore change volume without
-creating liquid mass. Liquid heat capacity and the existing formation-energy
-reference remain unchanged; liquid p/rho and surface-energy corrections are
+creating liquid mass. The formation-energy reference remains unchanged; liquid p/rho and surface-energy corrections are
 still neglected in this dilute point-particle model.
 
 Coefficients and bounds participate in restart identity. Evaluating outside
@@ -736,3 +735,35 @@ material pool, with one entry per material and the same breakup model as global
 options. Only its breakup fields are used; global options still control transfer,
 substeps and computational splitting. See
 [focused evidence](validation/port-breakup-properties-20260916.md).
+
+
+## Temperature-dependent liquid heat capacity
+
+Use `liquid_cp_model='polynomial'`, `liquid_cp_coefficients=a,b,c,d` and
+`liquid_cp_temperature_range=Tmin,Tmax` for
+`cp(T)=a+b*T+c*T**2+d*T**3` in J/(kg K), with kelvin temperatures. The default
+`constant` uses `liquid_cp` and requires zero coefficient/range arrays.
+The polynomial must remain within [1,1e8] J/(kg K) over its complete interval;
+validation checks endpoints and all interior extrema. Tref must lie inside
+that interval. Coefficients are bounded by 1e10 in absolute value; temperatures
+are within [1,1e5] K. Injection and subsequent live droplets cannot leave the
+fit interval. Out-of-range update candidates retain whole-step rollback.
+
+Liquid energy uses the exact polynomial integral from Tref, anchored to the
+existing gas enthalpy minus reference latent heat. Both the heating/evaporation
+update and its substep estimate use cp at the substep's initial droplet
+temperature. This is a frozen-property time approximation; it does not exactly
+integrate the nonlinear temperature ODE. Discrete gas feedback uses the change
+in integrated liquid energy, preserving all-phase total energy. Clausius
+saturation pressure still uses the prescribed reference latent heat; this
+change does not add a variable-latent-heat saturation model.
+
+For separate port materials use `port_cp_models(16)`,
+`port_cp_coefficients(4,16)` and `port_cp_temperature_ranges(2,16)`. These
+independently default to constant/zero, like other per-port property models;
+constant cp inherits the existing per-port/global scalar cp input. Any nondefault
+port cp field enables material identity. Unused slots retain defaults. All fits
+and intervals enter checkpoint identity; default constant-cp formats remain.
+
+The tests use an illustrative `cp=4000+4*T` fit over 300--600 K, with no claim
+of measured liquid properties. See [focused evidence](validation/liquid-heat-capacity-20260916.md).

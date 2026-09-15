@@ -25,6 +25,10 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    character(len=16) :: liquid_cp_model,port_cp_models(16)
+    real(dp) :: liquid_cp_coefficients(4),liquid_cp_temperature_range(2)
+    real(dp) :: port_cp_coefficients(4,16),port_cp_temperature_ranges(2,16)
+    logical :: port_cp_overrides
     logical :: port_breakup_properties
     real(dp) :: port_surface_tensions(16),port_liquid_viscosities(16)
     character(len=24) :: port_viscosity_models(16)
@@ -111,6 +115,8 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      liquid_cp_model,liquid_cp_coefficients,liquid_cp_temperature_range, &
+      port_cp_models,port_cp_coefficients,port_cp_temperature_ranges, &
       port_surface_tensions,port_liquid_viscosities,port_viscosity_models, &
       port_viscosity_coefficients,port_viscosity_temperature_ranges, &
       port_density_models,port_vapor_pressure_models,port_boiling_models,port_critical_temperatures, &
@@ -126,6 +132,8 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    liquid_cp_model='constant';liquid_cp_coefficients=0;liquid_cp_temperature_range=0
+    port_cp_models='constant';port_cp_coefficients=0;port_cp_temperature_ranges=0
     port_surface_tensions=-1;port_liquid_viscosities=-1;port_viscosity_models=''
     port_viscosity_coefficients=0;port_viscosity_temperature_ranges=0
     port_density_models='constant';port_vapor_pressure_models='clausius';port_boiling_models='reject'
@@ -280,6 +288,8 @@ contains
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
+    liquid%heat_capacity_model=liquid_cp_model;liquid%heat_capacity_coefficients=liquid_cp_coefficients
+    liquid%heat_capacity_temperature_range=liquid_cp_temperature_range
     liquid%boiling_model=boiling_model;liquid%critical_temperature=critical_temperature
     liquid%density_model=liquid_density_model;liquid%density_coefficients=liquid_density_coefficients
     liquid%density_temperature_range=liquid_density_temperature_range
@@ -321,7 +331,14 @@ contains
     port_breakup_properties=any(port_surface_tensions/=-1).or.any(port_liquid_viscosities/=-1).or. &
       any(port_viscosity_models/='').or.any(port_viscosity_coefficients/=0).or.any(port_viscosity_temperature_ranges/=0)
     if (port_breakup_properties.and.breakup_model=='none') call fail('Port breakup properties require breakup')
-    multi_material=port_breakup_properties.or.port_property_models.or.any(port_vapor_names/='').or. &
+    if (.not.all(ieee_is_finite(port_cp_coefficients)).or. &
+        .not.all(ieee_is_finite(port_cp_temperature_ranges))) call fail('Nonfinite port heat capacity')
+    if (any(port_cp_models(injection_port_count+1:)/='constant').or. &
+        any(port_cp_coefficients(:,injection_port_count+1:)/=0).or. &
+        any(port_cp_temperature_ranges(:,injection_port_count+1:)/=0)) call fail('Unused port heat capacity')
+    port_cp_overrides=any(port_cp_models/='constant').or.any(port_cp_coefficients/=0).or.any(port_cp_temperature_ranges/=0)
+    multi_material=port_cp_overrides.or.port_breakup_properties.or.port_property_models.or. &
+      any(port_vapor_names/='').or. &
       any(port_liquid_densities/=-1).or.any(port_liquid_cps/=-1).or. &
       any(port_reference_temperatures/=-1).or.any(port_reference_pressures/=-1).or.any(port_latent_heats/=-1)
     if (multi_material) then
@@ -338,6 +355,9 @@ contains
           port_latent_heats(port),materials(port),ok,port_vapor_pressure_models(port), &
           port_antoine_coefficients(:,port),port_antoine_temperature_ranges(:,port))
         if (.not.ok) call fail('Invalid port liquid/vapor thermodynamics')
+        materials(port)%heat_capacity_model=port_cp_models(port)
+        materials(port)%heat_capacity_coefficients=port_cp_coefficients(:,port)
+        materials(port)%heat_capacity_temperature_range=port_cp_temperature_ranges(:,port)
         materials(port)%density_model=port_density_models(port)
         materials(port)%density_coefficients=port_density_coefficients(:,port)
         materials(port)%density_temperature_range=port_density_temperature_ranges(:,port)
@@ -513,6 +533,17 @@ contains
         context=trim(context)//' '//trim(breakup_options(port)%liquid_viscosity_model)
         call append_reals([breakup_options(port)%surface_tension,breakup_options(port)%liquid_viscosity, &
           breakup_options(port)%liquid_viscosity_coefficients,breakup_options(port)%liquid_viscosity_temperature_range])
+      end do
+    end if
+    if (liquid_cp_model=='polynomial') then
+      context=trim(context)//' liquid-cp-polynomial-v1'
+      call append_reals([liquid_cp_coefficients,liquid_cp_temperature_range])
+    end if
+    if (port_cp_overrides) then
+      context=trim(context)//' port-cp-models-v1'
+      do port=1,injection_port_count
+        context=trim(context)//' '//trim(materials(port)%heat_capacity_model)
+        call append_reals([materials(port)%heat_capacity_coefficients,materials(port)%heat_capacity_temperature_range])
       end do
     end if
     if (port_property_models) then

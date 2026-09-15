@@ -336,7 +336,7 @@ contains
         if (.not. local_ok) return
         d=parcel_diameter(drops(p),material); mdot=masscoef*d
         tdot=(heat*(tg-drops(p)%temperature)-mdot*(film%vapor_enthalpy-liquid_energy(material,drops(p)%temperature))) &
-          /(drops(p)%mass*material%heat_capacity)
+          /(drops(p)%mass*liquid_heat_capacity_at_temperature(material,drops(p)%temperature))
         dt=interval-elapsed
         if (invtau > 0.0_dp) dt=min(dt,options%max_fractional_change/invtau)
         if (mdot > 0.0_dp .and. d > 2.0_dp*options%minimum_diameter) &
