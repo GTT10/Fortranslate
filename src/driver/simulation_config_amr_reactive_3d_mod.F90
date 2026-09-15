@@ -151,9 +151,6 @@ contains
       message='Regrid temperature threshold must be finite'
     else if (config%regrid_temperature_threshold<=0.0_dp) then
       message='Regrid temperature threshold must be positive'
-    else if (config%regrid_interval_steps>0.and. &
-        (config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0)) then
-      message='Dynamic 3D AMR checkpoint/restart is not implemented'
     else if (config%refinement_ratio < 2) then
       message = "3D AMR refinement_ratio must be at least two"
     else if (config%coarse_i_lower <= 1 .or. &

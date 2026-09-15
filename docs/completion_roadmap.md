@@ -58,7 +58,7 @@ Characteristic inflow and moving walls, AMR/EB and particle boundary coupling
 remain part of the completion work.
 
 Serial 3D temperature-tagged patch movement/resizing is implemented with conservative
-remapping and overlap reuse. Dynamic restart/MPI, general patches/levels and
+remapping, overlap reuse and geometry-aware restart. Dynamic MPI, general patches/levels and
 physical/EB boundaries remain open; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
 
 ## Contract for every increment

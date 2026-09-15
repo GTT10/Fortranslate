@@ -841,3 +841,9 @@ add_test(NAME amr_dynamic_hotspot_3d COMMAND pelef_amr_reactive_3d
 set_tests_properties(amr_dynamic_hotspot_3d PROPERTIES
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_dynamic_3d" TIMEOUT 300
   PASS_REGULAR_EXPRESSION "Regrid at step [1-9][0-9]*:")
+
+add_test(NAME amr_dynamic_restart_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_dynamic_amr_3d_restart.py"
+    --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_dynamic_restart_3d")
+set_tests_properties(amr_dynamic_restart_3d PROPERTIES TIMEOUT 600)

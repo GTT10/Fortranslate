@@ -9,10 +9,10 @@ module amr_reactive_3d_checkpoint_mod
     gas_transport_species, compatible_transport_database
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   use amr_hierarchy_3d_mod, only: &
-    amr_patch_3d, restrict_average_3d
+    amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d
   implicit none
   private
 
@@ -22,6 +22,7 @@ module amr_reactive_3d_checkpoint_mod
   integer, parameter :: checkpoint_schema_selected = 3
   integer, parameter :: checkpoint_schema_fixed_transport = 4
   integer, parameter :: checkpoint_schema_selected_transport = 5
+  character(len=*), parameter :: dynamic_operator='DYNAMIC_AMR_3D_TTAG_CONSERVATIVE_PLM_V1_POST_STEP'
   integer, parameter :: bundle_sha256_length = 64
   character(len=*), parameter, public :: &
     amr_reactive_3d_transport_operator = "STATIC_AMR_3D_R_T_H_T_R_V1"
@@ -30,17 +31,142 @@ module amr_reactive_3d_checkpoint_mod
   character(len=*), parameter :: transport_checkpoint_phase = &
     "POST_ACCEPTED_COARSE_STEP"
 
+  public :: read_dynamic_amr_reactive_3d_checkpoint
   public :: write_amr_reactive_3d_checkpoint
   public :: read_amr_reactive_3d_checkpoint
 
 contains
+  function dynamic_signature(config) result(signature)
+    type(amr_reactive_3d_config), intent(in) :: config
+    character(len=512) :: signature
+    write(signature,'(9(i0,1x),es27.18e3)') config%regrid_interval_steps,config%regrid_buffer_cells, &
+      config%coarse_i_lower,config%coarse_i_upper,config%coarse_j_lower,config%coarse_j_upper, &
+      config%coarse_k_lower,config%coarse_k_upper,config%refinement_ratio,config%regrid_temperature_threshold
+  end function
+
+  subroutine dynamic_checkpoint_header(unit,flow,config,patch,count,ok)
+    integer, intent(in) :: unit
+    type(reactive_3d_config), intent(in) :: flow
+    type(amr_reactive_3d_config), intent(in) :: config
+    type(amr_patch_3d), intent(out) :: patch
+    integer, intent(out) :: count
+    logical, intent(out) :: ok
+    character(len=1024) :: line
+    integer :: layout(7),status,i,tokens
+    logical :: in_token
+    ok=.false.; count=0
+    read(unit,'(a)',iostat=status) line
+    if (status/=0) return
+    if (trim(line)/=dynamic_operator) return
+    read(unit,'(a)',iostat=status) line
+    if (status/=0) return
+    if (trim(line)/=trim(dynamic_signature(config))) return
+    read(unit,'(a)',iostat=status) line
+    if (status/=0) return
+    tokens=0; in_token=.false.
+    do i=1,len_trim(line)
+      if (index(' +-0123456789',line(i:i))==0) return
+      if (line(i:i)==' ') then
+        in_token=.false.
+      else if (.not.in_token) then
+        tokens=tokens+1; in_token=.true.
+      end if
+    end do
+    if (tokens/=7) return
+    read(line,*,iostat=status) layout
+    if (status/=0) return
+    if (layout(7)<0.or.layout(7)>flow%maximum_steps) return
+    call initialize_amr_patch_3d(flow%nx,flow%ny,flow%nz,layout(1),layout(2),layout(3),layout(4), &
+      layout(5),layout(6),config%refinement_ratio,patch,ok)
+    if (.not.ok) return
+    ok=patch%is_strictly_interior()
+    if (ok) count=layout(7)
+  end subroutine
+
+  subroutine read_dynamic_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,patch, &
+      coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux, &
+      regrid_count,ok,message,bundle_sha256,chemistry_integrator,base_mole_fractions,reactions, &
+      transport,maximum_transport_diffusivity,minimum_transport_theta)
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_3d_config), intent(in) :: flow_config
+    type(amr_reactive_3d_config), intent(in) :: amr_config
+    type(amr_patch_3d), intent(inout) :: patch
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    real(dp), allocatable, intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
+    real(dp), intent(inout) :: time,initial_integrals(:),maximum_reflux
+    integer, intent(inout) :: steps,regrid_count
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    character(len=*), intent(in), optional :: bundle_sha256,chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    type(elementary_reaction), intent(in), optional :: reactions(:)
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(inout), optional :: maximum_transport_diffusivity,minimum_transport_theta
+    type(amr_patch_3d) :: candidate_patch
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),integrals(:)
+    real(dp) :: candidate_time,candidate_reflux,diffusivity,theta
+    integer :: unit,status,header(3),candidate_steps,count
+    logical :: local_ok
+    character(len=1024) :: magic
+    ok=.false.; message='Invalid dynamic 3D AMR checkpoint header'
+    if (amr_config%regrid_interval_steps<=0) return
+    if (flow_config%transport_enabled) then
+      if (.not.present(transport).or..not.present(maximum_transport_diffusivity).or. &
+          .not.present(minimum_transport_theta)) return
+    end if
+    if (.not.flow_config%transport_enabled) then
+      if (present(transport).or.present(maximum_transport_diffusivity).or.present(minimum_transport_theta)) return
+    end if
+    open(newunit=unit,file=path,status='old',action='read',iostat=status)
+    if (status/=0) return
+    read(unit,'(a)',iostat=status) magic
+    if (status==0) then
+      if (trim(magic)/=checkpoint_magic) status=1
+    end if
+    header=-1
+    if (status==0) read(unit,*,iostat=status) header
+    local_ok=.false.
+    if (status==0) then
+      if (header(1)>=6.and.header(1)<=9.and.header(2)==size(species).and.header(3)==reactive_nvar(size(species))) &
+        call dynamic_checkpoint_header(unit,flow_config,amr_config,candidate_patch,count,local_ok)
+    end if
+    close(unit)
+    if (.not.local_ok) return
+    allocate(c(size(coarse_state,1),size(coarse_state,2),size(coarse_state,3),size(coarse_state,4)))
+    allocate(ct(size(coarse_temperature,1),size(coarse_temperature,2),size(coarse_temperature,3)))
+    allocate(f(size(c,1),candidate_patch%fine_nx(),candidate_patch%fine_ny(),candidate_patch%fine_nz()))
+    allocate(ft(candidate_patch%fine_nx(),candidate_patch%fine_ny(),candidate_patch%fine_nz()))
+    allocate(integrals(size(initial_integrals)))
+    c=0; ct=0; integrals=0
+    f=0; ft=0; candidate_time=0; candidate_steps=0; candidate_reflux=0; diffusivity=0; theta=1
+    if (flow_config%transport_enabled) then
+      call read_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,candidate_patch,c,ct,f,ft, &
+        candidate_time,candidate_steps,integrals,candidate_reflux,local_ok,message,bundle_sha256, &
+        chemistry_integrator,base_mole_fractions,reactions,transport,diffusivity,theta,regrid_count=count)
+    else
+      call read_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,candidate_patch,c,ct,f,ft, &
+        candidate_time,candidate_steps,integrals,candidate_reflux,local_ok,message,bundle_sha256, &
+        chemistry_integrator,base_mole_fractions,reactions,regrid_count=count)
+    end if
+    if (.not.local_ok) return
+    coarse_state=c; coarse_temperature=ct; call move_alloc(f,fine_state); call move_alloc(ft,fine_temperature)
+    patch=candidate_patch; time=candidate_time; steps=candidate_steps; initial_integrals=integrals
+    maximum_reflux=candidate_reflux; regrid_count=count
+    if (flow_config%transport_enabled) then
+      maximum_transport_diffusivity=diffusivity; minimum_transport_theta=theta
+    end if
+    ok=.true.; message=''
+  end subroutine read_dynamic_amr_reactive_3d_checkpoint
+
 
   subroutine write_amr_reactive_3d_checkpoint( &
       path, species, flow_config, amr_config, patch, &
       coarse_state, coarse_temperature, fine_state, fine_temperature, &
       time, steps, initial_integrals, maximum_reflux, ok, message, &
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
-      transport, maximum_transport_diffusivity, minimum_transport_theta)
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count)
+    integer, intent(in), optional :: regrid_count
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_3d_config), intent(in) :: flow_config
@@ -70,8 +196,12 @@ contains
     ok = .false.
     message = ""
     if (amr_config%regrid_interval_steps>0) then
-      message='Dynamic 3D AMR checkpoint context is not implemented'
-      return
+      if (.not.present(regrid_count)) then
+        message='Missing regrid counter'; return
+      end if
+      if (regrid_count<0.or.regrid_count>steps) then
+        message='Invalid regrid counter'; return
+      end if
     end if
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
@@ -131,6 +261,7 @@ contains
         schema = checkpoint_schema_fixed
       end if
     end if
+    if (amr_config%regrid_interval_steps>0) schema=schema+4
     if (.not. valid_checkpoint_shapes( &
         species, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature)) then
@@ -206,6 +337,15 @@ contains
     write(unit, '(*(i0,1x))', iostat=status) &
       schema, size(species), nvar
     if (status /= 0) go to 900
+    if (amr_config%regrid_interval_steps>0) then
+      write(unit,'(a)',iostat=status) dynamic_operator
+      if (status/=0) go to 900
+      write(unit,'(a)',iostat=status) trim(dynamic_signature(amr_config))
+      if (status/=0) go to 900
+      write(unit,'(*(i0,1x))',iostat=status) patch%coarse_i_lower,patch%coarse_i_upper, &
+        patch%coarse_j_lower,patch%coarse_j_upper,patch%coarse_k_lower,patch%coarse_k_upper,regrid_count
+      if (status/=0) go to 900
+    end if
     if (selected_context) then
       call write_selected_checkpoint_context( &
         unit, reactions, bundle_sha256, chemistry_integrator, &
@@ -305,7 +445,10 @@ contains
       coarse_state, coarse_temperature, fine_state, fine_temperature, &
       time, steps, initial_integrals, maximum_reflux, ok, message, &
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
-      transport, maximum_transport_diffusivity, minimum_transport_theta)
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count)
+    integer, intent(inout), optional :: regrid_count
+    type(amr_patch_3d) :: stored_patch
+    integer :: stored_regrids
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(reactive_3d_config), intent(in) :: flow_config
@@ -352,10 +495,7 @@ contains
 
     ok = .false.
     message = ""
-    if (amr_config%regrid_interval_steps>0) then
-      message='Dynamic 3D AMR checkpoint context is not implemented'
-      return
-    end if
+    stored_regrids=0
     candidate_maximum_transport_diffusivity = 0.0_dp
     candidate_minimum_transport_theta = 1.0_dp
     nvar = reactive_nvar(size(species))
@@ -414,6 +554,7 @@ contains
         expected_schema = checkpoint_schema_fixed
       end if
     end if
+    if (amr_config%regrid_interval_steps>0) expected_schema=expected_schema+4
     if (.not. valid_checkpoint_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature) .or. &
@@ -437,6 +578,14 @@ contains
     if (status /= 0) go to 900
     if (any(stored_header /= [expected_schema, size(species), nvar])) &
       go to 900
+    if (amr_config%regrid_interval_steps>0) then
+      call dynamic_checkpoint_header(unit,flow_config,amr_config,stored_patch,stored_regrids,local_ok)
+      if (.not.local_ok) go to 900
+      if (any([stored_patch%coarse_i_lower,stored_patch%coarse_i_upper,stored_patch%coarse_j_lower, &
+          stored_patch%coarse_j_upper,stored_patch%coarse_k_lower,stored_patch%coarse_k_upper]/= &
+          [patch%coarse_i_lower,patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
+          patch%coarse_k_lower,patch%coarse_k_upper])) go to 900
+    end if
     if (selected_context) then
       call read_selected_checkpoint_context( &
         unit, reactions, bundle_sha256, chemistry_integrator, &
@@ -604,6 +753,10 @@ contains
       return
     end if
 
+    if (stored_regrids>stored_steps) then
+      message='Invalid dynamic regrid counter'; return
+    end if
+    if (present(regrid_count)) regrid_count=stored_regrids
     coarse_state = candidate_coarse_state
     coarse_temperature = candidate_coarse_temperature
     fine_state = candidate_fine_state
@@ -1326,7 +1479,7 @@ contains
     type(amr_patch_3d), intent(in) :: patch
     logical, intent(in) :: selected_context
 
-    logical :: physics_matches
+    logical :: physics_matches,geometry_matches
 
     if (selected_context) then
       physics_matches = trim(flow_config%thermo_model) == "selected"
@@ -1334,18 +1487,20 @@ contains
       physics_matches = .not. flow_config%chemistry_enabled
     end if
 
-    matches = patch%is_strictly_interior() .and. &
-      patch%coarse_nx == flow_config%nx .and. &
-      patch%coarse_ny == flow_config%ny .and. &
-      patch%coarse_nz == flow_config%nz .and. &
-      patch%coarse_i_lower == amr_config%coarse_i_lower .and. &
+    geometry_matches = patch%coarse_i_lower == amr_config%coarse_i_lower .and. &
       patch%coarse_i_upper == amr_config%coarse_i_upper .and. &
       patch%coarse_j_lower == amr_config%coarse_j_lower .and. &
       patch%coarse_j_upper == amr_config%coarse_j_upper .and. &
       patch%coarse_k_lower == amr_config%coarse_k_lower .and. &
-      patch%coarse_k_upper == amr_config%coarse_k_upper .and. &
+      patch%coarse_k_upper == amr_config%coarse_k_upper
+    if (amr_config%regrid_interval_steps>0) geometry_matches=.true.
+    matches = patch%is_strictly_interior() .and. &
+      patch%coarse_nx == flow_config%nx .and. &
+      patch%coarse_ny == flow_config%ny .and. &
+      patch%coarse_nz == flow_config%nz .and. &
+      geometry_matches .and. &
       patch%refinement_ratio == amr_config%refinement_ratio .and. &
-      trim(flow_config%boundary_condition) == "periodic" .and. &
+      all(resolved_reactive_boundaries_3d(flow_config) == "periodic") .and. &
       (trim(flow_config%reconstruction) == "pcm" .or. &
        trim(flow_config%reconstruction) == "characteristic_plm") .and. &
       (trim(flow_config%limiter) == "minmod" .or. &

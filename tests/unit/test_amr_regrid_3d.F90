@@ -57,9 +57,10 @@ program test_amr_regrid_3d
   base%nx=8; base%ny=8; base%nz=8; base%boundary_faces(1:2)='outflow'
   call validate_amr_reactive_3d_configuration(base,config,ok,message)
   call require(.not.ok,'physical face override rejected')
+  base%chemistry_enabled=.false.
   base%boundary_faces=''; config%regrid_interval_steps=1; config%checkpoint_interval_steps=1
   call validate_amr_reactive_3d_configuration(base,config,ok,message)
-  call require(.not.ok,'dynamic legacy checkpoint rejected')
+  call require(ok,'dynamic checkpoint supported')
   print *, 'PASS: conservative remap, linear prolongation, exact overlap, shrink, tags and rollback'
 contains
   subroutine require(condition,label)

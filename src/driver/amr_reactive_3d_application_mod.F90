@@ -26,7 +26,8 @@ module amr_reactive_3d_application_mod
     compute_amr_reactive_transport_timestep_3d, &
     advance_amr_reactive_full_3d
   use amr_reactive_3d_checkpoint_mod, only: &
-    write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint
+    write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
+    read_dynamic_amr_reactive_3d_checkpoint
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   private
@@ -126,52 +127,96 @@ contains
     allocate(recovered_temperature(config%nx, config%ny, config%nz))
     time = 0.0_dp
     step = 0
+    regrid_count=0
     maximum_reflux = 0.0_dp
     maximum_diffusivity = 0.0_dp
     minimum_transport_theta = 1.0_dp
     restarted = len_trim(amr_config%restart_file) > 0
     if (restarted) then
-      if (selected_context) then
-        if (config%transport_enabled) then
-          call read_amr_reactive_3d_checkpoint( &
-            trim(amr_config%restart_file), species, config, amr_config, &
-            patch, coarse_state, coarse_temperature, fine_state, &
-            fine_temperature, time, step, initial_integrals, maximum_reflux, &
-            ok, message, bundle_sha256=bundle_sha256, &
-            chemistry_integrator=chemistry_integrator, &
-            base_mole_fractions=base_mole_fractions, reactions=reactions, &
-            transport=transport, &
-            maximum_transport_diffusivity=maximum_diffusivity, &
-            minimum_transport_theta=minimum_transport_theta)
+      if (amr_config%regrid_interval_steps>0) then
+        if (selected_context) then
+          if (config%transport_enabled) then
+            call read_dynamic_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, &
+              patch, coarse_state, coarse_temperature, fine_state, &
+              fine_temperature, time, step, initial_integrals, maximum_reflux, regrid_count, &
+              ok, message, bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, reactions=reactions, &
+              transport=transport, &
+              maximum_transport_diffusivity=maximum_diffusivity, &
+              minimum_transport_theta=minimum_transport_theta)
+          else
+            call read_dynamic_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
+              bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, reactions=reactions)
+          end if
         else
-          call read_amr_reactive_3d_checkpoint( &
-            trim(amr_config%restart_file), species, config, amr_config, patch, &
-            coarse_state, coarse_temperature, fine_state, fine_temperature, &
-            time, step, initial_integrals, maximum_reflux, ok, message, &
-            bundle_sha256=bundle_sha256, &
-            chemistry_integrator=chemistry_integrator, &
-            base_mole_fractions=base_mole_fractions, reactions=reactions)
+          if (config%transport_enabled) then
+            call read_dynamic_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
+              transport=transport, &
+              maximum_transport_diffusivity=maximum_diffusivity, &
+              minimum_transport_theta=minimum_transport_theta)
+          else
+            call read_dynamic_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, regrid_count, ok, message)
+          end if
         end if
       else
-        if (config%transport_enabled) then
-          call read_amr_reactive_3d_checkpoint( &
-            trim(amr_config%restart_file), species, config, amr_config, patch, &
-            coarse_state, coarse_temperature, fine_state, fine_temperature, &
-            time, step, initial_integrals, maximum_reflux, ok, message, &
-            transport=transport, &
-            maximum_transport_diffusivity=maximum_diffusivity, &
-            minimum_transport_theta=minimum_transport_theta)
+        if (selected_context) then
+          if (config%transport_enabled) then
+            call read_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, &
+              patch, coarse_state, coarse_temperature, fine_state, &
+              fine_temperature, time, step, initial_integrals, maximum_reflux, &
+              ok, message, bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, reactions=reactions, &
+              transport=transport, &
+              maximum_transport_diffusivity=maximum_diffusivity, &
+              minimum_transport_theta=minimum_transport_theta)
+          else
+            call read_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, ok, message, &
+              bundle_sha256=bundle_sha256, &
+              chemistry_integrator=chemistry_integrator, &
+              base_mole_fractions=base_mole_fractions, reactions=reactions)
+          end if
         else
-          call read_amr_reactive_3d_checkpoint( &
-            trim(amr_config%restart_file), species, config, amr_config, patch, &
-            coarse_state, coarse_temperature, fine_state, fine_temperature, &
-            time, step, initial_integrals, maximum_reflux, ok, message)
+          if (config%transport_enabled) then
+            call read_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, ok, message, &
+              transport=transport, &
+              maximum_transport_diffusivity=maximum_diffusivity, &
+              minimum_transport_theta=minimum_transport_theta)
+          else
+            call read_amr_reactive_3d_checkpoint( &
+              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              coarse_state, coarse_temperature, fine_state, fine_temperature, &
+              time, step, initial_integrals, maximum_reflux, ok, message)
+          end if
         end if
       end if
       if (.not. ok) then
         write(*, '(a)') trim(message)
         error stop 3
       end if
+      deallocate(xf,yf,zf)
+      allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
+      call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
     else
       call initialize_reactive_problem_3d( &
         species, config, x, y, z, coarse_state, coarse_temperature, &
@@ -252,7 +297,6 @@ contains
     end if
 
     stopped_after_checkpoint = .false.
-    regrid_count=0
     do while (time < config%final_time)
       if (amr_config%regrid_interval_steps>0) then
         if (mod(step,amr_config%regrid_interval_steps)==0) then
@@ -325,7 +369,7 @@ contains
                 base_mole_fractions=base_mole_fractions, reactions=reactions, &
                 transport=transport, &
                 maximum_transport_diffusivity=maximum_diffusivity, &
-                minimum_transport_theta=minimum_transport_theta)
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
             else
               call write_amr_reactive_3d_checkpoint( &
                 trim(amr_config%checkpoint_file), species, config, &
@@ -333,7 +377,7 @@ contains
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, bundle_sha256=bundle_sha256, &
                 chemistry_integrator=chemistry_integrator, &
-                base_mole_fractions=base_mole_fractions, reactions=reactions)
+                base_mole_fractions=base_mole_fractions, reactions=reactions,regrid_count=regrid_count)
             end if
           else
             if (config%transport_enabled) then
@@ -343,13 +387,13 @@ contains
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, transport=transport, &
                 maximum_transport_diffusivity=maximum_diffusivity, &
-                minimum_transport_theta=minimum_transport_theta)
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
             else
               call write_amr_reactive_3d_checkpoint( &
                 trim(amr_config%checkpoint_file), species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
-                maximum_reflux, ok, message)
+                maximum_reflux, ok, message,regrid_count=regrid_count)
             end if
           end if
           if (.not. ok) then

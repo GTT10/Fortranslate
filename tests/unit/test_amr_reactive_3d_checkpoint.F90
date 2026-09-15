@@ -18,7 +18,8 @@ program test_amr_reactive_3d_checkpoint
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     composite_integrals_amr_3d
   use amr_reactive_3d_checkpoint_mod, only: &
-    write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint
+    write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
+    read_dynamic_amr_reactive_3d_checkpoint
   implicit none
 
   integer, parameter :: n = 4, ratio = 2
@@ -61,7 +62,7 @@ program test_amr_reactive_3d_checkpoint
   real(dp) :: transport_diffusivity, transport_theta
   real(dp) :: saved_transport_diffusivity, saved_transport_theta
   logical :: ok
-  integer :: steps, saved_steps, nvar
+  integer :: steps, saved_steps, nvar, regrids
   character(len=1024) :: message
   character(len=64) :: bundle_sha256, incompatible_bundle_sha256
 
@@ -670,6 +671,40 @@ program test_amr_reactive_3d_checkpoint
     coarse_state, coarse_temperature, fine_state, fine_temperature, &
     time, steps, initial_integrals, maximum_reflux, ok, message)
   call require(.not. ok, "inconsistent checkpoint temperature rejection")
+  coarse_temperature = saved_coarse_temperature
+  amr_config%regrid_interval_steps=1
+  regrids=1
+  call write_amr_reactive_3d_checkpoint( &
+    selected_transport_checkpoint_path,species,selected_transport_config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals, &
+    maximum_reflux,ok,message,bundle_sha256=bundle_sha256,chemistry_integrator='explicit', &
+    base_mole_fractions=selected_composition,reactions=reactions,transport=transport, &
+    maximum_transport_diffusivity=transport_diffusivity,minimum_transport_theta=transport_theta, &
+    regrid_count=regrids)
+  call require(ok,'dynamic selected transport write: '//trim(message))
+  call require_checkpoint_schema(selected_transport_checkpoint_path,9,'dynamic selected transport schema')
+  regrids=-1
+  call read_dynamic_amr_reactive_3d_checkpoint( &
+    selected_transport_checkpoint_path,species,selected_transport_config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals, &
+    maximum_reflux,regrids,ok,message,bundle_sha256=bundle_sha256,chemistry_integrator='explicit', &
+    base_mole_fractions=selected_composition,reactions=reactions,transport=transport, &
+    maximum_transport_diffusivity=transport_diffusivity,minimum_transport_theta=transport_theta)
+  call require(ok.and.regrids==1,'dynamic selected transport read: '//trim(message))
+  call write_truncated_checkpoint(selected_transport_checkpoint_path)
+  call read_dynamic_amr_reactive_3d_checkpoint( &
+    selected_transport_checkpoint_path,species,selected_transport_config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals, &
+    maximum_reflux,regrids,ok,message,bundle_sha256=bundle_sha256,chemistry_integrator='explicit', &
+    base_mole_fractions=selected_composition,reactions=reactions,transport=transport, &
+    maximum_transport_diffusivity=transport_diffusivity,minimum_transport_theta=transport_theta)
+  call require(.not.ok.and.regrids==1,'dynamic failed read counter rollback')
+  call require_checkpoint_unchanged( &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux, &
+    saved_coarse_state,saved_coarse_temperature,saved_fine_state,saved_fine_temperature, &
+    saved_time,saved_steps,saved_integrals,saved_maximum_reflux,'dynamic roundtrip and failure transaction', &
+    saved_maximum_diffusivity=saved_transport_diffusivity,saved_minimum_theta=saved_transport_theta, &
+    maximum_diffusivity=transport_diffusivity,minimum_theta=transport_theta)
   call delete_checkpoint(checkpoint_path)
   call delete_checkpoint(selected_checkpoint_path)
   call delete_checkpoint(transport_checkpoint_path)

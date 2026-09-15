@@ -141,7 +141,14 @@ remap commits only after the composite conservation check passes.
 
 `dynamic_hotspot.nml` shows regridding during advection. Both serial front ends
 use this path; chemistry/transport operators continue to use the current patch.
-Dynamic checkpoint/restart and MPI regridding are explicitly rejected until
-geometry/event persistence and distributed ownership updates are implemented.
+Dynamic checkpoint/restart uses schemas 6--9 and preserves the current patch,
+completed regrid count, tagging interval/threshold/buffer and initial patch
+configuration, alongside the existing physics context. Restart commits only
+after geometry, state, EOS and synchronization checks pass. Checkpoints are
+written after an accepted coarse step; restart resumes tagging at that stored
+step. Static schemas 2--5 remain unchanged. Fixed-mechanism chemistry restart
+remains unsupported; selected-mechanism chemistry uses its existing context.
+MPI regridding is explicitly rejected pending distributed ownership updates.
+See [focused restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md).
 Multipatch/multilevel regridding, physical coarse boundaries and 3D EB coupling
 remain open. The default interval zero preserves static runs.
