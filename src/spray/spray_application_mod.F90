@@ -211,11 +211,13 @@ contains
     close(unit)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
     if (diameter_distribution/='weibull'.and.diameter_distribution/='normal'.and. &
-        diameter_distribution/='lognormal') call fail('Invalid diameter distribution')
+        diameter_distribution/='lognormal'.and.diameter_distribution/='chi-squared') &
+      call fail('Invalid diameter distribution')
     if (.not.ieee_is_finite(diameter_std)) call fail('Nonfinite diameter standard deviation')
     if (diameter_std<0.or.diameter_std>1.or.(diameter_std>0.and.diameter_std<1e-15_dp)) &
       call fail('Invalid diameter standard deviation')
-    if (diameter_distribution=='weibull'.and.diameter_std/=0) call fail('Unused diameter standard deviation')
+    if ((diameter_distribution=='weibull'.or.diameter_distribution=='chi-squared').and.diameter_std/=0) &
+      call fail('Unused diameter standard deviation')
     if (diameter_distribution/='weibull'.and.diameter_shape/=0) call fail('Unused Weibull shape')
     if (diameter_weighting/='mass'.and.diameter_weighting/='number') call fail('Invalid diameter weighting')
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')

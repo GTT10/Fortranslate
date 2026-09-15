@@ -4,5 +4,5 @@
   "path": "Source/Spray/Distribution/Distributions.cpp",
   "sha256": "e5a1c9891ca5e3aed08482eee876dd2d81b3d1b7a4e3b376002bd972246964ef",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Weibull, Normal and LogNormal distributions including arithmetic mean/std conversion; deterministic midpoint quadrature, bounded truncation and exact-dose normalization are PeleF choices."
+  "scope": "Weibull, Normal, LogNormal and the pinned 100-bin ChiSquared law; deterministic midpoint quadrature, bounded truncation and exact-dose normalization are PeleF choices."
 }

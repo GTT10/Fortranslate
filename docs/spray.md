@@ -1041,3 +1041,24 @@ The default `'weibull'` retains the previous shape-zero monodisperse or
 positive-shape Weibull behavior and requires `diameter_std=0`.
 Selector and standard deviation enter restart identity. See
 [normal/lognormal checks](validation/spray-normal-sizes-20260916.md).
+
+
+### ChiSquared table
+
+`diameter_distribution='chi-squared'` selects the pinned 100-bin `ChiSquared`
+distribution. `drop_diameter` (or each port's diameter override) maps to the
+upstream nominal `d32` parameter. At bin j=1..100, its cumulative probability
+is proportional to `1-exp(-xi)*(1+xi+xi**2/2+xi**3/6)` with `xi=.12*j`;
+its diameter is the left edge `.12*(j-1)*d32/3`. This reproduces the source's
+discrete table rather than substituting a continuous inverse distribution.
+The nominal input does not guarantee the measured Sauter mean diameter after
+binning, bounds, weighting and finite sampling.
+
+Bins outside `diameter_min`/`diameter_max` are removed and the remaining
+probabilities are normalized. The source's zero-diameter first bin is therefore
+excluded by the positive minimum diameter. Empty support is rejected. Midpoint
+quantiles select bins; repeated diameters are possible. Select number weighting
+for the source sampling basis, or mass weighting for the alternative mass CDF.
+`diameter_shape` and `diameter_std` must both be zero. Existing multi-port,
+scheduling and restart paths carry the selector. See
+[table/restart checks](validation/spray-chi-squared-20260916.md).

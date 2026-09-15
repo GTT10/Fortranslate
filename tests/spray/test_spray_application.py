@@ -511,6 +511,42 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_chi_squared_sizes(self):
+        settings = ("parcel_count=8,diameter_distribution='chi-squared',diameter_weighting='number',"
+                    "injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,"
+                    "injection_port_diameters=2e-5,4e-5,drag_enabled=.false.,heat_enabled=.false.,"
+                    "evaporation_enabled=.false.,")
+        checkpoint = self.root/'chi.chk'
+        self.run_case('chi', common=settings)
+        self.check_balance('chi')
+        with (self.root/'chi.parcels.csv').open() as stream:
+            rows = list(csv.DictReader(stream))
+        # Pinned 100-bin table, conditioned on its positive-diameter entries.
+        bins = [12, 18, 23, 28, 33, 38, 46, 61]
+        for port, d32 in enumerate([2e-5, 4e-5]):
+            batch = rows[8*port:8*(port+1)]
+            self.assertEqual(len({r['multiplicity'] for r in batch}), 1)
+            for row, bin_index in zip(batch, bins):
+                self.assertAlmostEqual(float(row['diameter'])/(bin_index*.12*d32/3), 1, delta=2e-14)
+        self.run_case('chi_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('chi_resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'chi.{suffix}').read_bytes(),
+                             (self.root/f'chi_resumed.{suffix}').read_bytes())
+        self.assertEqual(self.history('chi')[-1], self.history('chi_resumed')[-1])
+        result = self.run_case('chi_changed', f"restart_file='{checkpoint}',", fail=True,
+                               common=settings.replace("distribution='chi-squared'", "distribution='weibull'"))
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('chi_truncated', common=settings+'diameter_min=1e-5,diameter_max=2e-5,')
+        self.check_balance('chi_truncated')
+        with (self.root/'chi_truncated.parcels.csv').open() as stream:
+            for row in csv.DictReader(stream):
+                # CSV reconstructs d from mass via a cube root; allow a few ulps.
+                self.assertTrue(1e-5*(1-4e-15) <= float(row['diameter']) <= 2e-5*(1+4e-15))
+        self.run_case('chi_empty', common=settings+'diameter_min=1e-9,diameter_max=2e-9,', fail=True)
+        self.run_case('chi_std', common=settings+'diameter_std=1e-6,', fail=True)
+
     def test_normal_lognormal_sizes(self):
         base = ("parcel_count=8,drop_diameter=2e-5,diameter_std=7e-6,diameter_min=1e-5,diameter_max=4e-5,"
                 "diameter_weighting='number',drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")

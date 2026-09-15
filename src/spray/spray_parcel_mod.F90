@@ -632,6 +632,8 @@ contains
     character(len=8) :: weighting
     character(len=16) :: distribution
     real(dp) :: std,location,width,zlo,zhi,plo,phi,target,left,right,mid,zmid,prob
+    real(dp) :: chi_cdf(100),chi_sizes(100),xi,previous_cdf,current_cdf,probability_sum
+    integer :: bin
     logical :: use_survival
     integer :: iteration
     real(dp), intent(in), optional :: diameter_shape, diameter_min, diameter_max
@@ -669,15 +671,15 @@ contains
     if (present(diameter_distribution)) distribution=diameter_distribution
     if (present(diameter_distribution)) then
       if (diameter_distribution/='weibull'.and.diameter_distribution/='normal'.and. &
-          diameter_distribution/='lognormal') return
+          diameter_distribution/='lognormal'.and.diameter_distribution/='chi-squared') return
     end if
     if (present(diameter_std)) std=diameter_std
     if (.not.ieee_is_finite(std)) return
     if (std<0.or.std>1) return
     if (std>0.and.std<1e-15_dp) return
-    if (distribution=='weibull'.and.std/=0) return
+    if ((distribution=='weibull'.or.distribution=='chi-squared').and.std/=0) return
     if (distribution/='weibull'.and.shape/=0) return
-    if (distribution/='weibull') then
+    if (distribution=='normal'.or.distribution=='lognormal') then
       if (std==0) then
         if (diameter<dlo.or.diameter>dhi) return
       else
@@ -701,6 +703,21 @@ contains
         end if
         if (abs(phi-plo)<=max(tiny(1.0_dp),32*epsilon(1.0_dp)*max(plo,phi))) return
       end if
+    end if
+    if (distribution=='chi-squared') then
+      ! Pinned ChiSquared uses 100 left-edge bins over xi=[0,12], d=xi*d32/3.
+      ! Condition the discrete probabilities on the configured positive diameter bounds.
+      previous_cdf=0;probability_sum=0;xi=0
+      do bin=1,100
+        chi_sizes(bin)=xi*diameter/3
+        xi=.12_dp*real(bin,dp)
+        current_cdf=1-exp(-xi)*(1+xi*(1+xi*(.5_dp+xi/6)))
+        if (chi_sizes(bin)>=dlo.and.chi_sizes(bin)<=dhi) &
+          probability_sum=probability_sum+current_cdf-previous_cdf
+        chi_cdf(bin)=probability_sum;previous_cdf=current_cdf
+      end do
+      if (probability_sum<=32*epsilon(1.0_dp)) return
+      chi_cdf=chi_cdf/probability_sum
     end if
     survival_low=1.0_dp; survival_high=0.0_dp
     if (shape>0.0_dp) then
@@ -746,6 +763,15 @@ contains
           end if
         end do
         drop_size=left+.5_dp*(right-left)
+      end if
+      if (distribution=='chi-squared') then
+        target=(real(i,dp)-.5_dp)/real(number,dp)
+        bin=1
+        do while(bin<100)
+          if (target<=chi_cdf(bin)) exit
+          bin=bin+1
+        end do
+        drop_size=chi_sizes(bin)
       end if
       m=pi*rho*drop_size**3/6.0_dp
       weight=1
