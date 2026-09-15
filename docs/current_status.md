@@ -29,8 +29,10 @@ the pinned half-temperature/half-composition rule
 ([correction evidence](validation/wall-film-skin-20260916.md)).
 
 KH shed-mass accumulation and four-child release now connect to regular CFD
-and restart ([evidence](validation/khrt-children-20260916.md)); simultaneous
-wall impact and computational splitting remain unsupported in this mode.
+and restart ([evidence](validation/khrt-children-20260916.md)); computational
+splitting now partitions the KH inventories
+([evidence](validation/khrt-splitting-20260916.md)). Simultaneous wall impact
+remains unsupported in this mode.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

@@ -47,8 +47,9 @@ and restart persistence; isothermal/tangentially moving gas walls include molecu
 and SGS heat/work budgets. The Ahamed impact-regime, splash-velocity, mass-distribution, four-child construction and deposited-film geometry kernels are connected by a transactional impact event with explicit wall impulse/energy budgets; regular coupled-step boundary handling now retains deposition patches, advances splash children and evolves stationary film temperature/mass with per-material constant or cubic conductivity; the CLI and coupled checkpoint retain these states, while lateral film transport and physical qualification remain open. ETAB and KH-RT representative-drop
 size/deformation, bounded computational parcel splitting and restart are implemented;
 KH shed-mass accumulation and conservative four-child transverse release now
-connect to CFD and restart. Their combination with wall impact/computational
-splitting, general turbulent dispersion and physical qualification remain open. Uniform gas/particle acceleration
+connect to CFD and restart, including computational splitting with partitioned
+KH inventories. Their combination with wall impact, general turbulent dispersion
+and physical qualification remain open. Uniform gas/particle acceleration
 now retains external impulse/work separately through coupled restart. Single-component
 Antoine saturation-pressure fits are connected with explicit temperature bounds
 and restart identity. Polynomial liquid density now drives injection, drag,

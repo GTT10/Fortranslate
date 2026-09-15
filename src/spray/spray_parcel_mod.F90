@@ -228,7 +228,7 @@ contains
     if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
     if (.not.ieee_is_finite(o%khrt_reference_diameter_cubed)) return
     if (o%khrt_children) then
-      if (o%breakup_model/='khrt'.or.o%maximum_multiplicity>0) return
+      if (o%breakup_model/='khrt') return
       if (o%khrt_reference_diameter_cubed<=0.or.o%khrt_reference_diameter_cubed>1e24_dp) return
     else
       if (o%khrt_reference_diameter_cubed/=0) return

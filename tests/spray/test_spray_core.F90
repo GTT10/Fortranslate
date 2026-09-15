@@ -383,6 +383,7 @@ program test_spray_core
   case('split')
     call make_drops();saved_drops=drops
     drops%multiplicity=10.0_dp
+    drops%khrt_initial_count=7.0_dp;drops%khrt_shed_volume=1e-12_dp
     transfer=0
     do n=1,size(drops)
       transfer=transfer+parcel_totals(drops(n),liquid)
@@ -401,6 +402,16 @@ program test_spray_core
     call require(.not.ok.and.size(drops)==size(saved_drops).and.all(drops%id==saved_drops%id), &
       'storage failure preserves IDs and allocation')
     call require(all(drops%multiplicity==saved_drops%multiplicity),'storage failure preserves weights')
+    call require(all(drops%khrt_initial_count==saved_drops%khrt_initial_count).and. &
+      all(drops%khrt_shed_volume==saved_drops%khrt_shed_volume),'storage failure preserves KH inventory')
+    call split_spray_parcels(drops,1.0_dp,100,ok)
+    call require(ok.and.size(drops)==48,'repeat split with rounding remainder')
+    call require(abs(sum(drops%khrt_initial_count)-28.0_dp)<1e-12_dp,'split conserves KH initial count')
+    call require(abs(sum(drops%khrt_shed_volume)/4e-12_dp-1)<1e-14_dp,'split conserves pending shed volume')
+    do n=1,size(drops)
+      call require(abs(drops(n)%khrt_initial_count/drops(n)%multiplicity-.7_dp)<1e-14_dp,'KH count per drop')
+      call require(abs(drops(n)%khrt_shed_volume/drops(n)%multiplicity/1e-13_dp-1)<1e-14_dp,'KH volume per drop')
+    end do
   case('khrt')
     options%breakup_model='khrt';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
     call make_drops();p=drops(1);p%velocity=0;q=p

@@ -304,7 +304,11 @@ back the entire coupled update.
 CSV fields `khrt_initial_count` and `khrt_shed_volume` expose the accumulator;
 checkpoint suffix `_SHED_V1` retains it alongside RT time and parent lineage.
 The enable flag and reference quantity participate in restart compatibility.
-For now, this mode requires `maximum_multiplicity=0` and wall impact disabled.
+Wall impact must remain disabled in this mode. Computational splitting is supported;
+both KH accumulators are partitioned with the represented drop count, so a split
+does not duplicate pending shed mass. The final piece carries rounding remainders.
+The jet release threshold still applies per parcel against the prescribed global
+reference; changing computational multiplicity can therefore change release timing.
 RT still changes the representative size; it does not itself create children.
 Collision, general turbulent dispersion, primary atomization and physical
 qualification remain open. See [focused evidence](validation/khrt-children-20260916.md).
@@ -316,7 +320,8 @@ droplets per computational parcel. Zero (the default) disables this partition.
 `maximum_parcels` bounds allocated particle storage, up to 1,000,000.
 After a coupling interval, overweight live parcels are partitioned into equal
 weights, with the final child carrying the rounding remainder. Droplet mass,
-position, velocity, temperature, deformation and RT timer are copied; aggregate mass,
+position, velocity, temperature, deformation and RT timer are copied. KH initial
+count and pending shed volume are divided among the pieces; aggregate mass,
 momentum and energy are conserved. This increases computational parcel count
 without introducing a transverse velocity or dispersion model.
 
@@ -331,7 +336,8 @@ ETAB splitting-enabled checkpoints use V5/V6, storing exact integer parent IDs i
 addition to the ETAB and optional boundary state. The multiplicity/storage
 limits are included in the context; parcel CSVs gain `parent_id`. For example,
 add `maximum_multiplicity=1e7, maximum_parcels=1000` to `etab.nml`.
-See [splitting/restart evidence](validation/spray-splitting-20260915.md).
+See [splitting/restart evidence](validation/spray-splitting-20260915.md) and
+[KH shedding partition evidence](validation/khrt-splitting-20260916.md).
 
 
 ## Gas reservoir inlet

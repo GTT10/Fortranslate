@@ -234,7 +234,7 @@ contains
     integer, allocatable :: pieces(:)
     integer :: p,n,total,extra,cursor
     integer(int64) :: last_id
-    real(dp) :: weight
+    real(dp) :: weight,count_weight,shed_weight
     ok=.false.
     if (.not.allocated(parcels)) return
     if (.not.ieee_is_finite(maximum_multiplicity).or.maximum_multiplicity<0.or.maximum_multiplicity>1e18_dp) return
@@ -264,12 +264,23 @@ contains
       if (pieces(p)==1) cycle
       weight=parcels(p)%multiplicity/real(pieces(p),dp)
       candidate(p)%multiplicity=weight
+      ! Both KH accumulators are extensive parcel inventories; duplicating
+      ! them would multiply the next release mass by the number of pieces.
+      count_weight=parcels(p)%khrt_initial_count/real(pieces(p),dp)
+      shed_weight=parcels(p)%khrt_shed_volume/real(pieces(p),dp)
+      candidate(p)%khrt_initial_count=count_weight;candidate(p)%khrt_shed_volume=shed_weight
+      if (.not.valid_spray_parcel(candidate(p))) return
       do n=2,pieces(p)
         cursor=cursor+1;candidate(cursor)=parcels(p)
         last_id=last_id+1;candidate(cursor)%id=last_id
         candidate(cursor)%parent_id=parcels(p)%id
         candidate(cursor)%multiplicity=weight
-        if (n==pieces(p)) candidate(cursor)%multiplicity=parcels(p)%multiplicity-real(n-1,dp)*weight
+        candidate(cursor)%khrt_initial_count=count_weight;candidate(cursor)%khrt_shed_volume=shed_weight
+        if (n==pieces(p)) then
+          candidate(cursor)%multiplicity=parcels(p)%multiplicity-real(n-1,dp)*weight
+          candidate(cursor)%khrt_initial_count=parcels(p)%khrt_initial_count-real(n-1,dp)*count_weight
+          candidate(cursor)%khrt_shed_volume=parcels(p)%khrt_shed_volume-real(n-1,dp)*shed_weight
+        end if
         if (.not.valid_spray_parcel(candidate(cursor))) return
       end do
     end do
