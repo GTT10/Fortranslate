@@ -686,7 +686,8 @@ contains
         if (invtau>0) dt=min(dt,options%max_fractional_change/invtau)
         tdot=heat*(tg-drops(p)%temperature)
         do n=1,size(components)
-          if (rates(n)>0) dt=min(dt,options%max_fractional_change*masses(n,p)/rates(n))
+          if (rates(n)>0.and.y(n)>mixture_trace_fraction) &
+            dt=min(dt,options%max_fractional_change*masses(n,p)/rates(n))
           tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
         end do
         tdot=tdot/(drops(p)%mass*cp)

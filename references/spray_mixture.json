@@ -11,5 +11,11 @@
     "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",
     "rule": "X_liquid=(Y/MW)/sum(Y/MW); equilibrium X_surface=X_liquid*psat/P."
   },
-  "rate_rule": "Effective D=sum(X_surface_i*D_i)/sum(X_surface_i); component share=X_surface_i*D_i/sum(X_surface_j*D_j), common Stefan transfer with existing selectable Ranz-Marshall/Abramzon-Sirignano correlations."
+  "rate_rule": "Effective D=sum(X_surface_i*D_i)/sum(X_surface_i); component share=X_surface_i*D_i/sum(X_surface_j*D_j), common Stefan transfer with existing selectable Ranz-Marshall/Abramzon-Sirignano correlations.",
+  "terminal_policy": {
+    "trace_mass_fraction": 1e-12,
+    "rule": "Actively evaporating trace/residual component mass is transferred to gas; predicted diameter below configured minimum transfers the whole droplet. Suppressed components are retained unless the complete droplet reaches the diameter cutoff.",
+    "restart_tag": "mixed-liquid-components-v2-terminal",
+    "difference": "Pinned Drag.H zeroes trace fractions and renormalizes. PeleF explicitly returns residual mass and energy to gas."
+  }
 }

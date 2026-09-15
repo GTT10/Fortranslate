@@ -331,7 +331,15 @@ heat transfer and component evaporation over a supplied interval. Gas state is
 held fixed during this operation; returned conserved increments include drag
 work and species exchange. It changes the parcel and external component-mass
 array only on success. Overdraw or inadmissible temperatures reject the interval;
-the caller must shorten it. A zero interval preserves state exactly. This remains
+the caller must shorten it. Evaporating trace components at or below a mass
+fraction of 1e-12, or with a predicted residual below that fraction of the current
+droplet mass, release their entire residual inventory. They no longer constrain
+the grid step through a relative component-mass limit. Suppressed components are
+retained. If evaporation reduces the predicted mixture diameter below
+`minimum_diameter`, every component is transferred to the gas using the terminal
+finite-inventory convention. These transfers conserve mass and energy rather
+than discarding small species and renormalizing their survivors.
+A zero interval preserves state exactly. This remains
 a composable API used by the grid coupling below; wall impact, KH shed children,
 per-port mixture compositions remain open.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
@@ -359,7 +367,7 @@ Both checkpoint routines accept optional `component_mass`. The `_MIX_V1` suffix
 adds a component count after grid dimensions and a component-mass row after each
 parcel record. Counts, shapes, nonnegative finite masses and parcel-mass closure
 are checked. A reader without composition output rejects this format; invalid
-reads preserve existing state. The caller's restart context must identify the
+reads preserve existing state. The caller's restart context must include `mixture_evolution_id` and identify the
 ordered component properties and mixture settings, as with existing pure-liquid
 checkpoint contexts. The reader commits the allocated component matrix together
 with the gas and parcel state.
@@ -416,7 +424,10 @@ Parcel CSVs add `mass_<species>` columns in kg per physical droplet. Their sum i
 `mass`; `diameter` and Sauter mean diameter use the evolving mixture density.
 The ordered component table and initial fractions enter restart compatibility.
 Changed composition/properties reject restart, and checkpoints retain every
-parcel's evolved component masses.
+parcel's evolved component masses. The terminal/trace update changes the
+mixture evolution tag to `mixed-liquid-components-v2-terminal`; earlier mixture
+checkpoints reject rather than silently changing their continuation policy.
+See [terminal-state evidence](validation/spray-mixture-terminal-20260916.md).
 
 [mixture.nml](../cases/spray_3d/mixture.nml) is a small synthetic example. The
 illustrative H2O/H2O2 properties demonstrate software behavior, not a validated

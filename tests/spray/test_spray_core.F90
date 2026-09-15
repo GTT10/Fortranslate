@@ -61,6 +61,46 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('mixture_terminal')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'terminal mixture component')
+    p%temperature=300;q=p;options%drag=.false.;options%heat=.false.
+    primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    mixture_y=[1e-13_dp,1.0_dp-1e-13_dp];component_mass=p%mass*mixture_y;saved_mass=component_mass
+    call liquid_mixture_properties(mixture_components,mixture_y,p%temperature,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'trace initial energy')
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e-9_dp,totals0,ok)
+    call require(ok.and.component_mass(1)==0.and.component_mass(2)>0,'trace component fully evaporates')
+    call require(totals0(5+liquid%vapor_index)==q%multiplicity*saved_mass(1),'trace mass returned to gas species')
+    call liquid_mixture_properties(mixture_components,component_mass/sum(component_mass),p%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'trace remaining energy')
+    expected=q%mass*q%multiplicity*(mixture_e0+.5_dp*sum(q%velocity**2))
+    value=p%mass*p%multiplicity*(mixture_e+.5_dp*sum(p%velocity**2))
+    call require(abs(value+totals0(5)-expected)<1e-12_dp*abs(expected),'trace cleanup energy conservation')
+    p=q;component_mass=saved_mass
+    primitive(15)=.1_dp;primitive(5+liquid%vapor_index)=.9_dp
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e-9_dp,totals0,ok)
+    call require(ok.and.component_mass(1)==saved_mass(1),'suppressed trace remains in liquid')
+    p=q;component_mass=p%mass*[.6_dp,.4_dp];saved_mass=component_mass
+    primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    options%minimum_diameter=2e-4_dp
+    call liquid_mixture_properties(mixture_components,[.6_dp,.4_dp],p%temperature,mixture_rho,mixture_cp,mixture_e0,ok)
+    call require(ok,'terminal initial energy')
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e-9_dp,totals0,ok)
+    call require(ok.and.p%mass==0.and.all(component_mass==0),'minimum diameter consumes all components')
+    expected=q%mass*q%multiplicity*(mixture_e0+.5_dp*sum(q%velocity**2))
+    call require(abs(totals0(5)-expected)<1e-12_dp*abs(expected),'terminal full energy returned')
+    call require(abs(totals0(1)-q%mass*q%multiplicity)<1e-22_dp,'terminal full mass returned')
+    p=q;component_mass=saved_mass;options%evaporation=.false.
+    call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
+      options,1e-9_dp,totals0,ok)
+    call require(ok.and.all(component_mass==saved_mass).and.p%mass==q%mass,'evaporation disabled preserves small drops')
   case('mixture_rates')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

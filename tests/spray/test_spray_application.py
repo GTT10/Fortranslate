@@ -58,6 +58,30 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_mixture_terminal_restart(self):
+        settings=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                  "mixture_densities=1000,800,mixture_cps=4184,2000,mixture_reference_temperatures=373.15,350,"
+                  "mixture_latent_heats=2257000,1e6,minimum_diameter=2e-5,")
+        checkpoint=self.root/'terminal_stop.chk';full=self.root/'terminal_full.chk';resumed=self.root/'terminal_resumed.chk'
+        self.run_case('terminal_mix',f"checkpoint_file='{full}',",common=settings)
+        self.assertEqual(self.check_balance('terminal_mix')[-1]['liquid_mass'],0)
+        with (self.root/'terminal_mix.parcels.csv').open() as stream:
+            rows=list(csv.DictReader(stream))
+        self.assertTrue(all(float(r[k])==0 for r in rows for k in ['mass','diameter','mass_H2O','mass_H2O2']))
+        self.run_case('terminal_stop',f"stop_after_steps=3,checkpoint_file='{checkpoint}',",common=settings)
+        self.run_case('terminal_resumed',f"restart_file='{checkpoint}',checkpoint_file='{resumed}',",common=settings)
+        self.assertEqual(full.read_bytes(),resumed.read_bytes())
+        for suffix in ['gas.csv','parcels.csv']:
+            self.assertEqual((self.root/f'terminal_mix.{suffix}').read_bytes(),
+                             (self.root/f'terminal_resumed.{suffix}').read_bytes())
+        old=self.root/'terminal_old.chk'
+        original=checkpoint.read_bytes()
+        changed=original.replace(b'mixed-liquid-components-v2-terminal',b'mixed-liquid-components-v1')
+        self.assertNotEqual(original,changed)
+        old.write_bytes(changed)
+        result=self.run_case('terminal_old',f"restart_file='{old}',",fail=True,common=settings)
+        self.assertIn('incompatible spray checkpoint',result.stdout.lower())
+
     def test_mixture_cli_injection_and_restart(self):
         mixture = ("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
                    "mixture_densities=1000,800,mixture_cps=4184,2000,"

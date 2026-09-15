@@ -864,7 +864,7 @@ contains
       call append_reals([khrt_reference_diameter_cubed])
     end if
     if (mixture_count>0) then
-      context=trim(context)//' mixed-liquid-components-v1'
+      context=trim(context)//' '//mixture_evolution_id
       call append_reals([real(mixture_count,dp)])
       do i=1,mixture_count
         context=trim(context)//' '//trim(mixture_vapor_names(i))

@@ -43,7 +43,9 @@ hydro/transport/LES/chemistry driver now retains composition and rolls it back
 with all other state ([evidence](validation/spray-mixture-reactive-20260916.md)).
 Mixture CLI inputs, shared/independent scheduled injection, component CSVs and
 restart compatibility are connected
-([evidence](validation/spray-mixture-cli-20260916.md)). Mixture wall impact, KH
+([evidence](validation/spray-mixture-cli-20260916.md)). Trace-species depletion and
+minimum-diameter removal now return their complete inventories to gas
+([evidence](validation/spray-mixture-terminal-20260916.md)). Mixture wall impact, KH
 shed children, per-port compositions and CLI property-fit inputs remain open.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish

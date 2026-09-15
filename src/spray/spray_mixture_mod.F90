@@ -11,6 +11,8 @@ module spray_mixture_mod
   use spray_parcel_mod
   implicit none
   private
+  real(dp), parameter, public :: mixture_trace_fraction=1e-12_dp
+  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v2-terminal'
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
   public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory
@@ -260,6 +262,8 @@ contains
     type(spray_parcel) :: candidate
     real(dp) :: remaining(size(component_mass)),y(size(component_mass)),rates(size(component_mass)),hv(size(component_mass))
     real(dp) :: exchange(size(gas_change)),drag(5),invtau,heat,mass
+    real(dp) :: evaporated(size(component_mass)),remaining_mass,rho,cp,e
+    integer :: i
     logical :: valid
     ok=.false.;gas_change=0
     if (.not.ieee_is_finite(dt).or.dt<0.or.dt>1e6_dp) return
@@ -275,12 +279,28 @@ contains
     if (dt==0) then
       ok=.true.;return
     end if
+    evaporated=rates*dt
+    do i=1,size(component_mass)
+      if (rates(i)<=0) cycle
+      if (component_mass(i)<=mixture_trace_fraction*mass) then
+        evaporated(i)=component_mass(i)
+      else
+        if (evaporated(i)>component_mass(i)) return
+        if (component_mass(i)-evaporated(i)<=mixture_trace_fraction*mass) evaporated(i)=component_mass(i)
+      end if
+    end do
+    remaining=component_mass-evaporated;remaining_mass=sum(remaining)
+    if (any(rates>0).and.remaining_mass>0) then
+      call liquid_mixture_properties(components,remaining/remaining_mass,parcel%temperature,rho,cp,e,valid)
+      if (.not.valid) return
+      if (remaining_mass<acos(-1.0_dp)*rho*options%minimum_diameter**3/6) evaporated=component_mass
+    end if
     candidate=parcel;remaining=component_mass
     if (options%drag) candidate%velocity=primitive(2:4)+(parcel%velocity-primitive(2:4))*exp(-min(700.0_dp,invtau*dt))
     candidate%position=parcel%position+.5_dp*dt*(parcel%velocity+candidate%velocity)
     drag=0;drag(2:4)=mass*parcel%multiplicity*(parcel%velocity-candidate%velocity)
     drag(5)=.5_dp*mass*parcel%multiplicity*(sum(parcel%velocity**2)-sum(candidate%velocity**2))
-    call advance_mixture_evaporation(candidate,components,remaining,rates*dt,hv, &
+    call advance_mixture_evaporation(candidate,components,remaining,evaporated,hv, &
       heat*(gas_temperature-parcel%temperature)*dt*parcel%multiplicity,exchange,valid)
     if (.not.valid) return
     exchange(1:5)=exchange(1:5)+drag
