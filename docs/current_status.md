@@ -65,7 +65,9 @@ evolution in one transaction ([evidence](validation/spray-mixture-wall-coupled-2
 The reactive driver now retains mixed film state across both spray half-steps and
 rolls it back after late failure ([evidence](validation/spray-mixture-wall-reactive-20260916.md)).
 CLI wall inputs, film component output, conservation totals and restart are connected
-([evidence](validation/spray-mixture-wall-cli-20260916.md)). Per-port compositions now drive initial and
+([evidence](validation/spray-mixture-wall-cli-20260916.md)). Active trace-film
+components now transfer their full residual inventories to gas
+([evidence](validation/spray-mixture-film-trace-20260916.md)). Per-port compositions now drive initial and
 scheduled injection with component budgets and restart identity
 ([evidence](validation/spray-port-mixture-20260916.md)). Component density/heat-capacity fits, Antoine
 pressure and Clausius surface caps are available in the CLI and restart context

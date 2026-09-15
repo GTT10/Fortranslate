@@ -987,7 +987,8 @@ contains
           if (.not.valid) return
           dt=interval-elapsed
           do c=1,size(components)
-            if (rates(c)>0) dt=min(dt,options%max_fractional_change*masses(c,p)/rates(c))
+            if (rates(c)>0.and.masses(c,p)>mixture_trace_fraction*patches(p)%mass) &
+              dt=min(dt,options%max_fractional_change*masses(c,p)/rates(c))
           end do
           if (abs(tdot)>0) dt=min(dt,min(2.0_dp,options%max_fractional_change*patches(p)%temperature)/abs(tdot))
           accepted=.false.
@@ -995,7 +996,7 @@ contains
             if (dt<=0.or.elapsed+dt<=elapsed) exit
             next=patches(p);next_mass=masses(:,p)
             call advance_mixture_wall_film_exchange(next,components,next_mass,rates*dt,hv,qg*dt,qw*dt, &
-              wall_options%minimum_height,change,wall_energy,valid)
+              wall_options%minimum_height,change,wall_energy,valid,deplete_traces=.true.)
             if (valid.and.next%mass>0) valid= &
               wall_liquid_conductivity_at_temperature(wall_options,next%material_id,next%temperature)>0
             if (valid) then

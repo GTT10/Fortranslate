@@ -510,8 +510,12 @@ component's evaporation rate times its own vapor-minus-liquid enthalpy, divided 
 the film mass and mixture heat capacity.
 
 `advance_mixture_wall_film_frozen` holds these rates fixed over a supplied interval
-and calls the conservative exchange API. It rejects component overdraw or an
-inadmissible remaining temperature; a grid driver must reduce the step in those
+and calls the conservative exchange API. Actively evaporating components whose
+current or predicted residual mass is at most `1e-12` of film mass are returned
+entirely to gas. Ambient-suppressed components stay in the film; a zero interval
+changes nothing. The grid depletion limiter excludes already trace components.
+Bulk component overdraw or an
+inadmissible remaining temperature rejects; a grid driver must reduce the step in those
 cases. It retains the full-inventory minimum-height removal policy. Composition
 transport, thermal updates and rates are now available as APIs; grid/CLI feedback
 and application restart wiring remain open. See
@@ -591,6 +595,12 @@ films. Pure-material property tables still cannot accompany mixture tables.
 The existing prohibition on moving particle-impact walls remains. CLI input/output
 and checkpoint wiring retain both particle and film compositions. See
 [reactive evidence](validation/spray-mixture-wall-reactive-20260916.md).
+
+Mixed-film evolution now uses `mixture_film_evolution_id='mixed-film-v2-trace'`
+in CLI checkpoint context. Earlier mixed-wall checkpoints reject because their
+trace-depletion evolution differs. The storage layout, pure-wall and particle-only
+mixture contexts are unchanged. API callers must include the evolution ID in their
+own context. See [trace evidence](validation/spray-mixture-film-trace-20260916.md).
 
 ### Mixed-wall CLI and outputs
 

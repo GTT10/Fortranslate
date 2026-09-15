@@ -3,7 +3,7 @@ module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mixture_mod, only: liquid_mixture_properties,liquid_mixture_temperature,valid_component_inventory, &
-    build_mixture_film
+    build_mixture_film,mixture_trace_fraction
   use nasa7_thermo_mod, only: nasa7_species
   use gas_transport_mod, only: gas_transport_species
   use spray_parcel_mod
@@ -29,6 +29,7 @@ module spray_wall_impact_mod
     real(dp) :: port_conductivities(16)=-1,port_conductivity_coefficients(4,16)=0
     real(dp) :: port_conductivity_temperature_ranges(2,16)=0
   end type
+  character(len=*), parameter, public :: mixture_film_evolution_id='mixed-film-v2-trace'
   public :: valid_wall_component_inventory
   public :: mixture_impact_boiling_temperature,mixture_impact_at_planar_wall
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
@@ -218,18 +219,19 @@ contains
       options,conductivity,wall_temperature,rates,hv,qgas,qwall,tdot,valid)
     if (.not.valid) return
     call advance_mixture_wall_film_exchange(patch,components,component_mass,rates*dt,hv,qgas*dt,qwall*dt, &
-      minimum_height,gas_change,wall_energy,ok)
+      minimum_height,gas_change,wall_energy,ok,deplete_traces=.true.)
   end subroutine
 
   ! Supplied component losses are total kg; heat amounts are J into the patch.
   subroutine advance_mixture_wall_film_exchange(patch,components,component_mass,evaporated_mass,vapor_enthalpy, &
-      gas_heat,wall_heat,minimum_height,gas_change,wall_energy,ok)
+      gas_heat,wall_heat,minimum_height,gas_change,wall_energy,ok,deplete_traces)
     type(spray_wall_film), intent(inout) :: patch
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(inout) :: component_mass(:)
     real(dp), intent(in) :: evaporated_mass(:),vapor_enthalpy(:),gas_heat,wall_heat,minimum_height
     real(dp), intent(out) :: gas_change(:),wall_energy
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: deplete_traces
     type(spray_wall_film) :: next
     real(dp) :: remaining(size(component_mass)),loss(size(component_mass)),exchange(size(gas_change))
     real(dp) :: rho,cp,old_e,new_e,target,t,area,total
@@ -242,7 +244,7 @@ contains
     if (.not.all(ieee_is_finite(vapor_enthalpy)).or. &
         .not.all(ieee_is_finite([gas_heat,wall_heat,minimum_height]))) return
     if (any(component_mass<0).or.any(component_mass>1e18_dp).or.any(evaporated_mass<0)) return
-    if (any(evaporated_mass>component_mass).or.any(abs(vapor_enthalpy)>1e15_dp)) return
+    if (any(abs(vapor_enthalpy)>1e15_dp)) return
     if (max(abs(gas_heat),abs(wall_heat))>min(1e24_dp,1e15_dp*patch%mass)) return
     if (minimum_height<1e-15_dp.or.minimum_height>1) return
     total=sum(component_mass)
@@ -255,9 +257,23 @@ contains
     if (all(evaporated_mass==0).and.gas_heat==0.and.wall_heat==0) then
       ok=.true.;return
     end if
-    remaining=component_mass-evaporated_mass;next=patch;next%mass=sum(remaining);new_e=0
+    loss=evaporated_mass
+    if (present(deplete_traces)) then
+      if (deplete_traces) then
+        do i=1,n
+          if (loss(i)<=0) cycle
+          if (component_mass(i)<=mixture_trace_fraction*patch%mass) then
+            loss(i)=component_mass(i)
+          else if (loss(i)<=component_mass(i)) then
+            if (component_mass(i)-loss(i)<=mixture_trace_fraction*patch%mass) loss(i)=component_mass(i)
+          end if
+        end do
+      end if
+    end if
+    if (any(loss>component_mass)) return
+    remaining=component_mass-loss;next=patch;next%mass=sum(remaining);new_e=0
     if (next%mass>0) then
-      target=patch%mass*old_e+gas_heat+wall_heat-sum(evaporated_mass*vapor_enthalpy)
+      target=patch%mass*old_e+gas_heat+wall_heat-sum(loss*vapor_enthalpy)
       if (abs(target)>1e15_dp*next%mass) return
       t=patch%temperature
       call liquid_mixture_temperature(components,remaining/next%mass,target/next%mass,t,valid)

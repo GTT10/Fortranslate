@@ -366,6 +366,21 @@ program test_spray_core
       transfer(1),transfer(2),transfer(3),ok)
     call require(ok.and.abs(mixture_rates(1)/masscoef-1)<1e-12_dp,'pure limit film mass rate')
     call require(abs(heat/transfer(1)-1)<1e-12_dp.and.value==transfer(2),'pure limit heat rates')
+    wall_patch=saved_patch;mixture_y=[1e-13_dp,1.0_dp-1e-13_dp]
+    component_mass=wall_patch%mass*mixture_y;saved_mass=component_mass
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,0.0_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.all(component_mass==saved_mass).and.all(totals0==0),'zero interval preserves trace film')
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,1e-10_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.component_mass(1)==0.and.component_mass(2)>0,'active film trace fully released')
+    call require(totals0(5+liquid%vapor_index)==saved_mass(1),'film trace gas species receives whole residual')
+    wall_patch=saved_patch;component_mass=saved_mass
+    primitive(5+liquid%vapor_index)=.001_dp;primitive(15)=.999_dp
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
+      options,.6_dp,400.0_dp,1e-10_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.component_mass(1)==saved_mass(1),'ambient-suppressed film trace retained')
+    call require(totals0(5+liquid%vapor_index)==0,'suppressed trace has no gas source')
   case('mixture_wall_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

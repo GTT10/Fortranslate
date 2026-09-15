@@ -986,6 +986,7 @@ contains
     end if
     if (impact_enabled) then
       context=trim(context)//' wall-impact-film-v1'
+      if (mixture_count>0) context=trim(context)//' '//mixture_film_evolution_id
       call append_reals([merge(1.0_dp,0.0_dp,wall_impact_faces),wall_temperature,wall_contact_angle, &
         real(maximum_wall_films,dp),real(maximum_parcels,dp),surface_tension,liquid_viscosity])
       context=trim(context)//' '//trim(liquid_viscosity_model)
