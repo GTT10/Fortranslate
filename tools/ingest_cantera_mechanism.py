@@ -15,9 +15,10 @@ The accepted mechanism subset is deliberately small:
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
 * Lindemann, Troe, SRI, or Tsang falloff and chemically activated reactions;
-* pressure-dependent Arrhenius (PLOG), with up to 64 rate entries.
+* pressure-dependent Arrhenius (PLOG), with up to 64 rate entries;
+* Chebyshev rates, with up to 8 by 8 coefficients.
 
-Chebyshev, NASA9, non-gas transport, and missing transport are
+NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
 Cantera duplicate reaction ordering is preserved exactly.
 """
@@ -449,8 +450,6 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
     ):
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
 
-    if "chebyshev" in combined:
-        raise ValueError(f"{equation}: Chebyshev reactions are unsupported")
     if any(_has_key_case_insensitive(raw, key) for key in (
         "orders", "negative-orders", "nonreactant-orders"
     )):
@@ -460,6 +459,8 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
     )):
         raise ValueError(f"{equation}: explicit reverse rates are unsupported")
 
+    if "chebyshev" in combined:
+        return "chebyshev"
     if "plog" in combined or "pressure-dependent-arrhenius" in combined:
         return "plog"
     if "chemically-activated" in combined or bool(getattr(rate, "chemically_activated", False)):
@@ -593,7 +594,21 @@ def _reaction_record(
     if species_compositions is not None:
         _validate_element_balance(record, species_compositions)
 
-    if kind == "plog":
+    if kind == "chebyshev":
+        # The rate API exposes coefficients in Cantera's m/kmol/s units, even
+        # when reaction.input_data retains a local input unit system.
+        rate = reaction.rate
+        bounds = [*rate.temperature_range, *rate.pressure_range]
+        record["chebyshev"] = {
+            "bounds": [_positive(v, equation) for v in bounds],
+            "data": [[_as_float(v, equation) for v in row] for row in rate.data],
+        }
+        matrix = record["chebyshev"]["data"]
+        if (len(bounds) != 4 or bounds[1] <= bounds[0] or bounds[3] <= bounds[2]
+                or not 1 <= len(matrix) <= 8 or not 1 <= len(matrix[0]) <= 8
+                or any(len(row) != len(matrix[0]) for row in matrix)):
+            raise ValueError(f"{equation}: invalid Chebyshev bounds or coefficient matrix (maximum 8 by 8)")
+    elif kind == "plog":
         rates = raw.get("rate-constants", [])
         if not 1 <= len(rates) <= 64:
             raise ValueError(f"{equation}: PLOG requires 1--64 rate entries")

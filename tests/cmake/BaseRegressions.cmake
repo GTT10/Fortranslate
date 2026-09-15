@@ -83,7 +83,7 @@ add_executable(
   unit/test_amr_reactive_3d_checkpoint.F90
 )
 target_link_libraries(test_amr_reactive_3d_checkpoint PRIVATE pelef_core)
-foreach(tsang_variant tsang tsang_activated plog)
+foreach(tsang_variant tsang tsang_activated plog chebyshev)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${tsang_variant}_checkpoint")
   add_test(NAME unit_amr_reactive_3d_${tsang_variant}_checkpoint COMMAND test_amr_reactive_3d_checkpoint ${tsang_variant})
   set_tests_properties(unit_amr_reactive_3d_${tsang_variant}_checkpoint PROPERTIES

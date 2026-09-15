@@ -403,7 +403,7 @@ provides the analytical concentration derivative used by the existing kinetic
 Jacobian. AMR/EB checkpoint mechanism records include the five SRI coefficients
 for SRI reactions; MPI mechanism comparisons include them too. Existing
 non-SRI checkpoint records keep their layout. This extends reaction kinetics,
-not the liquid property model. Chebyshev rates remain open. See [focused evidence](validation/sri-20260915.md).
+not the liquid property model. See [focused evidence](validation/sri-20260915.md).
 
 
 ## Chemically activated reactions
@@ -457,3 +457,18 @@ these derivatives need not be continuous at knots.
 PLOG count and coefficients participate in MPI mechanism comparison and
 AMR/EB checkpoint records. Existing non-PLOG checkpoint records retain their
 layout. See [focused evidence](validation/plog-20260915.md).
+
+## Chebyshev temperature/pressure rates
+
+Selected bundles accept Chebyshev coefficient matrices up to 8 by 8, with
+positive, ordered temperature and pressure fit bounds. Coefficients come from
+Cantera's normalized rate API in m/kmol/s units. The runtime evaluates the
+polynomial in inverse temperature and log pressure, with pressure R*T*sum(C),
+and supplies its analytic derivative with respect to every concentration.
+It evaluates the polynomial outside the fit interval when representable;
+this extrapolation does not extend the physical validity of a mechanism fit.
+Zero pressure, malformed tables and unrepresentable logarithmic rates fail.
+
+The matrix, shape and bounds participate in MPI mechanism comparisons and
+AMR/EB checkpoint contexts. Existing reaction kinds retain their checkpoint
+layouts. See [the focused Chebyshev evidence](validation/chebyshev-20260915.md).

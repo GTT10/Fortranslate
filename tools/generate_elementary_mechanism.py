@@ -17,7 +17,7 @@ FALLOFF_TYPES = {"falloff", "sri-falloff", "chemically-activated", "sri-chemical
 TSANG_TYPES = {"tsang-falloff", "tsang-chemically-activated"}
 FALLOFF_TYPES |= TSANG_TYPES
 SRI_TYPES = {"sri-falloff", "sri-chemically-activated"}
-REACTION_TYPES = {"elementary", "three-body", "plog"} | FALLOFF_TYPES
+REACTION_TYPES = {"elementary", "three-body", "plog", "chebyshev"} | FALLOFF_TYPES
 CHEMISTRY_INTEGRATORS = {"explicit", "implicit"}
 TRANSPORT_GEOMETRIES = {"atom": 0, "linear": 1, "nonlinear": 2}
 MAX_SPECIES = 128
@@ -131,6 +131,7 @@ FORTRAN_IMPORTED_IDENTIFIERS = {
     "reaction_kind_tsang",
     "reaction_kind_tsang_activated",
     "reaction_kind_plog",
+    "reaction_kind_chebyshev",
 }
 # Names in the selected-mechanism probe's host scope and in the generated
 # module's procedure scopes.  Every public name emitted by a bundle is
@@ -523,7 +524,18 @@ def validate(data: dict[str, Any]) -> None:
             for name, coefficient in reaction[side].items():
                 if name not in species or finite_float(coefficient, equation) <= 0.0:
                     raise ValueError(f"{equation}: invalid {side}")
-        if reaction_type == "plog":
+        if reaction_type == "chebyshev":
+            cheb = reaction["chebyshev"]
+            bounds = [finite_float(v, equation) for v in cheb["bounds"]]
+            matrix = cheb["data"]
+            if (len(bounds) != 4 or min(bounds) <= 0 or bounds[1] <= bounds[0] or bounds[3] <= bounds[2]
+                    or not 1 <= len(matrix) <= 8 or not 1 <= len(matrix[0]) <= 8
+                    or any(len(row) != len(matrix[0]) for row in matrix)):
+                raise ValueError(f"{equation}: invalid Chebyshev bounds or coefficient matrix (maximum 8 by 8)")
+            for row in matrix:
+                for value in row:
+                    finite_float(value, equation)
+        elif reaction_type == "plog":
             rates = reaction["plog"]
             if not 1 <= len(rates) <= 64:
                 raise ValueError(f"{equation}: PLOG requires 1--64 rate entries")
@@ -789,6 +801,8 @@ def generate(data: dict[str, Any]) -> str:
           if any("chemically-activated" in r.get("type", "") for r in reactions) else []),
         *(["  use elementary_kinetics_mod, only: reaction_kind_tsang, reaction_kind_tsang_activated"]
           if any(r.get("type") in TSANG_TYPES for r in reactions) else []),
+        *(["  use elementary_kinetics_mod, only: reaction_kind_chebyshev"]
+          if any(r.get("type") == "chebyshev" for r in reactions) else []),
         *(["  use elementary_kinetics_mod, only: reaction_kind_plog"]
           if any(r.get("type") == "plog" for r in reactions) else []),
         "  implicit none",
@@ -860,6 +874,7 @@ def generate(data: dict[str, Any]) -> str:
 
     kind_symbol = {
         "plog": "reaction_kind_plog",
+        "chebyshev": "reaction_kind_chebyshev",
         "elementary": "reaction_kind_elementary",
         "three-body": "reaction_kind_three_body",
         "falloff": "reaction_kind_falloff",
@@ -895,7 +910,16 @@ def generate(data: dict[str, Any]) -> str:
                 f"{fortran_real(float(coefficient))}"
             )
 
-        if reaction_type == "plog":
+        if reaction_type == "chebyshev":
+            cheb = reaction["chebyshev"]
+            matrix = cheb["data"]
+            lines.append(f"    reactions({r_index})%chebyshev_shape = [{len(matrix)}, {len(matrix[0])}]")
+            for j, value in enumerate(cheb["bounds"], 1):
+                lines.append(f"    reactions({r_index})%chebyshev_bounds({j}) = {fortran_real(float(value))}")
+            for i, row in enumerate(matrix, 1):
+                for j, value in enumerate(row, 1):
+                    lines.append(f"    reactions({r_index})%chebyshev({i},{j}) = {fortran_real(float(value))}")
+        elif reaction_type == "plog":
             lines.append(f"    reactions({r_index})%plog_count = {len(reaction['plog'])}")
             for j, entry in enumerate(reaction['plog'], 1):
                 for k, key in enumerate(("P", "A", "b", "Ea"), 1):

@@ -21,6 +21,8 @@ module elementary_kinetics_mod
   integer, parameter, public :: reaction_kind_tsang_activated = 8
   integer, parameter, public :: reaction_kind_plog = 9
   integer, parameter, public :: plog_capacity = 64
+  integer, parameter, public :: reaction_kind_chebyshev = 10
+  integer, parameter, public :: chebyshev_capacity = 8
 
   type, public :: arrhenius_rate
     real(dp) :: pre_exponential = 0.0_dp
@@ -51,6 +53,9 @@ module elementary_kinetics_mod
     real(dp) :: tsang(2) = [1.0_dp,0.0_dp]
     integer :: plog_count=0
     real(dp) :: plog(4,plog_capacity)=0.0_dp ! pressure [Pa], A, b, Ea [J/kmol]
+    integer :: chebyshev_shape(2)=0
+    real(dp) :: chebyshev_bounds(4)=0.0_dp ! Tmin, Tmax [K], Pmin, Pmax [Pa]
+    real(dp) :: chebyshev(chebyshev_capacity,chebyshev_capacity)=0.0_dp
   end type elementary_reaction
 
   public :: valid_arrhenius_rate
@@ -114,6 +119,8 @@ contains
         reaction%reactant_stoich)) <= 0.0_dp) return
 
     select case (reaction%kind)
+    case (reaction_kind_chebyshev)
+      if (.not.valid_chebyshev_table(reaction)) return
     case (reaction_kind_plog)
       if (.not.valid_plog_table(reaction)) return
     case (reaction_kind_elementary)
@@ -153,6 +160,64 @@ contains
     valid = all(ieee_is_finite(reaction%third_body_efficiencies)) .and. &
       all(reaction%third_body_efficiencies >= 0.0_dp)
   end function valid_efficiencies
+
+  logical function valid_chebyshev_table(reaction) result(ok)
+    type(elementary_reaction), intent(in) :: reaction
+    integer :: nt,np
+    ok=.false.
+    if (any(reaction%chebyshev_shape<1).or.any(reaction%chebyshev_shape>chebyshev_capacity)) return
+    nt=reaction%chebyshev_shape(1);np=reaction%chebyshev_shape(2)
+    if (.not.all(ieee_is_finite(reaction%chebyshev_bounds))) return
+    if (any(reaction%chebyshev_bounds<=0)) return
+    if (reaction%chebyshev_bounds(2)<=reaction%chebyshev_bounds(1)) return
+    if (reaction%chebyshev_bounds(4)<=reaction%chebyshev_bounds(3)) return
+    if (.not.all(ieee_is_finite(reaction%chebyshev(1:nt,1:np)))) return
+    ok=.true.
+  end function
+
+  subroutine chebyshev_forward_rate(reaction,temperature,total_concentration,rate,derivative,ok)
+    type(elementary_reaction), intent(in) :: reaction
+    real(dp), intent(in) :: temperature,total_concentration
+    real(dp), intent(out) :: rate,derivative
+    logical, intent(out) :: ok
+    real(dp) :: tx(chebyshev_capacity),px(chebyshev_capacity),dx(chebyshev_capacity)
+    real(dp) :: x,y,logp,span,lograte,slope,bounds(4)
+    integer :: i,j,nt,np
+    ok=.false.;rate=0;derivative=0
+    if (.not.valid_chebyshev_table(reaction)) return
+    if (.not.ieee_is_finite(temperature).or..not.ieee_is_finite(total_concentration)) return
+    if (temperature<=0.or.total_concentration<=0) return
+    bounds=reaction%chebyshev_bounds
+    nt=reaction%chebyshev_shape(1);np=reaction%chebyshev_shape(2)
+    ! Log pressure avoids forming R*T*C, which can overflow outside a fit range.
+    logp=log10(universal_gas_constant)+log10(temperature)+log10(total_concentration)
+    span=log10(bounds(4))-log10(bounds(3))
+    if (span<=0.or.1/bounds(2)==1/bounds(1)) return
+    x=(2/temperature-1/bounds(1)-1/bounds(2))/(1/bounds(2)-1/bounds(1))
+    y=(2*logp-log10(bounds(3))-log10(bounds(4)))/span
+    tx=0;px=0;dx=0;tx(1)=1;px(1)=1
+    tx(2)=x;px(2)=y;dx(2)=1
+    do i=3,max(nt,np)
+      if (i<=nt) tx(i)=2*x*tx(i-1)-tx(i-2)
+      if (i<=np) then
+        px(i)=2*y*px(i-1)-px(i-2)
+        dx(i)=2*px(i-1)+2*y*dx(i-1)-dx(i-2)
+      end if
+    end do
+    lograte=0;slope=0
+    do j=1,np
+      do i=1,nt
+        lograte=lograte+reaction%chebyshev(i,j)*tx(i)*px(j)
+        slope=slope+reaction%chebyshev(i,j)*tx(i)*dx(j)
+      end do
+    end do
+    lograte=lograte*log(10.0_dp)
+    if (.not.ieee_is_finite(lograte).or..not.ieee_is_finite(slope)) return
+    if (abs(lograte)>logarithm_limit) return
+    rate=exp(lograte)
+    derivative=2*rate*slope/(total_concentration*span)
+    ok=ieee_is_finite(rate).and.ieee_is_finite(derivative)
+  end subroutine
 
   logical function valid_plog_table(reaction) result(ok)
     type(elementary_reaction), intent(in) :: reaction
@@ -426,6 +491,9 @@ contains
     if (.not. ok) return
 
     select case (reaction%kind)
+    case (reaction_kind_chebyshev)
+      call chebyshev_forward_rate(reaction,temperature,sum(concentrations),rate_constant,derivative_wrt_pressure,ok)
+      if (present(concentration_derivative)) concentration_derivative=derivative_wrt_pressure
     case (reaction_kind_plog)
       call plog_forward_rate(reaction,temperature,sum(concentrations),rate_constant,derivative_wrt_pressure,ok)
       if (present(concentration_derivative)) concentration_derivative=derivative_wrt_pressure

@@ -1,6 +1,6 @@
 program test_amr_reactive_3d_checkpoint
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
-  use elementary_kinetics_mod, only: reaction_kind_plog
+  use elementary_kinetics_mod, only: reaction_kind_plog, reaction_kind_chebyshev
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -79,13 +79,18 @@ program test_amr_reactive_3d_checkpoint
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "elementary mechanism load")
   call get_command_argument(1,variant)
-  if (index(variant,'sri')==1.or.index(variant,'tsang')==1.or.variant=='plog') then
+  if (index(variant,'sri')==1.or.index(variant,'tsang')==1.or.variant=='plog'.or.variant=='chebyshev') then
     reactions(2)%kind=reaction_kind_sri
     if (variant=='sri_activated') reactions(2)%kind=reaction_kind_sri_activated
     if (variant=='tsang') reactions(2)%kind=reaction_kind_tsang
     if (variant=='tsang_activated') reactions(2)%kind=reaction_kind_tsang_activated
     reactions(2)%tsang=[.4_dp,1e-4_dp]
-    if (variant=='plog') then
+    if (variant=='chebyshev') then
+      reactions(2)%kind=reaction_kind_chebyshev;reactions(2)%chebyshev_shape=[2,2]
+      reactions(2)%chebyshev_bounds=[300.0_dp,2500.0_dp,1e3_dp,1e7_dp]
+      reactions(2)%chebyshev(1:2,1)=[9.0_dp,-0.2_dp]
+      reactions(2)%chebyshev(1:2,2)=[0.4_dp,0.1_dp]
+    else if (variant=='plog') then
       reactions(2)%kind=reaction_kind_plog;reactions(2)%plog_count=3
       reactions(2)%plog(:,1)=[1e4_dp,1e9_dp,0.0_dp,1e6_dp]
       reactions(2)%plog(:,2)=[1e5_dp,2e9_dp,0.0_dp,1e6_dp]
@@ -521,7 +526,9 @@ program test_amr_reactive_3d_checkpoint
     "selected composition mismatch transaction")
 
   incompatible_reactions = reactions
-  if (variant=='plog') then
+  if (variant=='chebyshev') then
+    incompatible_reactions(2)%chebyshev(2,2)=0.11_dp
+  else if (variant=='plog') then
     incompatible_reactions(2)%plog(2,3)=1.01_dp*reactions(2)%plog(2,3)
   else if (index(variant,'tsang')==1) then
     incompatible_reactions(2)%tsang(1)=1.01_dp*reactions(2)%tsang(1)

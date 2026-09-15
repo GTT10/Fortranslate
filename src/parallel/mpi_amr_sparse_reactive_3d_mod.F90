@@ -3,7 +3,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
   use constants_mod, only: mechanism_species_capacity
-  use elementary_kinetics_mod, only: plog_capacity
+  use elementary_kinetics_mod, only: plog_capacity, chebyshev_capacity
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -3975,7 +3975,7 @@ contains
       distribution%comm, counts_match, collective_ok)
     if (.not. collective_ok) return
 
-    real_count = 3 * nspecies + 21 + 4*plog_capacity
+    real_count = 3 * nspecies + 27 + 4*plog_capacity + chebyshev_capacity**2
     allocate(local_reals(real_count, local_count))
     allocate(root_reals(real_count, local_count))
     allocate(local_integers(4, local_count))
@@ -4038,6 +4038,11 @@ contains
       local_reals(real_index+11,reaction_index)=real(reactions(reaction_index)%plog_count,dp)
       local_reals(real_index+12:real_index+11+4*plog_capacity,reaction_index)= &
         reshape(reactions(reaction_index)%plog,[4*plog_capacity])
+      real_index=real_index+12+4*plog_capacity
+      local_reals(real_index:real_index+1,reaction_index)=real(reactions(reaction_index)%chebyshev_shape,dp)
+      local_reals(real_index+2:real_index+5,reaction_index)=reactions(reaction_index)%chebyshev_bounds
+      local_reals(real_index+6:real_index+5+chebyshev_capacity**2,reaction_index)= &
+        reshape(reactions(reaction_index)%chebyshev,[chebyshev_capacity**2])
     end do
     root_reals = local_reals
     root_integers = local_integers

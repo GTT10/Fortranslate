@@ -1,6 +1,7 @@
 module amr_reactive_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
+  use elementary_kinetics_mod, only: reaction_kind_chebyshev, chebyshev_capacity
   use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -1112,6 +1113,14 @@ contains
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
         if (status/=0) return
       end if
+      if (reactions(reaction_index)%kind==reaction_kind_chebyshev) then
+        write(unit,'(2(i0,1x))',iostat=status) reactions(reaction_index)%chebyshev_shape
+        if (status/=0) return
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev_bounds
+        if (status/=0) return
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev
+        if (status/=0) return
+      end if
       if (reactions(reaction_index)%kind==reaction_kind_plog) then
         write(unit,'(i0)',iostat=status) reactions(reaction_index)%plog_count
         if (status/=0) return
@@ -1150,6 +1159,8 @@ contains
     real(dp), allocatable :: stored_reactants(:), stored_products(:)
     real(dp), allocatable :: stored_efficiencies(:)
     real(dp) :: stored_rates(9), expected_rates(9)
+    real(dp) :: stored_chebyshev(chebyshev_capacity,chebyshev_capacity),stored_chebyshev_bounds(4)
+    integer :: stored_chebyshev_shape(2)
     real(dp) :: stored_plog(4)
     integer :: stored_plog_count
     real(dp) :: stored_tsang(2)
@@ -1367,6 +1378,22 @@ contains
         if (status/=0) return
         if (.not.all(ieee_is_finite(stored_tsang))) return
         if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) return
+        message=""
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_chebyshev) then
+        message="Selected 3D AMR checkpoint mechanism mismatch"
+        read(unit,*,iostat=status) stored_chebyshev_shape
+        if (status/=0) return
+        if (any(stored_chebyshev_shape/=reactions(reaction_index)%chebyshev_shape)) return
+        read(unit,*,iostat=status) stored_chebyshev_bounds
+        if (status/=0) return
+        if (.not.all(ieee_is_finite(stored_chebyshev_bounds))) return
+        if (.not.all(checkpoint_real_matches(stored_chebyshev_bounds, &
+            reactions(reaction_index)%chebyshev_bounds))) return
+        read(unit,*,iostat=status) stored_chebyshev
+        if (status/=0) return
+        if (.not.all(ieee_is_finite(stored_chebyshev))) return
+        if (.not.all(checkpoint_real_matches(stored_chebyshev,reactions(reaction_index)%chebyshev))) return
         message=""
       end if
       if (reactions(reaction_index)%kind==reaction_kind_plog) then

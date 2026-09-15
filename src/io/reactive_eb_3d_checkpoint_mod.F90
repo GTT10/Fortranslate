@@ -1,6 +1,7 @@
 module reactive_eb_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
+  use elementary_kinetics_mod, only: reaction_kind_chebyshev, chebyshev_capacity
   use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
   use constants_mod, only: density_floor
@@ -234,6 +235,14 @@ contains
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
         if (status/=0) go to 900
       end if
+      if (reactions(reaction_index)%kind==reaction_kind_chebyshev) then
+        write(unit,'(2(i0,1x))',iostat=status) reactions(reaction_index)%chebyshev_shape
+        if (status/=0) go to 900
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev_bounds
+        if (status/=0) go to 900
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev
+        if (status/=0) go to 900
+      end if
       if (reactions(reaction_index)%kind==reaction_kind_plog) then
         write(unit,'(i0)',iostat=status) reactions(reaction_index)%plog_count
         if (status/=0) go to 900
@@ -435,6 +444,8 @@ contains
     real(dp) :: candidate_element_integrals(3)
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
+    real(dp) :: stored_chebyshev(chebyshev_capacity,chebyshev_capacity),stored_chebyshev_bounds(4)
+    integer :: stored_chebyshev_shape(2)
     real(dp) :: stored_plog(4)
     integer :: stored_plog_count
     real(dp) :: stored_tsang(2)
@@ -710,6 +721,20 @@ contains
         if (status/=0) go to 900
         if (.not.all(ieee_is_finite(stored_tsang))) go to 900
         if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) go to 900
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_chebyshev) then
+        read(unit,*,iostat=status) stored_chebyshev_shape
+        if (status/=0) go to 900
+        if (any(stored_chebyshev_shape/=reactions(reaction_index)%chebyshev_shape)) go to 900
+        read(unit,*,iostat=status) stored_chebyshev_bounds
+        if (status/=0) go to 900
+        if (.not.all(ieee_is_finite(stored_chebyshev_bounds))) go to 900
+        if (.not.all(checkpoint_real_matches(stored_chebyshev_bounds, &
+            reactions(reaction_index)%chebyshev_bounds))) go to 900
+        read(unit,*,iostat=status) stored_chebyshev
+        if (status/=0) go to 900
+        if (.not.all(ieee_is_finite(stored_chebyshev))) go to 900
+        if (.not.all(checkpoint_real_matches(stored_chebyshev,reactions(reaction_index)%chebyshev))) go to 900
       end if
       if (reactions(reaction_index)%kind==reaction_kind_plog) then
         read(unit,*,iostat=status) stored_plog_count

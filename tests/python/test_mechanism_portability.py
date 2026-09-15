@@ -92,6 +92,36 @@ class Lindemann(unittest.TestCase):
                                            'low-P-rate-constant': {'A': 2., 'b': 0., 'Ea': 0.},
                                            'high-P-rate-constant': {'A': 3., 'b': 0., 'Ea': 0.}})
 
+    def test_chebyshev_import_generation_and_invalid_tables(self):
+        reaction = self.reaction()
+        reaction.reaction_type = 'Chebyshev'
+        reaction.input_data = {'type': 'Chebyshev', 'data': [[99.]]}
+        reaction.rate = SimpleNamespace(temperature_range=[300., 2500.], pressure_range=[1e3, 1e7],
+                                        data=[[9., .4], [-.3, .08]])
+        record = ingest._reaction_record(reaction, ['A', 'B'], 0)
+        self.assertEqual(record['chebyshev']['data'], reaction.rate.data)
+        data = {'module_name': 'cheb_mod', 'loader_name': 'load_cheb', 'kernel_name': 'cheb_rates',
+                'symbol_prefix': 'cheb', 'species': ['A', 'B'], 'reactions': [record]}
+        generator.validate(data)
+        text = generator.generate(data)
+        self.assertIn('reaction_kind_chebyshev', text)
+        self.assertIn('%chebyshev_shape = [2, 2]', text)
+        self.assertIn('%chebyshev(2,2)', text)
+        for bounds, matrix in [([300, 300, 1e3, 1e7], [[9]]),
+                               ([300, 2500, 0, 1e7], [[9]]),
+                               ([300, 2500, 1e3, 1e7], []),
+                               ([300, 2500, 1e3, 1e7], [[9], [1, 2]]),
+                               ([300, 2500, 1e3, 1e7], [[9]*9]),
+                               ([300, 2500, 1e3, 1e7], [[float('nan')]])]:
+            record['chebyshev'] = {'bounds': bounds, 'data': matrix}
+            with self.assertRaises(ValueError):
+                generator.validate(data)
+            reaction.rate.temperature_range = bounds[:2]
+            reaction.rate.pressure_range = bounds[2:]
+            reaction.rate.data = matrix
+            with self.assertRaises(ValueError):
+                ingest._reaction_record(reaction, ['A', 'B'], 0)
+
     def test_lindemann_uses_existing_no_troe_runtime_path(self):
         record = ingest._reaction_record(self.reaction(), ['A', 'B'], 0)
         self.assertEqual(record['type'], 'falloff')
