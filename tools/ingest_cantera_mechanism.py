@@ -14,7 +14,7 @@ The accepted mechanism subset is deliberately small:
 * NASA7 species with gas Lennard-Jones transport data;
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
-* Lindemann, Troe, or SRI falloff and chemically activated reactions.
+* Lindemann, Troe, SRI, or Tsang falloff and chemically activated reactions.
 
 PLOG, Chebyshev, NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
@@ -447,15 +447,11 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
         getattr(reaction, "allow_nonreactant_orders", False)
     ):
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
-    if rate_subtype in {"tsang"}:
-        raise ValueError(f"{equation}: {rate_subtype} falloff is unsupported")
 
     if "plog" in combined or "pressure-dependent-arrhenius" in combined:
         raise ValueError(f"{equation}: PLOG reactions are unsupported")
     if "chebyshev" in combined:
         raise ValueError(f"{equation}: Chebyshev reactions are unsupported")
-    if "tsang" in combined or _has_key_case_insensitive(raw, "Tsang"):
-        raise ValueError(f"{equation}: Tsang falloff is unsupported")
     if any(_has_key_case_insensitive(raw, key) for key in (
         "orders", "negative-orders", "nonreactant-orders"
     )):
@@ -605,7 +601,18 @@ def _reaction_record(
         )
         troe = _troe_record(raw, equation)
         sri = _key_case_insensitive(raw, "SRI")
-        if sri is not None:
+        tsang = _key_case_insensitive(raw, "Tsang")
+        if tsang is not None:
+            if sri is not None or troe is not None:
+                raise ValueError(f"{equation}: conflicting falloff models")
+            values = _mapping(tsang, f"{equation} Tsang")
+            a = _as_float(values["A"], f"{equation} Tsang A")
+            b = _as_float(values.get("B", 0.), f"{equation} Tsang B")
+            if a <= 0 and b <= 0:
+                raise ValueError(f"{equation}: nonpositive Tsang center")
+            record["tsang"] = {"A": a, "B": b}
+            record["type"] = "tsang-" + kind
+        elif sri is not None:
             if troe is not None:
                 raise ValueError(f"{equation}: conflicting falloff models")
             values = _mapping(sri, f"{equation} SRI")

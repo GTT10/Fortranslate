@@ -403,13 +403,13 @@ provides the analytical concentration derivative used by the existing kinetic
 Jacobian. AMR/EB checkpoint mechanism records include the five SRI coefficients
 for SRI reactions; MPI mechanism comparisons include them too. Existing
 non-SRI checkpoint records keep their layout. This extends reaction kinetics,
-not the liquid property model. PLOG, Chebyshev and Tsang rates remain open. See [focused evidence](validation/sri-20260915.md).
+not the liquid property model. PLOG and Chebyshev rates remain open. See [focused evidence](validation/sri-20260915.md).
 
 
 ## Chemically activated reactions
 
 Cantera `type: chemically-activated` reactions now use the same supported
-Lindemann, Troe or SRI broadening data as falloff reactions. Their rate is
+Lindemann, Troe, SRI or Tsang broadening data as falloff reactions. Their rate is
 `k0 F / (1 + Pr)`, with `Pr = k0 [M] / kinfinity`; the runtime supplies the
 corresponding analytic concentration derivative. This is distinct from the
 ordinary falloff prefactor. Normalized bundles use `chemically-activated`
@@ -420,3 +420,19 @@ and checkpoint records. SRI coefficients persist for both pressure laws, and a
 changed coefficient rejects AMR restart. The existing reduced-pressure floor
 also applies to the broadening calculation; below it the broadening derivative
 is zero for the activated branch. See [focused evidence](validation/activated-rates-20260915.md).
+
+
+## Tsang broadening
+
+The selected importer accepts Cantera `Tsang: {A: ..., B: ...}` data for both
+falloff and chemically activated reactions. B defaults to zero. Normalized
+bundles use `tsang-falloff` or `tsang-chemically-activated` and a `tsang`
+coefficient mapping. The center factor is `A+B*T`; the rest of the broadening
+and its concentration derivative use the existing Troe expressions. Both
+coefficients must be finite and the center must be positive at the evaluated
+temperature. A nonpositive center rejects the rate calculation.
+
+Tsang has separate reaction kinds and coefficient storage. AMR/EB checkpoint
+records and MPI mechanism comparisons include both coefficients. Legacy
+non-Tsang checkpoint layouts are preserved. See
+[focused evidence](validation/tsang-20260915.md).

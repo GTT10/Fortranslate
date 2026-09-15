@@ -977,7 +977,7 @@ contains
     allocate(troe_enabled(nreactions))
     allocate(species_values(18 * nspecies))
     allocate(transport_values(5 * nspecies))
-    reaction_stride = 3 * nspecies + 18
+    reaction_stride = 3 * nspecies + 20
     allocate(reaction_values(reaction_stride * nreactions))
     species_values = 0.0_dp
     transport_values = 0.0_dp
@@ -1046,6 +1046,7 @@ contains
         reactions(reaction_index)%troe%temperature_1, &
         reactions(reaction_index)%troe%temperature_2]
       reaction_values(value_offset+14:value_offset+18)=reactions(reaction_index)%sri
+      reaction_values(value_offset+19:value_offset+20)=reactions(reaction_index)%tsang
     end do
     local_ok = all(ieee_is_finite(species_values))
     if (local_ok) local_ok = all(ieee_is_finite(transport_values))

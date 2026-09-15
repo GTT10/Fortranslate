@@ -1,5 +1,6 @@
 module reactive_eb_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use precision_mod, only: dp
   use constants_mod, only: density_floor
   use state_indices_mod, only: irho, iet
@@ -227,6 +228,11 @@ contains
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
         if (status/=0) go to 900
       end if
+      if (reactions(reaction_index)%kind==reaction_kind_tsang.or. &
+          reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
+        if (status/=0) go to 900
+      end if
       if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
         write(unit, '(*(es27.18e3,1x))', iostat=status) &
           reactions(reaction_index)%third_body_efficiencies
@@ -420,6 +426,7 @@ contains
     real(dp) :: candidate_element_integrals(3)
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
+    real(dp) :: stored_tsang(2)
     real(dp) :: stored_sri(5)
     real(dp) :: stored_troe_values(4), expected_troe_values(4)
     real(dp) :: stored_transport_values(5), expected_transport_values(5)
@@ -685,6 +692,13 @@ contains
         if (status/=0) go to 900
         if (.not.all(ieee_is_finite(stored_sri))) go to 900
         if (.not.all(checkpoint_real_matches(stored_sri,reactions(reaction_index)%sri))) go to 900
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_tsang.or. &
+          reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
+        read(unit,*,iostat=status) stored_tsang
+        if (status/=0) go to 900
+        if (.not.all(ieee_is_finite(stored_tsang))) go to 900
+        if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) go to 900
       end if
       if (stored_has_efficiency == 1) then
         allocate(stored_efficiencies(size(species)))

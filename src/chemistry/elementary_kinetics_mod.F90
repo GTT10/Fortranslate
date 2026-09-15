@@ -17,6 +17,8 @@ module elementary_kinetics_mod
   integer, parameter, public :: reaction_kind_sri = 4
   integer, parameter, public :: reaction_kind_activated = 5
   integer, parameter, public :: reaction_kind_sri_activated = 6
+  integer, parameter, public :: reaction_kind_tsang = 7
+  integer, parameter, public :: reaction_kind_tsang_activated = 8
 
   type, public :: arrhenius_rate
     real(dp) :: pre_exponential = 0.0_dp
@@ -44,6 +46,7 @@ module elementary_kinetics_mod
     type(troe_parameters) :: troe
     logical :: reversible = .true.
     real(dp) :: sri(5) = [1.0_dp,0.0_dp,1.0_dp,1.0_dp,0.0_dp]
+    real(dp) :: tsang(2) = [1.0_dp,0.0_dp]
   end type elementary_reaction
 
   public :: valid_arrhenius_rate
@@ -112,11 +115,16 @@ contains
     case (reaction_kind_three_body)
       if (.not. valid_arrhenius_rate(reaction%forward_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
-    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated)
+    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated, &
+        reaction_kind_tsang,reaction_kind_tsang_activated)
       if (.not. valid_arrhenius_rate(reaction%low_pressure_rate)) return
       if (.not. valid_arrhenius_rate(reaction%high_pressure_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
       if (.not. valid_troe_parameters(reaction%troe)) return
+      if (reaction%kind==reaction_kind_tsang.or.reaction%kind==reaction_kind_tsang_activated) then
+        if (reaction%troe%enabled.or..not.all(ieee_is_finite(reaction%tsang))) return
+        if (all(reaction%tsang<=0)) return
+      end if
       if (reaction%kind==reaction_kind_sri.or.reaction%kind==reaction_kind_sri_activated) then
         if (reaction%troe%enabled.or..not.all(ieee_is_finite(reaction%sri))) return
         if (reaction%sri(1)<0.or.reaction%sri(3)<0.or.reaction%sri(4)<=0) return
@@ -261,8 +269,9 @@ contains
 
   real(dp) function troe_falloff_factor( &
       parameters, temperature, reduced_pressure, ok, &
-      logarithmic_derivative) result(falloff_factor)
+      logarithmic_derivative,center_override) result(falloff_factor)
     type(troe_parameters), intent(in) :: parameters
+    real(dp), intent(in), optional :: center_override
     real(dp), intent(in) :: temperature, reduced_pressure
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: logarithmic_derivative
@@ -278,13 +287,17 @@ contains
       ieee_is_finite(temperature) .and. ieee_is_finite(reduced_pressure) .and. &
       valid_troe_parameters(parameters)
     if (.not. ok) return
-    if (.not. parameters%enabled) return
+    if (.not.parameters%enabled.and..not.present(center_override)) return
 
+    if (present(center_override)) then
+      f_center=center_override
+    else
     f_center = (1.0_dp - parameters%alpha) * &
       exp(-temperature / parameters%temperature_3) + &
       parameters%alpha * exp(-temperature / parameters%temperature_1)
     if (parameters%temperature_2 > 0.0_dp) then
       f_center = f_center + exp(-parameters%temperature_2 / temperature)
+    end if
     end if
     if (f_center <= 0.0_dp .or. .not. ieee_is_finite(f_center)) then
       ok = .false.
@@ -360,7 +373,8 @@ contains
         concentration_derivative = base_rate * &
           reaction%third_body_efficiencies
       end if
-    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated)
+    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated, &
+        reaction_kind_tsang,reaction_kind_tsang_activated)
       if (.not. valid_efficiencies(reaction, size(concentrations))) then
         ok = .false.
         return
@@ -380,20 +394,25 @@ contains
       reduced_pressure = low_rate * third_body / high_rate
       if (reaction%kind==reaction_kind_sri.or.reaction%kind==reaction_kind_sri_activated) then
         falloff_factor=sri_falloff_factor(reaction%sri,temperature,reduced_pressure,ok,log_factor_derivative)
+      else if (reaction%kind==reaction_kind_tsang.or.reaction%kind==reaction_kind_tsang_activated) then
+        falloff_factor=troe_falloff_factor(reaction%troe,temperature,reduced_pressure,ok, &
+          log_factor_derivative,reaction%tsang(1)+reaction%tsang(2)*temperature)
       else
       falloff_factor = troe_falloff_factor( &
         reaction%troe, temperature, reduced_pressure, ok, &
         log_factor_derivative)
       end if
       if (.not. ok) return
-      if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated) then
+      if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated.or. &
+          reaction%kind==reaction_kind_tsang_activated) then
         rate_constant=low_rate/(1+reduced_pressure)*falloff_factor
       else
         rate_constant = high_rate * reduced_pressure / &
           (1.0_dp + reduced_pressure) * falloff_factor
       end if
       if (present(concentration_derivative)) then
-        if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated) then
+        if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated.or. &
+          reaction%kind==reaction_kind_tsang_activated) then
           derivative_wrt_third_body=-rate_constant/(1+reduced_pressure)*(low_rate/high_rate)
           if (reduced_pressure>minimum_reduced_pressure) &
             derivative_wrt_third_body=derivative_wrt_third_body+rate_constant*log_factor_derivative/third_body

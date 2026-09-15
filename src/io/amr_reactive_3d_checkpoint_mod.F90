@@ -1,5 +1,6 @@
 module amr_reactive_3d_checkpoint_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: &
@@ -1105,6 +1106,11 @@ contains
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
         if (status/=0) return
       end if
+      if (reactions(reaction_index)%kind==reaction_kind_tsang.or. &
+          reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
+        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
+        if (status/=0) return
+      end if
       if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
         write(unit, '(*(es27.18e3,1x))', iostat=status) &
           reactions(reaction_index)%third_body_efficiencies
@@ -1135,6 +1141,7 @@ contains
     real(dp), allocatable :: stored_reactants(:), stored_products(:)
     real(dp), allocatable :: stored_efficiencies(:)
     real(dp) :: stored_rates(9), expected_rates(9)
+    real(dp) :: stored_tsang(2)
     real(dp) :: stored_sri(5)
     real(dp) :: stored_troe(4), expected_troe(4)
     real(dp) :: stored_controls(2), expected_controls(2)
@@ -1340,6 +1347,15 @@ contains
         if (status/=0) return
         if (.not.all(ieee_is_finite(stored_sri))) return
         if (.not.all(checkpoint_real_matches(stored_sri,reactions(reaction_index)%sri))) return
+        message=""
+      end if
+      if (reactions(reaction_index)%kind==reaction_kind_tsang.or. &
+          reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
+        message="Selected 3D AMR checkpoint mechanism mismatch"
+        read(unit,*,iostat=status) stored_tsang
+        if (status/=0) return
+        if (.not.all(ieee_is_finite(stored_tsang))) return
+        if (.not.all(checkpoint_real_matches(stored_tsang,reactions(reaction_index)%tsang))) return
         message=""
       end if
       if (efficiency_size > 0) then

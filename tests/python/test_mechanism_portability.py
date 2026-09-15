@@ -135,6 +135,23 @@ class Lindemann(unittest.TestCase):
             generator.validate(data)
             self.assertIn('reaction_kind_', generator.generate(data))
 
+    def test_tsang_import_and_generation(self):
+        r = self.reaction();r.rate.sub_type = 'Tsang';r.reaction_type = 'falloff-Tsang'
+        r.input_data['Tsang'] = {'A': .4}
+        record = ingest._reaction_record(r, ['A', 'B'], 0)
+        self.assertEqual(record['type'], 'tsang-falloff')
+        self.assertEqual(record['tsang']['B'], 0.)
+        data = {'module_name': 'ts_mod', 'loader_name': 'load_ts', 'kernel_name': 'ts_rates',
+                'symbol_prefix': 'ts', 'species': ['A', 'B'], 'reactions': [record]}
+        generator.validate(data)
+        self.assertIn('%tsang(2)', generator.generate(data))
+        record['troe'] = {'A': .5, 'T1': 1000., 'T3': 100.}
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+        del record['troe'];record['tsang']['A'] = -1
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+
     def test_unknown_or_malformed_falloff_not_silently_lindemann(self):
         for subtype, kind in [('Troe', 'falloff-Troe'), ('', 'falloff-Lindemann'),
                               ('Lindemann', 'falloff-unknown'), ('SRI', 'falloff-SRI'),

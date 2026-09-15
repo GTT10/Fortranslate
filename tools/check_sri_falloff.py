@@ -13,7 +13,7 @@ def main():
     import numpy as np
     parser=argparse.ArgumentParser()
     parser.add_argument('--activated',action='store_true')
-    parser.add_argument('--model',choices=['sri','troe','lindemann'],default='sri')
+    parser.add_argument('--model',choices=['sri','troe','lindemann','tsang'],default='sri')
     parser.add_argument('--build-dir',type=Path,required=True)
     parser.add_argument('--work-dir',type=Path,required=True)
     args=parser.parse_args()
@@ -28,6 +28,7 @@ def main():
         'SRI':{'A':1.2,'B':500.,'C':1000.,'D':.8,'E':.1}}
     if args.model != 'sri': del data['SRI']
     if args.model == 'troe': data['Troe']={'A':.6,'T3':100.,'T1':1000.,'T2':5000.}
+    if args.model == 'tsang': data['Tsang']={'A':.4,'B':1e-4}
     reaction=ct.Reaction.from_dict(data,parent)
     gas=ct.Solution(thermo='ideal-gas',kinetics='gas',species=parent.species(),reactions=[reaction],transport_model='mixture-averaged')
     gas.name='sri';gas.write_yaml(work/'sri.yaml')
@@ -56,6 +57,12 @@ def main():
  end do
 end program
 ''')
+    if args.model == 'tsang':
+        probe = work/'probe.F90'
+        probe.write_text(probe.read_text().replace('end program', """r(1)%tsang=[.4_dp,-.001_dp]
+ call reaction_effective_forward_rate(r(1),1000.0_dp,c,k,dk,ok)
+ if(ok) error stop 'nonpositive Tsang center accepted'
+end program"""))
     subprocess.run(['gfortran','-fcheck=all','-ffpe-trap=invalid,zero,overflow',
         '-I'+str(args.build_dir.resolve()/'modules'),str(work/'sri.F90'),str(work/'probe.F90'),
         str(args.build_dir.resolve()/'libpelef_core.a'),'-o',str(work/'probe')],cwd=work,check=True)

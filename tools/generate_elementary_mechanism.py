@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 FALLOFF_TYPES = {"falloff", "sri-falloff", "chemically-activated", "sri-chemically-activated"}
+TSANG_TYPES = {"tsang-falloff", "tsang-chemically-activated"}
+FALLOFF_TYPES |= TSANG_TYPES
 SRI_TYPES = {"sri-falloff", "sri-chemically-activated"}
 REACTION_TYPES = {"elementary", "three-body"} | FALLOFF_TYPES
 CHEMISTRY_INTEGRATORS = {"explicit", "implicit"}
@@ -126,6 +128,8 @@ FORTRAN_IMPORTED_IDENTIFIERS = {
     "reaction_kind_sri",
     "reaction_kind_activated",
     "reaction_kind_sri_activated",
+    "reaction_kind_tsang",
+    "reaction_kind_tsang_activated",
 }
 # Names in the selected-mechanism probe's host scope and in the generated
 # module's procedure scopes.  Every public name emitted by a bundle is
@@ -502,6 +506,16 @@ def validate(data: dict[str, Any]) -> None:
             raise ValueError(f"{equation}: unsupported reaction type")
         if "sri" in reaction and reaction_type not in SRI_TYPES:
             raise ValueError(f"{equation}: SRI requires sri-falloff type")
+        if reaction_type in TSANG_TYPES:
+            if "troe" in reaction or "sri" in reaction:
+                raise ValueError(f"{equation}: conflicting falloff models")
+            tsang = reaction["tsang"]
+            a = finite_float(tsang["A"], equation)
+            b = finite_float(tsang.get("B", 0.), equation)
+            if a <= 0 and b <= 0:
+                raise ValueError(f"{equation}: nonpositive Tsang center")
+        elif "tsang" in reaction:
+            raise ValueError(f"{equation}: Tsang requires a Tsang reaction type")
         for side in ("reactants", "products"):
             if not reaction[side]:
                 raise ValueError(f"{equation}: empty {side}")
@@ -762,6 +776,8 @@ def generate(data: dict[str, Any]) -> str:
         (", reaction_kind_sri" if any(r.get("type") in SRI_TYPES for r in reactions) else ""),
         *(["  use elementary_kinetics_mod, only: reaction_kind_activated, reaction_kind_sri_activated"]
           if any("chemically-activated" in r.get("type", "") for r in reactions) else []),
+        *(["  use elementary_kinetics_mod, only: reaction_kind_tsang, reaction_kind_tsang_activated"]
+          if any(r.get("type") in TSANG_TYPES for r in reactions) else []),
         "  implicit none",
         "  private",
         "",
@@ -836,6 +852,8 @@ def generate(data: dict[str, Any]) -> str:
         "sri-falloff": "reaction_kind_sri",
         "chemically-activated": "reaction_kind_activated",
         "sri-chemically-activated": "reaction_kind_sri_activated",
+        "tsang-falloff": "reaction_kind_tsang",
+        "tsang-chemically-activated": "reaction_kind_tsang_activated",
     }
     for r_index, reaction in enumerate(reactions, start=1):
         reaction_type = reaction.get("type", "elementary")
@@ -900,6 +918,9 @@ def generate(data: dict[str, Any]) -> str:
                       [("A", None), ("B", None), ("C", None), ("D", 1.), ("E", 0.)]]
             for k, value in enumerate(values, 1):
                 lines.append(f"    reactions({r_index})%sri({k}) = {fortran_real(float(value))}")
+        if reaction_type in TSANG_TYPES:
+            for k, value in enumerate([reaction['tsang']['A'], reaction['tsang'].get('B', 0.)], 1):
+                lines.append(f"    reactions({r_index})%tsang({k}) = {fortran_real(float(value))}")
         troe = reaction.get("troe")
         if troe is not None:
             lines += [

@@ -1,4 +1,5 @@
 program test_amr_reactive_3d_checkpoint
+  use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -77,9 +78,12 @@ program test_amr_reactive_3d_checkpoint
   call load_h2o2_elementary_mechanism(reactions, ok)
   call require(ok, "elementary mechanism load")
   call get_command_argument(1,variant)
-  if (variant=='sri'.or.variant=='sri_activated') then
+  if (index(variant,'sri')==1.or.index(variant,'tsang')==1) then
     reactions(2)%kind=reaction_kind_sri
     if (variant=='sri_activated') reactions(2)%kind=reaction_kind_sri_activated
+    if (variant=='tsang') reactions(2)%kind=reaction_kind_tsang
+    if (variant=='tsang_activated') reactions(2)%kind=reaction_kind_tsang_activated
+    reactions(2)%tsang=[.4_dp,1e-4_dp]
     reactions(2)%low_pressure_rate=reactions(2)%forward_rate
     reactions(2)%high_pressure_rate=reactions(2)%forward_rate
     allocate(reactions(2)%third_body_efficiencies(size(species)))
@@ -510,7 +514,9 @@ program test_amr_reactive_3d_checkpoint
     "selected composition mismatch transaction")
 
   incompatible_reactions = reactions
-  if (variant=='sri'.or.variant=='sri_activated') then
+  if (index(variant,'tsang')==1) then
+    incompatible_reactions(2)%tsang(1)=1.01_dp*reactions(2)%tsang(1)
+  else if (variant=='sri'.or.variant=='sri_activated') then
     incompatible_reactions(2)%sri(4)=1.01_dp*reactions(2)%sri(4)
   else
     incompatible_reactions(1)%forward_rate%pre_exponential = &
