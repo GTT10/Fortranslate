@@ -57,6 +57,42 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_port_breakup_properties_restart(self):
+        common = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                  "injection_port_axes=1,0,0,1,0,0,injection_port_fractions=.5,.5,"
+                  "injection_speed=500,cone_angle=0,gas_pressure=1e7,"
+                  "surface_tension=.072,liquid_viscosity=.001,"
+                  "port_surface_tensions=.072,.035,port_liquid_viscosities=.001,.002,"
+                  "port_viscosity_models='constant','inverse-temperature',"
+                  "port_viscosity_coefficients(:,2)=.001,.33,0,0,"
+                  "port_viscosity_temperature_ranges(:,2)=300,400,"
+                  "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,transport_enabled=.false.,")
+        for model in ['etab', 'khrt']:
+            settings = common+f"breakup_model='{model}',"
+            name = 'port_'+model
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                parcels = list(csv.DictReader(stream))
+            self.assertEqual([int(p['material_id']) for p in parcels], [1, 1, 2, 2])
+            # Different properties must alter the actual breakup state, not only metadata.
+            self.assertNotEqual((parcels[0]['diameter'], parcels[0]['deformation']),
+                                (parcels[2]['diameter'], parcels[2]['deformation']))
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('.072,.035', '.072,.04'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('bad_port_sigma', common=common+"breakup_model='etab',port_surface_tensions=.072,0,", fail=True)
+        self.run_case('bad_port_mu_range', common=(common+"breakup_model='etab',").replace('300,400', '350,400'),
+                      fail=True)
+        self.run_case('unused_port_mu', common='port_liquid_viscosities=.001,', fail=True)
+
     def test_port_property_models_restart(self):
         settings = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                     "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,"

@@ -226,13 +226,15 @@ contains
   end subroutine
 
   subroutine advance_spray_coupling_3d(species, transport, liquid, options, state, temperature, &
-      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change,materials)
+      lower, spacing, parcels, interval, substeps, ok, message, boundary_faces,boundary_change,materials,breakup_options)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid) :: material
     type(spray_options), intent(in) :: options
+    type(spray_options), intent(in), optional :: breakup_options(:)
+    type(spray_options) :: local_breakup
     real(dp), intent(inout) :: state(:,:,:,:), temperature(:,:,:)
     real(dp), intent(in) :: lower(3), spacing(3), interval
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -274,6 +276,14 @@ contains
     if (.not. all(ieee_is_finite([lower,spacing,interval]))) return
     if (any(spacing < 1.0e-12_dp) .or. any(spacing > 1.0e9_dp)) return
     if (maxval(abs(lower)) > 1.0e9_dp .or. interval < 0.0_dp .or. interval > 1.0e6_dp) return
+    if (present(breakup_options)) then
+      if (.not.present(materials)) return
+      if (size(breakup_options)/=size(materials)) return
+      do p=1,size(breakup_options)
+        if (.not.valid_spray_options(breakup_options(p))) return
+        if (breakup_options(p)%breakup_model/=options%breakup_model) return
+      end do
+    end if
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
       material=select_spray_liquid(parcels(p),liquid,materials)
@@ -295,6 +305,12 @@ contains
     volume=product(spacing); total_steps=0
     do p=1,size(drops)
       material=select_spray_liquid(drops(p),liquid,materials)
+      local_breakup=options
+      if (present(breakup_options)) then
+        local_breakup=breakup_options(drops(p)%material_id)
+        local_breakup%minimum_diameter=options%minimum_diameter
+        local_breakup%maximum_substeps=options%maximum_substeps
+      end if
       elapsed=0.0_dp
       do while (elapsed < interval .and. drops(p)%mass > 0.0_dp)
         if (total_steps >= options%maximum_substeps) then
@@ -362,7 +378,7 @@ contains
         if (.not. accepted) then
           message='Spray feedback cannot preserve gas/material admissibility; complete update rolled back'; return
         end if
-        call advance_spray_breakup(next,material,options,sampled(1),film%gas_velocity, &
+        call advance_spray_breakup(next,material,local_breakup,sampled(1),film%gas_velocity, &
           film%density,film%viscosity,dt,local_ok)
         if (.not.local_ok) then
           message='Spray breakup rejected; complete coupling step rolled back'; return

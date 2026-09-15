@@ -25,6 +25,11 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
+    logical :: port_breakup_properties
+    real(dp) :: port_surface_tensions(16),port_liquid_viscosities(16)
+    character(len=24) :: port_viscosity_models(16)
+    real(dp) :: port_viscosity_coefficients(4,16),port_viscosity_temperature_ranges(2,16)
+    type(spray_options), allocatable :: breakup_options(:)
     logical :: port_property_models
     character(len=16) :: port_density_models(16),port_vapor_pressure_models(16),port_boiling_models(16)
     real(dp) :: port_density_coefficients(4,16),port_density_temperature_ranges(2,16)
@@ -106,6 +111,8 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,initial_liquid_mass,parcel_count, &
+      port_surface_tensions,port_liquid_viscosities,port_viscosity_models, &
+      port_viscosity_coefficients,port_viscosity_temperature_ranges, &
       port_density_models,port_vapor_pressure_models,port_boiling_models,port_critical_temperatures, &
       port_density_coefficients,port_density_temperature_ranges,port_antoine_coefficients,port_antoine_temperature_ranges, &
       port_vapor_names,port_liquid_densities,port_liquid_cps,port_reference_temperatures, &
@@ -119,6 +126,8 @@ contains
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    port_surface_tensions=-1;port_liquid_viscosities=-1;port_viscosity_models=''
+    port_viscosity_coefficients=0;port_viscosity_temperature_ranges=0
     port_density_models='constant';port_vapor_pressure_models='clausius';port_boiling_models='reject'
     port_density_coefficients=0;port_density_temperature_ranges=0
     port_antoine_coefficients=0;port_antoine_temperature_ranges=0;port_critical_temperatures=0
@@ -300,7 +309,19 @@ contains
       any(port_boiling_models/='reject').or.any(port_density_coefficients/=0).or. &
       any(port_density_temperature_ranges/=0).or.any(port_antoine_coefficients/=0).or. &
       any(port_antoine_temperature_ranges/=0).or.any(port_critical_temperatures/=0)
-    multi_material=port_property_models.or.any(port_vapor_names/='').or. &
+    if (.not.all(ieee_is_finite(port_surface_tensions)).or. &
+        .not.all(ieee_is_finite(port_liquid_viscosities)).or. &
+        .not.all(ieee_is_finite(port_viscosity_coefficients)).or. &
+        .not.all(ieee_is_finite(port_viscosity_temperature_ranges))) call fail('Nonfinite port breakup property')
+    if (any(port_surface_tensions(injection_port_count+1:)/=-1).or. &
+        any(port_liquid_viscosities(injection_port_count+1:)/=-1).or. &
+        any(port_viscosity_models(injection_port_count+1:)/='').or. &
+        any(port_viscosity_coefficients(:,injection_port_count+1:)/=0).or. &
+        any(port_viscosity_temperature_ranges(:,injection_port_count+1:)/=0)) call fail('Unused port breakup property')
+    port_breakup_properties=any(port_surface_tensions/=-1).or.any(port_liquid_viscosities/=-1).or. &
+      any(port_viscosity_models/='').or.any(port_viscosity_coefficients/=0).or.any(port_viscosity_temperature_ranges/=0)
+    if (port_breakup_properties.and.breakup_model=='none') call fail('Port breakup properties require breakup')
+    multi_material=port_breakup_properties.or.port_property_models.or.any(port_vapor_names/='').or. &
       any(port_liquid_densities/=-1).or.any(port_liquid_cps/=-1).or. &
       any(port_reference_temperatures/=-1).or.any(port_reference_pressures/=-1).or.any(port_latent_heats/=-1)
     if (multi_material) then
@@ -338,6 +359,24 @@ contains
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
     if (.not. valid_spray_options(options)) call fail('Invalid parcel integration controls')
+    if (port_breakup_properties) then
+      allocate(breakup_options(injection_port_count))
+      do port=1,injection_port_count
+        breakup_options(port)=options
+        if (port_surface_tensions(port)/=-1) breakup_options(port)%surface_tension=port_surface_tensions(port)
+        if (port_liquid_viscosities(port)/=-1) breakup_options(port)%liquid_viscosity=port_liquid_viscosities(port)
+        if (port_viscosity_models(port)/='') then
+          breakup_options(port)%liquid_viscosity_model=port_viscosity_models(port)
+          breakup_options(port)%liquid_viscosity_coefficients=port_viscosity_coefficients(:,port)
+          breakup_options(port)%liquid_viscosity_temperature_range=port_viscosity_temperature_ranges(:,port)
+        else if (any(port_viscosity_coefficients(:,port)/=0).or.any(port_viscosity_temperature_ranges(:,port)/=0)) then
+          call fail('Port viscosity coefficients require explicit model')
+        end if
+        if (.not.valid_spray_options(breakup_options(port))) call fail('Invalid port breakup property')
+        if (liquid_viscosity_at_temperature(breakup_options(port),injection_port_temperatures(port))<=0) &
+          call fail('Port injection outside viscosity range')
+      end do
+    end if
     if (initial_liquid_mass>0.and.parcels_per_event>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     ! Validate injection geometry even for a zero-mass/gas-only run.
     call inject_ports(1.0e-12_dp,1,1_int64,new_parcels,ok)
@@ -466,6 +505,14 @@ contains
         context=trim(context)//' '//trim(materials(port)%vapor_name)
         call append_reals([materials(port)%density,materials(port)%heat_capacity, &
           materials(port)%reference_temperature,materials(port)%reference_pressure,materials(port)%latent_heat])
+      end do
+    end if
+    if (port_breakup_properties) then
+      context=trim(context)//' port-breakup-properties-v1'
+      do port=1,injection_port_count
+        context=trim(context)//' '//trim(breakup_options(port)%liquid_viscosity_model)
+        call append_reals([breakup_options(port)%surface_tension,breakup_options(port)%liquid_viscosity, &
+          breakup_options(port)%liquid_viscosity_coefficients,breakup_options(port)%liquid_viscosity_temperature_range])
       end do
     end if
     if (port_property_models) then
@@ -707,7 +754,8 @@ contains
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
-          boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials)
+          boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
+          breakup_options)
         if (ok) exit
         dt=0.5_dp*dt
         if (time+dt<=time .or. dt<1.0e-18_dp) exit

@@ -99,12 +99,13 @@ contains
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,acceleration,source_change,materials)
+      wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_options), intent(in), optional :: breakup_options(:)
     type(spray_options), intent(in) :: options
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -170,7 +171,7 @@ contains
     do half=1,2
       if (half == 1) then
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options)
         if (.not. local_ok) return
         ledger=ledger+exchange
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
@@ -202,7 +203,7 @@ contains
         end if
         ledger=ledger+exchange
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
-          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials)
+          drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options)
         if (.not. local_ok) return
         ledger=ledger+exchange
       end if

@@ -52,7 +52,7 @@ Antoine saturation-pressure fits are connected with explicit temperature bounds
 and restart identity. Polynomial liquid density now drives injection, drag,
 evaporation and breakup consistently; inverse-temperature liquid viscosity now
 drives ETAB/KH-RT. An optional near-boiling vapor-state temperature cap follows
-the pinned reference convention. Port material identity now routes evaporation to each liquid's gas species and persists through restart; density/pressure fits and vapor-state caps can be set independently per port. Physical boiling rates and composition-varying mixture droplets remain open.
+the pinned reference convention. Port material identity now routes evaporation to each liquid's gas species and persists through restart; density/pressure fits, vapor-state caps and breakup viscosity/surface tension can be set independently per port. Physical boiling rates and composition-varying mixture droplets remain open.
 
 ## Ordered implementation work
 

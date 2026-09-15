@@ -664,8 +664,8 @@ Parcel CSV adds `material_id`; opt-in checkpoint records retain it and reject
 changed liquid inputs. Default single-liquid checkpoint/output formats remain.
 
 Each port can also select its density and saturation-pressure models and
-near-boiling cap, as described below. Breakup viscosity, surface tension and
-other breakup controls remain shared. The low-level material
+near-boiling cap, as described below. Breakup viscosity and surface tension can also be overridden per port;
+model selection and the remaining breakup controls stay shared. The low-level material
 pool API accepts individual `spray_liquid` records; totals require validated
 parcel IDs and materials, as supplied by injection/coupling or checked after
 application restart. This is coexisting pure-liquid droplets, not a liquid
@@ -708,3 +708,31 @@ temperature; Antoine and cap cannot be combined for the same material.
 All port model fields participate in restart identity when enabled. Default
 material contexts remain compatible. See
 [focused evidence](validation/port-property-models-20260915.md).
+
+
+### Breakup properties per port
+
+`port_surface_tensions(16)` and `port_liquid_viscosities(16)` override surface
+tension (N/m) and dynamic viscosity (Pa s). Numeric -1 inherits the global
+value. `port_viscosity_models(16)` defaults to blank, inheriting the complete
+global viscosity model and fit. An explicit `constant` or `inverse-temperature`
+selector instead uses that port's `port_viscosity_coefficients(4,16)` and
+`port_viscosity_temperature_ranges(2,16)`, both defaulting to zero. Coefficients
+without an explicit selector are rejected. Inverse-temperature units, validity
+bounds and the evaluation formula match the global viscosity model.
+
+These inputs require active ports and ETAB or KH-RT breakup. Keep valid global
+breakup settings as inheritance defaults. Unused port fields must retain their
+defaults; injection temperature must lie in the chosen viscosity fit's domain.
+Later out-of-domain candidates retain the existing whole-step rollback behavior.
+Any override enables material identity, including when vapor species are shared.
+Both coupling half steps select breakup properties by that identity. Computational
+splitting preserves identity; model selection, calibration constants and global
+storage/substep controls remain shared in application inputs. Resolved properties
+are included in restart identity. With no overrides, preceding formats remain.
+
+The core coupling API accepts an optional `breakup_options` array alongside the
+material pool, with one entry per material and the same breakup model as global
+options. Only its breakup fields are used; global options still control transfer,
+substeps and computational splitting. See
+[focused evidence](validation/port-breakup-properties-20260916.md).
