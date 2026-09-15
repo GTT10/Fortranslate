@@ -1775,3 +1775,20 @@ periodic boundaries and `breakup_model='none'` are currently supported; unsuppor
 breakup is rejected. Wall events, distributed breakup, gas hydro/chemistry stepping,
 injection scheduling and the MPI CLI remain to be connected. See
 [coupling evidence](validation/spray-mpi-coupling-20260916.md).
+
+### Distributed particle and reaction splitting
+
+`advance_mpi_mixture_reaction` performs a half-interval periodic mixed-particle
+update, cell-local gas chemistry, then the remaining particle half. All stages
+operate on private gas, temperature, particles and composition; collective
+chemistry failure or a failed second half discards the complete interval. Accepted
+particle substep counts are returned only on success. Interval, tolerances and
+integrator selection must agree across ranks. Ordered thermodynamic, reaction,
+transport and component tables are a caller-owned common convention.
+
+The wrapper uses `advance_spray_chemistry_3d`, accepting native explicit/implicit
+chemistry and CVODE when compiled in. Focused MPI evidence currently covers native
+implicit chemistry. This is particle/reaction operator splitting; gas advection,
+molecular transport, SGS, walls and breakup are not advanced by this API. The
+nonlinear particle substep remains first order despite symmetric ordering. See
+[reaction coupling evidence](validation/spray-mpi-reaction-20260916.md).

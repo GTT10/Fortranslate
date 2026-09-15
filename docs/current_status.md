@@ -96,8 +96,10 @@ owner-block temperatures and commits conserved state and temperature collectivel
 ([evidence](validation/spray-mpi-gas-20260916.md)). Periodic mixed-particle drag/heating/evaporation now uses owner sampling, a
 common substep, collective feedback retry and end-of-interval migration with
 whole-interval rollback ([evidence](validation/spray-mpi-coupling-20260916.md)).
-Distributed wall/breakup events, reactive gas stepping and application integration
-remain open.
+Periodic particle/reaction splitting now connects cell-local chemistry between
+particle half-steps with collective whole-interval rollback
+([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
+events, coupled gas advection/transport and application integration remain open.
 
 The spray CVODE branch now builds after removal of misplaced wall-film setup;
 focused native/CVODE chemistry tests pass

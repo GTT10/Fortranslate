@@ -4,6 +4,9 @@ program test_spray_mpi
   use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
+  use mixture_thermo_mod, only: mixture_specific_gas_constant
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use gas_transport_mod, only: gas_transport_species
@@ -14,6 +17,7 @@ program test_spray_mpi
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
   implicit none
   type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:),bad_reactions(:)
   type(spray_liquid) :: liquids(2)
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_options) :: options
@@ -275,8 +279,73 @@ program test_spray_mpi
   local_totals=0;local_totals(1)=sum(field(5+liquids(1)%vapor_index,:,:,:))
   call MPI_Allreduce(local_totals(1),after(1),1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(after(1)>0,'liquid vapor reaches distributed gas')
+  call load_h2o2_full_mechanism(reactions,ok);call require(ok,'MPI reaction mechanism')
+  primitive=0;primitive(1)=1;primitive(6)=.03_dp;primitive(9)=.23_dp;primitive(15)=.74_dp
+  primitive(5)=1400*mixture_specific_gas_constant(species,primitive(6:),ok)
+  call require(ok,'reacting gas constant')
+  call reactive_primitive_to_conserved(species,primitive,gas_cell,gas_t,sound,ok)
+  call require(ok,'reacting initial state')
+  do k=1,dims(3)
+    do j=1,dims(2)
+      do i=1,dims(1)
+        field(:,i,j,k)=gas_cell
+      end do
+    end do
+  end do
+  temperature=gas_t;saved_field=field;saved_temperature=temperature;saved=parcels;saved_mass=masses
+  bad_reactions=reactions
+  if (rank==nranks-1) bad_reactions(1)%forward_rate%pre_exponential=-1
+  call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,bad_reactions,transport,liquids,options, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok)
+  call require(.not.ok.and.steps==0,'one-rank chemistry failure rejects split update')
+  call require(all(field==saved_field).and.all(temperature==saved_temperature).and.all(masses==saved_mass), &
+    'reaction failure rolls back gas and liquid composition')
+  do p=1,size(parcels)
+    call require(parcels(p)%id==saved(p)%id.and.all(parcels(p)%position==saved(p)%position).and. &
+      all(parcels(p)%velocity==saved(p)%velocity).and.parcels(p)%temperature==saved(p)%temperature, &
+      'reaction failure rolls back already advanced particles')
+  end do
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'reacting initial budgets')
+  call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok)
+  call require(ok.and.steps>=2,'MPI split particle reaction update')
+  call require(maxval(abs(field(6,:,:,:)-saved_field(6,:,:,:)))>1e-12_dp,'gas reaction advances hydrogen')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'reacting final budgets')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after(:5)-before(:5))<2e-12_dp*max(1e-12_dp,abs(before(:5)))), &
+    'reaction coupling conserves global hydrodynamic inventories')
+  call require(all(abs(element_totals(after)-element_totals(before))< &
+    2e-10_dp*max(1e-12_dp,abs(element_totals(before)))),'reaction coupling conserves element inventories')
   call MPI_Finalize(ierr)
 contains
+  function element_totals(inventory) result(elements)
+    real(dp), intent(in) :: inventory(15)
+    real(dp) :: elements(4),atoms(4)
+    integer :: q
+    elements=0
+    do q=1,size(species)
+      atoms=0
+      select case(trim(species(q)%name))
+      case('H2');atoms(1)=2
+      case('H');atoms(1)=1
+      case('O');atoms(2)=1
+      case('O2');atoms(2)=2
+      case('OH');atoms(:2)=[1,1]
+      case('H2O');atoms(:2)=[2,1]
+      case('HO2');atoms(:2)=[1,2]
+      case('H2O2');atoms(:2)=[2,2]
+      case('AR');atoms(3)=1
+      case('N2');atoms(4)=2
+      case default;call require(.false.,'unknown element inventory species')
+      end select
+      elements=elements+atoms*inventory(5+q)/species(q)%molecular_weight
+    end do
+  end function
   subroutine require(condition,message)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: message

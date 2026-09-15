@@ -4,6 +4,8 @@ module spray_mpi_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use spray_reactive_3d_mod, only: advance_spray_chemistry_3d
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
@@ -16,9 +18,66 @@ module spray_mpi_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
-  public :: advance_mpi_mixture_coupling
+  public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine advance_mpi_mixture_reaction(comm,species,reactions,transport,components,options,state,temperature, &
+      parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),interval,rtol,atol
+    integer, intent(in) :: cells(3),parts(3)
+    character(len=*), intent(in) :: method
+    integer, intent(out) :: substeps
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: drops(:)
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
+    real(dp) :: controls(4),minimum(4),maximum(4)
+    integer :: ierr,first_steps,last_steps,method_code
+    logical :: valid,agreed
+    character(len=256) :: message
+    ok=.false.;substeps=0;method_code=0
+    select case(trim(method))
+    case('implicit');method_code=1
+    case('explicit');method_code=2
+    case('cvode');method_code=3
+    end select
+    valid=allocated(parcels).and.allocated(component_mass).and.method_code>0
+    valid=valid.and.all(ieee_is_finite([interval,rtol,atol]))
+    valid=valid.and.interval>=0.and.interval<=1e6_dp.and.min(rtol,atol)>0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.agreed) return
+    controls=[interval,rtol,atol,real(method_code,dp)]
+    call MPI_Allreduce(controls,minimum,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(minimum/=maximum)) return
+    gas=state;temp=temperature;drops=parcels;masses=component_mass
+    call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid)
+    if (.not.valid) return
+    call advance_spray_chemistry_3d(species,reactions,gas,temp,interval,rtol,atol,method,valid,message)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.agreed) return
+    call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid)
+    if (.not.valid) return
+    if (first_steps>huge(substeps)-last_steps) return
+    state=gas;temperature=temp
+    call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
+    substeps=first_steps+last_steps;ok=.true.
+  end subroutine
+
   subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok)
     type(MPI_Comm), intent(in) :: comm
