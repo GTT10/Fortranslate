@@ -120,7 +120,7 @@ regridding, scalable I/O, embedded boundaries, and boundary-touching patches
 remain outside this case.
 
 
-## Temperature-driven regridding (serial)
+## Temperature-driven regridding (serial and MPI)
 
 Set `regrid_interval_steps>0` in `&amr_reactive_3d` to rebuild the single
 ratio-preserving interior patch at synchronized coarse steps, including step
@@ -148,7 +148,14 @@ after geometry, state, EOS and synchronization checks pass. Checkpoints are
 written after an accepted coarse step; restart resumes tagging at that stored
 step. Static schemas 2--5 remain unchanged. Fixed-mechanism chemistry restart
 remains unsupported; selected-mechanism chemistry uses its existing context.
-MPI regridding is explicitly rejected pending distributed ownership updates.
-See [focused restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md).
+MPI uses the same tagging/remap operator. At tagging steps, it gathers the
+hierarchy on rank zero; after a patch change it rebuilds sparse slab ownership
+and redistributes the remapped state. Ranks with no fine cells remain supported.
+Checkpoint geometry is broadcast before restart distribution, so rank counts
+can change. Fluid/chemistry/transport stepping remains rank-local. Regridding
+and checkpoint I/O still require root memory for the complete hierarchy; this
+is not a scalable distributed-remap implementation.
+See [serial restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md)
+and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915.md).
 Multipatch/multilevel regridding, physical coarse boundaries and 3D EB coupling
 remain open. The default interval zero preserves static runs.

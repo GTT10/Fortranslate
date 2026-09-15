@@ -83,7 +83,7 @@ program pelef_mpi_amr_reactive_3d
   if (.not. ok) call abort_run("Failed to resolve MPI 3D AMR composition", 2)
   call run_mpi_amr_reactive_3d_application( &
     MPI_COMM_WORLD, trim(input_path), &
-    "rank-local sparse distributed-slab static two-level 3D reactive AMR", &
+    "rank-local sparse distributed-slab two-level 3D reactive AMR", &
     config, amr_config, species, reactions, transport, mole_fractions, &
     trim(coarse_output), trim(fine_output))
 

@@ -1,4 +1,22 @@
 if(PELEF_ENABLE_MPI)
+  set(DYNAMIC_AMR_MPI_FLAGS)
+  foreach(flag IN LISTS MPIEXEC_PREFLAGS)
+    list(APPEND DYNAMIC_AMR_MPI_FLAGS "--mpiexec-preflag=${flag}")
+  endforeach()
+  foreach(flag IN LISTS MPIEXEC_POSTFLAGS)
+    list(APPEND DYNAMIC_AMR_MPI_FLAGS "--mpiexec-postflag=${flag}")
+  endforeach()
+  add_test(NAME regression_mpi_dynamic_amr_3d_restart
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_dynamic_amr_3d_restart.py"
+      --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      ${DYNAMIC_AMR_MPI_FLAGS} --ranks 4 --restart-ranks 3
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_dynamic_amr_3d_restart")
+  set_tests_properties(regression_mpi_dynamic_amr_3d_restart PROPERTIES
+    TIMEOUT 900 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()
+
+if(PELEF_ENABLE_MPI)
   set(
     MPI_AMR_REACTIVE_3D_TRANSPORT_RESTART_0245_WORK_DIRECTORY
     "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_reactive_3d_transport_restart_0245"

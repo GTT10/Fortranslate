@@ -13,6 +13,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--mpiexec', type=Path)
+    parser.add_argument('--numproc-flag', default='-n')
+    parser.add_argument('--mpiexec-preflag', action='append', default=[])
+    parser.add_argument('--mpiexec-postflag', action='append', default=[])
+    parser.add_argument('--ranks', type=int, default=4)
+    parser.add_argument('--restart-ranks', type=int, default=3)
     args = parser.parse_args()
     executable = args.executable.resolve()
     work = args.work_dir.resolve()
@@ -28,7 +34,12 @@ def main() -> None:
         config = config.replace('&amr_reactive_3d', '&amr_reactive_3d\n' + extra)
         path = work / f'{name}.nml'
         path.write_text(config)
-        result = subprocess.run([str(executable), str(path)], cwd=work,
+        command = [str(executable), str(path)]
+        if args.mpiexec:
+            ranks = 1 if name == 'reference' else args.ranks if name == 'stopped' else args.restart_ranks
+            command = ([str(args.mpiexec.resolve()), args.numproc_flag, str(ranks)]
+                       + args.mpiexec_preflag + command + args.mpiexec_postflag)
+        result = subprocess.run(command, cwd=work,
                                 capture_output=True, text=True, timeout=240)
         output = result.stdout + result.stderr
         (work / f'{name}.log').write_text(output)

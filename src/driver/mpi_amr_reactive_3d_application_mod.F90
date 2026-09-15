@@ -31,10 +31,11 @@ module mpi_amr_reactive_3d_application_mod
     advance_mpi_amr_sparse_full_3d
   use amr_reactive_3d_mod, only: &
     composite_element_integrals_amr_3d, &
-    element_integrals_from_reactive_integrals_3d
+    element_integrals_from_reactive_integrals_3d, &
+    regrid_amr_reactive_3d, temperature_tag_patch_3d
   use amr_reactive_3d_checkpoint_mod, only: &
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
-    amr_reactive_3d_transport_operator
+    amr_reactive_3d_transport_operator, read_dynamic_amr_reactive_3d_checkpoint
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   private
@@ -62,7 +63,7 @@ contains
     character(len=*), intent(in), optional :: chemistry_integrator
 
     type(reactive_3d_config) :: fine_config
-    type(amr_patch_3d) :: patch
+    type(amr_patch_3d) :: patch, next_patch
     type(mpi_amr_sparse_distribution_3d) :: distribution
     type(mpi_amr_sparse_hierarchy_3d) :: hierarchy
     real(dp), allocatable :: coarse_state(:, :, :, :)
@@ -88,6 +89,8 @@ contains
     logical :: transport_enabled, transport_policy_ok
     logical :: any_selected_context, all_selected_context
     integer :: step, nvar, covered_nx, covered_ny, covered_nz
+    logical :: patch_changed
+    integer :: regrid_count
     integer :: ierr, rank, nranks
 
     call MPI_Comm_rank(comm, rank, ierr)
@@ -117,8 +120,10 @@ contains
       call collective_require( &
         ok, "Selected sparse MPI 3D AMR context is incomplete", 2)
     end if
-    call collective_require(amr_config%regrid_interval_steps==0, &
-      "Dynamic 3D AMR regridding is not implemented for MPI",2)
+    call consensus_integer_vector(comm,[amr_config%regrid_interval_steps,amr_config%regrid_buffer_cells],ok)
+    call collective_require(ok,'MPI regrid settings differ by rank',2)
+    call consensus_real_vector(comm,[amr_config%regrid_temperature_threshold],ok)
+    call collective_require(ok,'MPI regrid threshold differs by rank',2)
     ok = size(species) > 0 .and. size(reactions) > 0
     if (ok) ok = size(base_mole_fractions) == size(species)
     if (ok) ok = size(transport) == size(species)
@@ -207,6 +212,7 @@ contains
     call fine_patch_centers(patch, config, dx, dy, dz, xf, yf, zf)
     time = 0.0_dp
     step = 0
+    regrid_count=0
     maximum_reflux = 0.0_dp
     maximum_diffusivity = 0.0_dp
     minimum_transport_theta = 1.0_dp
@@ -216,42 +222,83 @@ contains
     root_ok = .true.
     if (rank == 0) then
       if (restarted) then
-        if (selected_context) then
-          if (transport_enabled) then
-            call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
-              patch, coarse_state, coarse_temperature, fine_state, &
-              fine_temperature, time, step, initial_integrals, &
-              maximum_reflux, root_ok, message, bundle_sha256=bundle_sha256, &
-              chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions, reactions=reactions, &
-              transport=transport, &
-              maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+        if (amr_config%regrid_interval_steps>0) then
+          if (selected_context) then
+            if (transport_enabled) then
+              call read_dynamic_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, regrid_count, root_ok, message, bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, reactions=reactions, &
+                transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta)
+            else
+              call read_dynamic_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, regrid_count, root_ok, message, bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, reactions=reactions)
+            end if
           else
-            call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
-              patch, coarse_state, coarse_temperature, fine_state, &
-              fine_temperature, time, step, initial_integrals, &
-              maximum_reflux, root_ok, message, bundle_sha256=bundle_sha256, &
-              chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions, reactions=reactions)
+            if (transport_enabled) then
+              call read_dynamic_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, regrid_count, root_ok, message, transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta)
+            else
+              call read_dynamic_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, regrid_count, root_ok, message)
+            end if
           end if
         else
-          if (transport_enabled) then
-            call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
-              patch, coarse_state, coarse_temperature, fine_state, &
-              fine_temperature, time, step, initial_integrals, &
-              maximum_reflux, root_ok, message, transport=transport, &
-              maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+          if (selected_context) then
+            if (transport_enabled) then
+              call read_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, root_ok, message, bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, reactions=reactions, &
+                transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta)
+            else
+              call read_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, root_ok, message, bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, reactions=reactions)
+            end if
           else
-            call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
-              patch, coarse_state, coarse_temperature, fine_state, &
-              fine_temperature, time, step, initial_integrals, &
-              maximum_reflux, root_ok, message)
+            if (transport_enabled) then
+              call read_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, root_ok, message, transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta)
+            else
+              call read_amr_reactive_3d_checkpoint( &
+                trim(amr_config%restart_file), species, config, amr_config, &
+                patch, coarse_state, coarse_temperature, fine_state, &
+                fine_temperature, time, step, initial_integrals, &
+                maximum_reflux, root_ok, message)
+            end if
           end if
         end if
       else
@@ -294,6 +341,7 @@ contains
       end if
     end if
     call root_require(root_ok, message, 3)
+    if (amr_config%regrid_interval_steps>0) call redistribute_patch_metadata()
     call MPI_Bcast(time, 1, MPI_DOUBLE_PRECISION, 0, comm, ierr)
     call collective_require( &
       ierr == MPI_SUCCESS, "Failed to broadcast sparse MPI 3D AMR time", 3)
@@ -370,6 +418,38 @@ contains
 
     stopped_after_checkpoint = .false.
     do while (time < config%final_time)
+      if (amr_config%regrid_interval_steps>0) then
+        if (mod(step,amr_config%regrid_interval_steps)==0) then
+          call gather_mpi_amr_sparse_hierarchy_3d(distribution,patch,0,hierarchy, &
+            coarse_state,coarse_temperature,fine_state,fine_temperature,ok)
+          call collective_require(ok,'Failed to gather MPI regrid state',4)
+          root_ok=.true.; patch_changed=.false.
+          if (rank==0) then
+            call temperature_tag_patch_3d(patch,coarse_temperature,amr_config%regrid_temperature_threshold, &
+              amr_config%regrid_buffer_cells,next_patch,patch_changed,root_ok)
+            if (root_ok.and.patch_changed) then
+              call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state, &
+                fine_temperature,next_patch,root_ok,config%reconstruction,config%limiter)
+              if (root_ok) then
+                regrid_count=regrid_count+1
+                write(*,'(a,i0,a,6(i0,1x))') 'Regrid at step ',step,': ',patch%coarse_i_lower, &
+                  patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
+                  patch%coarse_k_lower,patch%coarse_k_upper
+              end if
+            end if
+          end if
+          call root_require(root_ok,'Failed conservative MPI regrid',4)
+          call MPI_Bcast(patch_changed,1,MPI_LOGICAL,0,comm,ierr)
+          call collective_require(ierr==MPI_SUCCESS,'Failed MPI regrid decision broadcast',4)
+          if (patch_changed) then
+            call redistribute_patch_metadata()
+            call scatter_mpi_amr_sparse_hierarchy_3d(distribution,species,patch,0,coarse_state, &
+              coarse_temperature,fine_state,fine_temperature,hierarchy,ok)
+            call collective_require(ok,'Failed MPI regrid redistribution',4)
+          end if
+          deallocate(coarse_state,coarse_temperature,fine_state,fine_temperature)
+        end if
+      end if
       ok = step < config%maximum_steps
       call collective_require( &
         ok, "Maximum step count reached before MPI 3D AMR final_time", 4)
@@ -442,7 +522,7 @@ contains
                   base_mole_fractions=base_mole_fractions, &
                   reactions=reactions, transport=transport, &
                   maximum_transport_diffusivity=maximum_diffusivity, &
-                  minimum_transport_theta=minimum_transport_theta)
+                  minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
               else
                 call write_amr_reactive_3d_checkpoint( &
                   trim(amr_config%checkpoint_file), species, config, &
@@ -452,7 +532,7 @@ contains
                   bundle_sha256=bundle_sha256, &
                   chemistry_integrator=chemistry_integrator, &
                   base_mole_fractions=base_mole_fractions, &
-                  reactions=reactions)
+                  reactions=reactions,regrid_count=regrid_count)
               end if
             else
               if (transport_enabled) then
@@ -463,13 +543,13 @@ contains
                   initial_integrals, maximum_reflux, root_ok, message, &
                   transport=transport, &
                   maximum_transport_diffusivity=maximum_diffusivity, &
-                  minimum_transport_theta=minimum_transport_theta)
+                  minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
               else
                 call write_amr_reactive_3d_checkpoint( &
                   trim(amr_config%checkpoint_file), species, config, &
                   amr_config, patch, coarse_state, coarse_temperature, &
                   fine_state, fine_temperature, time, step, &
-                  initial_integrals, maximum_reflux, root_ok, message)
+                  initial_integrals, maximum_reflux, root_ok, message,regrid_count=regrid_count)
               end if
             end if
           end if
@@ -602,6 +682,7 @@ contains
         max(coarse_closure, fine_closure)
       write(*, '(a,1x,a)') "Wrote coarse CSV:", trim(coarse_output)
       write(*, '(a,1x,a)') "Wrote fine CSV:", trim(fine_output)
+      write(*,'(a,i0)') 'Completed regrids: ',regrid_count
       if (stopped_after_checkpoint) then
         write(*, '(a,1x,a)') "Stopped after checkpoint:", &
           trim(amr_config%checkpoint_file)
@@ -609,6 +690,25 @@ contains
     end if
 
   contains
+
+    subroutine redistribute_patch_metadata()
+      integer :: bounds(6),local_ierr
+      logical :: local_ok
+      bounds=[patch%coarse_i_lower,patch%coarse_i_upper,patch%coarse_j_lower, &
+        patch%coarse_j_upper,patch%coarse_k_lower,patch%coarse_k_upper]
+      call MPI_Bcast(bounds,6,MPI_INTEGER,0,comm,local_ierr)
+      call collective_require(local_ierr==MPI_SUCCESS,'Failed MPI patch bounds broadcast',4)
+      call MPI_Bcast(regrid_count,1,MPI_INTEGER,0,comm,local_ierr)
+      call collective_require(local_ierr==MPI_SUCCESS,'Failed MPI regrid count broadcast',4)
+      call initialize_amr_patch_3d(config%nx,config%ny,config%nz,bounds(1),bounds(2),bounds(3), &
+        bounds(4),bounds(5),bounds(6),amr_config%refinement_ratio,patch,local_ok)
+      call collective_require(local_ok,'Invalid redistributed MPI patch',4)
+      call initialize_mpi_amr_sparse_distribution_3d(patch,comm,distribution,local_ok)
+      call collective_require(local_ok,'Failed to redistribute MPI patch ownership',4)
+      deallocate(xf,yf,zf)
+      allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
+      call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
+    end subroutine redistribute_patch_metadata
 
     subroutine collective_require(local_ok, failure_message, code)
       logical, intent(in) :: local_ok
