@@ -38,7 +38,7 @@ contains
     real(dp) :: mixture_antoine_coefficients(4,16),mixture_antoine_temperature_ranges(2,16)
     real(dp) :: mixture_critical_temperatures(16)
     type(spray_liquid), allocatable :: mixture_components(:)
-    real(dp), allocatable :: component_mass(:,:)
+    real(dp), allocatable :: component_mass(:,:),film_component_mass(:,:)
     character(len=16) :: liquid_cp_model,port_cp_models(16)
     real(dp) :: liquid_cp_coefficients(4),liquid_cp_temperature_range(2)
     real(dp) :: port_cp_coefficients(4,16),port_cp_temperature_ranges(2,16)
@@ -688,8 +688,7 @@ contains
     end if
     if (initial_liquid_mass>0.and.parcels_per_event>maximum_parcels) call fail('Initial parcel count exceeds storage limit')
     if (mixture_count>0) then
-      if (multi_material.or.impact_enabled) &
-        call fail('Mixture mode cannot use pure-port properties or wall impact')
+      if (multi_material) call fail('Mixture mode cannot use pure-port properties')
       if (injection_port_count>0) then
         allocate(materials(injection_port_count));multi_material=.true.
         do port=1,injection_port_count
@@ -788,7 +787,7 @@ contains
       if (.not. ok) call fail('Initial parcel injection failed')
     end if
     if (mixture_count>0) then
-      allocate(component_mass(mixture_count,size(parcels)))
+      allocate(component_mass(mixture_count,size(parcels)),film_component_mass(mixture_count,0))
       do i=1,size(parcels)
         component_mass(:,i)=parcels(i)%mass*injection_composition(parcels(i)%material_id)
       end do
@@ -1015,7 +1014,11 @@ contains
     end if
     if (len_trim(restart_file)>0) then
       if (mixture_count>0) then
-        call load_checkpoint(component_mass)
+        if (impact_enabled) then
+          call load_checkpoint(component_mass,film_component_mass)
+        else
+          call load_checkpoint(component_mass)
+        end if
       else
         call load_checkpoint()
       end if
@@ -1032,6 +1035,7 @@ contains
         film_identity=spray_parcel();film_identity%material_id=wall_films(i)%material_id
         material=select_spray_liquid(film_identity,liquid,materials)
         if (.not.valid_spray_liquid(material)) call fail('Invalid restart film material')
+        if (mixture_count>0) material=current_film_liquid(i)
         if (liquid_heat_capacity_at_temperature(material,wall_films(i)%temperature)<=0) &
           call fail('Invalid restart film temperature')
         if (wall_film_evolution) then
@@ -1228,7 +1232,8 @@ contains
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step, &
-          mixture_components=mixture_components,component_mass=component_mass)
+          mixture_components=mixture_components,component_mass=component_mass, &
+          wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
@@ -1250,7 +1255,11 @@ contains
     if (ios/=0) call fail('History close failed')
     if (len_trim(checkpoint_file)>0) then
       if (mixture_count>0) then
-        call save_checkpoint(component_mass)
+        if (impact_enabled) then
+          call save_checkpoint(component_mass,film_component_mass)
+        else
+          call save_checkpoint(component_mass)
+        end if
       else
         call save_checkpoint()
       end if
@@ -1259,32 +1268,32 @@ contains
     call write_snapshots()
     write(*,'(a,es14.6,a,i0,a,i0)') 'Spray run completed: t=',time,', steps=',steps,', parcels=',size(parcels)
   contains
-    subroutine load_checkpoint(checkpoint_mass)
-      real(dp), allocatable, intent(inout), optional :: checkpoint_mass(:,:)
+    subroutine load_checkpoint(checkpoint_mass,checkpoint_film_mass)
+      real(dp), allocatable, intent(inout), optional :: checkpoint_mass(:,:),checkpoint_film_mass(:,:)
       if (physical_boundaries) then
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
         khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass)
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
       else
       call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
         khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass)
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
       end if
     end subroutine
-    subroutine save_checkpoint(checkpoint_mass)
-      real(dp), allocatable, intent(in), optional :: checkpoint_mass(:,:)
+    subroutine save_checkpoint(checkpoint_mass,checkpoint_film_mass)
+      real(dp), allocatable, intent(in), optional :: checkpoint_mass(:,:),checkpoint_film_mass(:,:)
       if (physical_boundaries) then
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
         khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass)
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
       else
       call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
         reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
         khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass)
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
       end if
     end subroutine
     function injection_composition(port_id) result(fractions)
@@ -1311,11 +1320,28 @@ contains
       fluid%boiling_model='reject';fluid%critical_temperature=0
       if (.not.valid_spray_liquid(fluid)) call fail('Invalid effective injection properties')
     end function
+    function current_film_liquid(index) result(fluid)
+      integer, intent(in) :: index
+      type(spray_liquid) :: fluid
+      real(dp) :: rho,cp,e
+      logical :: valid
+      if (.not.valid_wall_component_inventory(wall_films(index),film_component_mass(:,index))) &
+        call fail('Invalid mixed film component inventory')
+      call liquid_mixture_properties(mixture_components,film_component_mass(:,index)/wall_films(index)%mass, &
+        wall_films(index)%temperature,rho,cp,e,valid)
+      if (.not.valid) call fail('Invalid mixed film thermodynamics')
+      fluid=mixture_components(1);fluid%density=rho;fluid%heat_capacity=cp
+      fluid%reference_temperature=wall_films(index)%temperature;fluid%reference_energy=e
+      fluid%density_model='constant';fluid%density_coefficients=0;fluid%density_temperature_range=0
+      fluid%heat_capacity_model='constant';fluid%heat_capacity_coefficients=0;fluid%heat_capacity_temperature_range=0
+      fluid%boiling_model='reject';fluid%critical_temperature=0
+    end function
     subroutine current_totals(result)
       real(dp), intent(out) :: result(:)
       logical :: valid
       if (mixture_count>0) then
-        call mixture_system_totals(state,spacing,parcels,mixture_components,component_mass,result,valid)
+        call mixture_system_totals(state,spacing,parcels,mixture_components,component_mass,result,valid, &
+          wall_films,film_component_mass)
         if (.not.valid) call fail('Invalid mixed-liquid inventory')
       else
         call spray_system_totals(state,spacing,parcels,liquid,result,materials,wall_films)
@@ -1578,13 +1604,21 @@ contains
       if (impact_enabled) then
         open(newunit=film_unit,file=trim(paths(4)),status='new',action='write',iostat=ios)
         if (ios/=0) call fail('Cannot create film snapshot')
-        write(film_unit,'(a)',iostat=ios) 'material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+        write(film_unit,'(a)',advance='no',iostat=ios) 'material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+        do i=1,mixture_count
+          if (ios==0) write(film_unit,'(a)',advance='no',iostat=ios) ',mass_'//trim(mixture_vapor_names(i))
+        end do
+        if (ios==0) write(film_unit,*,iostat=ios)
         do p=1,size(wall_films)
           if (ios/=0) exit
-          write(film_unit,'(i0,10(a,es26.17e3))',iostat=ios) wall_films(p)%material_id, &
+          write(film_unit,'(i0,10(a,es26.17e3))',advance='no',iostat=ios) wall_films(p)%material_id, &
             ',',wall_films(p)%position(1),',',wall_films(p)%position(2),',',wall_films(p)%position(3), &
             ',',wall_films(p)%normal(1),',',wall_films(p)%normal(2),',',wall_films(p)%normal(3), &
             ',',wall_films(p)%mass,',',wall_films(p)%temperature,',',wall_films(p)%diameter,',',wall_films(p)%height
+          do i=1,mixture_count
+            if (ios==0) write(film_unit,'(a,es26.17e3)',advance='no',iostat=ios) ',',film_component_mass(i,p)
+          end do
+          if (ios==0) write(film_unit,*,iostat=ios)
         end do
         if (ios/=0) call fail('Film snapshot write failed')
         close(film_unit,iostat=ios)

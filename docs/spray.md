@@ -340,7 +340,7 @@ retained. If evaporation reduces the predicted mixture diameter below
 finite-inventory convention. These transfers conserve mass and energy rather
 than discarding small species and renormalizing their survivors.
 A zero interval preserves state exactly. This remains
-a composable API used by the grid coupling below; mixture wall impact remains open.
+a composable API used by the grid and wall coupling below.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
 ### Mixed-liquid grid coupling and composition restart
@@ -450,8 +450,7 @@ nozzle geometry, per-port temperatures and shared/independent schedules remain
 available. Injection density and energy use the actual mixture at each port's
 injection temperature; rate-derived velocity uses that density. New component
 masses append alongside each injected parcel, with species-resolved mass ledgers.
-Per-port pure-liquid property overrides and particle wall impact cannot be combined
-with mixture mode. Prescribed mixture viscosity/surface tension permit representative
+Per-port pure-liquid property overrides cannot be combined with mixture mode. Prescribed mixture viscosity/surface tension permit representative
 ETAB/KHRT, KH shed children and computational splitting.
 
 Parcel CSVs add `mass_<species>` columns in kg per physical droplet. Their sum is
@@ -479,7 +478,7 @@ classification or child/film construction preserves all supplied state arrays.
 
 The caller supplies the dimensionless impact parameters, including wall-to-boiling
 temperature ratio. The planar dispatcher below evaluates that ratio. Grid/CLI coupling remains to be connected. The checkpoint API below retains
-mixture-film composition. The CLI still rejects mixed-liquid wall impact. There is no entrainment
+mixture-film composition. The CLI supports this mixed-liquid wall path. There is no entrainment
 from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
 
 ### Mixed-liquid film exchange API
@@ -546,7 +545,7 @@ A mixed checkpoint with film state requires this matrix, including a zero-column
 matrix when there are no films. Shape mismatch, negative/nonfinite component mass
 or failure to sum to film mass rejects. Reading validates the complete candidate
 before changing gas, particles, films or either component matrix. Existing pure-film
-and particle-only mixed formats retain their layout. Grid/CLI wiring remains open.
+and particle-only mixed formats retain their layout. The CLI retains this mixed-film checkpoint state.
 See [checkpoint evidence](validation/spray-mixture-film-checkpoint-20260916.md).
 
 ### Mixed-film grid feedback API
@@ -562,9 +561,7 @@ patch until its birth time within the interval.
 The returned boundary ledger records heat entering the simulated gas/film system
 from walls. Fully evaporated patches and corresponding matrix columns are removed
 together. `mixture_system_totals` accepts optional `wall_films` and `film_mass` to
-include stationary-film mass, species and internal energy. This API is ready for
-connection to particle impact and reactive/CLI stepping; those connections remain
-open. See [grid evidence](validation/spray-mixture-film-grid-20260916.md).
+include stationary-film mass, species and internal energy. This API is connected to particle impact and reactive/CLI stepping. See [grid evidence](validation/spray-mixture-film-grid-20260916.md).
 
 ### Combined mixed-particle and wall-film update
 
@@ -579,7 +576,7 @@ After particle flight, stationary films exchange mass and energy with the grid f
 their remaining interval. Particle and film substeps share the configured budget.
 Capacity failure, inadmissible impact or rejected film feedback rolls back the entire
 particle/gas/film update. Boundary ledgers combine wall impulse/energy and wall heat.
-Reactive-driver integration is available below; CLI wiring remains open. See
+Reactive-driver and CLI integration are available below. See
 [combined evidence](validation/spray-mixture-wall-coupled-20260916.md).
 
 ### Reactive mixed-wall integration
@@ -592,8 +589,22 @@ a late chemistry failure restores both component matrices with gas, particles an
 films. Pure-material property tables still cannot accompany mixture tables.
 
 The existing prohibition on moving particle-impact walls remains. CLI input/output
-and checkpoint wiring is the remaining application connection. See
+and checkpoint wiring retain both particle and film compositions. See
 [reactive evidence](validation/spray-mixture-wall-reactive-20260916.md).
+
+### Mixed-wall CLI and outputs
+
+Combine mixture inputs with the existing `wall_impact_faces`, `surface_tension`,
+`liquid_viscosity`, `wall_film_evolution` and `wall_liquid_conductivity` settings.
+Stationary film heat conductivity is prescribed; this is not a calibrated mixture
+conductivity model. The `.films.csv` output adds `mass_<species>` columns in kg per
+whole patch, while parcel component columns remain kg per physical drop. History
+and conservation ledgers include gas, particles and mixed films.
+
+Restart retains both component matrices and validates film volume using the current
+film composition and temperature. [mixture_wall.nml](../cases/spray_3d/mixture_wall.nml)
+is a small synthetic deposition/evaporation example. See
+[CLI evidence](validation/spray-mixture-wall-cli-20260916.md).
 
 ## KH-RT representative-drop breakup
 

@@ -16,7 +16,7 @@ Older milestone prose remains historical detail, not a current global status.
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
-| LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity or shared or per-port multicomponent compositions, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, selectable Schiller-Naumann or PelePhysics drag with ETAB deformation correction, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup, optional KH shed-mass children with conservative transverse velocities, and bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection from point or finite circular solid/hollow outlets with swirl with up to 16 independently configured ports and optional piecewise-linear shared or independent per-port injection-rate histories with optional discharge-based injection speed, and per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared size distributions, deviatoric Smagorinsky, coupled restart | Mixture wall impact/physical boiling, general dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, lateral wall-film transport and impact qualification, calibrated properties and experimental validation |
+| LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity or shared or per-port multicomponent compositions, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, selectable Schiller-Naumann or PelePhysics drag with ETAB deformation correction, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup, optional KH shed-mass children with conservative transverse velocities, and bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection from point or finite circular solid/hollow outlets with swirl with up to 16 independently configured ports and optional piecewise-linear shared or independent per-port injection-rate histories with optional discharge-based injection speed, and per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared size distributions, deviatoric Smagorinsky, coupled restart | Physical mixture boiling, general dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, lateral wall-film transport and impact qualification, calibrated properties and experimental validation |
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
@@ -49,7 +49,7 @@ minimum-diameter removal now return their complete inventories to gas
 and retain their state through splitting and restart
 ([evidence](validation/spray-mixture-kh-20260916.md)). The mixture impact event API now partitions component masses into splash and film
 with wall budgets ([evidence](validation/spray-mixture-wall-event-20260916.md));
-its CLI connection remains open. Planar crossing now uses mixture properties
+its CLI connection is now available. Planar crossing now uses mixture properties
 and the reference mass-weighted impact boiling temperature
 ([evidence](validation/spray-mixture-wall-crossing-20260916.md)). A supplied film-exchange API now
 updates composition, temperature and height with gas/wall energy closure
@@ -57,13 +57,15 @@ updates composition, temperature and height with gas/wall energy closure
 heat/evaporation rates and a frozen-rate update are now available
 ([evidence](validation/spray-mixture-film-rates-20260916.md)). The checkpoint API
 now retains film component masses with transactional validation
-([evidence](validation/spray-mixture-film-checkpoint-20260916.md)); application wiring remains open. A transactional mixed-film grid feedback API now
+([evidence](validation/spray-mixture-film-checkpoint-20260916.md)); application wiring is connected. A transactional mixed-film grid feedback API now
 conserves species and gas/film/wall energy and removes terminal patches
 ([evidence](validation/spray-mixture-film-grid-20260916.md)). The mixed particle
 coupler now connects wall crossing, splash/deposition and remaining-interval film
 evolution in one transaction ([evidence](validation/spray-mixture-wall-coupled-20260916.md)).
 The reactive driver now retains mixed film state across both spray half-steps and
-rolls it back after late failure ([evidence](validation/spray-mixture-wall-reactive-20260916.md)). Per-port compositions now drive initial and
+rolls it back after late failure ([evidence](validation/spray-mixture-wall-reactive-20260916.md)).
+CLI wall inputs, film component output, conservation totals and restart are connected
+([evidence](validation/spray-mixture-wall-cli-20260916.md)). Per-port compositions now drive initial and
 scheduled injection with component budgets and restart identity
 ([evidence](validation/spray-port-mixture-20260916.md)). Component density/heat-capacity fits, Antoine
 pressure and Clausius surface caps are available in the CLI and restart context

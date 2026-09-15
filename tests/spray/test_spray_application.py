@@ -405,6 +405,43 @@ class SprayApplication(unittest.TestCase):
                       fail=True)
         self.run_case('lambda_unused_port', common=cases[0]+'port_wall_conductivities(3)=.5,', fail=True)
 
+    def test_mixed_wall_cli_restart(self):
+        common=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                "mixture_densities=1000,800,mixture_cps=4184,2000,"
+                "mixture_reference_temperatures=373.15,350,mixture_latent_heats=2257000,1e6,"
+                "boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+                "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
+                "surface_tension=.072,liquid_viscosity=.001,wall_film_evolution=.true.,wall_liquid_conductivity=.6,"
+                "injection_center=.002,.002,5e-7,injection_axis=0,0,-1,cone_angle=0,parcel_count=1,"
+                "mole_names='N2','','',mole_amounts=1,0,0,gas_temperature=900,"
+                "drag_enabled=.false.,transport_enabled=.false.,")
+        for index, extra in enumerate(['injection_speed=10,',
+                'injection_speed=300,heat_enabled=.false.,evaporation_enabled=.false.,',
+                "injection_speed=300,heat_enabled=.false.,evaporation_enabled=.false.,breakup_model='khrt',"
+                'khrt_children=.true.,khrt_reference_diameter_cubed=1e-25,maximum_parcels=1000,']):
+            name=f'mixed_wall{index}';settings=common+extra
+            full=self.root/f'{name}_full.chk';stop=self.root/f'{name}_stop.chk';resumed=self.root/f'{name}_resumed.chk'
+            self.run_case(name,f"checkpoint_file='{full}',",common=settings)
+            history=self.check_balance(name)
+            self.assertGreater(history[-1]['film_mass'],0)
+            with (self.root/f'{name}.films.csv').open() as stream:
+                films=list(csv.DictReader(stream))
+            for film in films:
+                mass=float(film['mass']);a=float(film['mass_H2O']);b=float(film['mass_H2O2'])
+                self.assertAlmostEqual((a+b)/mass,1,places=13)
+                rho=1/(a/mass/1000+b/mass/800)
+                self.assertAlmostEqual(rho*math.pi*.25*float(film['diameter'])**2*float(film['height'])/mass,1,places=13)
+            if index==0:
+                self.assertTrue(any(abs(float(f['temperature'])-330)>1e-6 for f in films))
+                self.assertTrue(any(abs(float(f['mass_H2O'])/float(f['mass'])-.6)>1e-8 for f in films))
+            self.run_case(name+'_stop',f"stop_after_steps=3,checkpoint_file='{stop}',",common=settings)
+            self.run_case(name+'_resumed',f"restart_file='{stop}',checkpoint_file='{resumed}',",common=settings)
+            self.assertEqual(full.read_bytes(),resumed.read_bytes())
+            self.assertEqual(history[-1],self.history(name+'_resumed')[-1])
+            for suffix in ['gas.csv','parcels.csv','films.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}_resumed.{suffix}').read_bytes())
+
     def test_wall_film_restart(self):
         common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
                   "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"

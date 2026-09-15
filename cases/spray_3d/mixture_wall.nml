@@ -1,0 +1,19 @@
+! Synthetic two-component liquid fixture; these are not validated mixture properties.
+&spray
+ cells=2,2,2, domain_length=.004,.004,.004, hydro_reconstruction='pcm',
+ gas_temperature=900, gas_pressure=101325,
+ mole_names='N2','','', mole_amounts=1,0,0, chemistry_enabled=.false.,
+ mixture_count=2, mixture_vapor_names='H2O','H2O2', mixture_fractions=.6,.4,
+ mixture_densities=1000,800, mixture_cps=4184,2000,
+ mixture_reference_temperatures=373.15,350,
+ mixture_reference_pressures=101325,101325, mixture_latent_heats=2257000,1e6,
+ drop_temperature=330, drop_diameter=20e-6, initial_liquid_mass=1e-10, parcel_count=1,
+ injection_center=.002,.002,5e-7, injection_axis=0,0,-1, injection_speed=10,
+ cone_angle=0, drag_enabled=.false., transport_enabled=.false.,
+ boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',
+ wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,
+ surface_tension=.072, liquid_viscosity=.001,
+ wall_film_evolution=.true., wall_liquid_conductivity=.6,
+ final_time=1e-6, maximum_dt=1e-7,
+ output_prefix='mixture_wall', checkpoint_file='mixture_wall.chk'
+/
