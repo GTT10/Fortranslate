@@ -1629,3 +1629,19 @@ enter restart identity. The default prescribed-speed behavior retains its
 context. Each batch still has one speed and is emitted at the window start;
 continuous momentum-flux equivalence is not claimed. See
 [flow-derived velocity checks](validation/spray-rate-velocity-20260916.md).
+
+## Cartesian particle partitioning
+
+`spray_partition_mod` supplies deterministic ownership and send-buffer ordering for
+the forthcoming particle MPI path. Each Cartesian axis assigns remainder cells to
+the lowest coordinates. Rank numbering is x-fastest. Physical coordinates must be
+inside the half-open box; periodic coordinates wrap for ownership without changing
+the stored particle position. Partitions cannot exceed cell counts or one million
+ranks in total.
+
+`partition_spray_parcels` accepts globally increasing particle IDs and groups records
+by destination rank, preserving ID order within each group. Counts and zero-based
+offsets identify contiguous send segments. The complete parcel record and optional
+per-drop component matrix move together. Invalid input leaves every caller array
+unchanged. MPI communication, receive-side ID ordering and distributed gas feedback
+are not connected yet. See [partition evidence](validation/spray-partition-20260916.md).

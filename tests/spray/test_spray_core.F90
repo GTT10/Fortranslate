@@ -9,6 +9,7 @@ program test_spray_core
   use mixture_thermo_mod, only: mixture_specific_gas_constant
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use mixture_transport_mod, only: binary_diffusion_coefficients
+  use spray_partition_mod
   use spray_mixture_mod
   use spray_parcel_mod
   use spray_wall_impact_mod
@@ -45,6 +46,7 @@ program test_spray_core
   real(dp) :: child_totals(5),film_budget(5),film_mdot,film_qgas,film_qwall,film_tdot,solid_energy
   real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
   integer :: impact_kinds(6),event_index
+  integer, allocatable :: partition_counts(:),partition_offsets(:)
   integer :: regime
   integer :: indices(3,8),n,steps
   logical :: ok
@@ -293,6 +295,29 @@ program test_spray_core
     call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
       saved_patch,transfer,solid_energy,ok)
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
+  case('partition')
+    call require(spray_cartesian_owner([3.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],[5,3,2],[2,2,1],[.false.,.false.,.false.])==1,'uneven cell partition boundary')
+    call require(spray_cartesian_owner([-1.0_dp,2.0_dp,0.0_dp],[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],[5,3,2],[2,2,1],[.true.,.false.,.false.])==3,'periodic Cartesian owner')
+    allocate(drops(3),child_component_mass(2,3))
+    do n=1,3
+      drops(n)=p;drops(n)%id=int(n,int64);drops(n)%position=[4.0_dp,2.0_dp,0.0_dp]
+      drops(n)%khrt_initial_count=100;drops(n)%khrt_shed_volume=real(n,dp)*1e-15_dp
+      child_component_mass(:,n)=p%mass*[.2_dp*n,1-.2_dp*n]
+    end do
+    drops(2)%position=[0.0_dp,0.0_dp,0.0_dp];saved_drops=drops;saved_child_mass=child_component_mass
+    call partition_spray_parcels(drops,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp], &
+      [5,3,2],[2,2,1],[.false.,.false.,.false.],partition_counts,partition_offsets,ok,child_component_mass)
+    call require(ok.and.all(partition_counts==[1,0,0,2]).and.all(partition_offsets==[0,1,1,1]),'rank send segments')
+    call require(all(drops%id==[2,1,3]).and.all(drops%khrt_shed_volume==saved_drops([2,1,3])%khrt_shed_volume), &
+      'stable rank ordering preserves KH state')
+    call require(all(child_component_mass==saved_child_mass(:,[2,1,3])),'partition preserves component columns')
+    drops=saved_drops;child_component_mass=saved_child_mass;drops(3)%position(1)=5
+    call partition_spray_parcels(drops,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp], &
+      [5,3,2],[2,2,1],[.false.,.false.,.false.],partition_counts,partition_offsets,ok,child_component_mass)
+    call require(.not.ok.and.all(drops%id==[1,2,3]).and.all(child_component_mass==saved_child_mass),'invalid owner rollback')
+    call require(all(partition_counts==[1,0,0,2]),'failed partition retains caller counts')
   case('mixture_wall_crossing')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

@@ -77,6 +77,11 @@ Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
 license remains an owner decision.
 
+Particle MPI groundwork now includes Cartesian cell ownership and stable send-buffer
+partitioning with component/KH state preservation
+([evidence](validation/spray-partition-20260916.md)). MPI communication and distributed
+particle feedback remain open.
+
 ## Repository consolidation implemented
 
 The README is an entry point rather than a chronological implementation log.
