@@ -1061,7 +1061,7 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
-      boundary_change, inflow_state, inflow_temperature)
+      boundary_change, inflow_state, inflow_temperature, wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1079,7 +1079,7 @@ contains
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -1100,6 +1100,9 @@ contains
     change = 0.0_dp
     hydro_change = 0.0_dp
     if (.not. valid_reactive_boundaries_3d(faces)) return
+    if (any(faces=='isothermal_wall')) then
+      if (.not.transport_enabled.or..not.thermal_conduction_enabled) return
+    end if
     selected_reconstruction = "pcm"
     selected_limiter = "mc"
     if (present(reconstruction)) selected_reconstruction = &
@@ -1134,7 +1137,8 @@ contains
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, inflow_state, inflow_temperature)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
+        inflow_state, inflow_temperature, wall_temperature)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1163,7 +1167,8 @@ contains
         species, transport, candidate_state, candidate_temperature, &
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
-        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, inflow_state, inflow_temperature)
+        barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
+        inflow_state, inflow_temperature, wall_temperature)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &

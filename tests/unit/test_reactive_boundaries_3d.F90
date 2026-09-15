@@ -19,6 +19,16 @@ program test_reactive_boundaries_3d
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   call check_inflow()
+  config%boundary_condition='isothermal_wall'
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(.not.ok,'isothermal wall requires conduction')
+  config%transport_enabled=.true.
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(ok,'valid isothermal config')
+  config%wall_temperature(1)=-1
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(.not.ok,'invalid wall temperature')
+  config=reactive_3d_config()
   config%boundary_condition='outflow'
   config%boundary_faces(3:6)='slip_wall'
   call validate_reactive_3d_configuration(config,ok,message)

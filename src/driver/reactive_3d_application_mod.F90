@@ -16,7 +16,7 @@ module reactive_3d_application_mod
   use reactive_3d_mod, only: &
     compute_reactive_cfl_timestep_3d, advance_reactive_full_3d, &
     reactive_integrals_3d, reactive_extrema_3d
-  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d, reactive_isothermal_timestep_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   private
@@ -43,7 +43,7 @@ contains
     character(len=32) :: faces(6)
     real(dp), allocatable :: inflow_state(:,:),inflow_y(:),inflow_x(:),inlet_cube(:,:,:,:)
     real(dp) :: inflow_t(6),inlet_temperature(2,2,2)
-    real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity
+    real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity,wall_dt
     real(dp), allocatable :: mass_fractions(:), primitive(:)
     real(dp) :: dx, dy, dz, time, dt, hydro_dt, transport_dt
     real(dp) :: base_density, density_l1_error, exact_density
@@ -196,7 +196,15 @@ contains
         if (.not. ok) then
           error stop "Failed to compute reactive 3D transport step"
         end if
-        dt = min(dt, transport_dt, inlet_transport_dt)
+        if (any(faces=='isothermal_wall')) then
+          call reactive_isothermal_timestep_3d(species,transport,state,temperature,[dx,dy,dz], &
+            faces,config%wall_temperature,config%transport_cfl,wall_dt,ok)
+          if (.not.ok) error stop 'Invalid isothermal wall timestep'
+          ! Reserve half the interior diffusion allowance for boundary exchange.
+          dt=min(dt,0.5_dp*transport_dt,0.5_dp*inlet_transport_dt,wall_dt)
+        else
+          dt = min(dt, transport_dt, inlet_transport_dt)
+        end if
         maximum_diffusivity = max( &
           maximum_diffusivity, step_maximum_diffusivity, inlet_diffusivity)
       end if
@@ -211,7 +219,7 @@ contains
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         step_transport_theta, ok, config%reconstruction, config%limiter, &
         chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
-        inflow_state=inflow_state,inflow_temperature=inflow_t)
+        inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if

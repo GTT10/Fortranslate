@@ -38,6 +38,17 @@ z-low, z-high**. Empty entries inherit `boundary_condition` (default
   operator reflects all three velocity components, imposing zero face velocity
   while allowing viscous wall shear. The Euler operator reflects only normal
   momentum so its numerical dissipation does not add artificial wall friction.
+- `isothermal_wall`: stationary no-slip wall with a prescribed
+  `wall_temperature(6)` in kelvin (default 300). Molecular transport and heat
+  conduction must be enabled. The temperature must lie in the loaded mechanism's
+  thermodynamic range. Wall conductivity is evaluated at the prescribed wall
+  temperature and adjacent-cell composition/pressure. The heat input is
+  `k_wall*(T_wall-T_cell)/(dx_normal/2)`; only the physical face energy flux is
+  changed. Mass/species fluxes remain zero and the wall shear is retained.
+  This direct face condition does not extrapolate a possibly negative ghost
+  temperature. The thermal timestep cap uses the adjacent cell's volumetric
+  heat capacity and sums conductances at wall corners; half the normal
+  interior diffusion allowance is reserved when these walls are present.
 - `periodic`: wrap cell states from the opposite side.
 
 PCM and characteristic PLM use the existing Rusanov, HLLC or PeleC Riemann
@@ -80,7 +91,11 @@ and converts kinetic energy to internal energy; total gas energy is conserved.
 independent inlet composition. The boundary ledger accounts for both convective
 and diffusive exchange with the reservoir.
 
-Moving/isothermal walls,
+`isothermal.nml` uses 350 K and 1100 K stationary y walls around an initially
+1000 K gas. The boundary ledger includes heating/cooling, so total gas energy
+can change consistently with the specified wall heat flux.
+
+Moving walls,
 characteristic boundaries, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.

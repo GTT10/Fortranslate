@@ -5,7 +5,9 @@ program test_reactive_boundary_transport_3d
   use transport_database_mod, only: gas_transport_species, load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: reactive_integrals_3d, advance_reactive_boundary_hydro_3d
-  use reactive_transport_3d_mod, only: advance_reactive_transport_3d, reactive_transport_euler_update_3d
+  use reactive_transport_3d_mod, only: advance_reactive_transport_3d, reactive_transport_euler_update_3d, &
+    reactive_isothermal_timestep_3d
+  use mixture_thermo_mod, only: mixture_mass_properties
   use mixture_transport_mod, only: mixture_transport_coefficients
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -21,6 +23,7 @@ program test_reactive_boundary_transport_3d
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
   call check_wall_shear()
+  call check_wall_heat()
   do mode=1,4
     visc=mode==1.or.mode==4; heat=mode==2.or.mode==4; diff=mode>=3
     do b=1,3
@@ -73,6 +76,47 @@ program test_reactive_boundary_transport_3d
   end do
   print *, 'PASS: physical viscosity/conduction/diffusion, surface ledger, walls and rollback'
 contains
+  subroutine check_wall_heat()
+    real(dp) :: mu,kappa,diffusion(7),wt(6),expected,wall_dt,rate,mw,gas_r,cp,cv,gamma,h,e,entropy
+    integer :: face,thermal_case
+    q=0.0_dp; q(1)=0.3_dp; q(5)=101325.0_dp
+    q(6)=0.03_dp; q(9)=0.22_dp; q(12)=0.75_dp
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          call reactive_primitive_to_conserved(species,q,before(:,i,j,k),bt(i,j,k),sound,ok)
+          call require(ok,'uniform heat-transfer state')
+        end do
+      end do
+    end do
+    do thermal_case=1,2
+      wt=bt(1,1,1)*0.5_dp
+      if (thermal_case==2) wt=bt(1,1,1)*1.5_dp
+      call mixture_transport_coefficients(species,transport,q(6:),wt(1),q(5),mu,kappa,diffusion,ok)
+      call require(ok,'wall conductivity')
+      call mixture_mass_properties(species,q(6:),bt(1,1,1),mw,gas_r,cp,cv,gamma,h,e,entropy,ok)
+      call require(ok,'cell thermal capacity')
+      expected=2*kappa*(wt(1)-bt(1,1,1))/dx*(4*dx)**2*dt
+      rate=2*kappa/(q(1)*cv*dx**2)
+      do face=1,6
+        faces='no_slip_wall'; faces(face)='isothermal_wall'
+        call reactive_isothermal_timestep_3d(species,transport,before,bt,[dx,dx,dx],faces,wt,.35_dp,wall_dt,ok)
+        call require(ok.and.abs(wall_dt/(.35_dp/rate)-1)<1e-12_dp,'wall thermal timestep')
+        call reactive_transport_euler_update_3d(species,transport,before,bt,4,4,4,dx,dx,dx,dt, &
+          .false.,.true.,.false.,.false.,u,t,theta,ok,faces,change,wall_temperature=wt)
+        call require(ok,'wall heat Euler update')
+        call require(abs(change(5)/expected-1)<1e-12_dp,'analytical Fourier wall flux')
+        call require(maxval(abs(change([1,2,3,4,6,7,8,9,10,11,12])))<1e-18_dp,'heat-only boundary exchange')
+        call require(abs((sum(u(5,:,:,:))-sum(before(5,:,:,:)))*dx**3/change(5)-1)<1e-9_dp, &
+          'heat enters gas energy')
+      end do
+    end do
+    u=before; t=bt; wt=-1
+    call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,dt, &
+      .true.,.true.,.true.,.true.,theta,ok,faces,change,wall_temperature=wt)
+    call require(.not.ok.and.all(u==before).and.all(t==bt).and.all(change==0),'invalid wall rollback')
+    print *, 'PASS: six-face hot/cold Fourier heat flux, thermal timestep and rejection'
+  end subroutine check_wall_heat
   subroutine check_wall_shear()
     real(dp) :: mu,kappa,diffusion(7),expected,kinetic0,kinetic1
     ! Uniform tangential flow between stationary y walls. The face derivative

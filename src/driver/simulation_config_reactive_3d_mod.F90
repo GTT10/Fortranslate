@@ -31,6 +31,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: boundary_condition = "periodic"
     character(len=32) :: boundary_faces(6) = ""
+    real(dp) :: wall_temperature(6)=300.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
     real(dp) :: inflow_velocity(3,6)=0.0_dp
     integer :: inflow_composition_count=0
@@ -124,12 +125,12 @@ contains
                 q(a)=max(1,min(n(a),idx(a)))
               case('outflow')
                 q(a)=max(1,min(n(a),idx(a)))
-              case('slip_wall','no_slip_wall')
+              case('slip_wall','no_slip_wall','isothermal_wall')
                 q(a)=1-idx(a)
                 if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
                 ! Only diffusive fluxes impose tangential no-slip. Euler fluxes
                 ! keep mirror-normal states to avoid numerical wall shear.
-                if (faces(face)=='no_slip_wall'.and.use_viscous_wall) then
+                if (faces(face)/='slip_wall'.and.use_viscous_wall) then
                   reflect=.not.reflect
                 else
                   reflect(a)=.not.reflect(a)
@@ -165,7 +166,7 @@ contains
     ok = .false.
     do f = 1, 6
       select case(trim(faces(f)))
-      case("periodic", "outflow", "slip_wall", "no_slip_wall", "inflow")
+      case("periodic", "outflow", "slip_wall", "no_slip_wall", "inflow", "isothermal_wall")
       case default
         return
       end select
@@ -198,6 +199,7 @@ contains
     real(dp) :: x_ho2, x_h2o2, x_ar, x_n2
     real(dp) :: composition_mole_fractions(reactive_3d_max_species)
     integer :: composition_count,inflow_composition_count
+    real(dp) :: wall_temperature(6)
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6)
     real(dp) :: inflow_composition_mole_fractions(reactive_3d_max_species)
     character(len=selected_composition_name_length) :: inflow_composition_species(reactive_3d_max_species)
@@ -217,7 +219,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, &
       thermo_model, riemann_solver, &
-      boundary_condition, boundary_faces, inflow_temperature, inflow_pressure, inflow_velocity, &
+      boundary_condition, boundary_faces, wall_temperature, inflow_temperature, inflow_pressure, inflow_velocity, &
       inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, transport_enabled, viscosity_enabled, &
@@ -257,6 +259,7 @@ contains
     inflow_composition_count = config%inflow_composition_count
     inflow_composition_species = config%inflow_composition_species
     inflow_composition_mole_fractions = config%inflow_composition_mole_fractions
+    wall_temperature=config%wall_temperature
     boundary_faces = config%boundary_faces
     chemistry_enabled = config%chemistry_enabled
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -338,6 +341,7 @@ contains
     config%inflow_composition_count = inflow_composition_count
     config%inflow_composition_species = inflow_composition_species
     config%inflow_composition_mole_fractions = inflow_composition_mole_fractions
+    config%wall_temperature=wall_temperature
     config%boundary_faces = boundary_faces
     config%chemistry_enabled = chemistry_enabled
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
@@ -399,6 +403,17 @@ contains
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
     do face=1,6
+      if (faces(face)=='isothermal_wall') then
+        if (.not.ieee_is_finite(config%wall_temperature(face))) then
+          message='Wall temperature must be finite'; return
+        end if
+        if (config%wall_temperature(face)<=0.0_dp) then
+          message='Wall temperature must be positive'; return
+        end if
+        if (.not.config%transport_enabled.or..not.config%thermal_conduction_enabled) then
+          message='Isothermal walls require molecular heat conduction'; return
+        end if
+      end if
       if (faces(face)/='inflow') cycle
       if (.not.all(ieee_is_finite([config%inflow_temperature(face),config%inflow_pressure(face), &
           config%inflow_velocity(:,face)]))) then
@@ -498,7 +513,7 @@ contains
              trim(config%riemann_solver) /= "pelec") then
       message = "Reactive 3D Riemann solver must be rusanov, hllc, or pelec"
     else if (.not. valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(config))) then
-      message = "Reactive 3D faces require periodic pairs, outflow, inflow, slip_wall, or no_slip_wall"
+      message = "Unknown reactive 3D face or unpaired periodic boundary"
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else
