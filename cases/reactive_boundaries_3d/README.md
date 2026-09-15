@@ -56,9 +56,8 @@ solver. Two ghost layers are filled at each SSPRK2 stage. Only the physical
 cells are advanced. Stage-weighted physical surface fluxes are accumulated
 in `Integrated boundary change`, ordered as density, three momenta, total
 energy, then species densities, integrated over space and time. The
-application subtracts these exchanges before checking conservation. Closed
-wall domains conserve mass and total energy, but the wall can change gas
-momentum. Chemistry and molecular transport are included in the existing transactional
+application subtracts these exchanges before checking conservation. Closed wall domains conserve mass. Stationary adiabatic walls conserve total
+gas energy; moving or isothermal walls exchange energy through work or heat. Chemistry and molecular transport are included in the existing transactional
 split step. A shared ghost-fill routine supplies viscous stresses, heat conduction,
 species diffusion and barodiffusion. Surface budgets include the two RK stages
 of both transport half-steps. Species donor limiting and enthalpy correction
@@ -95,7 +94,19 @@ and diffusive exchange with the reservoir.
 1000 K gas. The boundary ledger includes heating/cooling, so total gas energy
 can change consistently with the specified wall heat flux.
 
-Moving walls,
-characteristic boundaries, general AMR/EB boundaries and particle boundary
+`wall_velocity(3,6)` prescribes constant tangential velocity in m/s for
+`no_slip_wall` and `isothermal_wall` faces (zero by default). Molecular viscosity
+must be enabled. For example, `wall_velocity(:,4)=250,0,0` moves the top y wall
+in the x direction. The transport ghost velocity is reflected about the wall
+velocity, with total energy adjusted to preserve internal energy. The energy
+flux includes wall traction dotted with wall velocity, plus prescribed heat
+conduction for an isothermal wall. Hydro remains impermeable. Normal wall motion
+and nonzero velocity on other face types are rejected. At wall intersections,
+ghost reflections are composed in x/y/z order.
+
+`moving_wall.nml` exercises this work and momentum transfer between periodic
+x/z faces and adiabatic y walls. See [focused evidence](../../docs/validation/moving-walls-20260915.md).
+
+Moving geometry, characteristic boundaries, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.

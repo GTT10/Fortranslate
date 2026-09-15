@@ -219,7 +219,8 @@ contains
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         step_transport_theta, ok, config%reconstruction, config%limiter, &
         chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
-        inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
+        wall_velocity=config%wall_velocity)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if

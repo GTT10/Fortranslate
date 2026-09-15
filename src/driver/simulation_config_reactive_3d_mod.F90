@@ -32,6 +32,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_condition = "periodic"
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
+    real(dp) :: wall_velocity(3,6)=0.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
     real(dp) :: inflow_velocity(3,6)=0.0_dp
     integer :: inflow_composition_count=0
@@ -87,19 +88,25 @@ module simulation_config_reactive_3d_mod
 
 contains
 
-  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall,inflow_state,inflow_temperature)
+  pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall, &
+      inflow_state,inflow_temperature,wall_velocity)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     logical, intent(in), optional :: viscous_wall
+    real(dp), intent(in), optional :: wall_velocity(:,:)
+    real(dp) :: shift(3), old_momentum(3),rho
     logical :: use_viscous_wall
     integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face,inlet
     logical :: reflect(3)
     ok=.false.; ghost=0.0_dp; gt=0.0_dp
     use_viscous_wall=.false.
     if (present(viscous_wall)) use_viscous_wall=viscous_wall
+    if (present(wall_velocity)) then
+      if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
+    end if
     n=shape(t); dims=n+4
     if (any(faces=='inflow')) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
@@ -112,7 +119,7 @@ contains
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
-            idx=[i,j,k]-2; q=idx; reflect=.false.; inlet=0
+            idx=[i,j,k]-2; q=idx; reflect=.false.; inlet=0; shift=0
             do a=1,3
               if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
               face=2*a
@@ -132,8 +139,11 @@ contains
                 ! keep mirror-normal states to avoid numerical wall shear.
                 if (faces(face)/='slip_wall'.and.use_viscous_wall) then
                   reflect=.not.reflect
+                  shift=-shift
+                  if (present(wall_velocity)) shift=shift+2.0_dp*wall_velocity(:,face)
                 else
                   reflect(a)=.not.reflect(a)
+                  shift(a)=-shift(a)
                 end if
               end select
             end do
@@ -141,14 +151,40 @@ contains
             if (inlet>0) then
               ghost(:,i,j,k)=inflow_state(:,inlet); gt(i,j,k)=inflow_temperature(inlet)
             end if
+            old_momentum=ghost(2:4,i,j,k)
             do a=1,3
               if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
             end do
+            if (any(abs(shift)>0.0_dp)) then
+              rho=ghost(1,i,j,k)
+              if (rho<=0.0_dp) return
+              ghost(2:4,i,j,k)=ghost(2:4,i,j,k)+rho*shift
+              ghost(5,i,j,k)=ghost(5,i,j,k)+ &
+                (sum(ghost(2:4,i,j,k)**2)-sum(old_momentum**2))/(2.0_dp*rho)
+              if (.not.all(ieee_is_finite(ghost(:,i,j,k)))) return
+            end if
           end do
         end do
       end do
     ok=.true.
   end subroutine fill_reactive_boundary_ghosts_3d
+
+  pure logical function valid_wall_velocity_3d(faces,velocity) result(ok)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in) :: velocity(:,:)
+    integer, parameter :: axis(6)=[1,1,2,2,3,3]
+    integer :: face
+    ok=.false.
+    if (any(shape(velocity)/=[3,6])) return
+    if (.not.all(ieee_is_finite(velocity))) return
+    do face=1,6
+      if (abs(velocity(axis(face),face))>0.0_dp) return
+      if (faces(face)/='no_slip_wall'.and.faces(face)/='isothermal_wall') then
+        if (any(abs(velocity(:,face))>0.0_dp)) return
+      end if
+    end do
+    ok=.true.
+  end function valid_wall_velocity_3d
 
   pure function resolved_reactive_boundaries_3d(config) result(faces)
     type(reactive_3d_config), intent(in) :: config
@@ -199,7 +235,7 @@ contains
     real(dp) :: x_ho2, x_h2o2, x_ar, x_n2
     real(dp) :: composition_mole_fractions(reactive_3d_max_species)
     integer :: composition_count,inflow_composition_count
-    real(dp) :: wall_temperature(6)
+    real(dp) :: wall_temperature(6),wall_velocity(3,6)
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6)
     real(dp) :: inflow_composition_mole_fractions(reactive_3d_max_species)
     character(len=selected_composition_name_length) :: inflow_composition_species(reactive_3d_max_species)
@@ -219,7 +255,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, &
       thermo_model, riemann_solver, &
-      boundary_condition, boundary_faces, wall_temperature, inflow_temperature, inflow_pressure, inflow_velocity, &
+      boundary_condition, boundary_faces, wall_temperature, wall_velocity, inflow_temperature, inflow_pressure, inflow_velocity, &
       inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, transport_enabled, viscosity_enabled, &
@@ -260,6 +296,7 @@ contains
     inflow_composition_species = config%inflow_composition_species
     inflow_composition_mole_fractions = config%inflow_composition_mole_fractions
     wall_temperature=config%wall_temperature
+    wall_velocity=config%wall_velocity
     boundary_faces = config%boundary_faces
     chemistry_enabled = config%chemistry_enabled
     chemistry_relative_tolerance = config%chemistry_relative_tolerance
@@ -342,6 +379,7 @@ contains
     config%inflow_composition_species = inflow_composition_species
     config%inflow_composition_mole_fractions = inflow_composition_mole_fractions
     config%wall_temperature=wall_temperature
+    config%wall_velocity=wall_velocity
     config%boundary_faces = boundary_faces
     config%chemistry_enabled = chemistry_enabled
     config%chemistry_relative_tolerance = chemistry_relative_tolerance
@@ -402,6 +440,14 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
+    if (.not.valid_wall_velocity_3d(faces,config%wall_velocity)) then
+      message='Wall velocity must be finite, tangential, and assigned only to no-slip walls'; return
+    end if
+    if (any(abs(config%wall_velocity)>0.0_dp)) then
+      if (.not.config%transport_enabled.or..not.config%viscosity_enabled) then
+        message='Moving walls require molecular viscosity'; return
+      end if
+    end if
     do face=1,6
       if (faces(face)=='isothermal_wall') then
         if (.not.ieee_is_finite(config%wall_temperature(face))) then

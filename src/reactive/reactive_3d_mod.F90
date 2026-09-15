@@ -1061,7 +1061,7 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
-      boundary_change, inflow_state, inflow_temperature, wall_temperature)
+      boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1079,7 +1079,7 @@ contains
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -1138,7 +1138,7 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1168,7 +1168,7 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &

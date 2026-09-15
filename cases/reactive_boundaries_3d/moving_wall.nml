@@ -1,0 +1,12 @@
+&reactive_3d
+  nx=4, ny=4, nz=4,
+  final_time=2e-7,
+  problem='uniform_reactor',
+  reconstruction='characteristic_plm', riemann_solver='hllc',
+  boundary_condition='periodic',
+  boundary_faces='periodic','periodic','no_slip_wall','no_slip_wall','periodic','periodic',
+  wall_velocity(:,4)=250,0,0,
+  initial_velocity_x=100, initial_velocity_y=0, initial_velocity_z=0,
+  chemistry_enabled=.false., transport_enabled=.true.,
+  output_file='moving_wall.csv'
+/

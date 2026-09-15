@@ -1892,8 +1892,8 @@ contains
   ! species donor budgets. Only physical face fluxes enter the update.
   subroutine physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok, &
-      inflow_state,inflow_temperature,wall_temperature)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),spacing(3),dt
@@ -1903,18 +1903,21 @@ contains
     real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:),theta
     logical, intent(out) :: ok
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
-    real(dp) :: heat,rate
+    real(dp) :: heat,rate,speed(3)
     integer :: dims(3),nv,face,a,i,j,k,idx(3)
     ok=.false.
     if (any(faces=='isothermal_wall')) then
       if (.not.conduction.or..not.present(wall_temperature)) return
       if (size(wall_temperature)/=6) return
     end if
+    if (present(wall_velocity)) then
+      if (.not.viscosity.and.any(abs(wall_velocity)>0.0_dp)) return
+    end if
     dims=n+4; nv=size(u,1)
     allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
     allocate(gx,mold=ghost); allocate(gy,mold=ghost); allocate(gz,mold=ghost)
     call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall=.true., &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
     if (.not.ok) return
     call reactive_transport_fluxes_3d(species,transport,ghost,gt,dims(1),dims(2),dims(3), &
       spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok)
@@ -1922,9 +1925,9 @@ contains
     fx=gx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
     fy=gy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
     fz=gz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
-    ! Stationary no-slip wall: only prescribed conduction contributes energy.
-    ! Direct face flux avoids extrapolating unphysical negative ghost temperatures.
-    if (any(faces=='isothermal_wall')) then
+    ! Wall energy flux is viscous traction dot wall velocity plus conduction.
+    ! Direct thermal flux avoids nonphysical extrapolated ghost temperatures.
+    if (any(faces=='isothermal_wall').or.present(wall_velocity)) then
       do k=1,n(3)
         do j=1,n(2)
           do i=1,n(1)
@@ -1934,18 +1937,23 @@ contains
               if (idx(a)==1) face=2*a-1
               if (idx(a)==n(a)) face=2*a
               if (face==0) cycle
-              if (faces(face)/='isothermal_wall') cycle
-              call wall_heat_transfer_3d(species,transport,u(:,i,j,k),t(i,j,k),wall_temperature(face), &
-                spacing(a),heat,rate,ok)
-              if (.not.ok) return
-              if (modulo(face,2)==0) heat=-heat
+              if (faces(face)/='isothermal_wall'.and.faces(face)/='no_slip_wall') cycle
+              heat=0.0_dp
+              if (faces(face)=='isothermal_wall') then
+                call wall_heat_transfer_3d(species,transport,u(:,i,j,k),t(i,j,k),wall_temperature(face), &
+                  spacing(a),heat,rate,ok)
+                if (.not.ok) return
+                if (modulo(face,2)==0) heat=-heat
+              end if
+              speed=0.0_dp
+              if (present(wall_velocity)) speed=wall_velocity(:,face)
               select case(a)
               case(1)
-                fx(5,merge(0,n(1),i==1),j,k)=heat
+                fx(5,merge(0,n(1),i==1),j,k)=heat+dot_product(speed,fx(2:4,merge(0,n(1),i==1),j,k))
               case(2)
-                fy(5,i,merge(0,n(2),j==1),k)=heat
+                fy(5,i,merge(0,n(2),j==1),k)=heat+dot_product(speed,fy(2:4,i,merge(0,n(2),j==1),k))
               case(3)
-                fz(5,i,j,merge(0,n(3),k==1))=heat
+                fz(5,i,j,merge(0,n(3),k==1))=heat+dot_product(speed,fz(2:4,i,j,merge(0,n(3),k==1)))
               end select
             end do
           end do
@@ -2015,8 +2023,8 @@ contains
       dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, output_state, &
       output_temperature, minimum_theta, ok, boundary_faces, boundary_change, &
-      inflow_state,inflow_temperature,wall_temperature)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: input_state(:, :, :, :)
@@ -2072,7 +2080,7 @@ contains
       call physical_transport_fluxes_3d(species,transport,input_state,input_temperature,[nx,ny,nz], &
         [dx,dy,dz],dt,faces,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
         barodiffusion_enabled,flux_x,flux_y,flux_z,minimum_theta,local_ok, &
-        inflow_state,inflow_temperature,wall_temperature)
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     else
       allocate(flux_x(nvar, nx, ny, nz), flux_y(nvar, nx, ny, nz))
       allocate(flux_z(nvar, nx, ny, nz))
@@ -2242,8 +2250,8 @@ contains
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, minimum_theta, ok, boundary_faces, boundary_change, &
-      inflow_state,inflow_temperature,wall_temperature)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -2312,13 +2320,15 @@ contains
       species, transport, initial_state, initial_temperature, nx, ny, nz, &
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, stage_state, &
-      stage_temperature, theta1, local_ok, boundary_faces, change1, inflow_state, inflow_temperature, wall_temperature)
+      stage_temperature, theta1, local_ok, boundary_faces, change1, inflow_state, inflow_temperature, &
+      wall_temperature,wall_velocity)
     if (.not. local_ok) return
     call reactive_transport_euler_update_3d( &
       species, transport, stage_state, stage_temperature, nx, ny, nz, &
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, euler_state, &
-      euler_temperature, theta2, local_ok, boundary_faces, change2, inflow_state, inflow_temperature, wall_temperature)
+      euler_temperature, theta2, local_ok, boundary_faces, change2, inflow_state, inflow_temperature, &
+      wall_temperature,wall_velocity)
     if (.not. local_ok) return
     if (.not. all(ieee_is_finite(stage_state)) .or. &
         .not. all(ieee_is_finite(stage_temperature)) .or. &

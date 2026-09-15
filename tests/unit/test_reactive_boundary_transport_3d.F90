@@ -118,7 +118,7 @@ contains
     print *, 'PASS: six-face hot/cold Fourier heat flux, thermal timestep and rejection'
   end subroutine check_wall_heat
   subroutine check_wall_shear()
-    real(dp) :: mu,kappa,diffusion(7),expected,kinetic0,kinetic1
+    real(dp) :: mu,kappa,diffusion(7),expected,kinetic0,kinetic1,wv(3,6),expected_work,wt(6)
     ! Uniform tangential flow between stationary y walls. The face derivative
     ! is U/(dy/2). Both walls exert -mu*2U/dy over area (4dx)^2.
     q=0.0_dp; q(1)=0.3_dp; q(2)=20.0_dp; q(5)=101325.0_dp
@@ -148,6 +148,27 @@ contains
     kinetic1=sum(0.5_dp*sum(u(2:4,:,:,:)**2,dim=1)/u(1,:,:,:))
     call require(kinetic1<kinetic0.and.maxval(t)>maxval(bt),'viscous heating')
     call require(abs(sum(u(5,:,:,:))-sum(before(5,:,:,:)))<1e-9_dp,'closed total energy')
+    ! Top wall moves at 50 m/s; bottom wall remains stationary.
+    ! Top/bottom tractions are 2 mu (50-U)/dy and -2 mu U/dy.
+    wv=0.0_dp; wv(1,4)=50.0_dp
+    expected=2*mu*(50.0_dp-2*q(2))/dx*(4*dx)**2*dt
+    expected_work=2*mu*(50.0_dp-q(2))/dx*50.0_dp*(4*dx)**2*dt
+    call reactive_transport_euler_update_3d(species,transport,before,bt,4,4,4,dx,dx,dx,dt, &
+      .true.,.false.,.false.,.false.,u,t,theta,ok,faces,change,wall_velocity=wv)
+    call require(ok,'moving wall Euler step')
+    call require(abs(change(2)/expected-1)<1e-12_dp,'moving wall analytical shear')
+    call require(abs(change(5)/expected_work-1)<1e-12_dp,'moving wall analytical work')
+    call require(abs((sum(u(5,:,:,:))-sum(before(5,:,:,:)))*dx**3/expected_work-1)<1e-8_dp, &
+      'moving wall energy budget')
+    faces(4)='isothermal_wall'; wt=bt(1,1,1)
+    call reactive_transport_euler_update_3d(species,transport,before,bt,4,4,4,dx,dx,dx,dt, &
+      .true.,.true.,.false.,.false.,u,t,theta,ok,faces,change,wall_temperature=wt,wall_velocity=wv)
+    call require(ok.and.abs(change(5)/expected_work-1)<1e-12_dp,'isothermal moving wall work')
+    faces(4)='no_slip_wall'
+    u=before; t=bt; wv(2,4)=1.0_dp
+    call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,dt, &
+      .true.,.false.,.false.,.false.,theta,ok,faces,change,wall_velocity=wv)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'normal wall motion rejected with rollback')
     print *, 'PASS: analytical no-slip shear and kinetic-to-internal energy conversion'
   end subroutine check_wall_shear
   subroutine require(condition,label)
