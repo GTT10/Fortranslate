@@ -26,7 +26,7 @@ program test_spray_integration
   character(len=32) :: faces(6)
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
-  real(dp) :: force(15),accel(3),dt,expected(3)
+  real(dp) :: force(15),accel(3),dt,expected(3),saved_force(15)
   real(dp), allocatable :: component_mass(:,:),saved_mass(:,:)
   integer :: i,j,k,iteration,steps,event,record_status
   character(len=16384) :: checkpoint_record
@@ -132,6 +132,70 @@ program test_spray_integration
     call require(all(drops%mass==before_drops%mass),'parent mass rollback')
     call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
       all(drops%khrt_shed_volume==before_drops%khrt_shed_volume),'wall/KH inventory rollback')
+  case('mixture_reactive')
+    materials(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
+    call require(ok,'reactive mixture properties')
+    allocate(component_mass(2,size(drops)))
+    do i=1,size(drops)
+      component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
+    end do
+    saved_mass=component_mass;accel=[0.0_dp,0.0_dp,-9.81_dp]
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'reactive mixture initial totals')
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,.1_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
+    call require(ok,trim(message))
+    call require(all(component_mass<saved_mass),'reactive driver advances component evaporation')
+    call require(maxval(abs(state(6,:,:,:)-before(6,:,:,:)))>1e-12_dp,'mixture gas chemistry advances')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok,'reactive mixture updated totals')
+    call require(abs(totals1(1)-totals0(1))<1e-12_dp*totals0(1),'reactive mixture mass conservation')
+    call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'reactive mixture force impulse')
+    call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'reactive mixture force work')
+    time=2e-7_dp;steps=1;event=0;injected=0
+    call write_spray_checkpoint('mixture-reactive.chk','mixture-reactive-context',species,state,temperature, &
+      drops,time,steps,event,totals0,injected,ok,message,source_totals=force,component_mass=component_mass)
+    call require(ok,trim(message))
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,.1_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
+    call require(ok,trim(message))
+    before=state;before_t=temperature;before_drops=drops;saved_mass=component_mass;saved_force=force
+    call read_spray_checkpoint('mixture-reactive.chk','mixture-reactive-context',species,state,temperature, &
+      drops,time,steps,event,totals0,injected,ok,message,source_totals=force,component_mass=component_mass)
+    call require(ok,trim(message))
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,.1_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
+    call require(ok,trim(message))
+    call require(all(state==before).and.all(temperature==before_t),'reactive mixture restart gas equality')
+    call require(all(component_mass==saved_mass).and.all(force==saved_force),'reactive mixture restart composition and force')
+    do i=1,size(drops)
+      call require(drops(i)%mass==before_drops(i)%mass.and.drops(i)%temperature==before_drops(i)%temperature.and. &
+        all(drops(i)%position==before_drops(i)%position).and.all(drops(i)%velocity==before_drops(i)%velocity), &
+        'reactive mixture restart parcel equality')
+    end do
+    open(newunit=i,file='mixture-reactive.chk',status='old');close(i,status='delete')
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'invalid', &
+      1e-7_dp,1e-12_dp,.1_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'late mixture chemistry rollback')
+    call require(all(component_mass==saved_mass).and.all(force==0),'late mixture component and force rollback')
+    do i=1,size(drops)
+      call require(drops(i)%mass==before_drops(i)%mass.and.drops(i)%temperature==before_drops(i)%temperature.and. &
+        all(drops(i)%position==before_drops(i)%position).and.all(drops(i)%velocity==before_drops(i)%velocity), &
+        'late mixture parcel rollback')
+    end do
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,component_mass=component_mass)
+    call require(.not.ok.and.all(component_mass==saved_mass),'missing mixture property table rejected')
   case('mixture_grid')
     materials(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)

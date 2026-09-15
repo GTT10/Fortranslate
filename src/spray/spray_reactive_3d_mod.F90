@@ -8,7 +8,7 @@ module spray_reactive_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d, advance_reactive_full_3d, recover_reactive_temperatures_3d
   use spray_parcel_mod
-  use spray_coupling_3d_mod, only: advance_spray_coupling_3d, valid_spray_boundary_faces
+  use spray_coupling_3d_mod, only: advance_spray_coupling_3d, advance_mixture_coupling_3d, valid_spray_boundary_faces
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
 #ifdef PELEF_SPRAY_CVODE
   use sundials_constant_volume_reactor_mod, only: cvode_reactor_context, initialize_constant_volume_cvode, &
@@ -100,12 +100,16 @@ contains
   subroutine advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films)
+      wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
+      mixture_components,component_mass)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
+    type(spray_liquid), intent(in), optional :: mixture_components(:)
+    real(dp), allocatable, intent(inout), optional :: component_mass(:,:)
+    real(dp), allocatable :: mixture_mass(:,:)
     type(spray_options), intent(in), optional :: breakup_options(:)
     type(spray_wall_options), intent(in), optional :: wall_options
     type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
@@ -148,6 +152,21 @@ contains
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
     if (.not.allocated(parcels)) return
+    if (present(mixture_components).neqv.present(component_mass)) then
+      message='Mixture components and mass storage must be supplied together';return
+    end if
+    if (present(component_mass)) then
+      if (.not.allocated(component_mass)) return
+      if (present(materials).or.present(breakup_options)) then
+        message='Mixture and per-port pure-liquid property tables cannot be combined';return
+      end if
+      if (present(wall_options)) then
+        if (any(wall_options%enabled)) then
+          message='Mixture wall impact is not connected';return
+        end if
+      end if
+      mixture_mass=component_mass
+    end if
     if (.not.valid_spray_boundary_faces(faces)) return
     if (present(boundary_change)) then
       if (size(boundary_change)/=size(state,1)) return
@@ -175,6 +194,9 @@ contains
     if (present(wall_films)) then
       if (.not.allocated(wall_films)) return
       patches=wall_films
+      if (present(component_mass).and.size(patches)>0) then
+        message='Mixture wall films are not connected';return
+      end if
     end if
     allocate(candidate,source=state); allocate(temp,source=temperature); allocate(drops,source=parcels)
     if (any(accel/=0)) then
@@ -185,8 +207,13 @@ contains
     ! remains first order in its substep. No second-order spray claim is implied.
     do half=1,2
       if (half == 1) then
+        if (present(component_mass)) then
+          call advance_mixture_coupling_3d(species,transport,mixture_components,options,candidate,temp,lower,spacing, &
+            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
+        else
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
+        end if
         if (.not. local_ok) return
         ledger=ledger+exchange
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
@@ -217,8 +244,13 @@ contains
           message='LES step rejected'; return
         end if
         ledger=ledger+exchange
+        if (present(component_mass)) then
+          call advance_mixture_coupling_3d(species,transport,mixture_components,options,candidate,temp,lower,spacing, &
+            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
+        else
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
+        end if
         if (.not. local_ok) return
         ledger=ledger+exchange
       end if
@@ -230,6 +262,7 @@ contains
     if (present(source_change)) source_change=force_ledger
     if (present(boundary_change)) boundary_change=ledger
     state=candidate; temperature=temp; parcels=drops
+    if (present(component_mass)) call move_alloc(mixture_mass,component_mass)
     if (present(wall_films)) call move_alloc(patches,wall_films); ok=.true.; message=''
   contains
     subroutine force_kick(gas,particles,interval,accepted)

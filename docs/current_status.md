@@ -38,8 +38,10 @@ now consumes crossed parcels before KH release, with coupled film/lineage restar
 The mixed-liquid API now covers mixture properties, component transport,
 regular-grid feedback, component-specific boundary budgets, representative
 breakup/splitting and composition checkpoint persistence
-([evidence](validation/spray-mixture-grid-20260916.md)). Mixture CLI/injection,
-the combined hydro/chemistry driver, wall impact and KH shed children remain open.
+([evidence](validation/spray-mixture-grid-20260916.md)). The combined
+hydro/transport/LES/chemistry driver now retains composition and rolls it back
+with all other state ([evidence](validation/spray-mixture-reactive-20260916.md)).
+Mixture CLI/injection, wall impact and KH shed children remain open.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

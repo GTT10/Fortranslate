@@ -271,8 +271,8 @@ recovers temperature and returns the opposite actual energy increment for the ga
 Failure preserves the parcel and returns zero transfer. The transport update
 below supplies mixture heat transfer and component evaporation.
 The CLI still selects one pure liquid per parcel. The mixture grid API below
-retains component masses and supports their checkpoint persistence; application
-input and the combined hydro/chemistry driver remain to be connected. The
+retains component masses and supports their checkpoint persistence and combined
+hydro/chemistry stepping; application inputs remain to be connected. The
 reference's optional boiling-temperature property caps are not applied here.
 See [source](../references/spray_mixture.json) and
 [focused evidence](validation/spray-mixture-thermo-20260916.md).
@@ -333,7 +333,7 @@ work and species exchange. It changes the parcel and external component-mass
 array only on success. Overdraw or inadmissible temperatures reject the interval;
 the caller must shorten it. A zero interval preserves state exactly. This remains
 a composable API used by the grid coupling below; wall impact, KH shed children,
-CLI and the combined hydro/chemistry driver remain to be connected.
+CLI and scheduled mixture injection remain to be connected.
 See [rate and update evidence](validation/spray-mixture-rates-20260916.md).
 
 ### Mixed-liquid grid coupling and composition restart
@@ -364,9 +364,25 @@ ordered component properties and mixture settings, as with existing pure-liquid
 checkpoint contexts. The reader commits the allocated component matrix together
 with the gas and parcel state.
 
-These are regular-grid coupling/checkpoint APIs. Mixture namelist input, scheduled
-injection and the combined hydro/chemistry application driver remain open.
+These are regular-grid coupling/checkpoint APIs. Mixture namelist input and
+scheduled injection remain open.
 See [grid/restart evidence](validation/spray-mixture-grid-20260916.md).
+
+### Mixed-liquid reacting-flow step
+
+`advance_spray_reactive_3d` accepts the optional pair `mixture_components` and
+`component_mass`. It advances the same mixture state in both spray half-steps,
+with the existing hydro, molecular transport, LES and chemistry operators between
+them. External acceleration retains its impulse/work ledger. Gas, particles and
+component masses commit together only after every stage succeeds; late chemistry
+or transport rejection returns zero external/boundary ledgers and preserves inputs.
+
+The mixture pair cannot be combined with the per-port pure-liquid property tables.
+Gas wall conditions remain available, but particle wall-impact options and nonempty
+film state reject until mixture film composition is implemented. No new chemistry
+backend or time-order accuracy claim is introduced. The focused check exercises
+the native implicit backend, not a new CVODE qualification. See
+[reacting-mixture evidence](validation/spray-mixture-reactive-20260916.md).
 
 ## KH-RT representative-drop breakup
 

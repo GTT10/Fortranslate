@@ -61,8 +61,9 @@ now have a shared thermodynamic API. Raoult surface partitioning and supplied
 component-mass evaporation exchange, diffusion-weighted rates and a conservative
 frozen-gas transport update are implemented. Regular-grid feedback, persistent
 component masses, boundary budgets, representative breakup/splitting and composition
-checkpoint APIs are connected. Mixture wall impact/KH shed children, CLI/injection,
-combined hydro/chemistry stepping and physical boiling rates remain open.
+checkpoint APIs are connected. Combined hydro/transport/LES/chemistry stepping
+now retains mixture composition through accepted updates and rollback. Mixture
+wall impact/KH shed children, CLI/injection and physical boiling rates remain open.
 
 ## Ordered implementation work
 
