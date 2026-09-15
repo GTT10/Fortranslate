@@ -5,11 +5,70 @@ module spray_mpi_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory
+  use spray_breakup_mod, only: split_spray_parcels
   use spray_partition_mod
   implicit none
   private
-  public :: migrate_spray_parcels,reserve_spray_ids
+  public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels
 contains
+  subroutine split_mpi_spray_parcels(comm,parcels,maximum_multiplicity,maximum_parcels,last_id,ok,component_mass)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), intent(in) :: maximum_multiplicity
+    integer, intent(in) :: maximum_parcels
+    integer(int64), intent(inout) :: last_id
+    logical, intent(out) :: ok
+    real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: masses(:,:)
+    integer :: p,parent,old_count,nc,lo,hi,ierr
+    integer(int64) :: next_id,first_id
+    logical :: valid,agreed
+    ok=.false.;valid=allocated(parcels).and.last_id>=0;nc=0
+    if (present(component_mass)) then
+      valid=valid.and.allocated(component_mass)
+      if (allocated(component_mass)) nc=size(component_mass,1)
+      valid=valid.and.nc>=1.and.nc<=16
+    end if
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(nc,lo,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(nc,hi,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.lo/=hi) return
+    old_count=size(parcels);candidate=parcels
+    if (present(component_mass)) valid=size(component_mass,2)==old_count
+    if (valid) then
+      do p=1,old_count
+        valid=valid.and.valid_spray_parcel(parcels(p)).and.parcels(p)%id<=last_id
+        if (p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+        if (present(component_mass)) valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
+      end do
+    end if
+    if (valid) call split_spray_parcels(candidate,maximum_multiplicity,maximum_parcels,valid)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    if (present(component_mass)) then
+      allocate(masses(nc,size(candidate)));masses(:,:old_count)=component_mass;parent=1
+      do p=old_count+1,size(candidate)
+        do while(parent<old_count)
+          if (parcels(parent)%id>=candidate(p)%parent_id) exit
+          parent=parent+1
+        end do
+        masses(:,p)=component_mass(:,parent)
+      end do
+    end if
+    next_id=last_id;first_id=0
+    call reserve_spray_ids(comm,size(candidate)-old_count,next_id,first_id,valid)
+    if (.not.valid) return
+    do p=old_count+1,size(candidate)
+      candidate(p)%id=first_id+int(p-old_count-1,int64)
+    end do
+    call move_alloc(candidate,parcels)
+    if (present(component_mass)) call move_alloc(masses,component_mass)
+    last_id=next_id;ok=.true.
+  end subroutine
+
   ! All ranks retain the same high-water mark; rank order breaks allocation ties.
   subroutine reserve_spray_ids(comm,local_count,last_id,first_id,ok)
     type(MPI_Comm), intent(in) :: comm

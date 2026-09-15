@@ -1676,3 +1676,17 @@ that mark from locally owned records. Assignment is deterministic for a given ra
 layout and request vector; changed-rank particle identity parity is not claimed.
 Injection/breakup driver wiring remains open. See
 [ID evidence](validation/spray-mpi-ids-20260916.md).
+
+### Collective computational splitting
+
+`split_mpi_spray_parcels` applies the existing multiplicity cap on local candidates,
+reserves globally disjoint child IDs and commits particle/component state and the
+shared ID mark together. Children inherit per-drop component masses and parent IDs;
+KH initial count and shed volume are partitioned with multiplicity. If any rank
+cannot split within capacity, no rank commits or consumes IDs. Input IDs must be
+locally increasing and no larger than the shared mark. The component table is a
+caller-owned common convention; column counts must agree across ranks.
+
+This is computational splitting of represented drop counts, not aerodynamic
+breakup. MPI injection and distributed gas/film coupling remain to be connected.
+See [split evidence](validation/spray-mpi-split-20260916.md).

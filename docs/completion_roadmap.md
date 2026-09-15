@@ -106,7 +106,8 @@ physical/EB boundaries remain open; see the [AMR case guide](../cases/amr_reacti
 Particle Cartesian MPI migration now preserves parcel/component payloads and
 restores local ID ordering, with collective input/capacity rejection. Distributed
 gas feedback, film ownership and application restart remain. A collective ID
-reservation API is implemented; injection/breakup driver wiring remains.
+reservation API and collective computational splitting are implemented; injection
+and aerodynamic-breakup driver wiring remain.
 
 ## Contract for every increment
 

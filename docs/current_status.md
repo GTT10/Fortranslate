@@ -83,7 +83,9 @@ partitioning with component/KH state preservation
 ([evidence](validation/spray-mpi-migration-20260916.md)). Distributed gas/film
 feedback and application integration remain open. Collective 64-bit ID reservation
 now rejects overflow and inconsistent rank histories
-([evidence](validation/spray-mpi-ids-20260916.md)).
+([evidence](validation/spray-mpi-ids-20260916.md)). Collective computational splitting
+now uses these IDs while preserving component and KH inventories
+([evidence](validation/spray-mpi-split-20260916.md)).
 
 ## Repository consolidation implemented
 

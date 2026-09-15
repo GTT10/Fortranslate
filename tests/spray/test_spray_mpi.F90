@@ -47,6 +47,21 @@ program test_spray_mpi
     [nranks,1,1],[nranks,1,1],[.true.,.false.,.false.],100,ok,masses)
   call require(.not.ok.and.all(parcels%id==saved%id),'one-rank invalid input rejects collectively')
   if (rank/=0) call require(all(masses==saved_mass),'other ranks preserve mass')
+  masses=saved_mass;last_id=int(2*nranks,int64)
+  call split_mpi_spray_parcels(MPI_COMM_WORLD,parcels,60.0_dp,merge(2,100,rank==0),last_id,ok,masses)
+  call require(.not.ok.and.size(parcels)==2.and.last_id==2*nranks,'split capacity collective rollback')
+  call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'split failure preserves payload')
+  call split_mpi_spray_parcels(MPI_COMM_WORLD,parcels,60.0_dp,100,last_id,ok,masses)
+  call require(ok.and.size(parcels)==4.and.last_id==4*nranks,'collective split ID allocation')
+  call require(all(parcels(3:4)%id==[2*nranks+2*rank+1,2*nranks+2*rank+2]),'split globally disjoint IDs')
+  call require(all(parcels(3:4)%parent_id==saved%id),'split lineage')
+  call require(sum(parcels%multiplicity)==sum(saved%multiplicity),'split multiplicity conserved')
+  call require(sum(parcels%khrt_initial_count)==sum(saved%khrt_initial_count),'split KH count conserved')
+  call require(abs(sum(parcels%khrt_shed_volume)-sum(saved%khrt_shed_volume))<1e-28_dp,'split KH volume conserved')
+  do p=1,4
+    call require(all(masses(:,p)==parcels(p)%mass*[.25_dp,.75_dp]),'split component inheritance')
+    call require(parcels(p)%multiplicity<=60,'split count cap')
+  end do
   last_id=100;first_id=-7
   call reserve_spray_ids(MPI_COMM_WORLD,rank,last_id,first_id,ok)
   call require(ok.and.last_id==100+nranks*(nranks-1)/2,'collective ID high-water mark')
