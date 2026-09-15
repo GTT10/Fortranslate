@@ -2,6 +2,7 @@
 module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
+  use spray_mixture_mod, only: liquid_mixture_properties,valid_component_inventory
   use spray_parcel_mod
   use nasa7_thermo_mod, only: universal_gas_constant
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -27,7 +28,7 @@ module spray_wall_impact_mod
   end type
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
   public :: wall_film_transfer_rates,advance_wall_film_frozen,wall_liquid_conductivity_at_temperature
-  public :: resolve_wall_impact
+  public :: resolve_wall_impact,resolve_mixture_wall_impact
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
 contains
@@ -313,6 +314,54 @@ contains
     real(dp) :: c(3)
     c=[a(2)*b(3)-a(3)*b(2),a(3)*b(1)-a(1)*b(3),a(1)*b(2)-a(2)*b(1)]
   end function
+
+  ! Component masses are per physical drop for parcels and total kg for the film.
+  ! Dimensionless impact parameters are supplied by the caller, as in the pure kernel.
+  subroutine resolve_mixture_wall_impact(parent,components,component_mass,location,normal,kv,tstar,kcrit,film_ratio, &
+      weber,reynolds,contact_angle,first_id,children,child_mass,film,film_mass,wall,regime,ok)
+    type(spray_parcel), intent(inout) :: parent
+    type(spray_liquid), intent(in) :: components(:)
+    real(dp), intent(inout) :: component_mass(:),film_mass(:)
+    real(dp), intent(in) :: location(3),normal(3),kv,tstar,kcrit,film_ratio,weber,reynolds,contact_angle
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), allocatable, intent(inout) :: child_mass(:,:)
+    type(spray_wall_film), intent(inout) :: film
+    real(dp), intent(out) :: wall(5)
+    integer, intent(out) :: regime
+    logical, intent(out) :: ok
+    type(spray_liquid) :: effective
+    type(spray_parcel) :: candidate
+    type(spray_parcel), allocatable :: spawned(:)
+    type(spray_wall_film) :: deposited
+    real(dp), allocatable :: spawned_mass(:,:)
+    real(dp) :: fractions(size(components)),rho,cp,e,budget(5)
+    integer :: n,kind
+    logical :: valid
+    wall=0;regime=-1;ok=.false.
+    if (size(components)/=size(component_mass).or.size(components)/=size(film_mass)) return
+    if (.not.valid_component_inventory(parent,component_mass).or.parent%mass<=0) return
+    fractions=component_mass/parent%mass
+    call liquid_mixture_properties(components,fractions,parent%temperature,rho,cp,e,valid)
+    if (.not.valid) return
+    effective=components(1);effective%density=rho;effective%heat_capacity=cp
+    effective%reference_temperature=parent%temperature;effective%reference_energy=e
+    effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
+    effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
+    effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    candidate=parent
+    call resolve_wall_impact(candidate,effective,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
+      contact_angle,first_id,spawned,deposited,budget,kind,valid)
+    if (.not.valid) return
+    allocate(spawned_mass(size(components),size(spawned)))
+    do n=1,size(spawned)
+      spawned_mass(:,n)=spawned(n)%mass*fractions
+    end do
+    component_mass=candidate%mass*fractions;film_mass=deposited%mass*fractions
+    parent=candidate;film=deposited;wall=budget;regime=kind
+    call move_alloc(spawned,children);call move_alloc(spawned_mass,child_mass)
+    ok=.true.
+  end subroutine
 
   subroutine resolve_wall_impact(parent,liquid,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
       contact_angle,first_id,children,film,wall,regime,ok)

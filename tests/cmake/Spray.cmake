@@ -43,7 +43,7 @@ if(PELEF_ENABLE_SPRAY)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test_spray_core PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
-  foreach(spray_case mixture_terminal mixture_rates mixture_exchange mixture film_evolution wall_event wall_state wall_impact heat_capacity port_states ports surface_cap viscosity density antoine split khrt etab boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
+  foreach(spray_case mixture_wall_event mixture_terminal mixture_rates mixture_exchange mixture film_evolution wall_event wall_state wall_impact heat_capacity port_states ports surface_cap viscosity density antoine split khrt etab boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
       les_boundary les_algebra les_grid les_zero les_reject)
     add_test(NAME spray_${spray_case} COMMAND test_spray_core ${spray_case})
     set_tests_properties(spray_${spray_case} PROPERTIES LABELS "spray" TIMEOUT 60)

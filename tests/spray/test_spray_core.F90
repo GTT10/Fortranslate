@@ -24,6 +24,8 @@ program test_spray_core
   type(spray_liquid) :: liquid,constant_liquid,mixture_components(2)
   real(dp) :: mixture_y(2),mixture_rho,mixture_cp,mixture_e,mixture_t,mixture_e0
   real(dp) :: component_mass(2),saved_mass(2),evaporated_mass(2),vapor_h(2),mw(2),surface_x(2),mixture_rates(2)
+  real(dp), allocatable :: child_component_mass(:,:),saved_child_mass(:,:)
+  real(dp) :: film_component_mass(2),saved_film_mass(2)
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options,constant_options
@@ -289,6 +291,52 @@ program test_spray_core
     call advance_wall_film_frozen(wall_patch,liquid,film,-1.0_dp,400.0_dp,.true.,.true.,dt,1e-7_dp, &
       saved_patch,transfer,solid_energy,ok)
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
+  case('mixture_wall_event')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'wall mixture component')
+    mixture_components(1)%heat_capacity_model='polynomial'
+    mixture_components(1)%heat_capacity_coefficients=[4000.0_dp,1.0_dp,0.0_dp,0.0_dp]
+    mixture_components(1)%heat_capacity_temperature_range=[300.0_dp,600.0_dp]
+    p%velocity=[0.0_dp,0.0_dp,-20.0_dp];q=p;mixture_y=[.6_dp,.4_dp]
+    call liquid_mixture_properties(mixture_components,mixture_y,p%temperature,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'wall initial thermodynamics')
+    impact_kv=[79.0_dp,79.0_dp,150.0_dp,150.0_dp,150.0_dp,300.0_dp]
+    impact_tstar=[1.0_dp,1.1_dp,1.0_dp,1.1_dp,1.0_dp,1.0_dp]
+    impact_film=[0.0_dp,0.0_dp,0.0_dp,0.0_dp,.2_dp,.03_dp]
+    impact_kinds=[impact_deposit,impact_rebound,impact_dry,impact_thermal,impact_spread,impact_wet]
+    do event_index=1,6
+      p=q;component_mass=q%mass*mixture_y
+      call resolve_mixture_wall_impact(p,mixture_components,component_mass,q%position,[0.0_dp,0.0_dp,1.0_dp], &
+        impact_kv(event_index),impact_tstar(event_index),80.0_dp,impact_film(event_index),100.0_dp,1000.0_dp, &
+        pi/3,2_int64,drops,child_component_mass,wall_patch,film_component_mass,transfer,regime,ok)
+      call require(ok.and.regime==impact_kinds(event_index),'mixture impact regime')
+      saved_mass=p%multiplicity*component_mass+film_component_mass
+      expected=p%mass*p%multiplicity*(mixture_e+.5_dp*sum(p%velocity**2))+wall_patch%mass*mixture_e
+      grad(:,1)=p%mass*p%multiplicity*p%velocity
+      do n=1,size(drops)
+        saved_mass=saved_mass+drops(n)%multiplicity*child_component_mass(:,n)
+        expected=expected+drops(n)%mass*drops(n)%multiplicity*(mixture_e+.5_dp*sum(drops(n)%velocity**2))
+        grad(:,1)=grad(:,1)+drops(n)%mass*drops(n)%multiplicity*drops(n)%velocity
+        call require(maxval(abs(child_component_mass(:,n)/drops(n)%mass-mixture_y))<1e-14_dp,'splash composition')
+      end do
+      call require(maxval(abs(saved_mass/(q%mass*q%multiplicity)-mixture_y))<1e-13_dp,'wall component closure')
+      value=q%mass*q%multiplicity*(mixture_e+.5_dp*sum(q%velocity**2))
+      call require(abs(expected+transfer(5)-value)<1e-12_dp*abs(value),'mixture wall energy')
+      call require(maxval(abs(grad(:,1)+transfer(2:4)-q%mass*q%multiplicity*q%velocity))<1e-18_dp, &
+        'mixture wall momentum')
+    end do
+    saved_drops=drops;saved_child_mass=child_component_mass;saved_patch=wall_patch;saved_film_mass=film_component_mass
+    p=q;component_mass=q%mass*mixture_y;saved_mass=component_mass
+    call resolve_mixture_wall_impact(p,mixture_components,component_mass,q%position,[0.0_dp,0.0_dp,1.0_dp], &
+      150.0_dp,1.0_dp,80.0_dp,0.0_dp,100.0_dp,0.0_dp,pi/3,2_int64,drops,child_component_mass, &
+      wall_patch,film_component_mass,transfer,regime,ok)
+    call require(.not.ok.and.regime==-1.and.all(transfer==0),'mixture late impact failure')
+    call require(all(component_mass==saved_mass).and.p%mass==q%mass,'mixture parent rollback')
+    call require(all(child_component_mass==saved_child_mass).and.all(drops%mass==saved_drops%mass), &
+      'mixture children rollback')
+    call require(all(film_component_mass==saved_film_mass).and.wall_patch%mass==saved_patch%mass,'mixture film rollback')
   case('wall_event')
     p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2;q=p
     q%khrt_initial_count=q%multiplicity;q%khrt_shed_volume=1e-12_dp

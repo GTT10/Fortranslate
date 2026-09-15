@@ -467,6 +467,22 @@ See [terminal-state evidence](validation/spray-mixture-terminal-20260916.md).
 illustrative H2O/H2O2 properties demonstrate software behavior, not a validated
 liquid blend. See [CLI/injection evidence](validation/spray-mixture-cli-20260916.md).
 
+### Mixed-liquid wall-impact event API
+
+`resolve_mixture_wall_impact` partitions an incident mixture among the retained
+parent, splash children and a deposited film patch using the existing six-regime
+impact kernel. Parent and child component masses are kg per physical drop;
+`film_mass` is kg per complete film patch. All outgoing material inherits the
+incident composition and temperature. The kernel evaluates mixture density and
+energy at that temperature and returns wall momentum/energy exchange. Failed
+classification or child/film construction preserves all supplied state arrays.
+
+The caller supplies the dimensionless impact parameters, including wall-to-boiling
+temperature ratio. Mixture boiling-temperature evaluation, planar crossing dispatch,
+film evolution, grid/CLI coupling and mixture-film checkpoint state remain to be
+connected. The CLI still rejects mixed-liquid wall impact. There is no entrainment
+from an existing film. See [event evidence](validation/spray-mixture-wall-event-20260916.md).
+
 ## KH-RT representative-drop breakup
 
 Set `breakup_model='khrt'` with positive `surface_tension` and
