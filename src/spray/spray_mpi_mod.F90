@@ -8,8 +8,38 @@ module spray_mpi_mod
   use spray_partition_mod
   implicit none
   private
-  public :: migrate_spray_parcels
+  public :: migrate_spray_parcels,reserve_spray_ids
 contains
+  ! All ranks retain the same high-water mark; rank order breaks allocation ties.
+  subroutine reserve_spray_ids(comm,local_count,last_id,first_id,ok)
+    type(MPI_Comm), intent(in) :: comm
+    integer, intent(in) :: local_count
+    integer(int64), intent(inout) :: last_id,first_id
+    logical, intent(out) :: ok
+    integer(int64) :: minimum,maximum,requested,total,prefix,next_first
+    integer :: rank,ierr
+    logical :: valid,agreed
+    ok=.false.;valid=local_count>=0.and.local_count<=1000000.and.last_id>=0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(last_id,minimum,1,MPI_INTEGER8,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(last_id,maximum,1,MPI_INTEGER8,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.minimum/=maximum) return
+    requested=int(local_count,int64)
+    call MPI_Allreduce(requested,total,1,MPI_INTEGER8,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (total>huge(last_id)-last_id) return
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Exscan(requested,prefix,1,MPI_INTEGER8,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (rank==0) prefix=0
+    next_first=0
+    if (local_count>0) next_first=last_id+prefix+1_int64
+    first_id=next_first;last_id=last_id+total;ok=.true.
+  end subroutine
+
   subroutine migrate_spray_parcels(comm,parcels,lower,spacing,cells,parts,periodic,maximum_parcels,ok,component_mass)
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)

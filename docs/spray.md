@@ -1661,3 +1661,18 @@ guarantee concerns application validation, not failed processes or MPI transport
 errors. Empty sources and destinations are supported. This migration API does not
 yet distribute gas coupling, film patches, injection IDs or application checkpoints.
 See [MPI evidence](validation/spray-mpi-migration-20260916.md).
+
+### Collective particle ID reservation
+
+`reserve_spray_ids` reserves a contiguous interval for each rank from a shared
+64-bit `last_id`. Rank order determines interval order. Each rank may request zero
+to one million IDs; a zero request returns `first_id=0`. On success every rank
+receives the same updated high-water mark. Negative requests, mismatched existing
+marks and overflow reject collectively without changing either output value.
+
+The caller must preserve the high-water mark in application restart state and
+reserve before constructing injected or split particles. The API does not infer
+that mark from locally owned records. Assignment is deterministic for a given rank
+layout and request vector; changed-rank particle identity parity is not claimed.
+Injection/breakup driver wiring remains open. See
+[ID evidence](validation/spray-mpi-ids-20260916.md).

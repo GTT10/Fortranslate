@@ -8,6 +8,7 @@ program test_spray_mpi
   type(spray_parcel), allocatable :: parcels(:),saved(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   integer :: rank,nranks,ierr,p,target
+  integer(int64) :: last_id,first_id,saved_last
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -46,6 +47,26 @@ program test_spray_mpi
     [nranks,1,1],[nranks,1,1],[.true.,.false.,.false.],100,ok,masses)
   call require(.not.ok.and.all(parcels%id==saved%id),'one-rank invalid input rejects collectively')
   if (rank/=0) call require(all(masses==saved_mass),'other ranks preserve mass')
+  last_id=100;first_id=-7
+  call reserve_spray_ids(MPI_COMM_WORLD,rank,last_id,first_id,ok)
+  call require(ok.and.last_id==100+nranks*(nranks-1)/2,'collective ID high-water mark')
+  if (rank==0) then
+    call require(first_id==0,'zero request has no ID range')
+  else
+    call require(first_id==101+rank*(rank-1)/2,'disjoint ID prefix range')
+  end if
+  saved_last=last_id
+  call reserve_spray_ids(MPI_COMM_WORLD,1,last_id,first_id,ok)
+  call require(ok.and.first_id==saved_last+rank+1.and.last_id==saved_last+nranks,'successive ID reservations')
+  saved_last=last_id;first_id=-9
+  call reserve_spray_ids(MPI_COMM_WORLD,merge(-1,1,rank==0),last_id,first_id,ok)
+  call require(.not.ok.and.last_id==saved_last.and.first_id==-9,'invalid ID request collective rollback')
+  last_id=huge(last_id)-1;first_id=-11
+  call reserve_spray_ids(MPI_COMM_WORLD,1,last_id,first_id,ok)
+  call require(.not.ok.and.last_id==huge(last_id)-1.and.first_id==-11,'ID overflow rollback')
+  last_id=int(rank,int64);first_id=-13
+  call reserve_spray_ids(MPI_COMM_WORLD,1,last_id,first_id,ok)
+  call require(.not.ok.and.last_id==rank.and.first_id==-13,'inconsistent ID history rejected')
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)

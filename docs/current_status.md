@@ -81,7 +81,9 @@ Particle MPI groundwork now includes Cartesian cell ownership and stable send-bu
 partitioning with component/KH state preservation
 ([evidence](validation/spray-partition-20260916.md)). MPI migration and receive-side ID ordering now pass 2/4-rank checks
 ([evidence](validation/spray-mpi-migration-20260916.md)). Distributed gas/film
-feedback and application integration remain open.
+feedback and application integration remain open. Collective 64-bit ID reservation
+now rejects overflow and inconsistent rank histories
+([evidence](validation/spray-mpi-ids-20260916.md)).
 
 ## Repository consolidation implemented
 
