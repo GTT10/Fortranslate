@@ -15,6 +15,8 @@ module elementary_kinetics_mod
   integer, parameter, public :: reaction_kind_three_body = 2
   integer, parameter, public :: reaction_kind_falloff = 3
   integer, parameter, public :: reaction_kind_sri = 4
+  integer, parameter, public :: reaction_kind_activated = 5
+  integer, parameter, public :: reaction_kind_sri_activated = 6
 
   type, public :: arrhenius_rate
     real(dp) :: pre_exponential = 0.0_dp
@@ -110,12 +112,12 @@ contains
     case (reaction_kind_three_body)
       if (.not. valid_arrhenius_rate(reaction%forward_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
-    case (reaction_kind_falloff,reaction_kind_sri)
+    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated)
       if (.not. valid_arrhenius_rate(reaction%low_pressure_rate)) return
       if (.not. valid_arrhenius_rate(reaction%high_pressure_rate)) return
       if (.not. valid_efficiencies(reaction, nspecies)) return
       if (.not. valid_troe_parameters(reaction%troe)) return
-      if (reaction%kind==reaction_kind_sri) then
+      if (reaction%kind==reaction_kind_sri.or.reaction%kind==reaction_kind_sri_activated) then
         if (reaction%troe%enabled.or..not.all(ieee_is_finite(reaction%sri))) return
         if (reaction%sri(1)<0.or.reaction%sri(3)<0.or.reaction%sri(4)<=0) return
         if (reaction%sri(1)==0.and.reaction%sri(3)==0) return
@@ -358,7 +360,7 @@ contains
         concentration_derivative = base_rate * &
           reaction%third_body_efficiencies
       end if
-    case (reaction_kind_falloff,reaction_kind_sri)
+    case (reaction_kind_falloff,reaction_kind_sri,reaction_kind_activated,reaction_kind_sri_activated)
       if (.not. valid_efficiencies(reaction, size(concentrations))) then
         ok = .false.
         return
@@ -376,7 +378,7 @@ contains
         reaction, concentrations, ok)
       if (.not. ok) return
       reduced_pressure = low_rate * third_body / high_rate
-      if (reaction%kind==reaction_kind_sri) then
+      if (reaction%kind==reaction_kind_sri.or.reaction%kind==reaction_kind_sri_activated) then
         falloff_factor=sri_falloff_factor(reaction%sri,temperature,reduced_pressure,ok,log_factor_derivative)
       else
       falloff_factor = troe_falloff_factor( &
@@ -384,10 +386,18 @@ contains
         log_factor_derivative)
       end if
       if (.not. ok) return
-      rate_constant = high_rate * reduced_pressure / &
-        (1.0_dp + reduced_pressure) * falloff_factor
+      if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated) then
+        rate_constant=low_rate/(1+reduced_pressure)*falloff_factor
+      else
+        rate_constant = high_rate * reduced_pressure / &
+          (1.0_dp + reduced_pressure) * falloff_factor
+      end if
       if (present(concentration_derivative)) then
-        if (third_body <= tiny(1.0_dp)) then
+        if (reaction%kind==reaction_kind_activated.or.reaction%kind==reaction_kind_sri_activated) then
+          derivative_wrt_third_body=-rate_constant/(1+reduced_pressure)*(low_rate/high_rate)
+          if (reduced_pressure>minimum_reduced_pressure) &
+            derivative_wrt_third_body=derivative_wrt_third_body+rate_constant*log_factor_derivative/third_body
+        else if (third_body <= tiny(1.0_dp)) then
           derivative_wrt_third_body = low_rate * falloff_factor
         else
           derivative_wrt_pressure = high_rate * falloff_factor * &

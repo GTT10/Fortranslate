@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cantera SRI rate and concentration-derivative oracle through generated Fortran."""
+"""Cantera pressure-dependent rate and derivative oracle through generated Fortran."""
 import argparse
 import json
 from pathlib import Path
@@ -12,6 +12,8 @@ def main():
     import cantera as ct
     import numpy as np
     parser=argparse.ArgumentParser()
+    parser.add_argument('--activated',action='store_true')
+    parser.add_argument('--model',choices=['sri','troe','lindemann'],default='sri')
     parser.add_argument('--build-dir',type=Path,required=True)
     parser.add_argument('--work-dir',type=Path,required=True)
     args=parser.parse_args()
@@ -19,10 +21,14 @@ def main():
     work=Path(tempfile.mkdtemp(prefix='sri-',dir=args.work_dir.resolve()))
     root=Path(__file__).resolve().parents[1]
     parent=ct.Solution('h2o2.yaml')
-    reaction=ct.Reaction.from_dict({'equation':'H + OH (+M) <=> H2O (+M)','type':'falloff',
+    data={'equation':'H + OH (+M) <=> H2O (+M)',
+        'type':'chemically-activated' if args.activated else 'falloff',
         'low-P-rate-constant':{'A':2e12,'b':-1.,'Ea':1e6},
         'high-P-rate-constant':{'A':3e9,'b':.2,'Ea':2e6},
-        'SRI':{'A':1.2,'B':500.,'C':1000.,'D':.8,'E':.1}},parent)
+        'SRI':{'A':1.2,'B':500.,'C':1000.,'D':.8,'E':.1}}
+    if args.model != 'sri': del data['SRI']
+    if args.model == 'troe': data['Troe']={'A':.6,'T3':100.,'T1':1000.,'T2':5000.}
+    reaction=ct.Reaction.from_dict(data,parent)
     gas=ct.Solution(thermo='ideal-gas',kinetics='gas',species=parent.species(),reactions=[reaction],transport_model='mixture-averaged')
     gas.name='sri';gas.write_yaml(work/'sri.yaml')
     subprocess.run([sys.executable,str(root/'tools/ingest_cantera_mechanism.py'),
@@ -61,9 +67,12 @@ end program
             gas.TPX=t,ct.one_atm,'N2:1';gas.TD=t,m*gas.mean_molecular_weight
             inputs.append(' '.join(map(str,[t,*gas.concentrations])))
             rate=gas.forward_rate_constants[0]
-            gas.TD=t,m*(1+1e-5)*gas.mean_molecular_weight;upper=gas.forward_rate_constants[0]
-            gas.TD=t,m*(1-1e-5)*gas.mean_molecular_weight;lower=gas.forward_rate_constants[0]
-            expected.append((rate,(upper-lower)/(2e-5*m)))
+            # Fourth-order stencil permits a larger interval at near-flat low-pressure limits.
+            h=1e-3; samples=[]
+            for shift in [-2*h,-h,h,2*h]:
+                gas.TD=t,m*(1+shift)*gas.mean_molecular_weight
+                samples.append(gas.forward_rate_constants[0])
+            expected.append((rate,(samples[0]-8*samples[1]+8*samples[2]-samples[3])/(12*h*m)))
     result=subprocess.run([str(work/'probe')],input='\n'.join(inputs)+'\n',text=True,capture_output=True,check=True)
     (work/'rates.txt').write_text(result.stdout)
     rows=np.array([list(map(float,line.split())) for line in result.stdout.splitlines()])
@@ -72,7 +81,7 @@ end program
     derivative_error=float(np.max(abs(rows[:,n2+1]/expected[:,1]-1)))
     assert rate_error<1e-12,(rate_error,derivative_error)
     assert derivative_error<1e-6,(rate_error,derivative_error)
-    summary={'states':len(inputs),'rate_relative_error':rate_error,'derivative_relative_error':derivative_error,
+    summary={'model':args.model,'activated':args.activated,'states':len(inputs),'rate_relative_error':rate_error,'derivative_relative_error':derivative_error,
              'artifacts':str(work)}
     (work/'result.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2))
 

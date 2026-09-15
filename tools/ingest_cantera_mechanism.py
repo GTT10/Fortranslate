@@ -14,7 +14,7 @@ The accepted mechanism subset is deliberately small:
 * NASA7 species with gas Lennard-Jones transport data;
 * elementary Arrhenius reactions;
 * three-body Arrhenius reactions; and
-* Lindemann falloff and falloff reactions with Troe or SRI broadening.
+* Lindemann, Troe, or SRI falloff and chemically activated reactions.
 
 PLOG, Chebyshev, NASA9, non-gas transport, and missing transport are
 rejected before a bundle is written.  Reaction list order is never sorted, so
@@ -447,8 +447,6 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
         getattr(reaction, "allow_nonreactant_orders", False)
     ):
         raise ValueError(f"{equation}: custom reaction orders are unsupported")
-    if bool(getattr(rate, "chemically_activated", False)):
-        raise ValueError(f"{equation}: chemically-activated rates are unsupported")
     if rate_subtype in {"tsang"}:
         raise ValueError(f"{equation}: {rate_subtype} falloff is unsupported")
 
@@ -458,8 +456,6 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
         raise ValueError(f"{equation}: Chebyshev reactions are unsupported")
     if "tsang" in combined or _has_key_case_insensitive(raw, "Tsang"):
         raise ValueError(f"{equation}: Tsang falloff is unsupported")
-    if "chemically-activated" in combined:
-        raise ValueError(f"{equation}: chemically-activated rates are unsupported")
     if any(_has_key_case_insensitive(raw, key) for key in (
         "orders", "negative-orders", "nonreactant-orders"
     )):
@@ -469,6 +465,8 @@ def _reaction_kind(reaction: Any, raw: Mapping[str, Any], equation: str) -> str:
     )):
         raise ValueError(f"{equation}: explicit reverse rates are unsupported")
 
+    if "chemically-activated" in combined or bool(getattr(rate, "chemically_activated", False)):
+        return "chemically-activated"
     if reaction_type in {"three-body", "three-body-arrhenius"}:
         return "three-body"
     if "three-body" in combined and "falloff" not in combined:
@@ -598,7 +596,7 @@ def _reaction_record(
     if species_compositions is not None:
         _validate_element_balance(record, species_compositions)
 
-    if kind == "falloff":
+    if kind in {"falloff", "chemically-activated"}:
         record["low_rate"] = _arrhenius_record(
             raw.get("low-P-rate-constant"), f"{equation} low-pressure rate"
         )
@@ -617,13 +615,13 @@ def _reaction_record(
             a, b, c, d, e = (record["sri"][k] for k in ("A", "B", "C", "D", "E"))
             if a < 0 or c < 0 or d <= 0 or (a == 0 and c == 0):
                 raise ValueError(f"{equation}: invalid SRI parameters")
-            record["type"] = "sri-falloff"
+            record["type"] = "sri-" + kind
         elif troe is None:
             # Require Cantera's explicit rate classification. Missing Troe data
             # must not silently downgrade a malformed/unknown falloff model.
             subtype = str(getattr(getattr(reaction, "rate", None), "sub_type", "")).lower()
             rate_kind = str(getattr(reaction, "reaction_type", "")).lower()
-            if subtype != "lindemann" or rate_kind != "falloff-lindemann":
+            if subtype != "lindemann" or rate_kind != kind + "-lindemann":
                 raise ValueError(f"{equation}: missing Troe data for non-Lindemann falloff")
             # An absent troe field selects the existing runtime's F=1 path.
         else:
@@ -633,7 +631,7 @@ def _reaction_record(
             raw.get("rate-constant"), f"{equation} Arrhenius rate"
         )
 
-    if kind in {"three-body", "falloff"}:
+    if kind in {"three-body", "falloff", "chemically-activated"}:
         default_efficiency, efficiencies = _third_body_data(
             reaction, raw, species_names, equation
         )

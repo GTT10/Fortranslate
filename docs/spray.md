@@ -403,5 +403,20 @@ provides the analytical concentration derivative used by the existing kinetic
 Jacobian. AMR/EB checkpoint mechanism records include the five SRI coefficients
 for SRI reactions; MPI mechanism comparisons include them too. Existing
 non-SRI checkpoint records keep their layout. This extends reaction kinetics,
-not the liquid property model. PLOG, Chebyshev, Tsang and chemically activated
-rates remain open. See [focused evidence](validation/sri-20260915.md).
+not the liquid property model. PLOG, Chebyshev and Tsang rates remain open. See [focused evidence](validation/sri-20260915.md).
+
+
+## Chemically activated reactions
+
+Cantera `type: chemically-activated` reactions now use the same supported
+Lindemann, Troe or SRI broadening data as falloff reactions. Their rate is
+`k0 F / (1 + Pr)`, with `Pr = k0 [M] / kinfinity`; the runtime supplies the
+corresponding analytic concentration derivative. This is distinct from the
+ordinary falloff prefactor. Normalized bundles use `chemically-activated`
+or `sri-chemically-activated` as their reaction type.
+
+Reaction kinds identify the different pressure laws in MPI mechanism comparison
+and checkpoint records. SRI coefficients persist for both pressure laws, and a
+changed coefficient rejects AMR restart. The existing reduced-pressure floor
+also applies to the broadening calculation; below it the broadening derivative
+is zero for the activated branch. See [focused evidence](validation/activated-rates-20260915.md).

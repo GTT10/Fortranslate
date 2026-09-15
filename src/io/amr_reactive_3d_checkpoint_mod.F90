@@ -3,7 +3,7 @@ module amr_reactive_3d_checkpoint_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: &
-    reaction_kind_sri, elementary_reaction, valid_elementary_reaction, &
+    reaction_kind_sri,reaction_kind_sri_activated, elementary_reaction, valid_elementary_reaction, &
     valid_arrhenius_rate, valid_troe_parameters
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
@@ -1100,7 +1100,8 @@ contains
         reactions(reaction_index)%troe%temperature_1, &
         reactions(reaction_index)%troe%temperature_2
       if (status /= 0) return
-      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+      if (reactions(reaction_index)%kind==reaction_kind_sri.or. &
+          reactions(reaction_index)%kind==reaction_kind_sri_activated) then
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
         if (status/=0) return
       end if
@@ -1332,7 +1333,8 @@ contains
         message = "Selected 3D AMR checkpoint mechanism mismatch"
         return
       end if
-      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+      if (reactions(reaction_index)%kind==reaction_kind_sri.or. &
+          reactions(reaction_index)%kind==reaction_kind_sri_activated) then
         message="Selected 3D AMR checkpoint mechanism mismatch"
         read(unit,*,iostat=status) stored_sri
         if (status/=0) return

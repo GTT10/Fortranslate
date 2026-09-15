@@ -5,7 +5,7 @@ module reactive_eb_3d_checkpoint_mod
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
   use elementary_kinetics_mod, only: &
-    reaction_kind_sri, elementary_reaction, valid_arrhenius_rate, valid_troe_parameters, &
+    reaction_kind_sri,reaction_kind_sri_activated, elementary_reaction, valid_arrhenius_rate, valid_troe_parameters, &
     valid_elementary_reaction
   use gas_transport_mod, only: &
     gas_transport_species, valid_gas_transport_species
@@ -222,7 +222,8 @@ contains
         reactions(reaction_index)%troe%temperature_1, &
         reactions(reaction_index)%troe%temperature_2
       if (status /= 0) go to 900
-      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+      if (reactions(reaction_index)%kind==reaction_kind_sri.or. &
+          reactions(reaction_index)%kind==reaction_kind_sri_activated) then
         write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
         if (status/=0) go to 900
       end if
@@ -678,7 +679,8 @@ contains
       if (.not. all(ieee_is_finite(stored_troe_values)) .or. &
           .not. all(checkpoint_real_matches( &
             stored_troe_values, expected_troe_values))) go to 900
-      if (reactions(reaction_index)%kind==reaction_kind_sri) then
+      if (reactions(reaction_index)%kind==reaction_kind_sri.or. &
+          reactions(reaction_index)%kind==reaction_kind_sri_activated) then
         read(unit,*,iostat=status) stored_sri
         if (status/=0) go to 900
         if (.not.all(ieee_is_finite(stored_sri))) go to 900

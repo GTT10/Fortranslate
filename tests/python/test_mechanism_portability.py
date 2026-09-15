@@ -119,6 +119,22 @@ class Lindemann(unittest.TestCase):
         with self.assertRaises(ValueError):
             generator.validate(data)
 
+    def test_activated_lindemann_and_sri(self):
+        for model in ['Lindemann', 'SRI']:
+            r = self.reaction();r.rate.sub_type = model
+            r.reaction_type = 'chemically-activated-' + model
+            r.rate.chemically_activated = True
+            r.input_data['type'] = 'chemically-activated'
+            if model == 'SRI':
+                r.input_data['SRI'] = {'A': 1.2, 'B': 500., 'C': 1000.}
+            record = ingest._reaction_record(r, ['A', 'B'], 0)
+            expected = 'chemically-activated' if model == 'Lindemann' else 'sri-chemically-activated'
+            self.assertEqual(record['type'], expected)
+            data = {'module_name': 'act_mod', 'loader_name': 'load_act', 'kernel_name': 'act_rates',
+                    'symbol_prefix': 'act', 'species': ['A', 'B'], 'reactions': [record]}
+            generator.validate(data)
+            self.assertIn('reaction_kind_', generator.generate(data))
+
     def test_unknown_or_malformed_falloff_not_silently_lindemann(self):
         for subtype, kind in [('Troe', 'falloff-Troe'), ('', 'falloff-Lindemann'),
                               ('Lindemann', 'falloff-unknown'), ('SRI', 'falloff-SRI'),
