@@ -117,6 +117,9 @@ program test_spray_integration
     state=before;temperature=before_t;deallocate(films);allocate(films(0))
     call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
       [0.0_dp,0.0_dp,-1.0_dp],300.0_dp,0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+    options%breakup_model='khrt';options%khrt_children=.true.
+    options%khrt_reference_diameter_cubed=1e-25_dp
+    drops%khrt_initial_count=1;drops%khrt_shed_volume=1e-18_dp
     before_drops=drops;saved_films=films
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
       [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.false.,'invalid', &
@@ -125,6 +128,8 @@ program test_spray_integration
     call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'late chemistry gas rollback')
     call require(size(films)==0.and.size(drops)==1.and.all(force==0),'film and child rollback')
     call require(all(drops%mass==before_drops%mass),'parent mass rollback')
+    call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
+      all(drops%khrt_shed_volume==before_drops%khrt_shed_volume),'wall/KH inventory rollback')
   case('materials')
     materials(1)=liquid
     ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.

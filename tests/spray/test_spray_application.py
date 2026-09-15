@@ -95,6 +95,31 @@ class SprayApplication(unittest.TestCase):
             self.run_case(f'children_invalid{index}', change, fail=True,
                           common=settings+'khrt_reference_diameter_cubed=1e-25,')
 
+    def test_khrt_wall_children_restart(self):
+        settings = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+                    "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
+                    "breakup_model='khrt',khrt_children=.true.,khrt_reference_diameter_cubed=1e-25,"
+                    "surface_tension=.072,liquid_viscosity=.001,injection_speed=1000,initial_liquid_mass=1e-14,"
+                    "injection_center=.002,.002,.00035,injection_axis=0,0,-1,cone_angle=0,parcel_count=1,"
+                    "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,"
+                    "transport_enabled=.false.,maximum_parcels=1000,")
+        checkpoint = self.root/'wall_kh_stop.chk'
+        final = self.root/'wall_kh_final.chk'
+        resumed = self.root/'wall_kh_resumed.chk'
+        self.run_case('wall_kh', f"checkpoint_file='{final}',", common=settings)
+        history = self.check_balance('wall_kh')
+        self.assertGreater(history[-1]['film_mass'], 0)
+        self.run_case('wall_kh_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.assertEqual(self.history('wall_kh_stop')[-1]['film_mass'], 0)
+        with (self.root/'wall_kh_stop.parcels.csv').open() as stream:
+            self.assertGreater(len(list(csv.DictReader(stream))), 1)  # KH children before the first impact.
+        self.run_case('wall_kh_resumed', f"restart_file='{checkpoint}',checkpoint_file='{resumed}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
+            self.assertEqual((self.root/f'wall_kh.{suffix}').read_bytes(),
+                             (self.root/f'wall_kh_resumed.{suffix}').read_bytes())
+        self.assertEqual(final.read_bytes(), resumed.read_bytes())
+        self.assertEqual(history[-1], self.history('wall_kh_resumed')[-1])
+
     def test_pelephysics_drag_restart(self):
         settings = ("drag_model='pelephysics',breakup_model='etab',surface_tension=.072,liquid_viscosity=.001,"
                     "injection_speed=100,heat_enabled=.false.,evaporation_enabled=.false.,")

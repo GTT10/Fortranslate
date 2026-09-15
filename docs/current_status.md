@@ -31,8 +31,9 @@ the pinned half-temperature/half-composition rule
 KH shed-mass accumulation and four-child release now connect to regular CFD
 and restart ([evidence](validation/khrt-children-20260916.md)); computational
 splitting now partitions the KH inventories
-([evidence](validation/khrt-splitting-20260916.md)). Simultaneous wall impact
-remains unsupported in this mode.
+([evidence](validation/khrt-splitting-20260916.md)). Stationary wall impact
+now consumes crossed parcels before KH release, with coupled film/lineage restart
+([evidence](validation/khrt-wall-20260916.md)); wet-impact correlation limits remain.
 
 Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a

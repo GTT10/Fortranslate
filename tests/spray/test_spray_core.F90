@@ -97,6 +97,7 @@ program test_spray_core
     call require(.not.ok.and.saved_patch%mass==wall_patch%mass.and.all(transfer==0),'invalid conduction rollback')
   case('wall_event')
     p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2;q=p
+    q%khrt_initial_count=q%multiplicity;q%khrt_shed_volume=1e-12_dp
     impact_kv=[79.0_dp,79.0_dp,150.0_dp,150.0_dp,150.0_dp,300.0_dp]
     impact_tstar=[1.0_dp,1.1_dp,1.0_dp,1.1_dp,1.0_dp,1.0_dp]
     impact_film=[0.0_dp,0.0_dp,0.0_dp,0.0_dp,.2_dp,.03_dp]
@@ -108,6 +109,12 @@ program test_spray_core
         2_int64,drops,wall_patch,transfer,regime,ok)
       if (.not.ok) print *, 'rejected impact case',event_index
       call require(ok.and.regime==impact_kinds(event_index),'complete impact regime dispatch')
+      call require(all(drops%khrt_initial_count==0).and.all(drops%khrt_shed_volume==0),'fresh splash KH state')
+      if (regime==impact_rebound) then
+        call require(p%khrt_shed_volume==q%khrt_shed_volume,'rebound preserves unspent KH inventory')
+      else
+        call require(p%khrt_initial_count==0.and.p%khrt_shed_volume==0,'impact consumed/reset KH inventory')
+      end if
       child_totals=parcel_totals(p,liquid)
       do n=1,size(drops)
         child_totals=child_totals+parcel_totals(drops(n),liquid)

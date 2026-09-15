@@ -372,10 +372,14 @@ contains
         next%velocity=(1.5_dp*sqrt(3.0_dp)*ut/pi)*beta+ &
           (.0028_dp*kv*exp(-.0062_dp*kv)*speed)*normal
         next%deformation=0;next%deformation_rate=0;next%rt_time=-1
+        next%khrt_initial_count=0;next%khrt_shed_volume=0
       case default
         return
       end select
       next%position=location+parcel_diameter(next,liquid)*normal
+    end if
+    if (next%mass==0) then
+      next%khrt_initial_count=0;next%khrt_shed_volume=0
     end if
     if (.not.valid_spray_parcel(next)) return
     total=parcel_totals(next,liquid)
@@ -436,6 +440,7 @@ contains
       candidate(i)%id=first_id+int(i-1,int64);candidate(i)%parent_id=parent%id
       candidate(i)%mass=parent%mass*masses(i)
       candidate(i)%deformation=0;candidate(i)%deformation_rate=0;candidate(i)%rt_time=-1
+      candidate(i)%khrt_initial_count=0;candidate(i)%khrt_shed_volume=0
       ub=v(2)
       if (i==2) ub=v(1)
       if (i==4) ub=v(3)

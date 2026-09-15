@@ -304,11 +304,19 @@ back the entire coupled update.
 CSV fields `khrt_initial_count` and `khrt_shed_volume` expose the accumulator;
 checkpoint suffix `_SHED_V1` retains it alongside RT time and parent lineage.
 The enable flag and reference quantity participate in restart compatibility.
-Wall impact must remain disabled in this mode. Computational splitting is supported;
+Stationary wall impact and computational splitting are supported. For splitting,
 both KH accumulators are partitioned with the represented drop count, so a split
 does not duplicate pending shed mass. The final piece carries rounding remainders.
 The jet release threshold still applies per parcel against the prescribed global
 reference; changing computational multiplicity can therefore change release timing.
+When a substep crosses an enabled wall, its incident parcel undergoes wall impact
+before any KH release. A hit skips aerodynamic breakup for that substep; otherwise
+KH children are born at its end and can impact during their remaining flight.
+This prevents the same incident mass from being released and deposited twice.
+Splash children start with empty KH inventories; deposition consumes the parent's
+inventory, thermal breakup resets it, and a rebound retains it. Existing wall
+correlation rejection rules still apply, including unsupported wet-splash states.
+See [combined wall/KH evidence](validation/khrt-wall-20260916.md).
 RT still changes the representative size; it does not itself create children.
 Collision, general turbulent dispersion, primary atomization and physical
 qualification remain open. See [focused evidence](validation/khrt-children-20260916.md).

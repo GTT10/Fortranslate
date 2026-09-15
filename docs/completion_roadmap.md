@@ -48,7 +48,8 @@ and SGS heat/work budgets. The Ahamed impact-regime, splash-velocity, mass-distr
 size/deformation, bounded computational parcel splitting and restart are implemented;
 KH shed-mass accumulation and conservative four-child transverse release now
 connect to CFD and restart, including computational splitting with partitioned
-KH inventories. Their combination with wall impact, general turbulent dispersion
+KH inventories and stationary wall impact processed before KH release on a
+crossing substep. General turbulent dispersion, wet-impact correlation limits
 and physical qualification remain open. Uniform gas/particle acceleration
 now retains external impulse/work separately through coupled restart. Single-component
 Antoine saturation-pressure fits are connected with explicit temperature bounds

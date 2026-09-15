@@ -318,7 +318,6 @@ contains
       end do
     end if
     if (.not.valid_wall_options(impact_settings,faces)) return
-    if (options%khrt_children.and.any(impact_settings%enabled)) return
     if (any(impact_settings%enabled).and..not.present(wall_films)) return
     allocate(patches(0))
     if (present(wall_films)) then
@@ -432,8 +431,13 @@ contains
         if (.not. accepted) then
           message='Spray feedback cannot preserve gas/material admissibility; complete update rolled back'; return
         end if
-        release=spray_khrt_release()
+        release=spray_khrt_release();hit=.false.
         if (options%khrt_children) then
+          ! A crossed wall owns the incident mass before any new KH release.
+          call process_wall_event(accepted)
+          if (.not.accepted) return
+        end if
+        if (options%khrt_children.and..not.hit) then
           shedding=spray_khrt_shedding_state(next%khrt_initial_count,next%khrt_shed_volume)
           reynolds=film%density*norm2(film%gas_velocity-next%velocity)*parcel_diameter(next,material)/film%viscosity
           call advance_khrt_shedding(next,material,local_breakup,sampled(1),film%gas_velocity,reynolds,dt, &
@@ -441,7 +445,7 @@ contains
           if (local_ok) then
             next%khrt_initial_count=shedding%initial_count;next%khrt_shed_volume=shedding%shed_volume
           end if
-        else
+        else if (.not.options%khrt_children) then
           call advance_spray_breakup(next,material,local_breakup,sampled(1),film%gas_velocity, &
             film%density,film%viscosity,dt,local_ok)
         end if
@@ -474,30 +478,9 @@ contains
           starts=[starts,spread(min(interval,elapsed+dt),1,size(spawned))]
           drops=[drops,spawned]
         end if
-        if (any(impact_settings%enabled).and.next%mass>0) then
-          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
-          call impact_at_planar_wall(next,drops(p)%position,material,local_breakup, &
-            species(material%vapor_index)%molecular_weight,sampled_pressure,lower,lower+spacing*real(shape3,dp), &
-            impact_settings,patches,drops(size(drops))%id+1_int64,spawned,deposit,wall_exchange,hit,local_ok)
-          if (.not.local_ok) then
-            message='Wall impact rejected; complete coupling step rolled back';return
-          end if
-          if (hit) then
-            if (size(drops)+size(spawned)>options%maximum_parcels) return
-            do n=1,size(spawned)
-              if (any(spawned(n)%position<lower).or.any(spawned(n)%position>=lower+spacing*real(shape3,dp))) return
-            end do
-            if (size(spawned)>0) then
-              starts=[starts,spread(min(interval,elapsed+dt),1,size(spawned))]
-              drops=[drops,spawned]
-            end if
-            if (deposit%mass>0) then
-              if (size(patches)>=impact_settings%maximum_films) return
-              patches=[patches,deposit]
-              film_starts=[film_starts,min(interval,elapsed+dt)]
-            end if
-            ledger(1:5)=ledger(1:5)-wall_exchange
-          end if
+        if (.not.options%khrt_children) then
+          call process_wall_event(accepted)
+          if (.not.accepted) return
         end if
         call apply_parcel_boundaries(next,material,lower,lower+spacing*real(shape3,dp),faces,exchange,local_ok)
         if (.not.local_ok) return
@@ -587,6 +570,37 @@ contains
     if (present(wall_films)) call move_alloc(patches,wall_films)
     if (present(boundary_change)) boundary_change=ledger
     substeps=total_steps; ok=.true.; message=''
+  contains
+    subroutine process_wall_event(event_ok)
+      logical, intent(out) :: event_ok
+      event_ok=.false.;hit=.false.
+      if (any(impact_settings%enabled).and.next%mass>0) then
+        if (drops(size(drops))%id>huge(1_int64)-4_int64) return
+        call impact_at_planar_wall(next,drops(p)%position,material,local_breakup, &
+          species(material%vapor_index)%molecular_weight,sampled_pressure,lower,lower+spacing*real(shape3,dp), &
+          impact_settings,patches,drops(size(drops))%id+1_int64,spawned,deposit,wall_exchange,hit,local_ok)
+        if (.not.local_ok) then
+          message='Wall impact rejected; complete coupling step rolled back';return
+        end if
+        if (hit) then
+          if (size(drops)+size(spawned)>options%maximum_parcels) return
+          do n=1,size(spawned)
+            if (any(spawned(n)%position<lower).or.any(spawned(n)%position>=lower+spacing*real(shape3,dp))) return
+          end do
+          if (size(spawned)>0) then
+            starts=[starts,spread(min(interval,elapsed+dt),1,size(spawned))]
+            drops=[drops,spawned]
+          end if
+          if (deposit%mass>0) then
+            if (size(patches)>=impact_settings%maximum_films) return
+            patches=[patches,deposit]
+            film_starts=[film_starts,min(interval,elapsed+dt)]
+          end if
+          ledger(1:5)=ledger(1:5)-wall_exchange
+        end if
+      end if
+      event_ok=.true.
+    end subroutine
   end subroutine
 
   subroutine spray_system_totals(state, spacing, parcels, liquid, totals,materials,wall_films)

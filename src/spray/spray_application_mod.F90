@@ -569,7 +569,6 @@ contains
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     options%khrt_children=khrt_children;options%khrt_reference_diameter_cubed=khrt_reference_diameter_cubed
-    if (khrt_children.and.impact_enabled) call fail('KH children with wall impact are not supported')
     split_enabled=maximum_multiplicity>0.or.khrt_children
     lineage_enabled=split_enabled.or.impact_enabled
     options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
@@ -608,7 +607,7 @@ contains
         do port=1,max(1,injection_port_count)
           checked_properties=options
           if (allocated(breakup_options)) checked_properties=breakup_options(port)
-          checked_properties%breakup_model='etab'
+          if (checked_properties%breakup_model=='none') checked_properties%breakup_model='etab'
           if (.not.valid_spray_options(checked_properties)) call fail('Invalid wall liquid surface tension or viscosity')
         end do
       end block
