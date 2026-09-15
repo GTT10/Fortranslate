@@ -3,6 +3,8 @@ module spray_mpi_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_breakup_mod, only: split_spray_parcels
@@ -11,8 +13,38 @@ module spray_mpi_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
-  public :: sample_mpi_spray_field,deposit_mpi_spray_field
+  public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine deposit_mpi_spray_gas(comm,species,state,temperature,positions,contributions, &
+      lower,spacing,cells,parts,faces,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
+    integer, intent(in) :: cells(3),parts(3)
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),recovered(:,:,:)
+    integer :: extent(3),ierr
+    logical :: valid,agreed
+    ! Keep both gas arrays private until every owner accepts its thermodynamics.
+    ! The caller owns the identical ordered species table and particle transaction.
+    ok=.false.;extent=shape(temperature)
+    allocate(recovered(extent(1),extent(2),extent(3)))
+    call recover_reactive_temperatures_3d(species,state,temperature,extent(1),extent(2),extent(3),recovered,valid)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.agreed) return
+    candidate=state
+    call deposit_mpi_spray_field(comm,candidate,positions,contributions,lower,spacing,cells,parts,faces,valid)
+    if (.not.valid) return
+    call recover_reactive_temperatures_3d(species,candidate,temperature,extent(1),extent(2),extent(3),recovered,valid)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.agreed) return
+    state=candidate;temperature=recovered;ok=.true.
+  end subroutine
+
   subroutine sample_mpi_spray_field(comm,field,positions,lower,spacing,cells,parts,faces,samples,ok)
     type(MPI_Comm), intent(in) :: comm
     real(dp), intent(in) :: field(:,:,:,:),positions(:,:),lower(3),spacing(3)

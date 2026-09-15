@@ -1739,3 +1739,17 @@ collectively and preserves every local field. This is a generic conservative
 field operation: gas positivity, species closure and temperature recovery must be
 checked by the future coupled driver before committing its particle candidates.
 See [deposition evidence](validation/spray-mpi-deposition-20260916.md).
+
+### Thermodynamically checked distributed feedback
+
+`deposit_mpi_spray_gas` applies inventory increments to distributed conserved gas
+blocks and recovers temperatures with the existing reactive thermodynamics. It
+validates the initial state, deposits into a private candidate, and accepts both
+state and temperature only when every owner recovers successfully. Invalid density,
+species or thermal energy on one owner preserves both arrays on all ranks. The
+ordered species table must be identical on every rank. Geometry and request limits
+are inherited from field deposition.
+
+The caller still owns particle candidates, time-step retries and the combined
+particle/gas commit. This API does not itself advance particles or chemistry.
+See [gas feedback evidence](validation/spray-mpi-gas-20260916.md).

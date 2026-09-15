@@ -91,8 +91,10 @@ reserves IDs and retains mixed component budgets with rollback
 now requests only interpolation cells from owner ranks and matches the serial
 stencil ([evidence](validation/spray-mpi-sampling-20260916.md)). Owner-routed
 feedback deposition now matches serial stencil accumulation
-([evidence](validation/spray-mpi-deposition-20260916.md)); distributed coupled
-thermodynamic stepping remains open.
+([evidence](validation/spray-mpi-deposition-20260916.md)). Gas feedback now recovers
+owner-block temperatures and commits conserved state and temperature collectively
+([evidence](validation/spray-mpi-gas-20260916.md)). Particle advancement, collective
+retry and combined distributed time stepping remain open.
 
 ## Repository consolidation implemented
 

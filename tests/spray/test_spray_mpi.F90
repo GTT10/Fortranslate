@@ -4,6 +4,8 @@ program test_spray_mpi
   use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use reactive_1d_mod, only: reactive_primitive_to_conserved
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use spray_parcel_mod
   use spray_mpi_mod
   use spray_partition_mod, only: spray_cartesian_block
@@ -17,6 +19,8 @@ program test_spray_mpi
   integer :: rank,nranks,ierr,p,target,first(3),dims(3),cells(3),i,j,k,n,indices(3,8)
   real(dp), allocatable :: field(:,:,:,:),positions(:,:),samples(:,:),saved_samples(:,:)
   real(dp), allocatable :: contributions(:,:),reference(:,:,:,:),saved_field(:,:,:,:)
+  real(dp), allocatable :: temperature(:,:,:),saved_temperature(:,:,:),reference_temperature(:,:,:)
+  real(dp) :: primitive(15),gas_cell(15),gas_t,sound
   integer :: source
   real(dp) :: weights(8),expected_value
   character(len=16) :: faces(6)
@@ -186,6 +190,45 @@ program test_spray_mpi
   call deposit_mpi_spray_field(MPI_COMM_WORLD,field,positions,contributions,[0.0_dp,0.0_dp,0.0_dp], &
     [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
   call require(.not.ok.and.all(field==saved_field),'invalid deposition collective rollback')
+  ! A physical gas candidate commits only after all owner blocks recover.
+  deallocate(field,positions,contributions)
+  allocate(field(15,dims(1),dims(2),dims(3)),temperature(dims(1),dims(2),dims(3)))
+  allocate(positions(3,1),contributions(15,1))
+  primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+  call reactive_primitive_to_conserved(species,primitive,gas_cell,gas_t,sound,ok)
+  call require(ok,'gas deposition initial thermodynamics')
+  do k=1,dims(3)
+    do j=1,dims(2)
+      do i=1,dims(1)
+        field(:,i,j,k)=gas_cell
+      end do
+    end do
+  end do
+  temperature=gas_t;positions(:,1)=[real(first(1),dp)+.5_dp,.5_dp,.5_dp]
+  contributions=0;contributions(5,1)=100
+  reference=field
+  call deposit_mpi_spray_field(MPI_COMM_WORLD,reference,positions,contributions,[0.0_dp,0.0_dp,0.0_dp], &
+    [1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(ok,'gas deposition reference')
+  allocate(reference_temperature(dims(1),dims(2),dims(3)))
+  call recover_reactive_temperatures_3d(species,reference,temperature,dims(1),dims(2),dims(3),reference_temperature,ok)
+  call require(ok,'serial thermodynamic reference')
+  call deposit_mpi_spray_gas(MPI_COMM_WORLD,species,field,temperature,positions,contributions, &
+    [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(ok.and.all(field==reference).and.all(temperature==reference_temperature),'gas and temperature commit')
+  call require(temperature(1,1,1)>gas_t,'deposited heat raises temperature')
+  saved_field=field;saved_temperature=temperature
+  if (rank==nranks-1) contributions(5,1)=-1e12_dp
+  call deposit_mpi_spray_gas(MPI_COMM_WORLD,species,field,temperature,positions,contributions, &
+    [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'one owner thermal failure rolls back all owners')
+  contributions=0
+  if (rank==nranks-1) contributions(6,1)=-.1_dp
+  call deposit_mpi_spray_gas(MPI_COMM_WORLD,species,field,temperature,positions,contributions, &
+    [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],faces,ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'negative species rolls back all owners')
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)
