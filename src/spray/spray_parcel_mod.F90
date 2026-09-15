@@ -18,6 +18,8 @@ module spray_parcel_mod
     character(len=16) :: vapor_pressure_model='clausius'
     real(dp) :: antoine_coefficients(4)=0.0_dp ! A, B [K], C [K], D [Pa]
     real(dp) :: antoine_temperature_range(2)=0.0_dp
+    character(len=16) :: density_model='constant'
+    real(dp) :: density_coefficients(4)=0.0_dp, density_temperature_range(2)=0.0_dp
   end type
   type, public :: spray_parcel
     integer(int64) :: id = 0_int64
@@ -49,7 +51,7 @@ module spray_parcel_mod
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
-  public :: inject_cone_parcels
+  public :: inject_cone_parcels, liquid_density_at_temperature
 contains
   subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok, &
       vapor_pressure_model, antoine_coefficients, antoine_temperature_range)
@@ -106,6 +108,18 @@ contains
     case default
       return
     end select
+    if (.not.all(ieee_is_finite(l%density_coefficients))) return
+    if (.not.all(ieee_is_finite(l%density_temperature_range))) return
+    select case(trim(l%density_model))
+    case('constant')
+      if (any(l%density_coefficients/=0).or.any(l%density_temperature_range/=0)) return
+    case('polynomial')
+      if (maxval(abs(l%density_coefficients))>1e10_dp) return
+      if (l%density_temperature_range(1)<1.or.l%density_temperature_range(2)>1e5_dp) return
+      if (l%density_temperature_range(2)<=l%density_temperature_range(1)) return
+    case default
+      return
+    end select
     ok = len_trim(l%vapor_name) > 0 .and. l%vapor_index > 0 .and. &
       l%density >= 1.0e-3_dp .and. l%density <= 1.0e5_dp .and. &
       l%heat_capacity >= 1.0_dp .and. l%heat_capacity <= 1.0e8_dp .and. &
@@ -156,12 +170,33 @@ contains
       o%minimum_diameter >= 1.0e-12_dp .and. o%minimum_diameter <= 1.0_dp .and. o%maximum_substeps > 0
   end function
 
+  pure real(dp) function liquid_density_at_temperature(l,temperature) result(rho)
+    type(spray_liquid), intent(in) :: l
+    real(dp), intent(in) :: temperature
+    real(dp) :: candidate
+    rho=0.0_dp
+    if (.not.valid_spray_liquid(l).or..not.ieee_is_finite(temperature)) return
+    if (temperature<1.or.temperature>1e5_dp) return
+    candidate=l%density
+    if (trim(l%density_model)=='polynomial') then
+      if (temperature<l%density_temperature_range(1).or.temperature>l%density_temperature_range(2)) return
+      candidate=l%density_coefficients(1)+temperature*(l%density_coefficients(2)+ &
+        temperature*(l%density_coefficients(3)+temperature*l%density_coefficients(4)))
+    end if
+    if (.not.ieee_is_finite(candidate)) return
+    if (candidate<1e-3_dp.or.candidate>1e5_dp) return
+    rho=candidate
+  end function
+
   pure real(dp) function parcel_diameter(p, liquid) result(d)
     type(spray_parcel), intent(in) :: p
     type(spray_liquid), intent(in) :: liquid
+    real(dp) :: rho
     d = 0.0_dp
     if (.not. valid_spray_liquid(liquid) .or. .not. valid_spray_parcel(p)) return
-    if (p%mass > 0.0_dp) d = (6.0_dp*p%mass/(pi*liquid%density))**(1.0_dp/3.0_dp)
+    rho=liquid_density_at_temperature(liquid,p%temperature)
+    if (rho<=0) return
+    if (p%mass > 0.0_dp) d = (6.0_dp*p%mass/(pi*rho))**(1.0_dp/3.0_dp)
   end function
 
   pure real(dp) function liquid_energy(l, temperature) result(e)
@@ -216,6 +251,7 @@ contains
     type(spray_options), intent(in) :: o
     real(dp), intent(out) :: inverse_tau, heat_coefficient, mass_coefficient
     logical, intent(out) :: ok
+    real(dp) :: rho
     real(dp) :: d, re, cdre, pr, sc, bm, bt, logbm, sh0, nu0, sh, nu, next_nu, phi, factor, f2
     integer :: iteration
     inverse_tau=0.0_dp; heat_coefficient=0.0_dp; mass_coefficient=0.0_dp
@@ -236,6 +272,8 @@ contains
     if (p%mass == 0.0_dp) then
       ok=.true.; return
     end if
+    rho=liquid_density_at_temperature(l,p%temperature)
+    if (rho<=0) return
     d=parcel_diameter(p,l)
     if (d < 1.0e-12_dp) return
     re=f%density*d*norm2(f%gas_velocity-p%velocity)/f%viscosity
@@ -268,7 +306,7 @@ contains
       nu=next_nu
       if (bt > 1.0e-12_dp) factor=log(1.0_dp+bt)/bt
     end if
-    if (o%drag) inverse_tau=3.0_dp*f%viscosity*cdre/(4.0_dp*l%density*d*d)
+    if (o%drag) inverse_tau=3.0_dp*f%viscosity*cdre/(4.0_dp*rho*d*d)
     if (o%heat) heat_coefficient=pi*f%conductivity*d*nu*factor
     if (o%evaporation) mass_coefficient=pi*f%density*f%diffusivity*sh*logbm
     ok=.true.
@@ -289,6 +327,7 @@ contains
     type(spray_parcel), intent(out) :: q
     real(dp), intent(out) :: transfer(5)
     logical, intent(out) :: ok
+    real(dp) :: rho
     real(dp) :: invtau, heat, masscoef, d, d2, dm, mbar, decay, latent, rate, equilibrium
     q=p; transfer=0.0_dp; ok=.false.
     if (.not. ieee_is_finite(dt)) return
@@ -297,9 +336,11 @@ contains
     if (.not. ok) return
     if (dt == 0.0_dp .or. p%mass == 0.0_dp) return
     ok=.false.
+    rho=liquid_density_at_temperature(l,p%temperature)
+    if (rho<=0) return
     d=parcel_diameter(p,l)
-    d2=max(0.0_dp,d*d-4.0_dp*masscoef*dt/(pi*l%density))
-    q%mass=min(p%mass,(pi*l%density/6.0_dp)*d2**1.5_dp)
+    d2=max(0.0_dp,d*d-4.0_dp*masscoef*dt/(pi*rho))
+    q%mass=min(p%mass,(pi*rho/6.0_dp)*d2**1.5_dp)
     ! Avoid drift when no mass transfer is requested.
     if (masscoef == 0.0_dp) q%mass=p%mass
     if (o%evaporation .and. masscoef > 0.0_dp .and. sqrt(d2) < o%minimum_diameter) q%mass=0.0_dp
@@ -325,6 +366,11 @@ contains
     if (.not. valid_spray_parcel(q)) then
       q=p; return
     end if
+    if (q%mass>0) then
+      if (liquid_density_at_temperature(l,q%temperature)<=0) then
+        q=p; return
+      end if
+    end if
     ! Discrete equal-and-opposite exchange includes evaporated momentum and
     ! kinetic energy. Do not add separate latent heat or drag-work terms again.
     transfer=parcel_totals(p,l)-parcel_totals(q,l)
@@ -343,6 +389,7 @@ contains
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: diameter_shape, diameter_min, diameter_max
+    real(dp) :: rho
     real(dp) :: e1(3),e2(3),ez(3), helper(3), cosine, sine, angle, m, weight
     real(dp) :: shape,dlo,dhi,survival_low,survival_high,survival,quantile,drop_size
     integer :: i
@@ -357,6 +404,8 @@ contains
     if (diameter < 1.0e-12_dp .or. diameter > 1.0_dp) return
     if (half_angle < 0.0_dp .or. half_angle > 0.5_dp*pi) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
+    rho=liquid_density_at_temperature(liquid,temperature)
+    if (rho<=0) return
     shape=0.0_dp; dlo=1.0e-12_dp; dhi=1.0_dp
     if (present(diameter_shape)) shape=diameter_shape
     if (present(diameter_min)) dlo=diameter_min
@@ -388,7 +437,7 @@ contains
           deallocate(parcels); return
         end if
       end if
-      m=pi*liquid%density*drop_size**3/6.0_dp
+      m=pi*rho*drop_size**3/6.0_dp
       weight=total_mass/(real(number,dp)*m)
       if (weight>1.0e18_dp .or. m>1.0_dp) then
         deallocate(parcels); return

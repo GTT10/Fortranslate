@@ -39,6 +39,7 @@ contains
     real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
+    real(dp) :: rho
     real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total
     logical :: rt_breakup
     real(dp), parameter :: pi=acos(-1.0_dp)
@@ -51,6 +52,8 @@ contains
     if (parcel%mass<=0.or.dt==0) then
       ok=.true.;return
     end if
+    rho=liquid_density_at_temperature(liquid,parcel%temperature)
+    if (rho<=0) return
     candidate=parcel;radius=.5_dp*parcel_diameter(parcel,liquid);child=radius
     if (radius<=.5_dp*options%minimum_diameter) then
       ok=.true.;return
@@ -66,13 +69,13 @@ contains
       cd=24/re
     end if
     we=gas_density*speed**2*radius/options%surface_tension
-    z=options%liquid_viscosity/sqrt(liquid%density*radius*options%surface_tension)
+    z=options%liquid_viscosity/sqrt(rho*radius*options%surface_tension)
     t=z*sqrt(we);rt_breakup=.false.
     if (candidate%rt_time>=0) then
-      acceleration=.375_dp*cd*gas_density*speed**2/(liquid%density*radius)
-      momdiff=acceleration*(liquid%density-gas_density)
+      acceleration=.375_dp*cd*gas_density*speed**2/(rho*radius)
+      momdiff=acceleration*(rho-gas_density)
       if (momdiff>0) then
-        omega=sqrt(2/(3*sqrt(3*options%surface_tension))*momdiff*sqrt(momdiff)/(liquid%density+gas_density))
+        omega=sqrt(2/(3*sqrt(3*options%surface_tension))*momdiff*sqrt(momdiff)/(rho+gas_density))
         lambda=options%khrt_c3*pi/sqrt(momdiff/(3*options%surface_tension))
         if (radius<lambda) then
           candidate%rt_time=0
@@ -89,7 +92,7 @@ contains
     if (.not.rt_breakup) then
       lambda=radius*9.02_dp*(1+.45_dp*sqrt(z))*(1+.4_dp*t**.7_dp)/(1+.865_dp*we**1.67_dp)**.6_dp
       omega=(.34_dp+.385_dp*we*sqrt(we))/((1+z)*(1+1.4_dp*t**.6_dp))* &
-        sqrt(options%surface_tension/(liquid%density*radius**3))
+        sqrt(options%surface_tension/(rho*radius**3))
       tau=3.726_dp*options%khrt_b1*radius/(lambda*omega)
       if (options%khrt_b0*lambda<radius.and.we>6) then
         rate=dt/tau
@@ -164,6 +167,7 @@ contains
     real(dp), intent(in) :: gas_density,gas_velocity(3),dt
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
+    real(dp) :: rho
     real(dp) :: radius,child,td,omega2,omega,we,wer,amplitude,y,ydot,yn,ydn
     real(dp) :: elapsed,step,speed,phi,angle,event_time,kbr,etb,ratio,total_mass
     real(dp), parameter :: pi=acos(-1.0_dp)
@@ -176,21 +180,23 @@ contains
     if (trim(options%breakup_model)=='none'.or.parcel%mass<=0.or.dt==0) then
       ok=.true.; return
     end if
+    rho=liquid_density_at_temperature(liquid,parcel%temperature)
+    if (rho<=0) return
     candidate=parcel; radius=0.5_dp*parcel_diameter(parcel,liquid)
     speed=sqrt(sum((gas_velocity-parcel%velocity)**2))
     total_mass=parcel%mass*parcel%multiplicity
     y=parcel%deformation; ydot=parcel%deformation_rate; elapsed=0
     do iteration=1,options%maximum_substeps
       if (elapsed>=dt.or.radius<=0.5_dp*options%minimum_diameter) exit
-      td=liquid%density*radius**2/(5.0_dp*options%liquid_viscosity)
-      omega2=8.0_dp*options%surface_tension/(liquid%density*radius**3)-1.0_dp/td**2
+      td=rho*radius**2/(5.0_dp*options%liquid_viscosity)
+      omega2=8.0_dp*options%surface_tension/(rho*radius**3)-1.0_dp/td**2
       if (omega2<=0) then
         y=0; ydot=0; elapsed=dt; exit
       end if
       omega=sqrt(omega2)
       we=gas_density*speed**2*radius/options%surface_tension; wer=we/12.0_dp
       step=dt-elapsed
-      if (speed>0) step=min(step,0.1_dp*radius*sqrt(3.0_dp*liquid%density/gas_density)/speed)
+      if (speed>0) step=min(step,0.1_dp*radius*sqrt(3.0_dp*rho/gas_density)/speed)
       if (step<=0.or.elapsed+step<=elapsed) return
       amplitude=sqrt((y-wer)**2+ydot**2/omega2)
       yn=wer+exp(-step/td)*((y-wer)*cos(omega*step)+(ydot+(y-wer)/td)/omega*sin(omega*step))

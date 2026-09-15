@@ -18,7 +18,7 @@ program test_spray_core
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
-  type(spray_liquid) :: liquid
+  type(spray_liquid) :: liquid,constant_liquid
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   type(spray_options) :: options
@@ -47,6 +47,41 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('density')
+    liquid%density_model='polynomial'
+    liquid%density_coefficients=[1200.0_dp,-.5_dp,0.0_dp,0.0_dp]
+    liquid%density_temperature_range=[250.0_dp,600.0_dp]
+    call require(liquid_density_at_temperature(liquid,350.0_dp)==1025.0_dp,'density polynomial')
+    d=parcel_diameter(p,liquid)
+    options%drag=.false.;options%evaporation=.false.
+    call advance_parcel_frozen_film(p,liquid,film,options,1e-3_dp,q,transfer,ok)
+    call require(ok.and.q%temperature>p%temperature.and.q%mass==p%mass,'thermal expansion preserves mass')
+    expected=d*(1025.0_dp/liquid_density_at_temperature(liquid,q%temperature))**(1.0_dp/3.0_dp)
+    call require(abs(parcel_diameter(q,liquid)/expected-1)<1e-13_dp,'heated radius uses updated density')
+    call require(maxval(abs(transfer-(parcel_totals(p,liquid)-parcel_totals(q,liquid))))<1e-18_dp, &
+      'thermal expansion energy exchange')
+    call inject_cone_parcels(liquid,1e-9_dp,2,1_int64,[.001_dp,.001_dp,.001_dp], &
+      [0.0_dp,0.0_dp,1.0_dp],0.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok)
+    call require(ok.and.abs(drops(1)%mass/(pi*1025.0_dp*1e-12_dp/6)-1)<1e-13_dp,'injected volume')
+    options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    constant_liquid=liquid;constant_liquid%density_model='constant';constant_liquid%density=1025
+    constant_liquid%density_coefficients=0;constant_liquid%density_temperature_range=0
+    q=p
+    call advance_etab_breakup(p,liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],1e-5_dp,ok)
+    call require(ok,'polynomial ETAB')
+    call advance_etab_breakup(q,constant_liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],1e-5_dp,ok)
+    call require(ok.and.p%mass==q%mass.and.p%deformation==q%deformation,'ETAB density parity')
+    options%breakup_model='khrt'
+    call advance_khrt_breakup(p,liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],100.0_dp,1e-5_dp,ok)
+    call require(ok,'polynomial KHRT')
+    call advance_khrt_breakup(q,constant_liquid,options,20.0_dp,[200.0_dp,0.0_dp,0.0_dp],100.0_dp,1e-5_dp,ok)
+    call require(ok.and.p%mass==q%mass.and.p%multiplicity==q%multiplicity,'KHRT density parity')
+    liquid%density_temperature_range=[250.0_dp,350.0_dp]
+    options%breakup_model='none';options%evaporation=.false.
+    call advance_parcel_frozen_film(p,liquid,film,options,1e-3_dp,q,transfer,ok)
+    call require(.not.ok.and.q%temperature==p%temperature.and.all(transfer==0),'density-range rollback')
+    liquid%density_coefficients=[1.0_dp,-.5_dp,0.0_dp,0.0_dp]
+    call require(liquid_density_at_temperature(liquid,300.0_dp)==0,'negative density rejected')
   case('antoine')
     liquid%vapor_pressure_model='antoine'
     liquid%antoine_coefficients=[5.40221_dp,1838.675_dp,-31.737_dp,1e5_dp]

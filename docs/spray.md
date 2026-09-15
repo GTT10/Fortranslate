@@ -71,7 +71,7 @@ is the mass of **one** droplet; its multiplicity multiplies all transfer terms.
 ## Models and conventions
 
 SI units are used throughout. The liquid is dilute, spherical, single-component,
-constant-density and spatially isothermal. `vapor_name` must identify a gas
+spatially isothermal, with constant or temperature-dependent polynomial density. `vapor_name` must identify a gas
 species in the selected mechanism. Liquid property numbers in the examples
 are illustrative constants, **not** a fitted methanol/water property database.
 
@@ -506,10 +506,35 @@ and requires the Antoine arrays to be zero. Antoine inputs require finite
 coefficients, positive B/D, ordered positive bounds and T+C>0 throughout the
 interval. Evaluation outside the fit range or at psat>=ambient pressure fails
 transactionally. This does not implement boiling, supercritical evaporation,
-multicomponent liquid properties or temperature-dependent density/cp.
+multicomponent liquid properties or temperature-dependent heat capacity.
 
 `cases/spray_3d/water_antoine.nml` supplies the NIST water fit for 273--303 K
 and starts droplets at 290 K. The coefficient source and units are recorded in
 [`references/spray_antoine.json`](../references/spray_antoine.json); density/cp
 remain illustrative constants. Changing either coefficients or bounds rejects
 a checkpoint restart. See [focused evidence](validation/antoine-20260915.md).
+
+## Temperature-dependent liquid density
+
+Use `liquid_density_model='polynomial'`, `liquid_density_coefficients=a,b,c,d`
+and `liquid_density_temperature_range=Tmin,Tmax` for
+`rho(T)=a+T*(b+T*(c+T*d))` in kg/m3, with T in kelvin. This is the pinned
+PelePhysics `MPLiqProps::rho_i` convention. The coefficients must already use SI
+units. `liquid_density` remains the constant-model input and initialization
+reference; the polynomial supplies the actual density when selected.
+
+Injection converts specified diameter to mass at the injection temperature.
+Drag, frozen-film evaporation and ETAB/KH-RT use the current droplet density.
+Evaporation freezes density over each substep, while the resulting diameter
+uses the updated temperature. Heating can therefore change volume without
+creating liquid mass. Liquid heat capacity and the existing formation-energy
+reference remain unchanged; liquid p/rho and surface-energy corrections are
+still neglected in this dilute point-particle model.
+
+Coefficients and bounds participate in restart identity. Evaluating outside
+the interval or obtaining density outside 1e-3--1e5 kg/m3 rejects the update;
+a polynomial is not guaranteed positive over its entire interval by setup.
+The default constant-density path retains its checkpoint context.
+`cases/spray_3d/water_density.nml` uses an illustrative linear polynomial to
+exercise the implementation, not calibrated water properties. See
+[focused evidence](validation/liquid-density-20260915.md).
