@@ -14,6 +14,7 @@ module spray_coupling_3d_mod
   use spray_breakup_mod
   implicit none
   private
+  public :: advance_mixture_film_coupling_3d
   public :: periodic_particle_stencil, build_spray_film, advance_spray_coupling_3d
   public :: spray_system_totals, valid_spray_boundary_faces, apply_parcel_boundaries
   public :: particle_boundary_stencil, advance_mixture_coupling_3d, mixture_system_totals
@@ -828,9 +829,142 @@ contains
     substeps=count;ok=.true.;message=''
   end subroutine
 
-  subroutine mixture_system_totals(state,spacing,parcels,components,component_mass,totals,ok)
+  subroutine advance_mixture_film_coupling_3d(species,transport,components,options,wall_options,state,temperature, &
+      films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,message,start_times)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    real(dp), allocatable, intent(inout) :: film_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),interval
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in), optional :: start_times(:)
+    integer, intent(out) :: substeps
+    real(dp), intent(out) :: boundary_change(:)
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    type(spray_wall_film), allocatable :: patches(:)
+    type(spray_wall_film) :: next
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:),kept(:,:)
+    real(dp) :: sampled(size(state,1)),primitive(size(state,1)),change(size(state,1)),ledger(size(state,1))
+    real(dp) :: old_cells(size(state,1),8),old_t(8),weights(8),guess,tg,sound,recovered,volume,elapsed,dt,conductivity
+    real(dp) :: rates(size(components)),hv(size(components)),next_mass(size(components)),qg,qw,tdot,wall_energy
+    integer :: shape3(3),indices(3,8),p,n,i,j,k,c,axis,face,attempt,total_steps
+    logical :: valid,accepted
+    ok=.false.;substeps=0;boundary_change=0;message='Invalid mixed film coupling state'
+    if (.not.allocated(films).or..not.allocated(film_mass)) return
+    if (.not.valid_spray_options(options).or..not.valid_wall_options(wall_options,faces)) return
+    if (size(components)<1.or.size(components)>min(16,size(species))) return
+    if (any(shape(film_mass)/=[size(components),size(films)]).or.size(films)>wall_options%maximum_films) return
+    if (size(state,1)/=5+size(species).or.size(boundary_change)/=size(state,1)) return
+    if (.not.all(ieee_is_finite([lower,spacing,interval]))) return
+    if (any(spacing<=0).or.any(spacing>1e6_dp).or.interval<0.or.interval>1e6_dp) return
+    shape3=shape(temperature)
+    if (any(shape3<2).or.any(shape(state(1,:,:,:))/=shape3)) return
+    if (present(start_times)) then
+      if (size(start_times)/=size(films)) return
+      if (.not.all(ieee_is_finite(start_times))) return
+      if (any(start_times<0).or.any(start_times>interval)) return
+    end if
+    do p=1,size(films)
+      if (.not.valid_wall_component_inventory(films(p),film_mass(:,p))) return
+    end do
+    do c=1,size(components)
+      if (.not.valid_spray_liquid(components(c))) return
+      if (components(c)%vapor_index>size(species)) return
+      if (trim(species(components(c)%vapor_index)%name)/=trim(components(c)%vapor_name)) return
+    end do
+    message='Invalid mixed film gas thermodynamics';temp=temperature
+    call recover_reactive_temperatures_3d(species,state,temperature,shape3(1),shape3(2),shape3(3),temp,valid)
+    if (.not.valid) return
+    if (any(abs(temp-temperature)>1e-9_dp*max(1.0_dp,abs(temperature)))) return
+    gas=state;temp=temperature;patches=films;masses=film_mass;ledger=0;total_steps=0;volume=product(spacing)
+    if (wall_options%evolve) then
+      do p=1,size(patches)
+        axis=maxloc(abs(patches(p)%normal),dim=1)
+        face=2*axis-merge(1,0,patches(p)%normal(axis)>0)
+        if (.not.wall_options%enabled(face)) return
+        elapsed=0
+        if (present(start_times)) elapsed=start_times(p)
+        do while(elapsed<interval.and.patches(p)%mass>0)
+          if (total_steps>=options%maximum_substeps) then
+            message='Mixed film substep limit; complete update rolled back';return
+          end if
+          message='Invalid mixed film interpolation stencil'
+          call particle_boundary_stencil(patches(p)%position,lower,spacing,shape3,faces,indices,weights,valid)
+          if (.not.valid) return
+          sampled=0;guess=0
+          do n=1,8
+            i=indices(1,n);j=indices(2,n);k=indices(3,n)
+            old_cells(:,n)=gas(:,i,j,k);old_t(n)=temp(i,j,k)
+            sampled=sampled+weights(n)*old_cells(:,n);guess=guess+weights(n)*old_t(n)
+          end do
+          call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)
+          if (.not.valid) return
+          conductivity=wall_liquid_conductivity_at_temperature(wall_options,patches(p)%material_id,patches(p)%temperature)
+          message='Invalid mixed film transfer rates'
+          call mixture_wall_film_rates(patches(p),components,masses(:,p),species,transport,primitive,tg,options, &
+            conductivity,wall_options%temperature(face),rates,hv,qg,qw,tdot,valid)
+          if (.not.valid) return
+          dt=interval-elapsed
+          do c=1,size(components)
+            if (rates(c)>0) dt=min(dt,options%max_fractional_change*masses(c,p)/rates(c))
+          end do
+          if (abs(tdot)>0) dt=min(dt,min(2.0_dp,options%max_fractional_change*patches(p)%temperature)/abs(tdot))
+          accepted=.false.
+          do attempt=1,30
+            if (dt<=0.or.elapsed+dt<=elapsed) exit
+            next=patches(p);next_mass=masses(:,p)
+            call advance_mixture_wall_film_exchange(next,components,next_mass,rates*dt,hv,qg*dt,qw*dt, &
+              wall_options%minimum_height,change,wall_energy,valid)
+            if (valid.and.next%mass>0) valid= &
+              wall_liquid_conductivity_at_temperature(wall_options,next%material_id,next%temperature)>0
+            if (valid) then
+              do n=1,8
+                i=indices(1,n);j=indices(2,n);k=indices(3,n)
+                gas(:,i,j,k)=gas(:,i,j,k)+weights(n)*change/volume
+              end do
+              do n=1,8
+                i=indices(1,n);j=indices(2,n);k=indices(3,n)
+                call reactive_conserved_to_primitive(species,gas(:,i,j,k),old_t(n),primitive,recovered,sound,valid)
+                if (.not.valid) exit
+                temp(i,j,k)=recovered
+              end do
+            end if
+            if (valid) then
+              accepted=.true.;exit
+            end if
+            do n=1,8
+              i=indices(1,n);j=indices(2,n);k=indices(3,n)
+              gas(:,i,j,k)=old_cells(:,n);temp(i,j,k)=old_t(n)
+            end do
+            dt=.5_dp*dt
+          end do
+          if (.not.accepted) then
+            message='Mixed film feedback rejected; complete update rolled back';return
+          end if
+          patches(p)=next;masses(:,p)=next_mass;ledger(5)=ledger(5)-wall_energy
+          elapsed=min(interval,elapsed+dt);total_steps=total_steps+1
+        end do
+      end do
+    end if
+    allocate(kept(size(components),count(patches%mass>0)))
+    do c=1,size(components)
+      kept(c,:)=pack(masses(c,:),patches%mass>0)
+    end do
+    patches=pack(patches,patches%mass>0)
+    state=gas;temperature=temp;films=patches;call move_alloc(kept,film_mass)
+    boundary_change=ledger;substeps=total_steps;ok=.true.;message=''
+  end subroutine
+
+  subroutine mixture_system_totals(state,spacing,parcels,components,component_mass,totals,ok,wall_films,film_mass)
     real(dp), intent(in) :: state(:,:,:,:),spacing(3),component_mass(:,:)
     type(spray_parcel), intent(in) :: parcels(:)
+    type(spray_wall_film), optional, intent(in) :: wall_films(:)
+    real(dp), optional, intent(in) :: film_mass(:,:)
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(inout) :: totals(:)
     logical, intent(out) :: ok
@@ -862,6 +996,20 @@ contains
         candidate(5+v)=candidate(5+v)+parcels(p)%multiplicity*component_mass(n,p)
       end do
     end do
+    if (present(wall_films).neqv.present(film_mass)) return
+    if (present(wall_films)) then
+      if (any(shape(film_mass)/=[size(components),size(wall_films)])) return
+      do p=1,size(wall_films)
+        if (.not.valid_wall_component_inventory(wall_films(p),film_mass(:,p))) return
+        call liquid_mixture_properties(components,film_mass(:,p)/wall_films(p)%mass,wall_films(p)%temperature,rho,cp,e,valid)
+        if (.not.valid) return
+        candidate(1)=candidate(1)+wall_films(p)%mass
+        candidate(5)=candidate(5)+wall_films(p)%mass*e
+        do n=1,size(components)
+          candidate(5+components(n)%vapor_index)=candidate(5+components(n)%vapor_index)+film_mass(n,p)
+        end do
+      end do
+    end if
     if (.not.all(ieee_is_finite(candidate))) return
     totals=candidate;ok=.true.
   end subroutine

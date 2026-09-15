@@ -549,6 +549,23 @@ before changing gas, particles, films or either component matrix. Existing pure-
 and particle-only mixed formats retain their layout. Grid/CLI wiring remains open.
 See [checkpoint evidence](validation/spray-mixture-film-checkpoint-20260916.md).
 
+### Mixed-film grid feedback API
+
+`advance_mixture_film_coupling_3d` advances stationary film patches and their
+component matrix against a regular gas grid. It samples gas properties at each
+patch, limits substeps by component depletion and temperature change, and deposits
+component mass and energy with the particle interpolation weights. Failed gas
+recovery halves the attempted interval; failure of the complete update preserves
+gas, temperatures, films and component masses. Optional `start_times` delays each
+patch until its birth time within the interval.
+
+The returned boundary ledger records heat entering the simulated gas/film system
+from walls. Fully evaporated patches and corresponding matrix columns are removed
+together. `mixture_system_totals` accepts optional `wall_films` and `film_mass` to
+include stationary-film mass, species and internal energy. This API is ready for
+connection to particle impact and reactive/CLI stepping; those connections remain
+open. See [grid evidence](validation/spray-mixture-film-grid-20260916.md).
+
 ## KH-RT representative-drop breakup
 
 Set `breakup_model='khrt'` with positive `surface_tension` and

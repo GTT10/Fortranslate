@@ -11,7 +11,8 @@ program test_spray_integration
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use spray_wall_impact_mod
   use spray_parcel_mod
-  use spray_coupling_3d_mod, only: spray_system_totals,advance_mixture_coupling_3d,mixture_system_totals
+  use spray_coupling_3d_mod, only: spray_system_totals,advance_mixture_coupling_3d,mixture_system_totals, &
+    advance_mixture_film_coupling_3d
   use spray_reactive_3d_mod
   use spray_checkpoint_mod
   implicit none
@@ -174,6 +175,47 @@ program test_spray_integration
     call require(all(drops%mass==before_drops%mass),'parent mass rollback')
     call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
       all(drops%khrt_shed_volume==before_drops%khrt_shed_volume),'wall/KH inventory rollback')
+  case('mixture_film_grid')
+    materials(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
+    call require(ok,'mixed film material')
+    deallocate(drops);allocate(drops(0),component_mass(2,0),films(1),film_mass(2,1))
+    films(1)=spray_wall_film([.002_dp,.002_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp], &
+      1e-8_dp,350.0_dp,1e-3_dp,1e-5_dp,1)
+    film_mass(:,1)=films(1)%mass*[.6_dp,.4_dp];saved_films=films;saved_film_mass=film_mass
+    faces='slip_wall';wall_options%enabled=.true.;wall_options%evolve=.true.
+    wall_options%liquid_conductivity=.6_dp;wall_options%temperature=400
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok,films,film_mass)
+    call require(ok,'mixed film initial totals')
+    call advance_mixture_film_coupling_3d(species,transport,materials,options,wall_options,state,temperature,films,film_mass, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-9_dp,faces,steps,force,ok,message)
+    call require(ok,trim(message))
+    call require(steps>0.and.films(1)%mass<saved_films(1)%mass,'coupled mixed film evolves')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok,films,film_mass)
+    call require(ok,'mixed film final totals')
+    call require(abs(totals1(1)-totals0(1))<1e-12_dp*totals0(1),'mixed film grid mass')
+    call require(maxval(abs(totals1(6:)-totals0(6:)))<1e-18_dp,'mixed film grid species')
+    call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'mixed film grid energy')
+    state=before;temperature=before_t;films=saved_films;film_mass=saved_film_mass
+    options%maximum_substeps=1
+    call advance_mixture_film_coupling_3d(species,transport,materials,options,wall_options,state,temperature,films,film_mass, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-4_dp,faces,steps,force,ok,message)
+    call require(.not.ok.and.steps==0.and.all(force==0),'mixed film substep rejection')
+    call require(all(state==before).and.all(temperature==before_t),'mixed film gas rollback')
+    call require(all(film_mass==saved_film_mass).and.all(films%mass==saved_films%mass),'mixed film inventory rollback')
+    options%maximum_substeps=100000;wall_options%minimum_height=1e-3_dp
+    call advance_mixture_film_coupling_3d(species,transport,materials,options,wall_options,state,temperature,films,film_mass, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-9_dp,faces,steps,force,ok,message)
+    call require(.not.ok.and.all(state==before).and.all(film_mass==saved_film_mass), &
+      'terminal film energy rejection rolls back')
+    films(1)%mass=1e-12_dp;film_mass=film_mass*1e-4_dp
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok,films,film_mass)
+    call require(ok,'admissible terminal initial totals')
+    call advance_mixture_film_coupling_3d(species,transport,materials,options,wall_options,state,temperature,films,film_mass, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-9_dp,faces,steps,force,ok,message)
+    call require(ok.and.size(films)==0.and.size(film_mass,2)==0,'terminal mixed film removed with matrix column')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok,films,film_mass)
+    call require(ok.and.maxval(abs(totals1-totals0-force))<1e-12_dp,'terminal mixed film grid closure')
   case('mixture_reactive')
     materials(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)
