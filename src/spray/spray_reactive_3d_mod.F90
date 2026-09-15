@@ -58,7 +58,17 @@ contains
 #ifndef PELEF_SPRAY_CVODE
       message='CVODE requested but this spray runtime was built without SUNDIALS'
 #else
-      allocate(candidate,source=state); allocate(temp,source=temperature); allocate(check_t,mold=temperature)
+      if ((present(component_mass).and.present(wall_films)).neqv.present(film_component_mass)) then
+      message='Mixed wall films require film component storage';return
+    end if
+    if (present(component_mass)) then
+      allocate(mixture_film_mass(size(mixture_components),0))
+      if (present(film_component_mass)) then
+        if (.not.allocated(film_component_mass)) return
+        mixture_film_mass=film_component_mass
+      end if
+    end if
+    allocate(candidate,source=state); allocate(temp,source=temperature); allocate(check_t,mold=temperature)
       call recover_reactive_temperatures_3d(species,state,temperature,dims(1),dims(2),dims(3),check_t,local_ok)
       if (.not. local_ok) return
       if (interval == 0.0_dp) then
@@ -101,15 +111,15 @@ contains
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
-      mixture_components,component_mass)
+      mixture_components,component_mass,film_component_mass)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid), intent(in), optional :: mixture_components(:)
-    real(dp), allocatable, intent(inout), optional :: component_mass(:,:)
-    real(dp), allocatable :: mixture_mass(:,:)
+    real(dp), allocatable, intent(inout), optional :: component_mass(:,:),film_component_mass(:,:)
+    real(dp), allocatable :: mixture_mass(:,:),mixture_film_mass(:,:)
     type(spray_options), intent(in), optional :: breakup_options(:)
     type(spray_wall_options), intent(in), optional :: wall_options
     type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
@@ -160,11 +170,6 @@ contains
       if (present(materials).or.present(breakup_options)) then
         message='Mixture and per-port pure-liquid property tables cannot be combined';return
       end if
-      if (present(wall_options)) then
-        if (any(wall_options%enabled)) then
-          message='Mixture wall impact is not connected';return
-        end if
-      end if
       mixture_mass=component_mass
     end if
     if (.not.valid_spray_boundary_faces(faces)) return
@@ -194,8 +199,15 @@ contains
     if (present(wall_films)) then
       if (.not.allocated(wall_films)) return
       patches=wall_films
-      if (present(component_mass).and.size(patches)>0) then
-        message='Mixture wall films are not connected';return
+    end if
+    if ((present(component_mass).and.present(wall_films)).neqv.present(film_component_mass)) then
+      message='Mixed wall films require film component storage';return
+    end if
+    if (present(component_mass)) then
+      allocate(mixture_film_mass(size(mixture_components),0))
+      if (present(film_component_mass)) then
+        if (.not.allocated(film_component_mass)) return
+        mixture_film_mass=film_component_mass
       end if
     end if
     allocate(candidate,source=state); allocate(temp,source=temperature); allocate(drops,source=parcels)
@@ -209,7 +221,8 @@ contains
       if (half == 1) then
         if (present(component_mass)) then
           call advance_mixture_coupling_3d(species,transport,mixture_components,options,candidate,temp,lower,spacing, &
-            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
+            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange, &
+            wall_options,patches,mixture_film_mass)
         else
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
@@ -246,7 +259,8 @@ contains
         ledger=ledger+exchange
         if (present(component_mass)) then
           call advance_mixture_coupling_3d(species,transport,mixture_components,options,candidate,temp,lower,spacing, &
-            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange)
+            drops,mixture_mass,0.5_dp*dt,substeps,local_ok,message,faces,exchange, &
+            wall_options,patches,mixture_film_mass)
         else
         call advance_spray_coupling_3d(species,transport,liquid,options,candidate,temp,lower,spacing, &
           drops,0.5_dp*dt,substeps,local_ok,message,faces,exchange,materials,breakup_options,wall_options,patches)
@@ -263,6 +277,7 @@ contains
     if (present(boundary_change)) boundary_change=ledger
     state=candidate; temperature=temp; parcels=drops
     if (present(component_mass)) call move_alloc(mixture_mass,component_mass)
+    if (present(film_component_mass)) call move_alloc(mixture_film_mass,film_component_mass)
     if (present(wall_films)) call move_alloc(patches,wall_films); ok=.true.; message=''
   contains
     subroutine force_kick(gas,particles,interval,accepted)

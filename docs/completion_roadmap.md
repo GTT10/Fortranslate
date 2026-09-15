@@ -63,7 +63,7 @@ frozen-gas transport update are implemented. Regular-grid feedback, persistent
 component masses, boundary budgets, representative breakup/splitting and composition
 checkpoint APIs are connected. Combined hydro/transport/LES/chemistry stepping
 now retains mixture composition through accepted updates and rollback. Mixture
-wall reactive integration and application restart and physical boiling rates remain open.
+wall CLI integration and application restart and physical boiling rates remain open.
 The mixture impact event kernel now partitions component masses into retained
 parent, splash and film with wall budgets. Supplied film evaporation/heat exchange
 now updates composition, temperature and height. Mixed film heat/evaporation rates
@@ -71,7 +71,8 @@ and a frozen-rate update are implemented; their grid connection remains. Planar
 crossing dispatch now computes mixed impact parameters and retains component budgets.
 The checkpoint API retains mixed-film component masses. Stationary mixed-film grid
 feedback now updates gas and film with wall budgets. Particle crossing, splash and
-remaining-interval film evolution now share one transaction; reactive/CLI wiring remains. Shared-composition CLI inputs, initial/scheduled injection,
+remaining-interval film evolution now share one transaction. Reactive stepping
+retains both component matrices with full rollback; CLI wiring remains. Shared-composition CLI inputs, initial/scheduled injection,
 component output and restart are now connected. Mixed KH shed children preserve
 composition and conservative transverse energy through coupling, splitting and restart.
 Component density/heat-capacity fits, Antoine pressure and Clausius surface caps

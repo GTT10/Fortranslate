@@ -220,6 +220,28 @@ program test_spray_integration
     call require(all(state==before).and.all(temperature==before_t).and.all(component_mass==saved_mass), &
       'mixed splash capacity gas/component rollback')
     call require(size(films)==0.and.size(film_mass,2)==0.and.all(drops%mass==before_drops%mass),'mixed splash film rollback')
+    options%maximum_parcels=1000;options%heat=.true.;options%evaporation=.true.
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.false.,'invalid', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+      wall_options=wall_options,wall_films=films,mixture_components=materials, &
+      component_mass=component_mass,film_component_mass=film_mass)
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'mixed wall late reactive rollback')
+    call require(size(films)==0.and.size(film_mass,2)==0.and.all(component_mass==saved_mass), &
+      'mixed wall late component rollback')
+    call require(all(drops%mass==before_drops%mass).and.all(force==0),'mixed wall late particle budget rollback')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok,films,film_mass)
+    call require(ok,'reactive mixed wall initial totals')
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+      wall_options=wall_options,wall_films=films,mixture_components=materials, &
+      component_mass=component_mass,film_component_mass=film_mass)
+    call require(ok,trim(message))
+    call require(size(films)>0.and.size(film_mass,2)==size(films),'reactive mixed wall state committed')
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok,films,film_mass)
+    call require(ok.and.abs(totals1(1)-totals0(1)-force(1))<1e-12_dp*totals0(1),'reactive mixed wall mass')
+    call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'reactive mixed wall energy')
   case('mixture_film_grid')
     materials(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp,materials(2),ok)

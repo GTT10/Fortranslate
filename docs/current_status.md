@@ -49,7 +49,7 @@ minimum-diameter removal now return their complete inventories to gas
 and retain their state through splitting and restart
 ([evidence](validation/spray-mixture-kh-20260916.md)). The mixture impact event API now partitions component masses into splash and film
 with wall budgets ([evidence](validation/spray-mixture-wall-event-20260916.md));
-its reactive/CLI connection remains open. Planar crossing now uses mixture properties
+its CLI connection remains open. Planar crossing now uses mixture properties
 and the reference mass-weighted impact boiling temperature
 ([evidence](validation/spray-mixture-wall-crossing-20260916.md)). A supplied film-exchange API now
 updates composition, temperature and height with gas/wall energy closure
@@ -61,7 +61,9 @@ now retains film component masses with transactional validation
 conserves species and gas/film/wall energy and removes terminal patches
 ([evidence](validation/spray-mixture-film-grid-20260916.md)). The mixed particle
 coupler now connects wall crossing, splash/deposition and remaining-interval film
-evolution in one transaction ([evidence](validation/spray-mixture-wall-coupled-20260916.md)). Per-port compositions now drive initial and
+evolution in one transaction ([evidence](validation/spray-mixture-wall-coupled-20260916.md)).
+The reactive driver now retains mixed film state across both spray half-steps and
+rolls it back after late failure ([evidence](validation/spray-mixture-wall-reactive-20260916.md)). Per-port compositions now drive initial and
 scheduled injection with component budgets and restart identity
 ([evidence](validation/spray-port-mixture-20260916.md)). Component density/heat-capacity fits, Antoine
 pressure and Clausius surface caps are available in the CLI and restart context

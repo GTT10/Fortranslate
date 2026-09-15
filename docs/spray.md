@@ -389,8 +389,8 @@ component masses commit together only after every stage succeeds; late chemistry
 or transport rejection returns zero external/boundary ledgers and preserves inputs.
 
 The mixture pair cannot be combined with the per-port pure-liquid property tables.
-Gas wall conditions remain available, but particle wall-impact options and nonempty
-film state reject until mixture film composition is implemented. No new chemistry
+Mixed particle wall impact requires `wall_films` and `film_component_mass` together.
+Gas wall conditions remain available. No new chemistry
 backend or time-order accuracy claim is introduced. The focused check exercises
 the native implicit backend, not a new CVODE qualification. See
 [reacting-mixture evidence](validation/spray-mixture-reactive-20260916.md).
@@ -579,8 +579,21 @@ After particle flight, stationary films exchange mass and energy with the grid f
 their remaining interval. Particle and film substeps share the configured budget.
 Capacity failure, inadmissible impact or rejected film feedback rolls back the entire
 particle/gas/film update. Boundary ledgers combine wall impulse/energy and wall heat.
-Reactive-driver and CLI wiring remain open. See
+Reactive-driver integration is available below; CLI wiring remains open. See
 [combined evidence](validation/spray-mixture-wall-coupled-20260916.md).
+
+### Reactive mixed-wall integration
+
+`advance_spray_reactive_3d` accepts `film_component_mass` alongside mixed-particle
+composition and `wall_films`. Both spray half-steps now carry wall impact and mixed
+film evolution through the same candidate state as hydro, molecular transport,
+LES and chemistry. The complete state commits only after every stage succeeds;
+a late chemistry failure restores both component matrices with gas, particles and
+films. Pure-material property tables still cannot accompany mixture tables.
+
+The existing prohibition on moving particle-impact walls remains. CLI input/output
+and checkpoint wiring is the remaining application connection. See
+[reactive evidence](validation/spray-mixture-wall-reactive-20260916.md).
 
 ## KH-RT representative-drop breakup
 
