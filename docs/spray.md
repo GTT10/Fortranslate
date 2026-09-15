@@ -85,8 +85,8 @@ energy; latent heat, evaporated kinetic energy and drag work are not added a
 second time.
 
 The surface saturation pressure uses a **constant-Lref** Clausius--Clapeyron
-law anchored at `(Tref, pref)`. States with `psat >= pgas` are rejected rather
-than extrapolated as boiling/supercritical flow. Condensation is not modeled;
+law anchored at `(Tref, pref)` by default. States with `psat >= pgas` are rejected
+by default; the optional surface cap below limits the vapor-state evaluation temperature. Condensation is not modeled;
 a saturated or supersaturated ambient produces zero evaporation. Film state
 uses the one-third rule, NASA7 thermodynamics and existing molecular transport.
 
@@ -559,3 +559,24 @@ in restart identity. No positivity proof across the whole fit range is implied.
 `cases/spray_3d/water_viscosity.nml` exercises combined density/viscosity and
 KH-RT using illustrative coefficients, not a calibrated water model. See
 [focused evidence](validation/liquid-viscosity-20260915.md).
+
+## Near-boiling vapor-state temperature cap
+
+`boiling_model='surface-cap'` with `critical_temperature=Tc` enables the pinned
+PelePhysics vapor-state convention `Ts=min(Tdrop,0.99*min(Tboil(P),Tc))`.
+The pressure-dependent boiling temperature comes from the existing constant
+reference latent heat and Clausius--Clapeyron equation. The cap affects the
+saturation-pressure evaluation; the droplet temperature, energy accounting,
+film transport temperature, and density/viscosity fit bounds retain their
+existing meanings.
+
+This option currently requires `vapor_pressure_model='clausius'` and Tc>Tref.
+It retains the default `boiling_model='reject'` behavior when absent. A
+nonpositive inverse boiling temperature is rejected. The critical temperature
+and selected model are part of restart identity. The example
+`cases/spray_3d/water_surface_cap.nml` starts water droplets at 400 K.
+
+This is a near-boiling numerical vapor-state treatment, not a heat-limited
+boiling-rate, supercritical-fluid or bubble-growth model. The upstream Watson
+latent-property correlation is not added here; the supplied reference latent
+heat remains authoritative. See [source and evidence](validation/surface-cap-20260915.md).

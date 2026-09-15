@@ -29,6 +29,8 @@ contains
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
     real(dp) :: domain_length(3),gas_temperature,gas_pressure,gas_velocity(3),shear_velocity
     real(dp) :: mole_amounts(mechanism_species_capacity),liquid_density,liquid_cp
+    character(len=16) :: boiling_model
+    real(dp) :: critical_temperature
     character(len=16) :: liquid_density_model
     real(dp) :: liquid_density_coefficients(4),liquid_density_temperature_range(2)
     character(len=16) :: vapor_pressure_model
@@ -81,6 +83,7 @@ contains
       inflow_composition_species,inflow_composition_mole_fractions, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
+      boiling_model,critical_temperature, &
       liquid_density_model,liquid_density_coefficients,liquid_density_temperature_range, &
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
@@ -104,6 +107,7 @@ contains
     gas_temperature=1200.0_dp; gas_pressure=101325.0_dp; gas_velocity=0.0_dp; shear_velocity=0.0_dp
     mole_names=''; mole_names(1:3)=[character(len=24)::'H2','O2','N2']
     mole_amounts=0.0_dp; mole_amounts(1:3)=[2.0_dp,1.0_dp,3.76_dp]
+    boiling_model='reject';critical_temperature=0
     liquid_density_model='constant';liquid_density_coefficients=0;liquid_density_temperature_range=0
     vapor_pressure_model='clausius';antoine_coefficients=0;antoine_temperature_range=0
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
@@ -183,9 +187,10 @@ contains
     call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
+    liquid%boiling_model=boiling_model;liquid%critical_temperature=critical_temperature
     liquid%density_model=liquid_density_model;liquid%density_coefficients=liquid_density_coefficients
     liquid%density_temperature_range=liquid_density_temperature_range
-    if (.not.valid_spray_liquid(liquid)) call fail('Invalid liquid density model')
+    if (.not.valid_spray_liquid(liquid)) call fail('Invalid liquid property model')
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     split_enabled=maximum_multiplicity>0
     options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
@@ -316,6 +321,10 @@ contains
         abramzon_sirignano,spray_cvode_available()
       context=trim(context)//' '//trim(flags)
     end block
+    if (trim(boiling_model)=='surface-cap') then
+      context=trim(context)//' boiling-surface-cap-v1'
+      call append_reals([critical_temperature])
+    end if
     if (trim(liquid_density_model)=='polynomial') then
       context=trim(context)//' liquid-density-polynomial-v1'
       call append_reals([liquid_density_coefficients,liquid_density_temperature_range])

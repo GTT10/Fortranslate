@@ -47,6 +47,25 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('surface_cap')
+    call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
+    call require(.not.ok,'default boiling rejection')
+    liquid%boiling_model='surface-cap';liquid%critical_temperature=647.0_dp
+    constant_liquid=liquid;constant_liquid%boiling_model='reject';constant_liquid%critical_temperature=0
+    call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
+    call require(ok,'boiling surface cap')
+    call saturation_mole_fraction(constant_liquid,18.015_dp,.99_dp*373.15_dp,101325.0_dp,expected,ok)
+    call require(ok.and.abs(value/expected-1)<1e-13_dp,'normal-pressure surface temperature')
+    do n=1,3
+      z=101325.0_dp*10.0_dp**(n-2)
+      td=1/(1/373.15_dp+log(101325.0_dp/z)*8314.46261815324_dp/(2.257e6_dp*18.015_dp))
+      call saturation_mole_fraction(liquid,18.015_dp,600.0_dp,z,value,ok)
+      call require(ok,'pressure-dependent surface cap')
+      call saturation_mole_fraction(constant_liquid,18.015_dp,.99_dp*min(td,647.0_dp),z,expected,ok)
+      call require(ok.and.abs(value/expected-1)<1e-12_dp,'pressure-dependent boiling temperature')
+    end do
+    liquid%critical_temperature=300
+    call require(.not.valid_spray_liquid(liquid),'critical temperature consistency')
   case('viscosity')
     options%breakup_model='etab';options%surface_tension=.072_dp
     options%liquid_viscosity_model='inverse-temperature'

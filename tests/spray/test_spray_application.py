@@ -57,6 +57,22 @@ class SprayApplication(unittest.TestCase):
         self.assertEqual(rows[-1]['time'], 1e-6)
         return rows
 
+    def test_boiling_surface_cap_restart(self):
+        settings = "boiling_model='surface-cap',critical_temperature=647,drop_temperature=400,"
+        checkpoint = self.root/'surface-cap.chk'
+        self.run_case('boiling', common=settings)
+        rows = self.check_balance('boiling')
+        self.assertLess(rows[-1]['liquid_mass'], rows[0]['liquid_mass'])
+        self.run_case('stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'boiling.{suffix}').read_bytes(),
+                             (self.root/f'resumed.{suffix}').read_bytes())
+        result = self.run_case('changed', f"restart_file='{checkpoint}',",
+                               common=settings.replace('647', '648'), fail=True)
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('default_boiling', common='drop_temperature=400,', fail=True)
+
     def test_viscosity_temperature_restart(self):
         settings = ("breakup_model='khrt',surface_tension=.072,"
                     "liquid_viscosity_model='inverse-temperature',liquid_viscosity_coefficients=.0002,.2,10,100,"

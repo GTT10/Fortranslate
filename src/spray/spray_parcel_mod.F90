@@ -20,6 +20,8 @@ module spray_parcel_mod
     real(dp) :: antoine_temperature_range(2)=0.0_dp
     character(len=16) :: density_model='constant'
     real(dp) :: density_coefficients(4)=0.0_dp, density_temperature_range(2)=0.0_dp
+    character(len=16) :: boiling_model='reject'
+    real(dp) :: critical_temperature=0.0_dp
   end type
   type, public :: spray_parcel
     integer(int64) :: id = 0_int64
@@ -107,6 +109,16 @@ contains
       if (l%antoine_temperature_range(1)<1.or.l%antoine_temperature_range(2)>1e5_dp) return
       if (l%antoine_temperature_range(2)<=l%antoine_temperature_range(1)) return
       if (l%antoine_temperature_range(1)+l%antoine_coefficients(3)<=0) return
+    case default
+      return
+    end select
+    if (.not.ieee_is_finite(l%critical_temperature)) return
+    select case(trim(l%boiling_model))
+    case('reject')
+      if (l%critical_temperature/=0) return
+    case('surface-cap')
+      if (trim(l%vapor_pressure_model)/='clausius') return
+      if (l%critical_temperature<=l%reference_temperature.or.l%critical_temperature>1e5_dp) return
     case default
       return
     end select
@@ -256,7 +268,7 @@ contains
     real(dp), intent(in) :: molecular_weight, temperature, pressure
     real(dp), intent(out) :: fraction
     logical, intent(out) :: ok
-    real(dp) :: log_fraction
+    real(dp) :: log_fraction,surface_temperature,inverse_boiling_temperature,boiling_temperature
     fraction = 0.0_dp
     ok = .false.
     if (.not. valid_spray_liquid(l)) return
@@ -264,6 +276,19 @@ contains
     if (molecular_weight < 1.0e-3_dp .or. molecular_weight > 1.0e5_dp) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
     if (pressure < 1.0e-6_dp .or. pressure > 1.0e12_dp) return
+    surface_temperature=temperature
+    if (trim(l%boiling_model)=='surface-cap') then
+      inverse_boiling_temperature=1/l%reference_temperature+ &
+        log(l%reference_pressure/pressure)*universal_gas_constant/(l%latent_heat*molecular_weight)
+      if (inverse_boiling_temperature<=0) return
+      if (inverse_boiling_temperature<1/l%critical_temperature) then
+        boiling_temperature=l%critical_temperature
+      else
+        boiling_temperature=1/inverse_boiling_temperature
+      end if
+      surface_temperature=min(temperature,.99_dp*boiling_temperature)
+      if (surface_temperature<1) return
+    end if
     if (trim(l%vapor_pressure_model)=='antoine') then
       if (temperature<l%antoine_temperature_range(1).or.temperature>l%antoine_temperature_range(2)) return
       ! PelePhysics convention: psat = D*10**(A-B/(T+C)), with T in K.
@@ -271,10 +296,10 @@ contains
         (l%antoine_coefficients(1)-l%antoine_coefficients(2)/(temperature+l%antoine_coefficients(3)))
     else
     log_fraction = log(l%reference_pressure/pressure) + l%latent_heat*molecular_weight/universal_gas_constant * &
-      (1.0_dp/l%reference_temperature-1.0_dp/temperature)
+      (1.0_dp/l%reference_temperature-1.0_dp/surface_temperature)
     end if
     if (.not.ieee_is_finite(log_fraction)) return
-    ! This sub-boiling model rejects boiling/supercritical states, not clamps them.
+    ! Reject saturation unless the explicitly selected surface cap avoided it.
     if (log_fraction >= 0.0_dp) return
     fraction = exp(max(log(tiny(1.0_dp)),log_fraction))
     ok = fraction < 1.0_dp

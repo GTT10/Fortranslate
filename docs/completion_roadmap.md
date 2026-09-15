@@ -51,7 +51,8 @@ now retains external impulse/work separately through coupled restart. Single-com
 Antoine saturation-pressure fits are connected with explicit temperature bounds
 and restart identity. Polynomial liquid density now drives injection, drag,
 evaporation and breakup consistently; inverse-temperature liquid viscosity now
-drives ETAB/KH-RT. Boiling and multicomponent liquids remain open.
+drives ETAB/KH-RT. An optional near-boiling vapor-state temperature cap follows
+the pinned reference convention. Physical boiling rates and multicomponent liquids remain open.
 
 ## Ordered implementation work
 
