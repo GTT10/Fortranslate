@@ -511,6 +511,54 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_port_size_distributions(self):
+        base = ("parcel_count=8,injection_port_count=2,injection_port_centers=.001,.001,.001,.003,.001,.001,"
+                "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.4,.6,injection_speed=0,"
+                "injection_port_diameters=2e-5,3e-5,port_diameter_distributions='normal','',"
+                "port_diameter_weightings='number','',port_diameter_stds=3e-6,-1,port_diameter_shapes=0,4,"
+                "port_diameter_minima=1e-5,2e-5,port_diameter_maxima=3e-5,6e-5,"
+                "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        schedules = ["mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4e-7,injection_interval=2e-7,",
+                     "initial_liquid_mass=0,independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                     "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                     "port_injection_intervals=2e-7,3e-7,"]
+        for index, schedule in enumerate(schedules):
+            name = f'port_sizes{index}'
+            settings = base+schedule
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            for start in range(0, len(rows), 8):
+                batch = rows[start:start+8]
+                normal = float(batch[0]['x']) < .002
+                if normal:
+                    self.assertEqual(len({r['multiplicity'] for r in batch}), 1)
+                else:
+                    masses = [float(r['mass'])*float(r['multiplicity']) for r in batch]
+                    self.assertLess((max(masses)-min(masses))/max(masses), 2e-14)
+                for q, row in enumerate(batch):
+                    quantile = (q+.5)/8
+                    if normal:
+                        oracle = NormalDist(2e-5, 3e-6)
+                        expected = oracle.inv_cdf(oracle.cdf(1e-5)+quantile*(oracle.cdf(3e-5)-oracle.cdf(1e-5)))
+                    else:
+                        low, high = math.exp(-(2/3)**4), math.exp(-2**4)
+                        expected = 3e-5*(-math.log(low-quantile*(low-high)))**.25
+                    self.assertAlmostEqual(float(row['diameter'])/expected, 1, delta=2e-13)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace('stds=3e-6', 'stds=4e-6'))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('port_sizes_unused', common=base+"port_diameter_distributions(3)='normal',", fail=True)
+        self.run_case('port_sizes_invalid', common=base.replace('stds=3e-6', 'stds=-2'), fail=True)
+
     def test_chi_squared_sizes(self):
         settings = ("parcel_count=8,diameter_distribution='chi-squared',diameter_weighting='number',"
                     "injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"

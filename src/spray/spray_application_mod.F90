@@ -78,6 +78,10 @@ contains
     real(dp) :: antoine_coefficients(4),antoine_temperature_range(2)
     real(dp) :: reference_temperature,reference_pressure,latent_heat
     character(len=16) :: diameter_weighting,diameter_distribution
+    character(len=16) :: port_diameter_distributions(16),port_diameter_weightings(16)
+    real(dp) :: port_diameter_stds(16),port_diameter_shapes(16),port_diameter_minima(16),port_diameter_maxima(16)
+    type(spray_size_options), allocatable :: port_sizes(:)
+    logical :: port_size_overrides
     real(dp) :: diameter_std
     real(dp) :: diameter_shape,diameter_min,diameter_max
     real(dp) :: drop_temperature,drop_diameter,initial_liquid_mass,injection_center(3),injection_axis(3)
@@ -133,6 +137,8 @@ contains
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,diameter_weighting,initial_liquid_mass,parcel_count, &
       diameter_distribution,diameter_std, &
+      port_diameter_distributions,port_diameter_weightings,port_diameter_stds, &
+      port_diameter_shapes,port_diameter_minima,port_diameter_maxima, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
       wall_conductivity_model,wall_conductivity_coefficients,wall_conductivity_temperature_range, &
       port_wall_conductivities,port_wall_conductivity_models, &
@@ -189,6 +195,8 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    port_diameter_distributions='';port_diameter_weightings=''
+    port_diameter_stds=-1;port_diameter_shapes=-1;port_diameter_minima=-1;port_diameter_maxima=-1
     diameter_distribution='weibull';diameter_std=0
     diameter_weighting='mass'
     diameter_shape=0.0_dp; diameter_min=1.0e-12_dp; diameter_max=1.0_dp
@@ -305,6 +313,28 @@ contains
         any(injection_port_diameters(injection_port_count+1:)/=-1).or. &
         any(injection_port_temperatures(injection_port_count+1:)/=-1).or. &
         any(injection_port_cone_angles(injection_port_count+1:)/=-1)) call fail('Unused injection port state')
+    if (.not.all(ieee_is_finite([port_diameter_stds,port_diameter_shapes, &
+        port_diameter_minima,port_diameter_maxima]))) call fail('Nonfinite port diameter distribution')
+    if (any(port_diameter_distributions(injection_port_count+1:)/='').or. &
+        any(port_diameter_weightings(injection_port_count+1:)/='').or. &
+        any(port_diameter_stds(injection_port_count+1:)/=-1).or. &
+        any(port_diameter_shapes(injection_port_count+1:)/=-1).or. &
+        any(port_diameter_minima(injection_port_count+1:)/=-1).or. &
+        any(port_diameter_maxima(injection_port_count+1:)/=-1)) call fail('Unused port diameter distribution')
+    port_size_overrides=any(port_diameter_distributions/='').or.any(port_diameter_weightings/='').or. &
+      any(port_diameter_stds/=-1).or.any(port_diameter_shapes/=-1).or. &
+      any(port_diameter_minima/=-1).or.any(port_diameter_maxima/=-1)
+    allocate(port_sizes(injection_port_count))
+    do port=1,injection_port_count
+      if (port_diameter_distributions(port)=='') port_diameter_distributions(port)=diameter_distribution
+      if (port_diameter_weightings(port)=='') port_diameter_weightings(port)=diameter_weighting
+      if (port_diameter_stds(port)==-1) port_diameter_stds(port)=diameter_std
+      if (port_diameter_shapes(port)==-1) port_diameter_shapes(port)=diameter_shape
+      if (port_diameter_minima(port)==-1) port_diameter_minima(port)=diameter_min
+      if (port_diameter_maxima(port)==-1) port_diameter_maxima(port)=diameter_max
+      port_sizes(port)=spray_size_options(port_diameter_distributions(port),port_diameter_weightings(port), &
+        port_diameter_stds(port),port_diameter_shapes(port),port_diameter_minima(port),port_diameter_maxima(port))
+    end do
     port_state_overrides=any(injection_port_speeds/=-1).or.any(injection_port_diameters/=-1).or. &
       any(injection_port_temperatures/=-1).or.any(injection_port_cone_angles/=-1)
     do port=1,injection_port_count
@@ -677,6 +707,13 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (port_size_overrides) then
+      context=trim(context)//' port-diameter-distributions-v1'
+      do port=1,injection_port_count
+        context=trim(context)//' '//trim(port_sizes(port)%distribution)//' '//trim(port_sizes(port)%weighting)
+        call append_reals([port_sizes(port)%std,port_sizes(port)%shape,port_sizes(port)%minimum,port_sizes(port)%maximum])
+      end do
+    end if
     if (diameter_distribution/='weibull') then
       context=trim(context)//' diameter-distribution-v1 '//trim(diameter_distribution)
       call append_reals([diameter_std])
@@ -868,7 +905,9 @@ contains
           call inject_cone_parcels(material,amount,parcel_count,first_id,injection_port_centers(:,selected_port), &
             injection_port_axes(:,selected_port),injection_port_speeds(selected_port),injection_port_cone_angles(selected_port), &
             injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
-            new_parcels,ok,diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std)
+            new_parcels,ok,port_sizes(selected_port)%shape,port_sizes(selected_port)%minimum, &
+            port_sizes(selected_port)%maximum,port_sizes(selected_port)%weighting, &
+            port_sizes(selected_port)%distribution,port_sizes(selected_port)%std)
           if (.not.ok) call fail('Independent port injection failed')
           if (multi_material) new_parcels%material_id=selected_port
           do i=1,size(new_parcels)
@@ -984,7 +1023,7 @@ contains
           injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
           injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
-          materials,diameter_weighting,diameter_distribution,diameter_std)
+          materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes)
       end if
     end subroutine inject_ports
     subroutine fail(text)

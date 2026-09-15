@@ -25,6 +25,10 @@ module spray_parcel_mod
     character(len=16) :: heat_capacity_model='constant'
     real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
   end type
+  type, public :: spray_size_options
+    character(len=16) :: distribution='weibull',weighting='mass'
+    real(dp) :: std=0,shape=0,minimum=1e-12_dp,maximum=1
+  end type
   type, public :: spray_parcel
     integer(int64) :: id = 0_int64
     real(dp) :: position(3) = 0.0_dp, velocity(3) = 0.0_dp
@@ -554,8 +558,10 @@ contains
 
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
-      port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting,diameter_distribution,diameter_std)
+      port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting, &
+      diameter_distribution,diameter_std,port_size_options)
     type(spray_liquid), intent(in) :: liquid
+    type(spray_size_options), intent(in), optional :: port_size_options(:)
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid) :: material
     real(dp), intent(in) :: total_mass,centers(:,:),axes(:,:),fractions(:),speed,half_angle,diameter,temperature
@@ -595,6 +601,9 @@ contains
     if (present(materials)) then
       if (size(materials)/=ports) return
     end if
+    if (present(port_size_options)) then
+      if (size(port_size_options)/=ports) return
+    end if
     total=ports*number
     if (first_id<1_int64.or.first_id>huge(first_id)-int(total,int64)) return
     allocate(candidate(total))
@@ -607,9 +616,16 @@ contains
       if (present(port_angles)) local_angle=port_angles(port)
       material=liquid
       if (present(materials)) material=materials(port)
+      if (present(port_size_options)) then
+        call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
+          centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
+          port_size_options(port)%shape,port_size_options(port)%minimum,port_size_options(port)%maximum, &
+          port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std)
+      else
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
         diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std)
+      end if
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
       candidate(offset+1:offset+number)=port_parcels

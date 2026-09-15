@@ -1023,8 +1023,8 @@ pinned PelePhysics diameter law. `drop_diameter` is the untruncated arithmetic
 mean and `diameter_std` is the untruncated arithmetic standard deviation, both
 in meters. For lognormal samples the internal normal parameters are
 `width=sqrt(log(1+(std/mean)**2))` and `location=log(mean)-width**2/2`.
-Each port's diameter override supplies its own mean; the standard deviation
-and distribution selector are global.
+Each port's diameter override supplies its own mean; the global standard
+deviation and distribution selector provide defaults for the per-port settings below.
 
 The existing `diameter_min` and `diameter_max` truncate and renormalize the
 CDF; midpoint quantiles are inverted by bounded bisection. Positive-tail
@@ -1062,3 +1062,29 @@ for the source sampling basis, or mass weighting for the alternative mass CDF.
 `diameter_shape` and `diameter_std` must both be zero. Existing multi-port,
 scheduling and restart paths carry the selector. See
 [table/restart checks](validation/spray-chi-squared-20260916.md).
+
+
+### Per-port diameter distributions
+
+Each explicit injection port can override:
+
+- `port_diameter_distributions(16)` and `port_diameter_weightings(16)`;
+  blank strings inherit the global selectors.
+- `port_diameter_stds(16)`, `port_diameter_shapes(16)`,
+  `port_diameter_minima(16)` and `port_diameter_maxima(16)`;
+  -1 inherits the corresponding global scalar.
+
+Inheritance is independent for each field. When changing distribution, explicitly
+clear an incompatible inherited parameter: for example a normal port under a
+positive-shape global Weibull configuration needs `port_diameter_shapes(port)=0`.
+Resolved options are validated by the same injector before any run outputs are
+created. Nondefault unused-port settings are rejected. Existing port diameters
+continue to set the Weibull scale, normal/lognormal mean or nominal ChiSquared d32.
+
+Initial, shared-schedule and independent-schedule batches use these resolved
+settings. Each batch conserves its assigned mass fraction or scheduled dose.
+Only explicit overrides add the per-port distribution checkpoint context;
+changed settings reject restart. The Fortran multi-port API accepts an optional
+`spray_size_options` array, one complete record per port. This changes size
+statistics, without requiring distinct liquid material IDs.
+See [per-port checks](validation/spray-port-sizes-20260916.md).
