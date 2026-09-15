@@ -5,6 +5,7 @@ import argparse
 import csv
 import math
 from pathlib import Path
+from statistics import NormalDist
 import subprocess
 import tempfile
 import unittest
@@ -509,6 +510,47 @@ class SprayApplication(unittest.TestCase):
         with (self.root/'sizes_full.parcels.csv').open() as stream:
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
+
+    def test_normal_lognormal_sizes(self):
+        base = ("parcel_count=8,drop_diameter=2e-5,diameter_std=7e-6,diameter_min=1e-5,diameter_max=4e-5,"
+                "diameter_weighting='number',drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                 "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,")
+        independent = (ports+"initial_liquid_mass=0,independent_port_schedules=.true.,port_mass_flow_rates=1e-4,2e-4,"
+                       "port_injection_starts=1e-7,1e-7,port_injection_ends=5e-7,6e-7,"
+                       "port_injection_intervals=2e-7,3e-7,")
+        for model in ['normal', 'lognormal']:
+            width = math.sqrt(math.log1p((7e-6/2e-5)**2))
+            oracle = NormalDist(2e-5, 7e-6) if model == 'normal' else NormalDist(math.log(2e-5)-width**2/2, width)
+            transform = (lambda d: d) if model == 'normal' else math.log
+            low, high = oracle.cdf(transform(1e-5)), oracle.cdf(transform(4e-5))
+            for index, schedule in enumerate(['', ports, independent]):
+                name = f'{model}{index}'
+                settings = base+f"diameter_distribution='{model}',"+schedule
+                checkpoint = self.root/f'{name}.chk'
+                self.run_case(name, common=settings)
+                self.check_balance(name)
+                with (self.root/f'{name}.parcels.csv').open() as stream:
+                    rows = list(csv.DictReader(stream))
+                for start in range(0, len(rows), 8):
+                    batch = rows[start:start+8]
+                    self.assertEqual(len({r['multiplicity'] for r in batch}), 1)
+                    for q, row in enumerate(batch):
+                        expected = oracle.inv_cdf(low+(q+.5)/8*(high-low))
+                        if model == 'lognormal':
+                            expected = math.exp(expected)
+                        self.assertAlmostEqual(float(row['diameter'])/expected, 1, delta=2e-13)
+                self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+                self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+                for suffix in ['gas.csv', 'parcels.csv']:
+                    self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                     (self.root/f'{name}resumed.{suffix}').read_bytes())
+                result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                       common=settings.replace('diameter_std=7e-6', 'diameter_std=8e-6'))
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        for extra in ["diameter_distribution='bad',", "diameter_distribution='normal',diameter_std=-1,",
+                      "diameter_distribution='normal',diameter_shape=3,", "diameter_std=1e-6,"]:
+            self.run_case('bad_distribution'+str(len(list(self.root.glob('bad_distribution*.nml')))), common=extra, fail=True)
 
     def test_number_weighted_sizes_restart(self):
         base = ("parcel_count=8,drop_diameter=2e-5,diameter_shape=3,diameter_min=1e-5,diameter_max=4e-5,"

@@ -1014,3 +1014,30 @@ The selector applies to initial, scheduled, multi-port and independently
 scheduled port batches, and enters checkpoint identity. Switching weighting
 on restart is rejected. This does not implement breakup-child generation.
 See [focused evidence](validation/spray-number-cdf-20260916.md).
+
+
+### Normal and lognormal diameters
+
+`diameter_distribution='normal'` or `'lognormal'` enables the corresponding
+pinned PelePhysics diameter law. `drop_diameter` is the untruncated arithmetic
+mean and `diameter_std` is the untruncated arithmetic standard deviation, both
+in meters. For lognormal samples the internal normal parameters are
+`width=sqrt(log(1+(std/mean)**2))` and `location=log(mean)-width**2/2`.
+Each port's diameter override supplies its own mean; the standard deviation
+and distribution selector are global.
+
+The existing `diameter_min` and `diameter_max` truncate and renormalize the
+CDF; midpoint quantiles are inverted by bounded bisection. Positive-tail
+normal probabilities use the complementary CDF to avoid subtraction from one.
+Intervals with numerically unresolved probability are rejected. Positive
+standard deviations must lie in [1e-15, 1] m; zero produces the mean diameter
+and requires that it lie within the configured bounds. Truncation generally
+changes the actual mean and standard deviation of the injected population.
+
+Choose `diameter_weighting='number'` for upstream number-distribution semantics,
+or `'mass'` for a mass-CDF interpretation. Both normalize to the requested
+injected mass. `diameter_shape` must remain zero for these two laws.
+The default `'weibull'` retains the previous shape-zero monodisperse or
+positive-shape Weibull behavior and requires `diameter_std=0`.
+Selector and standard deviation enter restart identity. See
+[normal/lognormal checks](validation/spray-normal-sizes-20260916.md).

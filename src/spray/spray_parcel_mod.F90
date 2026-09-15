@@ -554,7 +554,7 @@ contains
 
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
-      port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting)
+      port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting,diameter_distribution,diameter_std)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid) :: material
@@ -563,7 +563,8 @@ contains
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
-    character(len=*), intent(in), optional :: diameter_weighting
+    character(len=*), intent(in), optional :: diameter_weighting,diameter_distribution
+    real(dp), intent(in), optional :: diameter_std
     real(dp), intent(in), optional :: diameter_shape,diameter_min,diameter_max
     real(dp), intent(in), optional :: port_speeds(:),port_diameters(:),port_temperatures(:),port_angles(:)
     real(dp) :: local_speed,local_diameter,local_temperature,local_angle
@@ -608,7 +609,7 @@ contains
       if (present(materials)) material=materials(port)
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
-        diameter_shape,diameter_min,diameter_max,diameter_weighting)
+        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std)
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
       candidate(offset+1:offset+number)=port_parcels
@@ -618,15 +619,21 @@ contains
   end subroutine inject_cone_ports
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
-      half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max,diameter_weighting)
+      half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max, &
+      diameter_weighting,diameter_distribution,diameter_std)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass, center(3), axis(3), speed, half_angle, diameter, temperature
     integer, intent(in) :: number
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
-    character(len=*), intent(in), optional :: diameter_weighting
+    character(len=*), intent(in), optional :: diameter_weighting,diameter_distribution
+    real(dp), intent(in), optional :: diameter_std
     character(len=8) :: weighting
+    character(len=16) :: distribution
+    real(dp) :: std,location,width,zlo,zhi,plo,phi,target,left,right,mid,zmid,prob
+    logical :: use_survival
+    integer :: iteration
     real(dp), intent(in), optional :: diameter_shape, diameter_min, diameter_max
     real(dp) :: rho
     real(dp) :: e1(3),e2(3),ez(3), helper(3), cosine, sine, angle, m, weight
@@ -658,6 +665,43 @@ contains
     if (.not. all(ieee_is_finite([shape,dlo,dhi]))) return
     if (shape<0.0_dp .or. shape>20.0_dp) return
     if (dlo<1.0e-12_dp .or. dhi>1.0_dp .or. dlo>=dhi) return
+    distribution='weibull';std=0
+    if (present(diameter_distribution)) distribution=diameter_distribution
+    if (present(diameter_distribution)) then
+      if (diameter_distribution/='weibull'.and.diameter_distribution/='normal'.and. &
+          diameter_distribution/='lognormal') return
+    end if
+    if (present(diameter_std)) std=diameter_std
+    if (.not.ieee_is_finite(std)) return
+    if (std<0.or.std>1) return
+    if (std>0.and.std<1e-15_dp) return
+    if (distribution=='weibull'.and.std/=0) return
+    if (distribution/='weibull'.and.shape/=0) return
+    if (distribution/='weibull') then
+      if (std==0) then
+        if (diameter<dlo.or.diameter>dhi) return
+      else
+        width=std;location=diameter;zlo=dlo;zhi=dhi
+        if (distribution=='lognormal') then
+          width=(std/diameter)**2
+          if (width<1e-8_dp) then
+            width=sqrt(width*(1-.5_dp*width))
+          else
+            width=sqrt(log(1+width))
+          end if
+          if (width==0) return
+          location=log(diameter)-.5_dp*width**2;zlo=log(dlo);zhi=log(dhi)
+        end if
+        zlo=(zlo-location)/width;zhi=(zhi-location)/width
+        use_survival=zlo>=0
+        if (use_survival) then
+          plo=.5_dp*erfc(zlo/sqrt(2.0_dp));phi=.5_dp*erfc(zhi/sqrt(2.0_dp))
+        else
+          plo=.5_dp*erfc(-zlo/sqrt(2.0_dp));phi=.5_dp*erfc(-zhi/sqrt(2.0_dp))
+        end if
+        if (abs(phi-plo)<=max(tiny(1.0_dp),32*epsilon(1.0_dp)*max(plo,phi))) return
+      end if
+    end if
     survival_low=1.0_dp; survival_high=0.0_dp
     if (shape>0.0_dp) then
       if (shape<0.25_dp) return
@@ -680,6 +724,28 @@ contains
         if (drop_size<dlo .or. drop_size>dhi) then
           deallocate(parcels); return
         end if
+      end if
+      if (distribution/='weibull'.and.std>0) then
+        target=plo+((real(i,dp)-.5_dp)/real(number,dp))*(phi-plo)
+        left=dlo;right=dhi
+        do iteration=1,100
+          mid=left+.5_dp*(right-left)
+          if (mid==left.or.mid==right) exit
+          zmid=mid
+          if (distribution=='lognormal') zmid=log(mid)
+          zmid=(zmid-location)/width
+          if (use_survival) then
+            prob=.5_dp*erfc(zmid/sqrt(2.0_dp))
+          else
+            prob=.5_dp*erfc(-zmid/sqrt(2.0_dp))
+          end if
+          if ((use_survival.and.prob>target).or.(.not.use_survival.and.prob<target)) then
+            left=mid
+          else
+            right=mid
+          end if
+        end do
+        drop_size=left+.5_dp*(right-left)
       end if
       m=pi*rho*drop_size**3/6.0_dp
       weight=1

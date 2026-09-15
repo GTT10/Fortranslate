@@ -77,7 +77,8 @@ contains
     character(len=16) :: vapor_pressure_model
     real(dp) :: antoine_coefficients(4),antoine_temperature_range(2)
     real(dp) :: reference_temperature,reference_pressure,latent_heat
-    character(len=16) :: diameter_weighting
+    character(len=16) :: diameter_weighting,diameter_distribution
+    real(dp) :: diameter_std
     real(dp) :: diameter_shape,diameter_min,diameter_max
     real(dp) :: drop_temperature,drop_diameter,initial_liquid_mass,injection_center(3),injection_axis(3)
     real(dp) :: injection_speed,cone_angle,mass_flow_rate,injection_start,injection_end,injection_interval
@@ -131,6 +132,7 @@ contains
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
       drop_diameter,diameter_shape,diameter_min,diameter_max,diameter_weighting,initial_liquid_mass,parcel_count, &
+      diameter_distribution,diameter_std, &
       wall_film_evolution,wall_liquid_conductivity,minimum_film_height, &
       wall_conductivity_model,wall_conductivity_coefficients,wall_conductivity_temperature_range, &
       port_wall_conductivities,port_wall_conductivity_models, &
@@ -187,6 +189,7 @@ contains
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
     reference_temperature=373.15_dp; reference_pressure=101325.0_dp; latent_heat=2.257e6_dp
     drop_temperature=330.0_dp; drop_diameter=20.0e-6_dp; initial_liquid_mass=1.0e-10_dp; parcel_count=4
+    diameter_distribution='weibull';diameter_std=0
     diameter_weighting='mass'
     diameter_shape=0.0_dp; diameter_min=1.0e-12_dp; diameter_max=1.0_dp
     injection_port_speeds=-1;injection_port_diameters=-1;injection_port_temperatures=-1;injection_port_cone_angles=-1
@@ -207,6 +210,13 @@ contains
     read(unit,nml=spray,iostat=ios,iomsg=message)
     close(unit)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
+    if (diameter_distribution/='weibull'.and.diameter_distribution/='normal'.and. &
+        diameter_distribution/='lognormal') call fail('Invalid diameter distribution')
+    if (.not.ieee_is_finite(diameter_std)) call fail('Nonfinite diameter standard deviation')
+    if (diameter_std<0.or.diameter_std>1.or.(diameter_std>0.and.diameter_std<1e-15_dp)) &
+      call fail('Invalid diameter standard deviation')
+    if (diameter_distribution=='weibull'.and.diameter_std/=0) call fail('Unused diameter standard deviation')
+    if (diameter_distribution/='weibull'.and.diameter_shape/=0) call fail('Unused Weibull shape')
     if (diameter_weighting/='mass'.and.diameter_weighting/='number') call fail('Invalid diameter weighting')
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
     if (.not.all(ieee_is_finite(acceleration))) call fail('Invalid acceleration')
@@ -665,6 +675,10 @@ contains
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
     end if
+    if (diameter_distribution/='weibull') then
+      context=trim(context)//' diameter-distribution-v1 '//trim(diameter_distribution)
+      call append_reals([diameter_std])
+    end if
     if (diameter_weighting/='mass') context=trim(context)//' diameter-weighting-v1 '//trim(diameter_weighting)
     if (drag_model/='schiller-naumann') context=trim(context)//' drag-model-v1 '//trim(drag_model)
     if (wall_film_evolution) then
@@ -852,7 +866,7 @@ contains
           call inject_cone_parcels(material,amount,parcel_count,first_id,injection_port_centers(:,selected_port), &
             injection_port_axes(:,selected_port),injection_port_speeds(selected_port),injection_port_cone_angles(selected_port), &
             injection_port_diameters(selected_port),injection_port_temperatures(selected_port), &
-            new_parcels,ok,diameter_shape,diameter_min,diameter_max,diameter_weighting)
+            new_parcels,ok,diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std)
           if (.not.ok) call fail('Independent port injection failed')
           if (multi_material) new_parcels%material_id=selected_port
           do i=1,size(new_parcels)
@@ -960,14 +974,15 @@ contains
       logical, intent(out) :: success
       if (injection_port_count==0) then
         call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,injection_speed, &
-          cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max,diameter_weighting)
+          cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
+          diameter_weighting,diameter_distribution,diameter_std)
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
           injection_speed,cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
           injection_port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
-          materials,diameter_weighting)
+          materials,diameter_weighting,diameter_distribution,diameter_std)
       end if
     end subroutine inject_ports
     subroutine fail(text)
