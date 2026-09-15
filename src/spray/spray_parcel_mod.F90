@@ -554,7 +554,7 @@ contains
 
   subroutine inject_cone_ports(liquid,total_mass,number,first_id,centers,axes,fractions,speed, &
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
-      port_speeds,port_diameters,port_temperatures,port_angles,materials)
+      port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting)
     type(spray_liquid), intent(in) :: liquid
     type(spray_liquid), intent(in), optional :: materials(:)
     type(spray_liquid) :: material
@@ -563,6 +563,7 @@ contains
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: diameter_weighting
     real(dp), intent(in), optional :: diameter_shape,diameter_min,diameter_max
     real(dp), intent(in), optional :: port_speeds(:),port_diameters(:),port_temperatures(:),port_angles(:)
     real(dp) :: local_speed,local_diameter,local_temperature,local_angle
@@ -607,7 +608,7 @@ contains
       if (present(materials)) material=materials(port)
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
-        diameter_shape,diameter_min,diameter_max)
+        diameter_shape,diameter_min,diameter_max,diameter_weighting)
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
       candidate(offset+1:offset+number)=port_parcels
@@ -617,13 +618,15 @@ contains
   end subroutine inject_cone_ports
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
-      half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max)
+      half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max,diameter_weighting)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass, center(3), axis(3), speed, half_angle, diameter, temperature
     integer, intent(in) :: number
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
+    character(len=*), intent(in), optional :: diameter_weighting
+    character(len=8) :: weighting
     real(dp), intent(in), optional :: diameter_shape, diameter_min, diameter_max
     real(dp) :: rho
     real(dp) :: e1(3),e2(3),ez(3), helper(3), cosine, sine, angle, m, weight
@@ -643,6 +646,11 @@ contains
     if (liquid_heat_capacity_at_temperature(liquid,temperature)<=0) return
     rho=liquid_density_at_temperature(liquid,temperature)
     if (rho<=0) return
+    weighting='mass'
+    if (present(diameter_weighting)) then
+      if (diameter_weighting/='mass'.and.diameter_weighting/='number') return
+      weighting=diameter_weighting
+    end if
     shape=0.0_dp; dlo=1.0e-12_dp; dhi=1.0_dp
     if (present(diameter_shape)) shape=diameter_shape
     if (present(diameter_min)) dlo=diameter_min
@@ -665,8 +673,7 @@ contains
     do i=1,number
       drop_size=diameter
       if (shape>0.0_dp) then
-        ! The specified truncated Weibull CDF is MASS weighted. Equal parcel
-        ! mass and varying multiplicity reproduce it, not a number-weighted CDF.
+        ! Midpoint quadrature of the truncated CDF; weights below select mass or number basis.
         quantile=(real(i,dp)-0.5_dp)/real(number,dp)
         survival=survival_low-quantile*(survival_low-survival_high)
         drop_size=diameter*(-log(survival))**(1.0_dp/shape)
@@ -675,7 +682,8 @@ contains
         end if
       end if
       m=pi*rho*drop_size**3/6.0_dp
-      weight=total_mass/(real(number,dp)*m)
+      weight=1
+      if (weighting=='mass') weight=total_mass/(real(number,dp)*m)
       if (weight>1.0e18_dp .or. m>1.0_dp) then
         deallocate(parcels); return
       end if
@@ -689,6 +697,14 @@ contains
         deallocate(parcels); return
       end if
     end do
+    if (weighting=='number') then
+      ! Equal represented droplet counts; normalize their unequal masses to the requested dose.
+      weight=total_mass/sum(parcels%mass)
+      if (weight<=0.or.weight>1e18_dp) then
+        deallocate(parcels);return
+      end if
+      parcels%multiplicity=weight
+    end if
     ok=.true.
   end subroutine
 end module spray_parcel_mod

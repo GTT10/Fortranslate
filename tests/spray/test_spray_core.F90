@@ -609,6 +609,19 @@ program test_spray_core
     end do
     call near(value,1.0e-8_dp,1.0e-13_dp,'distributed injected mass')
     deallocate(drops)
+    call inject_cone_parcels(liquid,1.0e-8_dp,64,1_int64,[0.0_dp,0.0_dp,0.0_dp], &
+      [0.0_dp,0.0_dp,1.0_dp],10.0_dp,0.1_dp,20.0e-6_dp,330.0_dp,drops,ok, &
+      diameter_shape=3.0_dp,diameter_min=10.0e-6_dp,diameter_max=40.0e-6_dp,diameter_weighting='number')
+    call require(ok,'number-CDF injection')
+    call require(all(drops%multiplicity==drops(1)%multiplicity),'equal represented droplet counts')
+    call require(drops(64)%mass>drops(1)%mass,'number-CDF parcel masses differ')
+    call near(sum(drops%mass*drops%multiplicity),1e-8_dp,1e-13_dp,'number-CDF total mass')
+    do n=1,64
+      d=parcel_diameter(drops(n),liquid)
+      expected=(exp(-.5_dp**3)-exp(-(d/20e-6_dp)**3))/(exp(-.5_dp**3)-exp(-2.0_dp**3))
+      call near(expected,(real(n,dp)-.5_dp)/64,1e-12_dp,'inverse number CDF')
+    end do
+    deallocate(drops)
     call inject_cone_parcels(liquid,1.0e-8_dp,2,1_int64,[0.0_dp,0.0_dp,0.0_dp], &
       [0.0_dp,0.0_dp,1.0_dp],10.0_dp,0.1_dp,20.0e-6_dp,330.0_dp,drops,ok,diameter_shape=-1.0_dp)
     call require(.not. ok .and. .not. allocated(drops),'negative size shape rejected')

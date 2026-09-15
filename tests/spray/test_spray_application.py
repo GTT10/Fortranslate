@@ -510,6 +510,37 @@ class SprayApplication(unittest.TestCase):
             data=list(csv.DictReader(stream))
         self.assertEqual(len({r['diameter'] for r in data}),16)
 
+    def test_number_weighted_sizes_restart(self):
+        base = ("parcel_count=8,drop_diameter=2e-5,diameter_shape=3,diameter_min=1e-5,diameter_max=4e-5,"
+                "diameter_weighting='number',drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,")
+        ports = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                 "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.5,.5,")
+        schedules = ['', ports, ports+"initial_liquid_mass=0,independent_port_schedules=.true.,"
+                     "port_mass_flow_rates=1e-4,2e-4,port_injection_starts=1e-7,1e-7,"
+                     "port_injection_ends=5e-7,6e-7,port_injection_intervals=2e-7,3e-7,"]
+        for index, schedule in enumerate(schedules):
+            name = f'number_sizes{index}'
+            settings = base+schedule
+            checkpoint = self.root/f'{name}.chk'
+            self.run_case(name, common=settings)
+            self.check_balance(name)
+            self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+            self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
+            for suffix in ['gas.csv', 'parcels.csv']:
+                self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                 (self.root/f'{name}resumed.{suffix}').read_bytes())
+            self.assertEqual(self.history(name)[-1], self.history(name+'resumed')[-1])
+            with (self.root/f'{name}.parcels.csv').open() as stream:
+                rows = list(csv.DictReader(stream))
+            for start in range(0, len(rows), 8):
+                batch = rows[start:start+8]
+                self.assertEqual(len({r['multiplicity'] for r in batch}), 1)
+                self.assertEqual(len({r['mass'] for r in batch}), 8)
+            result = self.run_case(name+'changed', f"restart_file='{checkpoint}',", fail=True,
+                                   common=settings.replace("weighting='number'", "weighting='mass'"))
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+        self.run_case('invalid_weighting', common="diameter_weighting='invalid',", fail=True)
+
     def test_les_switch_is_active_and_conservative(self):
         common = 'cells=4,4,4,hydro_reconstruction="characteristic_plm",shear_velocity=50,initial_liquid_mass=0,'
         self.run_case('sgs_off', common=common)

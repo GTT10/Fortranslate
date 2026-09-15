@@ -993,3 +993,24 @@ restart is rejected. The gas-skin Reynolds number, frozen exponential velocity
 update and conservative mass/momentum/energy exchange are shared by both
 choices. This ports the reference force law, not its complete time integration
 or all spray submodels. See [focused evidence](validation/spray-reference-drag-20260916.md).
+
+
+### Particle-number-weighted size distribution
+
+Set `diameter_weighting='number'` with positive `diameter_shape` to interpret
+the truncated Weibull CDF as a droplet-number distribution, matching the
+sampling basis of the pinned PelePhysics Weibull model. Each parcel in a
+single injection batch has the same multiplicity (represented droplet count)
+and a different total mass. The common multiplicity is the requested batch
+mass divided by the sum of its individual droplet masses. This retains the
+prescribed total injection mass for any finite parcel count.
+
+The default `diameter_weighting='mass'` retains equal parcel masses and
+varying multiplicity. Both choices use deterministic midpoint quantiles and
+the existing diameter bounds, rather than random reference sampling. With
+shape zero all diameters are identical. `drop_diameter` is the Weibull scale;
+it is not generally the arithmetic mean, despite the upstream `mean_dia` name.
+The selector applies to initial, scheduled, multi-port and independently
+scheduled port batches, and enters checkpoint identity. Switching weighting
+on restart is rejected. This does not implement breakup-child generation.
+See [focused evidence](validation/spray-number-cdf-20260916.md).
