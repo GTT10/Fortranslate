@@ -16,6 +16,10 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_application_mod.F90
       src/les/les_smagorinsky_3d_mod.F90
     )
+    if(PELEF_ENABLE_MPI)
+      target_sources(${target} PRIVATE src/spray/spray_mpi_mod.F90)
+      target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
+    endif()
     set_target_properties(${target} PROPERTIES
       Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}_modules")
     target_include_directories(${target} PUBLIC

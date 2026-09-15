@@ -1643,5 +1643,21 @@ ranks in total.
 by destination rank, preserving ID order within each group. Counts and zero-based
 offsets identify contiguous send segments. The complete parcel record and optional
 per-drop component matrix move together. Invalid input leaves every caller array
-unchanged. MPI communication, receive-side ID ordering and distributed gas feedback
-are not connected yet. See [partition evidence](validation/spray-partition-20260916.md).
+unchanged. MPI communication and receive-side ID ordering are available below; distributed
+gas feedback remains open. See [partition evidence](validation/spray-partition-20260916.md).
+
+### MPI particle migration
+
+With `PELEF_ENABLE_MPI=ON`, `migrate_spray_parcels` uses `mpi_f08` all-to-all
+communication to move records to Cartesian owner ranks. IDs and lineage use integer
+64-bit buffers; the 14 real parcel fields and optional component masses use separate
+double-precision buffers. Received records are sorted by ID before committing. All
+ranks must supply identical geometry, decomposition and component-column count.
+The caller supplies globally unique IDs; duplicates arriving at one rank reject.
+
+Invalid local input, mismatched configuration, receive-capacity overflow or invalid
+received records reject collectively before any caller arrays are replaced. This
+guarantee concerns application validation, not failed processes or MPI transport
+errors. Empty sources and destinations are supported. This migration API does not
+yet distribute gas coupling, film patches, injection IDs or application checkpoints.
+See [MPI evidence](validation/spray-mpi-migration-20260916.md).

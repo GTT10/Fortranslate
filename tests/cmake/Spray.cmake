@@ -1,4 +1,14 @@
 if(PELEF_ENABLE_SPRAY)
+  if(PELEF_ENABLE_MPI)
+    add_executable(test_spray_mpi spray/test_spray_mpi.F90)
+    target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
+    foreach(ranks 2 4)
+      add_test(NAME spray_mpi_migration_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(spray_mpi_migration_${ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 60 PROCESSORS ${ranks})
+    endforeach()
+  endif()
   add_test(NAME spray_acceleration_restart COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --acceleration -9810
     --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_acceleration")

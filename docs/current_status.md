@@ -79,8 +79,9 @@ license remains an owner decision.
 
 Particle MPI groundwork now includes Cartesian cell ownership and stable send-buffer
 partitioning with component/KH state preservation
-([evidence](validation/spray-partition-20260916.md)). MPI communication and distributed
-particle feedback remain open.
+([evidence](validation/spray-partition-20260916.md)). MPI migration and receive-side ID ordering now pass 2/4-rank checks
+([evidence](validation/spray-mpi-migration-20260916.md)). Distributed gas/film
+feedback and application integration remain open.
 
 ## Repository consolidation implemented
 

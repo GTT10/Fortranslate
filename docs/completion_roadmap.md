@@ -103,6 +103,10 @@ remapping, overlap reuse and geometry-aware changed-rank restart. Distributed re
 without root aggregation, general patches/levels and
 physical/EB boundaries remain open; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
 
+Particle Cartesian MPI migration now preserves parcel/component payloads and
+restores local ID ordering, with collective input/capacity rejection. Distributed
+gas feedback, film ownership, global injection IDs and application restart remain.
+
 ## Contract for every increment
 
 Before modifying code, specify the failure/capability, supported dimensions,
