@@ -134,7 +134,10 @@ including isothermal conduction and tangential wall work, with a global boundary
 ledger ([evidence](validation/spray-mpi-boundary-transport-20260917.md)).
 MPI SGS now uses the same physical-boundary ghost and wall-heat rules and
 returns a global surface ledger ([evidence](validation/spray-mpi-boundary-les-20260917.md)).
-Nonperiodic particle stepping and application wiring remain open.
+The MPI particle-coupling API now supports open-face removal, stationary wall
+reflection and nonperiodic owner migration with a replicated boundary ledger
+([evidence](validation/spray-mpi-particle-boundary-20260917.md)). Mixed wall-impact/film
+evolution in the coupled driver and nonperiodic application wiring remain open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

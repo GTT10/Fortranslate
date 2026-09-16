@@ -254,6 +254,7 @@ program test_spray_mpi
   call check_film_coupling()
   call check_wall_impacts()
   call check_wall_crossing()
+  call check_particle_boundaries()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'initial coupled totals')
@@ -667,6 +668,60 @@ contains
       'hllc','mc',ok,boundaries,change,inlet,inlet_t)
     call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
       'MPI physical hydro face disagreement rolls back')
+  end subroutine
+
+  subroutine check_particle_boundaries()
+    type(spray_parcel), allocatable :: drops(:),initial(:)
+    type(spray_options) :: settings
+    real(dp), allocatable :: cm(:,:),initial_mass(:,:)
+    real(dp) :: u(15,1,2,2),t(1,2,2),u0(15,1,2,2),t0(1,2,2),q(15),cell(15),tc,ac,ledger(15)
+    character(len=32) :: boundary(6)
+    integer :: np,nstep,c
+    np=merge(3,0,rank==0);allocate(drops(np),cm(2,np))
+    do c=1,np
+      drops(c)=spray_parcel(int(c,int64),[.5_dp,.5_dp,.5_dp],[0.0_dp,0.0_dp,0.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      cm(:,c)=drops(c)%mass*[.25_dp,.75_dp]
+    end do
+    if (rank==0) then
+      drops(1)%position(1)=.01_dp;drops(1)%velocity(1)=-2
+      drops(2)%position(3)=.01_dp;drops(2)%velocity(3)=-2
+      drops(3)%position(1)=.99_dp;drops(3)%velocity(1)=2
+    end if
+    q=0;q(1)=1;q(5)=101325;q(15)=1
+    call reactive_primitive_to_conserved(species,q,cell,tc,ac,ok)
+    call require(ok,'particle boundary gas initialization')
+    u=spread(spread(spread(cell,2,1),3,2),4,2);t=tc;u0=u;t0=t;initial=drops;initial_mass=cm
+    boundary='periodic';boundary(1:2)='outflow';boundary(5:6)='slip_wall'
+    settings%drag=.false.;settings%heat=.false.;settings%evaporation=.false.;settings%maximum_substeps=1
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,u,t,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],[nranks,2,2],[nranks,1,1],.8_dp,nstep,ok, &
+      boundary_faces=boundary,boundary_change=ledger)
+    call require(.not.ok.and.all(u==u0).and.all(t==t0).and.all(ledger==0).and.all(cm==initial_mass), &
+      'nonperiodic particle substep exhaustion rolls back gas mass and ledger')
+    do c=1,np
+      call require(all(drops(c)%position==initial(c)%position).and.all(drops(c)%velocity==initial(c)%velocity), &
+        'nonperiodic particle substep exhaustion rolls back positions and velocities')
+    end do
+    settings%maximum_substeps=100
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,u,t,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],[nranks,2,2],[nranks,1,1],.01_dp,nstep,ok, &
+      boundary_faces=boundary,boundary_change=ledger)
+    call require(ok.and.nstep==1,'nonperiodic particle coupling')
+    call require(size(drops)==merge(1,0,rank<2),'outflow removed and survivors migrated')
+    if (rank==0) then
+      call require(drops(1)%id==2.and.abs(drops(1)%position(3)-.01_dp)<1e-14_dp.and.drops(1)%velocity(3)==2, &
+        'stationary wall reflection matches ballistic path')
+    else if (rank==1) then
+      call require(drops(1)%id==3.and.abs(drops(1)%position(1)-1.01_dp)<1e-14_dp, &
+        'nonperiodic survivor crosses owner interface')
+    end if
+    call require(abs(ledger(1)+1e-7_dp)<1e-20_dp.and.abs(ledger(2)-2e-7_dp)<1e-20_dp.and. &
+      abs(ledger(4)-4e-7_dp)<1e-20_dp,'outflow mass and reflection impulse ledger')
+    call require(abs(ledger(5+liquids(1)%vapor_index)+.25e-7_dp)<1e-20_dp.and. &
+      abs(ledger(5+liquids(2)%vapor_index)+.75e-7_dp)<1e-20_dp,'outflow component ledger')
+    tc=.25_dp*liquid_energy(liquids(1),330.0_dp)+.75_dp*liquid_energy(liquids(2),330.0_dp)+2.0_dp
+    call require(abs(ledger(5)+1e-7_dp*tc)<1e-12_dp*max(1e-12_dp,abs(1e-7_dp*tc)), &
+      'outflow energy includes both component internal energies and kinetic energy')
   end subroutine
 
   subroutine check_wall_crossing()
