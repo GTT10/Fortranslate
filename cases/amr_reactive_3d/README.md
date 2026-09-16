@@ -109,8 +109,8 @@ Each chemistry phase advances both levels privately, averages down, and
 recovers the covered coarse temperature. The application gates Euler and
 H/O/N conservation separately from reacting species activity. A rank with no
 fine cells still participates in reaction/integrator and success consensus.
-Chemistry-enabled checkpoint/restart is rejected because schema 2 does not
-store its reaction and source-integrator context.
+Fixed-mechanism reacting checkpoint/restart now stores its reaction and
+source-integrator context; see the fixed chemistry restart section below.
 
 This case qualifies serial and rank-local sparse, static, strictly interior,
 single-patch PCM or characteristic-PLM hydrodynamic AMR with optional fixed
@@ -146,8 +146,8 @@ completed regrid count, tagging interval/threshold/buffer and initial patch
 configuration, alongside the existing physics context. Restart commits only
 after geometry, state, EOS and synchronization checks pass. Checkpoints are
 written after an accepted coarse step; restart resumes tagging at that stored
-step. Static schemas 2--5 remain unchanged. Fixed-mechanism chemistry restart
-remains unsupported; selected-mechanism chemistry uses its existing context.
+step. Static schemas 2--5 remain unchanged. Fixed-mechanism reacting checkpoints
+use separate schemas; selected-mechanism chemistry retains its existing context.
 MPI uses the same tagging/remap operator. At tagging steps, it gathers the
 hierarchy on rank zero; after a patch change it rebuilds sparse slab ownership
 and redistributes the remapped state. Ranks with no fine cells remain supported.
@@ -181,7 +181,7 @@ interior, including after temperature-tagged movement/resizing.
 Checkpoint schemas 10–13 (static) and 14–17 (dynamic) extend the existing schema
 with a boundary-settings signature and cumulative transfer. Restart rejects
 changed faces, wall settings or reservoir inputs. Periodic schemas 2–9 retain
-their layout. Existing fixed-mechanism chemistry-on restart restrictions remain;
+their layout. Fixed-mechanism reacting restart is also supported;
 selected-mechanism context handling is shared, but the dated physical-boundary
 application checks exercised only the fixed H2/O2 frontends. MPI checkpoint
 restart is rank-neutral; four-to-two-rank physical restart is compared to serial
@@ -189,3 +189,19 @@ CSV output and retains the global boundary ledger.
 
 See [serial evidence](../../docs/validation/amr-physical-app-20260917.md) and
 [MPI evidence](../../docs/validation/amr-mpi-physical-app-20260917.md).
+
+## Fixed chemistry restart
+
+Serial and sparse MPI AMR support checkpoint/restart with `chemistry_enabled =
+.true.` for both `elementary` and `full_h2o2`. The fixed mechanism remains fixed:
+restart compares the saved reactions with the compiled model, alongside initial
+composition, chemistry tolerances, the full-H2/O2 source SHA and the default integrator (elementary explicit,
+full H2/O2 implicit). Species thermodynamics and transport retain their existing
+checks. A selected bundle cannot be substituted through this path.
+
+Reacting fixed schemas are the corresponding nonreacting fixed schema plus 16:
+18/20 for periodic static hydro/transport, 22/24 for periodic dynamic cases,
+26/28 for physical static cases and 30/32 for physical dynamic cases. The old
+nonreacting and selected layouts remain unchanged. Reads commit only after all
+context, state and geometry checks pass, including the physical boundary ledger.
+See [focused restart evidence](../../docs/validation/amr-fixed-chemistry-restart-20260917.md).

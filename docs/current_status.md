@@ -28,7 +28,10 @@ physical boundary data and budgets. Physical molecular transport and the full
 reaction/transport/hydro split are also connected
 ([evidence](validation/amr-mpi-physical-transport-20260917.md)). MPI application
 inputs, wall/inlet timestep limits and rank-neutral boundary-ledger restart are
-also connected ([evidence](validation/amr-mpi-physical-app-20260917.md)).
+also connected ([evidence](validation/amr-mpi-physical-app-20260917.md)). Fixed elementary
+and full-H2/O2 reacting AMR checkpoint/restart now retains canonical reaction,
+composition and integrator context for serial/MPI applications
+([evidence](validation/amr-fixed-chemistry-restart-20260917.md)).
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

@@ -14,6 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--reacting', action='store_true')
     parser.add_argument('--mpiexec', type=Path)
     parser.add_argument('--numproc-flag', default='-n')
     parser.add_argument('--mpiexec-preflag', action='append', default=[])
@@ -51,8 +52,18 @@ def main() -> None:
             assert not (work / f'{name}_coarse.csv').exists()
         return output
 
-    for label in ('wall', 'dynamic', 'inlet'):
+    labels = ('dynamic', 'elementary') if args.reacting else ('wall', 'dynamic', 'inlet')
+    for label in labels:
         source = template
+        if args.reacting:
+            source = source.replace('chemistry_enabled = .false.', 'chemistry_enabled = .true.')
+            source = source.replace('final_time = 1.0e-8', 'final_time = 1.0e-10')
+            source = source.replace('cfl = 0.02', 'cfl = 0.0002')
+        if label == 'elementary':
+            source = source.replace('full_h2o2', 'elementary')
+            source = source.replace('transport_enabled = .true.', 'transport_enabled = .false.')
+            source = source.replace('wall_velocity(2,1) = 20', 'wall_velocity(2,1) = 0')
+            source = source.replace('isothermal_wall', 'no_slip_wall')
         if label == 'dynamic':
             for axis in ('nx', 'ny', 'nz'):
                 source = source.replace(f'{axis} = 4', f'{axis} = 6')
@@ -89,6 +100,35 @@ def main() -> None:
         changed = (source.replace('1300', '1400') if label == 'inlet' else
                    source.replace('600, 600', '650, 600', 1))
         run(f'{label}_changed', changed, f"restart_file='{label}.chk',", success=False)
+        if args.reacting:
+            inactive = source.replace('chemistry_enabled = .true.', 'chemistry_enabled = .false.')
+            run(f'{label}_inactive_reference', inactive)
+            assert (work / f'{label}_inactive_reference_coarse.csv').read_bytes() != (work / f'{label}_reference_coarse.csv').read_bytes()
+            changed_tolerance = source.replace('2.0e-7', '3.0e-7')
+            run(f'{label}_tolerance', changed_tolerance, f"restart_file='{label}.chk',", success=False)
+            checkpoint = work / f'{label}.chk'
+            original_checkpoint = checkpoint.read_text()
+            assert 'FIXED_CONTEXT' in original_checkpoint
+            wrong_integrator = 'explicit' if label == 'dynamic' else 'implicit'
+            lines = original_checkpoint.splitlines()
+            context_line = lines.index('FIXED_CONTEXT')
+            lines[context_line + 2] = wrong_integrator
+            checkpoint.write_text('\n'.join(lines) + '\n')
+            run(f'{label}_integrator', source, f"restart_file='{label}.chk',", success=False)
+            lines = original_checkpoint.splitlines()
+            reaction_rates = lines.index('REACTIONS') + 6
+            rates = lines[reaction_rates].split()
+            rates[0] = str(float(rates[0]) * 1.01)
+            lines[reaction_rates] = ' '.join(rates)
+            checkpoint.write_text('\n'.join(lines) + '\n')
+            run(f'{label}_reaction', source, f"restart_file='{label}.chk',", success=False)
+            lines = original_checkpoint.splitlines()
+            identity = lines[context_line + 1]
+            lines[context_line + 1] = identity[:-1] + ('0' if identity[-1] != '0' else '1')
+            checkpoint.write_text('\n'.join(lines) + '\n')
+            run(f'{label}_identity', source, f"restart_file='{label}.chk',", success=False)
+            checkpoint.write_text(original_checkpoint)
+
     print(f'artifacts={work}')
     print('amr_physical_boundary_restart=PASS')
 

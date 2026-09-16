@@ -10,10 +10,12 @@ module amr_reactive_3d_checkpoint_mod
     valid_arrhenius_rate, valid_troe_parameters
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
-  use reactive_1d_mod, only: reactive_nvar
+  use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
+  use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism,h2o2_full_source_sha256
+  use reactive_1d_mod, only: reactive_nvar, resolve_reactive_chemistry_integrator
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d, &
-    valid_reactive_boundaries_3d
+    valid_reactive_boundaries_3d, reactive_3d_mole_fractions
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d
@@ -157,7 +159,8 @@ contains
     if (status==0) read(unit,*,iostat=status) header
     local_ok=.false.
     if (status==0) then
-      if (((header(1)>=6.and.header(1)<=9).or.(header(1)>=14.and.header(1)<=17)).and. &
+      if (((header(1)>=6.and.header(1)<=9).or.(header(1)>=14.and.header(1)<=17).or. &
+          any(header(1)==[22,24,30,32])).and. &
           header(2)==size(species).and.header(3)==reactive_nvar(size(species))) &
         call dynamic_checkpoint_header(unit,flow_config,amr_config,candidate_patch,count,local_ok)
     end if
@@ -305,6 +308,7 @@ contains
     end if
     if (amr_config%regrid_interval_steps>0) schema=schema+4
     if (physical_boundary) schema=schema+8
+    if (.not.selected_context.and.flow_config%chemistry_enabled) schema=schema+16
     if (.not. valid_checkpoint_shapes( &
         species, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature)) then
@@ -395,6 +399,10 @@ contains
         base_mole_fractions, flow_config%chemistry_relative_tolerance, &
         flow_config%chemistry_absolute_tolerance, status)
       if (status /= 0) go to 900
+    end if
+    if (.not.selected_context.and.flow_config%chemistry_enabled) then
+      call fixed_checkpoint_context(unit,flow_config,size(species),.true.,synchronized,message)
+      if (.not.synchronized) go to 900
     end if
     if (flow_config%transport_enabled) then
       call write_transport_checkpoint_context( &
@@ -617,6 +625,7 @@ contains
     end if
     if (amr_config%regrid_interval_steps>0) expected_schema=expected_schema+4
     if (physical_boundary) expected_schema=expected_schema+8
+    if (.not.selected_context.and.flow_config%chemistry_enabled) expected_schema=expected_schema+16
     if (.not. valid_checkpoint_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature) .or. &
@@ -654,6 +663,10 @@ contains
         base_mole_fractions, flow_config%chemistry_relative_tolerance, &
         flow_config%chemistry_absolute_tolerance, context_ok, message)
       if (.not. context_ok) go to 900
+    end if
+    if (.not.selected_context.and.flow_config%chemistry_enabled) then
+      call fixed_checkpoint_context(unit,flow_config,size(species),.false.,context_ok,message)
+      if (.not.context_ok) go to 900
     end if
     if (flow_config%transport_enabled) then
       call read_transport_checkpoint_context( &
@@ -1100,9 +1113,57 @@ contains
       flow_config%species_diffusion_enabled
   end function valid_transport_checkpoint_context
 
+  subroutine fixed_checkpoint_context(unit,flow,nspecies,writing,ok,message)
+    integer, intent(in) :: unit,nspecies
+    type(reactive_3d_config), intent(in) :: flow
+    logical, intent(in) :: writing
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    type(elementary_reaction), allocatable :: fixed_reactions(:)
+    real(dp) :: composition(nspecies)
+    character(len=8) :: integrator
+    character(len=80) :: identity
+    logical :: use_implicit
+    integer :: status
+
+    ok=.false.; message='Invalid fixed AMR chemistry context'
+    if (.not.all(ieee_is_finite([flow%chemistry_relative_tolerance,flow%chemistry_absolute_tolerance]))) return
+    if (min(flow%chemistry_relative_tolerance,flow%chemistry_absolute_tolerance)<=0) return
+    identity=trim(flow%thermo_model)
+    select case(trim(flow%thermo_model))
+    case('elementary')
+      if (nspecies/=7) return
+      call load_h2o2_elementary_mechanism(fixed_reactions,ok)
+    case('full_h2o2')
+      if (nspecies/=10) return
+      call load_h2o2_full_mechanism(fixed_reactions,ok)
+      identity=trim(identity)//":"//h2o2_full_source_sha256
+    case default
+      return
+    end select
+    if (.not.ok) return
+    call reactive_3d_mole_fractions(flow,nspecies,composition,ok)
+    if (ok) ok=all(ieee_is_finite(composition))
+    if (.not.ok) return
+    call resolve_reactive_chemistry_integrator(nspecies,use_implicit=use_implicit,ok=ok)
+    if (.not.ok) return
+    integrator='explicit'
+    if (use_implicit) integrator='implicit'
+    if (writing) then
+      call write_selected_checkpoint_context(unit,fixed_reactions,trim(identity),integrator, &
+        composition,flow%chemistry_relative_tolerance,flow%chemistry_absolute_tolerance,status,fixed_model=.true.)
+      ok=status==0
+    else
+      call read_selected_checkpoint_context(unit,fixed_reactions,trim(identity),integrator, &
+        composition,flow%chemistry_relative_tolerance,flow%chemistry_absolute_tolerance,ok,message,fixed_model=.true.)
+    end if
+    if (index(message,'Selected ')==1) message='Fixed '//trim(message(10:))
+    if (ok) message=''
+  end subroutine fixed_checkpoint_context
+
   subroutine write_selected_checkpoint_context( &
       unit, reactions, bundle_sha256, chemistry_integrator, &
-      base_mole_fractions, relative_tolerance, absolute_tolerance, status)
+      base_mole_fractions, relative_tolerance, absolute_tolerance, status, fixed_model)
     integer, intent(in) :: unit
     type(elementary_reaction), intent(in) :: reactions(:)
     character(len=*), intent(in) :: bundle_sha256, chemistry_integrator
@@ -1110,10 +1171,16 @@ contains
     real(dp), intent(in) :: relative_tolerance, absolute_tolerance
     integer, intent(out) :: status
 
+    logical, optional, intent(in) :: fixed_model
+    character(len=16) :: context_marker
     integer :: reaction_index, efficiency_size,plog_index
 
+    context_marker="SELECTED_CONTEXT"
+    if (present(fixed_model)) then
+      if (fixed_model) context_marker="FIXED_CONTEXT"
+    end if
     status = 0
-    write(unit, '(a)', iostat=status) "SELECTED_CONTEXT"
+    write(unit, '(a)', iostat=status) trim(context_marker)
     if (status /= 0) return
     write(unit, '(a)', iostat=status) trim(bundle_sha256)
     if (status /= 0) return
@@ -1208,13 +1275,13 @@ contains
     write(unit, '(*(es27.18e3,1x))', iostat=status) &
       relative_tolerance, absolute_tolerance
     if (status /= 0) return
-    write(unit, '(a)', iostat=status) "END_SELECTED_CONTEXT"
+    write(unit, '(a)', iostat=status) "END_"//trim(context_marker)
   end subroutine write_selected_checkpoint_context
 
   subroutine read_selected_checkpoint_context( &
       unit, reactions, bundle_sha256, chemistry_integrator, &
       base_mole_fractions, relative_tolerance, absolute_tolerance, &
-      ok, message)
+      ok, message, fixed_model)
     integer, intent(in) :: unit
     type(elementary_reaction), intent(in) :: reactions(:)
     character(len=*), intent(in) :: bundle_sha256, chemistry_integrator
@@ -1223,6 +1290,9 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
 
+    logical, optional, intent(in) :: fixed_model
+    logical :: is_fixed
+    character(len=16) :: context_marker
     real(dp), allocatable :: stored_composition(:)
     real(dp), allocatable :: stored_reactants(:), stored_products(:)
     real(dp), allocatable :: stored_efficiencies(:)
@@ -1241,6 +1311,10 @@ contains
     integer :: stored_header(6), expected_header(6)
     integer :: stored_troe_enabled, reaction_index, efficiency_size,plog_index
 
+    is_fixed=.false.
+    if (present(fixed_model)) is_fixed=fixed_model
+    context_marker="SELECTED_CONTEXT"
+    if (is_fixed) context_marker="FIXED_CONTEXT"
     ok = .false.
     message = ""
     read(unit, '(a)', iostat=status) marker
@@ -1248,7 +1322,7 @@ contains
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
-    if (trim(marker) /= "SELECTED_CONTEXT") then
+    if (trim(marker) /= trim(context_marker)) then
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
@@ -1257,7 +1331,7 @@ contains
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
-    if (.not. valid_bundle_sha256(stored_bundle)) then
+    if (.not.is_fixed.and..not.valid_bundle_sha256(stored_bundle)) then
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
@@ -1527,7 +1601,7 @@ contains
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
-    if (trim(marker) /= "END_SELECTED_CONTEXT") then
+    if (trim(marker) /= "END_"//trim(context_marker)) then
       message = "Selected 3D AMR checkpoint context is invalid"
       return
     end if
@@ -1634,7 +1708,8 @@ contains
     if (selected_context) then
       physics_matches = trim(flow_config%thermo_model) == "selected"
     else
-      physics_matches = .not. flow_config%chemistry_enabled
+      physics_matches = trim(flow_config%thermo_model)=="elementary".or. &
+        trim(flow_config%thermo_model)=="full_h2o2"
     end if
 
     geometry_matches = patch%coarse_i_lower == amr_config%coarse_i_lower .and. &

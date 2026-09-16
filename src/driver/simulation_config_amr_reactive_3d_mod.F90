@@ -141,11 +141,6 @@ contains
              trim(base_config%thermo_model) /= "full_h2o2" .and. &
              .not. (selected_model .and. selected_allowed)) then
       message = "Static 3D AMR requires a fixed H2/O2 thermodynamic model"
-    else if (.not. selected_model .and. &
-             base_config%chemistry_enabled .and. &
-             (config%checkpoint_interval_steps > 0 .or. &
-              len_trim(config%restart_file) > 0)) then
-      message = "Static 3D AMR chemistry restart is not yet supported"
     else if (config%regrid_interval_steps<0.or.config%regrid_buffer_cells<0.or. &
         config%regrid_buffer_cells>max(base_config%nx,base_config%ny,base_config%nz)) then
       message='Invalid 3D AMR regrid interval or buffer'

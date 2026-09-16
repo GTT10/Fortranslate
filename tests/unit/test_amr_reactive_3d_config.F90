@@ -36,11 +36,11 @@ program test_amr_reactive_3d_config
   call require(ok, "fixed-mechanism chemistry configuration")
   amr%checkpoint_interval_steps = 4
   call validate_amr_reactive_3d_configuration(base, amr, ok, message)
-  call require(.not. ok, "chemistry checkpoint rejection")
+  call require(ok, "fixed chemistry checkpoint acceptance")
   amr = amr_reactive_3d_config()
   amr%restart_file = "chemistry.chk"
   call validate_amr_reactive_3d_configuration(base, amr, ok, message)
-  call require(.not. ok, "chemistry restart rejection")
+  call require(ok, "fixed chemistry restart acceptance")
   amr = amr_reactive_3d_config()
   base%chemistry_enabled = .false.
   base%transport_enabled = .true.

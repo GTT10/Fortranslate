@@ -741,6 +741,26 @@ program test_amr_reactive_3d_checkpoint
     saved_time,saved_steps,saved_integrals,saved_maximum_reflux,'dynamic roundtrip and failure transaction', &
     saved_maximum_diffusivity=saved_transport_diffusivity,saved_minimum_theta=saved_transport_theta, &
     maximum_diffusivity=transport_diffusivity,minimum_theta=transport_theta)
+  amr_config%regrid_interval_steps=0
+  config%chemistry_enabled=.true.
+  call write_amr_reactive_3d_checkpoint( &
+    checkpoint_path,species,config,amr_config,patch,coarse_state,coarse_temperature, &
+    fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(ok,'fixed reacting checkpoint write: '//trim(message))
+  call require_checkpoint_schema(checkpoint_path,18,'fixed reacting schema')
+  call read_amr_reactive_3d_checkpoint( &
+    checkpoint_path,species,config,amr_config,patch,coarse_state,coarse_temperature, &
+    fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(ok,'fixed reacting checkpoint read: '//trim(message))
+  call replace_checkpoint_line(checkpoint_path,'explicit','implicit')
+  call read_amr_reactive_3d_checkpoint( &
+    checkpoint_path,species,config,amr_config,patch,coarse_state,coarse_temperature, &
+    fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(.not.ok,'fixed reacting integrator mismatch rejected')
+  call require_checkpoint_unchanged( &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux, &
+    saved_coarse_state,saved_coarse_temperature,saved_fine_state,saved_fine_temperature, &
+    saved_time,saved_steps,saved_integrals,saved_maximum_reflux,'fixed reacting failed read rollback')
   call delete_checkpoint(checkpoint_path)
   call delete_checkpoint(selected_checkpoint_path)
   call delete_checkpoint(transport_checkpoint_path)
