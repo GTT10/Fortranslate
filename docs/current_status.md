@@ -43,7 +43,10 @@ diffusive/isothermal-wall bounds
 ([evidence](validation/amr-tree-subcycle-transport-20260917.md)). Fixed/selected applications
 now select the recursive reaction/transport/hydro composition, scaled timestep
 bounds and mode-aware checkpoint continuation
-([evidence](validation/amr-tree-subcycle-application-20260917.md)). A transactional tree
+([evidence](validation/amr-tree-subcycle-application-20260917.md)). MPI tree transfer APIs now
+store payloads only on assigned patch owners, with collective metadata checks and
+root scatter/gather ([evidence](validation/amr-tree-mpi-distribution-20260917.md)).
+Distributed tree evolution remains open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

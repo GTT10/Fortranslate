@@ -1,0 +1,116 @@
+program test_mpi_amr_patch_tree_distribution_3d
+  use mpi_f08
+  use precision_mod, only: dp
+  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  implicit none
+  type(amr_patch_tree_3d) :: tree,different_tree
+  type(amr_patch_3d) :: patches(2)
+  type(amr_tree_state_3d) :: global,local,result,saved,broken
+  integer :: ierr,rank,nranks,root,node,n(3),owners(3),other_owners(3),mode,i,j,k
+  logical :: ok
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+  call require(nranks>=2,'two or more ranks')
+  root=nranks-1
+  call initialize_amr_patch_3d(4,4,4,1,2,1,2,1,2,2,patches(1),ok)
+  call require(ok,'child geometry')
+  call initialize_amr_patch_3d(4,4,4,1,1,1,1,1,1,3,patches(2),ok)
+  call require(ok,'grandchild geometry')
+  call initialize_amr_patch_tree_3d([4,4,4],[1,2],patches,tree,ok)
+  call require(ok,'tree')
+  if (rank==root) then
+    allocate(global%fields(3))
+    do node=1,3
+      n=tree%nodes(node)%shape
+      allocate(global%fields(node)%values(2,n(1),n(2),n(3)))
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            global%fields(node)%values(:,i,j,k)=values(node,i,j,k)
+          end do
+        end do
+      end do
+    end do
+  end if
+  do mode=1,2
+    owners=[0,1,0]
+    if (mode==2) owners=0
+    call scatter_mpi_amr_tree_3d(tree,owners,global,local,MPI_COMM_WORLD,root,ok)
+    call require(ok,'scatter')
+    do node=1,3
+      call require(allocated(local%fields(node)%values).eqv.(owners(node)==rank),'only owner stores payload')
+      if (owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            call require(all(local%fields(node)%values(:,i,j,k)==values(node,i,j,k)),'received component/cell order')
+          end do
+        end do
+      end do
+      local%fields(node)%values=local%fields(node)%values+10*rank
+    end do
+    call gather_mpi_amr_tree_3d(tree,owners,local,result,MPI_COMM_WORLD,root,ok)
+    call require(ok,'gather')
+    if (rank==root) then
+      do node=1,3
+        call require(all(result%fields(node)%values==global%fields(node)%values+10*owners(node)),'exact gathered values')
+      end do
+    else
+      call require(.not.allocated(result%fields),'nonroot gather output untouched')
+    end if
+    saved=local;different_tree=tree
+    if (rank==0) then
+      different_tree%nodes(3)%patch%coarse_i_lower=2
+      different_tree%nodes(3)%patch%coarse_i_upper=2
+    end if
+    call scatter_mpi_amr_tree_3d(different_tree,owners,global,local,MPI_COMM_WORLD,root,ok)
+    call require(.not.ok,'different valid topologies rejected collectively')
+    call unchanged()
+    other_owners=owners
+    if (rank==0) other_owners(1)=1
+    call scatter_mpi_amr_tree_3d(tree,other_owners,global,local,MPI_COMM_WORLD,root,ok)
+    call require(.not.ok,'inconsistent owners rejected collectively')
+    call unchanged()
+    call scatter_mpi_amr_tree_3d(tree,owners,global,local,MPI_COMM_WORLD,rank,ok)
+    call require(.not.ok,'inconsistent root rejected collectively')
+    call unchanged()
+    broken=local
+    if (rank==0) deallocate(broken%fields(1)%values)
+    call gather_mpi_amr_tree_3d(tree,owners,broken,result,MPI_COMM_WORLD,root,ok)
+    call require(.not.ok,'missing owner data rejected collectively')
+    if (rank==root) then
+      do node=1,3
+        call require(all(result%fields(node)%values==global%fields(node)%values+10*owners(node)),'failed gather preserves output')
+      end do
+    end if
+    call MPI_Barrier(MPI_COMM_WORLD,ierr)
+  end do
+  if (rank==root) print *, 'PASS: distributed tree payloads, exact gather, empty ranks and collective rollback'
+  call MPI_Finalize(ierr)
+contains
+  function values(peer,i,j,k) result(value)
+    integer, intent(in) :: peer,i,j,k
+    real(dp) :: value(2)
+    value=[real(peer,dp)+.25_dp,real(peer,dp)-.5_dp]+.01_dp*i+.001_dp*j+.0001_dp*k
+  end function
+  subroutine unchanged()
+    integer :: peer
+    do peer=1,3
+      call require(allocated(local%fields(peer)%values).eqv.allocated(saved%fields(peer)%values),'allocation rollback')
+      if (.not.allocated(saved%fields(peer)%values)) cycle
+      call require(all(local%fields(peer)%values==saved%fields(peer)%values),'payload rollback')
+    end do
+  end subroutine
+  subroutine require(condition,label)
+    logical, intent(in) :: condition
+    character(len=*), intent(in) :: label
+    integer :: status
+    if (condition) return
+    print *, 'FAIL rank ',rank,': '//label
+    call MPI_Abort(MPI_COMM_WORLD,1,status)
+  end subroutine
+end program

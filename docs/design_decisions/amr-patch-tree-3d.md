@@ -458,6 +458,31 @@ their previous identity. Restart cannot change the mode. This is operator-split
 subcycling, not per-fine-step coupled chemistry, and does not establish global
 second-order convergence.
 
+## MPI patch ownership and transfer
+
+`mpi_amr_patch_tree_distribution_3d_mod` provides collective scatter/gather on a
+caller-supplied communicator and root rank. Topology and an explicit zero-based
+owner vector are replicated metadata. Each rank's local `amr_tree_state_3d` has
+one field slot per node, but only owned nodes allocate cell arrays. Empty ranks
+are supported. These partial fields intentionally do not satisfy the serial
+full-tree `is_valid` contract and cannot be passed to serial evolution kernels.
+
+Before payload messages, all ranks agree on transfer direction, root, node count,
+exact topology/owner records and component counts. Shapes, finite data, ownership
+allocation and MPI count bounds are checked collectively. Candidate allocations
+also complete collectively before sends begin. Payloads travel directly between
+root and each owner in node order. Scatter preserves its global source; gather
+preserves local sources and changes the global output only on root. Failed input
+validation leaves destinations unchanged on every rank.
+
+The communicator is borrowed, and calls must follow collective ordering. Root and
+owner buffers must be distinct actual objects. MPI runtime/communicator failure
+is governed by the MPI error handler, not a recoverable application transaction.
+These transfers support initialization/output and verification; they are not a
+root-gather stepping algorithm. Ownership planning, distributed halos, evolution,
+restriction/reflux, rebalancing and application integration remain open. Whole-node
+ownership does not split a large root patch or establish scaling.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.

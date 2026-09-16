@@ -119,7 +119,8 @@ fluxes and coarse-time endpoints. Interval-scoped reflux can return corrected
 fluxes while preserving coarser endpoints. Recursive hydro subcycling and scaled
 coarse CFL selection are connected. Recursive transport uses ratio-squared substeps
 and scaled diffusion/wall bounds. Coupled/application dispatch and mode-aware
-checkpoint continuation are now connected; tree MPI and broader qualification remain. Exposed-cell chemistry and reaction/hydro splitting are connected;
+checkpoint continuation are now connected. MPI patch-owner scatter/gather is
+implemented; next connect distributed halo exchange and evolution. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.
