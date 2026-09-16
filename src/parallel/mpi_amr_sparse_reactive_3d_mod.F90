@@ -22,7 +22,8 @@ module mpi_amr_sparse_reactive_3d_mod
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_3d_mod, only: &
     recover_reactive_temperatures_3d, &
-    compute_reactive_plm_slab_face_fluxes_3d, &
+    compute_reactive_plm_slab_face_fluxes_3d,compute_reactive_face_fluxes_3d, &
+    compute_reactive_plm_face_fluxes_3d, &
     advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: &
     reactive_transport_ghosted_fluxes_3d, &
@@ -82,6 +83,7 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: compute_mpi_amr_sparse_transport_timestep_3d
   public :: build_mpi_amr_sparse_boundary_halos_3d
   public :: build_mpi_amr_sparse_periodic_halos_3d
+  public :: advance_mpi_amr_sparse_boundary_hydro_3d
   public :: advance_mpi_amr_sparse_periodic_hydro_3d
   public :: advance_mpi_amr_sparse_hydro_3d
   public :: advance_mpi_amr_sparse_chemistry_3d
@@ -1596,6 +1598,199 @@ contains
     maximum_reflux_correction = global_reflux
     ok = .true.
   end subroutine advance_mpi_amr_sparse_hydro_3d
+
+  subroutine advance_mpi_amr_sparse_boundary_hydro_3d( &
+      distribution, species, patch, state, temperature, dx, dy, dz, dt, &
+      riemann_solver, reconstruction, limiter, face_flux_x, &
+      face_flux_y, face_flux_z, faces,boundary_change,ok,inflow_state,inflow_temperature)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
+    real(dp), intent(in) :: dx, dy, dz, dt
+    character(len=*), intent(in) :: riemann_solver, reconstruction, limiter
+    real(dp), allocatable, intent(out) :: face_flux_x(:, :, :, :)
+    real(dp), allocatable, intent(out) :: face_flux_y(:, :, :, :)
+    real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    logical, intent(out) :: ok
+
+    real(dp), allocatable :: old_state(:, :, :, :)
+    real(dp), allocatable :: stage_state(:, :, :, :)
+    real(dp), allocatable :: candidate_state(:, :, :, :)
+    real(dp), allocatable :: old_temperature(:, :, :)
+    real(dp), allocatable :: stage_temperature(:, :, :)
+    real(dp), allocatable :: candidate_temperature(:, :, :)
+    real(dp), allocatable :: first_flux_x(:, :, :, :)
+    real(dp), allocatable :: first_flux_y(:, :, :, :)
+    real(dp), allocatable :: first_flux_z(:, :, :, :)
+    real(dp), allocatable :: second_flux_x(:, :, :, :)
+    real(dp), allocatable :: second_flux_y(:, :, :, :)
+    real(dp), allocatable :: second_flux_z(:, :, :, :)
+    logical :: local_ok, global_ok
+    integer :: nvar, local_count, ny, nz,ierr
+    real(dp) :: local_budget(size(state,1)),global_budget(size(state,1))
+
+    ok = .false.;boundary_change=0
+    nvar = reactive_nvar(size(species))
+    local_count = size(state, 2)
+    ny = size(state, 3)
+    nz = size(state, 4)
+    local_ok = size(boundary_change)==nvar.and.all(ieee_is_finite([dx, dy, dz, dt]))
+    if (local_ok) local_ok = dx > 0.0_dp .and. dy > 0.0_dp .and. &
+      dz > 0.0_dp .and. dt > 0.0_dp
+    if (local_ok) local_ok = distribution%is_valid(patch)
+    if (local_ok) local_ok = size(state, 1) == nvar .and. &
+      local_count == distribution%coarse_count .and. &
+      ny == patch%coarse_ny .and. nz == patch%coarse_nz
+    if (local_ok) local_ok = all(shape(temperature) == [local_count, ny, nz])
+    if (local_ok) local_ok = all(ieee_is_finite(state))
+    if (local_ok) local_ok = all(ieee_is_finite(temperature))
+    if (local_ok) local_ok = minval(temperature) > 0.0_dp
+    if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
+      trim(reconstruction) == "characteristic_plm"
+    if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
+      trim(limiter) == "mc"
+    call sparse_collective_contract_matches_3d( &
+      distribution, species, patch, [dx, dy, dz, dt], &
+      trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
+        trim(limiter), local_ok, global_ok)
+    if (.not. global_ok) return
+
+    old_state = state
+    allocate(old_temperature(local_count, ny, nz))
+    call recover_reactive_temperatures_3d( &
+      species, old_state, temperature, local_count, ny, nz, &
+      old_temperature, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+    call physical_fluxes(old_state, old_temperature, &
+      riemann_solver, reconstruction, limiter, first_flux_x, &
+      first_flux_y, first_flux_z, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+    call physical_stage( &
+      old_state, old_state, first_flux_x, first_flux_y, first_flux_z, &
+      dx, dy, dz, dt, .false., stage_state, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+    allocate(stage_temperature(local_count, ny, nz))
+    call recover_reactive_temperatures_3d( &
+      species, stage_state, old_temperature, local_count, ny, nz, &
+      stage_temperature, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+
+    call physical_fluxes(stage_state, stage_temperature, &
+      riemann_solver, reconstruction, limiter, second_flux_x, &
+      second_flux_y, second_flux_z, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+    call physical_stage( &
+      old_state, stage_state, second_flux_x, second_flux_y, second_flux_z, &
+      dx, dy, dz, dt, .true., candidate_state, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+    allocate(candidate_temperature(local_count, ny, nz))
+    call recover_reactive_temperatures_3d( &
+      species, candidate_state, stage_temperature, local_count, ny, nz, &
+      candidate_temperature, local_ok)
+    call sparse_collective_logical_and_3d( &
+      distribution%comm, local_ok, global_ok)
+    if (.not. global_ok) return
+
+    allocate(face_flux_x(nvar, 0:local_count, ny, nz))
+    allocate(face_flux_y(nvar, local_count,0:ny, nz))
+    allocate(face_flux_z(nvar, local_count,ny,0:nz))
+    face_flux_x = 0.5_dp * (first_flux_x + second_flux_x)
+    face_flux_y = 0.5_dp * (first_flux_y + second_flux_y)
+    face_flux_z = 0.5_dp * (first_flux_z + second_flux_z)
+    call boundary_budget(face_flux_x,face_flux_y,face_flux_z,local_budget)
+    call MPI_Allreduce(local_budget,global_budget,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.all(ieee_is_finite(global_budget))) return
+    boundary_change=global_budget
+    state = candidate_state
+    temperature = candidate_temperature
+    ok = .true.
+  contains
+    subroutine physical_fluxes(u,t,solver,recon,lim,fx,fy,fz,success)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+      character(len=*), intent(in) :: solver,recon,lim
+      real(dp), allocatable, intent(out) :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+      logical, intent(out) :: success
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
+      integer :: dims(3)
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,u,t,faces,ghost,gt,success, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.success) return
+      dims=shape(gt)
+      allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
+      if (recon=='pcm') then
+        call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3),solver,gx,gy,gz,success)
+      else
+        call compute_reactive_plm_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3),lim,solver,gx,gy,gz,success)
+      end if
+      if (.not.success) return
+      allocate(fx(nvar,0:local_count,ny,nz),fy(nvar,local_count,0:ny,nz),fz(nvar,local_count,ny,0:nz))
+      fx=gx(:,2:local_count+2,3:ny+2,3:nz+2)
+      fy=gy(:,3:local_count+2,2:ny+2,3:nz+2)
+      fz=gz(:,3:local_count+2,3:ny+2,2:nz+2)
+    end subroutine physical_fluxes
+
+    subroutine physical_stage(old,base,fx,fy,fz,sx,sy,sz,interval,second,candidate,success)
+      real(dp), intent(in) :: old(:,:,:,:),base(:,:,:,:),fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+      real(dp), intent(in) :: sx,sy,sz,interval
+      logical, intent(in) :: second
+      real(dp), allocatable, intent(out) :: candidate(:,:,:,:)
+      logical, intent(out) :: success
+      real(dp) :: rhs(size(old,1))
+      integer :: i,j,k
+      allocate(candidate,mold=old)
+      do k=1,nz
+        do j=1,ny
+          do i=1,local_count
+            rhs=-(fx(:,i,j,k)-fx(:,i-1,j,k))/sx-(fy(:,i,j,k)-fy(:,i,j-1,k))/sy &
+              -(fz(:,i,j,k)-fz(:,i,j,k-1))/sz
+            candidate(:,i,j,k)=base(:,i,j,k)+interval*rhs
+            if (second) candidate(:,i,j,k)=.5_dp*old(:,i,j,k)+.5_dp*candidate(:,i,j,k)
+          end do
+        end do
+      end do
+      success=all(ieee_is_finite(candidate))
+    end subroutine physical_stage
+
+    subroutine boundary_budget(fx,fy,fz,change)
+      real(dp), intent(in) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+      real(dp), intent(out) :: change(:)
+      integer :: i,j,k
+      change=0
+      do k=1,nz
+        do j=1,ny
+          if (distribution%coarse_first==1) change=change+dt*dy*dz*fx(:,0,j,k)
+          if (distribution%coarse_last==patch%coarse_nx) change=change-dt*dy*dz*fx(:,local_count,j,k)
+        end do
+      end do
+      do k=1,nz
+        do i=1,local_count
+          change=change+dt*dx*dz*(fy(:,i,0,k)-fy(:,i,ny,k))
+        end do
+      end do
+      do j=1,ny
+        do i=1,local_count
+          change=change+dt*dx*dy*(fz(:,i,j,0)-fz(:,i,j,nz))
+        end do
+      end do
+    end subroutine boundary_budget
+  end subroutine advance_mpi_amr_sparse_boundary_hydro_3d
 
   subroutine advance_mpi_amr_sparse_periodic_hydro_3d( &
       distribution, species, patch, state, temperature, dx, dy, dz, dt, &

@@ -18,7 +18,7 @@ program test_mpi_amr_reactive_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: &
-    recover_reactive_temperatures_3d, &
+    recover_reactive_temperatures_3d,advance_reactive_boundary_hydro_3d, &
     advance_reactive_euler_ssprk2_plm_with_fluxes_3d
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
@@ -41,7 +41,7 @@ program test_mpi_amr_reactive_3d
     gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     build_mpi_amr_sparse_periodic_halos_3d,build_mpi_amr_sparse_boundary_halos_3d, &
-    advance_mpi_amr_sparse_periodic_hydro_3d, &
+    advance_mpi_amr_sparse_periodic_hydro_3d,advance_mpi_amr_sparse_boundary_hydro_3d, &
     advance_mpi_amr_sparse_hydro_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
     advance_mpi_amr_sparse_transport_3d, advance_mpi_amr_sparse_full_3d
@@ -384,6 +384,7 @@ program test_mpi_amr_reactive_3d
       sparse_halo_state, sparse_halo_temperature), &
     "two-plane sparse periodic halo bit parity")
   call check_physical_halos()
+  call check_physical_coarse_hydro()
   serial_coarse = coarse_state
   serial_coarse_temperature = coarse_temperature
   allocate(serial_flux_x, mold=serial_coarse)
@@ -700,6 +701,46 @@ program test_mpi_amr_reactive_3d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine check_physical_coarse_hydro()
+    real(dp), allocatable :: u(:,:,:,:),t(:,:,:),reference(:,:,:,:),rt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp), allocatable :: inlet(:,:),it(:),ledger(:),expected(:),sx(:,:,:,:),sy(:,:,:,:),sz(:,:,:,:)
+    character(len=32) :: faces(6),method
+    integer :: mode,lo,hi,nv
+    lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last;nv=size(coarse_state,1)
+    allocate(inlet(nv,6),it(6),ledger(nv),expected(nv))
+    allocate(sx,mold=coarse_state);allocate(sy,mold=coarse_state);allocate(sz,mold=coarse_state)
+    inlet=spread(coarse_state(:,1,1,1),2,6);it=coarse_temperature(1,1,1)
+    inlet(:,3)=1.1_dp*inlet(:,3)
+    faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
+    do mode=1,2
+      method='pcm'
+      if (mode==2) method='characteristic_plm'
+      reference=coarse_state;rt=coarse_temperature
+      call advance_reactive_boundary_hydro_3d(species,reference,rt,[dx,dy,dz],1e-7_dp, &
+        faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz)
+      call require(ok,'serial physical coarse hydro reference')
+      u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
+      call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it)
+      call require(ok,'sparse physical coarse hydro advance')
+      call require(all(u==reference(:,lo:hi,:,:)).and.all(t==rt(lo:hi,:,:)), &
+        'sparse physical coarse state and temperature exactly match serial')
+      call require(all(fx(:,1:,:,:)==sx(:,lo:hi,:,:)).and.all(fy(:,:,1:,:)==sy(:,lo:hi,:,:)).and. &
+        all(fz(:,:,:,1:)==sz(:,lo:hi,:,:)),'physical coarse mean reflux fluxes exactly match serial')
+      call require(all(abs(ledger-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
+        'physical boundary reduction matches serial surface ledger')
+      call require(maxval(abs(ledger))>1e-12_dp,'physical boundary flux is exercised')
+      u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
+      if (sparse_distribution%rank==0) inlet(1,3)=-1
+      call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it)
+      call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
+        all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0), &
+        'physical hydro rank-local invalid inlet rolls back collectively')
+      inlet(1,3)=1.1_dp*coarse_state(1,1,1,1)
+    end do
+  end subroutine check_physical_coarse_hydro
 
   subroutine check_physical_halos()
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),reference(:,:,:,:),rt(:,:,:),saved(:,:,:,:),st(:,:,:)
