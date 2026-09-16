@@ -1224,7 +1224,7 @@ contains
     real(dp) :: elapsed, request, accepted, next_step, tolerance
     real(dp) :: checked_temperature, sound_speed
     logical :: local_ok, use_implicit
-    integer :: i, j, k, substeps, nspecies, newton_iterations, rejected_attempts
+    integer :: i, j, k, substeps, nspecies, newton_iterations, rejected_attempts, closure_species
 
     ok = .false.
     nspecies = size(species)
@@ -1298,6 +1298,17 @@ contains
         candidate_state(reactive_species_component(nspecies), i, j) = rho - &
           sum(candidate_state(reactive_species_component(1): &
             reactive_species_component(nspecies - 1), i, j))
+        if (candidate_state(reactive_species_component(nspecies),i,j)<0.0_dp) then
+          ! A zero final species cannot absorb a negative roundoff residual.
+          ! Restore its integrated abundance and close on the largest species.
+          if (candidate_state(reactive_species_component(nspecies),i,j)<-32*epsilon(rho)*rho) return
+          candidate_state(reactive_species_component(nspecies),i,j)=rho*mass_fractions(nspecies)
+          closure_species=maxloc(mass_fractions,dim=1)
+          candidate_state(reactive_species_component(closure_species),i,j)=0.0_dp
+          candidate_state(reactive_species_component(closure_species),i,j)=rho- &
+            sum(candidate_state(reactive_species_component(1):reactive_species_component(nspecies),i,j))
+          if (candidate_state(reactive_species_component(closure_species),i,j)<0.0_dp) return
+        end if
         call reactive_conserved_to_primitive( &
           species, candidate_state(:, i, j), candidate_temperature(i, j), &
           primitive, &
