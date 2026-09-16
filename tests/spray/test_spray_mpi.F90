@@ -11,7 +11,8 @@ program test_spray_mpi
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved
-  use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_euler_ssprk2_plm_3d
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_euler_ssprk2_plm_3d, &
+    advance_reactive_boundary_hydro_3d
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use spray_parcel_mod
@@ -535,8 +536,10 @@ contains
   subroutine check_boundary_ghosts()
     real(dp), allocatable :: global_ghost(:,:,:,:),global_t(:,:,:),local_ghost(:,:,:,:),local_t(:,:,:),u(:,:,:,:),t(:,:,:)
     real(dp), allocatable :: saved_ghost(:,:,:,:),saved_t(:,:,:)
-    real(dp) :: velocity(3,6),inlet(15,6),inlet_t(6)
+    real(dp), allocatable :: serial_u(:,:,:,:),serial_t(:,:,:),local_u(:,:,:,:),local_temp(:,:,:)
+    real(dp) :: velocity(3,6),inlet(15,6),inlet_t(6),serial_change(15),change(15),delta(15),total_delta(15),inventory(15)
     character(len=32) :: boundaries(6)
+    real(dp), parameter :: spacing(3)=[1.0_dp,1.0_dp,1.0_dp]
     integer :: mode
     allocate(global_ghost(15,cells(1)+4,7,7),global_t(cells(1)+4,7,7))
     u=reference(:,first(1)+1:first(1)+dims(1),:,:)
@@ -560,13 +563,42 @@ contains
         'MPI ghost states exactly match serial including corners')
       call require(all(local_t==global_t(first(1)+1:first(1)+dims(1)+4,:,:)), &
         'MPI ghost temperatures exactly match serial')
+      serial_u=reference;serial_t=reference_temperature;local_u=u;local_temp=t
+      call advance_reactive_boundary_hydro_3d(species,serial_u,serial_t,spacing,1e-5_dp,boundaries, &
+        'characteristic_plm','mc','hllc',serial_change,ok,inlet,inlet_t)
+      call require(ok,'serial physical-boundary hydro reference')
+      call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e-5_dp, &
+        'hllc','mc',ok,boundaries,change,inlet,inlet_t)
+      call require(ok,'MPI physical-boundary hydro')
+      call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
+        max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
+        'MPI physical hydro matches serial states')
+      call require(maxval(abs(local_temp-serial_t(first(1)+1:first(1)+dims(1),:,:)))<1e-5_dp, &
+        'MPI physical hydro matches serial temperature')
+      call require(maxval(abs(change-serial_change)/max(1e-12_dp,abs(serial_change)))<1e-10_dp, &
+        'MPI physical hydro global boundary ledger matches serial')
+      delta=sum(sum(sum(local_u-u,dim=4),dim=3),dim=2)*product(spacing)
+      call MPI_Allreduce(delta,total_delta,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      inventory=sum(sum(sum(abs(reference),dim=4),dim=3),dim=2)*product(spacing)
+      call require(all(abs(total_delta-change)<2e-12_dp*max(1e-12_dp,inventory)), &
+        'MPI boundary flux accounts for total inventory change')
     end do
+    local_u=u;local_temp=t
+    call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e3_dp, &
+      'hllc','mc',ok,boundaries,change,inlet,inlet_t)
+    call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
+      'MPI physical hydro failed stage rolls back state and boundary ledger')
     saved_ghost=local_ghost;saved_t=local_t
     if (rank==0) boundaries(2)='slip_wall'
     call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &
       viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
     call require(.not.ok.and.all(local_ghost==saved_ghost).and.all(local_t==saved_t), &
       'MPI boundary disagreement rejects without changing ghost output')
+    local_u=u;local_temp=t
+    call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e-5_dp, &
+      'hllc','mc',ok,boundaries,change,inlet,inlet_t)
+    call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
+      'MPI physical hydro face disagreement rolls back')
   end subroutine
 
   subroutine check_wall_crossing()

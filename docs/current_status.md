@@ -126,7 +126,10 @@ wall events ([evidence](validation/spray-mpi-wall-crossing-20260917.md)); integr
 with nonperiodic gas/particle stepping and the application remains open.
 A two-layer MPI ghost API now combines physical wall/inlet/outlet conditions with
 neighbor exchange, including transverse corners
-([evidence](validation/spray-mpi-boundary-ghost-20260917.md)).
+([evidence](validation/spray-mpi-boundary-ghost-20260917.md)). MPI hydro now uses
+these boundaries in both SSPRK2 stages and returns a global physical-face flux
+ledger ([evidence](validation/spray-mpi-boundary-hydro-20260917.md)); nonperiodic
+transport, particle stepping and application inputs remain to be connected.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

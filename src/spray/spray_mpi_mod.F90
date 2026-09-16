@@ -12,7 +12,8 @@ module spray_mpi_mod
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
-  use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d, &
+    compute_reactive_plm_face_fluxes_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
@@ -867,21 +868,28 @@ contains
     end subroutine
   end subroutine
 
-  subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok)
+  subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok, &
+      faces,boundary_change,inflow_state,inflow_temperature)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
     integer, intent(in) :: cells(3)
     character(len=*), intent(in) :: solver,limiter
+    character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     logical, intent(out) :: ok
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: controls(4),minimum(4),maximum(4),rhs(size(state,1))
-    integer :: config(6),minconfig(6),maxconfig(6),rank,nranks,ierr,first(3),extent(3)
+    real(dp) :: local_change(size(state,1)),global_change(size(state,1)),rate(size(state,1))
+    integer :: config(7),minconfig(7),maxconfig(7),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next,solver_code,limiter_code
     logical :: valid,agreed
+    if (present(boundary_change)) boundary_change=0
+    local_change=0
     ok=.false.;nvar=size(state,1);solver_code=0;limiter_code=0
     select case(trim(solver))
     case('rusanov');solver_code=1
@@ -898,12 +906,13 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=all(ieee_is_finite([spacing,dt])).and.solver_code>0.and.limiter_code>0
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
+    if (present(boundary_change)) valid=valid.and.size(boundary_change)==nvar.and.present(faces)
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,solver_code,limiter_code];controls=[spacing,dt]
-    call MPI_Allreduce(config,minconfig,6,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces))];controls=[spacing,dt]
+    call MPI_Allreduce(config,minconfig,7,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,maxconfig,6,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,maxconfig,7,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,minimum,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -922,46 +931,102 @@ contains
     call recover_reactive_temperatures_3d(species,gas,temperature,nx,ny,nz,temp,valid)
     call agree()
     if (.not.agreed) return
-    allocate(halo(nvar,nx+4,ny,nz),halo_t(nx+4,ny,nz))
-    allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
-    allocate(fx(nvar,nx+4,ny,nz),fy(nvar,nx+4,ny,nz),fz(nvar,nx+4,ny,nz))
-    previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
+    if (.not.present(faces)) then
+      allocate(halo(nvar,nx+4,ny,nz),halo_t(nx+4,ny,nz))
+      allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
+      allocate(fx(nvar,nx+4,ny,nz),fy(nvar,nx+4,ny,nz),fz(nvar,nx+4,ny,nz))
+      previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
+    else
+      allocate(fx(nvar,nx+4,ny+4,nz+4),fy(nvar,nx+4,ny+4,nz+4),fz(nvar,nx+4,ny+4,nz+4))
+    end if
     do stage=1,2
-      send(:nvar,:,:,:)=gas(:,nx-1:nx,:,:);send(nvar+1,:,:,:)=temp(nx-1:nx,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3301,left,size(left),MPI_DOUBLE_PRECISION, &
-        previous,3301,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      send(:nvar,:,:,:)=gas(:,:2,:,:);send(nvar+1,:,:,:)=temp(:2,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3302,right,size(right),MPI_DOUBLE_PRECISION, &
-        next,3302,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      halo(:,3:nx+2,:,:)=gas;halo_t(3:nx+2,:,:)=temp
-      halo(:,:2,:,:)=left(:nvar,:,:,:);halo_t(:2,:,:)=left(nvar+1,:,:,:)
-      halo(:,nx+3:,:,:)=right(:nvar,:,:,:);halo_t(nx+3:,:,:)=right(nvar+1,:,:,:)
-      call compute_reactive_plm_slab_face_fluxes_3d(species,halo,halo_t,nx+4,ny,nz,2,nx+2, &
-        limiter,solver,fx,fy,fz,valid)
-      call agree()
-      if (.not.agreed) return
-      do k=1,nz
-        km=modulo(k-2,nz)+1
-        do j=1,ny
-          jm=modulo(j-2,ny)+1
-          do i=1,nx
-            rhs=-(fx(:,i+2,j,k)-fx(:,i+1,j,k))/spacing(1) &
-              -(fy(:,i+2,j,k)-fy(:,i+2,jm,k))/spacing(2) &
-              -(fz(:,i+2,j,k)-fz(:,i+2,j,km))/spacing(3)
-            candidate(:,i,j,k)=gas(:,i,j,k)+dt*rhs
-            if (stage==2) candidate(:,i,j,k)=.5_dp*state(:,i,j,k)+.5_dp*candidate(:,i,j,k)
+      if (present(faces)) then
+        call physical_stage()
+        if (.not.agreed) return
+      else
+        send(:nvar,:,:,:)=gas(:,nx-1:nx,:,:);send(nvar+1,:,:,:)=temp(nx-1:nx,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3301,left,size(left),MPI_DOUBLE_PRECISION, &
+          previous,3301,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        send(:nvar,:,:,:)=gas(:,:2,:,:);send(nvar+1,:,:,:)=temp(:2,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3302,right,size(right),MPI_DOUBLE_PRECISION, &
+          next,3302,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        halo(:,3:nx+2,:,:)=gas;halo_t(3:nx+2,:,:)=temp
+        halo(:,:2,:,:)=left(:nvar,:,:,:);halo_t(:2,:,:)=left(nvar+1,:,:,:)
+        halo(:,nx+3:,:,:)=right(:nvar,:,:,:);halo_t(nx+3:,:,:)=right(nvar+1,:,:,:)
+        call compute_reactive_plm_slab_face_fluxes_3d(species,halo,halo_t,nx+4,ny,nz,2,nx+2, &
+          limiter,solver,fx,fy,fz,valid)
+        call agree()
+        if (.not.agreed) return
+        do k=1,nz
+          km=modulo(k-2,nz)+1
+          do j=1,ny
+            jm=modulo(j-2,ny)+1
+            do i=1,nx
+              rhs=-(fx(:,i+2,j,k)-fx(:,i+1,j,k))/spacing(1) &
+                -(fy(:,i+2,j,k)-fy(:,i+2,jm,k))/spacing(2) &
+                -(fz(:,i+2,j,k)-fz(:,i+2,j,km))/spacing(3)
+              candidate(:,i,j,k)=gas(:,i,j,k)+dt*rhs
+              if (stage==2) candidate(:,i,j,k)=.5_dp*state(:,i,j,k)+.5_dp*candidate(:,i,j,k)
+            end do
           end do
         end do
-      end do
+      end if
       call recover_reactive_temperatures_3d(species,candidate,temp,nx,ny,nz,next_temp,valid)
       call agree()
       if (.not.agreed) return
       gas=candidate;temp=next_temp
     end do
+    if (present(faces)) then
+      call MPI_Allreduce(local_change,global_change,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (.not.all(ieee_is_finite(global_change))) return
+      if (present(boundary_change)) boundary_change=global_change
+    end if
     state=gas;temperature=temp;ok=.true.
   contains
+    subroutine physical_stage()
+      call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      call agree()
+      if (.not.agreed) return
+      call compute_reactive_plm_face_fluxes_3d(species,halo,halo_t,nx+4,ny+4,nz+4, &
+        limiter,solver,fx,fy,fz,valid)
+      call agree()
+      if (.not.agreed) return
+      do k=1,nz
+        do j=1,ny
+          do i=1,nx
+            rhs=-(fx(:,i+2,j+2,k+2)-fx(:,i+1,j+2,k+2))/spacing(1) &
+              -(fy(:,i+2,j+2,k+2)-fy(:,i+2,j+1,k+2))/spacing(2) &
+              -(fz(:,i+2,j+2,k+2)-fz(:,i+2,j+2,k+1))/spacing(3)
+            candidate(:,i,j,k)=gas(:,i,j,k)+dt*rhs
+            if (stage==2) candidate(:,i,j,k)=.5_dp*state(:,i,j,k)+.5_dp*candidate(:,i,j,k)
+          end do
+        end do
+      end do
+      rate=0
+      do k=3,nz+2
+        do j=3,ny+2
+          if (rank==0) rate=rate+fx(:,2,j,k)*spacing(2)*spacing(3)
+          if (rank==nranks-1) rate=rate-fx(:,nx+2,j,k)*spacing(2)*spacing(3)
+        end do
+      end do
+      do k=3,nz+2
+        do i=3,nx+2
+          rate=rate+(fy(:,i,2,k)-fy(:,i,ny+2,k))*spacing(1)*spacing(3)
+        end do
+      end do
+      do j=3,ny+2
+        do i=3,nx+2
+          rate=rate+(fz(:,i,j,2)-fz(:,i,j,nz+2))*spacing(1)*spacing(2)
+        end do
+      end do
+      local_change=local_change+.5_dp*dt*rate
+      valid=all(ieee_is_finite(local_change))
+      call agree()
+    end subroutine
     subroutine agree()
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if (ierr/=MPI_SUCCESS) agreed=.false.
