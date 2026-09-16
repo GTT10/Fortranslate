@@ -101,11 +101,33 @@ Global integer layout is shared with ghost filling. The implementation uses
 node scans and candidate copies; scaling has not been measured. Flux production,
 EOS admissibility after correction and subcycle scheduling remain caller work.
 
+## Synchronous hydro
+
+`advance_amr_patch_tree_hydro_3d` advances every node through SSPRK2 with a
+common timestep. Each Euler stage fills snapshot halos, computes existing PCM
+or characteristic-PLM Riemann fluxes, updates cells, reconciles integrated
+fluxes, averages down and recovers temperature. The final convex combination
+is restricted and recovered again. Initial covered parent cells are also
+synchronized before flux evaluation. Final recovery uses the first-stage
+temperature guesses, matching the regular-grid SSPRK2 convention.
+
+State and one-component temperature trees, signed boundary change and maximum
+reflux correction commit together only on success. The ledger averages both
+Euler-stage surface integrals after fine-flux replacement. The maximum is
+across the two Euler stages, before SSPRK averaging. Physical boundaries use
+Euler reflection and optional reservoir state/temperature; thermal/viscous
+wall transport is outside this routine.
+
+`compute_amr_patch_tree_cfl_3d` returns the minimum existing local CFL bound over
+all nodes, using each node's spacing. Callers choose the timestep; advance does
+not enforce that bound. All nodes currently use this same interval. PLM face
+reconstruction is available, but coarse/fine spatial donors remain PCM, so this
+is not a claim of globally second-order AMR accuracy or subcycled evolution.
+
 ## Remaining integration
 
-This foundation does not yet evolve a multi-patch flow. PLM ghost filling,
-hydro flux production and subcycling,
-thermodynamic recovery, chemistry/transport coupling, dynamic remapping,
+PLM coarse/fine interpolation, subcycle scheduling,
+chemistry/transport coupling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

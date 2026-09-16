@@ -111,8 +111,10 @@ recursive PCM initialization, bottom-up restriction and composite inventories.
 Snapshot peer/ancestor ghost filling and physical boundaries are connected.
 Per-donor-level temporal interpolation is available for coarse ghosts.
 Tree flux synchronization/reflux now handles nested and adjacent boxes, periodic
-seams and physical boundary-ledger replacement. Next connect PLM interpolation
-and hydro/subcycling, then reaction/transport,
+seams and physical boundary-ledger replacement. Synchronous SSPRK2 hydro now
+connects flux production and temperature recovery, using a common timestep
+bounded by all node CFL limits. Next connect PLM coarse/fine interpolation
+and subcycling, then reaction/transport,
 dynamic remap, MPI ownership and application/restart paths. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 

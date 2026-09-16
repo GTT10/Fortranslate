@@ -55,6 +55,7 @@ add_library(
   src/amr/amr_patch_tree_3d_mod.F90
   src/amr/amr_patch_tree_ghost_3d_mod.F90
   src/amr/amr_patch_tree_reflux_3d_mod.F90
+  src/amr/amr_patch_tree_hydro_3d_mod.F90
   src/amr/amr_reactive_3d_mod.F90
   src/amr/amr_reactive_transport_3d_mod.F90
   src/io/amr_reactive_3d_checkpoint_mod.F90
