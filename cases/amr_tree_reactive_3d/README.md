@@ -11,7 +11,7 @@ cd build/tree-example
   ../../cases/amr_tree_reactive_3d/branched.dat
 ```
 
-The executable accepts `<reactive_3d.nml> <topology.dat>`. Flow input uses the
+The executable accepts `<reactive_3d.nml> <topology.dat> [schedule.dat]`. Flow input uses the
 existing `reactive_3d` configuration, including elementary/full-H2/O2 models,
 PCM/characteristic-PLM face reconstruction, physical boundaries, chemistry and
 molecular transport. Existing validation requires at least four root cells in
@@ -39,6 +39,31 @@ includes all-node hydro/transport bounds, touched isothermal walls and inflow
 states at the finest spacing. Rejected steps halve the timestep up to 20
 attempts; only successful steps advance time and boundary budgets.
 
+## Scheduled regridding
+
+An optional third argument gives a schedule. The first record is its event count;
+each following record is `time 'topology-path'`. Times must increase strictly,
+be positive, and not exceed `final_time`. Quote paths, including absolute paths;
+relative paths resolve beside the schedule file. All topology inputs are read
+before evolution. `regrid.dat` moves/refines the patches with ratio 3, removes
+all children, then restores `branched.dat` at final time:
+
+```text
+3
+2.5e-10 'moved_ratio3.dat'
+5.0e-10 'root.dat'
+1.0e-9 'branched.dat'
+```
+
+Time steps stop exactly at each event. Conserved overlap projection and EOS
+recovery occur before the new topology is published. An absolute-cell-inventory
+scaled conservation check must pass at `5e-12`; boundary budgets and original
+initial inventories are carried through unchanged. Final-time events run before
+output. Reservoir bounds use the finest spacing across the initial and scheduled
+trees; per-step hydro/diffusion/wall bounds use the active tree. Logs report event
+times, node/level counts, and maximum remap error. This is a prescribed schedule,
+not automatic solution-based tagging.
+
 ## Output
 
 `output_file` is a single CSV of **exposed cells only**, so covered parent cells
@@ -56,7 +81,7 @@ files are not checkpoints.
 
 ## Remaining scope
 
-This frontend uses a fixed topology and serial ownership. Dynamic tagging/regrid
-scheduling, checkpoint/restart, MPI execution and a selected-mechanism frontend
+This frontend supports static or scheduled topologies with serial ownership.
+Automatic tagging, checkpoint/restart, MPI execution and a selected-mechanism frontend
 remain to be connected. Coarse/fine donors are PCM and time stepping is common
 across levels; this is not subcycled or globally second-order AMR qualification.

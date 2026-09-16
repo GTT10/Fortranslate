@@ -219,9 +219,17 @@ transactional steps by halving time. Exposed-cell CSV carries node/level/spacing
 a companion file records composite initial/final/boundary inventories. See the
 [case guide](../../cases/amr_tree_reactive_3d/README.md).
 
+The optional event schedule preloads valid topologies and clips timesteps to
+their exact prescribed times. A candidate remap/EOS recovery and component
+conservation check precede topology/state publication. The relative check uses
+the old absolute-cell composite inventory, so opposite momenta do not create a
+near-zero cancellation scale. Initial inventories and accumulated boundary flux
+are preserved. Events at final time execute before output. Inflow bounds cover
+the finest scheduled spacing; active-tree bounds are recomputed each step.
+
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling, dynamic tagging/regrid scheduling,
+PLM coarse/fine interpolation, subcycle scheduling, automatic solution-based tagging,
 MPI decomposition, checkpoint/restart and selected-mechanism application dispatch must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

@@ -21,11 +21,11 @@ program pelef_amr_tree_reactive_3d
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: mole_fractions(:)
-  character(len=1024) :: input_path, topology_path, message
+  character(len=1024) :: input_path, topology_path, schedule_path, message
   logical :: ok
 
-  if (command_argument_count() /= 2) then
-    write(*, '(a)') "Usage: pelef_amr_tree_reactive_3d <input.nml> <topology.dat>"
+  if (command_argument_count() < 2.or.command_argument_count()>3) then
+    write(*, '(a)') "Usage: pelef_amr_tree_reactive_3d <input.nml> <topology.dat> [schedule.dat]"
     error stop 2
   end if
   call get_command_argument(1, input_path)
@@ -57,5 +57,11 @@ program pelef_amr_tree_reactive_3d
   call reactive_3d_mole_fractions( &
     config, size(species), mole_fractions, ok)
   if (.not. ok) error stop "Failed to resolve fixed 3D AMR composition"
-  call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions)
+  if (command_argument_count()==3) then
+    call get_command_argument(3,schedule_path)
+    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
+      trim(schedule_path))
+  else
+    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions)
+  end if
 end program pelef_amr_tree_reactive_3d

@@ -911,3 +911,10 @@ add_test(NAME regression_amr_patch_tree_application_3d
     --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_application_3d")
 set_tests_properties(regression_amr_patch_tree_application_3d PROPERTIES TIMEOUT 240)
+
+add_test(NAME regression_amr_patch_tree_regrid_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_tree_regrid_3d.py"
+    --executable "$<TARGET_FILE:pelef_amr_tree_reactive_3d>"
+    --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_regrid_3d")
+set_tests_properties(regression_amr_patch_tree_regrid_3d PROPERTIES TIMEOUT 240)
