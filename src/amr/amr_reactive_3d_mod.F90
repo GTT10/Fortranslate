@@ -43,7 +43,8 @@ module amr_reactive_3d_mod
   public :: interpolate_coarse_fine_ghost_plm_3d
 
 contains
-  subroutine regrid_amr_reactive_3d(species,patch,coarse,ct,fine,ft,next_patch,ok,reconstruction,limiter)
+  subroutine regrid_amr_reactive_3d(species,patch,coarse,ct,fine,ft,next_patch,ok,reconstruction,limiter, &
+      boundary_faces,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(inout) :: patch
     type(amr_patch_3d), intent(in) :: next_patch
@@ -51,13 +52,32 @@ contains
     real(dp), allocatable, intent(inout) :: fine(:,:,:,:),ft(:,:,:)
     logical, intent(out) :: ok
     character(len=*), intent(in) :: reconstruction,limiter
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), allocatable :: slope_state(:,:,:,:),ghost_temperature(:,:,:)
+    integer :: shift,face
+    logical :: touched(6)
     real(dp), allocatable :: c(:,:,:,:),tc(:,:,:),f(:,:,:,:),tf(:,:,:),old_tf(:,:,:),old_tc(:,:,:)
     real(dp) :: slope(size(coarse,1),3),q(reactive_nprim(size(species)))
     real(dp) :: offset(3),theta,temperature,sound,initial(size(coarse,1)),final(size(coarse,1))
     integer :: n(3),lo(3),oldlo(3),i,j,k,ci,cj,ck,ii,jj,kk,oldidx(3),v,r,attempt
     logical :: local_ok,physical
     ok=.false.
-    if (.not.patch%is_strictly_interior().or..not.next_patch%is_strictly_interior()) return
+    if (.not.patch%is_valid().or..not.next_patch%is_valid()) return
+    if (present(boundary_faces)) then
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      touched=[min(patch%coarse_i_lower,next_patch%coarse_i_lower)==1, &
+        max(patch%coarse_i_upper,next_patch%coarse_i_upper)==patch%coarse_nx, &
+        min(patch%coarse_j_lower,next_patch%coarse_j_lower)==1, &
+        max(patch%coarse_j_upper,next_patch%coarse_j_upper)==patch%coarse_ny, &
+        min(patch%coarse_k_lower,next_patch%coarse_k_lower)==1, &
+        max(patch%coarse_k_upper,next_patch%coarse_k_upper)==patch%coarse_nz]
+      do face=1,6
+        if (touched(face).and.boundary_faces(face)=='periodic') return
+      end do
+    else
+      if (.not.patch%is_strictly_interior().or..not.next_patch%is_strictly_interior()) return
+    end if
     n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
     if (any(n/=[next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz])) return
     if (patch%refinement_ratio/=next_patch%refinement_ratio) return
@@ -77,6 +97,16 @@ contains
     if (.not.local_ok) return
     call recover_reactive_temperatures_3d(species,c,ct,n(1),n(2),n(3),tc,local_ok)
     if (.not.local_ok) return
+    shift=0
+    if (present(boundary_faces)) then
+      shift=2
+      allocate(slope_state(size(c,1),n(1)+4,n(2)+4,n(3)+4),ghost_temperature(n(1)+4,n(2)+4,n(3)+4))
+      call fill_reactive_boundary_ghosts_3d(c,tc,boundary_faces,slope_state,ghost_temperature,local_ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+    else
+      allocate(slope_state,source=c)
+    end if
     r=patch%refinement_ratio
     lo=[next_patch%coarse_i_lower,next_patch%coarse_j_lower,next_patch%coarse_k_lower]
     oldlo=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
@@ -88,11 +118,14 @@ contains
           slope=0.0_dp
           if (reconstruction=='characteristic_plm') then
             do v=1,size(c,1)
-              call limited_slope(c(v,ci,cj,ck)-c(v,ci-1,cj,ck),c(v,ci+1,cj,ck)-c(v,ci,cj,ck), &
+              call limited_slope(slope_state(v,ci+shift,cj+shift,ck+shift)-slope_state(v,ci+shift-1,cj+shift,ck+shift), &
+                slope_state(v,ci+shift+1,cj+shift,ck+shift)-slope_state(v,ci+shift,cj+shift,ck+shift), &
                 limiter,slope(v,1),local_ok)
-              call limited_slope(c(v,ci,cj,ck)-c(v,ci,cj-1,ck),c(v,ci,cj+1,ck)-c(v,ci,cj,ck), &
+              call limited_slope(slope_state(v,ci+shift,cj+shift,ck+shift)-slope_state(v,ci+shift,cj+shift-1,ck+shift), &
+                slope_state(v,ci+shift,cj+shift+1,ck+shift)-slope_state(v,ci+shift,cj+shift,ck+shift), &
                 limiter,slope(v,2),local_ok)
-              call limited_slope(c(v,ci,cj,ck)-c(v,ci,cj,ck-1),c(v,ci,cj,ck+1)-c(v,ci,cj,ck), &
+              call limited_slope(slope_state(v,ci+shift,cj+shift,ck+shift)-slope_state(v,ci+shift,cj+shift,ck+shift-1), &
+                slope_state(v,ci+shift,cj+shift,ck+shift+1)-slope_state(v,ci+shift,cj+shift,ck+shift), &
                 limiter,slope(v,3),local_ok)
             end do
             ! Species closure is an algebraic constraint on density slopes.
@@ -145,29 +178,40 @@ contains
     coarse=c; ct=old_tc; call move_alloc(f,fine); call move_alloc(tf,ft); patch=next_patch; ok=.true.
   end subroutine regrid_amr_reactive_3d
 
-  subroutine temperature_tag_patch_3d(patch,t,threshold,buffer,next_patch,changed,ok)
+  subroutine temperature_tag_patch_3d(patch,t,threshold,buffer,next_patch,changed,ok,boundary_faces)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: t(:,:,:),threshold
     integer, intent(in) :: buffer
     type(amr_patch_3d), intent(out) :: next_patch
     logical, intent(out) :: changed,ok
-    integer :: n(3),lo(3),hi(3),i,j,k
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    integer :: n(3),lo(3),hi(3),i,j,k,first(3),last(3),a
     next_patch=patch; changed=.false.; ok=.false.
-    if (.not.patch%is_strictly_interior()) return
+    if (.not.patch%is_valid()) return
     n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    first=2;last=n-1
+    if (present(boundary_faces)) then
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      do a=1,3
+        if (boundary_faces(2*a-1)/='periodic') first(a)=1
+        if (boundary_faces(2*a)/='periodic') last(a)=n(a)
+      end do
+    end if
+    if (any([patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]<first).or. &
+        any([patch%coarse_i_upper,patch%coarse_j_upper,patch%coarse_k_upper]>last)) return
     if (any(shape(t)/=n).or.buffer<0.or.buffer>maxval(n)) return
     if (.not.ieee_is_finite(threshold).or..not.all(ieee_is_finite(t))) return
     lo=n; hi=0
-    do k=2,n(3)-1
-      do j=2,n(2)-1
-        do i=2,n(1)-1
+    do k=first(3),last(3)
+      do j=first(2),last(2)
+        do i=first(1),last(1)
           if (t(i,j,k)<threshold) cycle
           lo=min(lo,[i,j,k]); hi=max(hi,[i,j,k])
         end do
       end do
     end do
     if (all(hi>0)) then
-      lo=max(2,lo-buffer); hi=min(n-1,hi+buffer)
+      lo=max(first,lo-buffer); hi=min(last,hi+buffer)
       call initialize_amr_patch_3d(n(1),n(2),n(3),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
         patch%refinement_ratio,next_patch,ok)
       if (.not.ok) return

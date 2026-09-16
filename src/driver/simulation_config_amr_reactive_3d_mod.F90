@@ -6,6 +6,7 @@ module simulation_config_amr_reactive_3d_mod
   private
 
   type, public :: amr_reactive_3d_config
+    logical :: regrid_physical_boundaries=.false.
     integer :: regrid_interval_steps=0, regrid_buffer_cells=1
     real(dp) :: regrid_temperature_threshold=1100.0_dp
     integer :: refinement_ratio = 2
@@ -49,16 +50,18 @@ contains
     integer :: unit, io_status
     character(len=512) :: coarse_output_file, fine_output_file
     character(len=512) :: checkpoint_file, restart_file
-    logical :: stop_after_checkpoint, selected_allowed
+    logical :: stop_after_checkpoint, selected_allowed,regrid_physical_boundaries
 
     namelist /amr_reactive_3d/ &
       refinement_ratio, regrid_interval_steps, regrid_buffer_cells, regrid_temperature_threshold, &
+      regrid_physical_boundaries, &
       coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, coarse_k_lower, coarse_k_upper, &
       coarse_output_file, fine_output_file, checkpoint_interval_steps, &
       stop_after_checkpoint, checkpoint_file, restart_file
 
     config = amr_reactive_3d_config()
+    regrid_physical_boundaries=config%regrid_physical_boundaries
     regrid_interval_steps=config%regrid_interval_steps
     regrid_buffer_cells=config%regrid_buffer_cells
     regrid_temperature_threshold=config%regrid_temperature_threshold
@@ -92,6 +95,7 @@ contains
         "Could not read &amr_reactive_3d from:", trim(path)
       return
     end if
+    config%regrid_physical_boundaries=regrid_physical_boundaries
     config%regrid_interval_steps=regrid_interval_steps
     config%regrid_buffer_cells=regrid_buffer_cells
     config%regrid_temperature_threshold=regrid_temperature_threshold
@@ -175,8 +179,10 @@ contains
       message = "3D AMR z patch lies outside the supported coarse-cell bounds"
     else if (any(touched.and.faces=='periodic')) then
       message='3D AMR patches touching periodic seams are not supported'
-    else if (any(touched).and.config%regrid_interval_steps>0) then
-      message='Boundary-touching 3D AMR currently requires a static patch'
+    else if (config%regrid_physical_boundaries.and.margin/=0) then
+      message='Physical boundary regridding is not enabled in this frontend'
+    else if (any(touched).and.config%regrid_interval_steps>0.and..not.config%regrid_physical_boundaries) then
+      message='Boundary-touching regridding requires regrid_physical_boundaries'
     else if (len_trim(config%coarse_output_file) == 0 .or. &
              len_trim(config%fine_output_file) == 0) then
       message = "3D AMR output paths must be nonempty"

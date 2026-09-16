@@ -1,9 +1,10 @@
 program test_amr_regrid_3d
   use precision_mod, only: dp
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
-  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d,prolong_pcm_3d
+  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d,prolong_pcm_3d,composite_integrals_amr_3d
   use amr_reactive_3d_mod, only: regrid_amr_reactive_3d,temperature_tag_patch_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config,validate_amr_reactive_3d_configuration
@@ -17,6 +18,8 @@ program test_amr_regrid_3d
   integer :: i,j,k
   logical :: ok,changed
   character(len=256) :: message
+  character(len=32) :: faces(6)
+  real(dp) :: initial(12),final(12),inlet(12,6),inlet_t(6)
   call load_h2o2_elementary_thermo(species,ok); call require(ok,'thermo')
   call initialize_amr_patch_3d(8,8,8,2,4,2,4,2,4,2,patch,ok); call require(ok,'old patch')
   do k=1,8
@@ -61,6 +64,40 @@ program test_amr_regrid_3d
   base%boundary_faces=''; config%regrid_interval_steps=1; config%checkpoint_interval_steps=1
   call validate_amr_reactive_3d_configuration(base,config,ok,message)
   call require(ok,'dynamic checkpoint supported')
+  faces='outflow';faces(1)='slip_wall';faces(5)='no_slip_wall'
+  call composite_integrals_amr_3d(c,f,patch,1._dp,1._dp,1._dp,initial,ok)
+  call require(ok,'physical initial inventory')
+  before=f
+  call initialize_amr_patch_3d(8,8,8,1,3,1,3,1,3,2,next_patch,ok)
+  call require(ok,'physical lower corner patch')
+  call regrid_amr_reactive_3d(species,patch,c,t,f,ft,next_patch,ok,'characteristic_plm','mc',faces)
+  call require(ok,'physical lower corner growth')
+  call require(all(f(:,3:6,3:6,3:6)==before),'physical overlap preserved exactly')
+  call composite_integrals_amr_3d(c,f,patch,1._dp,1._dp,1._dp,final,ok)
+  call require(ok.and.all(abs(final-initial)<=5e-12_dp*max(1._dp,abs(initial))),'physical grow inventory')
+  before=f;before_c=c
+  faces(1)='inflow';inlet=spread(c(:,1,1,1),2,6);inlet_t=t(1,1,1)
+  inlet(1,1)=ieee_value(0._dp,ieee_quiet_nan)
+  call regrid_amr_reactive_3d(species,patch,c,t,f,ft,next_patch,ok,'characteristic_plm','mc',faces,inlet,inlet_t)
+  call require(.not.ok.and.all(f==before).and.all(c==before_c),'physical invalid reservoir rollback')
+  faces(1)='slip_wall'
+  call initialize_amr_patch_3d(8,8,8,2,3,2,3,2,3,2,next_patch,ok)
+  call require(ok,'physical shrink target')
+  call regrid_amr_reactive_3d(species,patch,c,t,f,ft,next_patch,ok,'pcm','mc',faces)
+  call require(ok.and.all(f==before(:,3:6,3:6,3:6)),'physical shrink overlap')
+  call initialize_amr_patch_3d(8,8,8,6,8,6,8,6,8,2,next_patch,ok)
+  call require(ok,'physical upper corner target')
+  call regrid_amr_reactive_3d(species,patch,c,t,f,ft,next_patch,ok,'characteristic_plm','mc',faces)
+  call require(ok,'physical upper corner move')
+  call composite_integrals_amr_3d(c,f,patch,1._dp,1._dp,1._dp,final,ok)
+  call require(ok.and.all(abs(final-initial)<=5e-12_dp*max(1._dp,abs(initial))),'physical move inventory')
+  tag=1000;tag(1,8,1)=1200
+  call temperature_tag_patch_3d(patch,tag,1100._dp,1,next_patch,changed,ok,faces)
+  call require(ok.and.changed.and.next_patch%coarse_i_lower==1.and.next_patch%coarse_j_upper==8.and. &
+    next_patch%coarse_k_lower==1,'physical boundary tags included')
+  faces='periodic'
+  call regrid_amr_reactive_3d(species,patch,c,t,f,ft,next_patch,ok,'pcm','mc',faces)
+  call require(.not.ok,'periodic seam remap rejected')
   print *, 'PASS: conservative remap, linear prolongation, exact overlap, shrink, tags and rollback'
 contains
   subroutine require(condition,label)

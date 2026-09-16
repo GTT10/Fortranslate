@@ -219,10 +219,25 @@ This short reacting full-H2/O2 case refines the cold moving x-low wall. Fine
 wall heat/work fluxes enter the composite boundary ledger; wall thermal timestep
 limits account for both coarse and fine states. Checkpoint/restart retains the
 physical patch geometry and boundary/chemistry context with the existing static
-schemas. Periodic seams and dynamic regridding with a boundary-touching patch
-are rejected. MPI frontends currently retain strictly interior patches.
+schemas. Periodic seams remain unsupported. Boundary-touching dynamic regridding is
+available in serial with the explicit setting below. MPI frontends currently
+retain strictly interior patches.
 
 [Application restart evidence](../../docs/validation/amr-boundary-touching-app-20260917.md)
 covers a full-H2/O2 reacting wall case and an elementary reacting corner case.
 The selected frontend shares this implementation; it has not been independently
 qualified for boundary-touching application inputs in that check.
+
+## Physical-boundary regridding (serial)
+
+Set `regrid_physical_boundaries = .true.` together with a positive
+`regrid_interval_steps` to let temperature tags and their buffer reach physical
+faces. Periodic axes retain an interior-cell margin. The example
+`dynamic_touching_wall.nml` expands the wall-touching patch at step zero and can
+be run with the same serial executable as the static example.
+
+Remapping preserves overlapping fine states, restricts derefined cells, and
+uses physical coarse ghosts for conservative limited prolongation of new cells.
+Checkpoint context includes this tagging mode, the moved patch and regrid count.
+The default remains interior tagging, preserving existing serial/MPI cases.
+See [dynamic-boundary evidence](../../docs/validation/amr-boundary-regrid-20260917.md).

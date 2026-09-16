@@ -120,9 +120,10 @@ program test_amr_reactive_3d_config
     allow_physical=.true.,allow_boundary_patch=.true.)
   call require(ok,'opt-in physical boundary patch')
   amr%regrid_interval_steps=1
+  amr%regrid_physical_boundaries=.true.
   call validate_amr_reactive_3d_configuration(base,amr,ok,message, &
     allow_physical=.true.,allow_boundary_patch=.true.)
-  call require(.not.ok,'boundary patch dynamic regrid rejection')
+  call require(ok,'boundary patch dynamic regrid acceptance')
   amr%regrid_interval_steps=0
   amr%coarse_i_lower=0
   call validate_amr_reactive_3d_configuration(base,amr,ok,message, &

@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
     parser.add_argument('--touching', action='store_true')
+    parser.add_argument('--dynamic-touching', action='store_true')
     parser.add_argument('--mpiexec', type=Path)
     parser.add_argument('--numproc-flag', default='-n')
     parser.add_argument('--mpiexec-preflag', action='append', default=[])
@@ -82,11 +83,14 @@ def main() -> None:
                 source = source.replace("'periodic'", "'no_slip_wall'")
                 source = source.replace('coarse_j_lower = 2', 'coarse_j_lower = 1')
                 source = source.replace('coarse_k_lower = 2', 'coarse_k_lower = 1')
+        if args.dynamic_touching:
+            source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\n'
+                                    'regrid_physical_boundaries=.true., regrid_interval_steps=1, regrid_temperature_threshold=1, regrid_buffer_cells=0,')
         reference = run(f'{label}_reference', source)
         stopped = run(f'{label}_stopped', source,
                       f"checkpoint_interval_steps=1, checkpoint_file='{label}.chk', stop_after_checkpoint=.true.,")
         assert 'Stopped after checkpoint:' in stopped
-        if label == 'dynamic':
+        if label == 'dynamic' or args.dynamic_touching:
             assert 'Regrid at step 0:' in stopped
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")
         for level in ('coarse', 'fine'):
@@ -109,9 +113,6 @@ def main() -> None:
         changed = (source.replace('1300', '1400') if label == 'inlet' else
                    source.replace('600, 600', '650, 600', 1))
         run(f'{label}_changed', changed, f"restart_file='{label}.chk',", success=False)
-        if args.touching:
-            rejected = run(f'{label}_regrid', source, 'regrid_interval_steps=1,', success=False)
-            assert 'requires a static patch' in rejected
         if args.reacting:
             inactive = source.replace('chemistry_enabled = .true.', 'chemistry_enabled = .false.')
             run(f'{label}_inactive_reference', inactive)

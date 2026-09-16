@@ -81,7 +81,7 @@ contains
     character(len=32) :: faces(6),fine_faces(6)
     logical :: touched(6)
     real(dp) :: fine_wall_dt
-    character(len=32), allocatable :: active_faces(:)
+    character(len=32), allocatable :: active_faces(:),regrid_faces(:)
     real(dp), allocatable :: boundary_total(:),step_boundary(:),inflow_state(:,:),inflow_x(:),inflow_y(:),inlet_cube(:,:,:,:)
     real(dp) :: inflow_t(6),primitive(reactive_nprim(size(species))),sound_speed
     real(dp) :: inlet_dt,inlet_transport_dt,face_dt,face_diffusivity,wall_dt,inlet_temperature(2,2,2),boundary_elements(3)
@@ -134,6 +134,7 @@ contains
     boundary_total=0;step_boundary=0;inflow_state=0;inflow_t=0
     faces=resolved_reactive_boundaries_3d(config)
     if (any(faces/='periodic')) allocate(active_faces,source=faces)
+    if (amr_config%regrid_physical_boundaries) allocate(regrid_faces,source=faces)
     call uniform_cell_centers_3d( &
       config%nx, config%ny, config%nz, config%x_lower, config%x_upper, &
       config%y_lower, config%y_upper, config%z_lower, config%z_upper, &
@@ -365,11 +366,11 @@ contains
       if (amr_config%regrid_interval_steps>0) then
         if (mod(step,amr_config%regrid_interval_steps)==0) then
           call temperature_tag_patch_3d(patch,coarse_temperature,amr_config%regrid_temperature_threshold, &
-            amr_config%regrid_buffer_cells,next_patch,patch_changed,ok)
+            amr_config%regrid_buffer_cells,next_patch,patch_changed,ok,regrid_faces)
           if (.not.ok) error stop '3D AMR temperature tagging failed'
           if (patch_changed) then
             call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
-              next_patch,ok,config%reconstruction,config%limiter)
+              next_patch,ok,config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
             if (.not.ok) error stop '3D AMR conservative regrid rejected'
             deallocate(xf,yf,zf)
             allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))

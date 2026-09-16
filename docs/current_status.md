@@ -12,7 +12,7 @@ Older milestone prose remains historical detail, not a current global status.
 | Area | Implemented subset | Still open |
 | --- | --- | --- |
 | Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip boundaries with prescribed tangential wall motion | Characteristic inflow and moving geometry, general 3D boundary/coupling qualification |
-| 3D AMR | Two-level hierarchy, with boundary-touching physical patches in serial static runs; periodic serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Scalable distributed remap, multiple general patches/levels, MPI boundary-touching patches and broader physical-boundary qualification |
+| 3D AMR | Two-level hierarchy, with boundary-touching physical patches in serial runs; periodic serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Scalable distributed remap, multiple general patches/levels, MPI boundary-touching patches and broader physical-boundary qualification |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
@@ -45,7 +45,10 @@ transport and the full reaction/transport/hydro split are connected, including
 fine wall heat/work fluxes ([evidence](validation/amr-boundary-touching-transport-20260917.md)).
 Serial static application inputs, fine wall timestep bounds and checkpoint/restart
 are connected ([evidence](validation/amr-boundary-touching-app-20260917.md)).
-Boundary-touching MPI stepping and dynamic regridding remain open.
+Serial temperature-driven regridding now supports boundary-touching patches with
+explicit physical tagging and geometry-aware restart
+([evidence](validation/amr-boundary-regrid-20260917.md)). Boundary-touching MPI
+stepping/regridding remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

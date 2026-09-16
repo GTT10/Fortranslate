@@ -66,6 +66,7 @@ contains
     write(signature,'(9(i0,1x),es27.18e3)') config%regrid_interval_steps,config%regrid_buffer_cells, &
       config%coarse_i_lower,config%coarse_i_upper,config%coarse_j_lower,config%coarse_j_upper, &
       config%coarse_k_lower,config%coarse_k_upper,config%refinement_ratio,config%regrid_temperature_threshold
+    if (config%regrid_physical_boundaries) signature=trim(signature)//' PHYSICAL_TAGGING_V1'
   end function
 
   subroutine dynamic_checkpoint_header(unit,flow,config,patch,count,ok)
@@ -77,7 +78,8 @@ contains
     logical, intent(out) :: ok
     character(len=1024) :: line
     integer :: layout(7),status,i,tokens
-    logical :: in_token
+    logical :: in_token,touched(6)
+    character(len=32) :: faces(6)
     ok=.false.; count=0
     read(unit,'(a)',iostat=status) line
     if (status/=0) return
@@ -103,7 +105,12 @@ contains
     call initialize_amr_patch_3d(flow%nx,flow%ny,flow%nz,layout(1),layout(2),layout(3),layout(4), &
       layout(5),layout(6),config%refinement_ratio,patch,ok)
     if (.not.ok) return
-    ok=patch%is_strictly_interior()
+    faces=resolved_reactive_boundaries_3d(flow)
+    touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+      patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+      patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+    ok=valid_reactive_boundaries_3d(faces).and..not.any(touched.and.faces=='periodic')
+    if (.not.config%regrid_physical_boundaries.and.any(touched)) ok=.false.
     if (ok) count=layout(7)
   end subroutine
 
@@ -1725,7 +1732,8 @@ contains
       patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
       patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
     if (any(touched.and.faces=='periodic')) geometry_matches=.false.
-    if (any(touched).and.amr_config%regrid_interval_steps>0) geometry_matches=.false.
+    if (any(touched).and.amr_config%regrid_interval_steps>0.and. &
+        .not.amr_config%regrid_physical_boundaries) geometry_matches=.false.
     matches = patch%is_valid() .and. &
       patch%coarse_nx == flow_config%nx .and. &
       patch%coarse_ny == flow_config%ny .and. &
