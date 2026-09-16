@@ -46,7 +46,9 @@ bounds and mode-aware checkpoint continuation
 ([evidence](validation/amr-tree-subcycle-application-20260917.md)). MPI tree transfer APIs now
 store payloads only on assigned patch owners, with collective metadata checks and
 root scatter/gather ([evidence](validation/amr-tree-mpi-distribution-20260917.md)).
-Distributed tree evolution remains open. A transactional tree
+Sparse cell queries now fetch only requested owner payloads in caller order, including
+empty ranks and collective rollback ([evidence](validation/amr-tree-mpi-cells-20260917.md)).
+Distributed halo construction and tree evolution remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

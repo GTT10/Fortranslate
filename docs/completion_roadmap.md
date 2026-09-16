@@ -120,7 +120,8 @@ fluxes while preserving coarser endpoints. Recursive hydro subcycling and scaled
 coarse CFL selection are connected. Recursive transport uses ratio-squared substeps
 and scaled diffusion/wall bounds. Coupled/application dispatch and mode-aware
 checkpoint continuation are now connected. MPI patch-owner scatter/gather is
-implemented; next connect distributed halo exchange and evolution. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
+implemented, and sparse owner-cell queries provide the payload exchange primitive;
+next connect halo donor selection/interpolation and distributed evolution. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.

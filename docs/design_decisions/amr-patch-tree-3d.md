@@ -483,6 +483,27 @@ root-gather stepping algorithm. Ownership planning, distributed halos, evolution
 restriction/reflux, rebalancing and application integration remain open. Whole-node
 ownership does not split a large root patch or establish scaling.
 
+## Sparse MPI cell requests
+
+`fetch_mpi_amr_tree_cells_3d(tree,owners,local,nvar,requests,values,comm,ok)`
+uses the same replicated metadata and owner-only payload layout. Each integer
+request column is `[node,i,j,k]` with one-based indices. The component count is
+common across ranks; request counts/order may differ, include duplicates, or be
+zero. The committed output has shape `(nvar,number_of_requests)` in caller order.
+
+After collective topology/ownership/shape/count checks, Alltoall exchanges request
+counts and Alltoallv routes coordinates to owners. Owners return only those cell
+vectors through a second Alltoallv. No full field gather is involved. Requested
+values must be finite; unrequested cells are not scanned. All ranks validate and
+allocate candidates before exchanges; invalid requests, metadata, allocation or
+requested payloads preserve existing outputs. Communicator ordering and runtime
+error handling follow the distribution API contract.
+
+This primitive does not choose ghost donors or implement boundary transforms,
+coarse spatial/time interpolation, restriction or reflux. Those operations must
+construct batched requests and consume the returned values before distributed
+evolution is available. Whole-node ownership and replicated metadata remain.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
