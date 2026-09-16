@@ -143,10 +143,32 @@ use total mass, momentum, total energy and elements, not individual species.
 The source-only interval may be zero; it still synchronizes covered parents and
 recovers temperature. The coupled step requires positive time.
 
+## Molecular transport
+
+`advance_amr_patch_tree_transport_3d` performs common-timestep SSPRK2 transport.
+Each stage packs conserved state and temperature guesses, fills viscous tree
+halos and uses the existing physical ghosted flux kernel for viscosity, heat
+conduction, species diffusion and optional barodiffusion. Domain-face wall
+corrections are selected from global node coordinates; interior patch faces
+receive no wall source. Reservoir, isothermal temperature and tangential wall
+velocity inputs follow the existing regular-grid conventions.
+
+Time-integrated fluxes pass through tree reflux before restriction and EOS
+recovery. Final state, temperature, boundary ledger, largest reflux correction
+and minimum species-flux limiter commit together. Shared-face incompatibility
+or an inadmissible refluxed state rejects the step; automatic timestep retry
+and an additional coarse/fine positivity limiter are not supplied here.
+
+`compute_amr_patch_tree_transport_timestep_3d` returns the minimum local
+transport bound and maximum diffusivity over all nodes. Optional domain faces
+and wall temperatures also include isothermal-wall bounds on touched faces.
+Callers must supply those options for isothermal walls and enforce the resulting
+bound themselves. This remains a common timestep, not ratio-squared subcycling.
+
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling,
-molecular transport coupling, dynamic remapping,
+combined reaction/transport/hydro driver integration, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

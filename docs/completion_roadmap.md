@@ -115,8 +115,9 @@ seams and physical boundary-ledger replacement. Synchronous SSPRK2 hydro now
 connects flux production and temperature recovery, using a common timestep
 bounded by all node CFL limits. Next connect PLM coarse/fine interpolation
 and subcycling. Exposed-cell chemistry and reaction/hydro splitting are connected;
-molecular transport, dynamic remap, MPI ownership and application/restart paths
-remain open. See the
+synchronous molecular transport now also connects nested reflux and physical
+walls. Combine the split driver, then connect dynamic remap, MPI ownership and
+application/restart paths. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

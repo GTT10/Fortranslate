@@ -38,8 +38,11 @@ composite boundary ledger, with a CFL minimum over all nodes
 ([evidence](validation/amr-tree-hydro-20260917.md)); coarse/fine donors remain PCM.
 Cell chemistry now runs on exposed tree cells, with bottom-up restriction and
 transactional reaction/hydro Strang splitting
-([evidence](validation/amr-tree-chemistry-20260917.md)). Molecular transport,
-dynamic remapping, MPI ownership and application/restart integration remain open.
+([evidence](validation/amr-tree-chemistry-20260917.md)). Synchronous molecular
+transport now includes viscous/thermal/species fluxes, nested reflux and physical
+wall budgets ([evidence](validation/amr-tree-transport-20260917.md)). Combined
+reaction/transport/hydro driver integration, dynamic remapping, MPI ownership
+and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks
