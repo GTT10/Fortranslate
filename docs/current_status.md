@@ -29,7 +29,10 @@ uses PCM ancestor fallback and follows regular-grid periodic/physical boundary
 conventions ([evidence](validation/amr-tree-ghost-3d-20260917.md)). Per-level coarse
 endpoint interpolation is also available for ghost donors while retaining exact
 current peers ([evidence](validation/amr-tree-temporal-ghost-20260917.md)). PLM
-ghost filling, hydro/reflux/subcycle scheduling, chemistry/transport, dynamic
+ghost filling and hydro/subcycle scheduling remain open. A transactional tree
+flux-correction API now reconciles shared and periodic faces, propagates nested
+fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
+replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Chemistry/transport, dynamic
 remapping, MPI ownership and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting

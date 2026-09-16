@@ -72,10 +72,39 @@ fine stage time. They must supply synchronized coarse values where required.
 Scheduling subcycles and PLM coarse/fine interpolation remain to be connected.
 Peer lookup currently scans nodes; no scaling qualification is implied.
 
+## Conservative flux synchronization
+
+`reflux_amr_patch_tree_3d` accepts one `amr_tree_flux_3d` per node. Its x/y/z
+arrays hold **time-integrated flux per unit face area over the same physical
+interval**. Normal face indices are 1 through `n+1`; other indices are cell
+indices 1 through `n`. The supplied state is the candidate already updated by
+these unreconciled flux divergences. The routine does not multiply by a timestep.
+
+Processing runs from deepest level to root. Peers first share one effective
+face value, preferring a value already replaced by finer coverage. Equally
+resolved peers must agree within `64*epsilon*max(1,maxabs(left),maxabs(right))`;
+the earlier traversal value becomes canonical. This includes different-parent
+peers and periodic seams. The divergence of effective minus original flux then
+corrects uncovered cells. Child faces are area-averaged onto parents, including
+faces on patch boundaries, so deeper corrections propagate upward. Covered
+parent cells are supplied by the final bottom-up state restriction.
+
+The returned `boundary_correction` is the signed physical-domain integral of
+effective minus original root flux, to add to the original root boundary
+ledger. Periodic faces contribute zero. `maximum_correction` measures the
+largest uncovered-cell conserved correction, before average-down. Inputs are
+read-only except for the candidate state and output diagnostics; all are
+committed together only on success. Shape/nonfinite errors or conflicting
+shared refined faces preserve prior state and diagnostics.
+
+Global integer layout is shared with ghost filling. The implementation uses
+node scans and candidate copies; scaling has not been measured. Flux production,
+EOS admissibility after correction and subcycle scheduling remain caller work.
+
 ## Remaining integration
 
 This foundation does not yet evolve a multi-patch flow. PLM ghost filling,
-conservative flux correction and subcycling,
+hydro flux production and subcycling,
 thermodynamic recovery, chemistry/transport coupling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.

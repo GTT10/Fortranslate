@@ -25,9 +25,35 @@ module amr_patch_tree_3d_mod
   contains
     procedure :: is_valid => state_valid
   end type
+  public :: amr_tree_integer_layout_3d
   public :: initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d
   public :: average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
 contains
+  subroutine amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer(int64), allocatable, intent(out) :: origin(:,:),domain(:,:)
+    integer, allocatable, intent(out) :: ratios(:)
+    logical, intent(out) :: ok
+    integer :: node,parent,level
+    ok=.false.
+    if (.not.tree%is_valid()) return
+    allocate(origin(3,size(tree%nodes)),domain(3,tree%level_count()),ratios(tree%level_count()))
+    origin=0;ratios=1;domain(:,1)=int(tree%nodes(1)%shape,int64)
+    do node=2,size(tree%nodes)
+      ratios(tree%nodes(node)%level+1)=tree%nodes(node)%patch%refinement_ratio
+    end do
+    do level=2,size(ratios)
+      if (any(domain(:,level-1)>(huge(1_int64)-2)/int(ratios(level),int64))) return
+      domain(:,level)=domain(:,level-1)*int(ratios(level),int64)
+    end do
+    do node=2,size(tree%nodes)
+      parent=tree%nodes(node)%parent
+      origin(:,node)=(origin(:,parent)+int(lower(tree%nodes(node)%patch)-1,int64))* &
+        int(tree%nodes(node)%patch%refinement_ratio,int64)
+    end do
+    ok=.true.
+  end subroutine amr_tree_integer_layout_3d
+
   pure function lower(patch) result(bounds)
     type(amr_patch_3d), intent(in) :: patch
     integer :: bounds(3)

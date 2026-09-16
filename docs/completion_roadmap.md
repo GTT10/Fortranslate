@@ -110,7 +110,9 @@ The regular 3D patch-tree geometry/state foundation now supports multiple childr
 recursive PCM initialization, bottom-up restriction and composite inventories.
 Snapshot peer/ancestor ghost filling and physical boundaries are connected.
 Per-donor-level temporal interpolation is available for coarse ghosts.
-Next connect PLM interpolation and conservative hydro/reflux/subcycling, then reaction/transport,
+Tree flux synchronization/reflux now handles nested and adjacent boxes, periodic
+seams and physical boundary-ledger replacement. Next connect PLM interpolation
+and hydro/subcycling, then reaction/transport,
 dynamic remap, MPI ownership and application/restart paths. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 

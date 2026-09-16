@@ -2,7 +2,7 @@ module amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
   implicit none
   private
@@ -24,7 +24,7 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
-    integer :: i,j,k,axis,face,inlet,level,source_level,source,parent,other,nvar,local(3),dims(3)
+    integer :: i,j,k,axis,face,inlet,level,source_level,source,other,nvar,local(3),dims(3)
     real(dp) :: shift(3),old_momentum(3),rho,fraction
     logical :: reflect(3),viscous,found
     ok=.false.
@@ -58,21 +58,9 @@ contains
     end if
     viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
-    allocate(origin(3,size(tree%nodes)),domain(3,tree%level_count()),ratios(tree%level_count()))
-    origin=0;ratios=1;domain(:,1)=int(tree%nodes(1)%shape,int64)
-    do other=2,size(tree%nodes)
-      ratios(tree%nodes(other)%level+1)=tree%nodes(other)%patch%refinement_ratio
-    end do
-    do level=2,size(ratios)
-      if (any(domain(:,level-1)>(huge(1_int64)-2)/int(ratios(level),int64))) return
-      domain(:,level)=domain(:,level-1)*int(ratios(level),int64)
-    end do
-    do other=2,size(tree%nodes)
-      parent=tree%nodes(other)%parent
-      origin(:,other)=(origin(:,parent)+int([tree%nodes(other)%patch%coarse_i_lower-1, &
-        tree%nodes(other)%patch%coarse_j_lower-1,tree%nodes(other)%patch%coarse_k_lower-1],int64))* &
-        int(tree%nodes(other)%patch%refinement_ratio,int64)
-    end do
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    if (.not.ok) return
+    ok=.false.
     level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+4
     allocate(candidate(nvar,dims(1),dims(2),dims(3)))
     do k=1,dims(3)
