@@ -35,6 +35,13 @@ contains
   integer :: injection_profile_points=0
   real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,profile_mass
   character(len=4096) :: profile_context
+  integer :: port_count=0,port_events(16)=0,port_number(16)=4,schedule_count
+  real(dp) :: port_start(16)=0,port_interval(16)=1e-8_dp,port_mass(16)=1e-10_dp
+  real(dp) :: port_center(3,16),port_axis(3,16),port_fractions(2,16)=.5_dp
+  real(dp) :: port_speed(16)=10,port_half_angle(16)=.1_dp,port_diameter(16)=2e-5_dp
+  real(dp) :: port_temperature(16)=330
+  real(dp), allocatable :: event_times(:),event_ends(:)
+  integer, allocatable :: event_ports(:)
   real(dp) :: spacing(3)=[.001_dp,.001_dp,.001_dp],lower(3)=0,gas_density=1,gas_temperature=800
   real(dp) :: gas_velocity(3)=0
   real(dp), allocatable :: gas_fractions(:)
@@ -61,10 +68,14 @@ contains
     liquid_density,liquid_cp,boiling_temperature,latent_heat,liquid_species,final_time,dt_max,cfl, &
     rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix,restart_path,checkpoint_path, &
     injection_events,injection_start,injection_interval,injection_profile_points, &
-    injection_profile_times,injection_profile_rates
+    injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
+    port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+  do p=1,16
+    port_center(:,p)=center;port_axis(:,p)=axis
+  end do
   allocate(gas_fractions(size(species)));gas_fractions=0
   do n=1,size(species)
     select case(trim(species(n)%name))
@@ -105,11 +116,11 @@ contains
     'Invalid injection profile point count')
   call require(all(injection_profile_times(injection_profile_points+1:)==0).and. &
     all(injection_profile_rates(injection_profile_points+1:)==0),'Unused injection profile entries')
+  call build_schedule()
   if (injection_profile_points>0) then
-    call require(injection_events>0,'A profile requires scheduled events')
+    call require(schedule_count>0,'A profile requires scheduled events')
     call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
-      injection_profile_rates(:injection_profile_points),injection_start, &
-      injection_start+real(injection_events,dp)*injection_interval,profile_mass,ok)
+      injection_profile_rates(:injection_profile_points),minval(event_times),maxval(event_ends),profile_mass,ok)
     call require(ok,'Invalid profile or incomplete schedule coverage')
   end if
   call require(gas_density>0.and.gas_temperature>0.and.all(gas_fractions>=0),'Invalid initial gas')
@@ -152,17 +163,28 @@ contains
       'Checkpoint profile context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
+  if (port_count>0) then
+    do p=1,port_count
+      write(profile_context,'(*(g0,1x))',iostat=status) 'independent-port-v1',p,port_events(p), &
+        port_start(p),port_interval(p),port_number(p),port_mass(p),port_center(:,p),port_axis(:,p), &
+        port_fractions(:,p),port_speed(p),port_half_angle(p),port_diameter(p),port_temperature(p)
+      call require(status==0,'Port context serialization failed')
+      call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+        'Checkpoint port context too long')
+      checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+    end do
+  end if
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
     call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(restart_path),trim(checkpoint_context),species, &
       state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok)
     call require(ok,'Restart rejected: invalid data or incompatible model/input context')
-    call require(time<=final_time.and.event>=0.and.event<=injection_events, &
+    call require(time<=final_time.and.event>=0.and.event<=schedule_count, &
       'Restart time/event is incompatible with this run')
-    if (event>0) call require(injection_start+real(event-1,dp)*injection_interval<=time, &
+    if (event>0) call require(event_times(event)<=time, &
       'Restart contains future injection events')
-    if (event<injection_events) call require(next_injection_time()>time, &
+    if (event<schedule_count) call require(next_injection_time()>time, &
       'Restart is missing a due injection event')
   else
     call budgets();initial_totals=totals
@@ -190,7 +212,7 @@ contains
       local_dt=min(local_dt,transport_dt)
     end if
     local_dt=min(local_dt,dt_max,final_time-time)
-    if (event<injection_events) local_dt=min(local_dt,next_injection_time()-time)
+    if (event<schedule_count) local_dt=min(local_dt,next_injection_time()-time)
     call MPI_Allreduce(local_dt,dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
     call require(ierr==MPI_SUCCESS,'Time-step reduction failed')
     ok=.false.
@@ -203,7 +225,7 @@ contains
       dt=.5_dp*dt
     end do
     call require(ok,'Coupled update rejected after retries')
-    if (event<injection_events.and.dt==next_injection_time()-time) then
+    if (event<schedule_count.and.dt==next_injection_time()-time) then
       time=next_injection_time()
     else
       time=time+dt
@@ -245,33 +267,95 @@ contains
   if (rank==0) print *, 'MPI spray completed: steps=',step,' time=',time
   call MPI_Finalize(ierr)
 contains
+  subroutine build_schedule()
+    integer :: completed(16),q,e,selected
+    real(dp) :: candidate_time,best_time
+    call require(port_count>=0.and.port_count<=16,'Invalid port count')
+    if (port_count==0) then
+      schedule_count=injection_events
+      allocate(event_times(schedule_count),event_ends(schedule_count),event_ports(schedule_count))
+      event_ports=0
+      do e=1,schedule_count
+        event_times(e)=injection_start+real(e-1,dp)*injection_interval
+        event_ends(e)=injection_start+real(e,dp)*injection_interval
+      end do
+      return
+    end if
+    do q=1,port_count
+      call require(all(ieee_is_finite([port_start(q),port_interval(q),port_mass(q),port_center(:,q), &
+        port_axis(:,q),port_fractions(:,q),port_speed(q),port_half_angle(q),port_diameter(q), &
+        port_temperature(q)])),'Nonfinite port input')
+      call require(port_events(q)>=0.and.port_events(q)<=1000000,'Invalid port event count')
+      call require(port_start(q)>=0.and.port_start(q)<=1e6_dp.and.port_interval(q)>0.and. &
+        port_interval(q)<=1e6_dp,'Invalid port timing')
+      call require(port_start(q)+real(max(0,port_events(q)-1),dp)*port_interval(q)<=1e6_dp, &
+        'Port schedule exceeds time range')
+      if (port_events(q)>1) call require(port_start(q)+port_interval(q)>port_start(q), &
+        'Port interval is below time resolution')
+      call require(port_number(q)>=0.and.port_number(q)<=125000.and.port_mass(q)>=0, &
+        'Invalid port population')
+      call require(all(port_fractions(:,q)>=0).and.abs(sum(port_fractions(:,q))-1)<1e-12_dp, &
+        'Invalid port composition')
+      call require(port_diameter(q)>0.and.port_temperature(q)>0.and.port_speed(q)>=0.and. &
+        port_half_angle(q)>=0.and.port_half_angle(q)<.5_dp*acos(-1.0_dp).and. &
+        maxval(abs(port_axis(:,q)))>0,'Invalid port geometry or droplet state')
+    end do
+    schedule_count=sum(port_events(:port_count))
+    call require(schedule_count<=1000000,'Too many combined port events')
+    allocate(event_times(schedule_count),event_ends(schedule_count),event_ports(schedule_count))
+    completed=0
+    do e=1,schedule_count
+      best_time=huge(1.0_dp);selected=0
+      do q=1,port_count
+        if (completed(q)>=port_events(q)) cycle
+        candidate_time=port_start(q)+real(completed(q),dp)*port_interval(q)
+        ! Strict comparison preserves port-index ordering at simultaneous events.
+        if (candidate_time<best_time) then
+          best_time=candidate_time;selected=q
+        end if
+      end do
+      event_times(e)=best_time;event_ports(e)=selected
+      completed(selected)=completed(selected)+1
+      event_ends(e)=port_start(selected)+real(completed(selected),dp)*port_interval(selected)
+    end do
+  end subroutine
   real(dp) function next_injection_time() result(next_time)
     next_time=huge(1.0_dp)
-    if (event<injection_events) next_time=injection_start+real(event,dp)*injection_interval
+    if (event<schedule_count) next_time=event_times(event+1)
   end function
   subroutine inject_due_events()
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: candidate_mass(:,:)
     real(dp) :: delta(5+size(species)),global_delta(5+size(species))
     integer(int64) :: candidate_id
-    real(dp) :: amount,event_time
-    integer :: event_number
-    do while(event<injection_events)
+    real(dp) :: amount,event_time,event_center(3),event_axis(3),event_fractions(2)
+    real(dp) :: event_speed,event_angle,event_diameter,event_temperature
+    integer :: event_number,port
+    do while(event<schedule_count)
       if (next_injection_time()>time) exit
       candidate=parcels;candidate_mass=masses;candidate_id=last_id;local_mass=0
       amount=total_mass;event_number=number
+      event_center=center;event_axis=axis;event_fractions=fractions
+      event_speed=speed;event_angle=half_angle;event_diameter=diameter;event_temperature=drop_temperature
+      port=event_ports(event+1)
+      if (port>0) then
+        amount=port_mass(port);event_number=port_number(port)
+        event_center=port_center(:,port);event_axis=port_axis(:,port);event_fractions=port_fractions(:,port)
+        event_speed=port_speed(port);event_angle=port_half_angle(port)
+        event_diameter=port_diameter(port);event_temperature=port_temperature(port)
+      end if
       if (injection_profile_points>0) then
         event_time=next_injection_time()
         call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
           injection_profile_rates(:injection_profile_points),event_time, &
-          injection_start+real(event+1,dp)*injection_interval,amount,ok)
+          event_ends(event+1),amount,ok)
         call require(ok,'Profile event integration failed')
         if (amount==0) event_number=0
       end if
       if (rank==0) local_mass=amount
       call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(event_number,0,rank==0), &
-        center,axis,speed,half_angle,diameter,drop_temperature,options%maximum_parcels,candidate_id,candidate,delta,ok, &
-        liquids,fractions,candidate_mass)
+        event_center,event_axis,event_speed,event_angle,event_diameter,event_temperature, &
+        options%maximum_parcels,candidate_id,candidate,delta,ok,liquids,event_fractions,candidate_mass)
       call require(ok,'Scheduled injection rejected')
       call migrate_spray_parcels(MPI_COMM_WORLD,candidate,lower,spacing,cells,[nranks,1,1], &
         [.true.,.true.,.true.],options%maximum_parcels,ok,candidate_mass)

@@ -44,8 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Independent multiport schedules, distributed breakup/wall films
-and SGS remain to be integrated in this executable.
+Distributed breakup/wall films and SGS remain to be integrated in this executable.
 
 ## Save and resume
 
@@ -107,3 +106,41 @@ A zero integrated dose consumes the event but creates no particle or ID. Positiv
 doses use `number` particles. Profiles and their integration version are bound to
 checkpoint context, so a changed profile cannot silently continue a saved run.
 With `injection_profile_points=0` (default), fixed mass per event is unchanged.
+
+
+## Independent injection ports
+
+Set `port_count=1..16` to replace the scalar schedule with independent ports.
+For each active port, set `port_events`, `port_start` (s), `port_interval` (s),
+`port_number` and `port_mass` (kg/event). Defaults are zero events, start zero,
+interval 1e-8 s, four parcels and 1e-10 kg. The combined event count is at most
+one million. Events execute in increasing time; ties execute in port-index order.
+A checkpoint taken at an event time includes every event due at that time.
+
+Port properties are `port_center(:,p)`, `port_axis(:,p)`, `port_speed(p)`,
+`port_half_angle(p)`, `port_diameter(p)`, `port_temperature(p)` and
+`port_fractions(:,p)`. Their factory defaults match the scalar defaults; setting
+scalar inputs does not override port defaults. The two liquid component property
+tables remain shared. For example:
+
+```fortran
+ port_count=2
+ port_events=2,2
+ port_start=0,7.5e-9
+ port_interval=7.5e-9,7.5e-9
+ port_number=2,3
+ port_mass=1e-10,2e-10
+ port_center(:,1)=.002,.002,.002
+ port_center(:,2)=.006,.002,.002
+ port_axis(:,2)=-1,0,0
+ port_fractions(:,1)=1,0
+ port_fractions(:,2)=0,1
+```
+
+An enabled shared rate profile applies separately to each port's event interval
+and overrides `port_mass`. It must cover every port interval. Overlapping intervals
+inject separate doses, so the supplied rate is per port, not a combined flow rate.
+Independent per-port rate tables are not yet exposed by this MPI executable.
+Active port definitions are bound to checkpoint context. Rank-count changes retain
+completed event order and ID reservation. `port_count=0` preserves scalar behavior
+and the existing scalar checkpoint context.

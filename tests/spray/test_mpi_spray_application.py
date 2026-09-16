@@ -147,7 +147,56 @@ def main():
     run_variant('profiled_mismatch', args.ranks,
                 profile.replace('rates=0,0,.02,0', 'rates=0,0,.03,0') + "\n restart_path='profiled.chk'", expect_success=False)
     assert not (work / 'profiled_mismatch.history.csv').exists()
-    print(f'PASS MPI spray application, profile, schedule and restart: {args.ranks} ranks; artifacts: {work}')
+    ports = """ port_count=2
+ port_events=2,2
+ port_start=0,7.5e-9
+ port_interval=7.5e-9,7.5e-9
+ port_number=2,3
+ port_mass=1e-10,2e-10
+ port_center(:,1)=.002,.002,.002
+ port_center(:,2)=.006,.002,.002
+ port_axis(:,2)=-1,0,0
+ port_fractions(:,1)=1,0
+ port_fractions(:,2)=0,1
+ port_diameter=2e-5,3e-5
+ port_temperature=330,340"""
+    run_variant('ports', args.ranks, ports)
+    port_history = rows(work / 'ports.history.csv')
+    assert [int(row['events']) for row in port_history] == [1, 3, 4, 4]
+    assert [int(row['parcels']) for row in port_history] == [2, 7, 10, 10]
+    assert math.isclose(float(port_history[-1]['injected_mass']), 6e-10, rel_tol=1e-14)
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in port_history)
+    port_particles = snapshots('ports', 'particles', ['id'])
+    assert set(port_particles) == {(i,) for i in range(1, 11)}
+    for (ident,), row in port_particles.items():
+        # At the tie, port 1 reserves IDs 3/4 before port 2 reserves 5/6/7.
+        assert float(row['component_mass_2' if ident <= 4 else 'component_mass_1']) == 0
+        assert float(row['x']) < .004 if ident <= 4 else float(row['x']) > .004
+        assert float(row['u']) > 0 if ident <= 4 else float(row['u']) < 0
+    run_variant('ports_split', args.ranks, ports + "\n checkpoint_path='ports.chk'", stop='7.5e-9')
+    assert int(rows(work / 'ports_split.history.csv')[-1]['events']) == 3
+    run_variant('ports_resume', 6 - args.ranks, ports + "\n restart_path='ports.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('ports', suffix, keys)
+        actual = snapshots('ports_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    run_variant('ports_mismatch', args.ranks,
+                ports.replace('port_mass=1e-10,2e-10', 'port_mass=1e-10,3e-10') +
+                "\n restart_path='ports.chk'", expect_success=False)
+    assert not (work / 'ports_mismatch.history.csv').exists()
+    run_variant('ports_profile', args.ranks, ports +
+                '\n injection_profile_points=4' +
+                '\n injection_profile_times=0,7.5e-9,1.5e-8,2.25e-8' +
+                '\n injection_profile_rates=0,0,.02,0')
+    profiled_ports = rows(work / 'ports_profile.history.csv')
+    assert [int(row['parcels']) for row in profiled_ports] == [0, 5, 8, 8]
+    assert math.isclose(float(profiled_ports[-1]['injected_mass']), 2.25e-10, rel_tol=1e-14)
+    assert int(profiled_ports[-1]['last_id']) == 8
+    print(f'PASS MPI spray application, profile, multiport schedule and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 
