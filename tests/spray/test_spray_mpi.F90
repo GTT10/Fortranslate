@@ -13,6 +13,7 @@ program test_spray_mpi
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use spray_parcel_mod
+  use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_mpi_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
@@ -23,7 +24,9 @@ program test_spray_mpi
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_options) :: options
   real(dp) :: local_totals(15),before(15),after(15)
-  integer :: steps
+  integer :: steps,checkpoint_event,checkpoint_unit
+  real(dp) :: checkpoint_time
+  character(len=80) :: checkpoint_path
   real(dp) :: fractions(2),ledger(15),direction(3)
   type(spray_parcel), allocatable :: parcels(:),saved(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
@@ -414,6 +417,55 @@ program test_spray_mpi
     cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok)
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'one rank invalid transport state rolls back collectively')
+  field=reference(:,first(1)+1:first(1)+dims(1),:,:)
+  temperature=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
+  checkpoint_time=1e-8_dp;steps=3;checkpoint_event=2;last_id=huge(0_int64)-19
+  write(checkpoint_path,'(a,i0,a)') 'mpi-spray-checkpoint-',nranks,'.chk'
+  call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+  call require(ok,'collective checkpoint write')
+  saved_field=field;saved_temperature=temperature;saved=parcels;saved_mass=masses
+  call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(checkpoint_path),'wrong-context',species, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(masses==saved_mass).and.all(parcels%id==saved%id), &
+    'checkpoint read failure preserves all ranks')
+  ! Each rank now reads the same distributed checkpoint on a one-rank communicator.
+  ! This tests a changed decomposition without requiring a second mpiexec process.
+  field=reference*0;temperature=reference_temperature*0;checkpoint_time=0;steps=0;checkpoint_event=0;last_id=0
+  deallocate(parcels,masses);allocate(parcels(0),masses(2,0))
+  call mpi_spray_checkpoint(MPI_COMM_SELF,.false.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+  call require(ok.and.all(field==reference).and.all(temperature==reference_temperature), &
+    'changed-rank checkpoint exact gas recovery')
+  call require(size(parcels)==nranks*(nranks-1)/2.and.last_id==huge(0_int64)-19, &
+    'changed-rank particle collection and ID reservation recovery')
+  call require(checkpoint_time==1e-8_dp.and.steps==3.and.checkpoint_event==2,'checkpoint metadata recovery')
+  do p=1,size(parcels)
+    call require(parcels(p)%id==p,'checkpoint global particle ordering')
+    call require(abs(sum(masses(:,p))-parcels(p)%mass)<1e-24_dp,'checkpoint component recovery')
+  end do
+  do p=1,size(saved)
+    i=int(saved(p)%id)
+    call require(all(parcels(i)%position==saved(p)%position).and.all(parcels(i)%velocity==saved(p)%velocity).and. &
+      parcels(i)%mass==saved(p)%mass.and.parcels(i)%temperature==saved(p)%temperature.and. &
+      parcels(i)%multiplicity==saved(p)%multiplicity.and.all(masses(:,i)==saved_mass(:,p)), &
+      'changed-rank checkpoint exact local particle payload')
+  end do
+  field=saved_field*0;temperature=saved_temperature*0
+  deallocate(parcels,masses);allocate(parcels(0),masses(2,0))
+  call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+  call require(ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'checkpoint scatters exact owner blocks')
+  call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'checkpoint redistributes owner particles')
+  call MPI_Barrier(MPI_COMM_WORLD,ierr)
+  if (rank==0) then
+    open(newunit=checkpoint_unit,file=trim(checkpoint_path),status='old');close(checkpoint_unit,status='delete')
+  end if
   call MPI_Finalize(ierr)
 contains
   function element_totals(inventory) result(elements)

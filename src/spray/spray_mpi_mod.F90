@@ -982,7 +982,8 @@ contains
     first_id=next_first;last_id=last_id+total;ok=.true.
   end subroutine
 
-  subroutine migrate_spray_parcels(comm,parcels,lower,spacing,cells,parts,periodic,maximum_parcels,ok,component_mass)
+  subroutine migrate_spray_parcels(comm,parcels,lower,spacing,cells,parts,periodic,maximum_parcels,ok,component_mass,gather_rank)
+    integer, intent(in), optional :: gather_rank
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3)
@@ -994,7 +995,7 @@ contains
     real(dp), allocatable :: masses(:,:),send_real(:,:),recv_real(:,:)
     integer(int64), allocatable :: send_int(:,:),recv_int(:,:)
     integer, allocatable :: counts(:),offsets(:),received(:),displacements(:)
-    integer :: rank,nranks,ierr,nc,nreal,nrecv,p,r,config(10),lo(10),hi(10)
+    integer :: rank,nranks,ierr,nc,nreal,nrecv,p,r,config(11),lo(11),hi(11),destination
     real(dp) :: bounds(6),minbounds(6),maxbounds(6)
     logical :: valid,global_valid
     ok=.false.
@@ -1002,6 +1003,8 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
+    destination=-1
+    if (present(gather_rank)) destination=gather_rank
     valid=allocated(parcels).and.maximum_parcels>=0.and.maximum_parcels<=1000000;nc=0
     if (allocated(parcels)) valid=valid.and.size(parcels)<=1000000
     if (present(component_mass)) then
@@ -1009,13 +1012,14 @@ contains
       if (allocated(component_mass)) nc=size(component_mass,1)
       valid=valid.and.nc>=1.and.nc<=16
     end if
+    valid=valid.and.destination>=-1.and.destination<nranks
     valid=valid.and.all(ieee_is_finite([lower,spacing]))
     call agree()
     if (.not.global_valid) return
-    config=[cells,parts,merge(1,0,periodic),nc];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lo,10,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,parts,merge(1,0,periodic),nc,destination];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lo,11,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,hi,10,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,hi,11,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,minbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -1037,6 +1041,12 @@ contains
     end if
     call agree()
     if (.not.global_valid) return
+    if (destination>=0) then
+      counts=0;counts(destination+1)=size(outgoing);offsets=0
+      do r=2,nranks
+        offsets(r)=offsets(r-1)+counts(r-1)
+      end do
+    end if
     allocate(received(nranks),displacements(nranks))
     call MPI_Alltoall(counts,1,MPI_INTEGER,received,1,MPI_INTEGER,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -1072,7 +1082,11 @@ contains
         int(recv_int(3,p)),recv_real(13,p),recv_real(14,p))
       valid=valid.and.valid_spray_parcel(incoming(p))
       if (p>1) valid=valid.and.incoming(p)%id>incoming(p-1)%id
-      valid=valid.and.spray_cartesian_owner(incoming(p)%position,lower,spacing,cells,parts,periodic)==rank
+      if (destination>=0) then
+        valid=valid.and.rank==destination
+      else
+        valid=valid.and.spray_cartesian_owner(incoming(p)%position,lower,spacing,cells,parts,periodic)==rank
+      end if
       if (nc>0) then
         masses(:,p)=recv_real(15:,p)
         valid=valid.and.valid_component_inventory(incoming(p),masses(:,p))

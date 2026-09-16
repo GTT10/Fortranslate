@@ -1855,3 +1855,26 @@ or the caller's watermark. Existing checkpoint modes remain unchanged when this
 argument is omitted. This is the persistence API needed by collective MPI ID
 reservation; MPI field/particle collection and CLI restart are still open. See
 [ID checkpoint evidence](validation/spray-id-checkpoint-20260917.md).
+
+### MPI checkpoint collection and redistribution
+
+`mpi_spray_checkpoint` in `spray_mpi_checkpoint_mod` writes or reads the existing
+mixed-particle checkpoint with `_ID_V1`. It supports periodic x-slab gas blocks,
+mixed particle columns, time/step/event metadata, reference/injected inventories
+and the shared ID high-water mark. Root owns file I/O and the temporary whole-grid
+buffer; other ranks retain local blocks. Writes gather complete particle records
+and sort globally by ID. Reads scatter gas into the current partition and migrate
+particles to spatial owners, committing caller state only after all operations
+succeed. The rank count is not encoded into the file identity.
+
+`migrate_spray_parcels` now accepts optional `gather_rank`: it sends all complete
+records to that rank while retaining geometry and payload checks. Omitting it
+retains ordinary spatial migration. The checkpoint routine uses private copies.
+
+The checkpoint API currently handles the no-breakup mixed-particle mode used by
+the MPI executable. Its caller must bind geometry, ordered property/mechanism
+and evolution identity in `context`; root path/context govern file access.
+The temporary root gas buffer is bounded to 100 million real values and particle
+collection to one million records. These are bounded root-I/O APIs, not scalable
+parallel checkpoint I/O. CLI restart remains to be connected. See
+[collection evidence](validation/spray-mpi-checkpoint-20260917.md).
