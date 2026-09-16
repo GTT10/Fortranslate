@@ -125,7 +125,29 @@ def main():
     resumed_history = rows(work / 'scheduled_resume.history.csv')
     assert int(resumed_history[0]['events']) == 2 and int(resumed_history[-1]['events']) == 3
     assert int(resumed_history[-1]['last_id']) == 12 and int(resumed_history[-1]['parcels']) == 12
-    print(f'PASS MPI spray application, schedule and restart: {args.ranks} ranks; artifacts: {work}')
+    profile = (schedule + '\n injection_profile_points=4' +
+               '\n injection_profile_times=0,7.5e-9,1.5e-8,2.25e-8' +
+               '\n injection_profile_rates=0,0,.02,0')
+    run_variant('profiled', args.ranks, profile)
+    profile_history = rows(work / 'profiled.history.csv')
+    assert [int(row['parcels']) for row in profile_history] == [0, 4, 8, 8]
+    assert int(profile_history[-1]['events']) == 3 and int(profile_history[-1]['last_id']) == 8
+    assert math.isclose(float(profile_history[-1]['injected_mass']), 1.5e-10, rel_tol=1e-14)
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in profile_history)
+    run_variant('profiled_split', args.ranks, profile + "\n checkpoint_path='profiled.chk'", stop='7.5e-9')
+    run_variant('profiled_resume', 6 - args.ranks, profile + "\n restart_path='profiled.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('profiled', suffix, keys)
+        actual = snapshots('profiled_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    run_variant('profiled_mismatch', args.ranks,
+                profile.replace('rates=0,0,.02,0', 'rates=0,0,.03,0') + "\n restart_path='profiled.chk'", expect_success=False)
+    assert not (work / 'profiled_mismatch.history.csv').exists()
+    print(f'PASS MPI spray application, profile, schedule and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 

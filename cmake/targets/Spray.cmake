@@ -5,6 +5,7 @@ if(PELEF_ENABLE_SPRAY)
     DESTINATION "share/pelef/licenses")
   function(pelef_add_spray_runtime target base)
     add_library(${target} STATIC
+      src/spray/spray_injection_profile_mod.F90
       src/spray/spray_parcel_mod.F90
       src/spray/spray_mixture_mod.F90
       src/spray/spray_partition_mod.F90

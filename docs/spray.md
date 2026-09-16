@@ -1922,3 +1922,13 @@ a chemistry closure residual on absent HE; the separate
 mass by assigning a tiny negative closure residual to the largest component.
 Build/input instructions are in the [MPI case guide](../cases/mpi_spray_3d/README.md),
 with exact configuration and evidence [here](validation/spray-selected-mpi-20260917.md).
+
+### MPI mass-flow profiles
+
+The MPI namelist accepts up to 64 ordered time/rate points and integrates each
+scheduled event interval with `integrate_spray_injection_profile`. The serial
+application now calls the same interval integrator, preserving its trapezoidal
+formula. Profiles cover all event intervals; unused entries stay zero. Active
+profiles replace fixed event mass and are included in restart identity. Zero-dose
+events advance the schedule without consuming IDs. Independent MPI port schedules
+remain open. See [profile evidence](validation/spray-mpi-profile-20260917.md).

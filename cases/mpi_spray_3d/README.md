@@ -44,7 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Independent multiport schedules and rate profiles, distributed breakup/wall films
+Independent multiport schedules, distributed breakup/wall films
 and SGS remain to be integrated in this executable.
 
 ## Save and resume
@@ -91,3 +91,19 @@ The old selected MPI 1D executable requires its own 2/10-species initialization
 profiles and is omitted for other species counts. This does not disable the
 selected MPI spray or AMR targets. Qualification here covers 21 species, not every
 supported mechanism size or physical liquid-fuel ignition.
+
+## Time-varying mass flow
+
+Set `injection_profile_points` (2--64), `injection_profile_times` (s) and
+`injection_profile_rates` (kg/s, 0--1). Times must increase and cover the complete
+window from `injection_start` through
+`injection_start + injection_events * injection_interval`; unused array entries
+must stay zero. Each event uses the exact piecewise-linear integral over its
+interval as the injected mass, replacing `total_mass`. The mass for that interval
+is introduced at its event's start, consistent with the discrete parcel schedule.
+The final event interval is included even if the simulation stops earlier.
+
+A zero integrated dose consumes the event but creates no particle or ID. Positive
+doses use `number` particles. Profiles and their integration version are bound to
+checkpoint context, so a changed profile cannot silently continue a saved run.
+With `injection_profile_points=0` (default), fixed mass per event is unchanged.

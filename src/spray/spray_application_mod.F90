@@ -13,6 +13,7 @@ module spray_application_mod
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
   use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d
   use spray_wall_impact_mod
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use spray_mixture_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, mixture_system_totals, valid_spray_boundary_faces
@@ -1412,23 +1413,15 @@ contains
       integer, intent(in), optional :: profile_port
       real(dp) :: profile_times(64),profile_rates(64)
       integer :: points
-      real(dp) :: lo,hi,flo,fhi,width
-      integer :: knot
+      logical :: profile_ok
       points=injection_profile_points;profile_times=injection_profile_times;profile_rates=injection_profile_rates
       if (present(profile_port)) then
         points=port_profile_points(profile_port)
         profile_times=port_profile_times(:,profile_port);profile_rates=port_profile_rates(:,profile_port)
       end if
-      mass=0
-      do knot=1,points-1
-        lo=max(begin_time,profile_times(knot));hi=min(end_time,profile_times(knot+1))
-        if (hi<=lo) cycle
-        width=profile_times(knot+1)-profile_times(knot)
-        flo=(lo-profile_times(knot))/width;fhi=(hi-profile_times(knot))/width
-        flo=(1-flo)*profile_rates(knot)+flo*profile_rates(knot+1)
-        fhi=(1-fhi)*profile_rates(knot)+fhi*profile_rates(knot+1)
-        mass=mass+.5_dp*(hi-lo)*(flo+fhi)
-      end do
+      call integrate_spray_injection_profile(profile_times(:points),profile_rates(:points), &
+        begin_time,end_time,mass,profile_ok)
+      if (.not.profile_ok) call fail('Invalid injection profile integration interval')
     end function
 
     logical function nozzle_inside_domain(center,axis,radius) result(valid)

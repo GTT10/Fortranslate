@@ -14,6 +14,7 @@ module spray_mpi_application_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: mixture_system_totals
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use spray_mixture_mod, only: mixture_evolution_id
   use spray_mpi_mod
   implicit none
@@ -31,6 +32,9 @@ contains
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),masses(:,:)
   integer :: cells(3)=[8,4,4],number=4,max_steps=10000,injection_events=1
   real(dp) :: injection_start=0,injection_interval=1e-8_dp
+  integer :: injection_profile_points=0
+  real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,profile_mass
+  character(len=4096) :: profile_context
   real(dp) :: spacing(3)=[.001_dp,.001_dp,.001_dp],lower(3)=0,gas_density=1,gas_temperature=800
   real(dp) :: gas_velocity(3)=0
   real(dp), allocatable :: gas_fractions(:)
@@ -56,7 +60,8 @@ contains
     number,total_mass,center,axis,speed,half_angle,diameter,drop_temperature,fractions, &
     liquid_density,liquid_cp,boiling_temperature,latent_heat,liquid_species,final_time,dt_max,cfl, &
     rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix,restart_path,checkpoint_path, &
-    injection_events,injection_start,injection_interval
+    injection_events,injection_start,injection_interval,injection_profile_points, &
+    injection_profile_times,injection_profile_rates
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -83,7 +88,8 @@ contains
   call require(status==0,'Input deserialization failed')
   call require(all(ieee_is_finite([spacing,lower,gas_density,gas_temperature,gas_velocity,gas_fractions, &
     total_mass,center,axis,speed,half_angle,diameter,drop_temperature,fractions,liquid_density,liquid_cp, &
-    boiling_temperature,latent_heat,final_time,dt_max,cfl,rtol,atol,injection_start,injection_interval])),'Nonfinite input')
+    boiling_temperature,latent_heat,final_time,dt_max,cfl,rtol,atol,injection_start,injection_interval, &
+    injection_profile_times,injection_profile_rates])),'Nonfinite input')
   call require(all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.maxval(abs(lower))<=1e9_dp,'Invalid geometry')
   call require(final_time>=0.and.final_time<=1e6_dp.and.dt_max>0.and.dt_max<=1e6_dp,'Invalid time interval')
   call require(cfl>0.and.cfl<=1.and.max_steps>0.and.min(rtol,atol)>0,'Invalid integration controls')
@@ -95,6 +101,17 @@ contains
     'Injection schedule exceeds time range')
   if (injection_events>1) call require(injection_start+injection_interval>injection_start, &
     'Injection interval is below time resolution')
+  call require(injection_profile_points==0.or.(injection_profile_points>=2.and.injection_profile_points<=64), &
+    'Invalid injection profile point count')
+  call require(all(injection_profile_times(injection_profile_points+1:)==0).and. &
+    all(injection_profile_rates(injection_profile_points+1:)==0),'Unused injection profile entries')
+  if (injection_profile_points>0) then
+    call require(injection_events>0,'A profile requires scheduled events')
+    call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
+      injection_profile_rates(:injection_profile_points),injection_start, &
+      injection_start+real(injection_events,dp)*injection_interval,profile_mass,ok)
+    call require(ok,'Invalid profile or incomplete schedule coverage')
+  end if
   call require(gas_density>0.and.gas_temperature>0.and.all(gas_fractions>=0),'Invalid initial gas')
   call require(abs(sum(gas_fractions)-1)<1e-12_dp,'Gas fractions must sum to one')
   call require(len_trim(output_prefix)>0,'Empty output prefix')
@@ -127,6 +144,14 @@ contains
     diameter,drop_temperature,fractions,liquid_species,liquid_density,liquid_cp,boiling_temperature,latent_heat, &
     dt_max,cfl,rtol,atol,chemistry,solver,limiter,transport_flags,injection_events,injection_start,injection_interval
   call require(status==0,'Checkpoint context serialization failed')
+  if (injection_profile_points>0) then
+    write(profile_context,'(*(g0,1x))',iostat=status) 'linear-injection-profile-v1',injection_profile_points, &
+      injection_profile_times(:injection_profile_points),injection_profile_rates(:injection_profile_points)
+    call require(status==0,'Profile context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint profile context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end if
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
@@ -229,11 +254,22 @@ contains
     real(dp), allocatable :: candidate_mass(:,:)
     real(dp) :: delta(5+size(species)),global_delta(5+size(species))
     integer(int64) :: candidate_id
+    real(dp) :: amount,event_time
+    integer :: event_number
     do while(event<injection_events)
       if (next_injection_time()>time) exit
       candidate=parcels;candidate_mass=masses;candidate_id=last_id;local_mass=0
-      if (rank==0) local_mass=total_mass
-      call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(number,0,rank==0), &
+      amount=total_mass;event_number=number
+      if (injection_profile_points>0) then
+        event_time=next_injection_time()
+        call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
+          injection_profile_rates(:injection_profile_points),event_time, &
+          injection_start+real(event+1,dp)*injection_interval,amount,ok)
+        call require(ok,'Profile event integration failed')
+        if (amount==0) event_number=0
+      end if
+      if (rank==0) local_mass=amount
+      call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(event_number,0,rank==0), &
         center,axis,speed,half_angle,diameter,drop_temperature,options%maximum_parcels,candidate_id,candidate,delta,ok, &
         liquids,fractions,candidate_mass)
       call require(ok,'Scheduled injection rejected')
