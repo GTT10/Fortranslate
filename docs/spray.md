@@ -1788,8 +1788,8 @@ transport and component tables are a caller-owned common convention.
 
 The wrapper uses `advance_spray_chemistry_3d`, accepting native explicit/implicit
 chemistry and CVODE when compiled in. Focused MPI evidence currently covers native
-implicit chemistry. Without hydro options this is particle/reaction operator splitting. Molecular
-transport, SGS, walls and breakup are not advanced by this API. The
+implicit chemistry. Without hydro options this is particle/reaction operator splitting. SGS, walls
+and breakup are not advanced by this API. The
 nonlinear particle substep remains first order despite symmetric ordering. See
 [reaction coupling evidence](validation/spray-mpi-reaction-20260916.md).
 
@@ -1807,5 +1807,23 @@ Supplying both `hydro_solver` and `hydro_limiter` to
 `advance_mpi_mixture_reaction` enables particle-half / chemistry-half / hydro /
 chemistry-half / particle-half ordering. Gas and particle state commit only after
 all stages and final migration succeed. Omitting both retains reaction-only gas
-stepping. Molecular transport and the distributed application remain open. See
+stepping. The distributed application remains open. See
 [advection evidence](validation/spray-mpi-hydro-20260917.md).
+
+### Distributed molecular transport
+
+`advance_mpi_spray_transport` advances periodic x-slab gas viscosity, heat
+conduction, species diffusion and barodiffusion using the existing ghosted
+transport fluxes and SSPRK2. Its four `enabled` entries select these processes in
+that order. One gas layer and cell species-outflow limiter factors are exchanged
+with adjacent ranks each stage, so each shared face uses the same limited flux.
+The returned `minimum_theta` is the minimum accepted factor across ranks/stages;
+failure leaves gas/temperature intact and returns its default value of one.
+Geometry, time step and flags must agree; species and transport tables remain a
+caller-owned common convention. The caller chooses a stable time step.
+
+Optional `transport_flags(4)` in `advance_mpi_mixture_reaction` requires hydro
+options when any flag is true and adds transport half-steps around hydro:
+P/2-C/2-T/2-H-T/2-C/2-P/2. All stages retain the complete interval transaction.
+Gas SGS, walls, breakup and MPI application/restart integration remain open. See
+[transport evidence](validation/spray-mpi-transport-20260917.md).

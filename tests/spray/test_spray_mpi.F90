@@ -7,6 +7,7 @@ program test_spray_mpi
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use mixture_thermo_mod, only: mixture_specific_gas_constant
+  use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_euler_ssprk2_plm_3d
   use gas_transport_mod, only: gas_transport_species
@@ -32,7 +33,7 @@ program test_spray_mpi
   real(dp), allocatable :: temperature(:,:,:),saved_temperature(:,:,:),reference_temperature(:,:,:)
   real(dp) :: primitive(15),gas_cell(15),gas_t,sound
   integer :: source
-  real(dp) :: weights(8),expected_value
+  real(dp) :: weights(8),expected_value,serial_theta,mpi_theta
   character(len=16) :: faces(6)
   integer(int64) :: last_id,first_id,saved_last
   logical :: ok
@@ -364,12 +365,55 @@ program test_spray_mpi
   call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(all(abs(after(:5)-before(:5))<2e-12_dp*max(1e-12_dp,abs(before(:5)))), &
     'MPI particle reaction hydro conservation')
+  do k=1,3
+    do j=1,3
+      do i=1,cells(1)
+        primitive=0;primitive(1)=1;primitive(2:4)=[2.0_dp*j,.5_dp*k,.25_dp*i]
+        primitive(5+liquids(1)%vapor_index)=.1_dp+.02_dp*sin(2*acos(-1.0_dp)*real(i-1,dp)/cells(1))
+        primitive(15)=1-primitive(5+liquids(1)%vapor_index)
+        primitive(5)=(500+20*i+10*j)*mixture_specific_gas_constant(species,primitive(6:),ok)
+        call require(ok,'diffusing gas constant')
+        call reactive_primitive_to_conserved(species,primitive,reference(:,i,j,k),reference_temperature(i,j,k),sound,ok)
+        call require(ok,'transport initial state')
+      end do
+    end do
+  end do
+  field=reference(:,first(1)+1:first(1)+dims(1),:,:)
+  temperature=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
+  saved_field=field
+  call advance_reactive_transport_3d(species,transport,reference,reference_temperature,cells(1),3,3, &
+    .001_dp,.001_dp,.001_dp,1e-6_dp,.true.,.true.,.true.,.true.,serial_theta,ok)
+  call require(ok,'serial transport reference')
+  call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,field,temperature,[.001_dp,.001_dp,.001_dp], &
+    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok)
+  call require(ok.and.abs(mpi_theta-serial_theta)<1e-14_dp,'MPI transport limiter matches serial')
+  call require(all(abs(field-reference(:,first(1)+1:first(1)+dims(1),:,:))< &
+    2e-12_dp*max(1.0_dp,abs(reference(:,first(1)+1:first(1)+dims(1),:,:)))),'MPI transport matches serial fields')
+  call require(maxval(abs(temperature-reference_temperature(first(1)+1:first(1)+dims(1),:,:)))<1e-8_dp, &
+    'MPI transport matches serial temperatures')
+  call require(maxval(abs(field-saved_field))>1e-6_dp,'transport changes the gas')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'transport split initial budgets')
+  call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc',[.true.,.true.,.true.,.true.])
+  call require(ok,'MPI particles chemistry transport hydro split')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'transport split final budgets')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after(:5)-before(:5))<2e-12_dp*max(1e-12_dp,abs(before(:5)))), &
+    'MPI particles chemistry transport hydro conservation')
   if (rank==nranks-1) field(1,1,1,1)=-1
   saved_field=field;saved_temperature=temperature
   call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,field,temperature,[1.0_dp,1.0_dp,1.0_dp], &
     cells,1e-5_dp,'hllc','mc',ok)
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'one rank invalid hydro state rolls back collectively')
+  call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,field,temperature,[.001_dp,.001_dp,.001_dp], &
+    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'one rank invalid transport state rolls back collectively')
   call MPI_Finalize(ierr)
 contains
   function element_totals(inventory) result(elements)
