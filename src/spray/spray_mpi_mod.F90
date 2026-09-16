@@ -17,12 +17,14 @@ module spray_mpi_mod
   use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
     construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
-  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options, &
+    valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: advance_mpi_film_coupling
   public :: migrate_mpi_wall_films
   public :: advance_mpi_spray_les
   public :: advance_mpi_spray_transport
@@ -30,6 +32,142 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine advance_mpi_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
+      films,film_mass,lower,spacing,cells,parts,interval,faces,substeps,boundary_change,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    real(dp), allocatable, intent(inout) :: film_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),interval
+    integer, intent(in) :: cells(3),parts(3)
+    character(len=*), intent(in) :: faces(6)
+    integer, intent(out) :: substeps
+    real(dp), intent(out) :: boundary_change(:)
+    logical, intent(out) :: ok
+    type(spray_wall_film), allocatable :: patches(:),trial(:),kept(:)
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:),field(:,:,:,:)
+    real(dp), allocatable :: masses(:,:),next_mass(:,:),kept_mass(:,:),positions(:,:),samples(:,:),change(:,:)
+    real(dp), allocatable :: rates(:,:),hv(:,:),qg(:),qw(:)
+    real(dp) :: primitive(size(state,1)),tg,sound,conductivity,tdot,elapsed,dt,local_dt,wall_energy
+    real(dp) :: ledger,trial_ledger,global_ledger,controls(3),low(3),high(3)
+    integer :: np,nc,nvar,p,c,axis,face,attempt,count_steps,ierr
+    logical :: valid,agreed,accepted
+    ok=.false.;substeps=0;boundary_change=0
+    valid=allocated(films).and.allocated(film_mass).and.valid_spray_options(options)
+    valid=valid.and.valid_wall_options(wall_options,faces).and.ieee_is_finite(interval)
+    valid=valid.and.interval>=0.and.interval<=1e6_dp.and.size(transport)==size(species)
+    call agree()
+    if (.not.agreed) return
+    np=size(films);nc=size(components);nvar=size(state,1)
+    valid=nc>=1.and.nc<=min(16,size(species)).and.np<=min(125000,wall_options%maximum_films)
+    valid=valid.and.all(shape(film_mass)==[nc,np]).and.size(boundary_change)==nvar
+    call agree()
+    if (.not.agreed) return
+    controls=[interval,real(nc,dp),merge(1.0_dp,0.0_dp,wall_options%evolve)]
+    call MPI_Allreduce(controls,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    do p=1,np
+      valid=valid.and.valid_wall_component_inventory(films(p),film_mass(:,p))
+    end do
+    do c=1,nc
+      valid=valid.and.valid_spray_liquid(components(c)).and.components(c)%vapor_index<=size(species)
+    end do
+    call agree()
+    if (.not.agreed) return
+    gas=state;temp=temperature;patches=films;masses=film_mass
+    allocate(positions(3,np),change(nvar,np),rates(nc,np),hv(nc,np),qg(np),qw(np))
+    do p=1,np
+      positions(:,p)=patches(p)%position
+    end do
+    change=0
+    call deposit_mpi_spray_gas(comm,species,gas,temp,positions,change,lower,spacing,cells,parts,faces,valid)
+    if (.not.valid) return
+    elapsed=0;ledger=0;count_steps=0
+    do while(wall_options%evolve.and.elapsed<interval)
+      valid=count_steps<options%maximum_substeps
+      call agree()
+      if (.not.agreed) return
+      if (allocated(field)) deallocate(field)
+      allocate(field(nvar+1,size(gas,2),size(gas,3),size(gas,4)))
+      field(:nvar,:,:,:)=gas;field(nvar+1,:,:,:)=temp
+      call sample_mpi_spray_field(comm,field,positions,lower,spacing,cells,parts,faces,samples,valid)
+      if (.not.valid) return
+      local_dt=interval-elapsed;rates=0;hv=0;qg=0;qw=0
+      do p=1,np
+        if (patches(p)%mass<=0) cycle
+        axis=maxloc(abs(patches(p)%normal),dim=1)
+        face=2*axis-merge(1,0,patches(p)%normal(axis)>0)
+        valid=wall_options%enabled(face)
+        if (.not.valid) exit
+        call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive,tg,sound,valid)
+        if (.not.valid) exit
+        conductivity=wall_liquid_conductivity_at_temperature(wall_options,patches(p)%material_id,patches(p)%temperature)
+        call mixture_wall_film_rates(patches(p),components,masses(:,p),species,transport,primitive,tg,options, &
+          conductivity,wall_options%temperature(face),rates(:,p),hv(:,p),qg(p),qw(p),tdot,valid)
+        if (.not.valid) exit
+        do c=1,nc
+          if (rates(c,p)>0.and.masses(c,p)>mixture_trace_fraction*patches(p)%mass) &
+            local_dt=min(local_dt,options%max_fractional_change*masses(c,p)/rates(c,p))
+        end do
+        if (abs(tdot)>0) local_dt=min(local_dt,min(2.0_dp,options%max_fractional_change*patches(p)%temperature)/abs(tdot))
+      end do
+      call agree()
+      if (.not.agreed) return
+      call MPI_Allreduce(local_dt,dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      accepted=.false.
+      do attempt=1,30
+        if (dt<=0.or.elapsed+dt<=elapsed) exit
+        trial=patches;next_mass=masses;change=0;trial_ledger=0;valid=.true.
+        do p=1,np
+          if (patches(p)%mass<=0) cycle
+          call advance_mixture_wall_film_exchange(trial(p),components,next_mass(:,p),rates(:,p)*dt,hv(:,p), &
+            qg(p)*dt,qw(p)*dt,wall_options%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true.)
+          if (valid.and.trial(p)%mass>0) valid= &
+            wall_liquid_conductivity_at_temperature(wall_options,trial(p)%material_id,trial(p)%temperature)>0
+          if (.not.valid) exit
+          trial_ledger=trial_ledger-wall_energy
+        end do
+        call agree()
+        if (agreed) then
+          next_gas=gas;next_temp=temp
+          call deposit_mpi_spray_gas(comm,species,next_gas,next_temp,positions,change,lower,spacing,cells,parts,faces,valid)
+          if (valid) then
+            accepted=.true.;exit
+          end if
+        end if
+        dt=.5_dp*dt
+      end do
+      if (.not.accepted) return
+      gas=next_gas;temp=next_temp;patches=trial;masses=next_mass;ledger=ledger+trial_ledger
+      elapsed=elapsed+dt;count_steps=count_steps+1
+    end do
+    kept=pack(patches,patches%mass>0)
+    allocate(kept_mass(nc,size(kept)))
+    do c=1,nc
+      kept_mass(c,:)=pack(masses(c,:),patches%mass>0)
+    end do
+    call migrate_mpi_wall_films(comm,kept,kept_mass,lower,spacing,cells,parts,wall_options%maximum_films,valid)
+    if (.not.valid) return
+    call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    state=gas;temperature=temp
+    call move_alloc(kept,films);call move_alloc(kept_mass,film_mass)
+    boundary_change(5)=global_ledger;substeps=count_steps;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   ! Stationary patches are owned by their containing Cartesian cell. Exact upper
   ! boundary coordinates select the final cell; physical film positions stay exact.
   ! Receive order is source-rank then original local order; films have no global ID.

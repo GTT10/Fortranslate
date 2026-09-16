@@ -16,7 +16,7 @@ program test_spray_mpi
   use spray_parcel_mod
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_mpi_mod
-  use spray_wall_impact_mod, only: spray_wall_film
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
   implicit none
@@ -248,6 +248,7 @@ program test_spray_mpi
     'negative species rolls back all owners')
   call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
   call check_kh_release()
+  call check_film_coupling()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'initial coupled totals')
@@ -525,6 +526,54 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film_coupling()
+    type(spray_wall_film), allocatable :: patches(:),original(:)
+    type(spray_parcel), allocatable :: empty(:)
+    type(spray_options) :: settings
+    type(spray_wall_options) :: walls
+    real(dp), allocatable :: cm(:,:),original_cm(:,:),empty_cm(:,:),gas(:,:,:,:),temp(:,:,:)
+    real(dp) :: start(15),finish(15),global_start(15),global_finish(15),boundary(15),film_total
+    integer :: count_steps,np
+    character(len=16) :: film_faces(6)
+    np=merge(1,0,rank==0)
+    allocate(patches(np),cm(2,np),empty(0),empty_cm(2,0))
+    if (np==1) then
+      patches(1)=spray_wall_film([0.0_dp,.5_dp,.5_dp],[1.0_dp,0.0_dp,0.0_dp], &
+        1e-9_dp,330.0_dp,.001_dp,1e-6_dp,1)
+      cm(:,1)=patches(1)%mass*[.25_dp,.75_dp]
+    end if
+    original=patches;original_cm=cm;gas=field;temp=temperature
+    film_faces='periodic';film_faces(1:2)='slip_wall'
+    walls%enabled(1)=.true.;walls%evolve=.true.;walls%temperature=400
+    walls%liquid_conductivity=.6_dp;walls%minimum_height=1e-10_dp
+    settings%maximum_substeps=1
+    call advance_mpi_film_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,walls,gas,temp,patches,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-3_dp,film_faces, &
+      count_steps,boundary,ok)
+    call require(.not.ok.and.count_steps==0.and.all(boundary==0),'film substep failure clears ledger')
+    call require(all(gas==field).and.all(temp==temperature).and.all(cm==original_cm), &
+      'film substep failure rolls back gas/composition')
+    call require(all(patches%temperature==original%temperature).and.all(patches%mass==original%mass), &
+      'film substep failure rolls back patch state')
+    settings%maximum_substeps=100000
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],empty,liquids,empty_cm,start,ok,patches,cm)
+    call require(ok,'film initial totals')
+    call MPI_Allreduce(start,global_start,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call advance_mpi_film_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,walls,gas,temp,patches,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,film_faces, &
+      count_steps,boundary,ok)
+    call require(ok.and.count_steps>0.and.boundary(5)>0,'MPI film heats with wall energy input')
+    if (rank==0) call require(patches(1)%temperature>330,'MPI film temperature increases')
+    film_total=sum(patches%mass)
+    call MPI_Allreduce(MPI_IN_PLACE,film_total,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(film_total<1e-9_dp,'MPI film evaporation reduces liquid mass')
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],empty,liquids,empty_cm,finish,ok,patches,cm)
+    call require(ok,'film final totals')
+    call MPI_Allreduce(finish,global_finish,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(global_finish-global_start-boundary)<2e-12_dp*max(1e-12_dp,abs(global_start))), &
+      'MPI gas film wall budgets close')
+  end subroutine
+
   subroutine check_film_migration()
     type(spray_wall_film), allocatable :: patches(:),original(:)
     real(dp), allocatable :: cm(:,:),original_cm(:,:)
