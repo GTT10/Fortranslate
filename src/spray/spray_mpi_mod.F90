@@ -251,7 +251,7 @@ contains
 
   subroutine advance_mpi_mixture_reaction(comm,species,reactions,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
-      hydro_solver,hydro_limiter,transport_flags)
+      hydro_solver,hydro_limiter,transport_flags,last_id)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -268,6 +268,8 @@ contains
     logical, intent(in), optional :: transport_flags(4)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    integer(int64), optional, intent(inout) :: last_id
+    integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
     real(dp) :: controls(10),minimum(10),maximum(10),chemistry_interval,transport_theta
@@ -299,6 +301,7 @@ contains
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0
+    valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.all(ieee_is_finite([interval,rtol,atol]))
     valid=valid.and.interval>=0.and.interval<=1e6_dp.and.min(rtol,atol)>0
     valid=valid.and.(.not.any(enabled).or.present(hydro_solver))
@@ -315,9 +318,11 @@ contains
     call MPI_Allreduce(controls,maximum,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
+    candidate_id=0
+    if (present(last_id)) candidate_id=last_id
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid)
+      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id)
     if (.not.valid) return
     chemistry_interval=interval
     if (present(hydro_solver)) chemistry_interval=.5_dp*interval
@@ -344,11 +349,12 @@ contains
       if (.not.agreed) return
     end if
     call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid)
+      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id)
     if (.not.valid) return
     if (first_steps>huge(substeps)-last_steps) return
     state=gas;temperature=temp
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
+    if (present(last_id)) last_id=candidate_id
     substeps=first_steps+last_steps;ok=.true.
   end subroutine
 
@@ -446,7 +452,7 @@ contains
   end subroutine
 
   subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &
-      parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok)
+      parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok,last_id)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -459,6 +465,10 @@ contains
     integer, intent(in) :: cells(3),parts(3)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    integer(int64), optional, intent(inout) :: last_id
+    integer(int64) :: accepted_id,trial_id
+    real(dp), allocatable :: reynolds(:),child_energy(:)
+    integer :: child_flag,low_flag,high_flag
     type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
     type(spray_liquid) :: effective
     type(spray_film) :: film
@@ -475,11 +485,17 @@ contains
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
-    ! Child shedding needs collective ID reservation; representative breakup does not.
-    valid=valid.and..not.options%khrt_children
+    valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.size(components)>=1.and.size(components)<=16
     call agree()
     if (.not.agreed) return
+    child_flag=merge(1,0,options%khrt_children)
+    call MPI_Allreduce(child_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(child_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
+    accepted_id=0
+    if (present(last_id)) accepted_id=last_id
     np=size(parcels);nc=size(components);nvar=size(state,1)
     valid=size(component_mass,1)==nc.and.size(component_mass,2)==np.and.np<=125000
     valid=valid.and.size(transport)==size(species)
@@ -517,6 +533,10 @@ contains
       valid=count_steps<options%maximum_substeps
       call agree()
       if (.not.agreed) return
+      np=size(drops)
+      deallocate(positions,change,primitive,tg)
+      if (allocated(reynolds)) deallocate(reynolds)
+      allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np),reynolds(np))
       ! Sample the temperature guess alongside conserved variables in one exchange.
       if (allocated(field)) deallocate(field)
       allocate(field(nvar+1,size(gas,2),size(gas,3),size(gas,4)))
@@ -556,7 +576,7 @@ contains
       accepted=.false.
       do attempt=1,30
         if (dt<=0.or.elapsed+dt<=elapsed) exit
-        trial=drops;next_mass=masses;change=0;valid=.true.
+        trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
@@ -575,14 +595,26 @@ contains
             call build_mixture_film(species,transport,primitive(:,p),tg(p),trial(p),components,y,options, &
               film,rates,hv,valid)
             if (.not.valid) exit
-            call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
-              film%density,film%viscosity,dt,valid)
-            if (.not.valid) exit
-            next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
+            if (options%khrt_children) then
+              reynolds(p)=film%density*norm2(primitive(2:4,p)-trial(p)%velocity)* &
+                parcel_diameter(trial(p),effective)/film%viscosity
+            else
+              call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
+                film%density,film%viscosity,dt,valid)
+              if (.not.valid) exit
+              next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
+            end if
           end if
           trial(p)%position=lower+modulo(trial(p)%position-lower,length)
         end do
         call agree()
+        if (agreed.and.options%khrt_children) then
+          call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
+            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid)
+          if (valid) valid=size(trial)<=125000
+          call agree()
+          if (agreed) change(5,:)=change(5,:)+child_energy
+        end if
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_spray_gas(comm,species,next_gas,next_temp,positions,change,lower,spacing,cells,parts,faces,valid)
@@ -593,9 +625,10 @@ contains
         dt=.5_dp*dt
       end do
       if (.not.accepted) return
-      drops=trial;masses=next_mass;gas=next_gas;temp=next_temp
+      drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
+    np=size(drops)
     kept=count(drops%mass>0);allocate(survivors(kept),kept_mass(nc,kept));kept=0
     do p=1,np
       if (drops(p)%mass<=0) cycle
@@ -606,6 +639,7 @@ contains
     if (.not.valid) return
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
+    if (present(last_id)) last_id=accepted_id
     substeps=count_steps;ok=.true.
   contains
     subroutine agree()

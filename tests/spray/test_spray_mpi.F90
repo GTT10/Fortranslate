@@ -506,7 +506,9 @@ contains
     type(spray_parcel), allocatable :: drops(:),original(:)
     real(dp), allocatable :: cm(:,:),original_cm(:,:),energy(:),density(:),velocity(:,:),reynolds(:)
     type(spray_options) :: settings
-    real(dp) :: initial(15),final(15),y(2)
+    real(dp) :: initial(15),final(15),y(2),global_initial(15),global_final(15)
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:)
+    integer :: coupled_steps,global_parcels
     integer :: np,q
     integer(int64) :: mark
     np=merge(1,0,rank<nranks-1)
@@ -549,6 +551,36 @@ contains
     call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,final,ok)
     call require(ok,'KH final inventory');final(5)=final(5)+sum(energy)
     call require(all(abs(final-initial)<2e-12_dp*max(1e-12_dp,abs(initial))),'KH mass momentum energy species conservation')
+    drops=original;cm=original_cm;mark=int(nranks,int64)
+    do q=1,size(drops)
+      drops(q)%velocity=[1000.0_dp,0.0_dp,0.0_dp]
+    end do
+    original=drops;gas=field;temp=temperature
+    settings%drag=.false.;settings%heat=.false.;settings%evaporation=.false.
+    settings%maximum_substeps=1
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],.001_dp,coupled_steps,ok,mark)
+    call require(.not.ok.and.coupled_steps==0.and.mark==nranks,'KH whole-interval rollback restores IDs')
+    call require(all(gas==field).and.all(temp==temperature).and.all(cm==original_cm), &
+      'KH whole-interval rollback restores gas and components')
+    call require(all(drops%mass==original%mass).and.all(drops%khrt_shed_volume==original%khrt_shed_volume), &
+      'KH whole-interval rollback restores parent state')
+    settings%maximum_substeps=100000
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,initial,ok)
+    call require(ok,'coupled KH initial inventory')
+    call MPI_Allreduce(initial,global_initial,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-6_dp,coupled_steps,ok,mark)
+    call require(ok.and.coupled_steps>0.and.mark>nranks,'coupled KH accepts children and IDs')
+    q=size(drops)
+    call MPI_Allreduce(q,global_parcels,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(global_parcels>=4*(nranks-1),'coupled KH children survive migration')
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,final,ok)
+    call require(ok,'coupled KH final inventory')
+    call MPI_Allreduce(final,global_final,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(global_final-global_initial)<2e-12_dp*max(1e-12_dp,abs(global_initial))), &
+      'coupled KH conserves gas and particle inventories')
+
   end subroutine
 
   function element_totals(inventory) result(elements)

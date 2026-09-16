@@ -15,10 +15,10 @@ contains
   ! Root owns file I/O and the temporary whole-grid buffer; no full grid is
   ! replicated on other ranks. The caller binds all model tables in context.
   subroutine mpi_spray_checkpoint(comm,writing,path,context,species,state,temperature,parcels,component_mass, &
-      lower,spacing,cells,time,steps,event,last_id,reference,injected,ok,breakup_state,khrt_state)
+      lower,spacing,cells,time,steps,event,last_id,reference,injected,ok,breakup_state,khrt_state,shedding_state)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
-    logical, intent(in), optional :: breakup_state,khrt_state
+    logical, intent(in), optional :: breakup_state,khrt_state,shedding_state
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference(:),injected(:)
@@ -33,14 +33,15 @@ contains
     real(dp), allocatable :: masses(:,:),global_state(:,:,:,:),global_t(:,:,:),local(:,:,:,:),packed(:),received(:)
     real(dp), allocatable :: ref(:),inj(:)
     integer, allocatable :: counts(:),offsets(:)
-    integer :: rank,nranks,ierr,nvar,nc,r,first(3),extent(3),config(8),low(8),high(8),step_data(2)
+    integer :: rank,nranks,ierr,nvar,nc,r,first(3),extent(3),config(9),low(9),high(9),step_data(2)
     integer(int64) :: next_id
     real(dp) :: next_time
-    logical :: valid,agreed,has_breakup,has_khrt
+    logical :: valid,agreed,has_breakup,has_khrt,has_shedding
     character(len=256) :: message
-    ok=.false.;has_breakup=.false.;has_khrt=.false.
+    ok=.false.;has_breakup=.false.;has_khrt=.false.;has_shedding=.false.
     if (present(breakup_state)) has_breakup=breakup_state
     if (present(khrt_state)) has_khrt=khrt_state
+    if (present(shedding_state)) has_shedding=shedding_state
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
@@ -52,10 +53,10 @@ contains
     valid=valid.and.size(reference)==nvar.and.size(injected)==nvar
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,nc,merge(1,0,writing),merge(1,0,has_breakup),merge(1,0,has_khrt)]
-    call MPI_Allreduce(config,low,8,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,nvar,nc,merge(1,0,writing),merge(1,0,has_breakup),merge(1,0,has_khrt),merge(1,0,has_shedding)]
+    call MPI_Allreduce(config,low,9,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,high,8,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,high,9,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(low/=high)) return
     call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
@@ -107,7 +108,7 @@ contains
         end do
         call write_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
           step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
-          breakup_state=has_breakup,khrt_state=has_khrt)
+          breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding)
       end if
       call agree()
       ok=agreed;return
@@ -116,7 +117,7 @@ contains
     if (rank==0) then
       call read_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
         step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
-          breakup_state=has_breakup,khrt_state=has_khrt)
+          breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding)
       if (valid) valid=size(masses,1)==nc
       if (valid) then
         do r=0,nranks-1

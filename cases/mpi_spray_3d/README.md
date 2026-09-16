@@ -44,7 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Distributed KH child release, wall films and SGS remain to be integrated in this executable.
+Distributed wall films and SGS remain to be integrated in this executable.
 
 ## Save and resume
 
@@ -227,10 +227,37 @@ The default is `'none'`. KH-RT constants are `khrt_b0=.61`, `khrt_b1=7` and
 Breakup decreases physical droplet mass and increases multiplicity, preserving
 parcel component inventories. Mixture density and thermal properties follow the
 current component masses and temperature; surface tension and viscosity are the
-supplied common constants. KH child shedding is not enabled in this executable.
+supplied common constants. Optional KH child shedding is described below.
 
 Particle CSVs include `deformation`, `deformation_rate` and `rt_time`.
 Checkpoints retain the appropriate deformation/RT state together with component
 masses and IDs. All breakup parameters are bound to restart identity. Changed
 parameters are rejected; default-disabled runs retain their earlier checkpoint
 context and schema.
+
+
+### KH child release
+
+With `breakup_model='khrt'`, enable `khrt_children=.true.` and set the positive
+`khrt_reference_diameter_cubed` (m3) used by the existing shedding threshold.
+The accumulated KH volume produces four children with inherited composition and
+symmetric transverse velocities. Their added kinetic energy is removed from the
+gas through the same owner-routed feedback transaction. New children participate
+in subsequent particle substeps. End-of-interval migration removes consumed
+parents and routes surviving parents/children to their owners.
+
+```fortran
+ khrt_children=.true.
+ khrt_reference_diameter_cubed=1e-25
+```
+
+This small threshold is a test setting, not a calibrated injector value.
+Particle output adds `parent_id`, `khrt_initial_count` and `khrt_shed_volume`.
+Checkpoints preserve these fields and the ID high-water mark. Rejected updates
+restore gas, parcels, composition and IDs together. Coupling currently limits each
+rank's candidate population to 125000 for field sampling/deposition.
+
+IDs are allocated by rank prefix at each release. Changed-rank restarts retain
+existing IDs, but future child IDs can differ when simultaneous releasing parents
+are spread across different partitions. The focused changed-rank case places its
+releasing population on one owner and therefore compares future IDs directly.

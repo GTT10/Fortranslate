@@ -314,7 +314,28 @@ def main():
                 " breakup_model='khrt'\n surface_tension=.073\n liquid_viscosity=.001\n speed=1000\n restart_path='khrt.chk'",
                 expect_success=False)
     assert not (work / 'breakup_mismatch.history.csv').exists()
-    print(f'PASS MPI spray application, breakup and restart: {args.ranks} ranks; artifacts: {work}')
+    shedding = (" breakup_model='khrt'\n surface_tension=.072\n liquid_viscosity=.001\n speed=1000" +
+                "\n khrt_children=.true.\n khrt_reference_diameter_cubed=1e-25")
+    run_variant('shedding', args.ranks, shedding)
+    run_variant('shedding_split', args.ranks, shedding + "\n checkpoint_path='shedding.chk'", stop='1e-8')
+    run_variant('shedding_resume', 6 - args.ranks, shedding + "\n restart_path='shedding.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('shedding', suffix, keys)
+        actual = snapshots('shedding_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    child_drops = snapshots('shedding', 'particles', ['id'])
+    assert len(child_drops) > 4 and any(int(row['parent_id']) > 0 for row in child_drops.values())
+    assert max(key[0] for key in child_drops) > 4
+    child_history = rows(work / 'shedding.history.csv')
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in child_history)
+    run_variant('shedding_mismatch', args.ranks,
+                shedding.replace('cubed=1e-25', 'cubed=1e-24') + "\n restart_path='shedding.chk'", expect_success=False)
+    assert not (work / 'shedding_mismatch.history.csv').exists()
+    print(f'PASS MPI spray application, KH children and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 

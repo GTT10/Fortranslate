@@ -102,8 +102,10 @@ candidate update with component-inventory preservation
 deformation/RT checkpoint state now support changed-rank continuation
 ([evidence](validation/spray-mpi-breakup-app-20260917.md)). A collective KH shedding
 API now constructs children with unique IDs, inherited composition and a gas-energy
-ledger ([evidence](validation/spray-mpi-kh-release-20260917.md)); coupled-step and
-application wiring remain open.
+ledger ([evidence](validation/spray-mpi-kh-release-20260917.md)). MPI coupled
+feedback, input and shedding/lineage restart are now connected, including ID
+rollback on rejected updates
+([evidence](validation/spray-mpi-kh-coupled-20260917.md)).
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
