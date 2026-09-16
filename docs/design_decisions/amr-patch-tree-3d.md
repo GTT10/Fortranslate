@@ -338,6 +338,33 @@ physical wall fluxes, tree reflux and transactional commit are retained. Limitin
 component interpolation alone does not guarantee nonlinear EOS admissibility;
 failures still reject the step. This remains a common timestep across levels.
 
+## Single-depth hydro stepping for subcycling
+
+`advance_amr_patch_tree_hydro_level_3d` advances every patch at one requested
+zero-based depth with synchronous SSPRK2 and returns time-integrated face fluxes.
+The state, temperature and returned flux array commit together only on success.
+Other depths remain unchanged, and their flux entries are unallocated. This
+primitive deliberately performs no restriction or coarse/fine reflux; its caller
+must accumulate fine substeps and synchronize their fluxes over a shared interval.
+
+For a non-root depth, callers provide `coarse_start`/`coarse_end` endpoint trees,
+packing conserved components followed by one temperature guess. Only coarser
+fields must be allocated. `fractions_start` and `fractions_end` give the local
+step endpoints within each donor level's interval; each array has length `depth`,
+and each finite fraction pair must satisfy `0 <= start <= end <= 1`. Ghost values
+use the start fraction for the first Euler flux and end fraction for the second.
+Same-depth peers always come from the same current RK stage. PCM/PLM donor and
+physical boundary behavior reuse the existing tree ghost/flux kernels.
+
+The returned face arrays contain `dt/2 * (F_stage1 + F_stage2)` per unit area,
+with the existing tree-register indexing. Their discrete divergence reproduces
+the complete accepted RK2 update. The method recovers active temperatures after
+the first stage and final convex combination; the first-stage temperature is the
+final recovery guess. This API enables a recursive scheduler but does not itself
+choose substep counts, enforce per-level CFL, reconcile levels or update the
+composite boundary ledger. Until those pieces are connected, the application
+continues to use its existing common-timestep path.
+
 ## Remaining integration
 
 Subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
