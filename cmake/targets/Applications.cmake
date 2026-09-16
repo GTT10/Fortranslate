@@ -106,6 +106,8 @@ target_link_libraries(pelef_reactive_eb_3d PRIVATE pelef_core)
 
 add_executable(pelef_amr_reactive_3d app/pelef_amr_reactive_3d.F90)
 target_link_libraries(pelef_amr_reactive_3d PRIVATE pelef_core)
+add_executable(pelef_amr_tree_reactive_3d app/pelef_amr_tree_reactive_3d.F90)
+target_link_libraries(pelef_amr_tree_reactive_3d PRIVATE pelef_core)
 
 add_executable(pelef_reactive_eb_2d app/pelef_reactive_eb_2d.F90)
 target_link_libraries(pelef_reactive_eb_2d PRIVATE pelef_core)
@@ -129,6 +131,7 @@ install(
     pelef0d_h2o2_full pelef_reactive_2d pelef_reactive_3d
     pelef_reactive_eb_3d
     pelef_amr_reactive_3d
+    pelef_amr_tree_reactive_3d
     pelef_reactive_eb_2d
     pelef_reactive_eb_amr_2d
     pelef_reactive_eb_patch_tree_2d

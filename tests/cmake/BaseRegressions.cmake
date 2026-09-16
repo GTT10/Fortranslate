@@ -903,3 +903,11 @@ add_test(NAME amr_boundary_touching_dynamic_restart_3d
     --touching --dynamic-touching --reacting --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_boundary_touching_dynamic_restart_3d")
 set_tests_properties(amr_boundary_touching_dynamic_restart_3d PROPERTIES TIMEOUT 600)
+
+add_test(NAME regression_amr_patch_tree_application_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_tree_application_3d.py"
+    --executable "$<TARGET_FILE:pelef_amr_tree_reactive_3d>"
+    --reference-executable "$<TARGET_FILE:pelef_reactive_3d>"
+    --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_application_3d")
+set_tests_properties(regression_amr_patch_tree_application_3d PROPERTIES TIMEOUT 240)

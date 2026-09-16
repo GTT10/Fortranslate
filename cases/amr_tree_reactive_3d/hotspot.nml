@@ -1,0 +1,17 @@
+&reactive_3d
+  nx=4, ny=4, nz=4, maximum_steps=100
+  x_upper=0.004, y_upper=0.004, z_upper=0.004
+  final_time=1.0e-9, cfl=0.2
+  problem='reactive_hotspot', thermo_model='elementary'
+  reconstruction='pcm', limiter='mc', riemann_solver='hllc'
+  boundary_condition='outflow'
+  boundary_faces='outflow','outflow','no_slip_wall','no_slip_wall','outflow','outflow'
+  wall_velocity(1,3)=2.0, wall_velocity(1,4)=2.0
+  chemistry_enabled=.true., transport_enabled=.true.
+  initial_temperature=1100.0, initial_pressure=101325.0
+  initial_velocity_x=1.0, initial_velocity_y=0.0, initial_velocity_z=-1.0
+  hotspot_temperature_rise=100.0
+  hotspot_center_x=0.002, hotspot_center_y=0.002, hotspot_center_z=0.002
+  hotspot_width=0.0006
+  output_file='tree_hotspot.csv'
+/

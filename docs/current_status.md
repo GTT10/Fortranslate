@@ -45,7 +45,12 @@ R/2-T/2-H-T/2-R/2 update now aggregates those boundary budgets transactionally
 ([evidence](validation/amr-tree-split-20260917.md)). A conservative overlap-remap
 API now supports changed patch layouts and refinement ratios, with transactional
 EOS recovery ([evidence](validation/amr-tree-remap-20260917.md)). Dynamic tagging/
-regrid scheduling, MPI ownership and application/restart integration remain open.
+regrid scheduling and MPI ownership remain open. The experimental
+[serial tree application](../cases/amr_tree_reactive_3d/README.md) now reads explicit
+patch topology, initializes analytic fields, evolves the split system and writes
+exposed-cell CSV plus composite budgets
+([evidence](validation/amr-tree-application-20260917.md)); checkpoint/restart and a
+selected-mechanism frontend remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

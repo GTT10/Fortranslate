@@ -118,7 +118,9 @@ and subcycling. Exposed-cell chemistry and reaction/hydro splitting are connecte
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.
-Next connect dynamic tagging/regrid scheduling, MPI ownership and application/restart paths. See the
+The serial application now connects static topology input, analytic initialization,
+split evolution and exposed-cell output. Next connect dynamic tagging/regrid scheduling,
+MPI ownership, checkpoint/restart and selected-mechanism frontend paths. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

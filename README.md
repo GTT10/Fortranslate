@@ -19,6 +19,9 @@ now connects fixed/selected-mechanism gas/particle stepping, CSV output and rank
 checkpoint/restart for bounded periodic cases.
 This is not complete PeleC parity or a validated diesel spray solver.
 
+An experimental [serial 3D patch-tree application](cases/amr_tree_reactive_3d/README.md)
+connects static multi-level geometry, reaction/transport/hydro and composite CSV output.
+
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,
 planar single-level 3D embedded boundaries are not arbitrary 3D geometry, and

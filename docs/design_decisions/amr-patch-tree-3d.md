@@ -209,9 +209,19 @@ exposed new cell. Storage does not allocate a global finest-grid raster, but
 work is quadratic in exposed cell counts. No scalable spatial search or timing
 qualification is claimed.
 
+## Serial application
+
+`pelef_amr_tree_reactive_3d` accepts the existing flow namelist and an explicit
+parent/box/ratio topology file. It samples initial conditions at each node's
+global coordinates, then restricts and recovers parents. The driver chooses a
+common all-node timestep including wall/inflow bounds and retries rejected
+transactional steps by halving time. Exposed-cell CSV carries node/level/spacing;
+a companion file records composite initial/final/boundary inventories. See the
+[case guide](../../cases/amr_tree_reactive_3d/README.md).
+
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling, dynamic tagging/regrid scheduling,
-MPI decomposition, checkpoint/restart and application input/output must be
+MPI decomposition, checkpoint/restart and selected-mechanism application dispatch must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
