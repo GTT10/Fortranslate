@@ -27,7 +27,7 @@ module mpi_amr_reactive_3d_application_mod
     average_down_3d, composite_integrals_amr_3d
   use mpi_amr_sparse_reactive_3d_mod, only: &
     mpi_amr_sparse_distribution_3d, mpi_amr_sparse_hierarchy_3d, &
-    initialize_mpi_amr_sparse_distribution_3d, temperature_tag_mpi_amr_sparse_patch_3d, &
+    initialize_mpi_amr_sparse_distribution_3d, temperature_tag_mpi_amr_sparse_patch_3d, regrid_mpi_amr_sparse_3d, &
     scatter_mpi_amr_sparse_hierarchy_3d, &
     gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
@@ -35,8 +35,7 @@ module mpi_amr_reactive_3d_application_mod
     advance_mpi_amr_sparse_full_3d
   use amr_reactive_3d_mod, only: &
     composite_element_integrals_amr_3d, &
-    element_integrals_from_reactive_integrals_3d, &
-    regrid_amr_reactive_3d
+    element_integrals_from_reactive_integrals_3d
   use amr_reactive_3d_checkpoint_mod, only: &
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
     amr_reactive_3d_transport_operator, read_dynamic_amr_reactive_3d_checkpoint,amr_reactive_boundary_signature_3d
@@ -498,27 +497,15 @@ contains
             next_patch,patch_changed,ok,regrid_faces)
           call collective_require(ok,'Failed distributed MPI temperature tagging',4)
           if (patch_changed) then
-            call gather_mpi_amr_sparse_hierarchy_3d(distribution,patch,0,hierarchy, &
-              coarse_state,coarse_temperature,fine_state,fine_temperature,ok)
-            call collective_require(ok,'Failed to gather MPI regrid state',4)
-            root_ok=.true.
-            if (rank==0) then
-              call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state, &
-                fine_temperature,next_patch,root_ok,config%reconstruction,config%limiter, &
-                regrid_faces,inflow_state,inflow_t)
-              if (root_ok) then
-                regrid_count=regrid_count+1
-                write(*,'(a,i0,a,6(i0,1x))') 'Regrid at step ',step,': ',patch%coarse_i_lower, &
-                  patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
-                  patch%coarse_k_lower,patch%coarse_k_upper
-              end if
-            end if
-            call root_require(root_ok,'Failed conservative MPI regrid',4)
-            call redistribute_patch_metadata()
-            call scatter_mpi_amr_sparse_hierarchy_3d(distribution,species,patch,0,coarse_state, &
-              coarse_temperature,fine_state,fine_temperature,hierarchy,ok)
-            call collective_require(ok,'Failed MPI regrid redistribution',4)
-            deallocate(coarse_state,coarse_temperature,fine_state,fine_temperature)
+            call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
+              config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
+            call collective_require(ok,'Failed distributed conservative MPI regrid',4)
+            regrid_count=regrid_count+1
+            deallocate(xf,yf,zf)
+            allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
+            call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
+            if (rank==0) write(*,'(a,i0,a,6(i0,1x))') 'Regrid at step ',step,': ',patch%coarse_i_lower, &
+              patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper,patch%coarse_k_lower,patch%coarse_k_upper
           end if
         end if
       end if

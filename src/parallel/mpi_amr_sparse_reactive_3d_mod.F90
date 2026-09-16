@@ -76,6 +76,7 @@ module mpi_amr_sparse_reactive_3d_mod
     procedure :: local_value_count => sparse_hierarchy_local_value_count_3d
   end type mpi_amr_sparse_hierarchy_3d
 
+  public :: regrid_mpi_amr_sparse_3d
   public :: temperature_tag_mpi_amr_sparse_patch_3d
   public :: initialize_mpi_amr_sparse_distribution_3d
   public :: scatter_mpi_amr_sparse_hierarchy_3d
@@ -93,6 +94,216 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: advance_mpi_amr_sparse_full_3d
 
 contains
+
+  subroutine regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok,reconstruction,limiter, &
+      boundary_faces,inflow_state,inflow_temperature)
+    type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(inout) :: patch
+    type(mpi_amr_sparse_hierarchy_3d), intent(inout) :: hierarchy
+    type(amr_patch_3d), intent(in) :: next_patch
+    logical, intent(out) :: ok
+    character(len=*), intent(in) :: reconstruction,limiter
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    type(mpi_amr_sparse_distribution_3d) :: next_distribution
+    type(mpi_amr_sparse_hierarchy_3d) :: candidate
+    real(dp), allocatable :: recovered(:,:,:),old_ft(:,:,:),halo(:,:,:,:),ht(:,:,:)
+    real(dp) :: initial(reactive_nvar(size(species))),final(reactive_nvar(size(species)))
+    integer :: n(3),r,shift
+    logical :: local_ok,global_ok,touched(6)
+
+    ok=.false.
+    n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    local_ok=hierarchy%is_valid(distribution,patch).and.next_patch%is_valid()
+    local_ok=local_ok.and.hierarchy%nvar==reactive_nvar(size(species))
+    local_ok=local_ok.and.all(n==[next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz])
+    local_ok=local_ok.and.patch%refinement_ratio==next_patch%refinement_ratio
+    local_ok=local_ok.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm')
+    local_ok=local_ok.and.(limiter=='mc'.or.limiter=='minmod')
+    if (present(boundary_faces)) then
+      touched=[min(patch%coarse_i_lower,next_patch%coarse_i_lower)==1, &
+        max(patch%coarse_i_upper,next_patch%coarse_i_upper)==n(1), &
+        min(patch%coarse_j_lower,next_patch%coarse_j_lower)==1, &
+        max(patch%coarse_j_upper,next_patch%coarse_j_upper)==n(2), &
+        min(patch%coarse_k_lower,next_patch%coarse_k_lower)==1, &
+        max(patch%coarse_k_upper,next_patch%coarse_k_upper)==n(3)]
+      local_ok=local_ok.and.valid_reactive_boundaries_3d(boundary_faces)
+      local_ok=local_ok.and..not.any(touched.and.boundary_faces=='periodic')
+    else
+      local_ok=local_ok.and.patch%is_strictly_interior().and.next_patch%is_strictly_interior()
+    end if
+    call sparse_collective_contract_matches_3d(distribution,species,patch, &
+      real([next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz, &
+        next_patch%coarse_i_lower,next_patch%coarse_i_upper,next_patch%coarse_j_lower,next_patch%coarse_j_upper, &
+        next_patch%coarse_k_lower,next_patch%coarse_k_upper,next_patch%refinement_ratio],dp), &
+      reconstruction//'|'//limiter//merge('|physical','|periodic',present(boundary_faces)),local_ok,global_ok)
+    if (.not.global_ok) return
+    call initialize_mpi_amr_sparse_distribution_3d(next_patch,distribution%comm,next_distribution,local_ok)
+    if (local_ok) local_ok=all(next_distribution%coarse_counts==distribution%coarse_counts).and. &
+      all(next_distribution%coarse_displacements==distribution%coarse_displacements)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    candidate=hierarchy
+    allocate(recovered,mold=hierarchy%coarse_temperature)
+    allocate(old_ft,mold=hierarchy%fine_temperature)
+    call recover_reactive_temperatures_3d(species,hierarchy%coarse_state,hierarchy%coarse_temperature, &
+      distribution%coarse_count,n(2),n(3),recovered,local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    if (distribution%fine_count>0) then
+      call recover_reactive_temperatures_3d(species,hierarchy%fine_state,hierarchy%fine_temperature, &
+        distribution%fine_count,patch%fine_ny(),patch%fine_nz(),old_ft,local_ok)
+    end if
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    call inventory(distribution,patch,hierarchy,initial,global_ok)
+    if (.not.global_ok) return
+    call average_down_sparse_hierarchy_3d(distribution,patch,candidate,local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    call recover_reactive_temperatures_3d(species,candidate%coarse_state,hierarchy%coarse_temperature, &
+      distribution%coarse_count,n(2),n(3),recovered,local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    candidate%coarse_temperature=recovered
+    shift=0
+    if (present(boundary_faces)) then
+      shift=2
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,candidate%coarse_state, &
+        candidate%coarse_temperature,boundary_faces,halo,ht,local_ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+    else
+      call build_mpi_amr_sparse_periodic_halos_3d(distribution,candidate%coarse_state, &
+        candidate%coarse_temperature,halo,ht,local_ok)
+    end if
+    if (.not.local_ok) return
+    deallocate(candidate%fine_state,candidate%fine_temperature)
+    allocate(candidate%fine_state(hierarchy%nvar,next_distribution%fine_count,next_patch%fine_ny(),next_patch%fine_nz()))
+    allocate(candidate%fine_temperature(next_distribution%fine_count,next_patch%fine_ny(),next_patch%fine_nz()))
+    r=patch%refinement_ratio
+    call prolong_local(local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    call average_down_sparse_hierarchy_3d(next_distribution,next_patch,candidate,local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    call recover_reactive_temperatures_3d(species,candidate%coarse_state,candidate%coarse_temperature, &
+      distribution%coarse_count,n(2),n(3),recovered,local_ok)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    candidate%coarse_temperature=recovered
+    call inventory(next_distribution,next_patch,candidate,final,global_ok)
+    if (.not.global_ok) return
+    local_ok=maxval(abs(final-initial)/max(1.0_dp,abs(initial)))<=5e-12_dp
+    local_ok=local_ok.and.candidate%is_valid(next_distribution,next_patch)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    hierarchy=candidate;distribution=next_distribution;patch=next_patch;ok=.true.
+  contains
+    subroutine prolong_local(success)
+      logical, intent(out) :: success
+      real(dp) :: slope(hierarchy%nvar,3),q(reactive_nprim(size(species))),offset(3)
+      real(dp) :: theta,temperature,sound
+      integer :: ci,cj,ck,li,hi,hj,hk,i,j,k,ii,jj,kk,v,attempt,oldidx(3),lo(3),oldlo(3)
+      logical :: physical,cell_ok
+      success=.false.
+      lo=[next_patch%coarse_i_lower,next_patch%coarse_j_lower,next_patch%coarse_k_lower]
+      oldlo=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
+      do ck=next_patch%coarse_k_lower,next_patch%coarse_k_upper
+        do cj=next_patch%coarse_j_lower,next_patch%coarse_j_upper
+          do ci=max(next_patch%coarse_i_lower,distribution%coarse_first), &
+              min(next_patch%coarse_i_upper,distribution%coarse_last)
+            li=distribution%coarse_local_index(ci);hi=li+2;hj=cj+shift;hk=ck+shift
+            slope=0
+            if (reconstruction=='characteristic_plm') then
+              do v=1,hierarchy%nvar
+                call limited_slope(halo(v,hi,hj,hk)-halo(v,hi-1,hj,hk), &
+                  halo(v,hi+1,hj,hk)-halo(v,hi,hj,hk),limiter,slope(v,1),cell_ok)
+                if (.not.cell_ok) return
+                call limited_slope(halo(v,hi,hj,hk)-halo(v,hi,hj-1,hk), &
+                  halo(v,hi,hj+1,hk)-halo(v,hi,hj,hk),limiter,slope(v,2),cell_ok)
+                if (.not.cell_ok) return
+                call limited_slope(halo(v,hi,hj,hk)-halo(v,hi,hj,hk-1), &
+                  halo(v,hi,hj,hk+1)-halo(v,hi,hj,hk),limiter,slope(v,3),cell_ok)
+                if (.not.cell_ok) return
+              end do
+              slope(1,:)=sum(slope(6:,:),dim=1)
+            end if
+            theta=1
+            do attempt=0,60
+              if (attempt==60) theta=0
+              physical=.true.
+              do kk=1,r
+                k=(ck-lo(3))*r+kk
+                do jj=1,r
+                  j=(cj-lo(2))*r+jj
+                  do ii=1,r
+                    i=(ci-lo(1))*r+ii-next_distribution%fine_first+1
+                    offset=(real([ii,jj,kk],dp)-0.5_dp)/real(r,dp)-0.5_dp
+                    candidate%fine_state(:,i,j,k)=candidate%coarse_state(:,li,cj,ck)+theta*matmul(slope,offset)
+                    if (minval(candidate%fine_state(6:,i,j,k))<0) physical=.false.
+                    call reactive_conserved_to_primitive(species,candidate%fine_state(:,i,j,k), &
+                      candidate%coarse_temperature(li,cj,ck),q,temperature,sound,cell_ok)
+                    if (.not.cell_ok) physical=.false.
+                    candidate%fine_temperature(i,j,k)=temperature
+                  end do
+                end do
+              end do
+              if (physical) exit
+              theta=0.5_dp*theta
+            end do
+            if (.not.physical) return
+          end do
+        end do
+      end do
+      do k=1,next_patch%fine_nz()
+        do j=1,next_patch%fine_ny()
+          do i=1,next_distribution%fine_count
+            oldidx=(lo-oldlo)*r+[i+next_distribution%fine_first-1,j,k]
+            if (any(oldidx<1).or.any(oldidx>[patch%fine_nx(),patch%fine_ny(),patch%fine_nz()])) cycle
+            oldidx(1)=oldidx(1)-distribution%fine_first+1
+            if (oldidx(1)<1.or.oldidx(1)>distribution%fine_count) return
+            candidate%fine_state(:,i,j,k)=hierarchy%fine_state(:,oldidx(1),oldidx(2),oldidx(3))
+            candidate%fine_temperature(i,j,k)=old_ft(oldidx(1),oldidx(2),oldidx(3))
+          end do
+        end do
+      end do
+      success=.true.
+    end subroutine prolong_local
+
+    subroutine inventory(d,p,h,total,success)
+      type(mpi_amr_sparse_distribution_3d), intent(in) :: d
+      type(amr_patch_3d), intent(in) :: p
+      type(mpi_amr_sparse_hierarchy_3d), intent(in) :: h
+      real(dp), intent(out) :: total(:)
+      logical, intent(out) :: success
+      real(dp) :: local(size(total)),weight
+      integer :: i,j,k,gi,ierr
+      local=0;weight=(1.0_dp/real(p%refinement_ratio,dp))**3
+      do k=1,p%coarse_nz
+        do j=1,p%coarse_ny
+          do i=1,d%coarse_count
+            gi=d%coarse_first+i-1
+            if (gi>=p%coarse_i_lower.and.gi<=p%coarse_i_upper.and. &
+                j>=p%coarse_j_lower.and.j<=p%coarse_j_upper.and.k>=p%coarse_k_lower.and.k<=p%coarse_k_upper) cycle
+            local=local+h%coarse_state(:,i,j,k)
+          end do
+        end do
+      end do
+      do k=1,p%fine_nz()
+        do j=1,p%fine_ny()
+          do i=1,d%fine_count
+            local=local+weight*h%fine_state(:,i,j,k)
+          end do
+        end do
+      end do
+      call sparse_collective_logical_and_3d(d%comm,all(ieee_is_finite(local)),success)
+      if (.not.success) return
+      call MPI_Allreduce(local,total,size(total),MPI_DOUBLE_PRECISION,MPI_SUM,d%comm,ierr)
+      call sparse_collective_mpi_success_3d(d%comm,ierr,success)
+    end subroutine inventory
+  end subroutine regrid_mpi_amr_sparse_3d
 
   subroutine temperature_tag_mpi_amr_sparse_patch_3d(distribution,patch,t,threshold,buffer, &
       next_patch,changed,ok,boundary_faces)

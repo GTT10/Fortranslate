@@ -149,13 +149,14 @@ written after an accepted coarse step; restart resumes tagging at that stored
 step. Static schemas 2--5 remain unchanged. Fixed-mechanism reacting checkpoints
 use separate schemas; selected-mechanism chemistry retains its existing context.
 MPI scans temperature tags in local slabs and reduces the global tag bounds.
-It gathers the hierarchy on rank zero only when those bounds change the patch;
-after conservative remapping it rebuilds sparse slab ownership and redistributes
-the remapped state. Ranks with no fine cells remain supported.
+When the patch changes, each rank restricts its old fine cells, exchanges
+coarse halos, prolongs new children and reuses local fine overlap. Coarse slab
+ownership stays fixed; fine ownership changes with the patch. No full-level
+field gathering is needed for remapping. Ranks with no fine cells remain supported.
 Checkpoint geometry is broadcast before restart distribution, so rank counts
-can change. Fluid/chemistry/transport stepping remains rank-local. Regridding
-and checkpoint I/O still require root memory for the complete hierarchy; this
-is not a scalable distributed-remap implementation.
+can change. Fluid/chemistry/transport stepping and remapping remain rank-local.
+Checkpoint and CSV I/O still require root memory for the complete hierarchy.
+Coarse repartitioning and production scaling are not qualified.
 See [serial restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md)
 and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915.md).
 Multipatch/multilevel regridding and 3D EB coupling
@@ -245,10 +246,11 @@ uses physical coarse ghosts for conservative limited prolongation of new cells.
 Checkpoint context includes this tagging mode, the moved patch and regrid count.
 The default remains interior tagging, preserving existing serial/MPI cases.
 MPI compares the tagging policy across ranks and computes global tag bounds
-from local temperature slabs. Unchanged patches skip hierarchy gathering.
-Changed patches are conservatively remapped on rank zero, then ownership is
-rebuilt and the new hierarchy is redistributed.
+from local temperature slabs. Changed patches are conservatively remapped
+within each fixed coarse slab, with two-layer neighbor exchange for slopes.
+Fine overlap stays on the same rank because its coarse parent ownership is fixed.
 Checkpoint/restart retains the tagging policy and supports changed rank counts.
-This still requires root memory for the complete hierarchy.
+Checkpoint/CSV I/O still requires root memory for the complete hierarchy.
 See [serial evidence](../../docs/validation/amr-boundary-regrid-20260917.md) and
-[MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md).
+[MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md),
+with the newer [distributed-remap check](../../docs/validation/amr-mpi-distributed-remap-20260917.md).

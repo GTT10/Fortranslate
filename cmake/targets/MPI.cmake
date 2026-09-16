@@ -360,6 +360,17 @@ if(PELEF_ENABLE_MPI)
         PASS_REGULAR_EXPRESSION "test_mpi_amr_tagging_3d: PASS" TIMEOUT 60)
     endforeach()
 
+    add_executable(test_mpi_amr_regrid_3d tests/mpi/test_mpi_amr_regrid_3d.F90)
+    target_link_libraries(test_mpi_amr_regrid_3d PRIVATE pelef_mpi_support)
+    foreach(regrid_ranks IN ITEMS 4 8)
+      add_test(NAME mpi_amr_regrid_3d_np${regrid_ranks}
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${regrid_ranks}
+          ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_mpi_amr_regrid_3d> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(mpi_amr_regrid_3d_np${regrid_ranks} PROPERTIES
+        ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1" PROCESSORS ${regrid_ranks}
+        PASS_REGULAR_EXPRESSION "test_mpi_amr_regrid_3d: PASS" TIMEOUT 60)
+    endforeach()
+
     add_executable(
       test_mpi_amr_reactive_chemistry_3d
       tests/mpi/test_mpi_amr_reactive_chemistry_3d.F90
