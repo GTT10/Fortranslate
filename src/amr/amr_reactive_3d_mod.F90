@@ -16,6 +16,7 @@ module amr_reactive_3d_mod
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_3d_mod, only: &
+    compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d, &
     compute_reactive_cfl_timestep_3d,advance_reactive_boundary_hydro_3d, &
     advance_reactive_euler_ssprk2_with_fluxes_3d, &
     advance_reactive_euler_ssprk2_plm_with_fluxes_3d, &
@@ -561,6 +562,9 @@ contains
     real(dp), allocatable :: fine_z_lower(:, :, :), fine_z_upper(:, :, :)
     real(dp) :: fine_dt, alpha_start, alpha_end
     logical :: local_ok
+    logical, allocatable :: touched(:)
+    real(dp) :: surface_correction(size(coarse_state,1)),candidate_reflux
+    integer :: face
     integer :: nvar, ratio, substep
     integer :: covered_nx, covered_ny, covered_nz
     character(len=32) :: selected_reconstruction, selected_limiter
@@ -580,7 +584,17 @@ contains
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return
-    if (.not. patch%is_strictly_interior()) return
+    if (.not.patch%is_strictly_interior()) then
+      if (.not.present(boundary_faces)) return
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      allocate(touched(6))
+      touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+        patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+        patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+      do face=1,6
+        if (touched(face).and.boundary_faces(face)=='periodic') return
+      end do
+    end if
     if (.not. all(ieee_is_finite([dx, dy, dz, dt]))) return
     if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. dz <= 0.0_dp .or. &
         dt <= 0.0_dp) return
@@ -605,9 +619,15 @@ contains
       patch%coarse_ny, patch%coarse_nz, coarse_start_temperature, local_ok)
     if (.not. local_ok) return
 
+    if (allocated(touched)) then
+      allocate(coarse_flux_x(nvar,0:patch%coarse_nx,patch%coarse_ny,patch%coarse_nz))
+      allocate(coarse_flux_y(nvar,patch%coarse_nx,0:patch%coarse_ny,patch%coarse_nz))
+      allocate(coarse_flux_z(nvar,patch%coarse_nx,patch%coarse_ny,0:patch%coarse_nz))
+    else
     allocate(coarse_flux_x, mold=coarse_state)
     allocate(coarse_flux_y, mold=coarse_state)
     allocate(coarse_flux_z, mold=coarse_state)
+    end if
     if (present(boundary_faces)) then
       call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
         boundary_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
@@ -680,7 +700,7 @@ contains
         dx / real(ratio, dp), dy / real(ratio, dp), &
         dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
         riemann_solver, selected_reconstruction, selected_limiter, &
-        fine_flux_x, fine_flux_y, fine_flux_z, local_ok)
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok,touched,boundary_faces,inflow_state,inflow_temperature)
       else
       call advance_fine_patch_ssprk2_3d( &
         species, patch, coarse_start, coarse_start_temperature, &
@@ -705,11 +725,18 @@ contains
     fine_z_lower = fine_z_lower / real(ratio, dp)
     fine_z_upper = fine_z_upper / real(ratio, dp)
 
+    if (allocated(touched)) then
+      call reflux_physical_coarse_3d(patch,coarse_candidate,coarse_flux_x,coarse_flux_y,coarse_flux_z, &
+        fine_x_lower,fine_x_upper,fine_y_lower,fine_y_upper,fine_z_lower,fine_z_upper, &
+        [dx,dy,dz],dt,boundary_faces,surface_correction,candidate_reflux,local_ok)
+      boundary_total=boundary_total+surface_correction
+    else
     call reflux_coarse_3d( &
       patch, coarse_candidate, coarse_flux_x, coarse_flux_y, coarse_flux_z, &
       fine_x_lower, fine_x_upper, fine_y_lower, fine_y_upper, &
       fine_z_lower, fine_z_upper, dx, dy, dz, dt, &
-      maximum_reflux_correction, local_ok)
+      candidate_reflux, local_ok)
+    end if
     if (.not. local_ok) return
     call average_down_3d(coarse_candidate, fine_candidate, patch, local_ok)
     if (.not. local_ok) return
@@ -721,6 +748,7 @@ contains
     if (.not. local_ok) return
     coarse_candidate_temperature = synchronized_coarse_temperature
 
+    maximum_reflux_correction=candidate_reflux
     if (present(boundary_change)) boundary_change=boundary_total
     coarse_state = coarse_candidate
     coarse_temperature = coarse_candidate_temperature
@@ -733,7 +761,7 @@ contains
       species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, &
       dx, dy, dz, dt, alpha_start, alpha_end, riemann_solver, &
-      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok)
+      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok,touched,faces,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: coarse_start(:, :, :, :)
@@ -748,6 +776,9 @@ contains
     real(dp), intent(out) :: face_flux_y(:, :, 0:, :)
     real(dp), intent(out) :: face_flux_z(:, :, :, 0:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: touched(6)
+    character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
 
     real(dp), allocatable :: old_state(:, :, :, :)
     real(dp), allocatable :: stage_state(:, :, :, :)
@@ -800,12 +831,19 @@ contains
     allocate(second_flux_y(nvar, nx, 0:ny, nz))
     allocate(second_flux_z(nvar, nx, ny, 0:nz))
 
+    if (present(touched)) then
+      if (.not.present(faces)) return
+      call compute_boundary_fine_fluxes_3d(species,patch,coarse_start,coarse_start_temperature, &
+        coarse_end,coarse_end_temperature,old_state,old_temperature,alpha_start,riemann_solver,reconstruction,limiter, &
+        touched,faces,first_flux_x,first_flux_y,first_flux_z,local_ok,inflow_state,inflow_temperature)
+    else
     call compute_fine_patch_face_fluxes_3d( &
       species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, old_state, old_temperature, &
       alpha_start, riemann_solver, reconstruction, limiter, &
       first_flux_x, first_flux_y, &
       first_flux_z, local_ok)
+    end if
     if (.not. local_ok) return
     call fine_flux_divergence_3d( &
       first_flux_x, first_flux_y, first_flux_z, dx, dy, dz, rhs, local_ok)
@@ -816,12 +854,19 @@ contains
       stage_temperature, local_ok)
     if (.not. local_ok) return
 
+    if (present(touched)) then
+      if (.not.present(faces)) return
+      call compute_boundary_fine_fluxes_3d(species,patch,coarse_start,coarse_start_temperature, &
+        coarse_end,coarse_end_temperature,stage_state,stage_temperature,alpha_end,riemann_solver,reconstruction,limiter, &
+        touched,faces,second_flux_x,second_flux_y,second_flux_z,local_ok,inflow_state,inflow_temperature)
+    else
     call compute_fine_patch_face_fluxes_3d( &
       species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, stage_state, stage_temperature, &
       alpha_end, riemann_solver, reconstruction, limiter, &
       second_flux_x, second_flux_y, &
       second_flux_z, local_ok)
+    end if
     if (.not. local_ok) return
     call fine_flux_divergence_3d( &
       second_flux_x, second_flux_y, second_flux_z, dx, dy, dz, rhs, local_ok)
@@ -840,6 +885,91 @@ contains
     temperature = candidate_temperature
     ok = .true.
   end subroutine advance_fine_patch_ssprk2_3d
+
+  subroutine compute_boundary_fine_fluxes_3d(species,patch,c0,t0,c1,t1,u,t,alpha,solver,reconstruction,limiter, &
+      touched,faces,fx,fy,fz,ok,inflow_state,inflow_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
+    character(len=*), intent(in) :: solver,reconstruction,limiter,faces(6)
+    logical, intent(in) :: touched(6)
+    real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
+    real(dp) :: primitive(reactive_nprim(size(species)))
+    integer :: n(3),ex(3),q(3),ci(3),lower(3),i,j,k,a,face,inlet
+    logical :: reflect(3),local_ok
+
+    ok=.false.;fx=0;fy=0;fz=0
+    n=shape(t);ex=n+4
+    lower=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    if (any(touched.and.faces=='inflow')) then
+      if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if (any(shape(inflow_state)/=[size(u,1),6]).or.size(inflow_temperature)/=6) return
+      if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
+    end if
+    allocate(ghost(size(u,1),ex(1),ex(2),ex(3)),gt(ex(1),ex(2),ex(3)))
+    allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
+    do k=1,ex(3)
+      do j=1,ex(2)
+        do i=1,ex(1)
+          q=[i,j,k]-2;reflect=.false.;inlet=0
+          ! Map physical ghost coordinates into the fine state first. Other
+          ! coordinates may remain coarse/fine ghosts, including at corners.
+          do a=1,3
+            if (q(a)>=1.and.q(a)<=n(a)) cycle
+            face=2*a
+            if (q(a)<1) face=face-1
+            if (.not.touched(face)) cycle
+            select case(trim(faces(face)))
+            case('outflow','inflow')
+              q(a)=max(1,min(n(a),q(a)))
+              if (faces(face)=='inflow') inlet=face
+            case('slip_wall','no_slip_wall','isothermal_wall')
+              if (q(a)<1) then
+                q(a)=1-q(a)
+              else
+                q(a)=2*n(a)+1-q(a)
+              end if
+              reflect(a)=.true.
+            case default
+              return
+            end select
+          end do
+          if (inlet>0) then
+            ghost(:,i,j,k)=inflow_state(:,inlet);gt(i,j,k)=inflow_temperature(inlet)
+          else if (all(q>=1).and.all(q<=n)) then
+            ghost(:,i,j,k)=u(:,q(1),q(2),q(3));gt(i,j,k)=t(q(1),q(2),q(3))
+          else
+            ci=lower+floor(real(q-1,dp)/real(patch%refinement_ratio,dp))
+            if (reconstruction=='pcm') then
+              call interpolate_coarse_cell(species,c0,t0,c1,t1,ci(1),ci(2),ci(3),alpha,primitive, &
+                ghost(:,i,j,k),gt(i,j,k),local_ok)
+            else
+              call interpolate_coarse_fine_ghost_plm_3d(species,c0,t0,c1,t1,ci(1),ci(2),ci(3), &
+                q(1),q(2),q(3),patch%refinement_ratio,alpha,limiter,primitive,ghost(:,i,j,k),gt(i,j,k),local_ok)
+            end if
+            if (.not.local_ok) return
+          end if
+          do a=1,3
+            if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
+          end do
+        end do
+      end do
+    end do
+    if (reconstruction=='pcm') then
+      call compute_reactive_face_fluxes_3d(species,ghost,gt,ex(1),ex(2),ex(3),solver,gx,gy,gz,local_ok)
+    else
+      call compute_reactive_plm_face_fluxes_3d(species,ghost,gt,ex(1),ex(2),ex(3),limiter,solver,gx,gy,gz,local_ok)
+    end if
+    if (.not.local_ok) return
+    fx=gx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
+    fy=gy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
+    fz=gz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
+    ok=.true.
+  end subroutine compute_boundary_fine_fluxes_3d
 
   subroutine compute_fine_patch_face_fluxes_3d( &
       species, patch, coarse_start, coarse_start_temperature, &

@@ -11,7 +11,7 @@ program test_amr_reactive_chemistry_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
-  use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_boundary_hydro_3d
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     restrict_average_3d, composite_integrals_amr_3d
@@ -173,12 +173,105 @@ program test_amr_reactive_chemistry_3d
     "chemistry-disabled exact hydro dispatch")
 
   call check_physical_split()
+  call check_boundary_touching_hydro()
 
   write(*, '(2(a,es24.16))') &
     "chemistry change=", chemistry_change, ", element error=", element_error
   write(*, '(a)') "test_amr_reactive_chemistry_3d: PASS"
 
 contains
+
+  subroutine check_boundary_touching_hydro()
+    type(amr_patch_3d) :: p
+    real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:),ref(:,:,:,:),rt(:,:,:)
+    real(dp), allocatable :: inlet(:,:),it(:),before(:),after(:),ledger(:),rl(:),total_ledger(:),scale(:)
+    real(dp) :: r,interval,velocity(3),factor,inlet_density
+    integer :: mode,scheme,lo(3),hi(3),a,i,j,k,nv,rr,substep
+    character(len=32) :: faces(6),method,bad_faces(6)
+    interval=1e-8_dp;velocity=[30._dp,-20._dp,10._dp]
+    do mode=1,8
+      lo=2;hi=3;rr=2
+      if (mode<=6) then
+        a=(mode+1)/2
+        if (modulo(mode,2)==1) lo(a)=1
+        if (modulo(mode,2)==0) hi(a)=4
+      else if (mode==7) then
+        lo=1;hi=4
+      else
+        lo=1;hi=2;rr=3
+      end if
+      call initialize_amr_patch_3d(4,4,4,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),rr,p,ok)
+      call require(ok,'boundary touching patch')
+      call initialize_uniform_hierarchy(species,p,c0,t0,f0,ft0,ok)
+      call require(ok,'boundary touching initial state')
+      nv=size(c0,1)
+      allocate(inlet(nv,6),it(6),before(nv),after(nv),ledger(nv),rl(nv),total_ledger(nv),scale(nv))
+      do k=1,4
+        do j=1,4
+          do i=1,4
+            c0(2:4,i,j,k)=c0(1,i,j,k)*velocity
+            c0(5,i,j,k)=c0(5,i,j,k)+.5_dp*c0(1,i,j,k)*sum(velocity**2)
+          end do
+        end do
+      end do
+      inlet=spread(c0(:,1,1,1),2,6);it=t0(1,1,1)
+      inlet(:,1)=1.1_dp*inlet(:,1)
+      inlet_density=inlet(1,1)
+      do k=1,size(f0,4)
+        do j=1,size(f0,3)
+          do i=1,size(f0,2)
+            factor=1+.05_dp*sin(real(i+2*j+3*k,dp))
+            f0(:,i,j,k)=factor*f0(:,i,j,k)
+            f0(2:4,i,j,k)=f0(1,i,j,k)*velocity
+            f0(5,i,j,k)=f0(5,i,j,k)+.5_dp*f0(1,i,j,k)*sum(velocity**2)
+          end do
+        end do
+      end do
+      call average_down_3d(c0,f0,p,ok)
+      call require(ok,'boundary touching synchronization')
+      faces=['inflow                          ','outflow                         ', &
+        'slip_wall                       ','no_slip_wall                    ', &
+        'outflow                         ','slip_wall                       ']
+      call composite_integrals_amr_3d(c0,f0,p,dx,dy,dz,before,ok)
+      call require(ok,'boundary touching initial inventory')
+      do scheme=1,2
+        method='pcm'
+        if (scheme==2) method='characteristic_plm'
+        c=c0;t=t0;f=f0;ft=ft0
+        call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+          method,'mc',faces,ledger,inlet,it)
+        if (.not.ok) write(*,*) 'boundary hydro case:',mode,trim(method)
+        call require(ok,'boundary touching hydro accepted')
+        call composite_integrals_amr_3d(c,f,p,dx,dy,dz,after,ok)
+        scale=max(abs(before),abs(ledger),1e-20_dp);scale(2:4)=maxval(scale(2:4))
+        call require(ok.and.all(abs(after-before-ledger)<=2e-11_dp*scale),'boundary touching conserved balance')
+        if (mode==7) then
+          ref=f0;rt=ft0;total_ledger=0
+          do substep=1,rr
+            call advance_reactive_boundary_hydro_3d(species,ref,rt,[dx,dy,dz]/rr,interval/rr, &
+              faces,method,'mc','rusanov',rl,ok,inlet,it)
+            call require(ok,'full refinement uniform-grid reference')
+            total_ledger=total_ledger+rl
+          end do
+          call require(all(ref==f).and.all(rt==ft).and.r==0,'full refinement exact fine-grid equality')
+          call require(all(abs(total_ledger-ledger)<=2e-11_dp*scale),'full refinement boundary transfer')
+        end if
+        c=c0;t=t0;f=f0;ft=ft0;inlet(1,1)=-1
+        call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+          method,'mc',faces,ledger,inlet,it)
+        call require(.not.ok.and.hierarchy_matches(c,t,f,ft,c0,t0,f0,ft0).and.r==0.and.all(ledger==0), &
+          'boundary touching invalid inlet rollback')
+        inlet(1,1)=inlet_density
+        bad_faces='periodic'
+        call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+          method,'mc',bad_faces,ledger)
+        call require(.not.ok.and.hierarchy_matches(c,t,f,ft,c0,t0,f0,ft0).and.r==0.and.all(ledger==0), &
+          'boundary touching periodic seam rejected')
+      end do
+      deallocate(inlet,it,before,after,ledger,rl,total_ledger,scale)
+    end do
+  end subroutine check_boundary_touching_hydro
 
   subroutine check_physical_split()
     real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:)

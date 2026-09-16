@@ -1196,7 +1196,7 @@ contains
       faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
       flux_x,flux_y,flux_z)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
-    ! Optional SSPRK2 mean upper-face fluxes, matching the periodic AMR API.
+    ! Optional SSPRK2 mean fluxes: upper faces, or all faces including index zero.
     real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: mean_x(:,:,:,:),mean_y(:,:,:,:),mean_z(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
@@ -1208,15 +1208,22 @@ contains
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),recovered(:,:,:),rhs(:,:,:,:)
     real(dp) :: rate0(size(state,1)),rate1(size(state,1))
     integer :: n(3)
-    logical :: local_ok
+    logical :: local_ok,full_faces
     ok=.false.; boundary_change=0.0_dp
     if (present(flux_x)) flux_x=0
     if (present(flux_y)) flux_y=0
     if (present(flux_z)) flux_z=0
     if ((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    full_faces=.false.
+    n=shape(temperature)
     if (present(flux_x)) then
-      if (any(shape(flux_x)/=shape(state)).or.any(shape(flux_y)/=shape(state)).or.any(shape(flux_z)/=shape(state))) return
-      allocate(mean_x,mold=state);allocate(mean_y,mold=state);allocate(mean_z,mold=state)
+      full_faces=all(shape(flux_x)==[size(state,1),n(1)+1,n(2),n(3)]).and. &
+        all(shape(flux_y)==[size(state,1),n(1),n(2)+1,n(3)]).and. &
+        all(shape(flux_z)==[size(state,1),n(1),n(2),n(3)+1])
+      if (.not.full_faces) then
+        if (any(shape(flux_x)/=shape(state)).or.any(shape(flux_y)/=shape(state)).or.any(shape(flux_z)/=shape(state))) return
+      end if
+      allocate(mean_x,mold=flux_x);allocate(mean_y,mold=flux_y);allocate(mean_z,mold=flux_z)
       mean_x=0;mean_y=0;mean_z=0
     end if
     n=shape(temperature)
@@ -1278,9 +1285,15 @@ contains
         end do
       end do
       if (present(flux_x)) then
+        if (full_faces) then
+          mean_x=mean_x+.5_dp*fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
+          mean_y=mean_y+.5_dp*fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
+          mean_z=mean_z+.5_dp*fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
+        else
         mean_x=mean_x+.5_dp*fx(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
         mean_y=mean_y+.5_dp*fy(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
         mean_z=mean_z+.5_dp*fz(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
+        end if
       end if
       ! Surface integral, independent of volume summation used by diagnostics.
       do k=3,n(3)+2
