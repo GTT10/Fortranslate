@@ -59,8 +59,9 @@ stop/restart now validates schedule position, geometry and continuation context
 ([evidence](validation/amr-tree-restart-20260917.md)). A temperature-tagged topology
 builder now creates multiple tiled children over requested depths, including
 periodic buffers and fine-only hot-cell preservation
-([evidence](validation/amr-tree-tagging-20260917.md)); automatic application cadence
-and its restart integration remain open.
+([evidence](validation/amr-tree-tagging-20260917.md)). Successful-step adaptation
+cadence and fixed/selected automatic-geometry restart are now connected
+([evidence](validation/amr-tree-adaptation-20260917.md)).
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

@@ -20,7 +20,8 @@ checkpoint/restart for bounded periodic cases.
 This is not complete PeleC parity or a validated diesel spray solver.
 
 An experimental [serial 3D patch-tree application](cases/amr_tree_reactive_3d/README.md)
-connects static or scheduled multi-level geometry, reaction/transport/hydro and composite CSV output.
+connects static, scheduled or temperature-adapted multi-level geometry,
+reaction/transport/hydro, checkpoint continuation and composite CSV output.
 
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,

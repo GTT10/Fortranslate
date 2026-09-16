@@ -290,11 +290,22 @@ caller's tree unchanged. This API creates geometry only; the existing conservati
 reactive remapper transfers fields and recovers temperature. It scans hot cells
 for each candidate tile, so large-tree scaling remains unqualified. Tile selection
 is not a Berger-Rigoutsos clustering implementation or a proper-nesting guarantee.
-Application regrid cadence and automatic-geometry restart validation still need
-integration; prescribed schedules continue to use their existing path.
+The application now supports an optional `amr_tree_adaptation` group with
+successful-step cadence. The first check follows a positive step count, preserving
+initial-topology inventory semantics. Same-time updates precede checkpoint writes
+and final output. Identical topology skips remapping but counts the check.
+Prescribed schedules and automatic adaptation are mutually exclusive modes.
+
+Checkpoint context includes the initial tree and all active adaptation controls.
+On restart the counter must equal integer division of saved steps by cadence;
+generated geometry must satisfy depth/ratio/tile/node bounds. A snapshot before
+the first check must still match initial geometry. Retagging the saved temperature
+is deliberately avoided: remapping can alter a formerly tagged cell's temperature.
+The saved geometry and fields are restored and the next due step performs the
+next check. This validates structural compatibility, not a replay of historical
+tag decisions. Reservoir timestep bounds include the maximum requested depth.
 
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling, automatic tagging application wiring,
-MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+PLM coarse/fine interpolation, subcycle scheduling, MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

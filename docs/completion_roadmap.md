@@ -121,8 +121,8 @@ Conservative overlap remapping now handles topology/refinement-ratio changes.
 The serial application now connects static topology input, analytic initialization,
 split evolution, scheduled conservative regridding and exposed-cell output.
 Configure-time selected-mechanism dispatch now uses an isolated tree runtime.
-Tree snapshot I/O, application stop/restart and schedule-position checks are implemented. Temperature-driven tiled topology generation is implemented; connect automatic
-application cadence and restart context. MPI ownership remains open. See the
+Tree snapshot I/O, application stop/restart and schedule-position checks are implemented. Temperature-driven tiled topology generation, successful-step application cadence
+and automatic-geometry restart are connected. MPI ownership remains open. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

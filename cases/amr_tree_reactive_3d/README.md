@@ -80,6 +80,48 @@ trees; per-step hydro/diffusion/wall bounds use the active tree. Logs report eve
 times, node/level counts, and maximum remap error. This is a prescribed schedule,
 not automatic solution-based tagging.
 
+## Automatic temperature adaptation
+
+Instead of a schedule argument, add this optional group to the input file:
+
+```fortran
+&amr_tree_adaptation
+  regrid_interval_steps=1
+  refinement_levels=2
+  refinement_ratios=2,2
+  temperature_thresholds=1150.0,1200.0
+  tile_shape=2,2,2
+  tag_buffer=1
+  maximum_nodes=4096
+/
+```
+
+The initial topology still comes from the second command-line argument. After
+each requested number of successful steps, exposed-cell temperatures select
+parent-cell tiles for refinement; conservative remapping applies any geometry
+change. This includes a final-time update. The initial state is not retagged at
+step zero. A check that selects unchanged geometry increments the regrid counter
+without remapping. The logged `Regrids` count is therefore the number of checks.
+
+`refinement_levels` permits 0–16 levels above root (zero coarsens to root).
+Positive thresholds must not decrease with depth; ratios must be at least 2.
+Tiles clip at parent edges; the nonnegative buffer is measured in parent cells
+at each depth and wraps periodic directions. `maximum_nodes` includes root;
+exceeding it rejects the proposal instead of silently dropping tags. Initial
+proposal validation occurs before stepping, and reservoir timestep bounds cover
+the finest permitted spacing. Omit the group or set `regrid_interval_steps=0`
+to disable adaptation. Prescribed schedules and automatic adaptation are separate
+modes and cannot be combined.
+
+Fixed and selected mechanisms share these controls. Automatic restart preserves
+the last generated topology; it does not retag saved temperatures, since remapping
+may have changed the temperatures that originally triggered refinement. Controls
+are part of checkpoint identity. The reader checks the consumed update count and
+permitted depth, ratios, tile alignment/extents and node budget. These checks do
+not reconstruct historical tag decisions. New updates begin at the next due
+successful step. Both optional namelist group headers must start new lines; their
+order does not matter.
+
 ## Checkpoint and continuation
 
 Both fixed and selected frontends accept an optional group in the input file
@@ -137,6 +179,6 @@ files are not checkpoints.
 
 ## Remaining scope
 
-This frontend supports static or scheduled topologies with serial ownership.
-Automatic tagging and MPI execution remain to be connected. Coarse/fine donors are PCM and time stepping is common
+This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
+MPI execution remains to be connected. Coarse/fine donors are PCM and time stepping is common
 across levels; this is not subcycled or globally second-order AMR qualification.

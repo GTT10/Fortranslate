@@ -1,5 +1,6 @@
 module amr_patch_tree_application_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use amr_patch_tree_tagging_3d_mod, only: tag_amr_patch_tree_temperature_3d
   use amr_patch_tree_remap_3d_mod, only: remap_amr_patch_tree_reactive_3d
   use, intrinsic :: iso_fortran_env, only: int64
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
@@ -39,7 +40,7 @@ contains
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: mole_fractions(:)
     type(reactive_3d_config) :: local
-    type(amr_patch_tree_3d) :: tree
+    type(amr_patch_tree_3d) :: tree,tagged_tree
     type(amr_tree_checkpoint_3d) :: snapshot
     type(amr_patch_tree_3d), allocatable :: events(:)
     type(amr_tree_state_3d) :: state,temperature
@@ -59,8 +60,16 @@ contains
     character(len=1024) :: checkpoint_file,restart_file
     character(len=:), allocatable :: context,schedule_identity,identity,integrator,expected_tree
     integer :: checkpoint_interval_steps,last_checkpoint_step
-    logical :: stop_after_checkpoint
+    integer, parameter :: maximum_tag_levels=16
+    integer :: regrid_interval_steps,refinement_levels,refinement_ratios(maximum_tag_levels)
+    integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
+    real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
+    logical :: periodic(3),stop_after_checkpoint
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
+      temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
+    regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
+    temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
     last_checkpoint_step=0
     if (present(input_path)) then
@@ -75,14 +84,32 @@ contains
           c=iachar(message(i:i))
           if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
         end do
+        if (index(message,'&amr_tree_adaptation')==1.or.index(message,'$amr_tree_adaptation')==1) then
+          backspace(unit,iostat=status)
+          if (status/=0) error stop 'Cannot locate tree adaptation configuration'
+          read(unit,nml=amr_tree_adaptation,iostat=status)
+          if (status/=0) error stop 'Invalid tree adaptation configuration'
+          cycle
+        end if
         if (index(message,'&amr_tree_checkpoint')/=1.and.index(message,'$amr_tree_checkpoint')/=1) cycle
         backspace(unit,iostat=status)
         if (status/=0) error stop 'Cannot locate tree checkpoint configuration'
         read(unit,nml=amr_tree_checkpoint,iostat=status)
         if (status/=0) error stop 'Invalid tree checkpoint configuration'
-        exit
       end do
       close(unit)
+    end if
+    if (regrid_interval_steps<0) error stop 'Negative automatic tree regrid interval'
+    if (regrid_interval_steps>0) then
+      if (present(schedule_path)) error stop 'Automatic tree adaptation cannot use a prescribed schedule'
+      if (refinement_levels<0.or.refinement_levels>maximum_tag_levels) error stop 'Invalid tree refinement depth'
+      if (any(refinement_ratios(:refinement_levels)<2)) error stop 'Invalid tree refinement ratios'
+      if (.not.all(ieee_is_finite(temperature_thresholds(:refinement_levels)))) error stop 'Nonfinite tree thresholds'
+      if (any(temperature_thresholds(:refinement_levels)<=0)) error stop 'Invalid tree temperature thresholds'
+      do i=2,refinement_levels
+        if (temperature_thresholds(i)<temperature_thresholds(i-1)) error stop 'Tree thresholds must not decrease'
+      end do
+      if (any(tile_shape<1).or.tag_buffer<0.or.maximum_nodes<1) error stop 'Invalid tree tagging bounds'
     end if
     if (checkpoint_interval_steps<0) error stop 'Negative tree checkpoint interval'
     if (stop_after_checkpoint.and.checkpoint_interval_steps==0) error stop 'Checkpoint stop requires positive interval'
@@ -93,6 +120,14 @@ contains
     call check_paths(trim(config%output_file)//'.budget.csv')
     call read_topology(topology_path,tree)
     schedule_identity=tree_key(tree)
+    if (regrid_interval_steps>0) then
+      write(message,'(*(i0,1x))') regrid_interval_steps,refinement_levels,tile_shape,tag_buffer,maximum_nodes
+      schedule_identity=schedule_identity//'automatic-v1 '//trim(message)//new_line('a')
+      do i=1,refinement_levels
+        write(message,'(i0,1x,es27.18e3)') refinement_ratios(i),temperature_thresholds(i)
+        schedule_identity=schedule_identity//trim(message)//new_line('a')
+      end do
+    end if
     count=size(tree%nodes)-1
     nevents=0
     if (present(schedule_path)) then
@@ -164,7 +199,20 @@ contains
     conduction=config%transport_enabled.and.config%thermal_conduction_enabled
     diffusion=config%transport_enabled.and.config%species_diffusion_enabled
     barodiffusion=config%transport_enabled.and.config%barodiffusion_enabled
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
     min_h=minval(h,dim=2)
+    if (regrid_interval_steps>0) then
+      tag_spacing=root_h
+      do i=1,refinement_levels
+        tag_spacing=tag_spacing/real(refinement_ratios(i),dp)
+      end do
+      if (any(tag_spacing<=tiny(1.0_dp))) error stop 'Automatic tree spacing underflow'
+      min_h=min(min_h,tag_spacing)
+      ! Validate the requested integer lattice before any evolution/output.
+      call tag_amr_patch_tree_temperature_3d(tree,temperature,temperature_thresholds(:refinement_levels), &
+        refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,periodic,tagged_tree,ok)
+      if (.not.ok) error stop 'Invalid initial automatic tree proposal'
+    end if
     ! Reservoir bounds remain conservative for every scheduled refinement.
     do event=1,nevents
       call include_event_spacing(events(event))
@@ -211,6 +259,18 @@ contains
         if (time==event_times(event)) then
           call apply_event(events(event))
           regrids=regrids+1;event=event+1
+        end if
+      end if
+      if (regrid_interval_steps>0) then
+        if (step>last_tag_step) then
+          if (mod(step,regrid_interval_steps)==0) then
+            call tag_amr_patch_tree_temperature_3d(tree,temperature,temperature_thresholds(:refinement_levels), &
+              refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,periodic,tagged_tree,ok)
+            if (.not.ok) error stop 'Automatic tree tagging failed'
+            if (tree_key(tree)/=tree_key(tagged_tree)) call apply_event(tagged_tree)
+            regrids=regrids+1;last_tag_step=step
+            write(*,'(a,i0,a,i0)') 'Automatic regrid check at step ',step,' Nodes: ',size(tree%nodes)
+          end if
         end if
       end if
       if (checkpoint_interval_steps>0) then
@@ -347,10 +407,15 @@ contains
       if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
         error stop 'Tree restart exceeds run limits'
       applied=count_events(snapshot%time)
+      if (regrid_interval_steps>0) applied=snapshot%steps/regrid_interval_steps
       if (snapshot%regrids/=applied) error stop 'Tree restart schedule position mismatch'
-      expected_tree=tree_key(tree)
-      if (applied>0) expected_tree=tree_key(events(applied))
-      if (tree_key(snapshot%tree)/=expected_tree) error stop 'Tree restart geometry mismatch'
+      if (regrid_interval_steps>0.and.applied>0) then
+        call validate_adaptive_geometry(snapshot%tree)
+      else
+        expected_tree=tree_key(tree)
+        if (applied>0) expected_tree=tree_key(events(applied))
+        if (tree_key(snapshot%tree)/=expected_tree) error stop 'Tree restart geometry mismatch'
+      end if
       if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
         error stop 'Tree restart initial inventory mismatch'
       ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
@@ -382,12 +447,30 @@ contains
       time=snapshot%time;step=snapshot%steps;regrids=snapshot%regrids
       max_correction=snapshot%maximum_reflux;min_theta=snapshot%minimum_theta
       max_remap_error=snapshot%maximum_remap_error
-      event=applied+1;last_checkpoint_step=step;count=size(tree%nodes)-1
+      event=applied+1;last_checkpoint_step=step;last_tag_step=step;count=size(tree%nodes)-1
       call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
       if (.not.ok) error stop 'Tree restart coordinate overflow'
       deallocate(h);allocate(h(3,count+1))
       do peer=1,count+1
         h(:,peer)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(peer)%level+1),dp)
+      end do
+    end subroutine
+    subroutine validate_adaptive_geometry(geometry)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      integer :: peer,depth,parent,lower(3),upper(3),dims(3)
+      if (size(geometry%nodes)>maximum_nodes.or.geometry%level_count()>refinement_levels+1) &
+        error stop 'Tree restart exceeds adaptation bounds'
+      do peer=2,size(geometry%nodes)
+        depth=geometry%nodes(peer)%level;parent=geometry%nodes(peer)%parent
+        dims=geometry%nodes(parent)%shape
+        associate(box=>geometry%nodes(peer)%patch)
+          lower=[box%coarse_i_lower,box%coarse_j_lower,box%coarse_k_lower]
+          upper=[box%coarse_i_upper,box%coarse_j_upper,box%coarse_k_upper]
+          if (box%refinement_ratio/=refinement_ratios(depth)) error stop 'Tree restart adaptation ratio mismatch'
+        end associate
+        if (any(mod(lower-1,tile_shape)/=0)) error stop 'Tree restart tile alignment mismatch'
+        if (any(int(upper,int64)/=min(int(dims,int64),int(lower,int64)+int(tile_shape,int64)-1))) &
+          error stop 'Tree restart tile extent mismatch'
       end do
     end subroutine
     integer function count_events(at_time) result(applied)
