@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument('--reacting', action='store_true')
     parser.add_argument('--touching', action='store_true')
     parser.add_argument('--dynamic-touching', action='store_true')
+    parser.add_argument('--load-balance', action='store_true')
     parser.add_argument('--mpiexec', type=Path)
     parser.add_argument('--numproc-flag', default='-n')
     parser.add_argument('--mpiexec-preflag', action='append', default=[])
@@ -86,10 +87,17 @@ def main() -> None:
         if args.dynamic_touching:
             source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\n'
                                     'regrid_physical_boundaries=.true., regrid_interval_steps=1, regrid_temperature_threshold=1, regrid_buffer_cells=0,')
+        if args.load_balance:
+            source = source.replace('nx = 4', 'nx = 8')
+            source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\nload_balance=.true.,')
         reference = run(f'{label}_reference', source)
         stopped = run(f'{label}_stopped', source,
                       f"checkpoint_interval_steps=1, checkpoint_file='{label}.chk', stop_after_checkpoint=.true.,")
         assert 'Stopped after checkpoint:' in stopped
+        if args.load_balance:
+            assert 'Balanced coarse columns:' in stopped
+            if args.dynamic_touching:
+                assert stopped.count('Balanced coarse columns:') >= 2
         if label == 'dynamic' or args.dynamic_touching:
             assert 'Regrid at step 0:' in stopped
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")

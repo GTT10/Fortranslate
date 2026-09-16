@@ -12,7 +12,7 @@ Older milestone prose remains historical detail, not a current global status.
 | Area | Implemented subset | Still open |
 | --- | --- | --- |
 | Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip boundaries with prescribed tangential wall motion | Characteristic inflow and moving geometry, general 3D boundary/coupling qualification |
-| 3D AMR | Two-level hierarchy, with serial/MPI boundary-touching physical patches; serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Multiple general patches/levels, automatic load balancing and broader scaling/physical-boundary qualification |
+| 3D AMR | Two-level hierarchy, with serial/MPI boundary-touching physical patches; serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Multiple general patches/levels and broader scaling/physical-boundary qualification |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
@@ -69,8 +69,10 @@ coarse halos and local fine overlap reuse
 gathers full fields during regridding. An explicit repartition API now transfers
 coarse/fine states and temperatures directly between ranks, and remapping
 preserves the chosen coarse partition
-([evidence](validation/amr-mpi-repartition-20260917.md)). Automatic balancing,
-general patches/levels and production scaling remain open; checkpoint/CSV I/O
+([evidence](validation/amr-mpi-repartition-20260917.md)). Optional cell-count
+balancing is connected after initialization/restart and geometry changes
+([evidence](validation/amr-mpi-load-balance-20260917.md)). General patches/levels,
+measured performance/scaling and broader physical qualification remain open; checkpoint/CSV I/O
 still uses root aggregation.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass

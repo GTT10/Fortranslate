@@ -6,7 +6,7 @@ module simulation_config_amr_reactive_3d_mod
   private
 
   type, public :: amr_reactive_3d_config
-    logical :: regrid_physical_boundaries=.false.
+    logical :: regrid_physical_boundaries=.false.,load_balance=.false.
     integer :: regrid_interval_steps=0, regrid_buffer_cells=1
     real(dp) :: regrid_temperature_threshold=1100.0_dp
     integer :: refinement_ratio = 2
@@ -50,17 +50,18 @@ contains
     integer :: unit, io_status
     character(len=512) :: coarse_output_file, fine_output_file
     character(len=512) :: checkpoint_file, restart_file
-    logical :: stop_after_checkpoint, selected_allowed,regrid_physical_boundaries
+    logical :: stop_after_checkpoint, selected_allowed,regrid_physical_boundaries,load_balance
 
     namelist /amr_reactive_3d/ &
       refinement_ratio, regrid_interval_steps, regrid_buffer_cells, regrid_temperature_threshold, &
-      regrid_physical_boundaries, &
+      regrid_physical_boundaries,load_balance, &
       coarse_i_lower, coarse_i_upper, &
       coarse_j_lower, coarse_j_upper, coarse_k_lower, coarse_k_upper, &
       coarse_output_file, fine_output_file, checkpoint_interval_steps, &
       stop_after_checkpoint, checkpoint_file, restart_file
 
     config = amr_reactive_3d_config()
+    load_balance=config%load_balance
     regrid_physical_boundaries=config%regrid_physical_boundaries
     regrid_interval_steps=config%regrid_interval_steps
     regrid_buffer_cells=config%regrid_buffer_cells
@@ -95,6 +96,7 @@ contains
         "Could not read &amr_reactive_3d from:", trim(path)
       return
     end if
+    config%load_balance=load_balance
     config%regrid_physical_boundaries=regrid_physical_boundaries
     config%regrid_interval_steps=regrid_interval_steps
     config%regrid_buffer_cells=regrid_buffer_cells

@@ -32,7 +32,7 @@ module mpi_amr_reactive_3d_application_mod
     gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
-    advance_mpi_amr_sparse_full_3d
+    advance_mpi_amr_sparse_full_3d,balance_mpi_amr_sparse_3d
   use amr_reactive_3d_mod, only: &
     composite_element_integrals_amr_3d, &
     element_integrals_from_reactive_integrals_3d
@@ -134,8 +134,8 @@ contains
     end if
     call consensus_integer_vector(comm,[amr_config%regrid_interval_steps,amr_config%regrid_buffer_cells],ok)
     call collective_require(ok,'MPI regrid settings differ by rank',2)
-    call consensus_logical_vector(comm,[amr_config%regrid_physical_boundaries],ok)
-    call collective_require(ok,'MPI physical regrid policy differs by rank',2)
+    call consensus_logical_vector(comm,[amr_config%regrid_physical_boundaries,amr_config%load_balance],ok)
+    call collective_require(ok,'MPI regrid/load-balance policy differs by rank',2)
     call consensus_real_vector(comm,[amr_config%regrid_temperature_threshold],ok)
     call collective_require(ok,'MPI regrid threshold differs by rank',2)
     ok = size(species) > 0 .and. size(reactions) > 0
@@ -446,6 +446,7 @@ contains
     call collective_require( &
       ok, "Failed to scatter sparse MPI 3D AMR hierarchy", 3)
     deallocate(coarse_state, coarse_temperature, fine_state, fine_temperature)
+    call balance_hierarchy()
 
     if (rank == 0) then
       write(*, '(a)') "PeleF " // pelef_version // " " // &
@@ -500,6 +501,7 @@ contains
             call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
               config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
             call collective_require(ok,'Failed distributed conservative MPI regrid',4)
+            call balance_hierarchy()
             regrid_count=regrid_count+1
             deallocate(xf,yf,zf)
             allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
@@ -794,6 +796,14 @@ contains
     end if
 
   contains
+
+    subroutine balance_hierarchy()
+      logical :: changed,local_ok
+      if (.not.amr_config%load_balance) return
+      call balance_mpi_amr_sparse_3d(distribution,patch,hierarchy,changed,local_ok)
+      call collective_require(local_ok,'Failed MPI AMR load balancing',4)
+      if (rank==0.and.changed) write(*,'(a,*(i0,1x))') 'Balanced coarse columns: ',distribution%coarse_counts
+    end subroutine balance_hierarchy
 
     subroutine redistribute_patch_metadata()
       integer :: bounds(6),local_ierr

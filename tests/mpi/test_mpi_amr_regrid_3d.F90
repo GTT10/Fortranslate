@@ -9,7 +9,8 @@ program test_mpi_amr_regrid_3d
   use amr_reactive_3d_mod, only: regrid_amr_reactive_3d
   use mpi_amr_sparse_reactive_3d_mod, only: mpi_amr_sparse_distribution_3d,mpi_amr_sparse_hierarchy_3d, &
     initialize_mpi_amr_sparse_distribution_3d,scatter_mpi_amr_sparse_hierarchy_3d, &
-    gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d
+    gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d, &
+    balance_mpi_amr_sparse_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_3d) :: patch,serial_patch,next_patch,bad,saved_patch
@@ -21,7 +22,7 @@ program test_mpi_amr_regrid_3d
   character(len=32) :: method
   integer :: ierr,rank,i,j,k,r,mode,lo,hi
   integer, allocatable :: counts(:)
-  logical :: ok
+  logical :: ok,changed
 
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -90,6 +91,7 @@ program test_mpi_amr_regrid_3d
         'states and temperatures exactly match serial')
       call require(distribution%is_valid(patch),'remapped ownership')
       call require(all(distribution%coarse_counts==counts),'remap preserves chosen coarse partition')
+      call check_balance()
     end do
     saved=hierarchy;saved_distribution=distribution;saved_patch=patch
     counts=distribution%coarse_counts
@@ -125,6 +127,42 @@ program test_mpi_amr_regrid_3d
   if (rank==0) print '(a)','test_mpi_amr_regrid_3d: PASS'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_balance()
+    real(dp) :: cost(8),best,peak
+    integer :: peer,first
+    cost=real(patch%coarse_ny*patch%coarse_nz,dp)
+    cost(patch%coarse_i_lower:patch%coarse_i_upper)= &
+      cost(patch%coarse_i_lower:patch%coarse_i_upper)+real(r*patch%fine_ny()*patch%fine_nz(),dp)
+    best=huge(1.0_dp)
+    call enumerate(1,distribution%nranks,0.0_dp,cost,best)
+    call balance_mpi_amr_sparse_3d(distribution,patch,hierarchy,changed,ok)
+    call require(ok,'automatic balance')
+    peak=0
+    do peer=1,distribution%nranks
+      first=distribution%coarse_displacements(peer)+1
+      peak=max(peak,sum(cost(first:first+distribution%coarse_counts(peer)-1)))
+    end do
+    call require(peak==best,'balance reaches exhaustive minimum maximum cell count')
+    call gather_mpi_amr_sparse_hierarchy_3d(distribution,patch,0,hierarchy,gc,gt,gf,gft,ok)
+    call require(ok,'gather balanced hierarchy')
+    if (rank==0) call require(all(c==gc).and.all(t==gt).and.all(f==gf).and.all(ft==gft), &
+      'automatic balance preserves serial state')
+    call balance_mpi_amr_sparse_3d(distribution,patch,hierarchy,changed,ok)
+    call require(ok.and..not.changed,'repeated balance does not transfer again')
+  end subroutine check_balance
+  recursive subroutine enumerate(first,remaining,previous,cost,best)
+    integer, intent(in) :: first,remaining
+    real(dp), intent(in) :: previous,cost(:)
+    real(dp), intent(inout) :: best
+    integer :: last
+    if (remaining==1) then
+      best=min(best,max(previous,sum(cost(first:))))
+      return
+    end if
+    do last=first,size(cost)-remaining+1
+      call enumerate(last+1,remaining-1,max(previous,sum(cost(first:last))),cost,best)
+    end do
+  end subroutine enumerate
   subroutine rollback()
     call require(.not.ok,'invalid remap rejected')
     call require(all(hierarchy%coarse_state==saved%coarse_state).and. &

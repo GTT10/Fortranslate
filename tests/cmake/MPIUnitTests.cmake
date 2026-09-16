@@ -46,6 +46,24 @@ if(PELEF_ENABLE_MPI)
       --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_boundary_touching_dynamic_restart_3d")
   set_tests_properties(regression_mpi_amr_boundary_touching_dynamic_restart_3d PROPERTIES
     TIMEOUT 600 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  add_test(NAME regression_mpi_amr_balanced_boundary_touching_restart_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
+      --reacting --touching --load-balance --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
+      --reference-executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      ${DYNAMIC_AMR_MPI_FLAGS} --ranks 4 --restart-ranks 2
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_balanced_boundary_touching_restart_3d")
+  set_tests_properties(regression_mpi_amr_balanced_boundary_touching_restart_3d PROPERTIES
+    TIMEOUT 600 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  add_test(NAME regression_mpi_amr_balanced_boundary_touching_dynamic_restart_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
+      --reacting --touching --load-balance --dynamic-touching --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
+      --reference-executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      ${DYNAMIC_AMR_MPI_FLAGS} --ranks 4 --restart-ranks 2
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_balanced_boundary_touching_dynamic_restart_3d")
+  set_tests_properties(regression_mpi_amr_balanced_boundary_touching_dynamic_restart_3d PROPERTIES
+    TIMEOUT 600 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   set_tests_properties(regression_mpi_amr_physical_boundary_restart_3d PROPERTIES
     TIMEOUT 600 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   set_tests_properties(regression_mpi_dynamic_amr_3d_restart PROPERTIES

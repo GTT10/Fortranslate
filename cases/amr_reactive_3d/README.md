@@ -159,8 +159,9 @@ Checkpoint and CSV I/O still require root memory for the complete hierarchy.
 The library also provides `repartition_mpi_amr_sparse_3d` for explicit contiguous
 coarse-slab counts (at least one coarse column per rank). It transfers both
 levels and temperatures directly with MPI all-to-all exchange; subsequent
-remaps preserve those counts. The application still chooses equal coarse
-column counts: automatic load balancing and production scaling remain open.
+remaps preserve those counts. By default the application chooses equal coarse
+column counts. Optional automatic balancing is described below; production
+scaling remains unqualified.
 See [repartition evidence](../../docs/validation/amr-mpi-repartition-20260917.md).
 See [serial restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md)
 and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915.md).
@@ -259,3 +260,22 @@ Checkpoint/CSV I/O still requires root memory for the complete hierarchy.
 See [serial evidence](../../docs/validation/amr-boundary-regrid-20260917.md) and
 [MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md),
 with the newer [distributed-remap check](../../docs/validation/amr-mpi-distributed-remap-20260917.md).
+
+## MPI cell-count balancing
+
+Set `load_balance = .true.` in `&amr_reactive_3d` to rebalance after
+initialization, restart and a patch geometry change. The default is `.false.`.
+The example `balanced_touching_wall.nml` can be run with four MPI ranks.
+
+The partitioner counts coarse cells plus fine children in each coarse x-column,
+minimizes the maximum count over contiguous rank slabs, and retains at least
+one coarse column per rank. It transfers data only when that maximum decreases;
+ties keep the current ownership. `Balanced coarse columns:` reports each rank's
+new coarse width. Chemistry stiffness, subcycle counts and measured runtime
+are not included in this cell-count estimate.
+
+The serial executable accepts the same input and performs no repartitioning.
+The option does not change checkpoint physics/context records; the MPI layout
+is recomputed for the current rank count on restart. Existing global state
+and boundary-ledger comparisons remain applicable. See
+[balancing and restart evidence](../../docs/validation/amr-mpi-load-balance-20260917.md).

@@ -76,6 +76,7 @@ module mpi_amr_sparse_reactive_3d_mod
     procedure :: local_value_count => sparse_hierarchy_local_value_count_3d
   end type mpi_amr_sparse_hierarchy_3d
 
+  public :: balance_mpi_amr_sparse_3d
   public :: repartition_mpi_amr_sparse_3d
   public :: regrid_mpi_amr_sparse_3d
   public :: temperature_tag_mpi_amr_sparse_patch_3d
@@ -95,6 +96,71 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: advance_mpi_amr_sparse_full_3d
 
 contains
+
+  subroutine balance_mpi_amr_sparse_3d(distribution,patch,hierarchy,changed,ok)
+    type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution
+    type(amr_patch_3d), intent(in) :: patch
+    type(mpi_amr_sparse_hierarchy_3d), intent(inout) :: hierarchy
+    logical, intent(out) :: changed,ok
+    real(dp), allocatable :: cost(:)
+    integer, allocatable :: counts(:)
+    real(dp) :: lower,upper,middle,load,old_peak,new_peak
+    integer :: i,peer,parts,iteration,first,cursor,n,nr
+    logical :: valid
+
+    changed=.false.;ok=.false.
+    call sparse_collective_layout_matches_3d(distribution,patch,hierarchy%nvar, &
+      hierarchy%is_valid(distribution,patch),valid)
+    if (.not.valid) return
+    n=patch%coarse_nx;nr=distribution%nranks
+    allocate(cost(n),counts(nr))
+    ! Cell count is a deterministic work proxy; no measured chemistry timings.
+    cost=real(patch%coarse_ny,dp)*real(patch%coarse_nz,dp)
+    cost(patch%coarse_i_lower:patch%coarse_i_upper)= &
+      cost(patch%coarse_i_lower:patch%coarse_i_upper)+real(patch%refinement_ratio,dp)* &
+      real(patch%fine_ny(),dp)*real(patch%fine_nz(),dp)
+    lower=maxval(cost);upper=sum(cost)
+    ! Find the smallest feasible maximum rank load for contiguous slabs.
+    do iteration=1,64
+      middle=lower+0.5_dp*(upper-lower)
+      if (middle==lower.or.middle==upper) exit
+      parts=1;load=0
+      do i=1,n
+        if (load+cost(i)>middle) then
+          parts=parts+1;load=0
+        end if
+        load=load+cost(i)
+      end do
+      if (parts<=nr) then
+        upper=middle
+      else
+        lower=middle
+      end if
+    end do
+    cursor=1
+    do peer=1,nr
+      first=cursor;load=cost(cursor);cursor=cursor+1
+      do while(cursor<=n-(nr-peer))
+        if (load+cost(cursor)>upper) exit
+        load=load+cost(cursor);cursor=cursor+1
+      end do
+      counts(peer)=cursor-first
+    end do
+    valid=cursor==n+1.and.all(counts>=1)
+    call sparse_collective_logical_and_3d(distribution%comm,valid,ok)
+    if (.not.ok) return
+    old_peak=0;new_peak=0;cursor=1
+    do peer=1,nr
+      first=distribution%coarse_displacements(peer)+1
+      old_peak=max(old_peak,sum(cost(first:first+distribution%coarse_counts(peer)-1)))
+      new_peak=max(new_peak,sum(cost(cursor:cursor+counts(peer)-1)))
+      cursor=cursor+counts(peer)
+    end do
+    ! Keep an equally good partition to avoid pointless transfers.
+    if (new_peak>=old_peak.or.all(counts==distribution%coarse_counts)) return
+    call repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,counts,ok)
+    changed=ok
+  end subroutine balance_mpi_amr_sparse_3d
 
   subroutine repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,coarse_counts,ok)
     type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution
