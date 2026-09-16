@@ -1622,7 +1622,8 @@ contains
     real(dp), allocatable :: fine_z_lower(:, :, :), fine_z_upper(:, :, :)
     real(dp) :: alpha_start, alpha_end, fine_dt
     real(dp) :: local_reflux, global_reflux
-    logical :: local_ok, global_ok
+    logical :: local_ok, global_ok, touched(6)
+    real(dp) :: local_boundary(reactive_nvar(size(species))), reflux_boundary(reactive_nvar(size(species)))
     integer :: covered_nx, covered_ny, covered_nz
     integer :: ratio, substep, ierr
 
@@ -1634,8 +1635,13 @@ contains
       dz > 0.0_dp .and. dt > 0.0_dp
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
-    ! Fine physical ghosts and domain-surface reflux are not connected yet.
-    if (local_ok) local_ok = patch%is_strictly_interior()
+    touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+      patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+      patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+    if (.not.patch%is_strictly_interior()) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(touched.and.boundary_faces=='periodic')
+    end if
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
       trim(reconstruction) == "characteristic_plm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
@@ -1719,7 +1725,8 @@ contains
         candidate%fine_temperature, dx / real(ratio, dp), &
         dy / real(ratio, dp), dz / real(ratio, dp), fine_dt, &
         alpha_start, alpha_end, riemann_solver, reconstruction, limiter, &
-        fine_flux_x, fine_flux_y, fine_flux_z, local_ok)
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok, &
+        boundary_faces, inflow_state, inflow_temperature)
       call sparse_collective_logical_and_3d( &
         distribution%comm, local_ok, global_ok)
       if (.not. global_ok) return
@@ -1738,11 +1745,24 @@ contains
     fine_z_lower = fine_z_lower / real(ratio, dp)
     fine_z_upper = fine_z_upper / real(ratio, dp)
 
+    if (present(boundary_faces)) then
+      call reflux_sparse_physical_coarse_3d(distribution,patch,candidate%coarse_state,coarse_flux_x, &
+        full_y,full_z,fine_x_lower,fine_x_upper,fine_y_lower,fine_y_upper,fine_z_lower,fine_z_upper, &
+        dx,dy,dz,dt,local_boundary,local_reflux,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      call MPI_Allreduce(local_boundary,reflux_boundary,size(local_boundary),MPI_DOUBLE_PRECISION, &
+        MPI_SUM,distribution%comm,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+      if (.not.global_ok) return
+      candidate_boundary=candidate_boundary+reflux_boundary
+    else
     call reflux_sparse_coarse_3d( &
       distribution, patch, candidate%coarse_state, coarse_flux_x, &
       coarse_flux_y, coarse_flux_z, fine_x_lower, fine_x_upper, &
       fine_y_lower, fine_y_upper, fine_z_lower, fine_z_upper, &
       dx, dy, dz, dt, local_reflux, local_ok)
+    end if
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
@@ -2234,7 +2254,8 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, &
       dx, dy, dz, dt, alpha_start, alpha_end, riemann_solver, &
-      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok)
+      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok, &
+      boundary_faces, inflow_state, inflow_temperature)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2249,6 +2270,8 @@ contains
     real(dp), allocatable, intent(out) :: face_flux_y(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
     logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:), inflow_temperature(:)
 
     real(dp), allocatable :: old_state(:, :, :, :)
     real(dp), allocatable :: stage_state(:, :, :, :)
@@ -2294,7 +2317,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, old_state, old_temperature, &
       alpha_start, riemann_solver, reconstruction, limiter, first_flux_x, &
-      first_flux_y, first_flux_z, local_ok)
+      first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, old_state, first_flux_x, first_flux_y, first_flux_z, &
@@ -2310,7 +2333,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, stage_state, stage_temperature, &
       alpha_end, riemann_solver, reconstruction, limiter, second_flux_x, &
-      second_flux_y, second_flux_z, local_ok)
+      second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, stage_state, second_flux_x, second_flux_y, second_flux_z, &
@@ -2337,7 +2360,8 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       riemann_solver, reconstruction, limiter, face_flux_x, &
-      face_flux_y, face_flux_z, ok)
+      face_flux_y, face_flux_z, ok, &
+      boundary_faces, inflow_state, inflow_temperature)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2352,6 +2376,8 @@ contains
     real(dp), allocatable, intent(out) :: face_flux_y(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
     logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:), inflow_temperature(:)
 
     real(dp), allocatable :: extended_state(:, :, :, :)
     real(dp), allocatable :: extended_temperature(:, :, :)
@@ -2375,7 +2401,8 @@ contains
     call build_sparse_fine_extended_state_3d( &
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
-      reconstruction, limiter, extended_state, extended_temperature, face_ok)
+      reconstruction, limiter, extended_state, extended_temperature, face_ok, &
+      boundary_faces, inflow_state, inflow_temperature)
     if (.not. face_ok) return
 
     select case (trim(reconstruction))
@@ -2467,7 +2494,8 @@ contains
   subroutine build_sparse_fine_extended_state_3d( &
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
-      reconstruction, limiter, extended_state, extended_temperature, ok)
+      reconstruction, limiter, extended_state, extended_temperature, ok, &
+      boundary_faces, inflow_state, inflow_temperature)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2481,11 +2509,15 @@ contains
     real(dp), allocatable, intent(out) :: extended_state(:, :, :, :)
     real(dp), allocatable, intent(out) :: extended_temperature(:, :, :)
     logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:), inflow_temperature(:)
 
     real(dp), allocatable :: fine_x_halo_state(:, :, :, :)
     real(dp), allocatable :: fine_x_halo_temperature(:, :, :)
     real(dp), allocatable :: primitive(:)
     real(dp) :: ghost_temperature
+    logical :: touched(6), reflect(3)
+    integer :: q(3), n(3), a, face, inlet, halo_i
     logical :: local_ok
     integer :: i, j, k, fine_i, fine_j, fine_k
     integer :: coarse_i, coarse_j, coarse_k
@@ -2497,6 +2529,18 @@ contains
     nz = patch%fine_nz()
     ratio = patch%refinement_ratio
     nvar = reactive_nvar(size(species))
+    n=[patch%fine_nx(),ny,nz]
+    touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+      patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+      patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+    if (present(boundary_faces)) then
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      if (any(touched.and.boundary_faces=='periodic')) return
+      if (any(touched.and.boundary_faces=='inflow')) then
+        if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
+        if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
+      end if
+    end if
     if (local_count < 1 .or. size(state, 1) /= nvar .or. &
         size(state, 2) /= local_count .or. size(state, 3) /= ny .or. &
         size(state, 4) /= nz) return
@@ -2523,23 +2567,44 @@ contains
     extended_state = 0.0_dp
     extended_temperature = 0.0_dp
     do k = 1, nz + 4
-      fine_k = k - 2
-      coarse_k = patch%coarse_k_lower + &
-        floor(real(fine_k - 1, dp) / real(ratio, dp))
       do j = 1, ny + 4
-        fine_j = j - 2
-        coarse_j = patch%coarse_j_lower + &
-          floor(real(fine_j - 1, dp) / real(ratio, dp))
         do i = 1, local_count + 4
-          fine_i = distribution%fine_first + i - 3
-          if (fine_i >= 1 .and. fine_i <= patch%fine_nx() .and. &
-              fine_j >= 1 .and. fine_j <= ny .and. &
-              fine_k >= 1 .and. fine_k <= nz) then
-            extended_state(:, i, j, k) = fine_x_halo_state(:, i, fine_j, fine_k)
-            extended_temperature(i, j, k) = &
-              fine_x_halo_temperature(i, fine_j, fine_k)
-            cycle
+          q=[distribution%fine_first+i-3,j-2,k-2]
+          reflect=.false.;inlet=0
+          if (present(boundary_faces)) then
+            do a=1,3
+              if (q(a)>=1.and.q(a)<=n(a)) cycle
+              face=2*a
+              if (q(a)<1) face=face-1
+              if (.not.touched(face)) cycle
+              select case(trim(boundary_faces(face)))
+              case('outflow','inflow')
+                q(a)=max(1,min(n(a),q(a)))
+                if (boundary_faces(face)=='inflow') inlet=face
+              case('slip_wall','no_slip_wall','isothermal_wall')
+                if (q(a)<1) then
+                  q(a)=1-q(a)
+                else
+                  q(a)=2*n(a)+1-q(a)
+                end if
+                reflect(a)=.not.reflect(a)
+              case default
+                return
+              end select
+            end do
           end if
+          fine_i=q(1);fine_j=q(2);fine_k=q(3)
+          if (inlet>0) then
+            extended_state(:,i,j,k)=inflow_state(:,inlet)
+            extended_temperature(i,j,k)=inflow_temperature(inlet)
+          else if (all(q>=1).and.all(q<=n)) then
+            halo_i=fine_i-distribution%fine_first+3
+            if (halo_i<1.or.halo_i>local_count+4) return
+            extended_state(:,i,j,k)=fine_x_halo_state(:,halo_i,fine_j,fine_k)
+            extended_temperature(i,j,k)=fine_x_halo_temperature(halo_i,fine_j,fine_k)
+          else
+          coarse_j=patch%coarse_j_lower+floor(real(fine_j-1,dp)/real(ratio,dp))
+          coarse_k=patch%coarse_k_lower+floor(real(fine_k-1,dp)/real(ratio,dp))
           coarse_i = patch%coarse_i_lower + &
             floor(real(fine_i - 1, dp) / real(ratio, dp))
           select case (trim(reconstruction))
@@ -2561,6 +2626,10 @@ contains
           end select
           if (.not. local_ok) return
           extended_temperature(i, j, k) = ghost_temperature
+          end if
+          do a=1,3
+            if (reflect(a)) extended_state(a+1,i,j,k)=-extended_state(a+1,i,j,k)
+          end do
         end do
       end do
     end do
@@ -2995,6 +3064,119 @@ contains
       all(ieee_is_finite(y_upper)) .and. &
       all(ieee_is_finite(z_lower)) .and. all(ieee_is_finite(z_upper))
   end subroutine accumulate_sparse_fine_interface_fluxes_3d
+
+  subroutine reflux_sparse_physical_coarse_3d(d,p,u,fx,fy,fz,xlo,xhi,ylo,yhi,zlo,zhi, &
+      dx,dy,dz,dt,budget,maximum_correction,ok)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: d
+    type(amr_patch_3d), intent(in) :: p
+    real(dp), intent(inout) :: u(:,:,:,:)
+    real(dp), intent(in) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    real(dp), intent(in) :: xlo(:,:,:),xhi(:,:,:),ylo(:,:,:),yhi(:,:,:),zlo(:,:,:),zhi(:,:,:)
+    real(dp), intent(in) :: dx,dy,dz,dt
+    real(dp), intent(out) :: budget(:),maximum_correction
+    logical, intent(out) :: ok
+    real(dp) :: correction(size(u,1))
+    integer :: i,j,k,li,adj,face
+    logical :: physical
+    ok=.false.;budget=0;maximum_correction=0
+    adj=p%coarse_i_lower-1;face=p%coarse_i_lower-1
+    physical=adj<1.or.adj>p%coarse_nx
+    if (d%owns_coarse(max(1,min(p%coarse_nx,adj)))) then
+      li=d%coarse_local_index(max(1,min(p%coarse_nx,adj)))
+      face=face-d%coarse_first+1
+      do k=p%coarse_k_lower,p%coarse_k_upper
+        do j=p%coarse_j_lower,p%coarse_j_upper
+        correction=-dt/dx*(xlo(:,j-p%coarse_j_lower+1,k-p%coarse_k_lower+1)-fx(:,face,j,k))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,j,k)=u(:,li,j,k)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+        end do
+      end do
+    end if
+    adj=p%coarse_i_upper+1;face=p%coarse_i_upper
+    physical=adj<1.or.adj>p%coarse_nx
+    if (d%owns_coarse(max(1,min(p%coarse_nx,adj)))) then
+      li=d%coarse_local_index(max(1,min(p%coarse_nx,adj)))
+      face=face-d%coarse_first+1
+      do k=p%coarse_k_lower,p%coarse_k_upper
+        do j=p%coarse_j_lower,p%coarse_j_upper
+        correction=dt/dx*(xhi(:,j-p%coarse_j_lower+1,k-p%coarse_k_lower+1)-fx(:,face,j,k))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,j,k)=u(:,li,j,k)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+        end do
+      end do
+    end if
+    adj=p%coarse_j_lower-1;face=p%coarse_j_lower-1
+    physical=adj<1.or.adj>p%coarse_ny
+    do i=max(d%coarse_first,p%coarse_i_lower),min(d%coarse_last,p%coarse_i_upper)
+      li=d%coarse_local_index(i)
+      do k=p%coarse_k_lower,p%coarse_k_upper
+        correction=-dt/dy*(ylo(:,i-p%coarse_i_lower+1,k-p%coarse_k_lower+1)-fy(:,li,face,k))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,adj,k)=u(:,li,adj,k)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+      end do
+    end do
+    adj=p%coarse_j_upper+1;face=p%coarse_j_upper
+    physical=adj<1.or.adj>p%coarse_ny
+    do i=max(d%coarse_first,p%coarse_i_lower),min(d%coarse_last,p%coarse_i_upper)
+      li=d%coarse_local_index(i)
+      do k=p%coarse_k_lower,p%coarse_k_upper
+        correction=dt/dy*(yhi(:,i-p%coarse_i_lower+1,k-p%coarse_k_lower+1)-fy(:,li,face,k))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,adj,k)=u(:,li,adj,k)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+      end do
+    end do
+    adj=p%coarse_k_lower-1;face=p%coarse_k_lower-1
+    physical=adj<1.or.adj>p%coarse_nz
+    do i=max(d%coarse_first,p%coarse_i_lower),min(d%coarse_last,p%coarse_i_upper)
+      li=d%coarse_local_index(i)
+      do j=p%coarse_j_lower,p%coarse_j_upper
+        correction=-dt/dz*(zlo(:,i-p%coarse_i_lower+1,j-p%coarse_j_lower+1)-fz(:,li,j,face))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,j,adj)=u(:,li,j,adj)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+      end do
+    end do
+    adj=p%coarse_k_upper+1;face=p%coarse_k_upper
+    physical=adj<1.or.adj>p%coarse_nz
+    do i=max(d%coarse_first,p%coarse_i_lower),min(d%coarse_last,p%coarse_i_upper)
+      li=d%coarse_local_index(i)
+      do j=p%coarse_j_lower,p%coarse_j_upper
+        correction=dt/dz*(zhi(:,i-p%coarse_i_lower+1,j-p%coarse_j_lower+1)-fz(:,li,j,face))
+        if (.not.all(ieee_is_finite(correction))) return
+        if (physical) then
+          budget=budget-correction*(dx*dy*dz)
+        else
+          u(:,li,j,adj)=u(:,li,j,adj)+correction
+          maximum_correction=max(maximum_correction,maxval(abs(correction)))
+        end if
+      end do
+    end do
+    ok=all(ieee_is_finite(u)).and.all(ieee_is_finite(budget)).and.ieee_is_finite(maximum_correction)
+  end subroutine reflux_sparse_physical_coarse_3d
 
   subroutine reflux_sparse_coarse_3d( &
       distribution, patch, coarse_state, coarse_flux_x, coarse_flux_y, &

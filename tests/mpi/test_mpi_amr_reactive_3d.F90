@@ -389,6 +389,9 @@ program test_mpi_amr_reactive_3d
   call check_physical_halos()
   call check_physical_coarse_hydro()
   call check_physical_hierarchy()
+  call check_physical_hierarchy(1)
+  call check_physical_hierarchy(2)
+  call check_physical_hierarchy(3)
   call check_boundary_distribution()
   serial_coarse = coarse_state
   serial_coarse_temperature = coarse_temperature
@@ -747,8 +750,8 @@ contains
         'boundary hierarchy exact scatter gather')
       saved=h
       call advance_mpi_amr_sparse_hydro_3d(dist,species,bp,h,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,'pcm','mc',r,ok,faces,budget)
-      call require(.not.ok.and.r==0.and.all(budget==0),'boundary hydro remains explicitly unsupported')
+        config%riemann_solver,'pcm','mc',r,ok,boundary_change=budget)
+      call require(.not.ok.and.r==0.and.all(budget==0),'boundary hydro without physical faces is rejected')
       call advance_mpi_amr_sparse_transport_3d(dist,species,transport,bp,h,dx,dy,dz,1e-7_dp, &
         .true.,.true.,.true.,.true.,'mc',theta,r,ok,faces,budget)
       call require(.not.ok.and.r==0.and.theta==1.and.all(budget==0),'boundary transport remains unsupported')
@@ -774,7 +777,8 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_physical_hierarchy()
+  subroutine check_physical_hierarchy(geometry)
+    integer, optional, intent(in) :: geometry
     type(amr_patch_3d) :: wall_patch
     type(mpi_amr_sparse_distribution_3d) :: dist
     type(mpi_amr_sparse_hierarchy_3d) :: h,saved
@@ -783,18 +787,31 @@ contains
     real(dp), allocatable :: before(:),after(:)
     real(dp) :: r,rr,e0(3),e1(3),eb(3),tw(6),wv(3,6),th,thr
     character(len=32) :: faces(6),method
-    integer :: i,j,k,mode,nv
-    call initialize_amr_patch_3d(n,n,n,2,3,2,3,2,3,ratio,wall_patch,ok)
+    integer :: i,j,k,mode,nv,lo,hi,nf,last_mode
+    lo=2;hi=3;last_mode=6
+    if (present(geometry)) then
+      last_mode=4
+      select case(geometry)
+      case(1)
+        lo=1;hi=2
+      case(2)
+        lo=n-1;hi=n
+      case(3)
+        lo=1;hi=n;last_mode=2
+      end select
+    end if
+    nf=(hi-lo+1)*ratio
+    call initialize_amr_patch_3d(n,n,n,lo,hi,lo,hi,lo,hi,ratio,wall_patch,ok)
     call require(ok,'physical hierarchy near-wall patch')
     call initialize_mpi_amr_sparse_distribution_3d(wall_patch,MPI_COMM_WORLD,dist,ok)
     call require(ok,'physical hierarchy distribution')
     c0=coarse_state;ct0=coarse_temperature;nv=size(c0,1)
-    allocate(f0(nv,4,4,4),ft0(4,4,4),inlet(nv,6),it(6),budget(nv),expected(nv),before(nv),after(nv))
-    do k=1,4
-      do j=1,4
-        do i=1,4
-          f0(:,i,j,k)=c0(:,1+(i+1)/2,1+(j+1)/2,1+(k+1)/2)
-          ft0(i,j,k)=ct0(1+(i+1)/2,1+(j+1)/2,1+(k+1)/2)
+    allocate(f0(nv,nf,nf,nf),ft0(nf,nf,nf),inlet(nv,6),it(6),budget(nv),expected(nv),before(nv),after(nv))
+    do k=1,nf
+      do j=1,nf
+        do i=1,nf
+          f0(:,i,j,k)=c0(:,lo+(i-1)/ratio,lo+(j-1)/ratio,lo+(k-1)/ratio)
+          ft0(i,j,k)=ct0(lo+(i-1)/ratio,lo+(j-1)/ratio,lo+(k-1)/ratio)
         end do
       end do
     end do
@@ -803,7 +820,7 @@ contains
     call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
     call require(ok,'physical hierarchy initial inventory')
     tw=600;tw(2)=900;wv=0;wv(2,1)=20;wv(3,2)=-10
-    do mode=1,6
+    do mode=1,last_mode
       method='pcm'
       if (modulo(mode,2)==0) method='characteristic_plm'
       if (mode>=5) faces(1:2)="isothermal_wall"
