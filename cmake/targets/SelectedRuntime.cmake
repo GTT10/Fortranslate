@@ -491,6 +491,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/amr/amr_patch_tree_transport_3d_mod.F90
     src/amr/amr_patch_tree_split_3d_mod.F90
     src/amr/amr_patch_tree_remap_3d_mod.F90
+    src/io/amr_patch_tree_checkpoint_3d_mod.F90
     src/driver/amr_patch_tree_application_3d_mod.F90
   )
   set_target_properties(

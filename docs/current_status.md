@@ -52,7 +52,10 @@ exposed-cell CSV plus composite budgets
 changes now connect conservative remapping, exact event-time stepping and budget
 continuity ([evidence](validation/amr-tree-regrid-20260917.md)). Configure-time
 selected mechanisms now use the same tree driver through an isolated runtime
-([evidence](validation/amr-tree-selected-20260917.md)); checkpoint/restart remains open.
+([evidence](validation/amr-tree-selected-20260917.md)). Versioned tree snapshot I/O
+and physics-context comparison APIs are now available
+([evidence](validation/amr-tree-checkpoint-api-20260917.md)); application stop/restart
+and schedule-position validation remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

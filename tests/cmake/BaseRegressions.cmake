@@ -918,3 +918,10 @@ add_test(NAME regression_amr_patch_tree_regrid_3d
     --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_regrid_3d")
 set_tests_properties(regression_amr_patch_tree_regrid_3d PROPERTIES TIMEOUT 240)
+
+add_executable(test_amr_patch_tree_checkpoint_3d unit/test_amr_patch_tree_checkpoint_3d.F90)
+target_link_libraries(test_amr_patch_tree_checkpoint_3d PRIVATE pelef_core)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_checkpoint_3d")
+add_test(NAME unit_amr_patch_tree_checkpoint_3d COMMAND test_amr_patch_tree_checkpoint_3d)
+set_tests_properties(unit_amr_patch_tree_checkpoint_3d PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_checkpoint_3d")

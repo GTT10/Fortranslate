@@ -234,6 +234,30 @@ mechanism lookup. Fixed callers omit the optional integrator and retain existing
 automatic selection. Selected startup checks composition and the requested
 initial/inflow/isothermal-wall temperature envelope against the generated data.
 
+## Checkpoint storage API
+
+`amr_tree_checkpoint_3d` groups topology, conserved/temperature fields, time,
+step/regrid counters, initial/boundary inventories and reflux/limiter/remap
+diagnostics. The versioned text writer validates finite state, parent-child
+synchronization and EOS temperature consistency before opening the destination.
+A physical write failure may leave a partial file; atomic replacement is not
+claimed. The reader builds a private candidate and commits only after context,
+geometry, data, footer and state validation all succeed. Stored doubles round-trip
+without changing temperature guesses.
+
+`build_amr_tree_checkpoint_context_3d` serializes flow configuration, ordered
+NASA7/transport records and the existing complete reaction serializer, including
+identity, composition, integrator and tolerances. Only final-time/step limits
+and output path are excluded from configuration identity. The caller supplies
+a canonical identity for initial topology and the full event schedule. Context
+lines are compared exactly; formatting changes between compiler/runtime versions
+may therefore reject a file even when its numeric inputs are equivalent.
+
+These are storage/context APIs. The application still needs checkpoint controls,
+stop/restart wiring, schedule-position checks and continuation-limit validation.
+The primitive API does not independently infer an event schedule from its opaque
+caller-supplied identity or prove historical boundary-budget correctness.
+
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling, automatic solution-based tagging,

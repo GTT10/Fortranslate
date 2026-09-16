@@ -42,6 +42,7 @@ module amr_reactive_3d_checkpoint_mod
 
   public :: read_amr_checkpoint_metadata
   public :: amr_checkpoint_envelope,checkpoint_temperature_is_consistent
+  public :: write_selected_checkpoint_context
   public :: amr_reactive_boundary_signature_3d
   public :: read_dynamic_amr_reactive_3d_checkpoint
   public :: write_amr_reactive_3d_checkpoint

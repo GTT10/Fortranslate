@@ -64,6 +64,7 @@ add_library(
   src/amr/amr_reactive_3d_mod.F90
   src/amr/amr_reactive_transport_3d_mod.F90
   src/io/amr_reactive_3d_checkpoint_mod.F90
+  src/io/amr_patch_tree_checkpoint_3d_mod.F90
   src/driver/amr_reactive_3d_application_mod.F90
   src/io/reactive_eb_3d_checkpoint_mod.F90
   src/eb/eb_reactive_reconstruction_2d_mod.F90
