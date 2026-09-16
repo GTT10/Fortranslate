@@ -18,12 +18,14 @@ module spray_mpi_mod
     construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options, &
-    valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange
+    valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange, &
+    classify_wall_impact,resolve_mixture_wall_impact
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: resolve_mpi_wall_impacts
   public :: advance_mpi_film_coupling
   public :: migrate_mpi_wall_films
   public :: advance_mpi_spray_les
@@ -32,6 +34,105 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  ! Resolve supplied wall events. data rows: Kv,T/Tboil,Kcrit,film/d,We,Re.
+  ! Geometry crossing and film-overlap queries remain the caller's responsibility.
+  subroutine resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices,locations,normals,data, &
+      contact_angle,films,film_mass,maximum_parcels,maximum_films,last_id,wall_change,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),film_mass(:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    integer, intent(in) :: indices(:),maximum_parcels,maximum_films
+    real(dp), intent(in) :: locations(:,:),normals(:,:),data(:,:),contact_angle
+    integer(int64), intent(inout) :: last_id
+    real(dp), intent(out) :: wall_change(5)
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: candidate(:),children(:)
+    type(spray_wall_film), allocatable :: patches(:)
+    type(spray_wall_film) :: deposited
+    real(dp), allocatable :: masses(:,:),patch_mass(:,:),child_mass(:,:)
+    real(dp) :: film_components(size(components)),budget(5),ledger(5),global_ledger(5),alpha,speed,un,splashed,deposit
+    integer :: ne,np,nc,nf,n,p,q,number,cursor,film_cursor,kind,ierr
+    integer(int64) :: next_id,first_id,child_id
+    logical :: valid,agreed
+    ok=.false.;wall_change=0
+    valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
+    call agree()
+    if (.not.agreed) return
+    np=size(parcels);nf=size(films);nc=size(components);ne=size(indices)
+    valid=np<=1000000.and.nf<=1000000.and.ne<=np.and.nc>=1.and.nc<=16
+    valid=valid.and.all(shape(component_mass)==[nc,np]).and.all(shape(film_mass)==[nc,nf])
+    valid=valid.and.all(shape(locations)==[3,ne]).and.all(shape(normals)==[3,ne]).and.all(shape(data)==[6,ne])
+    valid=valid.and.maximum_parcels>=np.and.maximum_parcels<=1000000
+    valid=valid.and.maximum_films>=nf.and.maximum_films<=1000000
+    valid=valid.and.all(indices>=1).and.all(indices<=np)
+    call agree()
+    if (.not.agreed) return
+    valid=all(ieee_is_finite(normals)).and.all(ieee_is_finite(locations)).and.all(ieee_is_finite(data))
+    valid=valid.and.maxval(abs(normals))<=1
+    do p=1,np
+      valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p)).and.parcels(p)%id<=last_id
+      if (p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+    end do
+    do p=1,nf
+      valid=valid.and.valid_wall_component_inventory(films(p),film_mass(:,p))
+    end do
+    do n=2,ne
+      valid=valid.and.indices(n)>indices(n-1)
+    end do
+    call agree()
+    if (.not.agreed) return
+    number=0
+    do n=1,ne
+      p=indices(n);speed=norm2(parcels(p)%velocity);un=dot_product(parcels(p)%velocity,normals(:,n))
+      valid=speed>0.and.un<0.and.abs(sum(normals(:,n)**2)-1)<1e-12_dp
+      if (.not.valid) exit
+      alpha=max(acos(-1.0_dp)/6,asin(min(1.0_dp,abs(un)/speed)))
+      call classify_wall_impact(data(1,n),data(2,n),alpha,data(3,n),data(4,n),kind,splashed,deposit,valid)
+      if (.not.valid) exit
+      if (splashed>0) number=number+4
+    end do
+    valid=valid.and.number<=maximum_parcels-np
+    call agree()
+    if (.not.agreed) return
+    next_id=last_id
+    call reserve_spray_ids(comm,number,next_id,first_id,valid)
+    if (.not.valid) return
+    allocate(candidate(np+number),masses(nc,np+number),patches(nf+ne),patch_mass(nc,nf+ne))
+    candidate(:np)=parcels;masses(:,:np)=component_mass;patches(:nf)=films;patch_mass(:,:nf)=film_mass
+    cursor=np;film_cursor=nf;ledger=0
+    do n=1,ne
+      p=indices(n);film_components=0;child_id=0
+      if (cursor<np+number) child_id=first_id+int(cursor-np,int64)
+      call resolve_mixture_wall_impact(candidate(p),components,masses(:,p),locations(:,n),normals(:,n), &
+        data(1,n),data(2,n),data(3,n),data(4,n),data(5,n),data(6,n),contact_angle, &
+        child_id,children,child_mass,deposited,film_components,budget,kind,valid)
+      if (.not.valid) exit
+      q=size(children)
+      valid=q<=np+number-cursor
+      if (.not.valid) exit
+      candidate(cursor+1:cursor+q)=children;masses(:,cursor+1:cursor+q)=child_mass;cursor=cursor+q
+      if (deposited%mass>0) then
+        film_cursor=film_cursor+1;patches(film_cursor)=deposited;patch_mass(:,film_cursor)=film_components
+      end if
+      ledger=ledger+budget
+    end do
+    valid=valid.and.cursor==np+number.and.film_cursor<=maximum_films
+    call agree()
+    if (.not.agreed) return
+    call MPI_Allreduce(ledger,global_ledger,5,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)
+    films=patches(:film_cursor);film_mass=patch_mass(:,:film_cursor)
+    last_id=next_id;wall_change=global_ledger;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine advance_mpi_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
       films,film_mass,lower,spacing,cells,parts,interval,faces,substeps,boundary_change,ok)
     type(MPI_Comm), intent(in) :: comm

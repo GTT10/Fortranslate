@@ -249,6 +249,7 @@ program test_spray_mpi
   call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
   call check_kh_release()
   call check_film_coupling()
+  call check_wall_impacts()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'initial coupled totals')
@@ -527,6 +528,53 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_wall_impacts()
+    type(spray_parcel), allocatable :: drops(:),original(:)
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: cm(:,:),original_cm(:,:),fm(:,:),loc(:,:),normal(:,:),data(:,:)
+    integer, allocatable :: events(:)
+    real(dp) :: wall(5),initial(15),final(15),global_initial(15),global_final(15)
+    integer :: np,q
+    integer(int64) :: mark
+    np=merge(1,0,rank<nranks-1)
+    allocate(drops(np),cm(2,np),patches(0),fm(2,0),loc(3,np),normal(3,np),data(6,np),events(np))
+    if (np>0) then
+      drops(1)=spray_parcel(int(rank+1,int64),[.25_dp,.25_dp,0.0_dp], &
+        [10.0_dp,0.0_dp,-20.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      cm(:,1)=drops(1)%mass*[.25_dp,.75_dp];events(1)=1
+      loc(:,1)=drops(1)%position;normal(:,1)=[0.0_dp,0.0_dp,1.0_dp]
+      data(:,1)=[150.0_dp,1.0_dp,80.0_dp,0.0_dp,100.0_dp,0.0_dp]
+    end if
+    original=drops;original_cm=cm;mark=int(nranks,int64)
+    call resolve_mpi_wall_impacts(MPI_COMM_WORLD,liquids,drops,cm,events,loc,normal,data,acos(-1.0_dp)/3, &
+      patches,fm,100,100,mark,wall,ok)
+    call require(.not.ok.and.mark==nranks.and.all(wall==0),'late impact failure rolls back IDs and wall ledger')
+    call require(all(cm==original_cm).and.all(drops%mass==original%mass).and.size(patches)==0, &
+      'late impact failure rolls back particle and film candidates')
+    data(6,:)=1000
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,initial,ok,patches,fm)
+    call require(ok,'wall event initial budget')
+    call MPI_Allreduce(initial,global_initial,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call resolve_mpi_wall_impacts(MPI_COMM_WORLD,liquids,drops,cm,events,loc,normal,data,acos(-1.0_dp)/3, &
+      patches,fm,100,100,mark,wall,ok)
+    call require(ok.and.mark==nranks+4*(nranks-1),'MPI impact reserves child IDs')
+    call require(size(drops)==5*np.and.size(patches)==np,'MPI dry impact splashes and deposits')
+    do q=2,size(drops)
+      call require(drops(q)%id==nranks+4*rank+q-1.and.drops(q)%parent_id==rank+1,'splash IDs and lineage')
+      call require(all(abs(cm(:,q)/drops(q)%mass-[.25_dp,.75_dp])<1e-14_dp),'splash composition inheritance')
+    end do
+    do q=1,2
+      call require(abs(sum(cm(q,:)*drops%multiplicity)+sum(fm(q,:))-sum(original_cm(q,:)*original%multiplicity)) &
+        <2e-12_dp*max(1e-30_dp,sum(original_cm(q,:)*original%multiplicity)),'impact component conservation')
+    end do
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,final,ok,patches,fm)
+    call require(ok,'wall event final budget')
+    call MPI_Allreduce(final,global_final,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    global_final(:5)=global_final(:5)+wall
+    call require(all(abs(global_final-global_initial)<2e-12_dp*max(1e-12_dp,abs(global_initial))), &
+      'wall event mass momentum energy species conservation')
+  end subroutine
+
   subroutine check_film_checkpoint()
     type(spray_wall_film), allocatable :: patches(:)
     type(spray_parcel), allocatable :: drops(:)

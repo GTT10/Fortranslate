@@ -115,8 +115,11 @@ film-coupling API now connects heating/evaporation to owner-routed gas feedback
 with a global wall-energy ledger and whole-interval rollback
 ([evidence](validation/spray-mpi-film-coupled-20260917.md)). MPI checkpoints now
 collect and redistribute film/component state and the wall budget across rank
-changes ([evidence](validation/spray-mpi-film-restart-20260917.md)); wall-boundary
-application wiring remains open.
+changes ([evidence](validation/spray-mpi-film-restart-20260917.md)). A collective
+mixed-wall impact event API now reserves splash IDs and commits parent, child,
+film and wall-budget updates transactionally
+([evidence](validation/spray-mpi-impact-20260917.md)); distributed crossing/film-overlap
+queries and wall-boundary application wiring remain open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
