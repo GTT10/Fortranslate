@@ -1,7 +1,7 @@
 module amr_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    valid_reactive_boundaries_3d
+    valid_reactive_boundaries_3d,valid_wall_velocity_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use elementary_kinetics_mod, only: &
@@ -36,6 +36,7 @@ module amr_reactive_3d_mod
   public :: advance_amr_reactive_strang_3d
   public :: advance_amr_reactive_hydro_3d
   public :: accumulate_fine_interface_fluxes_3d
+  public :: build_boundary_fine_ghosts_3d
   public :: reflux_physical_coarse_3d
   public :: reflux_coarse_3d
   public :: compute_fine_patch_plm_slab_face_fluxes_3d
@@ -885,36 +886,44 @@ contains
     ok = .true.
   end subroutine advance_fine_patch_ssprk2_3d
 
-  subroutine compute_boundary_fine_fluxes_3d(species,patch,c0,t0,c1,t1,u,t,alpha,solver,reconstruction,limiter, &
-      touched,faces,fx,fy,fz,ok,inflow_state,inflow_temperature)
+  subroutine build_boundary_fine_ghosts_3d(species,patch,c0,t0,c1,t1,u,t,alpha,reconstruction,limiter, &
+      touched,faces,ghost,gt,ok,inflow_state,inflow_temperature,viscous_wall,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
-    character(len=*), intent(in) :: solver,reconstruction,limiter,faces(6)
+    character(len=*), intent(in) :: reconstruction,limiter,faces(6)
     logical, intent(in) :: touched(6)
-    real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
-    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
-    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
-    real(dp) :: primitive(reactive_nprim(size(species)))
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
+    logical, optional, intent(in) :: viscous_wall
+    real(dp) :: primitive(reactive_nprim(size(species))),shift(3),old_momentum(3),rho
     integer :: n(3),ex(3),q(3),ci(3),lower(3),i,j,k,a,face,inlet
-    logical :: reflect(3),local_ok
-
-    ok=.false.;fx=0;fy=0;fz=0
+    logical :: reflect(3),local_ok,viscous
+    ok=.false.;ghost=0;gt=0
+    viscous=.false.
+    if (present(viscous_wall)) viscous=viscous_wall
     n=shape(t);ex=n+4
-    lower=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
+    if (.not.valid_amr_reactive_shapes(species,patch,c0,t0,u,t)) return
+    if (any(shape(c1)/=shape(c0)).or.any(shape(t1)/=shape(t0))) return
+    if (any(shape(ghost)/=[size(u,1),ex]).or.any(shape(gt)/=ex)) return
+    if (.not.ieee_is_finite(alpha)) return
+    if (alpha<0.or.alpha>1) return
+    if (reconstruction/='pcm'.and.reconstruction/='characteristic_plm') return
     if (.not.valid_reactive_boundaries_3d(faces)) return
+    if (present(wall_velocity)) then
+      if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
+    end if
+    lower=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
     if (any(touched.and.faces=='inflow')) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[size(u,1),6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
     end if
-    allocate(ghost(size(u,1),ex(1),ex(2),ex(3)),gt(ex(1),ex(2),ex(3)))
-    allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
     do k=1,ex(3)
       do j=1,ex(2)
         do i=1,ex(1)
-          q=[i,j,k]-2;reflect=.false.;inlet=0
+          q=[i,j,k]-2;reflect=.false.;inlet=0;shift=0
           ! Map physical ghost coordinates into the fine state first. Other
           ! coordinates may remain coarse/fine ghosts, including at corners.
           do a=1,3
@@ -932,7 +941,12 @@ contains
               else
                 q(a)=2*n(a)+1-q(a)
               end if
-              reflect(a)=.true.
+              if (viscous.and.faces(face)/='slip_wall') then
+                reflect=.not.reflect;shift=-shift
+                if (present(wall_velocity)) shift=shift+2*wall_velocity(:,face)
+              else
+                reflect(a)=.not.reflect(a);shift(a)=-shift(a)
+              end if
             case default
               return
             end select
@@ -952,12 +966,43 @@ contains
             end if
             if (.not.local_ok) return
           end if
+          old_momentum=ghost(2:4,i,j,k)
           do a=1,3
             if (reflect(a)) ghost(a+1,i,j,k)=-ghost(a+1,i,j,k)
           end do
+          if (any(abs(shift)>0)) then
+            rho=ghost(1,i,j,k)
+            if (rho<=0) return
+            ghost(2:4,i,j,k)=ghost(2:4,i,j,k)+rho*shift
+            ghost(5,i,j,k)=ghost(5,i,j,k)+(sum(ghost(2:4,i,j,k)**2)-sum(old_momentum**2))/(2*rho)
+          end if
         end do
       end do
     end do
+    ok=all(ieee_is_finite(ghost)).and.all(ieee_is_finite(gt))
+    if (ok) ok=minval(gt)>0
+  end subroutine build_boundary_fine_ghosts_3d
+
+  subroutine compute_boundary_fine_fluxes_3d(species,patch,c0,t0,c1,t1,u,t,alpha,solver,reconstruction,limiter, &
+      touched,faces,fx,fy,fz,ok,inflow_state,inflow_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
+    character(len=*), intent(in) :: solver,reconstruction,limiter,faces(6)
+    logical, intent(in) :: touched(6)
+    real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
+    integer :: n(3),ex(3)
+    logical :: local_ok
+    ok=.false.;fx=0;fy=0;fz=0
+    n=shape(t);ex=n+4
+    allocate(ghost(size(u,1),ex(1),ex(2),ex(3)),gt(ex(1),ex(2),ex(3)))
+    allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
+    call build_boundary_fine_ghosts_3d(species,patch,c0,t0,c1,t1,u,t,alpha,reconstruction,limiter, &
+      touched,faces,ghost,gt,local_ok,inflow_state,inflow_temperature)
+    if (.not.local_ok) return
     if (reconstruction=='pcm') then
       call compute_reactive_face_fluxes_3d(species,ghost,gt,ex(1),ex(2),ex(3),solver,gx,gy,gz,local_ok)
     else

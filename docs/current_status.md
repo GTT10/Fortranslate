@@ -40,8 +40,10 @@ Serial PCM/PLM hydro now connects fine physical ghosts, subcycling, boundary
 ledger replacement and average-down for such patches
 ([evidence](validation/amr-boundary-touching-hydro-20260917.md)). Cell-local reaction,
 reaction/hydro splitting and the state-based CFL helper now accept these patches
-([evidence](validation/amr-boundary-touching-reaction-20260917.md)). Transport, MPI,
-regridding, checkpoint and application activation remain open.
+([evidence](validation/amr-boundary-touching-reaction-20260917.md)). Molecular
+transport and the full reaction/transport/hydro split are connected, including
+fine wall heat/work fluxes ([evidence](validation/amr-boundary-touching-transport-20260917.md)).
+MPI, regridding, checkpoint and application activation remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

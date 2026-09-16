@@ -11,7 +11,7 @@ program test_amr_reactive_transport_3d
   use transport_database_mod, only: load_h2o2_elementary_transport
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: reactive_nvar, reactive_species_component
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
@@ -20,7 +20,8 @@ program test_amr_reactive_transport_3d
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     restrict_average_3d, composite_integrals_amr_3d
   use state_indices_mod, only: irho
-  use amr_reactive_3d_mod, only: advance_amr_reactive_strang_3d, element_integrals_from_reactive_integrals_3d
+  use amr_reactive_3d_mod, only: advance_amr_reactive_strang_3d, element_integrals_from_reactive_integrals_3d, &
+    build_boundary_fine_ghosts_3d
   use amr_reactive_transport_3d_mod, only: &
     compute_amr_reactive_transport_timestep_3d, &
     advance_amr_reactive_transport_3d, advance_amr_reactive_full_3d
@@ -34,7 +35,7 @@ program test_amr_reactive_transport_3d
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
-  type(amr_patch_3d) :: patch
+  type(amr_patch_3d) :: patch,boundary_patch
   real(dp), allocatable :: coarse_state(:, :, :, :)
   real(dp), allocatable :: coarse_temperature(:, :, :)
   real(dp), allocatable :: fine_state(:, :, :, :)
@@ -221,7 +222,16 @@ program test_amr_reactive_transport_3d
   call run_ratio_three_transport_test(species, transport, ok)
   call require(ok, "ratio-three AMR transport test")
 
-  call run_physical_transport_tests()
+  call run_physical_transport_tests(patch)
+  call initialize_amr_patch_3d(nx,ny,nz,1,2,2,3,2,3,2,boundary_patch,ok)
+  call require(ok,'transport boundary face patch')
+  call run_physical_transport_tests(boundary_patch)
+  call initialize_amr_patch_3d(nx,ny,nz,1,2,3,4,1,2,3,boundary_patch,ok)
+  call require(ok,'transport boundary corner patch')
+  call run_physical_transport_tests(boundary_patch)
+  call initialize_amr_patch_3d(nx,ny,nz,1,nx,1,ny,1,nz,2,boundary_patch,ok)
+  call require(ok,'transport full domain patch')
+  call run_physical_transport_tests(boundary_patch)
   call check_single_column_wall_timestep()
 
   write(*, '(a)') "test_amr_reactive_transport_3d: PASS"
@@ -250,14 +260,16 @@ contains
       'single column touching two thermal walls halves the heat-exchange timestep')
   end subroutine check_single_column_wall_timestep
 
-  subroutine run_physical_transport_tests()
+  subroutine run_physical_transport_tests(patch)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),reference(:,:,:,:),reference_t(:,:,:)
     real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:)
     real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
     real(dp), allocatable :: before(:),after(:),ledger(:),inlet(:,:),it(:),scale(:)
     real(dp) :: tw(6),wv(3,6),th,r,e0(3),e1(3),eb(3)
     character(len=32) :: faces(6)
     integer :: mode,nv
-    call initialize_hierarchy(.true.,c0,t0,f0,ft0,ok)
+    call initialize_hierarchy(.true.,c0,t0,f0,ft0,ok,patch_override=patch)
     call require(ok,'physical transport initial hierarchy')
     nv=size(c0,1)
     allocate(before(nv),after(nv),ledger(nv),inlet(nv,6),it(6),scale(nv))
@@ -273,6 +285,24 @@ contains
         faces(1)='inflow'
       else
         wv(2,1)=20
+      end if
+      if (patch%coarse_j_lower==1.or.patch%coarse_j_upper==ny) then
+        faces(3:4)='no_slip_wall';wv(1,4)=-15
+      end if
+      if (patch%coarse_k_lower==1.or.patch%coarse_k_upper==nz) then
+        faces(5:6)='no_slip_wall';wv(1,5)=10
+      end if
+      if (patch%fine_nx()==nx*patch%refinement_ratio.and.patch%fine_ny()==ny*patch%refinement_ratio.and. &
+          patch%fine_nz()==nz*patch%refinement_ratio) then
+        if (allocated(ghost)) deallocate(ghost,gt,reference,reference_t)
+        allocate(ghost(nv,size(f0,2)+4,size(f0,3)+4,size(f0,4)+4),gt(size(f0,2)+4,size(f0,3)+4,size(f0,4)+4))
+        allocate(reference,mold=ghost);allocate(reference_t,mold=gt)
+        call build_boundary_fine_ghosts_3d(species,patch,c0,t0,c0,t0,f0,ft0,.5_dp,'characteristic_plm','mc', &
+          [.true.,.true.,.true.,.true.,.true.,.true.],faces,ghost,gt,ok,inlet,it,.true.,wv)
+        call require(ok,'full-domain viscous fine ghosts')
+        call fill_reactive_boundary_ghosts_3d(f0,ft0,faces,reference,reference_t,ok, &
+          viscous_wall=.true.,inflow_state=inlet,inflow_temperature=it,wall_velocity=wv)
+        call require(ok.and.all(ghost==reference).and.all(gt==reference_t),'viscous fine ghosts equal regular grid')
       end if
       c=c0;t=t0;f=f0;ft=ft0
       if (mode<=2) then

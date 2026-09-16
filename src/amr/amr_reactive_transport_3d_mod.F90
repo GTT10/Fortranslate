@@ -1,6 +1,6 @@
 module amr_reactive_transport_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -8,14 +8,14 @@ module amr_reactive_transport_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use reactive_transport_3d_mod, only: &
-    physical_transport_fluxes_3d, physical_transport_budget_3d, &
+    physical_transport_fluxes_3d, physical_transport_budget_3d,physical_transport_ghosted_fluxes_3d, &
     reactive_transport_fluxes_3d, reactive_transport_ghosted_fluxes_3d, &
     reactive_transport_interface_theta_3d, reactive_transport_timestep_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d, average_down_3d, initialize_amr_patch_3d
   use amr_reactive_3d_mod, only: &
     advance_amr_reactive_chemistry_3d, advance_amr_reactive_hydro_3d, &
     advance_amr_reactive_strang_3d, accumulate_fine_interface_fluxes_3d, &
-    reflux_coarse_3d, interpolate_coarse_fine_ghost_plm_3d
+    reflux_coarse_3d,reflux_physical_coarse_3d,build_boundary_fine_ghosts_3d,interpolate_coarse_fine_ghost_plm_3d
   implicit none
   private
 
@@ -397,7 +397,11 @@ contains
     real(dp), allocatable :: px(:,:,:,:),py(:,:,:,:),pz(:,:,:,:)
     real(dp), allocatable :: start_ghost(:,:,:,:),end_ghost(:,:,:,:),start_gt(:,:,:),end_gt(:,:,:)
     real(dp) :: boundary_total(size(coarse_state,1))
-    integer :: cn(3)
+    integer :: cn(3),fn(3),face
+    logical :: touching,touched(6)
+    character(len=32) :: fine_faces(6)
+    real(dp) :: fine_wall_velocity(3,6),surface_change(size(coarse_state,1))
+    real(dp), allocatable :: physical_ghost(:,:,:,:),physical_gt(:,:,:)
     real(dp) :: fine_dt, ratio_real, coarse_theta, fine_theta, alpha
     real(dp) :: interface_theta
     logical :: local_ok
@@ -424,6 +428,24 @@ contains
     if (dt <= 0.0_dp .or. dx <= 0.0_dp .or. dy <= 0.0_dp .or. &
         dz <= 0.0_dp) return
 
+    touching=.not.patch%is_strictly_interior()
+    if (touching) then
+      if (.not.present(boundary_faces)) return
+      if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+        patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+        patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+      fine_faces='outflow';fine_wall_velocity=0
+      do face=1,6
+        if (.not.touched(face)) cycle
+        if (boundary_faces(face)=='periodic') return
+        fine_faces(face)=boundary_faces(face)
+        if (present(wall_velocity)) then
+          if (any(shape(wall_velocity)/=[3,6])) return
+          fine_wall_velocity(:,face)=wall_velocity(:,face)
+        end if
+      end do
+    end if
     nvar = reactive_nvar(size(species))
     allocate(coarse_flux_x, mold=coarse_state)
     allocate(coarse_flux_y, mold=coarse_state)
@@ -542,8 +564,21 @@ contains
         patch%coarse_k_lower+2,patch%coarse_k_upper+2,ratio,interpolation_patch,local_ok)
       if (.not. local_ok) return
     end if
+    fn=[patch%fine_nx(),patch%fine_ny(),patch%fine_nz()]
+    if (touching) allocate(physical_ghost(nvar,fn(1)+4,fn(2)+4,fn(3)+4),physical_gt(fn(1)+4,fn(2)+4,fn(3)+4))
     do substep = 1, subcycles
       alpha = real(substep - 1, dp) / real(subcycles, dp)
+      if (touching) then
+        call build_boundary_fine_ghosts_3d(species,interpolation_patch,start_ghost,start_gt,end_ghost,end_gt, &
+          new_fine_state,new_fine_temperature,alpha,'characteristic_plm',limiter,touched,boundary_faces, &
+          physical_ghost,physical_gt,local_ok,inflow_state,inflow_temperature,viscous_wall=.true., &
+          wall_velocity=wall_velocity)
+        if (.not.local_ok) return
+        call physical_transport_ghosted_fluxes_3d(species,transport,new_fine_state,new_fine_temperature, &
+          physical_ghost,physical_gt,fn,[dx,dy,dz]/ratio_real,fine_dt,fine_faces,viscosity_enabled, &
+          thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
+          fine_flux_x,fine_flux_y,fine_flux_z,fine_theta,local_ok,wall_temperature,fine_wall_velocity)
+      else
       if (present(boundary_faces)) then
       call build_fine_transport_ghosts_3d(species,interpolation_patch,start_ghost,start_gt,end_ghost,end_gt, &
         new_fine_state,new_fine_temperature,alpha,limiter,ghost_state,ghost_temperature,local_ok)
@@ -562,6 +597,7 @@ contains
         viscosity_enabled, thermal_conduction_enabled, &
         species_diffusion_enabled, barodiffusion_enabled, &
         fine_flux_x, fine_flux_y, fine_flux_z, fine_theta, local_ok)
+      end if
       if (.not. local_ok) return
       minimum_theta = min(minimum_theta, fine_theta)
       do k = 1, patch%fine_nz()
@@ -632,11 +668,18 @@ contains
     new_fine_temperature = recovered_temperature
     deallocate(recovered_temperature)
 
+    if (touching) then
+      call reflux_physical_coarse_3d(patch,new_coarse_state,px,py,pz, &
+        fine_x_lower,fine_x_upper,fine_y_lower,fine_y_upper,fine_z_lower,fine_z_upper,[dx,dy,dz],dt, &
+        boundary_faces,surface_change,maximum_reflux_correction,local_ok)
+      boundary_total=boundary_total+surface_change
+    else
     call reflux_coarse_3d( &
       patch, new_coarse_state, coarse_flux_x, coarse_flux_y, coarse_flux_z, &
       fine_x_lower, fine_x_upper, fine_y_lower, fine_y_upper, &
       fine_z_lower, fine_z_upper, dx, dy, dz, dt, &
       maximum_reflux_correction, local_ok)
+    end if
     if (.not. local_ok) return
     call average_down_3d(new_coarse_state, new_fine_state, patch, local_ok)
     if (.not. local_ok) return
@@ -691,7 +734,7 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     if (nspecies < 1) return
-    if (.not. patch%is_strictly_interior()) return
+    if (.not. patch%is_valid()) return
     if (.not. all(ieee_is_finite([dx, dy, dz, dt]))) return
     if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. dz <= 0.0_dp .or. &
         dt <= 0.0_dp) return
@@ -706,6 +749,7 @@ contains
 
     do k = 1, size(fine_x_lower, 3)
       do j = 1, size(fine_x_lower, 2)
+        if (patch%coarse_i_lower>1) then
         base_state = coarse_state(:, patch%coarse_i_lower - 1, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_lower + k - 1) + &
           dt / dx * coarse_flux_x(:, patch%coarse_i_lower - 1, &
@@ -727,6 +771,8 @@ contains
           end do
         end if
 
+        end if
+        if (patch%coarse_i_upper<patch%coarse_nx) then
         base_state = coarse_state(:, patch%coarse_i_upper + 1, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_lower + k - 1) - &
           dt / dx * coarse_flux_x(:, patch%coarse_i_upper, &
@@ -747,11 +793,13 @@ contains
             end do
           end do
         end if
+        end if
       end do
     end do
 
     do k = 1, size(fine_y_lower, 3)
       do i = 1, size(fine_y_lower, 2)
+        if (patch%coarse_j_lower>1) then
         base_state = coarse_state(:, patch%coarse_i_lower + i - 1, &
           patch%coarse_j_lower - 1, patch%coarse_k_lower + k - 1) + &
           dt / dy * coarse_flux_y(:, patch%coarse_i_lower + i - 1, &
@@ -773,6 +821,8 @@ contains
           end do
         end if
 
+        end if
+        if (patch%coarse_j_upper<patch%coarse_ny) then
         base_state = coarse_state(:, patch%coarse_i_lower + i - 1, &
           patch%coarse_j_upper + 1, patch%coarse_k_lower + k - 1) - &
           dt / dy * coarse_flux_y(:, patch%coarse_i_lower + i - 1, &
@@ -793,11 +843,13 @@ contains
             end do
           end do
         end if
+        end if
       end do
     end do
 
     do j = 1, size(fine_z_lower, 3)
       do i = 1, size(fine_z_lower, 2)
+        if (patch%coarse_k_lower>1) then
         base_state = coarse_state(:, patch%coarse_i_lower + i - 1, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_lower - 1) + &
           dt / dz * coarse_flux_z(:, patch%coarse_i_lower + i - 1, &
@@ -819,6 +871,8 @@ contains
           end do
         end if
 
+        end if
+        if (patch%coarse_k_upper<patch%coarse_nz) then
         base_state = coarse_state(:, patch%coarse_i_lower + i - 1, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_upper + 1) - &
           dt / dz * coarse_flux_z(:, patch%coarse_i_lower + i - 1, &
@@ -838,6 +892,7 @@ contains
                   boundary_z_upper(:, fine_i, fine_j)
             end do
           end do
+        end if
         end if
       end do
     end do
@@ -953,7 +1008,7 @@ contains
     valid = .false.
     if (size(species) < 1) return
     if (size(transport) /= size(species)) return
-    if (.not. patch%is_strictly_interior()) return
+    if (.not. patch%is_valid()) return
     nvar = reactive_nvar(size(species))
     if (any(shape(coarse_state) /= &
         [nvar, patch%coarse_nx, patch%coarse_ny, patch%coarse_nz])) return
