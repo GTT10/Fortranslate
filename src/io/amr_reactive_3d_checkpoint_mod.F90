@@ -1,4 +1,5 @@
 module amr_reactive_3d_checkpoint_mod
+  use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use elementary_kinetics_mod, only: reaction_kind_chebyshev, chebyshev_capacity
@@ -37,6 +38,7 @@ module amr_reactive_3d_checkpoint_mod
   character(len=*), parameter :: transport_checkpoint_phase = &
     "POST_ACCEPTED_COARSE_STEP"
 
+  public :: read_amr_checkpoint_metadata
   public :: amr_checkpoint_envelope,checkpoint_temperature_is_consistent
   public :: amr_reactive_boundary_signature_3d
   public :: read_dynamic_amr_reactive_3d_checkpoint
@@ -966,6 +968,360 @@ contains
       message = "3D AMR checkpoint is truncated, invalid, or incompatible"
     end if
   end subroutine read_amr_reactive_3d_checkpoint
+
+  subroutine read_amr_checkpoint_metadata( &
+      path, species, flow_config, amr_config, patch, &
+      coarse_offset,fine_offset,row_bytes, &
+      time, steps, initial_integrals, maximum_reflux, ok, message, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change,scan_rows)
+    logical, optional, intent(in) :: scan_rows
+    logical :: scanning
+    integer :: ci,cj,ck
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    character(len=32768) :: stored_amr_reactive_boundary_signature_3d
+    logical :: physical_boundary
+    integer, intent(inout), optional :: regrid_count
+    type(amr_patch_3d) :: stored_patch
+    integer :: stored_regrids
+    character(len=*), intent(in) :: path
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp) :: discarded(reactive_nvar(size(species))+1)
+    real(dp) :: candidate_boundary(reactive_nvar(size(species)))
+    type(reactive_3d_config), intent(in) :: flow_config
+    type(amr_reactive_3d_config), intent(in) :: amr_config
+    type(amr_patch_3d), intent(inout) :: patch
+    integer(int64), intent(out) :: coarse_offset,fine_offset
+    integer, intent(out) :: row_bytes
+    type(amr_patch_3d) :: candidate_patch
+    integer(int64) :: position,coarse_start,fine_start
+    real(dp), intent(inout) :: time
+    integer, intent(inout) :: steps
+    real(dp), intent(inout) :: initial_integrals(:), maximum_reflux
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    type(elementary_reaction), intent(in), optional :: reactions(:)
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(inout), optional :: maximum_transport_diffusivity
+    real(dp), intent(inout), optional :: minimum_transport_theta
+
+    real(dp), allocatable :: candidate_integrals(:)
+    real(dp) :: stored_species_values(18), expected_species_values(18)
+    real(dp) :: stored_mesh(7), expected_mesh(7)
+    real(dp) :: stored_time, stored_maximum_reflux, time_tolerance
+    real(dp) :: candidate_maximum_transport_diffusivity
+    real(dp) :: candidate_minimum_transport_theta
+    character(len=1024) :: magic, stored_name, stored_thermo
+    character(len=1024) :: stored_solver, stored_boundary, end_marker
+    character(len=1024) :: stored_reconstruction, stored_limiter
+    integer :: stored_header(3), stored_layout(10), expected_layout(10)
+    integer :: stored_flags(2), expected_flags(2), stored_coarse_shape(3)
+    integer :: stored_fine_shape(3), stored_steps
+    integer :: unit, status, species_index, nvar, expected_schema
+    logical :: local_ok
+    logical :: selected_context, context_ok, transport_context
+
+    ok = .false.
+    message = ""
+    scanning=.false.
+    if (present(scan_rows)) scanning=scan_rows
+    candidate_patch=patch
+    coarse_offset=0;fine_offset=0;row_bytes=28*(reactive_nvar(size(species))+1)
+    candidate_boundary=0
+    physical_boundary=any(resolved_reactive_boundaries_3d(flow_config)/='periodic')
+    if (physical_boundary) then
+      message='Physical AMR restart requires a conserved boundary ledger'
+      if (.not.present(boundary_change)) return
+      if (size(boundary_change)/=size(candidate_boundary)) return
+      message=''
+    end if
+    stored_regrids=0
+    candidate_maximum_transport_diffusivity = 0.0_dp
+    candidate_minimum_transport_theta = 1.0_dp
+    nvar = reactive_nvar(size(species))
+    selected_context = present(bundle_sha256) .or. &
+      present(chemistry_integrator) .or. present(base_mole_fractions) .or. &
+      present(reactions)
+    transport_context = present(transport) .or. &
+      present(maximum_transport_diffusivity) .or. &
+      present(minimum_transport_theta)
+    if (len_trim(path) == 0) then
+      message = "3D AMR restart path is empty"
+      return
+    end if
+    if (selected_context) then
+      if (.not. present(bundle_sha256) .or. &
+          .not. present(chemistry_integrator) .or. &
+          .not. present(base_mole_fractions) .or. &
+          .not. present(reactions)) then
+        message = "Selected 3D AMR restart context is incomplete"
+        return
+      end if
+      if (.not. valid_selected_checkpoint_context( &
+          size(species), bundle_sha256, chemistry_integrator, &
+          base_mole_fractions, reactions, &
+          flow_config%chemistry_relative_tolerance, &
+          flow_config%chemistry_absolute_tolerance)) then
+        message = "Selected 3D AMR restart context is invalid"
+        return
+      end if
+    end if
+    if (flow_config%transport_enabled) then
+      if (.not. present(transport) .or. &
+          .not. present(maximum_transport_diffusivity) .or. &
+          .not. present(minimum_transport_theta)) then
+        message = "Transport 3D AMR restart context is incomplete"
+        return
+      end if
+      if (.not. compatible_transport_database(species, transport)) then
+        message = "Transport 3D AMR restart context is invalid"
+        return
+      end if
+    else if (transport_context) then
+      message = "Transport 3D AMR restart context is unexpected"
+      return
+    end if
+    if (selected_context) then
+      if (flow_config%transport_enabled) then
+        expected_schema = checkpoint_schema_selected_transport
+      else
+        expected_schema = checkpoint_schema_selected
+      end if
+    else
+      if (flow_config%transport_enabled) then
+        expected_schema = checkpoint_schema_fixed_transport
+      else
+        expected_schema = checkpoint_schema_fixed
+      end if
+    end if
+    if (amr_config%regrid_interval_steps>0) expected_schema=expected_schema+4
+    if (physical_boundary) expected_schema=expected_schema+8
+    if (.not.selected_context.and.flow_config%chemistry_enabled) expected_schema=expected_schema+16
+    if (size(initial_integrals)/=nvar) then
+      message='Invalid checkpoint inventory shape';return
+    end if
+    open(newunit=unit, file=trim(path), status="old", action="read", &
+      form="formatted", access="stream", iostat=status)
+    if (status /= 0) then
+      write(message, '(a,1x,a)') &
+        "Could not open 3D AMR checkpoint:", trim(path)
+      return
+    end if
+    read(unit, '(a)', iostat=status) magic
+    if (status /= 0) go to 900
+    if (trim(magic) /= checkpoint_magic) go to 900
+    read(unit, *, iostat=status) stored_header
+    if (status /= 0) go to 900
+    if (any(stored_header /= [expected_schema, size(species), nvar])) &
+      go to 900
+    if (amr_config%regrid_interval_steps>0) then
+      call dynamic_checkpoint_header(unit,flow_config,amr_config,stored_patch,stored_regrids,local_ok)
+      if (.not.local_ok) go to 900
+      candidate_patch=stored_patch
+    end if
+    if (.not.checkpoint_configuration_matches(flow_config,amr_config,candidate_patch,selected_context)) goto 900
+    if (selected_context) then
+      call read_selected_checkpoint_context( &
+        unit, reactions, bundle_sha256, chemistry_integrator, &
+        base_mole_fractions, flow_config%chemistry_relative_tolerance, &
+        flow_config%chemistry_absolute_tolerance, context_ok, message)
+      if (.not. context_ok) go to 900
+    end if
+    if (.not.selected_context.and.flow_config%chemistry_enabled) then
+      call fixed_checkpoint_context(unit,flow_config,size(species),.false.,context_ok,message)
+      if (.not.context_ok) go to 900
+    end if
+    if (flow_config%transport_enabled) then
+      call read_transport_checkpoint_context( &
+        unit, species, transport, flow_config, &
+        candidate_maximum_transport_diffusivity, &
+        candidate_minimum_transport_theta, context_ok, message)
+      if (.not. context_ok) go to 900
+    end if
+    do species_index = 1, size(species)
+      read(unit, '(a)', iostat=status) stored_name
+      if (status /= 0) go to 900
+      if (trim(stored_name) /= trim(species(species_index)%name)) go to 900
+      read(unit, *, iostat=status) stored_species_values
+      if (status /= 0) go to 900
+      expected_species_values = [ &
+        species(species_index)%molecular_weight, &
+        species(species_index)%temperature_min, &
+        species(species_index)%temperature_mid, &
+        species(species_index)%temperature_max, &
+        species(species_index)%low_coefficients, &
+        species(species_index)%high_coefficients]
+      if (.not. all(checkpoint_real_matches( &
+          stored_species_values, expected_species_values))) go to 900
+    end do
+    read(unit, '(a)', iostat=status) stored_thermo
+    if (status /= 0) go to 900
+    if (trim(stored_thermo) /= trim(flow_config%thermo_model)) go to 900
+    read(unit, '(a)', iostat=status) stored_solver
+    if (status /= 0) go to 900
+    if (trim(stored_solver) /= trim(flow_config%riemann_solver)) go to 900
+    read(unit, '(a)', iostat=status) stored_boundary
+    if (status /= 0) go to 900
+    if (trim(stored_boundary) /= trim(flow_config%boundary_condition)) &
+      go to 900
+    read(unit, '(a)', iostat=status) stored_reconstruction
+    if (status /= 0) go to 900
+    if (trim(stored_reconstruction) /= trim(flow_config%reconstruction)) &
+      go to 900
+    read(unit, '(a)', iostat=status) stored_limiter
+    if (status /= 0) go to 900
+    if (trim(stored_limiter) /= trim(flow_config%limiter)) go to 900
+    read(unit, *, iostat=status) stored_layout
+    if (status /= 0) go to 900
+    expected_layout = [ &
+      flow_config%nx, flow_config%ny, flow_config%nz, &
+      candidate_patch%coarse_i_lower, candidate_patch%coarse_i_upper, &
+      candidate_patch%coarse_j_lower, candidate_patch%coarse_j_upper, &
+      candidate_patch%coarse_k_lower, candidate_patch%coarse_k_upper, candidate_patch%refinement_ratio]
+    if (any(stored_layout /= expected_layout)) go to 900
+    read(unit, *, iostat=status) stored_mesh
+    if (status /= 0) go to 900
+    expected_mesh = [ &
+      flow_config%x_lower, flow_config%x_upper, &
+      flow_config%y_lower, flow_config%y_upper, &
+      flow_config%z_lower, flow_config%z_upper, flow_config%cfl]
+    if (.not. all(checkpoint_real_matches( &
+        stored_mesh, expected_mesh))) go to 900
+    read(unit, *, iostat=status) stored_flags
+    if (status /= 0) go to 900
+    expected_flags = [ &
+      merge(1, 0, flow_config%chemistry_enabled), &
+      merge(1, 0, flow_config%transport_enabled)]
+    if (any(stored_flags /= expected_flags)) go to 900
+    read(unit, *, iostat=status) &
+      stored_time, stored_maximum_reflux, stored_steps
+    if (status /= 0) go to 900
+    if (.not. ieee_is_finite(stored_time) .or. &
+        .not. ieee_is_finite(stored_maximum_reflux) .or. &
+        .not. ieee_is_finite(flow_config%final_time)) go to 900
+    time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
+      max(1.0_dp, abs(flow_config%final_time))
+    if (stored_time < 0.0_dp .or. &
+        stored_time > flow_config%final_time + time_tolerance .or. &
+        stored_maximum_reflux < 0.0_dp .or. stored_steps < 0 .or. &
+        stored_steps > flow_config%maximum_steps .or. &
+        (stored_steps == 0 .and. stored_time > tiny(1.0_dp)) .or. &
+        (stored_steps > 0 .and. stored_time <= 0.0_dp)) go to 900
+    allocate(candidate_integrals(nvar))
+    read(unit, *, iostat=status) candidate_integrals
+    if (status /= 0) go to 900
+    if (.not. all(ieee_is_finite(candidate_integrals))) go to 900
+
+    read(unit, *, iostat=status) stored_coarse_shape
+    if (status /= 0) go to 900
+    if (any(stored_coarse_shape /= &
+        [candidate_patch%coarse_nx, candidate_patch%coarse_ny, candidate_patch%coarse_nz])) go to 900
+    inquire(unit=unit,pos=coarse_start,iostat=status)
+    if (status/=0) goto 900
+    if (scanning) then
+      do ck=1,candidate_patch%coarse_nz
+        do cj=1,candidate_patch%coarse_ny
+          do ci=1,candidate_patch%coarse_nx
+            read(unit,*,iostat=status) discarded
+            if (status/=0) goto 900
+          end do
+        end do
+      end do
+      inquire(unit=unit,pos=position,iostat=status)
+      if (status/=0) goto 900
+    else
+    call after_level(coarse_start,[candidate_patch%coarse_nx,candidate_patch%coarse_ny,candidate_patch%coarse_nz], &
+      row_bytes,position,local_ok)
+    if (.not.local_ok) goto 900
+    end if
+    read(unit, *, pos=position,iostat=status) stored_fine_shape
+    if (status /= 0) go to 900
+    if (any(stored_fine_shape /= &
+        [candidate_patch%fine_nx(), candidate_patch%fine_ny(), candidate_patch%fine_nz()])) go to 900
+    inquire(unit=unit,pos=fine_start,iostat=status)
+    if (status/=0) goto 900
+    if (scanning) then
+      do ck=1,candidate_patch%fine_nz()
+        do cj=1,candidate_patch%fine_ny()
+          do ci=1,candidate_patch%fine_nx()
+            read(unit,*,iostat=status) discarded
+            if (status/=0) goto 900
+          end do
+        end do
+      end do
+      inquire(unit=unit,pos=position,iostat=status)
+      if (status/=0) goto 900
+    else
+    call after_level(fine_start,[candidate_patch%fine_nx(),candidate_patch%fine_ny(),candidate_patch%fine_nz()], &
+      row_bytes,position,local_ok)
+    if (.not.local_ok) goto 900
+    end if
+    if (physical_boundary) then
+      read(unit,'(a)',pos=position,iostat=status) stored_amr_reactive_boundary_signature_3d
+      if (status/=0) go to 900
+      if (trim(stored_amr_reactive_boundary_signature_3d)/=trim(amr_reactive_boundary_signature_3d(flow_config))) go to 900
+      read(unit,*,iostat=status) candidate_boundary
+      if (status/=0) go to 900
+      if (.not.all(ieee_is_finite(candidate_boundary))) go to 900
+    end if
+    if (physical_boundary) then
+      read(unit, '(a)', iostat=status) end_marker
+    else
+      read(unit, '(a)', pos=position,iostat=status) end_marker
+    end if
+    if (status /= 0) go to 900
+    if (trim(end_marker) /= "END_CHECKPOINT") go to 900
+    read(unit, '(a)', iostat=status) magic
+    if (.not. is_iostat_end(status)) go to 900
+    close(unit, iostat=status)
+    if (status /= 0) then
+      message = "Failed to close 3D AMR checkpoint"
+      return
+    end if
+
+    if (stored_regrids>stored_steps) then
+      message='Invalid dynamic regrid counter'; return
+    end if
+    if (present(regrid_count)) regrid_count=stored_regrids
+    if (physical_boundary) boundary_change=candidate_boundary
+    patch=candidate_patch;coarse_offset=coarse_start-1;fine_offset=fine_start-1
+    time = stored_time
+    steps = stored_steps
+    initial_integrals = candidate_integrals
+    maximum_reflux = stored_maximum_reflux
+    if (flow_config%transport_enabled) then
+      maximum_transport_diffusivity = &
+        candidate_maximum_transport_diffusivity
+      minimum_transport_theta = candidate_minimum_transport_theta
+    end if
+    ok = .true.
+    return
+
+900 continue
+    close(unit)
+    if (len_trim(message) == 0) then
+      message = "3D AMR checkpoint is truncated, invalid, or incompatible"
+    end if
+  end subroutine read_amr_checkpoint_metadata
+
+  subroutine after_level(first,shape,row_bytes,position,ok)
+    integer(int64), intent(in) :: first
+    integer, intent(in) :: shape(3),row_bytes
+    integer(int64), intent(out) :: position
+    logical, intent(out) :: ok
+    integer(int64) :: bytes
+    integer :: axis
+    ok=.false.;position=0;bytes=row_bytes
+    if (first<1.or.any(shape<1).or.row_bytes<1) return
+    do axis=1,3
+      if (bytes>(huge(bytes)-first)/int(shape(axis),int64)) return
+      bytes=bytes*int(shape(axis),int64)
+    end do
+    position=first+bytes;ok=.true.
+  end subroutine after_level
 
   subroutine write_transport_checkpoint_context( &
       unit, transport, flow_config, maximum_diffusivity, minimum_theta, status)

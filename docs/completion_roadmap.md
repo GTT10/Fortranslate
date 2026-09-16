@@ -102,9 +102,9 @@ Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with con
 remapping, overlap reuse and geometry-aware changed-rank restart, including
 physical-boundary tagging and boundary-touching patches. Remapping now runs
 within fixed coarse slabs without full-level root aggregation. General
-patches/levels, measured workload/scaling qualification, distributed checkpoint reads
+patches/levels, measured workload/scaling qualification, broader distributed I/O qualification
 and EB coupling remain open. Two-level MPI AMR CSV output and final diagnostics now
-operate on local slabs, as do analytic coarse/fine initialization and checkpoint writes; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
+operate on local slabs, as do analytic coarse/fine initialization and checkpoint read/write; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and
 restores local ID ordering, with collective input/capacity rejection. Distributed

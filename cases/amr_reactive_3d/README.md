@@ -83,11 +83,14 @@ using the same byte layout as the serial writer. Final inventory, synchronizatio
 and composition diagnostics use reductions without gathering fields. Checkpoint
 writes also use local slabs, preserving the existing file layout after collective
 metadata, temperature and level-synchronization checks. The payload contains no
-owner map and may therefore be
-resumed with a different valid rank count. Fresh runs initialize analytic conditions
-directly on each local slab and
-reduce initial inventories. Checkpoint reads still require root memory
-for the hierarchy. See the
+owner map and may therefore be resumed with a different valid rank count. Fresh
+runs initialize analytic conditions directly on each local slab and reduce
+initial inventories. Restart reads the canonical fixed-width cell rows
+directly into local candidates and commits only after collective EOS, synchronization
+and metadata checks. Metadata is replicated; no full hierarchy is gathered for I/O.
+Reformatted list-directed files use a bounded-memory streaming fallback on each
+rank; that compatibility path scans all rows and is not a scalable I/O path. See the
+[checkpoint input checks](../../docs/validation/amr-mpi-checkpoint-input-20260917.md),
 [checkpoint output checks](../../docs/validation/amr-mpi-checkpoint-output-20260917.md) and
 [distributed CSV checks](../../docs/validation/amr-mpi-distributed-csv-20260917.md).
 
@@ -163,7 +166,7 @@ ownership stays fixed; fine ownership changes with the patch. No full-level
 field gathering is needed for remapping. Ranks with no fine cells remain supported.
 Checkpoint geometry is broadcast before restart distribution, so rank counts
 can change. Fluid/chemistry/transport stepping and remapping remain rank-local.
-Checkpoint reads still require root memory for the complete hierarchy.
+Checkpoint reads and writes now operate on local slabs.
 The library also provides `repartition_mpi_amr_sparse_3d` for explicit contiguous
 coarse-slab counts (at least one coarse column per rank). It transfers both
 levels and temperatures directly with MPI all-to-all exchange; subsequent
@@ -264,7 +267,7 @@ from local temperature slabs. Changed patches are conservatively remapped
 within each fixed coarse slab, with two-layer neighbor exchange for slopes.
 Fine overlap stays on the same rank because its coarse parent ownership is fixed.
 Checkpoint/restart retains the tagging policy and supports changed rank counts.
-Checkpoint reads still require root memory for the complete hierarchy.
+Checkpoint reads and writes now operate on local slabs.
 See [serial evidence](../../docs/validation/amr-boundary-regrid-20260917.md) and
 [MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md),
 with the newer [distributed-remap check](../../docs/validation/amr-mpi-distributed-remap-20260917.md).

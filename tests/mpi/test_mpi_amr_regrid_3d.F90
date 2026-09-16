@@ -1,4 +1,5 @@
 program test_mpi_amr_regrid_3d
+  use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
@@ -12,8 +13,9 @@ program test_mpi_amr_regrid_3d
     gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d, &
     balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
-  use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d
-  use amr_reactive_3d_checkpoint_mod, only: write_amr_reactive_3d_checkpoint
+  use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d,read_mpi_amr_checkpoint_3d
+  use amr_reactive_3d_checkpoint_mod, only: write_amr_reactive_3d_checkpoint,read_amr_reactive_3d_checkpoint, &
+    read_amr_checkpoint_metadata
   use simulation_config_reactive_3d_mod, only: reactive_3d_config
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   implicit none
@@ -141,7 +143,15 @@ contains
     character(len=128) :: path
     character(len=256) :: message
     real(dp) :: integrals(12),clock,saved_t,saved_cell(12)
-    integer :: parent
+    integer :: parent,loaded_steps,rows,unit,output_unit,io_status
+    character(len=32768) :: line
+    integer(int64) :: coarse_offset,fine_offset
+    real(dp) :: loaded_time,loaded_reflux,loaded_integrals(12),ledger(12)
+    real(dp), allocatable :: ref_c(:,:,:,:),ref_t(:,:,:),ref_f(:,:,:,:),ref_ft(:,:,:)
+    type(mpi_amr_sparse_hierarchy_3d) :: loaded,before
+    type(mpi_amr_sparse_distribution_3d) :: loaded_distribution
+    type(amr_patch_3d) :: loaded_patch
+    character :: first_byte
     flow%nx=8;flow%ny=8;flow%nz=8;flow%thermo_model='elementary'
     flow%boundary_condition='outflow';flow%chemistry_enabled=.false.;flow%transport_enabled=.false.
     flow%final_time=1.0_dp
@@ -159,6 +169,73 @@ contains
         clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
       call require(ok,'serial checkpoint write: '//trim(message))
       call same_file(path)
+    end if
+    loaded_distribution=distribution;loaded_patch=patch
+    loaded_time=-1;loaded_steps=-1;loaded_reflux=-1;loaded_integrals=-1;ledger=-1
+    call read_mpi_amr_checkpoint_3d(loaded_distribution,loaded,path,species,flow,amr,loaded_patch, &
+      loaded_time,loaded_steps,loaded_integrals,loaded_reflux,ok,message,boundary_change=ledger)
+    call require(ok,'distributed checkpoint read: '//trim(message))
+    call require(loaded_time==clock.and.loaded_steps==1.and.loaded_reflux==0.and. &
+      all(loaded_integrals==0).and.all(ledger==0),'distributed restart diagnostics')
+    call gather_mpi_amr_sparse_hierarchy_3d(loaded_distribution,loaded_patch,0,loaded,gc,gt,gf,gft,ok)
+    call require(ok,'gather checkpoint candidate')
+    if (rank==0) then
+      ref_c=c;ref_t=t;ref_f=f;ref_ft=ft
+      call read_amr_reactive_3d_checkpoint(path,species,flow,amr,patch,ref_c,ref_t,ref_f,ref_ft, &
+        loaded_time,loaded_steps,loaded_integrals,loaded_reflux,ok,message,boundary_change=ledger)
+      call require(ok,'independent serial restart')
+      call require(all(ref_c==gc).and.all(ref_t==gt).and.all(ref_f==gf).and.all(ref_ft==gft), &
+        'distributed restart exactly matches serial state and recovered temperatures')
+    end if
+    if (mode==1) then
+      before=loaded
+      ! Corrupt a coarse cell owned by the final rank, keeping metadata and length intact.
+      if (rank==0) then
+        call read_amr_checkpoint_metadata(path,species,flow,amr,loaded_patch,coarse_offset,fine_offset,rows, &
+          loaded_time,loaded_steps,loaded_integrals,loaded_reflux,ok,message,boundary_change=ledger)
+        call require(ok,'metadata byte offsets')
+        coarse_offset=coarse_offset+int(distribution%coarse_displacements(distribution%nranks),int64)*rows+1
+        open(newunit=unit,file=path,status='old',access='stream',form='unformatted',action='readwrite')
+        read(unit,pos=coarse_offset) first_byte
+        write(unit,pos=coarse_offset) '!'
+        close(unit)
+      end if
+      call MPI_Barrier(MPI_COMM_WORLD,ierr)
+      call read_mpi_amr_checkpoint_3d(loaded_distribution,loaded,path,species,flow,amr,loaded_patch, &
+        loaded_time,loaded_steps,loaded_integrals,loaded_reflux,ok,message,boundary_change=ledger)
+      call require(.not.ok,'corrupt non-root-owned cell rejects collectively')
+      call require(all(loaded%coarse_state==before%coarse_state).and.all(loaded%fine_state==before%fine_state).and. &
+        all(loaded%coarse_temperature==before%coarse_temperature).and. &
+        all(loaded%fine_temperature==before%fine_temperature),'rejected restart preserves hierarchy')
+      call require(loaded_time==clock.and.loaded_steps==1.and.loaded_reflux==0.and. &
+        all(loaded_integrals==0).and.all(ledger==0),'rejected restart preserves diagnostics')
+      call require(all(loaded_distribution%coarse_counts==distribution%coarse_counts).and. &
+        all(loaded_distribution%fine_counts==distribution%fine_counts).and. &
+        loaded_patch%coarse_i_lower==patch%coarse_i_lower.and.loaded_patch%coarse_i_upper==patch%coarse_i_upper, &
+        'rejected restart preserves geometry and ownership')
+      if (rank==0) then
+        open(newunit=unit,file=path,status='old',access='stream',form='unformatted',action='write')
+        write(unit,pos=coarse_offset) first_byte
+        close(unit)
+      end if
+      call MPI_Barrier(MPI_COMM_WORLD,ierr)
+      if (rank==0) then
+        open(newunit=unit,file=path,status='old',action='read')
+        open(newunit=output_unit,file=trim(path)//'.spaced',status='replace',action='write')
+        do
+          read(unit,'(a)',iostat=io_status) line
+          if (io_status/=0) exit
+          write(output_unit,'(a)') trim(line)//' '
+        end do
+        close(unit);close(output_unit)
+      end if
+      call MPI_Barrier(MPI_COMM_WORLD,ierr)
+      call read_mpi_amr_checkpoint_3d(loaded_distribution,loaded,trim(path)//'.spaced',species,flow,amr,loaded_patch, &
+        loaded_time,loaded_steps,loaded_integrals,loaded_reflux,ok,message,boundary_change=ledger)
+      call require(ok,'streaming fallback accepts reformatted checkpoint: '//trim(message))
+      call require(all(loaded%coarse_state==before%coarse_state).and.all(loaded%fine_state==before%fine_state).and. &
+        all(loaded%coarse_temperature==before%coarse_temperature).and. &
+        all(loaded%fine_temperature==before%fine_temperature),'reformatted restart preserves exact state')
     end if
     if (mode/=1) return
     if (distribution%fine_count>0) then
