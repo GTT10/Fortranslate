@@ -1842,3 +1842,16 @@ CSVs retain final fields. Existing output files are refused. See the
 This executable currently supports initial injection and fixed-mechanism periodic
 flow. Its CSVs do not provide restart. Scheduled injection, rank-neutral checkpoint,
 selected-mechanism routing, SGS and distributed wall/breakup events remain open.
+
+### Checkpoint ID reservation state
+
+`write_spray_checkpoint` and `read_spray_checkpoint` accept optional 64-bit
+`last_id`. Supplying it adds `_ID_V1` to the format identity and stores an integer
+record after dimensions/component count, before time metadata. The reader must
+explicitly request this mode. The watermark must be nonnegative and at least every
+live particle ID; it may exceed all live IDs because particles can evaporate.
+Overflow, malformed records and smaller watermarks reject without changing state
+or the caller's watermark. Existing checkpoint modes remain unchanged when this
+argument is omitted. This is the persistence API needed by collective MPI ID
+reservation; MPI field/particle collection and CLI restart are still open. See
+[ID checkpoint evidence](validation/spray-id-checkpoint-20260917.md).

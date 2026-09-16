@@ -109,6 +109,8 @@ exchanges gas and species-limiter halos and connects as half-steps around hydro
 global time-step selection/retry, coupled stepping, budget history and rank-local
 CSV output ([evidence](validation/spray-mpi-application-20260917.md)). Scheduled
 injection, rank-neutral MPI spray checkpoint and selected-mechanism routing remain open.
+The checkpoint API now preserves a 64-bit ID high-water mark with strict validation,
+ready for MPI reservation state ([evidence](validation/spray-id-checkpoint-20260917.md)).
 
 The spray CVODE branch now builds after removal of misplaced wall-film setup;
 focused native/CVODE chemistry tests pass

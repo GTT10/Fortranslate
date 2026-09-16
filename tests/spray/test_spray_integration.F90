@@ -30,6 +30,7 @@ program test_spray_integration
   real(dp) :: checkpoint_state(15,5,5,5),checkpoint_temperature(5,5,5)
   real(dp) :: force(15),accel(3),dt,expected(3),saved_force(15)
   real(dp), allocatable :: component_mass(:,:),saved_mass(:,:),film_mass(:,:),saved_film_mass(:,:)
+  integer(int64) :: last_id
   integer :: i,j,k,iteration,steps,event,record_status
   character(len=16384) :: checkpoint_record
   logical :: ok
@@ -606,6 +607,39 @@ program test_spray_integration
     call require(all(state==before) .and. all(temperature==before_t),'restart exact state')
     call require(all(totals0==totals1) .and. size(drops)==2 .and. steps==3,'restart metadata')
     open(newunit=i,file='roundtrip.chk',status='old'); close(i,status='delete')
+    last_id=huge(0_int64)-7_int64
+    call write_spray_checkpoint('ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,last_id=last_id)
+    call require(ok,'64-bit ID checkpoint write')
+    last_id=19
+    call read_spray_checkpoint('ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message)
+    call require(.not.ok,'ID checkpoint requires explicit ID state')
+    call read_spray_checkpoint('ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,last_id=last_id)
+    call require(ok.and.last_id==huge(0_int64)-7_int64,'ID high watermark exact beyond floating integer range')
+    last_id=1
+    call write_spray_checkpoint('invalid-ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,last_id=last_id)
+    call require(.not.ok,'ID watermark below live IDs rejected')
+    open(newunit=i,file='ids.chk',status='old')
+    open(newunit=j,file='bad-ids.chk',status='replace')
+    k=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if (record_status/=0) exit
+      k=k+1
+      if (k==4) checkpoint_record='18446744073709551616'
+      write(j,'(a)') trim(checkpoint_record)
+    end do
+    close(i);close(j)
+    last_id=19
+    call read_spray_checkpoint('bad-ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,last_id=last_id)
+    call require(.not.ok.and.last_id==19.and.all(state==before).and.all(temperature==before_t), &
+      'overflow ID read rolls back state and watermark')
+    open(newunit=i,file='ids.chk',status='old');close(i,status='delete')
+    open(newunit=i,file='bad-ids.chk',status='old');close(i,status='delete')
     drops%rt_time=3.125e-6_dp
     call write_spray_checkpoint('khrt-roundtrip.chk','khrt-context',species,state,temperature,drops,time,steps,event, &
       totals0,injected,ok,message,breakup_state=.true.,khrt_state=.true.)

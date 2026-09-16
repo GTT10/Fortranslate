@@ -1,4 +1,5 @@
 module spray_checkpoint_mod
+  use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: iso_c_binding, only: c_char,c_int,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
@@ -82,7 +83,8 @@ contains
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id)
+    integer(int64), intent(in), optional :: last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -134,6 +136,7 @@ contains
     if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
     if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
     if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
+    if (present(last_id)) expected_magic=trim(expected_magic)//'_ID_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -165,6 +168,10 @@ contains
       do p=1,size(wall_films)
         if (.not.valid_wall_component_inventory(wall_films(p),film_component_mass(:,p))) return
       end do
+    end if
+    if (present(last_id)) then
+      if (last_id<0) return
+      if (any(parcels%id>last_id)) return
     end if
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
@@ -202,6 +209,9 @@ contains
     if (ios==0) write(unit,*,iostat=ios) size(state,1),dims,size(parcels)
     if (present(component_mass)) then
       if (ios==0) write(unit,'(i0)',iostat=ios) size(component_mass,1)
+    end if
+    if (present(last_id)) then
+      if (ios==0) write(unit,'(i0)',iostat=ios) last_id
     end if
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reference_totals
@@ -268,7 +278,9 @@ contains
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id)
+    integer(int64), intent(inout), optional :: last_id
+    integer(int64) :: candidate_last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
     character(len=80) :: expected_magic
@@ -330,6 +342,7 @@ contains
     if (present(component_mass)) expected_magic=trim(expected_magic)//'_MIX_V1'
     if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
     if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
+    if (present(last_id)) expected_magic=trim(expected_magic)//'_ID_V1'
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -356,6 +369,14 @@ contains
       if (ios/=0) goto 900
       if (component_count(1)<1.or.component_count(1)>min(16,size(species))) goto 900
       allocate(mass_candidate(component_count(1),got(5)))
+    end if
+    if (present(last_id)) then
+      call read_tokens(unit,tokens(1:1),ios)
+      if (ios/=0) goto 900
+      if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
+      read(tokens(1),*,iostat=ios) candidate_last_id
+      if (ios/=0) goto 900
+      if (candidate_last_id<0) goto 900
     end if
     call read_tokens(unit,tokens(1:3),ios)
     if (ios/=0) goto 900
@@ -483,6 +504,10 @@ contains
     call recover_reactive_temperatures_3d(species,candidate,temp,dims(1),dims(2),dims(3),check,local_ok)
     if (.not. local_ok) return
     if (any(abs(check-temp)>1.0e-9_dp*max(1.0_dp,abs(temp)))) return
+    if (present(last_id)) then
+      if (any(drops%id>candidate_last_id)) return
+      last_id=candidate_last_id
+    end if
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source
