@@ -80,6 +80,46 @@ trees; per-step hydro/diffusion/wall bounds use the active tree. Logs report eve
 times, node/level counts, and maximum remap error. This is a prescribed schedule,
 not automatic solution-based tagging.
 
+## Checkpoint and continuation
+
+Both fixed and selected frontends accept an optional group in the input file
+(group header starts a new line):
+
+```fortran
+&amr_tree_checkpoint
+  checkpoint_file='tree.chk'
+  checkpoint_interval_steps=1
+  stop_after_checkpoint=.true.
+/
+```
+
+The interval counts successful steps. A checkpoint is written after any regrid
+at that time, including a final-time regrid. Stopping returns successfully before
+writing final CSVs; existing CSVs remain untouched. Omit the group to disable
+checkpointing. To continue, use the same physical input, initial topology and
+full schedule, replacing the group with:
+
+```fortran
+&amr_tree_checkpoint
+  restart_file='tree.chk'
+/
+```
+
+Paths resolve from the working directory. Final time, maximum steps and output
+path may change; all physics, mechanism records/identity, initial topology and
+ordered schedule contents must match. Topology filenames may change if their
+contents do not. The reader checks consumed events, active geometry, run limits,
+initial inventories and the conserved boundary ledger before continuing. Saved
+temperatures and accumulated diagnostics are restored exactly. Restart never
+replays a consumed event. Saving can also remain enabled during continuation;
+the restored step is not written again. Checkpoint and restart paths may be the
+same, but must not alias configuration/topology/schedule or CSV paths. The path
+guard is lexical; symlink and hard-link aliases are not resolved.
+
+The snapshot writer validates data before opening the destination. An I/O failure
+can still leave a partial checkpoint. Exact context text is compiler/runtime
+sensitive; cross-compiler portability has not been qualified.
+
 ## Output
 
 `output_file` is a single CSV of **exposed cells only**, so covered parent cells
@@ -98,5 +138,5 @@ files are not checkpoints.
 ## Remaining scope
 
 This frontend supports static or scheduled topologies with serial ownership.
-Automatic tagging, checkpoint/restart and MPI execution remain to be connected. Coarse/fine donors are PCM and time stepping is common
+Automatic tagging and MPI execution remain to be connected. Coarse/fine donors are PCM and time stepping is common
 across levels; this is not subcycled or globally second-order AMR qualification.

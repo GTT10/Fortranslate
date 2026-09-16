@@ -2,6 +2,9 @@ module amr_patch_tree_application_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use amr_patch_tree_remap_3d_mod, only: remap_amr_patch_tree_reactive_3d
   use, intrinsic :: iso_fortran_env, only: int64
+  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
+    read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
+  use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
@@ -9,7 +12,8 @@ module amr_patch_tree_application_3d_mod
   use gas_transport_mod, only: gas_transport_species
   use mixture_thermo_mod, only: mixture_density,mass_fractions_from_mole_fractions
   use selected_composition_mod, only: resolve_selected_composition
-  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved, &
+    resolve_reactive_chemistry_integrator
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
@@ -26,9 +30,9 @@ module amr_patch_tree_application_3d_mod
   public :: run_amr_patch_tree_application_3d
 contains
   subroutine run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-      schedule_path,chemistry_integrator)
+      schedule_path,chemistry_integrator,input_path,mechanism_identity)
     character(len=*), intent(in) :: topology_path
-    character(len=*), optional, intent(in) :: schedule_path,chemistry_integrator
+    character(len=*), optional, intent(in) :: schedule_path,chemistry_integrator,input_path,mechanism_identity
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -36,6 +40,7 @@ contains
     real(dp), intent(in) :: mole_fractions(:)
     type(reactive_3d_config) :: local
     type(amr_patch_tree_3d) :: tree
+    type(amr_tree_checkpoint_3d) :: snapshot
     type(amr_patch_tree_3d), allocatable :: events(:)
     type(amr_tree_state_3d) :: state,temperature
     integer, allocatable :: ratios(:)
@@ -50,8 +55,44 @@ contains
     character(len=32) :: faces(6)
     character(len=1024) :: message,event_path
     character(len=:), allocatable :: row
-    logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
+    logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion,use_implicit
+    character(len=1024) :: checkpoint_file,restart_file
+    character(len=:), allocatable :: context,schedule_identity,identity,integrator,expected_tree
+    integer :: checkpoint_interval_steps,last_checkpoint_step
+    logical :: stop_after_checkpoint
+    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
+    last_checkpoint_step=0
+    if (present(input_path)) then
+      open(newunit=unit,file=input_path,status='old',action='read',iostat=status)
+      if (status/=0) error stop 'Cannot open tree checkpoint configuration'
+      do
+        read(unit,'(a)',iostat=status) message
+        if (status<0) exit
+        if (status/=0) error stop 'Cannot read tree checkpoint configuration'
+        message=adjustl(message)
+        do i=1,len_trim(message)
+          c=iachar(message(i:i))
+          if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
+        end do
+        if (index(message,'&amr_tree_checkpoint')/=1.and.index(message,'$amr_tree_checkpoint')/=1) cycle
+        backspace(unit,iostat=status)
+        if (status/=0) error stop 'Cannot locate tree checkpoint configuration'
+        read(unit,nml=amr_tree_checkpoint,iostat=status)
+        if (status/=0) error stop 'Invalid tree checkpoint configuration'
+        exit
+      end do
+      close(unit)
+    end if
+    if (checkpoint_interval_steps<0) error stop 'Negative tree checkpoint interval'
+    if (stop_after_checkpoint.and.checkpoint_interval_steps==0) error stop 'Checkpoint stop requires positive interval'
+    if (checkpoint_interval_steps>0.and.len_trim(checkpoint_file)==0) error stop 'Missing tree checkpoint path'
+    if (present(input_path)) call check_paths(input_path)
+    if (present(schedule_path)) call check_paths(schedule_path)
+    call check_paths(config%output_file)
+    call check_paths(trim(config%output_file)//'.budget.csv')
     call read_topology(topology_path,tree)
+    schedule_identity=tree_key(tree)
     count=size(tree%nodes)-1
     nevents=0
     if (present(schedule_path)) then
@@ -77,8 +118,21 @@ contains
         event_path=schedule_path(:slash)//trim(event_path)
       end if
       call read_topology(trim(event_path),events(event))
+      write(message,'(es27.18e3)') event_times(event)
+      schedule_identity=schedule_identity//trim(message)//new_line('a')//tree_key(events(event))
     end do
     if (present(schedule_path)) close(unit)
+    if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
+      identity='fixed:'//trim(config%thermo_model)
+      if (present(mechanism_identity)) identity=mechanism_identity
+      call resolve_reactive_chemistry_integrator(size(species),chemistry_integrator,use_implicit,ok)
+      if (.not.ok) error stop 'Invalid tree chemistry integrator'
+      integrator='explicit'
+      if (use_implicit) integrator='implicit'
+      call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
+        identity,integrator,schedule_identity,context,ok)
+      if (.not.ok) error stop 'Cannot build tree checkpoint context'
+    end if
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) error stop 'Tree coordinate overflow'
     root_h=[(config%x_upper-config%x_lower)/config%nx,(config%y_upper-config%y_lower)/config%ny, &
@@ -149,6 +203,7 @@ contains
     call composite_integrals_amr_patch_tree_3d(tree,state,root_h,initial,ok)
     if (.not.ok) error stop 'Invalid initial composite inventory'
     time=0;step=0;budget=0;max_correction=0;min_theta=1;event=1;regrids=0;max_remap_error=0
+    if (len_trim(restart_file)>0) call restore_checkpoint()
     write(*,'(a)') 'PeleF '//pelef_version//' experimental serial regular 3D patch tree'
     write(*,'(a,i0,a,i0)') 'Nodes: ',count+1,' Levels: ',tree%level_count()
     do
@@ -156,6 +211,18 @@ contains
         if (time==event_times(event)) then
           call apply_event(events(event))
           regrids=regrids+1;event=event+1
+        end if
+      end if
+      if (checkpoint_interval_steps>0) then
+        if (step>last_checkpoint_step) then
+          if (mod(step,checkpoint_interval_steps)==0) then
+            call save_checkpoint()
+            last_checkpoint_step=step
+            if (stop_after_checkpoint) then
+              write(*,'(a,i0,a,es24.16)') 'Stopped after checkpoint at step ',step,' time ',time
+              return
+            end if
+          end if
         end if
       end if
       if (time>=config%final_time) exit
@@ -237,6 +304,100 @@ contains
     write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
     write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
   contains
+    subroutine check_paths(path)
+      character(len=*), intent(in) :: path
+      if (checkpoint_interval_steps>0) then
+        if (selected_reactor_paths_alias_lexically(checkpoint_file,path)) error stop 'Tree checkpoint aliases input/output'
+      end if
+      if (len_trim(restart_file)>0) then
+        if (selected_reactor_paths_alias_lexically(restart_file,path)) error stop 'Tree restart aliases input/output'
+      end if
+    end subroutine
+    function tree_key(geometry) result(key)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      character(len=:), allocatable :: key
+      character(len=512) :: line
+      integer :: peer
+      write(line,'(*(i0,1x))') size(geometry%nodes),geometry%nodes(1)%shape
+      key=trim(line)//new_line('a')
+      do peer=2,size(geometry%nodes)
+        associate(item=>geometry%nodes(peer),box=>geometry%nodes(peer)%patch)
+          write(line,'(*(i0,1x))') item%parent,box%coarse_i_lower,box%coarse_i_upper, &
+            box%coarse_j_lower,box%coarse_j_upper,box%coarse_k_lower,box%coarse_k_upper,box%refinement_ratio
+        end associate
+        key=key//trim(line)//new_line('a')
+      end do
+    end function
+    subroutine save_checkpoint()
+      snapshot%tree=tree;snapshot%state=state;snapshot%temperature=temperature
+      snapshot%initial=initial;snapshot%boundary=budget
+      snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
+      snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
+      snapshot%maximum_remap_error=max_remap_error
+      call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok)
+      if (.not.ok) error stop 'Cannot write tree checkpoint'
+    end subroutine
+    subroutine restore_checkpoint()
+      integer :: applied,peer,nconserved
+      type(amr_tree_state_3d) :: absolute_state
+      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q))
+      call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
+        [config%nx,config%ny,config%nz],snapshot,ok)
+      if (.not.ok) error stop 'Invalid tree restart checkpoint/context'
+      if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
+        error stop 'Tree restart exceeds run limits'
+      applied=count_events(snapshot%time)
+      if (snapshot%regrids/=applied) error stop 'Tree restart schedule position mismatch'
+      expected_tree=tree_key(tree)
+      if (applied>0) expected_tree=tree_key(events(applied))
+      if (tree_key(snapshot%tree)/=expected_tree) error stop 'Tree restart geometry mismatch'
+      if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
+        error stop 'Tree restart initial inventory mismatch'
+      ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
+      absolute_state=state
+      do peer=1,size(tree%nodes)
+        absolute_state%fields(peer)%values=abs(state%fields(peer)%values)
+      end do
+      call composite_integrals_amr_patch_tree_3d(tree,absolute_state,root_h,original_scale,ok)
+      if (.not.ok) error stop 'Invalid initial restart inventory scale'
+      absolute_state=snapshot%state
+      do peer=1,size(snapshot%tree%nodes)
+        absolute_state%fields(peer)%values=abs(snapshot%state%fields(peer)%values)
+      end do
+      call composite_integrals_amr_patch_tree_3d(snapshot%tree,absolute_state,root_h,restart_scale,ok)
+      if (.not.ok) error stop 'Invalid restart inventory scale'
+      call composite_integrals_amr_patch_tree_3d(snapshot%tree,snapshot%state,root_h,inventory,ok)
+      if (.not.ok) error stop 'Invalid restart inventory'
+      ! Momentum is a vector: a nearly zero transverse component must use
+      ! the full momentum magnitude as its roundoff scale.
+      original_scale(2:4)=maxval(original_scale(2:4))
+      restart_scale(2:4)=maxval(restart_scale(2:4))
+      nconserved=size(q)
+      if (config%chemistry_enabled) nconserved=5
+      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
+          2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
+          abs(snapshot%boundary(:nconserved))))) error stop 'Tree restart boundary ledger mismatch'
+      tree=snapshot%tree;state=snapshot%state;temperature=snapshot%temperature
+      initial=snapshot%initial;budget=snapshot%boundary
+      time=snapshot%time;step=snapshot%steps;regrids=snapshot%regrids
+      max_correction=snapshot%maximum_reflux;min_theta=snapshot%minimum_theta
+      max_remap_error=snapshot%maximum_remap_error
+      event=applied+1;last_checkpoint_step=step;count=size(tree%nodes)-1
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+      if (.not.ok) error stop 'Tree restart coordinate overflow'
+      deallocate(h);allocate(h(3,count+1))
+      do peer=1,count+1
+        h(:,peer)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(peer)%level+1),dp)
+      end do
+    end subroutine
+    integer function count_events(at_time) result(applied)
+      real(dp), intent(in) :: at_time
+      integer :: peer
+      applied=0
+      do peer=1,nevents
+        if (event_times(peer)<=at_time) applied=applied+1
+      end do
+    end function
     subroutine read_topology(path,result)
       character(len=*), intent(in) :: path
       type(amr_patch_tree_3d), intent(out) :: result
@@ -244,6 +405,7 @@ contains
       integer, allocatable :: parents(:),shapes(:,:)
       integer :: input,ios,nchild,peer,parent,dims(3),lower(3),upper(3),ratio
       logical :: valid
+      call check_paths(path)
       open(newunit=input,file=path,status='old',action='read',iostat=ios)
       if (ios/=0) error stop 'Cannot open tree topology'
       read(input,*,iostat=ios) nchild

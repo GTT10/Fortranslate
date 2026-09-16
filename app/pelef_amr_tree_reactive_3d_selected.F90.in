@@ -117,10 +117,12 @@ program pelef_amr_tree_reactive_3d_selected
   write(*,'(a)') 'Chemistry integrator: '//pelef_selected_chemistry_integrator
   if (command_argument_count()==3) then
     call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
-      trim(schedule_path),pelef_selected_chemistry_integrator)
+      trim(schedule_path),pelef_selected_chemistry_integrator, &
+      input_path=trim(input_path),mechanism_identity=pelef_selected_bundle_sha256)
   else
     call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
-      chemistry_integrator=pelef_selected_chemistry_integrator)
+      chemistry_integrator=pelef_selected_chemistry_integrator, &
+      input_path=trim(input_path),mechanism_identity=pelef_selected_bundle_sha256)
   end if
 contains
   subroutine check_output_alias(path)

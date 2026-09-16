@@ -60,8 +60,9 @@ program pelef_amr_tree_reactive_3d
   if (command_argument_count()==3) then
     call get_command_argument(3,schedule_path)
     call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
-      trim(schedule_path))
+      trim(schedule_path),input_path=trim(input_path))
   else
-    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions)
+    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
+      input_path=trim(input_path))
   end if
 end program pelef_amr_tree_reactive_3d

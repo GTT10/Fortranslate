@@ -20,6 +20,7 @@ add_library(
   src/driver/selected_composition_mod.F90
   src/driver/simulation_config_reactive_1d_mod.F90
   src/driver/simulation_config_reactive_2d_mod.F90
+  src/driver/simulation_config_selected_reactor_mod.F90
   src/driver/simulation_config_reactive_3d_mod.F90
   src/driver/simulation_config_amr_reactive_3d_mod.F90
   src/driver/simulation_config_reactive_eb_3d_mod.F90

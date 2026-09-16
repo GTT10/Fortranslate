@@ -121,8 +121,7 @@ Conservative overlap remapping now handles topology/refinement-ratio changes.
 The serial application now connects static topology input, analytic initialization,
 split evolution, scheduled conservative regridding and exposed-cell output.
 Configure-time selected-mechanism dispatch now uses an isolated tree runtime.
-Tree snapshot I/O and physics-context APIs are implemented; connect application
-stop/restart and schedule-position checks. Automatic solution-based tagging and
+Tree snapshot I/O, application stop/restart and schedule-position checks are implemented. Automatic solution-based tagging and
 MPI ownership remain open. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 

@@ -253,14 +253,20 @@ a canonical identity for initial topology and the full event schedule. Context
 lines are compared exactly; formatting changes between compiler/runtime versions
 may therefore reject a file even when its numeric inputs are equivalent.
 
-These are storage/context APIs. The application still needs checkpoint controls,
-stop/restart wiring, schedule-position checks and continuation-limit validation.
+The application now exposes optional `amr_tree_checkpoint` controls. Its context
+includes canonical initial-tree geometry and each scheduled time/topology, without
+filenames. Restarts validate run limits, the number of consumed events, expected
+active topology and independently initialized inventories. The boundary ledger
+uses `2e-10` times absolute cell inventories (a common vector magnitude for the
+three momentum components); chemistry-enabled runs check the five Euler components,
+while chemistry-disabled runs also check species. Successful-step checkpoints
+are saved after same-time regrids and before final output. Exact saved fields,
+temperatures, counters and diagnostics resume with the next unconsumed event.
 The primitive API does not independently infer an event schedule from its opaque
 caller-supplied identity or prove historical boundary-budget correctness.
 
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling, automatic solution-based tagging,
-MPI decomposition and checkpoint/restart must be
-connected before claiming a general multi-level solver. EB geometry is separate.
+MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
