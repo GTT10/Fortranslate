@@ -114,8 +114,9 @@ Tree flux synchronization/reflux now handles nested and adjacent boxes, periodic
 seams and physical boundary-ledger replacement. Synchronous SSPRK2 hydro now
 connects flux production and temperature recovery, using a common timestep
 bounded by all node CFL limits. Next connect PLM coarse/fine interpolation
-and subcycling, then reaction/transport,
-dynamic remap, MPI ownership and application/restart paths. See the
+and subcycling. Exposed-cell chemistry and reaction/hydro splitting are connected;
+molecular transport, dynamic remap, MPI ownership and application/restart paths
+remain open. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

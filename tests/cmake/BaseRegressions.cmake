@@ -71,6 +71,9 @@ add_test(NAME unit_amr_patch_tree_reflux_3d COMMAND test_amr_patch_tree_reflux_3
 add_executable(test_amr_patch_tree_hydro_3d unit/test_amr_patch_tree_hydro_3d.F90)
 target_link_libraries(test_amr_patch_tree_hydro_3d PRIVATE pelef_core)
 add_test(NAME unit_amr_patch_tree_hydro_3d COMMAND test_amr_patch_tree_hydro_3d)
+add_executable(test_amr_patch_tree_chemistry_3d unit/test_amr_patch_tree_chemistry_3d.F90)
+target_link_libraries(test_amr_patch_tree_chemistry_3d PRIVATE pelef_core)
+add_test(NAME unit_amr_patch_tree_chemistry_3d COMMAND test_amr_patch_tree_chemistry_3d)
 
 add_executable(
   test_amr_reactive_3d_config

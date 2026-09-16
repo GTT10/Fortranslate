@@ -124,10 +124,29 @@ not enforce that bound. All nodes currently use this same interval. PLM face
 reconstruction is available, but coarse/fine spatial donors remain PCM, so this
 is not a claim of globally second-order AMR accuracy or subcycled evolution.
 
+## Chemistry and reaction/hydro splitting
+
+`advance_amr_patch_tree_chemistry_3d` applies the existing cell chemistry solver
+to exposed cells at every node. Immediate-child boxes mask covered parent
+cells; their result comes from bottom-up restriction. Temperatures are recovered
+from the synchronized conserved state. Species and ordered reactions are
+caller-supplied, with the existing optional chemistry-integrator selector.
+The routine owns no fixed-mechanism database. State and temperature commit only
+after all nodes and final recovery succeed.
+
+`advance_amr_patch_tree_strang_3d` composes a half reaction interval, synchronous
+hydro and a second half reaction interval. Candidate copies cover the whole
+composition, so a hydro failure after chemistry also preserves the original
+hierarchy and diagnostics. The returned boundary ledger is the hydro surface
+integral; chemistry changes species internally, so conservation comparisons
+use total mass, momentum, total energy and elements, not individual species.
+The source-only interval may be zero; it still synchronizes covered parents and
+recovers temperature. The coupled step requires positive time.
+
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling,
-chemistry/transport coupling, dynamic remapping,
+molecular transport coupling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

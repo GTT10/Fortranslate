@@ -36,8 +36,10 @@ replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous
 SSPRK2 hydro now connects PCM/PLM face fluxes, temperature recovery and the
 composite boundary ledger, with a CFL minimum over all nodes
 ([evidence](validation/amr-tree-hydro-20260917.md)); coarse/fine donors remain PCM.
-Chemistry/transport, dynamic
-remapping, MPI ownership and application/restart integration remain open.
+Cell chemistry now runs on exposed tree cells, with bottom-up restriction and
+transactional reaction/hydro Strang splitting
+([evidence](validation/amr-tree-chemistry-20260917.md)). Molecular transport,
+dynamic remapping, MPI ownership and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks
