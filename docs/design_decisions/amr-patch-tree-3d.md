@@ -138,7 +138,7 @@ all nodes, using each node's spacing. Callers choose the timestep; advance does
 not enforce that bound. All nodes currently use this same interval. PLM face
 reconstruction now also enables limited coarse-donor interpolation and forwards
 the species count for closure. PCM reconstruction retains the original donor
-path. Transport ghosts still use PCM. This is not a claim of globally second-order
+path. Transport accepts the same optional coarse limiter. This is not a claim of globally second-order
 AMR accuracy or subcycled evolution.
 
 ## Chemistry and reaction/hydro splitting
@@ -322,7 +322,23 @@ The saved geometry and fields are restored and the next due step performs the
 next check. This validates structural compatibility, not a replay of historical
 tag decisions. Reservoir timestep bounds include the maximum requested depth.
 
+## Transport coarse donors
+
+`advance_amr_patch_tree_transport_3d` accepts optional `coarse_limiter`, forwarding
+it and the species count to the tree ghost helper along with viscous-wall and
+moving-wall data. The direct API defaults to PCM when the argument is absent.
+The combined R/2-T/2-H-T/2-R/2 step supplies the configured limiter for both
+transport half-steps when `reconstruction='characteristic_plm'`; PCM reconstruction
+retains the previous path. Thus the application reconstruction selection now
+controls spatial coarse donors consistently for hydro and molecular transport.
+
+The existing transport flux routine recovers primitive/thermodynamic states from
+the packed conserved ghost values and temperature guesses. Its positivity limiter,
+physical wall fluxes, tree reflux and transactional commit are retained. Limiting
+component interpolation alone does not guarantee nonlinear EOS admissibility;
+failures still reject the step. This remains a common timestep across levels.
+
 ## Remaining integration
 
-Transport coarse/fine interpolation, subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+Subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

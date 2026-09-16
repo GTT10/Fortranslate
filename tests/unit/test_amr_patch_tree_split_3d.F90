@@ -70,11 +70,11 @@ program test_amr_patch_tree_split_3d
     if (mode==1) then
       oracle=state;synchronized=temperature
       call advance_amr_patch_tree_strang_3d(tree,species,reactions,oracle,synchronized,spacing,dt,faces, &
-        'pcm','mc','hllc',2e-7_dp,1e-12_dp,reference_budget,reference_max,ok,integrator)
+        'characteristic_plm','mc','hllc',2e-7_dp,1e-12_dp,reference_budget,reference_max,ok,integrator)
       call require(ok,'no-transport comparison')
     end if
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
-      'pcm','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
+      'characteristic_plm','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
     call require(ok,'Strang step')
     if (mode==1) call require(maxval(abs(state%fields(4)%values-oracle%fields(4)%values))>1e-10_dp, &
       'transport changes the coupled solution')

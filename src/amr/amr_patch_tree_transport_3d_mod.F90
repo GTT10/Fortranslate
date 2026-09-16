@@ -75,7 +75,7 @@ contains
   end subroutine
   subroutine advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -86,6 +86,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction,minimum_theta
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,initial_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
@@ -173,7 +174,8 @@ contains
       do peer=1,size(tree%nodes)
         n=tree%nodes(peer)%shape;dims=n+4
         call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success, &
-          viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity)
+          viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
+          coarse_limiter=coarse_limiter,species_count=size(species))
         if (.not.success) return
         allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
         local_faces='outflow';level=tree%nodes(peer)%level+1

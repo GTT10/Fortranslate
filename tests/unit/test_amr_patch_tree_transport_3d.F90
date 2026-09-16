@@ -21,7 +21,9 @@ program test_amr_patch_tree_transport_3d
   real(dp) :: spacing(3),dt,root_dt,expected_dt,local_dt,h(3),budget(12),serial_budget(12),largest, &
       initial(12),final(12),theta,serial_theta,diffusivity,local_diffusivity
   real(dp) :: wall_t(6),wall_v(3,6),wall_dt
-  integer :: i,j,k,mode,geometry,node,n(3),axis,level
+  integer :: i,j,k,mode,geometry,node,n(3),axis,level,boundary_mode
+  character(len=:), allocatable :: coarse_limiter
+  type(amr_tree_state_3d) :: pcm_results(4)
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:)
   logical :: ok
@@ -57,13 +59,16 @@ program test_amr_patch_tree_transport_3d
     call require(ok,'topology')
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     call require(ok,'global layout')
-    do mode=1,4
+    do mode=1,8
+      boundary_mode=mod(mode-1,4)+1
+      if (allocated(coarse_limiter)) deallocate(coarse_limiter)
+      if (mode>4) coarse_limiter="mc"
       faces='periodic';wall_v=0
-      if (mode==2) faces='outflow'
-      if (mode>2) then
+      if (boundary_mode==2) faces='outflow'
+      if (boundary_mode>2) then
         wall_v(1,3:4)=2
         faces='outflow';faces(3:4)='no_slip_wall'
-        if (mode==4) faces(3:4)='isothermal_wall'
+        if (boundary_mode==4) faces(3:4)='isothermal_wall'
       end if
 
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
@@ -85,7 +90,7 @@ program test_amr_patch_tree_transport_3d
       end do
       call require(dt==expected_dt,'hierarchy CFL minimum')
       if (geometry==2) call require(dt<root_dt/16,'finest grid CFL controls step')
-      if (mode==4) then
+      if (boundary_mode==4) then
         do node=1,size(tree%nodes)
           n=tree%nodes(node)%shape;h=spacing/2**tree%nodes(node)%level
           local_faces='outflow';level=tree%nodes(node)%level+1
@@ -108,8 +113,17 @@ program test_amr_patch_tree_transport_3d
       call require(ok,'initial inventory')
       dt=min(dt,1e-8_dp)
       call advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
-        .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v)
-      call require(ok,'hydro step')
+        .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+        coarse_limiter=coarse_limiter)
+      call require(ok,'transport step')
+      if (geometry==2) then
+        if (mode<=4) then
+          pcm_results(mode)=state
+        else
+          call require(maxval(abs(state%fields(2)%values-pcm_results(boundary_mode)%fields(2)%values))>1e-12_dp, &
+            'linear donors change coarse/fine transport')
+        end if
+      end if
       if (geometry==1) then
         serial=root;st=rt(1,:,:,:)
         call advance_reactive_transport_3d(species,transport,serial,st,4,4,4,spacing(1),spacing(2),spacing(3),dt, &
@@ -129,7 +143,8 @@ program test_amr_patch_tree_transport_3d
       end do
       saved=state;saved_t=temperature;budget=-17;largest=-19;theta=-23
       call advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,1.0_dp,faces, &
-        .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v)
+        .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+        coarse_limiter=coarse_limiter)
       call require(.not.ok,'nonphysical candidate rejection')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')

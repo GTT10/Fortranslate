@@ -31,12 +31,14 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: chemistry_integrator
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    character(len=:), allocatable :: transport_limiter
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),stage_budget(size(boundary_change)),largest,stage_max,theta,stage_theta
     logical :: valid,transport_enabled
     ok=.false.
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0.or.(barodiffusion.and..not.diffusion)) return
+    if (reconstruction=='characteristic_plm') transport_limiter=limiter
     candidate=state;temps=temperature
     budget=0;largest=0;theta=1
     transport_enabled=viscosity.or.conduction.or.diffusion
@@ -74,7 +76,7 @@ contains
       stage_budget=0;stage_max=0;stage_theta=1
       call advance_amr_patch_tree_transport_3d(tree,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
         viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,success, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
       if (.not.success) return
       budget=budget+stage_budget;largest=max(largest,stage_max);theta=min(theta,stage_theta)
     end subroutine
