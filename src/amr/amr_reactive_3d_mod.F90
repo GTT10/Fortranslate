@@ -1,6 +1,7 @@
 module amr_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
+    valid_reactive_boundaries_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use elementary_kinetics_mod, only: &
@@ -34,6 +35,7 @@ module amr_reactive_3d_mod
   public :: advance_amr_reactive_strang_3d
   public :: advance_amr_reactive_hydro_3d
   public :: accumulate_fine_interface_fluxes_3d
+  public :: reflux_physical_coarse_3d
   public :: reflux_coarse_3d
   public :: compute_fine_patch_plm_slab_face_fluxes_3d
   public :: interpolate_coarse_fine_ghost_plm_3d
@@ -1495,6 +1497,106 @@ contains
     z_upper = candidate_z_upper
   end subroutine accumulate_fine_interface_fluxes_3d
 
+  ! Fine interface fluxes are averaged over child faces and the coarse interval.
+  ! At a physical face replace the covered coarse contribution to the external
+  ! ledger. At an interior face correct the adjacent uncovered coarse cell.
+  subroutine reflux_physical_coarse_3d(patch,coarse,fx,fy,fz,xlo,xhi,ylo,yhi,zlo,zhi, &
+      spacing,dt,faces,boundary_change,maximum_correction,ok)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(inout) :: coarse(:,:,:,:)
+    real(dp), intent(in) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    real(dp), intent(in) :: xlo(:,:,:),xhi(:,:,:),ylo(:,:,:),yhi(:,:,:),zlo(:,:,:),zhi(:,:,:)
+    real(dp), intent(in) :: spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(out) :: boundary_change(:),maximum_correction
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:)
+    real(dp) :: correction(size(coarse,1)),budget(size(coarse,1)),largest,volume
+    integer :: n(3),lo(3),hi(3),a,side,i,j,k,cell
+
+    ok=.false.; boundary_change=0; maximum_correction=0
+    n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    lo=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]
+    hi=[patch%coarse_i_upper,patch%coarse_j_upper,patch%coarse_k_upper]
+    if (.not.patch%is_valid().or.size(boundary_change)/=size(coarse,1)) return
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    do a=1,3
+      if (lo(a)==1.and.faces(2*a-1)=='periodic') return
+      if (hi(a)==n(a).and.faces(2*a)=='periodic') return
+    end do
+    if (any(shape(fx)/=[size(coarse,1),n(1)+1,n(2),n(3)]).or. &
+        any(shape(fy)/=[size(coarse,1),n(1),n(2)+1,n(3)]).or. &
+        any(shape(fz)/=[size(coarse,1),n(1),n(2),n(3)+1])) return
+    if (.not.all(ieee_is_finite(fx)).or..not.all(ieee_is_finite(fy)).or..not.all(ieee_is_finite(fz))) return
+    if (.not.valid_reflux_inputs_3d(patch,coarse,fx(:,1:,:,:),fy(:,:,1:,:),fz(:,:,:,1:), &
+        xlo,xhi,ylo,yhi,zlo,zhi,spacing(1),spacing(2),spacing(3),dt,allow_boundary=.true.)) return
+    allocate(candidate,source=coarse)
+    budget=0; largest=0; volume=product(spacing)
+    do side=1,2
+      do k=lo(3),hi(3)
+        do j=lo(2),hi(2)
+          if (side==1) then
+            cell=lo(1)-1
+            correction=-dt/spacing(1)*(xlo(:,j-lo(2)+1,k-lo(3)+1)-fx(:,cell,j,k))
+          else
+            cell=hi(1)
+            correction=dt/spacing(1)*(xhi(:,j-lo(2)+1,k-lo(3)+1)-fx(:,cell,j,k))
+            cell=cell+1
+          end if
+          if (cell==0.or.cell==n(1)+1) then
+            budget=budget-correction*volume
+          else
+            candidate(:,cell,j,k)=candidate(:,cell,j,k)+correction
+            largest=max(largest,maxval(abs(correction)))
+          end if
+        end do
+      end do
+    end do
+    do side=1,2
+      do k=lo(3),hi(3)
+        do i=lo(1),hi(1)
+          if (side==1) then
+            cell=lo(2)-1
+            correction=-dt/spacing(2)*(ylo(:,i-lo(1)+1,k-lo(3)+1)-fy(:,i,cell,k))
+          else
+            cell=hi(2)
+            correction=dt/spacing(2)*(yhi(:,i-lo(1)+1,k-lo(3)+1)-fy(:,i,cell,k))
+            cell=cell+1
+          end if
+          if (cell==0.or.cell==n(2)+1) then
+            budget=budget-correction*volume
+          else
+            candidate(:,i,cell,k)=candidate(:,i,cell,k)+correction
+            largest=max(largest,maxval(abs(correction)))
+          end if
+        end do
+      end do
+    end do
+    do side=1,2
+      do j=lo(2),hi(2)
+        do i=lo(1),hi(1)
+          if (side==1) then
+            cell=lo(3)-1
+            correction=-dt/spacing(3)*(zlo(:,i-lo(1)+1,j-lo(2)+1)-fz(:,i,j,cell))
+          else
+            cell=hi(3)
+            correction=dt/spacing(3)*(zhi(:,i-lo(1)+1,j-lo(2)+1)-fz(:,i,j,cell))
+            cell=cell+1
+          end if
+          if (cell==0.or.cell==n(3)+1) then
+            budget=budget-correction*volume
+          else
+            candidate(:,i,j,cell)=candidate(:,i,j,cell)+correction
+            largest=max(largest,maxval(abs(correction)))
+          end if
+        end do
+      end do
+    end do
+    if (.not.all(ieee_is_finite(candidate)).or..not.all(ieee_is_finite(budget)).or. &
+        .not.ieee_is_finite(largest)) return
+    coarse=candidate; boundary_change=budget; maximum_correction=largest; ok=.true.
+  end subroutine reflux_physical_coarse_3d
+
   subroutine reflux_coarse_3d( &
       patch, coarse_state, coarse_flux_x, coarse_flux_y, coarse_flux_z, &
       fine_x_lower, fine_x_upper, fine_y_lower, fine_y_upper, &
@@ -1686,7 +1788,7 @@ contains
   pure logical function valid_reflux_inputs_3d( &
       patch, coarse_state, coarse_flux_x, coarse_flux_y, coarse_flux_z, &
       fine_x_lower, fine_x_upper, fine_y_lower, fine_y_upper, &
-      fine_z_lower, fine_z_upper, dx, dy, dz, dt) result(valid)
+      fine_z_lower, fine_z_upper, dx, dy, dz, dt, allow_boundary) result(valid)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: coarse_state(:, :, :, :)
     real(dp), intent(in) :: coarse_flux_x(:, :, :, :)
@@ -1697,10 +1799,15 @@ contains
     real(dp), intent(in) :: fine_z_lower(:, :, :), fine_z_upper(:, :, :)
     real(dp), intent(in) :: dx, dy, dz, dt
 
+    logical, optional, intent(in) :: allow_boundary
+    logical :: interior_required
     integer :: nvar, covered_nx, covered_ny, covered_nz
 
     valid = .false.
-    if (.not. patch%is_strictly_interior()) return
+    interior_required=.true.
+    if (present(allow_boundary)) interior_required=.not.allow_boundary
+    if (.not.patch%is_valid()) return
+    if (interior_required.and..not.patch%is_strictly_interior()) return
     nvar = size(coarse_state, 1)
     covered_nx = patch%coarse_i_upper - patch%coarse_i_lower + 1
     covered_ny = patch%coarse_j_upper - patch%coarse_j_lower + 1

@@ -33,6 +33,11 @@ and full-H2/O2 reacting AMR checkpoint/restart now retains canonical reaction,
 composition and integrator context for serial/MPI applications
 ([evidence](validation/amr-fixed-chemistry-restart-20260917.md)).
 
+Boundary-touching AMR now has a physical flux-correction API that replaces
+covered domain-surface fluxes in the boundary ledger and corrects only uncovered
+interior coarse cells ([evidence](validation/amr-boundary-reflux-20260917.md)).
+Fine boundary ghost handling and stepping/application activation remain open.
+
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
 connected to the regular coupled-step API with wall budgets, stationary film
