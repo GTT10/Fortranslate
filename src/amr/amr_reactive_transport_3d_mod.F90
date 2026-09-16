@@ -1,5 +1,6 @@
 module amr_reactive_transport_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -7,9 +8,10 @@ module amr_reactive_transport_3d_mod
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use reactive_transport_3d_mod, only: &
+    physical_transport_fluxes_3d, physical_transport_budget_3d, &
     reactive_transport_fluxes_3d, reactive_transport_ghosted_fluxes_3d, &
     reactive_transport_interface_theta_3d, reactive_transport_timestep_3d
-  use amr_hierarchy_3d_mod, only: amr_patch_3d, average_down_3d
+  use amr_hierarchy_3d_mod, only: amr_patch_3d, average_down_3d, initialize_amr_patch_3d
   use amr_reactive_3d_mod, only: &
     advance_amr_reactive_chemistry_3d, advance_amr_reactive_hydro_3d, &
     advance_amr_reactive_strang_3d, accumulate_fine_interface_fluxes_3d, &
@@ -81,7 +83,8 @@ contains
       fine_state, fine_temperature, dx, dy, dz, interval, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
-      minimum_theta, maximum_reflux_correction, ok)
+      minimum_theta, maximum_reflux_correction, ok, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -109,12 +112,20 @@ contains
     real(dp), allocatable :: candidate_fine(:, :, :, :)
     real(dp), allocatable :: candidate_fine_temperature(:, :, :)
     real(dp), allocatable :: recovered_temperature(:, :, :)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp) :: boundary_one(size(coarse_state,1)),boundary_two(size(coarse_state,1))
     real(dp) :: theta_one, theta_two, reflux_one, reflux_two
     logical :: local_ok
 
     minimum_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
     ok = .false.
+    if (present(boundary_change)) then
+      boundary_change=0
+      if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
     if (.not. valid_amr_transport_shapes_3d( &
           species, transport, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return
@@ -139,7 +150,8 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       stage_coarse, stage_coarse_temperature, stage_fine, &
-      stage_fine_temperature, theta_one, reflux_one, local_ok)
+      stage_fine_temperature, theta_one, reflux_one, local_ok, &
+      boundary_faces,boundary_one,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
 
     allocate(euler_coarse, mold=coarse_state)
@@ -152,7 +164,8 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       euler_coarse, euler_coarse_temperature, euler_fine, &
-      euler_fine_temperature, theta_two, reflux_two, local_ok)
+      euler_fine_temperature, theta_two, reflux_two, local_ok, &
+      boundary_faces,boundary_two,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
 
     allocate(candidate_coarse, source=0.5_dp * (coarse_state + euler_coarse))
@@ -180,6 +193,7 @@ contains
         .not. all(ieee_is_finite(candidate_fine)) .or. &
         .not. all(ieee_is_finite(candidate_fine_temperature))) return
 
+    if (present(boundary_change)) boundary_change=.5_dp*(boundary_one+boundary_two)
     coarse_state = candidate_coarse
     coarse_temperature = candidate_coarse_temperature
     fine_state = candidate_fine
@@ -196,7 +210,8 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, minimum_transport_theta, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
-      chemistry_integrator)
+      chemistry_integrator, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -220,6 +235,10 @@ contains
     real(dp), allocatable :: coarse_candidate_temperature(:, :, :)
     real(dp), allocatable :: fine_candidate(:, :, :, :)
     real(dp), allocatable :: fine_candidate_temperature(:, :, :)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp) :: boundary_total(size(coarse_state,1)),stage_boundary(size(coarse_state,1))
     real(dp) :: stage_theta, stage_reflux, hydro_reflux
     real(dp) :: candidate_theta, candidate_reflux
     logical :: local_ok
@@ -228,6 +247,11 @@ contains
     minimum_transport_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
     ok = .false.
+    boundary_total=0
+    if (present(boundary_change)) then
+      boundary_change=0
+      if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
     candidate_theta = 1.0_dp
     candidate_reflux = 0.0_dp
     selected_reconstruction = "pcm"
@@ -239,7 +263,8 @@ contains
         species, reactions, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
         chemistry_enabled, rtol, atol, candidate_reflux, ok, &
-        selected_reconstruction, selected_limiter, chemistry_integrator)
+        selected_reconstruction, selected_limiter, chemistry_integrator, &
+        boundary_faces,boundary_change,inflow_state,inflow_temperature)
       if (ok) maximum_reflux_correction = candidate_reflux
       return
     end if
@@ -276,8 +301,9 @@ contains
       dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, selected_limiter, stage_theta, stage_reflux, &
-      local_ok)
+      local_ok,boundary_faces,stage_boundary,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
+    boundary_total=boundary_total+stage_boundary
     candidate_theta = min(candidate_theta, stage_theta)
     candidate_reflux = max(candidate_reflux, stage_reflux)
 
@@ -285,8 +311,9 @@ contains
       species, patch, coarse_candidate, coarse_candidate_temperature, &
       fine_candidate, fine_candidate_temperature, dx, dy, dz, dt, &
       riemann_solver, hydro_reflux, local_ok, selected_reconstruction, &
-      selected_limiter)
+      selected_limiter,boundary_faces,stage_boundary,inflow_state,inflow_temperature)
     if (.not. local_ok) return
+    boundary_total=boundary_total+stage_boundary
     candidate_reflux = max(candidate_reflux, hydro_reflux)
 
     call advance_amr_reactive_transport_3d( &
@@ -295,8 +322,9 @@ contains
       dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, selected_limiter, stage_theta, stage_reflux, &
-      local_ok)
+      local_ok,boundary_faces,stage_boundary,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
+    boundary_total=boundary_total+stage_boundary
     candidate_theta = min(candidate_theta, stage_theta)
     candidate_reflux = max(candidate_reflux, stage_reflux)
     if (chemistry_enabled) then
@@ -308,6 +336,7 @@ contains
       if (.not. local_ok) return
     end if
 
+    if (present(boundary_change)) boundary_change=boundary_total
     coarse_state = coarse_candidate
     coarse_temperature = coarse_candidate_temperature
     fine_state = fine_candidate
@@ -323,7 +352,8 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, limiter, new_coarse_state, &
       new_coarse_temperature, new_fine_state, new_fine_temperature, &
-      minimum_theta, maximum_reflux_correction, ok)
+      minimum_theta, maximum_reflux_correction, ok, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -360,6 +390,14 @@ contains
     real(dp), allocatable :: boundary_y_upper(:, :, :)
     real(dp), allocatable :: boundary_z_lower(:, :, :)
     real(dp), allocatable :: boundary_z_upper(:, :, :)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    type(amr_patch_3d) :: interpolation_patch
+    real(dp), allocatable :: px(:,:,:,:),py(:,:,:,:),pz(:,:,:,:)
+    real(dp), allocatable :: start_ghost(:,:,:,:),end_ghost(:,:,:,:),start_gt(:,:,:),end_gt(:,:,:)
+    real(dp) :: boundary_total(size(coarse_state,1))
+    integer :: cn(3)
     real(dp) :: fine_dt, ratio_real, coarse_theta, fine_theta, alpha
     real(dp) :: interface_theta
     logical :: local_ok
@@ -374,6 +412,11 @@ contains
     minimum_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
     ok = .false.
+    boundary_total=0
+    if (present(boundary_change)) then
+      boundary_change=0
+      if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
     if (.not. valid_amr_transport_shapes_3d( &
           species, transport, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return
@@ -385,6 +428,28 @@ contains
     allocate(coarse_flux_x, mold=coarse_state)
     allocate(coarse_flux_y, mold=coarse_state)
     allocate(coarse_flux_z, mold=coarse_state)
+    cn=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    if (present(boundary_faces)) then
+      allocate(px(nvar,0:cn(1),cn(2),cn(3)),py(nvar,cn(1),0:cn(2),cn(3)),pz(nvar,cn(1),cn(2),0:cn(3)))
+      call physical_transport_fluxes_3d(species,transport,coarse_state,coarse_temperature,cn,[dx,dy,dz],dt, &
+        boundary_faces,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
+        px,py,pz,coarse_theta,local_ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      if (.not. local_ok) return
+      call physical_transport_budget_3d(px,py,pz,cn,[dx,dy,dz],dt,boundary_total,local_ok)
+      if (.not. local_ok) return
+      coarse_flux_x=px(:,1:cn(1),:,:)
+      coarse_flux_y=py(:,:,1:cn(2),:)
+      coarse_flux_z=pz(:,:,:,1:cn(3))
+      do k=1,cn(3)
+        do j=1,cn(2)
+          do i=1,cn(1)
+            new_coarse_state(:,i,j,k)=coarse_state(:,i,j,k) &
+              -dt/dx*(px(:,i,j,k)-px(:,i-1,j,k))-dt/dy*(py(:,i,j,k)-py(:,i,j-1,k)) &
+              -dt/dz*(pz(:,i,j,k)-pz(:,i,j,k-1))
+          end do
+        end do
+      end do
+    else
     call reactive_transport_fluxes_3d( &
       species, transport, coarse_state, coarse_temperature, &
       patch%coarse_nx, patch%coarse_ny, patch%coarse_nz, dx, dy, dz, dt, &
@@ -408,6 +473,7 @@ contains
         end do
       end do
     end do
+    end if
     allocate(recovered_temperature, mold=coarse_temperature)
     call recover_reactive_temperatures_3d( &
       species, new_coarse_state, coarse_temperature, patch%coarse_nx, &
@@ -459,13 +525,35 @@ contains
     boundary_z_upper = 0.0_dp
     minimum_theta = coarse_theta
 
+    interpolation_patch=patch
+    if (present(boundary_faces)) then
+      allocate(start_ghost(nvar,cn(1)+4,cn(2)+4,cn(3)+4),start_gt(cn(1)+4,cn(2)+4,cn(3)+4))
+      allocate(end_ghost,mold=start_ghost);allocate(end_gt,mold=start_gt)
+      call fill_reactive_boundary_ghosts_3d(coarse_state,coarse_temperature,boundary_faces,start_ghost,start_gt, &
+        local_ok,viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+        wall_velocity=wall_velocity)
+      if (.not. local_ok) return
+      call fill_reactive_boundary_ghosts_3d(new_coarse_state,new_coarse_temperature,boundary_faces,end_ghost,end_gt, &
+        local_ok,viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+        wall_velocity=wall_velocity)
+      if (.not. local_ok) return
+      call initialize_amr_patch_3d(cn(1)+4,cn(2)+4,cn(3)+4, &
+        patch%coarse_i_lower+2,patch%coarse_i_upper+2,patch%coarse_j_lower+2,patch%coarse_j_upper+2, &
+        patch%coarse_k_lower+2,patch%coarse_k_upper+2,ratio,interpolation_patch,local_ok)
+      if (.not. local_ok) return
+    end if
     do substep = 1, subcycles
       alpha = real(substep - 1, dp) / real(subcycles, dp)
+      if (present(boundary_faces)) then
+      call build_fine_transport_ghosts_3d(species,interpolation_patch,start_ghost,start_gt,end_ghost,end_gt, &
+        new_fine_state,new_fine_temperature,alpha,limiter,ghost_state,ghost_temperature,local_ok)
+      else
       call build_fine_transport_ghosts_3d( &
         species, patch, coarse_state, coarse_temperature, &
         new_coarse_state, new_coarse_temperature, new_fine_state, &
         new_fine_temperature, alpha, limiter, ghost_state, &
         ghost_temperature, local_ok)
+      end if
       if (.not. local_ok) return
       call reactive_transport_ghosted_fluxes_3d( &
         species, transport, ghost_state, ghost_temperature, &
@@ -562,6 +650,7 @@ contains
       all(ieee_is_finite(new_coarse_temperature)) .and. &
       all(ieee_is_finite(new_fine_state)) .and. &
       all(ieee_is_finite(new_fine_temperature))
+    if (ok.and.present(boundary_change)) boundary_change=boundary_total
   end subroutine advance_amr_transport_euler_3d
 
   subroutine limit_fine_transport_interfaces_3d( &

@@ -20,7 +20,7 @@ program test_amr_reactive_transport_3d
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     restrict_average_3d, composite_integrals_amr_3d
   use state_indices_mod, only: irho
-  use amr_reactive_3d_mod, only: advance_amr_reactive_strang_3d
+  use amr_reactive_3d_mod, only: advance_amr_reactive_strang_3d, element_integrals_from_reactive_integrals_3d
   use amr_reactive_transport_3d_mod, only: &
     compute_amr_reactive_transport_timestep_3d, &
     advance_amr_reactive_transport_3d, advance_amr_reactive_full_3d
@@ -221,9 +221,87 @@ program test_amr_reactive_transport_3d
   call run_ratio_three_transport_test(species, transport, ok)
   call require(ok, "ratio-three AMR transport test")
 
+  call run_physical_transport_tests()
+
   write(*, '(a)') "test_amr_reactive_transport_3d: PASS"
 
 contains
+
+  subroutine run_physical_transport_tests()
+    real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:)
+    real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: before(:),after(:),ledger(:),inlet(:,:),it(:),scale(:)
+    real(dp) :: tw(6),wv(3,6),th,r,e0(3),e1(3),eb(3)
+    character(len=32) :: faces(6)
+    integer :: mode,nv
+    call initialize_hierarchy(.true.,c0,t0,f0,ft0,ok)
+    call require(ok,'physical transport initial hierarchy')
+    nv=size(c0,1)
+    allocate(before(nv),after(nv),ledger(nv),inlet(nv,6),it(6),scale(nv))
+    inlet=spread(c0(:,1,1,1),2,6);it=t0(1,1,1)
+    inlet(:,1)=1.1_dp*inlet(:,1)
+    tw=600;wv=0;wv(2,1)=20
+    call composite_integrals_amr_3d(c0,f0,patch,dx,dy,dz,before,ok)
+    call require(ok,'physical transport initial inventory')
+    do mode=1,4
+      faces='periodic';faces(1)='isothermal_wall';faces(2)='outflow'
+      wv=0
+      if (mode==2) then
+        faces(1)='inflow'
+      else
+        wv(2,1)=20
+      end if
+      c=c0;t=t0;f=f0;ft=ft0
+      if (mode<=2) then
+        call advance_amr_reactive_transport_3d(species,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv)
+      else
+        call advance_amr_reactive_full_3d(species,reactions,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
+          'rusanov',mode==4,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
+          'characteristic_plm','mc',boundary_faces=faces,boundary_change=ledger,inflow_state=inlet, &
+          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv)
+      end if
+      call require(ok,'physical AMR transport or full split advance')
+      call composite_integrals_amr_3d(c,f,patch,dx,dy,dz,after,ok)
+      scale=max(abs(before),abs(ledger),1e-20_dp)
+      scale(2:4)=maxval(scale(2:4))
+      call require(ok,'physical transport final inventory')
+      if (mode==4) then
+        call require(all(abs(after(1:5)-before(1:5)-ledger(1:5))<=2e-11_dp*scale(1:5)), &
+          'physical reacting full split Euler balance')
+        call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
+        call require(ok,'physical full split initial elements')
+        call element_integrals_from_reactive_integrals_3d(species,after,e1,ok)
+        call require(ok,'physical full split final elements')
+        call element_integrals_from_reactive_integrals_3d(species,ledger,eb,ok)
+        call require(ok.and.all(abs(e1-e0-eb)<=2e-10_dp*max(abs(e0),1e-30_dp)), &
+          'physical reacting full split elemental balance')
+      else
+        call require(all(abs(after-before-ledger)<=2e-11_dp*scale),'physical transport composite balance')
+      end if
+      call require(abs(ledger(5))>1e-15_dp,'physical transport nonzero boundary energy')
+      call require(th>=0.and.th<=1,'physical transport limiter bounds')
+      if (mode==1) call require(ledger(5)<0,'cold wall removes energy')
+      c=c0;t=t0;f=f0;ft=ft0
+      if (mode==2) then
+        inlet(1,1)=-1
+      else
+        tw(1)=-1
+      end if
+      if (mode<=2) then
+        call advance_amr_reactive_transport_3d(species,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv)
+      else
+        call advance_amr_reactive_full_3d(species,reactions,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
+          'rusanov',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
+          'characteristic_plm','mc',boundary_faces=faces,boundary_change=ledger,inflow_state=inlet, &
+          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv)
+      end if
+      call require(.not.ok.and.all(c==c0).and.all(t==t0).and.all(f==f0).and.all(ft==ft0).and. &
+        all(ledger==0).and.th==1.and.r==0,'physical transport rejection rolls back all outputs')
+      tw=600;inlet(1,1)=1.1_dp*c0(1,1,1,1)
+    end do
+  end subroutine run_physical_transport_tests
 
   subroutine run_individual_transport_mode_tests(species, transport, ok_out)
     type(nasa7_species), intent(in) :: species(:)

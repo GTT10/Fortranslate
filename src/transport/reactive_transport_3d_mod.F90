@@ -20,6 +20,7 @@ module reactive_transport_3d_mod
 
   public :: reactive_isothermal_timestep_3d
   public :: reactive_transport_fluxes_3d
+  public :: physical_transport_fluxes_3d, physical_transport_budget_3d
   public :: physical_transport_ghosted_fluxes_3d
   public :: reactive_transport_ghosted_fluxes_3d
   public :: reactive_transport_face_flux_3d
