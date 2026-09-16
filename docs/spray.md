@@ -1839,8 +1839,8 @@ CSVs retain final fields. Existing output files are refused. See the
 [case and input guide](../cases/mpi_spray_3d/README.md) and
 [application evidence](validation/spray-mpi-application-20260917.md).
 
-This executable currently supports initial injection and fixed-mechanism periodic
-flow. Its CSVs do not provide restart; the checkpoint API below does. Scheduled
+This executable currently supports timed repeated injection and fixed-mechanism periodic
+flow. Its CSVs do not provide restart; the checkpoint API below does. Independent multiport/rate-profile
 injection, selected-mechanism routing, SGS and distributed wall/breakup events remain open.
 
 ### Checkpoint ID reservation state
@@ -1889,3 +1889,19 @@ so runs can continue in a new decomposition. Initial reference and injection
 budgets remain those of the saved run. See the
 [restart guide](../cases/mpi_spray_3d/README.md#save-and-resume) and
 [application evidence](validation/spray-mpi-restart-application-20260917.md).
+
+### MPI timed injection
+
+`injection_events`, `injection_start` and `injection_interval` schedule repeated
+cone events using the existing `number` and `total_mass` per event. Default values
+retain one event at time zero. The step ends at the next pending event and the
+application processes events at its final time before saving. Event candidates,
+component columns and global IDs commit after injection and migration succeed.
+History budgets subtract accumulated injection from gas-plus-particle totals.
+
+Restart preserves the event counter and resumes only future events, including
+when the checkpoint is written exactly at an event time. Schedule parameters
+enter checkpoint context. Context v2 records initial-gas reference budgets and
+separate injected budgets, so earlier v1 application contexts are intentionally
+incompatible. Independent ports and time-varying rate profiles remain open for
+this MPI executable. See [schedule evidence](validation/spray-mpi-schedule-20260917.md).

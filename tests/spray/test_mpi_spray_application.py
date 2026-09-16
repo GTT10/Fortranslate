@@ -100,7 +100,30 @@ def main():
         assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
-    print(f'PASS MPI spray application and restart: {args.ranks} ranks; artifacts: {work}')
+    schedule = ' injection_events=3\n injection_interval=7.5e-9'
+    run_variant('scheduled', args.ranks, schedule)
+    schedule_history = rows(work / 'scheduled.history.csv')
+    assert [int(row['events']) for row in schedule_history] == [1, 2, 3, 3]
+    assert [int(row['parcels']) for row in schedule_history] == [4, 8, 12, 12]
+    assert math.isclose(float(schedule_history[-1]['injected_mass']), 3e-10, rel_tol=1e-14)
+    assert int(schedule_history[-1]['last_id']) == 12
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in schedule_history)
+    run_variant('scheduled_split', args.ranks, schedule + "\n checkpoint_path='scheduled.chk'", stop='7.5e-9')
+    split_history = rows(work / 'scheduled_split.history.csv')
+    assert int(split_history[-1]['events']) == 2
+    run_variant('scheduled_resume', 6 - args.ranks, schedule + "\n restart_path='scheduled.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('scheduled', suffix, keys)
+        actual = snapshots('scheduled_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    resumed_history = rows(work / 'scheduled_resume.history.csv')
+    assert int(resumed_history[0]['events']) == 2 and int(resumed_history[-1]['events']) == 3
+    assert int(resumed_history[-1]['last_id']) == 12 and int(resumed_history[-1]['parcels']) == 12
+    print(f'PASS MPI spray application, schedule and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 
