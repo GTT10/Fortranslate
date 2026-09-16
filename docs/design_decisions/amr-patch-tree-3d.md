@@ -85,7 +85,7 @@ packed after the conserved fields, remains a guess for subsequent EOS recovery.
 This component bound is not a proof of nonlinear EOS admissibility; existing
 reactive flux/state checks can still reject a step. The recursive hydro API below
 now supplies hydro subcycle scheduling; a separate transport scheduler uses ratio-squared substeps.
-Coupled/application wiring remains separate.
+Coupled/application dispatch is now opt-in, as described below.
 Peer lookup currently scans nodes; no scaling qualification is implied.
 
 ## Conservative flux synchronization
@@ -409,10 +409,9 @@ full trees; this is not a memory/scaling optimization.
 multiplied by that depth's cumulative refinement ratio. The stepper accepts a
 caller-chosen coarse `dt`; it does not retry or enforce this bound internally.
 This hydro bound does not cover diffusion or external reservoir bounds.
-The application and combined reaction/transport driver still use the common-step
-path. The transport scheduler below now provides diffusive subcycling. Coupled splitting
-and application checkpoint/timestep controls remain to be connected before enabling
-the recursive path there.
+The application and combined reaction/transport driver default to the common-step
+path and can opt into the recursive composition. The transport scheduler below provides diffusive subcycling; coupled application
+dispatch supplies the corresponding bounds and checkpoint controls.
 
 ## Recursive transport subcycling
 
@@ -437,10 +436,29 @@ minimum. Spatial spacing still follows cumulative ratio, not its square. The
 reported maximum diffusivity is the maximum across nodes. As with hydro, the
 caller supplies dt and remains responsible for stability, reservoir bounds and
 retry policy. Full-tree scratch copies remain; this is not scaling qualification.
-These are transport APIs; the application still selects the existing synchronous
-reaction/transport/hydro split until coupled dispatch is connected.
+The combined driver and application can select these transport APIs through the
+subcycling mode described below.
+
+## Coupled application subcycling
+
+The combined split accepts optional `subcycling` (default false). When true,
+the two transport halves use recursive ratio-squared steps and hydro uses recursive
+ratio-based steps. Chemistry retains the exposed-cell coarse half-interval solves.
+All three flow budgets, maximum correction and minimum transport theta accumulate
+inside the existing private candidate; the final chemistry solve must succeed
+before publication. Disabled operators remain skipped.
+
+The optional application `amr_tree_timestepping` group exposes this switch. Scaled
+hydro/transport/wall timestep helpers replace the synchronous bounds, and reservoir
+bounds use root spacing. The full dt is conservatively constrained by the transport
+bound. Outer retries, scheduled-event clipping and automatic regrid cadence
+continue to act on coarse intervals. Checkpoints occur only after full completion
+and include the active integration mode in context; old synchronous contexts retain
+their previous identity. Restart cannot change the mode. This is operator-split
+subcycling, not per-fine-step coupled chemistry, and does not establish global
+second-order convergence.
 
 ## Remaining integration
 
-Coupled/application subcycle dispatch and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

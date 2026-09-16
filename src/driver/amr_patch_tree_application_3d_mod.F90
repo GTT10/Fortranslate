@@ -7,6 +7,8 @@ module amr_patch_tree_application_3d_mod
     read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use precision_mod, only: dp
+  use amr_patch_tree_subcycle_3d_mod, only: compute_amr_patch_tree_subcycle_cfl_3d
+  use amr_patch_tree_transport_subcycle_3d_mod, only: compute_amr_patch_tree_subcycle_transport_timestep_3d
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -64,10 +66,12 @@ contains
     integer :: regrid_interval_steps,refinement_levels,refinement_ratios(maximum_tag_levels)
     integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
     real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
-    logical :: periodic(3),stop_after_checkpoint
+    logical :: periodic(3),stop_after_checkpoint,subcycling
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
+    namelist /amr_tree_timestepping/ subcycling
+    subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
@@ -84,6 +88,13 @@ contains
           c=iachar(message(i:i))
           if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
         end do
+        if (index(message,'&amr_tree_timestepping')==1.or.index(message,'$amr_tree_timestepping')==1) then
+          backspace(unit,iostat=status)
+          if (status/=0) error stop 'Cannot locate tree timestepping configuration'
+          read(unit,nml=amr_tree_timestepping,iostat=status)
+          if (status/=0) error stop 'Invalid tree timestepping configuration'
+          cycle
+        end if
         if (index(message,'&amr_tree_adaptation')==1.or.index(message,'$amr_tree_adaptation')==1) then
           backspace(unit,iostat=status)
           if (status/=0) error stop 'Cannot locate tree adaptation configuration'
@@ -157,6 +168,7 @@ contains
       schedule_identity=schedule_identity//trim(message)//new_line('a')//tree_key(events(event))
     end do
     if (present(schedule_path)) close(unit)
+    if (subcycling) schedule_identity=schedule_identity//'subcycling-v1'//new_line('a')
     if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       identity='fixed:'//trim(config%thermo_model)
       if (present(mechanism_identity)) identity=mechanism_identity
@@ -232,6 +244,7 @@ contains
       q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mass_fractions
       call reactive_primitive_to_conserved(species,q,inlet(:,face),inlet_t(face),sound,ok)
       if (.not.ok) error stop 'Invalid inflow state'
+      if (subcycling) min_h=root_h
       inlet_dt=min(inlet_dt,config%cfl/sum((abs(q(2:4))+sound)/min_h))
       if (config%transport_enabled) then
         do k=1,2
@@ -253,6 +266,7 @@ contains
     time=0;step=0;budget=0;max_correction=0;min_theta=1;event=1;regrids=0;max_remap_error=0
     if (len_trim(restart_file)>0) call restore_checkpoint()
     write(*,'(a)') 'PeleF '//pelef_version//' experimental serial regular 3D patch tree'
+    write(*,'(a,l1)') 'Subcycling: ',subcycling
     write(*,'(a,i0,a,i0)') 'Nodes: ',count+1,' Levels: ',tree%level_count()
     do
       if (event<=nevents) then
@@ -289,12 +303,21 @@ contains
       stop_time=config%final_time
       if (event<=nevents) stop_time=event_times(event)
       if (step>=config%maximum_steps) error stop 'Tree maximum_steps reached'
-      call compute_amr_patch_tree_cfl_3d(tree,species,state,temperature,root_h,config%cfl,dt,ok)
+      if (subcycling) then
+        call compute_amr_patch_tree_subcycle_cfl_3d(tree,species,state,temperature,root_h,config%cfl,dt,ok)
+      else
+        call compute_amr_patch_tree_cfl_3d(tree,species,state,temperature,root_h,config%cfl,dt,ok)
+      end if
       if (.not.ok) error stop 'Invalid tree hydro timestep'
       dt=min(dt,inlet_dt,stop_time-time)
       if (config%transport_enabled) then
-        call compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,state,temperature,root_h, &
-          config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,ok,faces,config%wall_temperature)
+        if (subcycling) then
+          call compute_amr_patch_tree_subcycle_transport_timestep_3d(tree,species,transport,state,temperature,root_h, &
+            config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,ok,faces,config%wall_temperature)
+        else
+          call compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,state,temperature,root_h, &
+            config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,ok,faces,config%wall_temperature)
+        end if
         if (.not.ok) error stop 'Invalid tree transport timestep'
         dt=min(dt,transport_dt)
       end if
@@ -304,7 +327,7 @@ contains
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity)
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling)
         if (ok) exit
         dt=.5_dp*dt
       end do

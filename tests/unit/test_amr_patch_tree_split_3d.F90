@@ -74,7 +74,8 @@ program test_amr_patch_tree_split_3d
       call require(ok,'no-transport comparison')
     end if
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
-      'characteristic_plm','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
+      'characteristic_plm','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok, &
+      integrator,subcycling=mode==2)
     call require(ok,'Strang step')
     if (mode==1) call require(maxval(abs(state%fields(4)%values-oracle%fields(4)%values))>1e-10_dp, &
       'transport changes the coupled solution')
@@ -96,7 +97,8 @@ program test_amr_patch_tree_split_3d
     saved=state;saved_t=temperature;budget=-17;largest=-19;theta=-23
     ! A hydro failure occurs after the first successful half reaction step.
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
-      'invalid','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
+      'invalid','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok, &
+      integrator,subcycling=mode==2)
     call require(.not.ok,'post-source hydro rejection')
     call unchanged()
     bad=reactions;bad(1)%reactant_stoich(1)=-1

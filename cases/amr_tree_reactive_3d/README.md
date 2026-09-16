@@ -80,6 +80,34 @@ trees; per-step hydro/diffusion/wall bounds use the active tree. Logs report eve
 times, node/level counts, and maximum remap error. This is a prescribed schedule,
 not automatic solution-based tagging.
 
+## Hierarchy subcycling
+
+The fixed and selected frontends accept:
+
+```fortran
+&amr_tree_timestepping
+  subcycling=.true.
+/
+```
+
+The default is `.false.` (the original common timestep). With subcycling enabled,
+one accepted application step is a coarse R/2-T/2-H-T/2-R/2 interval. Hydro uses
+one child step per refinement ratio, while each transport half uses the ratio
+squared. Chemistry operates on exposed cells over the two coarse half-intervals.
+Every completed fine interval returns corrected fluxes to its parent. The entire
+coarse interval rolls back if any operator fails; the existing timestep-halving
+retry then applies.
+
+Timestep selection uses scaled hydro, diffusion and isothermal-wall bounds.
+Reservoir bounds use root spacing because the corresponding spatial ratios are
+cancelled by the hydro/transport substep counts. Transport bounds conservatively
+limit the full coarse dt even though each transport solve spans dt/2. Regrid
+cadence, `maximum_steps` and checkpoint intervals count coarse steps. Prescribed
+event times still clip the coarse step exactly; regridding and checkpoint writes
+occur only after the full interval succeeds. Static, prescribed and automatic
+geometries use the same dispatch. Checkpoint context includes subcycling mode;
+changing it at restart is rejected. No checkpoint contains an unfinished substep.
+
 ## Automatic temperature adaptation
 
 Instead of a schedule argument, add this optional group to the input file:
@@ -182,4 +210,5 @@ files are not checkpoints.
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
 MPI execution remains to be connected. Characteristic-PLM hydro enables limited
 linear coarse donors with the configured limiter for both hydro and transport.
-PCM reconstruction retains PCM donors. Time stepping is common across levels; this is not subcycled or globally second-order AMR qualification.
+PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
+AMR convergence and large-tree scaling remain unqualified.

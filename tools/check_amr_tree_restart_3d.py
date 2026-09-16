@@ -11,10 +11,14 @@ def main():
     parser.add_argument('--selected', type=Path, required=True)
     parser.add_argument('--case-dir', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--subcycling', action='store_true')
     args = parser.parse_args()
     case = args.case_dir.resolve()
     work = args.work_dir.resolve()
     original = (case / 'hotspot.nml').read_text()
+    time_controls = '\n&amr_tree_timestepping subcycling=.true. /\n'
+    if args.subcycling:
+        original += time_controls
     for kind, binary in [('fixed', args.fixed), ('selected', args.selected)]:
         directory = work / kind
         directory.mkdir(parents=True, exist_ok=True)
@@ -40,7 +44,7 @@ def main():
 
         run('continuous', config)
         baseline = [p.read_bytes() for p in outputs]
-        for interval in [1, 2, 3]:
+        for interval in ([1] if args.subcycling else [1, 2, 3]):
             controls = (f"\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps={interval},"
                         ' stop_after_checkpoint=.true. /\n')
             log = run(f'stop{interval}', config + controls)
@@ -51,6 +55,8 @@ def main():
             assert 'Regrids: 3' in log and 'Steps: 3' in log, log
             assert [p.read_bytes() for p in outputs] == baseline
         saved = (directory / 'tree.chk').read_bytes()
+        if args.subcycling:
+            run('changed_timestepping', config.replace(time_controls, '') + restart, False)
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart, False)
         altered = directory / 'changed_schedule.dat'
         altered.write_text('3\n2.0e-10 ' + repr(str(case / 'moved_ratio3.dat')) + '\n5e-10 ' +
@@ -80,7 +86,7 @@ def main():
             'checkpoint_interval_steps=1 /\n', False)
         run('malformed', config + "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1\n", False)
         assert [p.read_bytes() for p in outputs] == baseline
-    print('PASS: fixed/selected exact restart at all three regrids, including final time; input/failure guards')
+    print('PASS: fixed/selected exact tree continuation and input/failure guards; subcycling=', args.subcycling)
 
 
 if __name__ == '__main__':

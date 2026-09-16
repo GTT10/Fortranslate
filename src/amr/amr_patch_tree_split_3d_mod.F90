@@ -1,6 +1,8 @@
 module amr_patch_tree_split_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use amr_patch_tree_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_hydro_3d
+  use amr_patch_tree_transport_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_transport_3d
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -12,13 +14,13 @@ module amr_patch_tree_split_3d_mod
   private
   public :: advance_amr_patch_tree_split_3d
 contains
-  ! R/2 - T/2 - H - T/2 - R/2, at one common timestep across the tree.
+  ! R/2 - T/2 - H - T/2 - R/2, over one coarse interval, with optional recursive flow/transport steps.
   ! Disabled operators are skipped. All stage outputs remain private until
   ! the complete composition succeeds, including the final chemistry solve.
   subroutine advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary_change,maximum_correction,minimum_theta,ok,chemistry_integrator, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,subcycling)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -34,11 +36,14 @@ contains
     character(len=:), allocatable :: transport_limiter
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),stage_budget(size(boundary_change)),largest,stage_max,theta,stage_theta
-    logical :: valid,transport_enabled
+    logical, optional, intent(in) :: subcycling
+    logical :: valid,transport_enabled,recursive_steps
     ok=.false.
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0.or.(barodiffusion.and..not.diffusion)) return
     if (reconstruction=='characteristic_plm') transport_limiter=limiter
+    recursive_steps=.false.
+    if (present(subcycling)) recursive_steps=subcycling
     candidate=state;temps=temperature
     budget=0;largest=0;theta=1
     transport_enabled=viscosity.or.conduction.or.diffusion
@@ -51,8 +56,13 @@ contains
       if (.not.valid) return
     end if
     stage_budget=0;stage_max=0
-    call advance_amr_patch_tree_hydro_3d(tree,species,candidate,temps,spacing,dt,faces,reconstruction,limiter,solver, &
-      stage_budget,stage_max,valid,inflow_state,inflow_temperature)
+    if (recursive_steps) then
+      call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,candidate,temps,spacing,dt,faces, &
+        reconstruction,limiter,solver,stage_budget,stage_max,valid,inflow_state,inflow_temperature)
+    else
+      call advance_amr_patch_tree_hydro_3d(tree,species,candidate,temps,spacing,dt,faces,reconstruction,limiter,solver, &
+        stage_budget,stage_max,valid,inflow_state,inflow_temperature)
+    end if
     if (.not.valid) return
     budget=budget+stage_budget;largest=max(largest,stage_max)
     if (transport_enabled) then
@@ -74,9 +84,15 @@ contains
     subroutine transport_half(success)
       logical, intent(out) :: success
       stage_budget=0;stage_max=0;stage_theta=1
-      call advance_amr_patch_tree_transport_3d(tree,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
-        viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,success, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      if (recursive_steps) then
+        call advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
+          viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,success, &
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      else
+        call advance_amr_patch_tree_transport_3d(tree,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
+          viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,success, &
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      end if
       if (.not.success) return
       budget=budget+stage_budget;largest=max(largest,stage_max);theta=min(theta,stage_theta)
     end subroutine
