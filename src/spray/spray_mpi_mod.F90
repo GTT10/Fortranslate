@@ -849,21 +849,30 @@ contains
     end subroutine
   end subroutine
 
-  subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok)
+  subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok, &
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
     integer, intent(in) :: cells(3)
     real(dp), intent(in) :: cs,prt,sct
+    character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    character(len=32) :: local_faces(6)
+    logical :: include_face(6)
+    real(dp) :: rate(size(state,1)),change(size(state,1)),global_change(size(state,1))
     logical, intent(out) :: ok
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
     real(dp), allocatable :: rhs(:,:,:,:)
     real(dp) :: controls(7),minimum(7),maximum(7),diffusivity
-    integer :: config(4),minconfig(4),maxconfig(4),rank,nranks,ierr,first(3),extent(3)
+    integer :: config(5),minconfig(5),maxconfig(5),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next
     logical :: valid,agreed
+    change=0
+    if (present(boundary_change)) boundary_change=0
     ok=.false.;nvar=size(state,1)
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -871,12 +880,13 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=all(ieee_is_finite([spacing,dt,cs,prt,sct]))
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
+    if (present(boundary_change)) valid=valid.and.present(faces).and.size(boundary_change)==nvar
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar];controls=[spacing,dt,cs,prt,sct]
-    call MPI_Allreduce(config,minconfig,4,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,nvar,merge(1,0,present(faces))];controls=[spacing,dt,cs,prt,sct]
+    call MPI_Allreduce(config,minconfig,5,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,maxconfig,4,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,maxconfig,5,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,minimum,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -899,25 +909,43 @@ contains
     allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
     allocate(rhs,mold=state)
     previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
+    include_face=.true.
+    include_face(1)=rank==0;include_face(2)=rank==nranks-1
+    if (present(faces)) then
+      local_faces=faces
+      if (rank/=0) local_faces(1)='outflow'
+      if (rank/=nranks-1) local_faces(2)='outflow'
+    end if
     do stage=1,2
-      send(:nvar,:,:,:)=gas(:,nx-1:nx,:,:);send(nvar+1,:,:,:)=temp(nx-1:nx,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3321,left,size(left),MPI_DOUBLE_PRECISION, &
-        previous,3321,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      send(:nvar,:,:,:)=gas(:,:2,:,:);send(nvar+1,:,:,:)=temp(:2,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3322,right,size(right),MPI_DOUBLE_PRECISION, &
-        next,3322,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      do k=1,nz+4
-        km=modulo(k-3,nz)+1
-        do j=1,ny+4
-          jm=modulo(j-3,ny)+1
-          halo(:,3:nx+2,j,k)=gas(:,:,jm,km);halo_t(3:nx+2,j,k)=temp(:,jm,km)
-          halo(:,:2,j,k)=left(:nvar,:,jm,km);halo_t(:2,j,k)=left(nvar+1,:,jm,km)
-          halo(:,nx+3:,j,k)=right(:nvar,:,jm,km);halo_t(nx+3:,j,k)=right(nvar+1,:,jm,km)
+      if (present(faces)) then
+        call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+        call agree()
+        if (.not.agreed) return
+        call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid, &
+          local_faces,rate,wall_temperature,include_face)
+        change=change+.5_dp*dt*rate
+        valid=valid.and.all(ieee_is_finite(change))
+      else
+        send(:nvar,:,:,:)=gas(:,nx-1:nx,:,:);send(nvar+1,:,:,:)=temp(nx-1:nx,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3321,left,size(left),MPI_DOUBLE_PRECISION, &
+          previous,3321,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        send(:nvar,:,:,:)=gas(:,:2,:,:);send(nvar+1,:,:,:)=temp(:2,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3322,right,size(right),MPI_DOUBLE_PRECISION, &
+          next,3322,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        do k=1,nz+4
+          km=modulo(k-3,nz)+1
+          do j=1,ny+4
+            jm=modulo(j-3,ny)+1
+            halo(:,3:nx+2,j,k)=gas(:,:,jm,km);halo_t(3:nx+2,j,k)=temp(:,jm,km)
+            halo(:,:2,j,k)=left(:nvar,:,jm,km);halo_t(:2,j,k)=left(nvar+1,:,jm,km)
+            halo(:,nx+3:,j,k)=right(:nvar,:,jm,km);halo_t(nx+3:,j,k)=right(nvar+1,:,jm,km)
+          end do
         end do
-      end do
-      call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid)
+        call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid)
+      end if
       if (valid) valid=dt*diffusivity*sum(1.0_dp/spacing**2)<=.2_dp
       call agree()
       if (.not.agreed) return
@@ -928,6 +956,12 @@ contains
       if (.not.agreed) return
       gas=candidate;temp=next_temp
     end do
+    if (present(faces)) then
+      call MPI_Allreduce(change,global_change,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (.not.all(ieee_is_finite(global_change))) return
+      if (present(boundary_change)) boundary_change=global_change
+    end if
     state=gas;temperature=temp;ok=.true.
   contains
     subroutine agree()

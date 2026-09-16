@@ -620,6 +620,25 @@ contains
       call MPI_Allreduce(delta,total_delta,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
       call require(all(abs(total_delta-change)<2e-12_dp*max(1e-12_dp,inventory*1e-9_dp)), &
         'MPI transport boundary flux accounts for inventory change')
+      transport_initial=local_u
+      inventory=sum(sum(sum(abs(serial_u),dim=4),dim=3),dim=2)
+      call advance_les_ssprk2_3d(species,serial_u,serial_t,[.001_dp,.001_dp,.001_dp],.1_dp,.7_dp,.7_dp, &
+        1e-5_dp,ok,boundaries,serial_change,inlet,inlet_t,wall_t,velocity)
+      call require(ok,'serial physical-boundary SGS reference')
+      call advance_mpi_spray_les(MPI_COMM_WORLD,species,local_u,local_temp,[.001_dp,.001_dp,.001_dp],cells, &
+        1e-5_dp,.1_dp,.7_dp,.7_dp,ok,boundaries,change,inlet,inlet_t,wall_t,velocity)
+      call require(ok,'MPI physical-boundary SGS')
+      call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
+        max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
+        'MPI physical SGS matches serial states')
+      call require(maxval(abs(local_temp-serial_t(first(1)+1:first(1)+dims(1),:,:)))<1e-8_dp, &
+        'MPI physical SGS matches serial temperature')
+      call require(all(abs(change-serial_change)<1e-10_dp*max(1e-12_dp,abs(serial_change))), &
+        'MPI SGS boundary ledger matches serial')
+      delta=sum(sum(sum(local_u-transport_initial,dim=4),dim=3),dim=2)*1e-9_dp
+      call MPI_Allreduce(delta,total_delta,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(all(abs(total_delta-change)<2e-12_dp*max(1e-12_dp,inventory*1e-9_dp)), &
+        'MPI SGS boundary flux accounts for inventory change')
     end do
     local_u=u;local_temp=t
     call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e3_dp, &
@@ -633,6 +652,10 @@ contains
       boundaries,change,inlet,inlet_t,wall_t,velocity)
     call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
       'MPI invalid wall thermal data rolls back transport')
+    call advance_mpi_spray_les(MPI_COMM_WORLD,species,local_u,local_temp,[.001_dp,.001_dp,.001_dp],cells, &
+      1e-5_dp,.1_dp,.7_dp,.7_dp,ok,boundaries,change,inlet,inlet_t,wall_t,velocity)
+    call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
+      'MPI invalid wall thermal data rolls back SGS')
     saved_ghost=local_ghost;saved_t=local_t
     if (rank==0) boundaries(2)='slip_wall'
     call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &

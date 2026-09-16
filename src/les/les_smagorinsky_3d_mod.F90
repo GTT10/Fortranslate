@@ -95,23 +95,45 @@ contains
   end subroutine
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
-  subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok)
+  subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok, &
+      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     integer, intent(in) :: cells(3)
     real(dp), intent(out) :: rhs(:,:,:,:),diffusivity
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(:)
+    real(dp), optional, intent(out) :: boundary_rate(:)
+    logical, optional, intent(in) :: boundary_face_mask(6)
+    integer :: f
     logical, intent(out) :: ok
     real(dp), allocatable :: full_rhs(:,:,:,:)
     ok=.false.;rhs=0;diffusivity=0
+    if (present(boundary_rate)) then
+      boundary_rate=0
+      if (size(boundary_rate)/=size(state,1)) return
+    end if
+    if (present(boundary_faces)) then
+      if (any(boundary_faces=='isothermal_wall')) then
+        if (.not.present(wall_temperature)) return
+        if (size(wall_temperature)/=6) return
+        do f=1,6
+          if (boundary_faces(f)/='isothermal_wall') cycle
+          if (.not.ieee_is_finite(wall_temperature(f))) return
+          if (wall_temperature(f)<=0) return
+        end do
+      end if
+    end if
     if (any(cells<2).or.any(cells>huge(1)-4)) return
     if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
     allocate(full_rhs,mold=state)
-    call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells)
+    call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells, &
+      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask)
     if (ok) rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      active_cells,boundary_rate,boundary_faces,wall_temperature)
+      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     real(dp), intent(out) :: rhs(:,:,:,:), maximum_diffusivity
@@ -119,6 +141,8 @@ contains
     integer, intent(in), optional :: active_cells(3)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(in), optional :: wall_temperature(:)
+    logical, optional, intent(in) :: boundary_face_mask(6)
+    logical :: include_face(6)
     real(dp), intent(out), optional :: boundary_rate(:)
     real(dp) :: rate(size(state,1))
     logical :: active_face
@@ -129,6 +153,8 @@ contains
     integer :: dims(3),l(3),ridx(3),lo(3),hi(3),lo2(3),hi2(3),i,j,k,n,a,b,wall_face
     logical :: local_ok
     rhs=0.0_dp; maximum_diffusivity=0.0_dp; ok=.false.; rate=0
+    include_face=.true.
+    if (present(boundary_face_mask)) include_face=boundary_face_mask
     if (present(boundary_rate)) boundary_rate=0
     dims=shape(temperature)
     if (any(dims < 2)) return
@@ -219,8 +245,8 @@ contains
             flux(5)=-dot_product(uface,tau(:,a))+heat_flux+dot_product(hav,jflux)
             flux(6:)=jflux
             if (present(active_cells)) then
-              if (l(a)==2) rate=rate+flux*cellvolume/spacing(a)
-              if (l(a)==active_cells(a)+2) rate=rate-flux*cellvolume/spacing(a)
+              if (l(a)==2.and.include_face(2*a-1)) rate=rate+flux*cellvolume/spacing(a)
+              if (l(a)==active_cells(a)+2.and.include_face(2*a)) rate=rate-flux*cellvolume/spacing(a)
             end if
             ! One face flux, equal and opposite for both cells: exact telescoping.
             rhs(:,i,j,k)=rhs(:,i,j,k)-flux/spacing(a)
