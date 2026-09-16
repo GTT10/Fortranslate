@@ -10,7 +10,8 @@ program test_mpi_amr_regrid_3d
   use mpi_amr_sparse_reactive_3d_mod, only: mpi_amr_sparse_distribution_3d,mpi_amr_sparse_hierarchy_3d, &
     initialize_mpi_amr_sparse_distribution_3d,scatter_mpi_amr_sparse_hierarchy_3d, &
     gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d, &
-    balance_mpi_amr_sparse_3d
+    balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
+  use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_3d) :: patch,serial_patch,next_patch,bad,saved_patch
@@ -51,6 +52,7 @@ program test_mpi_amr_regrid_3d
     end do
     call scatter_mpi_amr_sparse_hierarchy_3d(distribution,species,patch,0,c,t,f,ft,hierarchy,ok)
     call require(ok,'scatter')
+    call check_csv(.true.)
     allocate(counts(distribution%nranks))
     do mode=1,5
       counts=1
@@ -92,6 +94,7 @@ program test_mpi_amr_regrid_3d
       call require(distribution%is_valid(patch),'remapped ownership')
       call require(all(distribution%coarse_counts==counts),'remap preserves chosen coarse partition')
       call check_balance()
+      call check_csv(.false.)
     end do
     saved=hierarchy;saved_distribution=distribution;saved_patch=patch
     counts=distribution%coarse_counts
@@ -127,6 +130,59 @@ program test_mpi_amr_regrid_3d
   if (rank==0) print '(a)','test_mpi_amr_regrid_3d: PASS'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_csv(check_rejection)
+    logical, intent(in) :: check_rejection
+    real(dp) :: xyz(8),fx(patch%fine_nx()),fy(patch%fine_ny()),fz(patch%fine_nz()),saved_density
+    character(len=128) :: prefix,cp,fp,path
+    character(len=256) :: message
+    integer :: n
+    xyz=[(real(n,dp),n=1,8)]
+    fx=[(real(n,dp)/r,n=1,size(fx))];fy=[(real(n,dp)/r,n=1,size(fy))];fz=[(real(n,dp)/r,n=1,size(fz))]
+    write(prefix,'(a,i0,a,i0)') 'distributed_csv_np',distribution%nranks,'_r',r
+    cp=trim(prefix)//'_coarse.csv';fp=trim(prefix)//'_fine.csv'
+    call write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,cp,fp,xyz,xyz,xyz,fx,fy,fz,0.1_dp,ok)
+    call require(ok,'distributed CSV including empty fine ranks')
+    if (rank==0) then
+      call write_reactive_3d_csv(trim(cp)//'.serial',species,xyz,xyz,xyz,c,t,8,8,8,0.1_dp,ok,message)
+      call require(ok,'serial coarse CSV')
+      call write_reactive_3d_csv(trim(fp)//'.serial',species,fx,fy,fz,f,ft, &
+        size(fx),size(fy),size(fz),0.1_dp,ok,message)
+      call require(ok,'serial fine CSV')
+      call same_file(cp);call same_file(fp)
+    end if
+    if (.not.check_rejection) return
+    ! Invalid fine data must be detected before either existing output is opened.
+    if (distribution%fine_count>0) then
+      saved_density=hierarchy%fine_state(1,1,1,1)
+      hierarchy%fine_state(1,1,1,1)=-1.0_dp
+    end if
+    call write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,cp,fp,xyz,xyz,xyz,fx,fy,fz,0.2_dp,ok)
+    call require(.not.ok,'invalid fine CSV state rejected')
+    if (distribution%fine_count>0) hierarchy%fine_state(1,1,1,1)=saved_density
+    path=fp
+    if (rank==0) path=trim(fp)//'.different'
+    call write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,cp,path,xyz,xyz,xyz,fx,fy,fz,0.2_dp,ok)
+    call require(.not.ok,'rank-inconsistent fine path rejected')
+    if (rank==0) then
+      call same_file(cp);call same_file(fp)
+    end if
+  end subroutine check_csv
+  subroutine same_file(path)
+    character(len=*), intent(in) :: path
+    character(len=:), allocatable :: actual,expected
+    integer :: unit,bytes,reference_bytes
+    inquire(file=trim(path),size=bytes)
+    inquire(file=trim(path)//'.serial',size=reference_bytes)
+    call require(bytes==reference_bytes,'CSV size and overwrite truncation match serial')
+    allocate(character(len=bytes)::actual,expected)
+    open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='old')
+    read(unit) actual
+    close(unit)
+    open(newunit=unit,file=trim(path)//'.serial',access='stream',form='unformatted',status='old')
+    read(unit) expected
+    close(unit)
+    call require(actual==expected,'CSV bytes match independent serial writer')
+  end subroutine same_file
   subroutine check_balance()
     real(dp) :: cost(8),best,peak
     integer :: peer,first

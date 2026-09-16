@@ -8,9 +8,41 @@ module reactive_csv_io_3d_mod
   implicit none
   private
 
-  public :: write_reactive_3d_csv
+  public :: write_reactive_3d_csv,reactive_3d_csv_header,format_reactive_3d_csv_row
 
 contains
+
+  function reactive_3d_csv_header(species) result(header)
+    type(nasa7_species), intent(in) :: species(:)
+    character(len=:), allocatable :: header
+    integer :: i
+    header='time,x,y,z,rho,u,v,w,pressure,temperature,rhoE,rhou,rhov,rhow'
+    do i=1,size(species)
+      header=header//',Y_'//trim(species(i)%name)
+    end do
+    do i=1,size(species)
+      header=header//',rhoY_'//trim(species(i)%name)
+    end do
+  end function reactive_3d_csv_header
+
+  subroutine format_reactive_3d_csv_row(species,xyz,time,state,temperature,row,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: xyz(3),time,state(:),temperature
+    character(len=*), intent(out) :: row
+    logical, intent(out) :: ok
+    real(dp) :: primitive(reactive_nprim(size(species))),local_temperature,sound_speed
+    integer :: i,status
+    ok=.false.;row=''
+    if (size(state)/=reactive_nvar(size(species)).or.len(row)/=26*(14+2*size(species))-1) return
+    call reactive_conserved_to_primitive(species,state,temperature,primitive,local_temperature,sound_speed,ok)
+    if (.not.ok) return
+    write(row,'(*(es25.16e3,:,","))',iostat=status) time,xyz,primitive(1:5),local_temperature, &
+      state(iet),state(imx),state(imy),state(imz), &
+      (primitive(reactive_mass_fraction_component(i)),i=1,size(species)), &
+      (state(reactive_species_component(i)),i=1,size(species))
+    ok=status==0
+  end subroutine format_reactive_3d_csv_row
+
 
   subroutine write_reactive_3d_csv( &
       path, species, x, y, z, state, temperature, nx, ny, nz, time, &

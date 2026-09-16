@@ -7,6 +7,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use simulation_config_reactive_3d_mod, only: &
     fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d,valid_wall_velocity_3d
   use precision_mod, only: dp
+  use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
   use gas_transport_mod, only: &
@@ -76,6 +77,7 @@ module mpi_amr_sparse_reactive_3d_mod
     procedure :: local_value_count => sparse_hierarchy_local_value_count_3d
   end type mpi_amr_sparse_hierarchy_3d
 
+  public :: write_mpi_amr_sparse_csv_3d
   public :: balance_mpi_amr_sparse_3d
   public :: repartition_mpi_amr_sparse_3d
   public :: regrid_mpi_amr_sparse_3d
@@ -96,6 +98,154 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: advance_mpi_amr_sparse_full_3d
 
 contains
+
+  subroutine write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,coarse_path,fine_path, &
+      x,y,z,xf,yf,zf,time,ok)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_3d), intent(in) :: patch
+    type(mpi_amr_sparse_hierarchy_3d), intent(in) :: hierarchy
+    character(len=*), intent(in) :: coarse_path,fine_path
+    real(dp), intent(in) :: x(:),y(:),z(:),xf(:),yf(:),zf(:),time
+    logical, intent(out) :: ok
+    logical :: valid,global_ok
+    ok=.false.
+    valid=hierarchy%is_valid(distribution,patch).and.hierarchy%nvar==reactive_nvar(size(species))
+    valid=valid.and.all([size(x),size(y),size(z)]==[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz])
+    valid=valid.and.all([size(xf),size(yf),size(zf)]==[patch%fine_nx(),patch%fine_ny(),patch%fine_nz()])
+    valid=valid.and.all(ieee_is_finite([time,x,y,z,xf,yf,zf])).and.trim(coarse_path)/=trim(fine_path)
+    call sparse_collective_contract_matches_3d(distribution,species,patch,[time,x,y,z,xf,yf,zf], &
+      'distributed_csv',valid,global_ok)
+    if (.not.global_ok) return
+    call path_matches(coarse_path,global_ok)
+    if (.not.global_ok) return
+    call path_matches(fine_path,global_ok)
+    if (.not.global_ok) return
+    call preflight(hierarchy%coarse_state,hierarchy%coarse_temperature,valid)
+    call sparse_collective_logical_and_3d(distribution%comm,valid,global_ok)
+    if (.not.global_ok) return
+    call preflight(hierarchy%fine_state,hierarchy%fine_temperature,valid)
+    call sparse_collective_logical_and_3d(distribution%comm,valid,global_ok)
+    if (.not.global_ok) return
+    call write_level(coarse_path,x,y,z,hierarchy%coarse_state,hierarchy%coarse_temperature, &
+      distribution%coarse_first,global_ok)
+    if (.not.global_ok) return
+    call write_level(fine_path,xf,yf,zf,hierarchy%fine_state,hierarchy%fine_temperature,distribution%fine_first,ok)
+  contains
+    subroutine path_matches(path,all_ok)
+      character(len=*), intent(in) :: path
+      logical, intent(out) :: all_ok
+      character(len=:), allocatable :: root_path
+      integer :: root_length,ierr
+      logical :: local_ok
+      root_length=len_trim(path)
+      call MPI_Bcast(root_length,1,MPI_INTEGER,0,distribution%comm,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) return
+      local_ok=root_length>0.and.root_length==len_trim(path)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,all_ok)
+      if (.not.all_ok) return
+      allocate(character(len=root_length)::root_path)
+      root_path=path
+      call MPI_Bcast(root_path,root_length,MPI_CHARACTER,0,distribution%comm,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) return
+      local_ok=path==root_path
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,all_ok)
+    end subroutine path_matches
+    subroutine preflight(u,t,success)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+      logical, intent(out) :: success
+      character(len=26*(14+2*size(species))-1) :: row
+      integer :: i,j,k
+      success=.true.
+      do k=1,size(t,3)
+        do j=1,size(t,2)
+          do i=1,size(t,1)
+            call format_reactive_3d_csv_row(species,[0.0_dp,0.0_dp,0.0_dp],time,u(:,i,j,k),t(i,j,k),row,success)
+            if (.not.success) return
+          end do
+        end do
+      end do
+    end subroutine preflight
+    subroutine write_level(path,gx,gy,gz,u,t,first,success)
+      character(len=*), intent(in) :: path
+      real(dp), intent(in) :: gx(:),gy(:),gz(:),u(:,:,:,:),t(:,:,:)
+      integer, intent(in) :: first
+      logical, intent(out) :: success
+      type(MPI_File) :: file
+      type(MPI_Status) :: status
+      character(len=:), allocatable :: header,block
+      character(len=26*(14+2*size(species))-1) :: row
+      integer :: i,j,k,position,row_bytes,block_bytes,ierr,close_error,axis
+      integer(kind=MPI_OFFSET_KIND) :: offset,total_bytes,payload_bytes
+      logical :: local_ok,all_ok,opened
+      success=.false.;opened=.false.;local_ok=.true.
+      row_bytes=len(row)+1
+      local_ok=local_ok.and.int(size(t,1),int64)*int(row_bytes,int64)<=int(huge(1),int64)
+      header=reactive_3d_csv_header(species)//new_line('a')
+      payload_bytes=int(row_bytes,MPI_OFFSET_KIND)
+      do axis=1,3
+        select case(axis)
+        case(1)
+          i=size(gx)
+        case(2)
+          i=size(gy)
+        case(3)
+          i=size(gz)
+        end select
+        if (payload_bytes>(huge(payload_bytes)-len(header))/int(i,MPI_OFFSET_KIND)) then
+          local_ok=.false.
+          exit
+        end if
+        payload_bytes=payload_bytes*int(i,MPI_OFFSET_KIND)
+      end do
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,all_ok)
+      if (.not.all_ok) return
+      total_bytes=len(header)+payload_bytes
+      block_bytes=size(t,1)*row_bytes
+      allocate(character(len=max(1,block_bytes))::block)
+      call MPI_File_open(distribution%comm,path,ior(MPI_MODE_WRONLY,MPI_MODE_CREATE),MPI_INFO_NULL,file,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) return
+      opened=.true.
+      call MPI_File_set_errhandler(file,MPI_ERRORS_RETURN,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) goto 900
+      call MPI_File_set_size(file,total_bytes,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) goto 900
+      ierr=MPI_SUCCESS
+      if (distribution%rank==0) call MPI_File_write_at(file,0_MPI_OFFSET_KIND,header,len(header), &
+        MPI_CHARACTER,status,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+      if (.not.all_ok) goto 900
+      do k=1,size(gz)
+        do j=1,size(gy)
+          position=0;local_ok=.true.
+          do i=1,size(t,1)
+            call format_reactive_3d_csv_row(species,[gx(first+i-1),gy(j),gz(k)],time,u(:,i,j,k),t(i,j,k),row,local_ok)
+            if (.not.local_ok) exit
+            block(position+1:position+row_bytes)=row//new_line('a')
+            position=position+row_bytes
+          end do
+          call sparse_collective_logical_and_3d(distribution%comm,local_ok,all_ok)
+          if (.not.all_ok) goto 900
+          offset=int(len(header),MPI_OFFSET_KIND)+ &
+            ((int(k-1,MPI_OFFSET_KIND)*size(gy)+j-1)*size(gx)+max(1,first)-1)*row_bytes
+          call MPI_File_write_at_all(file,offset,block,block_bytes,MPI_CHARACTER,status,ierr)
+          call sparse_collective_mpi_success_3d(distribution%comm,ierr,all_ok)
+          if (.not.all_ok) goto 900
+        end do
+      end do
+      success=.true.
+900   if (opened) then
+        call MPI_File_close(file,close_error)
+        call sparse_collective_mpi_success_3d(distribution%comm,close_error,all_ok)
+        success=success.and.all_ok
+      end if
+    end subroutine write_level
+  end subroutine write_mpi_amr_sparse_csv_3d
 
   subroutine balance_mpi_amr_sparse_3d(distribution,patch,hierarchy,changed,ok)
     type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution

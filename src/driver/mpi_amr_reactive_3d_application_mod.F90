@@ -23,7 +23,7 @@ module mpi_amr_reactive_3d_application_mod
   use reactive_3d_mod, only: &
     recover_reactive_temperatures_3d, reactive_extrema_3d
   use amr_hierarchy_3d_mod, only: &
-    amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d, &
+    amr_patch_3d, initialize_amr_patch_3d, &
     average_down_3d, composite_integrals_amr_3d
   use mpi_amr_sparse_reactive_3d_mod, only: &
     mpi_amr_sparse_distribution_3d, mpi_amr_sparse_hierarchy_3d, &
@@ -32,14 +32,13 @@ module mpi_amr_reactive_3d_application_mod
     gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
-    advance_mpi_amr_sparse_full_3d,balance_mpi_amr_sparse_3d
+    advance_mpi_amr_sparse_full_3d,balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
   use amr_reactive_3d_mod, only: &
     composite_element_integrals_amr_3d, &
     element_integrals_from_reactive_integrals_3d
   use amr_reactive_3d_checkpoint_mod, only: &
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
     amr_reactive_3d_transport_operator, read_dynamic_amr_reactive_3d_checkpoint,amr_reactive_boundary_signature_3d
-  use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   private
 
@@ -74,7 +73,6 @@ contains
     real(dp), allocatable :: coarse_temperature(:, :, :)
     real(dp), allocatable :: fine_temperature(:, :, :)
     real(dp), allocatable :: recovered_temperature(:, :, :)
-    real(dp), allocatable :: restricted(:, :, :, :)
     real(dp), allocatable :: initial_integrals(:), final_integrals(:)
     real(dp), allocatable :: mass_fractions(:)
     real(dp), allocatable :: x(:), y(:), z(:), xf(:), yf(:), zf(:)
@@ -91,7 +89,7 @@ contains
     logical :: selected_context, element_diagnostics
     logical :: transport_enabled, transport_policy_ok
     logical :: any_selected_context, all_selected_context
-    integer :: step, nvar, covered_nx, covered_ny, covered_nz
+    integer :: step, nvar
     logical :: patch_changed
     integer :: regrid_count
     integer :: ierr, rank, nranks,face,i,j,k
@@ -668,18 +666,9 @@ contains
       end if
     end do
 
-    call gather_mpi_amr_sparse_hierarchy_3d( &
-      distribution, patch, 0, hierarchy, coarse_state, coarse_temperature, &
-      fine_state, fine_temperature, ok)
-    call collective_require( &
-      ok, "Failed to gather final sparse MPI 3D AMR state", 6)
-    covered_nx = patch%coarse_i_upper - patch%coarse_i_lower + 1
-    covered_ny = patch%coarse_j_upper - patch%coarse_j_lower + 1
-    covered_nz = patch%coarse_k_upper - patch%coarse_k_lower + 1
+    call distributed_final_diagnostics()
     root_ok = .true.
     if (rank == 0) then
-      call composite_integrals_amr_3d( &
-        coarse_state, fine_state, patch, dx, dy, dz, final_integrals, root_ok)
       if (root_ok) then
         if (config%chemistry_enabled) then
           conservation_error = maxval(abs( &
@@ -698,9 +687,7 @@ contains
       elemental_conservation_error = 0.0_dp
       final_elements = 0.0_dp
       if (root_ok .and. element_diagnostics) then
-        call composite_element_integrals_amr_3d( &
-          species, patch, coarse_state, fine_state, dx, dy, dz, &
-          final_elements, root_ok)
+        call element_integrals_from_reactive_integrals_3d(species,final_integrals,final_elements,root_ok)
       end if
       if (root_ok .and. element_diagnostics) then
         call element_integrals_from_reactive_integrals_3d(species,boundary_total,boundary_elements,root_ok)
@@ -710,21 +697,6 @@ contains
           final_elements - initial_elements-boundary_elements) / &
           max(1.0e-30_dp, abs(initial_elements)))
       end if
-      if (root_ok) then
-        allocate(restricted(nvar, covered_nx, covered_ny, covered_nz))
-        call restrict_average_3d(fine_state, patch, restricted, root_ok)
-      end if
-      if (root_ok) then
-        synchronization_error = maxval(abs(restricted - coarse_state(:, &
-          patch%coarse_i_lower:patch%coarse_i_upper, &
-          patch%coarse_j_lower:patch%coarse_j_upper, &
-          patch%coarse_k_lower:patch%coarse_k_upper))) / &
-          max(1.0_dp, maxval(abs(restricted)))
-        call level_extrema( &
-          species, coarse_state, coarse_temperature, coarse_closure, root_ok)
-      end if
-      if (root_ok) call level_extrema( &
-        species, fine_state, fine_temperature, fine_closure, root_ok)
       if (root_ok) then
         root_ok = conservation_error <= 5.0e-11_dp .and. &
           synchronization_error <= 5.0e-13_dp .and. &
@@ -739,20 +711,9 @@ contains
     end if
     call root_require(root_ok, message, 6)
 
-    root_ok = .true.
-    if (rank == 0) then
-      call write_reactive_3d_csv( &
-        trim(coarse_output), species, x, y, z, coarse_state, &
-        coarse_temperature, config%nx, config%ny, config%nz, time, &
-        root_ok, message)
-      if (root_ok) then
-        call write_reactive_3d_csv( &
-          trim(fine_output), species, xf, yf, zf, fine_state, &
-          fine_temperature, patch%fine_nx(), patch%fine_ny(), &
-          patch%fine_nz(), time, root_ok, message)
-      end if
-    end if
-    call root_require(root_ok, message, 7)
+    call write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,trim(coarse_output),trim(fine_output), &
+      x,y,z,xf,yf,zf,time,ok)
+    call collective_require(ok,'Failed distributed MPI AMR CSV output',7)
     if (rank == 0) then
       write(*, '(a,i0)') "Completed coarse steps: ", step
       write(*, '(a,i0)') "Completed hydro fine substeps: ", &
@@ -796,6 +757,69 @@ contains
     end if
 
   contains
+
+    subroutine distributed_final_diagnostics()
+      real(dp) :: sums(nvar),restricted_cell(nvar),local_max(4),global_max(4)
+      real(dp) :: volume,fine_volume,weight
+      integer :: ci,cj,ck,gi,ii,jj,kk,fi,fj,fk,r,local_ierr
+      logical :: local_ok
+      call collective_require(hierarchy%is_valid(distribution,patch),'Invalid final MPI hierarchy',6)
+      sums=0;local_max=0
+      volume=dx*dy*dz;r=patch%refinement_ratio
+      weight=1.0_dp/real(r**3,dp);fine_volume=volume*weight
+      do ck=1,patch%coarse_nz
+        do cj=1,patch%coarse_ny
+          do ci=1,distribution%coarse_count
+            gi=distribution%coarse_first+ci-1
+            if (gi>=patch%coarse_i_lower.and.gi<=patch%coarse_i_upper.and. &
+                cj>=patch%coarse_j_lower.and.cj<=patch%coarse_j_upper.and. &
+                ck>=patch%coarse_k_lower.and.ck<=patch%coarse_k_upper) cycle
+            sums=sums+volume*hierarchy%coarse_state(:,ci,cj,ck)
+          end do
+        end do
+      end do
+      do ck=1,patch%fine_nz()
+        do cj=1,patch%fine_ny()
+          do ci=1,distribution%fine_count
+            sums=sums+fine_volume*hierarchy%fine_state(:,ci,cj,ck)
+          end do
+        end do
+      end do
+      do ck=patch%coarse_k_lower,patch%coarse_k_upper
+        fk=(ck-patch%coarse_k_lower)*r+1
+        do cj=patch%coarse_j_lower,patch%coarse_j_upper
+          fj=(cj-patch%coarse_j_lower)*r+1
+          do gi=max(distribution%coarse_first,patch%coarse_i_lower),min(distribution%coarse_last,patch%coarse_i_upper)
+            ci=distribution%coarse_local_index(gi)
+            fi=(gi-patch%coarse_i_lower)*r+2-distribution%fine_first
+            restricted_cell=0
+            do kk=fk,fk+r-1
+              do jj=fj,fj+r-1
+                do ii=fi,fi+r-1
+                  restricted_cell=restricted_cell+weight*hierarchy%fine_state(:,ii,jj,kk)
+                end do
+              end do
+            end do
+            local_max(1)=max(local_max(1),maxval(abs(restricted_cell-hierarchy%coarse_state(:,ci,cj,ck))))
+            local_max(2)=max(local_max(2),maxval(abs(restricted_cell)))
+          end do
+        end do
+      end do
+      call level_extrema(species,hierarchy%coarse_state,hierarchy%coarse_temperature,local_max(3),local_ok)
+      call collective_require(local_ok,'Invalid final coarse MPI thermodynamics',6)
+      if (distribution%fine_count>0) &
+        call level_extrema(species,hierarchy%fine_state,hierarchy%fine_temperature,local_max(4),local_ok)
+      call collective_require(local_ok,'Invalid final fine MPI thermodynamics',6)
+      call collective_require(all(ieee_is_finite(sums)).and.all(ieee_is_finite(local_max)), &
+        'Invalid final MPI reductions',6)
+      call MPI_Allreduce(sums,final_integrals,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,local_ierr)
+      call collective_require(local_ierr==MPI_SUCCESS,'Failed final MPI inventory reduction',6)
+      call MPI_Allreduce(local_max,global_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,local_ierr)
+      call collective_require(local_ierr==MPI_SUCCESS,'Failed final MPI invariant reduction',6)
+      synchronization_error=global_max(1)/max(1.0_dp,global_max(2))
+      coarse_closure=global_max(3);fine_closure=global_max(4)
+      call collective_require(all(ieee_is_finite(final_integrals)),'Invalid final MPI inventory',6)
+    end subroutine distributed_final_diagnostics
 
     subroutine balance_hierarchy()
       logical :: changed,local_ok

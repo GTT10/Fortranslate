@@ -78,10 +78,13 @@ python3 ../tools/compare_mpi_amr_reactive_3d.py \
 
 Coarse and fine state and temperature are rank-local throughout stepping.
 Fine ownership follows the parent coarse slab, so some ranks may own no fine
-cells. Checkpoint and CSV access is selected-root-only; the checkpoint payload
-contains no owner map and may therefore be resumed with a different valid
-rank count. Root gather/scatter is compatibility I/O rather than scalable
-distributed output.
+cells. CSV rows are written directly from local slabs with collective MPI file I/O,
+using the same byte layout as the serial writer. Final inventory, synchronization
+and composition diagnostics use reductions without gathering fields. Checkpoint
+access remains root-only; its payload contains no owner map and may therefore be
+resumed with a different valid rank count. Initial/checkpoint gather/scatter still
+requires root memory for the hierarchy. See the
+[distributed CSV checks](../../docs/validation/amr-mpi-distributed-csv-20260917.md).
 
 The fixed full-H2/O2 chemistry boundary uses paired inert and reacting
 hotspots:
@@ -155,7 +158,7 @@ ownership stays fixed; fine ownership changes with the patch. No full-level
 field gathering is needed for remapping. Ranks with no fine cells remain supported.
 Checkpoint geometry is broadcast before restart distribution, so rank counts
 can change. Fluid/chemistry/transport stepping and remapping remain rank-local.
-Checkpoint and CSV I/O still require root memory for the complete hierarchy.
+Initial/checkpoint I/O still requires root memory for the complete hierarchy.
 The library also provides `repartition_mpi_amr_sparse_3d` for explicit contiguous
 coarse-slab counts (at least one coarse column per rank). It transfers both
 levels and temperatures directly with MPI all-to-all exchange; subsequent
@@ -256,7 +259,7 @@ from local temperature slabs. Changed patches are conservatively remapped
 within each fixed coarse slab, with two-layer neighbor exchange for slopes.
 Fine overlap stays on the same rank because its coarse parent ownership is fixed.
 Checkpoint/restart retains the tagging policy and supports changed rank counts.
-Checkpoint/CSV I/O still requires root memory for the complete hierarchy.
+Initial/checkpoint I/O still requires root memory for the complete hierarchy.
 See [serial evidence](../../docs/validation/amr-boundary-regrid-20260917.md) and
 [MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md),
 with the newer [distributed-remap check](../../docs/validation/amr-mpi-distributed-remap-20260917.md).
