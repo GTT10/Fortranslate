@@ -113,8 +113,8 @@ Per-donor-level temporal interpolation is available for coarse ghosts.
 Tree flux synchronization/reflux now handles nested and adjacent boxes, periodic
 seams and physical boundary-ledger replacement. Synchronous SSPRK2 hydro now
 connects flux production and temperature recovery, using a common timestep
-bounded by all node CFL limits. Next connect PLM coarse/fine interpolation
-and subcycling. Exposed-cell chemistry and reaction/hydro splitting are connected;
+bounded by all node CFL limits. Limited coarse-donor interpolation is connected
+for PLM hydro; next connect transport donors and subcycling. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.

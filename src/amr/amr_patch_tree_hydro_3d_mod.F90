@@ -126,7 +126,12 @@ contains
       updated=u
       do peer=1,size(tree%nodes)
         n=tree%nodes(peer)%shape;dims=n+4
-        call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet)
+        if (reconstruction=='pcm') then
+          call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet)
+        else
+          call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
+            coarse_limiter=limiter,species_count=size(species))
+        end if
         if (.not.success) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
         if (reconstruction=='pcm') then

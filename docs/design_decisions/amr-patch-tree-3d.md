@@ -41,7 +41,7 @@ The hierarchy owns its arrays; restriction uses a private candidate copy.
 `fill_amr_patch_tree_ghosts_3d` builds a two-cell halo around one node. It
 constructs checked 64-bit global integer coordinates at every depth, searches
 all peer boxes at the requested resolution (including different parents), and
-falls back through coarser levels using PCM when no peer covers the cell.
+falls back through coarser levels when no peer covers the cell (PCM by default).
 The result includes the unchanged interior and commits only on success.
 
 Its component layout is density, three momenta, total energy, then any species
@@ -69,7 +69,22 @@ invalid interpolation input preserves the prior output.
 
 Callers own time brackets and choose a fraction for each coarse level at the
 fine stage time. They must supply synchronized coarse values where required.
-Scheduling subcycles and PLM coarse/fine interpolation remain to be connected.
+Optional `coarse_limiter='mc'` or `'minmod'` enables conserved-component linear
+reconstruction of coarse donors. Same-level copies remain exact. Slopes use
+face neighbors, while extrema include the full 3x3x3 donor stencil to retain
+multidimensional affine fields. Neighbor sampling crosses peer boxes and follows
+physical/periodic boundaries, with PCM fallback if that stencil itself reaches
+a coarser region. Temporal interpolation precedes slope construction and uses
+each sampled donor's own time fraction.
+
+One common slope scale bounds every component throughout the complete fine-cell
+subdivision and preserves its zero-mean correction. Optional `species_count`
+identifies rhoY components after energy; the final species slope is dependent on
+density and the other species slopes, preserving their sum. Temperature, when
+packed after the conserved fields, remains a guess for subsequent EOS recovery.
+This component bound is not a proof of nonlinear EOS admissibility; existing
+reactive flux/state checks can still reject a step. Scheduling subcycles remains
+open.
 Peer lookup currently scans nodes; no scaling qualification is implied.
 
 ## Conservative flux synchronization
@@ -121,8 +136,10 @@ wall transport is outside this routine.
 `compute_amr_patch_tree_cfl_3d` returns the minimum existing local CFL bound over
 all nodes, using each node's spacing. Callers choose the timestep; advance does
 not enforce that bound. All nodes currently use this same interval. PLM face
-reconstruction is available, but coarse/fine spatial donors remain PCM, so this
-is not a claim of globally second-order AMR accuracy or subcycled evolution.
+reconstruction now also enables limited coarse-donor interpolation and forwards
+the species count for closure. PCM reconstruction retains the original donor
+path. Transport ghosts still use PCM. This is not a claim of globally second-order
+AMR accuracy or subcycled evolution.
 
 ## Chemistry and reaction/hydro splitting
 
@@ -307,5 +324,5 @@ tag decisions. Reservoir timestep bounds include the maximum requested depth.
 
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling, MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+Transport coarse/fine interpolation, subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

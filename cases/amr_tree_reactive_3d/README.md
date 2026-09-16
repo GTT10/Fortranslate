@@ -180,5 +180,6 @@ files are not checkpoints.
 ## Remaining scope
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
-MPI execution remains to be connected. Coarse/fine donors are PCM and time stepping is common
-across levels; this is not subcycled or globally second-order AMR qualification.
+MPI execution remains to be connected. Characteristic-PLM hydro enables limited
+linear coarse donors with the configured limiter; PCM hydro and transport retain
+PCM donors. Time stepping is common across levels; this is not subcycled or globally second-order AMR qualification.

@@ -2,6 +2,7 @@ module amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use slope_limiter_mod, only: limited_slope
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
   implicit none
@@ -9,7 +10,7 @@ module amr_patch_tree_ghost_3d_mod
   public :: fill_amr_patch_tree_ghosts_3d
 contains
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
-      coarse_future,coarse_fractions)
+      coarse_future,coarse_fractions,coarse_limiter,species_count)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: state
     integer, intent(in) :: node
@@ -20,19 +21,28 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),wall_velocity(:,:)
     type(amr_tree_state_3d), optional, intent(in) :: coarse_future
     real(dp), optional, intent(in) :: coarse_fractions(:)
+    character(len=*), optional, intent(in) :: coarse_limiter
+    integer, optional, intent(in) :: species_count
     real(dp), allocatable :: candidate(:,:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
     integer :: i,j,k,axis,face,inlet,level,source_level,source,other,nvar,local(3),dims(3)
     real(dp) :: shift(3),old_momentum(3),rho,fraction
-    logical :: reflect(3),viscous,found
+    logical :: reflect(3),viscous,found,valid
+    integer :: nspecies
     ok=.false.
     if (.not.state%is_valid(tree)) return
     if (node<1.or.node>size(tree%nodes)) return
     if (.not.valid_reactive_boundaries_3d(faces)) return
     nvar=size(state%fields(1)%values,1)
     if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-4)) return
+    nspecies=0
+    if (present(species_count)) nspecies=species_count
+    if (nspecies<0.or.nspecies>nvar-5) return
+    if (present(coarse_limiter)) then
+      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod') return
+    end if
     if (present(coarse_future).neqv.present(coarse_fractions)) return
     if (present(coarse_future)) then
       if (size(coarse_fractions)/=tree%nodes(node)%level) return
@@ -118,6 +128,10 @@ contains
             source_level=source_level-1
           end do
           if (.not.found) return
+          if (present(coarse_limiter).and.source_level<level.and.inlet==0) then
+            call interpolate_donor(point,source_level,mapped,candidate(:,i,j,k),valid)
+            if (.not.valid) return
+          end if
           if (inlet>0) candidate(:,i,j,k)=inflow_state(:,inlet)
           old_momentum=candidate(2:4,i,j,k)
           do axis=1,3
@@ -135,5 +149,128 @@ contains
     end do
     if (.not.all(ieee_is_finite(candidate))) return
     call move_alloc(candidate,ghost);ok=.true.
+  contains
+    subroutine interpolate_donor(center_index,donor_level,fine_index,value,success)
+      integer(int64), intent(in) :: center_index(3),fine_index(3)
+      integer, intent(in) :: donor_level
+      real(dp), intent(inout) :: value(:)
+      logical, intent(out) :: success
+      real(dp) :: center(nvar),neighbor(nvar),minus(nvar,3),plus(nvar,3),slopes(nvar,3)
+      real(dp) :: minimum(nvar),maximum(nvar),offset(3),radius(nvar),theta,half_width(3)
+      integer(int64) :: query(3),factor(3)
+      integer :: di,dj,dk,direction,component,delta(3)
+      logical :: good
+      success=.false.;center=value;minimum=center;maximum=center
+      factor=domain(:,level)/domain(:,donor_level)
+      offset=(real(modulo(fine_index,factor),dp)+.5_dp)/real(factor,dp)-.5_dp
+      half_width=.5_dp*(1.0_dp-1.0_dp/real(factor,dp))
+      ! Corner bounds retain affine fields in multiple dimensions. Sampling
+      ! only face extrema would unnecessarily flatten a diagonal linear field.
+      do dk=-1,1
+        do dj=-1,1
+          do di=-1,1
+            delta=[di,dj,dk]
+            if (all(delta==0)) cycle
+            query=center_index+int(delta,int64)
+            call sample_neighbor(query,donor_level,neighbor,good)
+            if (.not.good) return
+            minimum=min(minimum,neighbor);maximum=max(maximum,neighbor)
+            do direction=1,3
+              if (sum(abs(delta))/=1.or.delta(direction)==0) cycle
+              if (delta(direction)<0) minus(:,direction)=neighbor
+              if (delta(direction)>0) plus(:,direction)=neighbor
+            end do
+          end do
+        end do
+      end do
+      do direction=1,3
+        do component=1,nvar
+          call limited_slope(center(component)-minus(component,direction), &
+            plus(component,direction)-center(component),coarse_limiter,slopes(component,direction),good)
+          if (.not.good) return
+        end do
+        ! Preserve sum(rhoY)=rho with one dependent species slope.
+        if (nspecies>0) slopes(5+nspecies,direction)=slopes(1,direction)-sum(slopes(6:4+nspecies,direction))
+      end do
+      radius=matmul(abs(slopes),half_width);theta=1
+      do component=1,nvar
+        if (radius(component)<=0) cycle
+        theta=min(theta,max(0.0_dp,min(maximum(component)-center(component), &
+          center(component)-minimum(component)))/radius(component))
+      end do
+      ! One scale for all components and all children retains affine closure
+      ! and a zero-mean correction over a complete donor-cell subdivision.
+      value=center+theta*matmul(slopes,offset)
+      success=all(ieee_is_finite(value))
+    end subroutine
+    subroutine sample_neighbor(query,requested_level,value,success)
+      integer(int64), intent(in) :: query(3)
+      integer, intent(in) :: requested_level
+      real(dp), intent(out) :: value(:)
+      logical, intent(out) :: success
+      integer(int64) :: position(3),bounds(3)
+      integer :: direction,boundary,reservoir,depth,peer,index(3)
+      real(dp) :: velocity_shift(3),momentum(3),blend,density
+      logical :: flip(3)
+      position=query;bounds=domain(:,requested_level);flip=.false.;velocity_shift=0;reservoir=0
+      success=.false.
+      do direction=1,3
+        if (query(direction)>=0.and.query(direction)<bounds(direction)) cycle
+        boundary=2*direction
+        if (query(direction)<0) boundary=boundary-1
+        select case(trim(faces(boundary)))
+        case('periodic')
+          position(direction)=modulo(query(direction),bounds(direction))
+        case('inflow','outflow')
+          position(direction)=max(0_int64,min(bounds(direction)-1,query(direction)))
+          if (faces(boundary)=='inflow') reservoir=boundary
+        case('slip_wall','no_slip_wall','isothermal_wall')
+          position(direction)=-query(direction)-1
+          if (query(direction)>=bounds(direction)) position(direction)=bounds(direction)-1-(query(direction)-bounds(direction))
+          if (faces(boundary)/='slip_wall'.and.viscous) then
+            flip=.not.flip;velocity_shift=-velocity_shift
+            if (present(wall_velocity)) velocity_shift=velocity_shift+2*wall_velocity(:,boundary)
+          else
+            flip(direction)=.not.flip(direction);velocity_shift(direction)=-velocity_shift(direction)
+          end if
+        end select
+      end do
+      depth=requested_level
+      do while(depth>=1)
+        do peer=1,size(tree%nodes)
+          if (tree%nodes(peer)%level+1/=depth) cycle
+          if (any(position<origin(:,peer))) cycle
+          if (any(position-origin(:,peer)>=int(tree%nodes(peer)%shape,int64))) cycle
+          index=int(position-origin(:,peer))+1
+          value=state%fields(peer)%values(:,index(1),index(2),index(3))
+          if (present(coarse_future)) then
+            blend=coarse_fractions(depth)
+            if (blend==1) then
+              value=coarse_future%fields(peer)%values(:,index(1),index(2),index(3))
+            else if (blend>0) then
+              value=(1-blend)*value+blend*coarse_future%fields(peer)%values(:,index(1),index(2),index(3))
+            end if
+          end if
+          success=.true.;exit
+        end do
+        if (success) exit
+        position=position/int(ratios(depth),int64);depth=depth-1
+      end do
+      if (.not.success) return
+      if (reservoir>0) value=inflow_state(:,reservoir)
+      momentum=value(2:4)
+      do direction=1,3
+        if (flip(direction)) value(direction+1)=-value(direction+1)
+      end do
+      if (any(abs(velocity_shift)>0)) then
+        density=value(1)
+        if (density<=0) then
+          success=.false.;return
+        end if
+        value(2:4)=value(2:4)+density*velocity_shift
+        value(5)=value(5)+(sum(value(2:4)**2)-sum(momentum**2))/(2*density)
+      end if
+      success=all(ieee_is_finite(value))
+    end subroutine
   end subroutine fill_amr_patch_tree_ghosts_3d
 end module amr_patch_tree_ghost_3d_mod

@@ -28,14 +28,15 @@ foundation. Snapshot ghost filling now exchanges peer data across parent boxes,
 uses PCM ancestor fallback and follows regular-grid periodic/physical boundary
 conventions ([evidence](validation/amr-tree-ghost-3d-20260917.md)). Per-level coarse
 endpoint interpolation is also available for ghost donors while retaining exact
-current peers ([evidence](validation/amr-tree-temporal-ghost-20260917.md)). PLM
-coarse/fine ghost filling and subcycle scheduling remain open. A transactional tree
+current peers ([evidence](validation/amr-tree-temporal-ghost-20260917.md)). Limited linear coarse-donor interpolation is now available for hydro
+([evidence](validation/amr-tree-plm-ghost-20260917.md)); transport donor interpolation
+and subcycle scheduling remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous
 SSPRK2 hydro now connects PCM/PLM face fluxes, temperature recovery and the
 composite boundary ledger, with a CFL minimum over all nodes
-([evidence](validation/amr-tree-hydro-20260917.md)); coarse/fine donors remain PCM.
+([evidence](validation/amr-tree-hydro-20260917.md)); PLM hydro now enables limited coarse donors.
 Cell chemistry now runs on exposed tree cells, with bottom-up restriction and
 transactional reaction/hydro Strang splitting
 ([evidence](validation/amr-tree-chemistry-20260917.md)). Synchronous molecular
