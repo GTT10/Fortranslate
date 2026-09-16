@@ -23,8 +23,7 @@ module mpi_amr_reactive_3d_application_mod
   use reactive_3d_mod, only: &
     recover_reactive_temperatures_3d, reactive_extrema_3d
   use amr_hierarchy_3d_mod, only: &
-    amr_patch_3d, initialize_amr_patch_3d, &
-    average_down_3d, composite_integrals_amr_3d
+    amr_patch_3d, initialize_amr_patch_3d
   use mpi_amr_sparse_reactive_3d_mod, only: &
     mpi_amr_sparse_distribution_3d, mpi_amr_sparse_hierarchy_3d, &
     initialize_mpi_amr_sparse_distribution_3d, temperature_tag_mpi_amr_sparse_patch_3d, regrid_mpi_amr_sparse_3d, &
@@ -34,7 +33,6 @@ module mpi_amr_reactive_3d_application_mod
     compute_mpi_amr_sparse_transport_timestep_3d, &
     advance_mpi_amr_sparse_full_3d,balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
   use amr_reactive_3d_mod, only: &
-    composite_element_integrals_amr_3d, &
     element_integrals_from_reactive_integrals_3d
   use amr_reactive_3d_checkpoint_mod, only: &
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
@@ -195,18 +193,17 @@ contains
     nvar = reactive_nvar(size(species))
     allocate(x(config%nx), y(config%ny), z(config%nz))
     allocate(xf(patch%fine_nx()), yf(patch%fine_ny()), zf(patch%fine_nz()))
-    if (rank == 0) then
+    restarted = len_trim(amr_config%restart_file) > 0
+    if (rank == 0.and.restarted) then
       allocate(coarse_state(nvar, config%nx, config%ny, config%nz))
       allocate(coarse_temperature(config%nx, config%ny, config%nz))
       allocate(fine_state(nvar, patch%fine_nx(), patch%fine_ny(), &
         patch%fine_nz()))
       allocate(fine_temperature( &
         patch%fine_nx(), patch%fine_ny(), patch%fine_nz()))
-      allocate(recovered_temperature(config%nx, config%ny, config%nz))
     else
       allocate(coarse_state(0, 0, 0, 0), coarse_temperature(0, 0, 0))
       allocate(fine_state(0, 0, 0, 0), fine_temperature(0, 0, 0))
-      allocate(recovered_temperature(0, 0, 0))
     end if
     allocate(mass_fractions(size(species)))
     allocate(initial_integrals(nvar), final_integrals(nvar))
@@ -331,44 +328,9 @@ contains
             end if
           end if
         end if
-      else
-        call initialize_reactive_problem_3d( &
-          species, config, x, y, z, coarse_state, coarse_temperature, &
-          base_density, mass_fractions, root_ok, base_mole_fractions)
-        if (root_ok) then
-          fine_config = config
-          fine_config%nx = patch%fine_nx()
-          fine_config%ny = patch%fine_ny()
-          fine_config%nz = patch%fine_nz()
-          call initialize_reactive_problem_3d( &
-            species, fine_config, xf, yf, zf, fine_state, fine_temperature, &
-            fine_base_density, mass_fractions, root_ok, base_mole_fractions)
-        end if
-        if (root_ok) call average_down_3d( &
-          coarse_state, fine_state, patch, root_ok)
-        if (root_ok) then
-          call recover_reactive_temperatures_3d( &
-            species, coarse_state, coarse_temperature, config%nx, &
-            config%ny, config%nz, recovered_temperature, root_ok)
-        end if
-        if (root_ok) coarse_temperature = recovered_temperature
-        if (root_ok) then
-          call composite_integrals_amr_3d( &
-            coarse_state, fine_state, patch, dx, dy, dz, &
-            initial_integrals, root_ok)
-        end if
-        if (.not. root_ok) message = "Failed to initialize MPI 3D AMR state"
       end if
-      if (root_ok .and. element_diagnostics) then
-        if (restarted) then
-          call element_integrals_from_reactive_integrals_3d( &
-            species, initial_integrals, initial_elements, root_ok)
-        else
-          call composite_element_integrals_amr_3d( &
-            species, patch, coarse_state, fine_state, dx, dy, dz, &
-            initial_elements, root_ok)
-        end if
-      end if
+      if (root_ok.and.element_diagnostics.and.restarted) &
+        call element_integrals_from_reactive_integrals_3d(species,initial_integrals,initial_elements,root_ok)
     end if
     call root_require(root_ok, message, 3)
     if (amr_config%regrid_interval_steps>0) call redistribute_patch_metadata()
@@ -438,11 +400,20 @@ contains
 
       end if
     end do
-    call scatter_mpi_amr_sparse_hierarchy_3d( &
-      distribution, species, patch, 0, coarse_state, coarse_temperature, &
-      fine_state, fine_temperature, hierarchy, ok)
-    call collective_require( &
-      ok, "Failed to scatter sparse MPI 3D AMR hierarchy", 3)
+    if (restarted) then
+      call scatter_mpi_amr_sparse_hierarchy_3d( &
+        distribution, species, patch, 0, coarse_state, coarse_temperature, &
+        fine_state, fine_temperature, hierarchy, ok)
+      call collective_require(ok, "Failed to scatter restart MPI AMR hierarchy", 3)
+    else
+      call initialize_local_hierarchy()
+      call distributed_final_diagnostics()
+      initial_integrals=final_integrals
+      if (element_diagnostics) then
+        call element_integrals_from_reactive_integrals_3d(species,initial_integrals,initial_elements,ok)
+        call collective_require(ok,'Invalid initial MPI element inventory',3)
+      end if
+    end if
     deallocate(coarse_state, coarse_temperature, fine_state, fine_temperature)
     call balance_hierarchy()
 
@@ -757,6 +728,54 @@ contains
     end if
 
   contains
+
+    subroutine initialize_local_hierarchy()
+      integer :: ci,cj,ck,gi,fi,fj,fk,ii,jj,kk,r
+      real(dp) :: weight
+      ! Keep the global domain extents: only the local array dimensions change.
+      hierarchy%nvar=nvar
+      allocate(hierarchy%coarse_state(nvar,distribution%coarse_count,config%ny,config%nz))
+      allocate(hierarchy%coarse_temperature(distribution%coarse_count,config%ny,config%nz))
+      allocate(hierarchy%fine_state(nvar,distribution%fine_count,patch%fine_ny(),patch%fine_nz()))
+      allocate(hierarchy%fine_temperature(distribution%fine_count,patch%fine_ny(),patch%fine_nz()))
+      fine_config=config;fine_config%nx=distribution%coarse_count
+      call initialize_reactive_problem_3d(species,fine_config,x(distribution%coarse_first:distribution%coarse_last), &
+        y,z,hierarchy%coarse_state,hierarchy%coarse_temperature,base_density,mass_fractions,ok,base_mole_fractions)
+      call collective_require(ok,'Failed rank-local coarse initialization',3)
+      if (distribution%fine_count>0) then
+        fine_config%nx=distribution%fine_count;fine_config%ny=patch%fine_ny();fine_config%nz=patch%fine_nz()
+        call initialize_reactive_problem_3d(species,fine_config,xf(distribution%fine_first:distribution%fine_last), &
+          yf,zf,hierarchy%fine_state,hierarchy%fine_temperature,fine_base_density,mass_fractions,ok,base_mole_fractions)
+      end if
+      call collective_require(ok,'Failed rank-local fine initialization',3)
+      r=patch%refinement_ratio;weight=1.0_dp/real(r**3,dp)
+      do ck=patch%coarse_k_lower,patch%coarse_k_upper
+        fk=(ck-patch%coarse_k_lower)*r+1
+        do cj=patch%coarse_j_lower,patch%coarse_j_upper
+          fj=(cj-patch%coarse_j_lower)*r+1
+          do gi=max(distribution%coarse_first,patch%coarse_i_lower),min(distribution%coarse_last,patch%coarse_i_upper)
+            ci=distribution%coarse_local_index(gi)
+            fi=(gi-patch%coarse_i_lower)*r+2-distribution%fine_first
+            hierarchy%coarse_state(:,ci,cj,ck)=0
+            do kk=fk,fk+r-1
+              do jj=fj,fj+r-1
+                do ii=fi,fi+r-1
+                  hierarchy%coarse_state(:,ci,cj,ck)=hierarchy%coarse_state(:,ci,cj,ck)+ &
+                    weight*hierarchy%fine_state(:,ii,jj,kk)
+                end do
+              end do
+            end do
+          end do
+        end do
+      end do
+      allocate(recovered_temperature,mold=hierarchy%coarse_temperature)
+      call recover_reactive_temperatures_3d(species,hierarchy%coarse_state,hierarchy%coarse_temperature, &
+        distribution%coarse_count,config%ny,config%nz,recovered_temperature,ok)
+      call collective_require(ok,'Failed rank-local initial temperature recovery',3)
+      hierarchy%coarse_temperature=recovered_temperature
+      deallocate(recovered_temperature)
+      call collective_require(hierarchy%is_valid(distribution,patch),'Invalid initialized local hierarchy',3)
+    end subroutine initialize_local_hierarchy
 
     subroutine distributed_final_diagnostics()
       real(dp) :: sums(nvar),restricted_cell(nvar),local_max(4),global_max(4)
