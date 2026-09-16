@@ -54,7 +54,7 @@ program pelef_amr_reactive_3d_selected
   end if
   call read_amr_reactive_3d_configuration( &
     trim(input_path), config, amr_config, ok, message, &
-    allow_selected=.true.)
+    allow_selected=.true.,allow_physical=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2

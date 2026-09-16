@@ -861,3 +861,9 @@ add_test(NAME amr_dynamic_restart_3d
     --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_dynamic_restart_3d")
 set_tests_properties(amr_dynamic_restart_3d PROPERTIES TIMEOUT 600)
+
+add_test(NAME amr_physical_boundary_restart_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
+    --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_physical_boundary_restart_3d")
+set_tests_properties(amr_physical_boundary_restart_3d PROPERTIES TIMEOUT 300)

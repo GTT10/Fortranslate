@@ -12,7 +12,8 @@ module amr_reactive_3d_checkpoint_mod
     gas_transport_species, compatible_transport_database
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d, &
+    valid_reactive_boundaries_3d
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d
@@ -39,6 +40,23 @@ module amr_reactive_3d_checkpoint_mod
   public :: read_amr_reactive_3d_checkpoint
 
 contains
+  function boundary_signature(config) result(signature)
+    type(reactive_3d_config), intent(in) :: config
+    character(len=32768) :: signature
+    character(len=80) :: entry
+    integer :: i
+    write(signature,'(a,6(1x,a),*(1x,es27.18e3))') 'PHYSICAL_AMR_BOUNDARY_V1', &
+      resolved_reactive_boundaries_3d(config),config%wall_temperature,config%wall_velocity, &
+      config%inflow_temperature,config%inflow_pressure,config%inflow_velocity, &
+      config%x_h2,config%x_h,config%x_o,config%x_o2,config%x_oh,config%x_h2o, &
+      config%x_ho2,config%x_h2o2,config%x_ar,config%x_n2
+    do i=1,config%inflow_composition_count
+      write(entry,'(a,1x,es27.18e3)') trim(config%inflow_composition_species(i)), &
+        config%inflow_composition_mole_fractions(i)
+      signature=trim(signature)//' '//trim(entry)
+    end do
+  end function boundary_signature
+
   function dynamic_signature(config) result(signature)
     type(amr_reactive_3d_config), intent(in) :: config
     character(len=512) :: signature
@@ -89,9 +107,11 @@ contains
   subroutine read_dynamic_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,patch, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux, &
       regrid_count,ok,message,bundle_sha256,chemistry_integrator,base_mole_fractions,reactions, &
-      transport,maximum_transport_diffusivity,minimum_transport_theta)
+      transport,maximum_transport_diffusivity,minimum_transport_theta,boundary_change)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    real(dp) :: candidate_boundary(reactive_nvar(size(species)))
     type(reactive_3d_config), intent(in) :: flow_config
     type(amr_reactive_3d_config), intent(in) :: amr_config
     type(amr_patch_3d), intent(inout) :: patch
@@ -114,6 +134,11 @@ contains
     character(len=1024) :: magic
     ok=.false.; message='Invalid dynamic 3D AMR checkpoint header'
     if (amr_config%regrid_interval_steps<=0) return
+    candidate_boundary=0
+    if (any(resolved_reactive_boundaries_3d(flow_config)/='periodic')) then
+      if (.not.present(boundary_change)) return
+      if (size(boundary_change)/=size(candidate_boundary)) return
+    end if
     if (flow_config%transport_enabled) then
       if (.not.present(transport).or..not.present(maximum_transport_diffusivity).or. &
           .not.present(minimum_transport_theta)) return
@@ -131,7 +156,8 @@ contains
     if (status==0) read(unit,*,iostat=status) header
     local_ok=.false.
     if (status==0) then
-      if (header(1)>=6.and.header(1)<=9.and.header(2)==size(species).and.header(3)==reactive_nvar(size(species))) &
+      if (((header(1)>=6.and.header(1)<=9).or.(header(1)>=14.and.header(1)<=17)).and. &
+          header(2)==size(species).and.header(3)==reactive_nvar(size(species))) &
         call dynamic_checkpoint_header(unit,flow_config,amr_config,candidate_patch,count,local_ok)
     end if
     close(unit)
@@ -146,13 +172,15 @@ contains
     if (flow_config%transport_enabled) then
       call read_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,candidate_patch,c,ct,f,ft, &
         candidate_time,candidate_steps,integrals,candidate_reflux,local_ok,message,bundle_sha256, &
-        chemistry_integrator,base_mole_fractions,reactions,transport,diffusivity,theta,regrid_count=count)
+        chemistry_integrator,base_mole_fractions,reactions,transport,diffusivity,theta, &
+        regrid_count=count,boundary_change=candidate_boundary)
     else
       call read_amr_reactive_3d_checkpoint(path,species,flow_config,amr_config,candidate_patch,c,ct,f,ft, &
         candidate_time,candidate_steps,integrals,candidate_reflux,local_ok,message,bundle_sha256, &
-        chemistry_integrator,base_mole_fractions,reactions,regrid_count=count)
+        chemistry_integrator,base_mole_fractions,reactions,regrid_count=count,boundary_change=candidate_boundary)
     end if
     if (.not.local_ok) return
+    if (any(resolved_reactive_boundaries_3d(flow_config)/='periodic')) boundary_change=candidate_boundary
     coarse_state=c; coarse_temperature=ct; call move_alloc(f,fine_state); call move_alloc(ft,fine_temperature)
     patch=candidate_patch; time=candidate_time; steps=candidate_steps; initial_integrals=integrals
     maximum_reflux=candidate_reflux; regrid_count=count
@@ -168,7 +196,9 @@ contains
       coarse_state, coarse_temperature, fine_state, fine_temperature, &
       time, steps, initial_integrals, maximum_reflux, ok, message, &
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
-      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count)
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
+    real(dp), optional, intent(in) :: boundary_change(:)
+    logical :: physical_boundary
     integer, intent(in), optional :: regrid_count
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
@@ -198,6 +228,14 @@ contains
 
     ok = .false.
     message = ""
+    physical_boundary=any(resolved_reactive_boundaries_3d(flow_config)/='periodic')
+    if (physical_boundary) then
+      message='Physical AMR checkpoint requires a finite conserved boundary ledger'
+      if (.not.present(boundary_change)) return
+      if (size(boundary_change)/=reactive_nvar(size(species))) return
+      if (.not.all(ieee_is_finite(boundary_change))) return
+      message=''
+    end if
     if (amr_config%regrid_interval_steps>0) then
       if (.not.present(regrid_count)) then
         message='Missing regrid counter'; return
@@ -265,6 +303,7 @@ contains
       end if
     end if
     if (amr_config%regrid_interval_steps>0) schema=schema+4
+    if (physical_boundary) schema=schema+8
     if (.not. valid_checkpoint_shapes( &
         species, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature)) then
@@ -428,6 +467,12 @@ contains
         end do
       end do
     end do
+    if (physical_boundary) then
+      write(unit,'(a)',iostat=status) trim(boundary_signature(flow_config))
+      if (status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) boundary_change
+      if (status/=0) go to 900
+    end if
     write(unit, '(a)', iostat=status) "END_CHECKPOINT"
     if (status /= 0) go to 900
     close(unit, iostat=status)
@@ -448,12 +493,16 @@ contains
       coarse_state, coarse_temperature, fine_state, fine_temperature, &
       time, steps, initial_integrals, maximum_reflux, ok, message, &
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
-      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count)
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    character(len=32768) :: stored_boundary_signature
+    logical :: physical_boundary
     integer, intent(inout), optional :: regrid_count
     type(amr_patch_3d) :: stored_patch
     integer :: stored_regrids
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
+    real(dp) :: candidate_boundary(reactive_nvar(size(species)))
     type(reactive_3d_config), intent(in) :: flow_config
     type(amr_reactive_3d_config), intent(in) :: amr_config
     type(amr_patch_3d), intent(in) :: patch
@@ -498,6 +547,14 @@ contains
 
     ok = .false.
     message = ""
+    candidate_boundary=0
+    physical_boundary=any(resolved_reactive_boundaries_3d(flow_config)/='periodic')
+    if (physical_boundary) then
+      message='Physical AMR restart requires a conserved boundary ledger'
+      if (.not.present(boundary_change)) return
+      if (size(boundary_change)/=size(candidate_boundary)) return
+      message=''
+    end if
     stored_regrids=0
     candidate_maximum_transport_diffusivity = 0.0_dp
     candidate_minimum_transport_theta = 1.0_dp
@@ -558,6 +615,7 @@ contains
       end if
     end if
     if (amr_config%regrid_interval_steps>0) expected_schema=expected_schema+4
+    if (physical_boundary) expected_schema=expected_schema+8
     if (.not. valid_checkpoint_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature) .or. &
@@ -745,6 +803,14 @@ contains
     call checkpoint_levels_synchronized( &
       patch, candidate_coarse_state, candidate_fine_state, synchronized)
     if (.not. synchronized) go to 900
+    if (physical_boundary) then
+      read(unit,'(a)',iostat=status) stored_boundary_signature
+      if (status/=0) go to 900
+      if (trim(stored_boundary_signature)/=trim(boundary_signature(flow_config))) go to 900
+      read(unit,*,iostat=status) candidate_boundary
+      if (status/=0) go to 900
+      if (.not.all(ieee_is_finite(candidate_boundary))) go to 900
+    end if
     read(unit, '(a)', iostat=status) end_marker
     if (status /= 0) go to 900
     if (trim(end_marker) /= "END_CHECKPOINT") go to 900
@@ -760,6 +826,7 @@ contains
       message='Invalid dynamic regrid counter'; return
     end if
     if (present(regrid_count)) regrid_count=stored_regrids
+    if (physical_boundary) boundary_change=candidate_boundary
     coarse_state = candidate_coarse_state
     coarse_temperature = candidate_coarse_temperature
     fine_state = candidate_fine_state
@@ -1582,7 +1649,7 @@ contains
       patch%coarse_nz == flow_config%nz .and. &
       geometry_matches .and. &
       patch%refinement_ratio == amr_config%refinement_ratio .and. &
-      all(resolved_reactive_boundaries_3d(flow_config) == "periodic") .and. &
+      valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(flow_config)) .and. &
       (trim(flow_config%reconstruction) == "pcm" .or. &
        trim(flow_config%reconstruction) == "characteristic_plm") .and. &
       (trim(flow_config%limiter) == "minmod" .or. &

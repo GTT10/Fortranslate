@@ -8,8 +8,11 @@ module amr_reactive_3d_application_mod
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
   use mesh_3d_mod, only: uniform_cell_centers_3d
-  use reactive_1d_mod, only: reactive_nvar
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_primitive_to_conserved
+  use mixture_thermo_mod, only: mixture_density,mass_fractions_from_mole_fractions
+  use selected_composition_mod, only: resolve_selected_composition
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
@@ -74,7 +77,12 @@ contains
     character(len=1024) :: message
     logical :: ok, restarted, stopped_after_checkpoint
     logical :: selected_context, element_diagnostics
-    integer :: step, nvar, covered_nx, covered_ny, covered_nz
+    integer :: step, nvar, covered_nx, covered_ny, covered_nz,face,i,j,k
+    character(len=32) :: faces(6)
+    character(len=32), allocatable :: active_faces(:)
+    real(dp), allocatable :: boundary_total(:),step_boundary(:),inflow_state(:,:),inflow_x(:),inflow_y(:),inlet_cube(:,:,:,:)
+    real(dp) :: inflow_t(6),primitive(reactive_nprim(size(species))),sound_speed
+    real(dp) :: inlet_dt,inlet_transport_dt,face_dt,face_diffusivity,wall_dt,inlet_temperature(2,2,2),boundary_elements(3)
 
     selected_context = len_trim(bundle_sha256) > 0
     if (size(species) < 1 .or. size(reactions) < 1 .or. &
@@ -119,6 +127,11 @@ contains
       patch%fine_nz()))
     allocate(mass_fractions(size(species)))
     allocate(initial_integrals(nvar), final_integrals(nvar))
+    allocate(boundary_total(nvar),step_boundary(nvar),inflow_state(nvar,6),inflow_x(size(species)),inflow_y(size(species)))
+    allocate(inlet_cube(nvar,2,2,2))
+    boundary_total=0;step_boundary=0;inflow_state=0;inflow_t=0
+    faces=resolved_reactive_boundaries_3d(config)
+    if (any(faces/='periodic')) allocate(active_faces,source=faces)
     call uniform_cell_centers_3d( &
       config%nx, config%ny, config%nz, config%x_lower, config%x_upper, &
       config%y_lower, config%y_upper, config%z_lower, config%z_upper, &
@@ -145,7 +158,8 @@ contains
               base_mole_fractions=base_mole_fractions, reactions=reactions, &
               transport=transport, &
               maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+              minimum_transport_theta=minimum_transport_theta, &
+              boundary_change=boundary_total)
           else
             call read_dynamic_amr_reactive_3d_checkpoint( &
               trim(amr_config%restart_file), species, config, amr_config, patch, &
@@ -153,7 +167,8 @@ contains
               time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
               bundle_sha256=bundle_sha256, &
               chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions, reactions=reactions)
+              base_mole_fractions=base_mole_fractions, reactions=reactions, &
+              boundary_change=boundary_total)
           end if
         else
           if (config%transport_enabled) then
@@ -163,12 +178,14 @@ contains
               time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
               transport=transport, &
               maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+              minimum_transport_theta=minimum_transport_theta, &
+              boundary_change=boundary_total)
           else
             call read_dynamic_amr_reactive_3d_checkpoint( &
               trim(amr_config%restart_file), species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
-              time, step, initial_integrals, maximum_reflux, regrid_count, ok, message)
+              time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
+              boundary_change=boundary_total)
           end if
         end if
       else
@@ -183,7 +200,8 @@ contains
               base_mole_fractions=base_mole_fractions, reactions=reactions, &
               transport=transport, &
               maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+              minimum_transport_theta=minimum_transport_theta, &
+              boundary_change=boundary_total)
           else
             call read_amr_reactive_3d_checkpoint( &
               trim(amr_config%restart_file), species, config, amr_config, patch, &
@@ -191,7 +209,8 @@ contains
               time, step, initial_integrals, maximum_reflux, ok, message, &
               bundle_sha256=bundle_sha256, &
               chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions, reactions=reactions)
+              base_mole_fractions=base_mole_fractions, reactions=reactions, &
+              boundary_change=boundary_total)
           end if
         else
           if (config%transport_enabled) then
@@ -201,12 +220,14 @@ contains
               time, step, initial_integrals, maximum_reflux, ok, message, &
               transport=transport, &
               maximum_transport_diffusivity=maximum_diffusivity, &
-              minimum_transport_theta=minimum_transport_theta)
+              minimum_transport_theta=minimum_transport_theta, &
+              boundary_change=boundary_total)
           else
             call read_amr_reactive_3d_checkpoint( &
               trim(amr_config%restart_file), species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
-              time, step, initial_integrals, maximum_reflux, ok, message)
+              time, step, initial_integrals, maximum_reflux, ok, message, &
+              boundary_change=boundary_total)
           end if
         end if
       end if
@@ -241,6 +262,47 @@ contains
         coarse_state, fine_state, patch, dx, dy, dz, initial_integrals, ok)
       if (.not. ok) error stop "Failed to integrate initial 3D AMR state"
     end if
+    inflow_state=0.0_dp; inflow_t=0.0_dp
+    inlet_dt=huge(1.0_dp); inlet_transport_dt=huge(1.0_dp)
+    call mass_fractions_from_mole_fractions(species,base_mole_fractions,inflow_y,ok)
+    if (.not.ok) error stop 'Invalid base inflow composition'
+    if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
+      call resolve_selected_composition('Inflow',config%inflow_composition_count, &
+        config%inflow_composition_species,config%inflow_composition_mole_fractions,species,inflow_x,ok,message)
+      if (.not.ok) then
+        write(*,'(a)') trim(message)
+        error stop 'Invalid inflow composition'
+      end if
+      call mass_fractions_from_mole_fractions(species,inflow_x,inflow_y,ok)
+      if (.not.ok) error stop 'Invalid inflow mass fractions'
+    end if
+    do face=1,6
+      if (faces(face)/='inflow') cycle
+      primitive=0.0_dp
+      primitive(1)=mixture_density(species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      if (.not.ok) error stop 'Invalid inflow density'
+      primitive(2:4)=config%inflow_velocity(:,face); primitive(5)=config%inflow_pressure(face)
+      primitive(6:)=inflow_y
+      call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
+      if (.not.ok) error stop 'Invalid inflow thermodynamics'
+      inlet_dt=min(inlet_dt,config%cfl/sum((abs(primitive(2:4))+sound_speed)/[dx,dy,dz]))
+      if (config%transport_enabled) then
+        do k=1,2
+          do j=1,2
+            do i=1,2
+              inlet_cube(:,i,j,k)=inflow_state(:,face)
+            end do
+          end do
+        end do
+        inlet_temperature=inflow_t(face)
+        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
+          config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled,face_dt,face_diffusivity,ok)
+        if (.not.ok) error stop 'Invalid inflow transport timestep'
+        inlet_transport_dt=min(inlet_transport_dt,face_dt)
+
+      end if
+    end do
     element_diagnostics = supports_hon_element_diagnostics(species)
     initial_elements = 0.0_dp
     if (element_diagnostics) then
@@ -324,7 +386,7 @@ contains
         species, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature, dx, dy, dz, config%cfl, hydro_dt, ok)
       if (.not. ok) error stop "Failed to compute 3D AMR CFL timestep"
-      dt = hydro_dt
+      dt = min(hydro_dt,inlet_dt)
       if (config%transport_enabled) then
         call compute_amr_reactive_transport_timestep_3d( &
           species, transport, patch, coarse_state, coarse_temperature, &
@@ -333,7 +395,13 @@ contains
           config%species_diffusion_enabled, transport_dt, &
           step_maximum_diffusivity, ok)
         if (.not. ok) error stop "Failed to compute 3D AMR transport step"
-        dt = min(dt, transport_dt)
+        dt = min(dt, transport_dt,inlet_transport_dt)
+        if (any(faces=='isothermal_wall')) then
+          call reactive_isothermal_timestep_3d(species,transport,coarse_state,coarse_temperature,[dx,dy,dz], &
+            faces,config%wall_temperature,config%transport_cfl,wall_dt,ok)
+          if (.not.ok) error stop 'Invalid AMR wall thermal timestep'
+          dt=min(dt,.5_dp*transport_dt,.5_dp*inlet_transport_dt,wall_dt)
+        end if
         maximum_diffusivity = max( &
           maximum_diffusivity, step_maximum_diffusivity)
       end if
@@ -349,8 +417,11 @@ contains
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         step_transport_theta, step_reflux, ok, &
         config%reconstruction, config%limiter, &
-        chemistry_integrator=chemistry_integrator)
+        chemistry_integrator=chemistry_integrator,boundary_faces=active_faces,boundary_change=step_boundary, &
+        inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
+        wall_velocity=config%wall_velocity)
       if (.not. ok) error stop "3D AMR reactive split rejected its candidate"
+      boundary_total=boundary_total+step_boundary
       maximum_reflux = max(maximum_reflux, step_reflux)
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
@@ -369,7 +440,8 @@ contains
                 base_mole_fractions=base_mole_fractions, reactions=reactions, &
                 transport=transport, &
                 maximum_transport_diffusivity=maximum_diffusivity, &
-                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
+              boundary_change=boundary_total)
             else
               call write_amr_reactive_3d_checkpoint( &
                 trim(amr_config%checkpoint_file), species, config, &
@@ -377,7 +449,8 @@ contains
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, bundle_sha256=bundle_sha256, &
                 chemistry_integrator=chemistry_integrator, &
-                base_mole_fractions=base_mole_fractions, reactions=reactions,regrid_count=regrid_count)
+                base_mole_fractions=base_mole_fractions, reactions=reactions,regrid_count=regrid_count, &
+              boundary_change=boundary_total)
             end if
           else
             if (config%transport_enabled) then
@@ -387,13 +460,15 @@ contains
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, transport=transport, &
                 maximum_transport_diffusivity=maximum_diffusivity, &
-                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count)
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
+              boundary_change=boundary_total)
             else
               call write_amr_reactive_3d_checkpoint( &
                 trim(amr_config%checkpoint_file), species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
-                maximum_reflux, ok, message,regrid_count=regrid_count)
+                maximum_reflux, ok, message,regrid_count=regrid_count, &
+              boundary_change=boundary_total)
             end if
           end if
           if (.not. ok) then
@@ -416,10 +491,10 @@ contains
     if (.not. ok) error stop "Failed to integrate final 3D AMR state"
     if (config%chemistry_enabled) then
       conservation_error = maxval(abs( &
-        final_integrals(1:ncons) - initial_integrals(1:ncons)) / &
+        final_integrals(1:ncons) - initial_integrals(1:ncons)-boundary_total(1:ncons)) / &
         max(1.0_dp, abs(initial_integrals(1:ncons))))
     else
-      conservation_error = maxval(abs(final_integrals - initial_integrals) / &
+      conservation_error = maxval(abs(final_integrals - initial_integrals-boundary_total) / &
         max(1.0_dp, abs(initial_integrals)))
     end if
     species_integral_change = maxval(abs( &
@@ -432,8 +507,10 @@ contains
         species, patch, coarse_state, fine_state, dx, dy, dz, &
         final_elements, ok)
       if (.not. ok) error stop "Failed to integrate final 3D AMR elements"
+      call element_integrals_from_reactive_integrals_3d(species,boundary_total,boundary_elements,ok)
+      if (.not.ok) error stop 'Invalid AMR boundary element budget'
       elemental_conservation_error = maxval(abs( &
-        final_elements - initial_elements) / &
+        final_elements - initial_elements-boundary_elements) / &
         max(1.0e-30_dp, abs(initial_elements)))
     end if
     covered_nx = patch%coarse_i_upper - patch%coarse_i_lower + 1
@@ -464,6 +541,10 @@ contains
     end if
     if (max(coarse_closure, fine_closure) > 5.0e-11_dp) then
       error stop "3D AMR species-closure gate failed"
+    end if
+    if (allocated(active_faces)) then
+      write(*,'(a,6(1x,a))') 'Boundary faces:',faces
+      write(*,'(a,*(1x,es24.16))') 'Conserved boundary change:',boundary_total
     end if
     write(*,'(a,i0)') "Completed regrids: ",regrid_count
     call write_reactive_3d_csv( &

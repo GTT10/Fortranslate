@@ -32,13 +32,13 @@ module simulation_config_amr_reactive_3d_mod
 contains
 
   subroutine read_amr_reactive_3d_configuration( &
-      path, base_config, config, ok, message, allow_selected)
+      path, base_config, config, ok, message, allow_selected,allow_physical)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(in) :: base_config
     type(amr_reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected
+    logical, intent(in), optional :: allow_selected,allow_physical
 
     integer :: refinement_ratio,regrid_interval_steps,regrid_buffer_cells
     real(dp) :: regrid_temperature_threshold
@@ -109,25 +109,27 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     call validate_amr_reactive_3d_configuration( &
-      base_config, config, ok, message, allow_selected=selected_allowed)
+      base_config, config, ok, message, allow_selected=selected_allowed,allow_physical=allow_physical)
   end subroutine read_amr_reactive_3d_configuration
 
   pure subroutine validate_amr_reactive_3d_configuration( &
-      base_config, config, ok, message, allow_selected)
+      base_config, config, ok, message, allow_selected,allow_physical)
     type(reactive_3d_config), intent(in) :: base_config
     type(amr_reactive_3d_config), intent(in) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected
+    logical, intent(in), optional :: allow_selected,allow_physical
 
-    logical :: selected_allowed, selected_model
+    logical :: selected_allowed, selected_model,physical_allowed
 
     ok = .false.
     message = ""
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
+    physical_allowed=.false.
+    if (present(allow_physical)) physical_allowed=allow_physical
     selected_model = trim(base_config%thermo_model) == "selected"
-    if (any(resolved_reactive_boundaries_3d(base_config) /= "periodic")) then
+    if (.not.physical_allowed.and.any(resolved_reactive_boundaries_3d(base_config) /= "periodic")) then
       message = "Static 3D AMR currently requires periodic boundaries"
     else if (trim(base_config%reconstruction) /= "pcm" .and. &
              trim(base_config%reconstruction) /= "characteristic_plm") then

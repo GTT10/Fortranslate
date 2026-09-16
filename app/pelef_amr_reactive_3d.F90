@@ -39,7 +39,7 @@ program pelef_amr_reactive_3d
     error stop 2
   end if
   call read_amr_reactive_3d_configuration( &
-    trim(input_path), config, amr_config, ok, message)
+    trim(input_path), config, amr_config, ok, message,allow_physical=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
