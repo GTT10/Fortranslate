@@ -16,6 +16,7 @@ program test_spray_mpi
   use spray_parcel_mod
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_mpi_mod
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
   implicit none
@@ -44,6 +45,7 @@ program test_spray_mpi
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+  call check_film_migration()
   allocate(parcels(2),masses(2,2))
   do p=1,2
     parcels(p)=spray_parcel(int(2*rank+p,int64),[.25_dp,.25_dp,.25_dp], &
@@ -523,6 +525,49 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film_migration()
+    type(spray_wall_film), allocatable :: patches(:),original(:)
+    real(dp), allocatable :: cm(:,:),original_cm(:,:)
+    real(dp) :: total(2),initial(2)
+    integer :: q,source_rank
+    allocate(patches(2),cm(2,2))
+    patches(1)=spray_wall_film([real(nranks,dp),.25_dp,.25_dp],[-1.0_dp,0.0_dp,0.0_dp], &
+      1e-9_dp,330.0_dp+rank,.001_dp,1e-6_dp,rank+1)
+    patches(2)=spray_wall_film([real(rank,dp)+.25_dp,2.0_dp,.25_dp],[0.0_dp,-1.0_dp,0.0_dp], &
+      2e-9_dp,400.0_dp+rank,.002_dp,2e-6_dp,16)
+    cm(:,1)=patches(1)%mass*[.25_dp,.75_dp];cm(:,2)=patches(2)%mass*[.5_dp,.5_dp]
+    original=patches;original_cm=cm
+    total=sum(cm,dim=2)
+    call MPI_Allreduce(total,initial,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call migrate_mpi_wall_films(MPI_COMM_WORLD,patches,cm,[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],[nranks,2,2],[nranks,1,1],1,ok)
+    call require(.not.ok.and.all(cm==original_cm),'film capacity rollback preserves components')
+    call require(all(patches%temperature==original%temperature),'film capacity rollback preserves patches')
+    call migrate_mpi_wall_films(MPI_COMM_WORLD,patches,cm,[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],[nranks,2,2],[nranks,1,1],100,ok)
+    call require(ok.and.size(patches)==merge(nranks+1,1,rank==nranks-1),'film closed-upper-boundary owner')
+    do q=1,size(patches)
+      if (patches(q)%temperature<400) then
+        source_rank=nint(patches(q)%temperature)-330
+        call require(rank==nranks-1.and.patches(q)%material_id==source_rank+1,'film material routing')
+        call require(all(patches(q)%position==[real(nranks,dp),.25_dp,.25_dp]),'film exact wall position')
+        call require(all(patches(q)%normal==[-1.0_dp,0.0_dp,0.0_dp]),'film wall normal')
+        call require(patches(q)%diameter==.001_dp.and.patches(q)%height==1e-6_dp,'film patch geometry')
+        call require(all(cm(:,q)==original_cm(:,1)),'film first composition exact')
+      else
+        call require(patches(q)%temperature==400+rank.and.patches(q)%material_id==16,'film local wall patch')
+        call require(all(cm(:,q)==original_cm(:,2)),'film second composition exact')
+      end if
+      patches(q)%position(1)=real(nranks,dp)
+    end do
+    call migrate_mpi_wall_films(MPI_COMM_WORLD,patches,cm,[0.0_dp,0.0_dp,0.0_dp], &
+      [1.0_dp,1.0_dp,1.0_dp],[nranks,2,2],[nranks,1,1],100,ok)
+    call require(ok.and.size(patches)==merge(2*nranks,0,rank==nranks-1),'film migration permits empty ranks')
+    total=sum(cm,dim=2)
+    call MPI_Allreduce(MPI_IN_PLACE,total,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(total-initial)<2e-12_dp*initial),'film component inventory preserved')
+  end subroutine
+
   subroutine check_kh_release()
     type(spray_parcel), allocatable :: drops(:),original(:)
     real(dp), allocatable :: cm(:,:),original_cm(:,:),energy(:),density(:),velocity(:,:),reynolds(:)

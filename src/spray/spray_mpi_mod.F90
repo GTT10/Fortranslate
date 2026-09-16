@@ -17,17 +17,123 @@ module spray_mpi_mod
   use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
     construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: migrate_mpi_wall_films
   public :: advance_mpi_spray_les
   public :: advance_mpi_spray_transport
   public :: advance_mpi_spray_hydro
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  ! Stationary patches are owned by their containing Cartesian cell. Exact upper
+  ! boundary coordinates select the final cell; physical film positions stay exact.
+  ! Receive order is source-rank then original local order; films have no global ID.
+  subroutine migrate_mpi_wall_films(comm,films,component_mass,lower,spacing,cells,parts,maximum_films,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    integer, intent(in) :: cells(3),parts(3),maximum_films
+    logical, intent(out) :: ok
+    type(spray_wall_film), allocatable :: candidate(:)
+    real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
+    integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
+    real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
+    integer :: config(8),lowconfig(8),highconfig(8),nranks,ierr,nc,np,p,r,q,nreceived,width
+    logical :: valid,agreed
+    ok=.false.;nc=0
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=allocated(films).and.allocated(component_mass)
+    if (allocated(component_mass)) nc=size(component_mass,1)
+    call agree()
+    if (.not.agreed) return
+    np=size(films)
+    valid=nc>=1.and.nc<=16.and.size(component_mass,2)==np.and.np<=1000000
+    valid=valid.and.maximum_films>=0.and.maximum_films<=1000000
+    valid=valid.and.spray_cartesian_owner(lower,lower,spacing,cells,parts,[.false.,.false.,.false.])>=0
+    call agree()
+    if (.not.agreed) return
+    config=[cells,parts,nc,maximum_films];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,8,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,highconfig,8,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,highbounds,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(lowconfig/=highconfig).or.any(lowbounds/=highbounds).or.product(parts)/=nranks) return
+    upper=lower+spacing*real(cells,dp)
+    allocate(counts(nranks),offsets(nranks),incoming(nranks),starts(nranks),cursor(nranks),owners(np));counts=0
+    do p=1,np
+      valid=valid_wall_component_inventory(films(p),component_mass(:,p))
+      if (.not.valid) exit
+      r=owner(films(p)%position);valid=r>=0
+      if (.not.valid) exit
+      owners(p)=r+1;counts(r+1)=counts(r+1)+1
+    end do
+    call agree()
+    if (.not.agreed) return
+    call MPI_Alltoall(counts,1,MPI_INTEGER,incoming,1,MPI_INTEGER,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=sum(int(incoming,int64))<=maximum_films
+    call agree()
+    if (.not.agreed) return
+    offsets(1)=0;starts(1)=0
+    do r=2,nranks
+      offsets(r)=offsets(r-1)+counts(r-1);starts(r)=starts(r-1)+incoming(r-1)
+    end do
+    cursor=offsets;nreceived=sum(incoming);width=10+nc
+    allocate(sent(width,np),received(width,nreceived),material(np),got_material(nreceived))
+    do p=1,np
+      r=owners(p);cursor(r)=cursor(r)+1;q=cursor(r)
+      sent(:,q)=[films(p)%position,films(p)%normal,films(p)%mass,films(p)%temperature, &
+        films(p)%diameter,films(p)%height,component_mass(:,p)]
+      material(q)=films(p)%material_id
+    end do
+    call MPI_Alltoallv(sent,width*counts,width*offsets,MPI_DOUBLE_PRECISION,received,width*incoming, &
+      width*starts,MPI_DOUBLE_PRECISION,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Alltoallv(material,counts,offsets,MPI_INTEGER,got_material,incoming,starts,MPI_INTEGER,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    allocate(candidate(nreceived),masses(nc,nreceived))
+    call MPI_Comm_rank(comm,r,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    do p=1,nreceived
+      candidate(p)=spray_wall_film(received(1:3,p),received(4:6,p),received(7,p),received(8,p), &
+        received(9,p),received(10,p),got_material(p))
+      masses(:,p)=received(11:,p)
+      valid=valid_wall_component_inventory(candidate(p),masses(:,p)).and.owner(candidate(p)%position)==r
+      if (.not.valid) exit
+    end do
+    call agree()
+    if (.not.agreed) return
+    call move_alloc(candidate,films);call move_alloc(masses,component_mass);ok=.true.
+  contains
+    integer function owner(position) result(destination)
+      real(dp), intent(in) :: position(3)
+      real(dp) :: probe(3)
+      integer :: axis
+      destination=-1
+      if (any(position<lower).or.any(position>upper)) return
+      probe=position
+      do axis=1,3
+        if (position(axis)==upper(axis)) probe(axis)=lower(axis)+(real(cells(axis),dp)-.5_dp)*spacing(axis)
+      end do
+      destination=spray_cartesian_owner(probe,lower,spacing,cells,parts,[.false.,.false.,.false.])
+    end function
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine advance_mpi_spray_transport(comm,species,transport,state,temperature,spacing,cells,dt,enabled,minimum_theta,ok)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)

@@ -108,7 +108,10 @@ rollback on rejected updates
 ([evidence](validation/spray-mpi-kh-coupled-20260917.md)). Periodic x-slab SGS now
 shares the serial Smagorinsky face kernel, with MPI SSPRK2, coupled half-steps,
 CLI coefficients and restart identity
-([evidence](validation/spray-mpi-les-20260917.md)).
+([evidence](validation/spray-mpi-les-20260917.md)). Stationary mixed wall-film
+patches can now migrate to Cartesian owners while retaining geometry and component
+inventories ([evidence](validation/spray-mpi-film-migration-20260917.md)); MPI film
+feedback, wall-boundary application wiring and film restart remain open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
