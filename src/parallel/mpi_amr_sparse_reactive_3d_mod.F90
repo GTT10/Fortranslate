@@ -300,8 +300,15 @@ contains
       dz > 0.0_dp .and. interval >= 0.0_dp
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
-    ! Fine physical ghosts and domain-surface reflux are not connected yet.
-    if (local_ok) local_ok = patch%is_strictly_interior()
+    if (.not.patch%is_strictly_interior()) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) then
+        local_ok=local_ok.and..not.any(boundary_faces=='periodic'.and. &
+          [patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+           patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+           patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz])
+      end if
+    end if
     if (local_ok) local_ok = compatible_transport_database(species, transport)
     if (local_ok) local_ok = .not. barodiffusion_enabled .or. &
       species_diffusion_enabled
@@ -577,6 +584,7 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), allocatable :: full_y(:,:,:,:),full_z(:,:,:,:)
     real(dp) :: candidate_budget(reactive_nvar(size(species)))
+    real(dp) :: local_boundary(reactive_nvar(size(species))),reflux_boundary(reactive_nvar(size(species)))
     real(dp) :: alpha, fine_dt, ratio_real
     real(dp) :: coarse_theta, fine_theta, local_reflux, global_reflux
     real(dp) :: interface_theta
@@ -714,7 +722,7 @@ contains
         dy / ratio_real, dz / ratio_real, fine_dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, fine_flux_x, fine_flux_y, fine_flux_z, &
-        fine_theta, local_ok)
+        fine_theta, local_ok,boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
       if (.not. local_ok) return
       minimum_theta = min(minimum_theta, fine_theta)
       if (distribution%fine_count > 0) then
@@ -805,11 +813,24 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
 
+    if (present(boundary_faces)) then
+      call reflux_sparse_physical_coarse_3d(distribution,patch,new_hierarchy%coarse_state,coarse_flux_x, &
+        full_y,full_z,fine_x_lower,fine_x_upper,fine_y_lower,fine_y_upper,fine_z_lower,fine_z_upper, &
+        dx,dy,dz,dt,local_boundary,local_reflux,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      call MPI_Allreduce(local_boundary,reflux_boundary,size(local_boundary),MPI_DOUBLE_PRECISION, &
+        MPI_SUM,distribution%comm,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+      if (.not.global_ok) return
+      candidate_budget=candidate_budget+reflux_boundary
+    else
     call reflux_sparse_coarse_3d( &
       distribution, patch, new_hierarchy%coarse_state, coarse_flux_x, &
       coarse_flux_y, coarse_flux_z, fine_x_lower, fine_x_upper, &
       fine_y_lower, fine_y_upper, fine_z_lower, fine_z_upper, &
       dx, dy, dz, dt, local_reflux, local_ok)
+    end if
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
@@ -896,7 +917,7 @@ contains
     if (local_ok) local_ok = dx > 0.0_dp .and. dy > 0.0_dp .and. &
       dz > 0.0_dp .and. dt > 0.0_dp
     if (local_ok) local_ok = nspecies >= 1
-    if (local_ok) local_ok = patch%is_strictly_interior()
+    if (local_ok) local_ok = patch%is_valid()
     if (local_ok) local_ok = distribution%is_valid(patch)
     if (local_ok) local_ok = all(ieee_is_finite(coarse_state))
     if (local_ok) local_ok = all(ieee_is_finite(fine_state))
@@ -973,6 +994,7 @@ contains
       local_i = distribution%coarse_local_index(global_i)
       covered_i = global_i - patch%coarse_i_lower + 1
       do k = 1, covered_nz
+        if (patch%coarse_j_lower>1) then
         base_state = coarse_state(:, local_i, patch%coarse_j_lower - 1, &
           patch%coarse_k_lower + k - 1) + &
           dt / dy * coarse_flux_y(:, local_i, &
@@ -982,6 +1004,8 @@ contains
           theta, call_ok)
         if (call_ok) local_y_lower(covered_i, k) = theta
         local_ok = local_ok .and. call_ok
+        end if
+        if (patch%coarse_j_upper<patch%coarse_ny) then
         base_state = coarse_state(:, local_i, patch%coarse_j_upper + 1, &
           patch%coarse_k_lower + k - 1) - &
           dt / dy * coarse_flux_y(:, local_i, &
@@ -991,8 +1015,10 @@ contains
           theta, call_ok)
         if (call_ok) local_y_upper(covered_i, k) = theta
         local_ok = local_ok .and. call_ok
+        end if
       end do
       do j = 1, covered_ny
+        if (patch%coarse_k_lower>1) then
         base_state = coarse_state(:, local_i, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_lower - 1) + &
           dt / dz * coarse_flux_z(:, local_i, &
@@ -1002,6 +1028,8 @@ contains
           theta, call_ok)
         if (call_ok) local_z_lower(covered_i, j) = theta
         local_ok = local_ok .and. call_ok
+        end if
+        if (patch%coarse_k_upper<patch%coarse_nz) then
         base_state = coarse_state(:, local_i, &
           patch%coarse_j_lower + j - 1, patch%coarse_k_upper + 1) - &
           dt / dz * coarse_flux_z(:, local_i, &
@@ -1011,6 +1039,7 @@ contains
           theta, call_ok)
         if (call_ok) local_z_upper(covered_i, j) = theta
         local_ok = local_ok .and. call_ok
+        end if
       end do
     end do
     call sparse_collective_logical_and_3d( &
@@ -1384,7 +1413,8 @@ contains
       state, temperature, alpha, limiter, dx, dy, dz, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, face_flux_x, &
-      face_flux_y, face_flux_z, minimum_theta, ok)
+      face_flux_y, face_flux_z, minimum_theta, ok, &
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1403,6 +1433,12 @@ contains
     real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    character(len=32) :: local_faces(6)
+    real(dp) :: velocity(3,6)
+    logical :: touched(6)
+    integer :: face
 
     real(dp), allocatable :: extended_state(:, :, :, :)
     real(dp), allocatable :: extended_temperature(:, :, :)
@@ -1443,13 +1479,42 @@ contains
         distribution, species, patch, coarse_start, &
         coarse_start_temperature, coarse_end, coarse_end_temperature, &
         state, temperature, alpha, "characteristic_plm", limiter, &
-        extended_state, extended_temperature, local_ok)
+        extended_state, extended_temperature, local_ok, &
+        boundary_faces,inflow_state,inflow_temperature,viscous_wall=.true.,wall_velocity=wall_velocity)
     else
       local_ok = .true.
     end if
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
+
+    if (.not.patch%is_strictly_interior()) then
+      local_theta=1;local_ok=.true.
+      if (local_count>0) then
+        touched=[patch%coarse_i_lower==1.and.distribution%fine_first==1, &
+          patch%coarse_i_upper==patch%coarse_nx.and.distribution%fine_last==patch%fine_nx(), &
+          patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+          patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+        local_faces='outflow';velocity=0
+        do face=1,6
+          if (.not.touched(face)) cycle
+          local_faces(face)=boundary_faces(face)
+          if (present(wall_velocity)) velocity(:,face)=wall_velocity(:,face)
+        end do
+        call physical_transport_ghosted_fluxes_3d(species,transport,state,temperature, &
+          extended_state,extended_temperature,[local_count,ny,nz],[dx,dy,dz],dt,local_faces, &
+          viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
+          face_flux_x,face_flux_y,face_flux_z,local_theta,local_ok,wall_temperature,velocity)
+      end if
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      call MPI_Allreduce(local_theta,minimum_theta,1,MPI_DOUBLE_PRECISION,MPI_MIN,distribution%comm,ierr)
+      call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+      if (.not.global_ok) return
+      ok=ieee_is_finite(minimum_theta)
+      if (ok) ok=minimum_theta>=0.and.minimum_theta<=1
+      return
+    end if
 
     if (local_count > 0) then
       allocate(ghost_state(nvar, 0:local_count + 1, 0:ny + 1, 0:nz + 1))
@@ -2495,7 +2560,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       reconstruction, limiter, extended_state, extended_temperature, ok, &
-      boundary_faces, inflow_state, inflow_temperature)
+      boundary_faces, inflow_state, inflow_temperature, viscous_wall, wall_velocity)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2515,6 +2580,10 @@ contains
     real(dp), allocatable :: fine_x_halo_state(:, :, :, :)
     real(dp), allocatable :: fine_x_halo_temperature(:, :, :)
     real(dp), allocatable :: primitive(:)
+    logical, optional, intent(in) :: viscous_wall
+    real(dp), optional, intent(in) :: wall_velocity(:,:)
+    real(dp) :: shift(3),old_momentum(3),rho
+    logical :: viscous
     real(dp) :: ghost_temperature
     logical :: touched(6), reflect(3)
     integer :: q(3), n(3), a, face, inlet, halo_i
@@ -2524,6 +2593,8 @@ contains
     integer :: local_count, ny, nz, ratio, nvar
 
     ok = .false.
+    viscous=.false.
+    if (present(viscous_wall)) viscous=viscous_wall
     local_count = distribution%fine_count
     ny = patch%fine_ny()
     nz = patch%fine_nz()
@@ -2535,6 +2606,9 @@ contains
       patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
     if (present(boundary_faces)) then
       if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      if (present(wall_velocity)) then
+        if (.not.valid_wall_velocity_3d(boundary_faces,wall_velocity)) return
+      end if
       if (any(touched.and.boundary_faces=='periodic')) return
       if (any(touched.and.boundary_faces=='inflow')) then
         if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
@@ -2570,7 +2644,7 @@ contains
       do j = 1, ny + 4
         do i = 1, local_count + 4
           q=[distribution%fine_first+i-3,j-2,k-2]
-          reflect=.false.;inlet=0
+          reflect=.false.;inlet=0;shift=0
           if (present(boundary_faces)) then
             do a=1,3
               if (q(a)>=1.and.q(a)<=n(a)) cycle
@@ -2587,7 +2661,12 @@ contains
                 else
                   q(a)=2*n(a)+1-q(a)
                 end if
-                reflect(a)=.not.reflect(a)
+                if (viscous.and.boundary_faces(face)/='slip_wall') then
+                  reflect=.not.reflect;shift=-shift
+                  if (present(wall_velocity)) shift=shift+2*wall_velocity(:,face)
+                else
+                  reflect(a)=.not.reflect(a);shift(a)=-shift(a)
+                end if
               case default
                 return
               end select
@@ -2627,9 +2706,17 @@ contains
           if (.not. local_ok) return
           extended_temperature(i, j, k) = ghost_temperature
           end if
+          old_momentum=extended_state(2:4,i,j,k)
           do a=1,3
             if (reflect(a)) extended_state(a+1,i,j,k)=-extended_state(a+1,i,j,k)
           end do
+          if (any(abs(shift)>0)) then
+            rho=extended_state(1,i,j,k)
+            if (rho<=0) return
+            extended_state(2:4,i,j,k)=extended_state(2:4,i,j,k)+rho*shift
+            extended_state(5,i,j,k)=extended_state(5,i,j,k)+ &
+              (sum(extended_state(2:4,i,j,k)**2)-sum(old_momentum**2))/(2*rho)
+          end if
         end do
       end do
     end do

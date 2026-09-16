@@ -753,8 +753,8 @@ contains
         config%riemann_solver,'pcm','mc',r,ok,boundary_change=budget)
       call require(.not.ok.and.r==0.and.all(budget==0),'boundary hydro without physical faces is rejected')
       call advance_mpi_amr_sparse_transport_3d(dist,species,transport,bp,h,dx,dy,dz,1e-7_dp, &
-        .true.,.true.,.true.,.true.,'mc',theta,r,ok,faces,budget)
-      call require(.not.ok.and.r==0.and.theta==1.and.all(budget==0),'boundary transport remains unsupported')
+        .true.,.true.,.true.,.true.,'mc',theta,r,ok,boundary_change=budget)
+      call require(.not.ok.and.r==0.and.theta==1.and.all(budget==0),'boundary transport without physical faces is rejected')
       trial_interval=1e-7_dp
       if (dist%rank==0) trial_interval=-1
       call advance_mpi_amr_sparse_chemistry_3d(dist,species,reactions,bp,h,trial_interval,2e-7_dp,1e-12_dp,ok)
@@ -790,14 +790,14 @@ contains
     integer :: i,j,k,mode,nv,lo,hi,nf,last_mode
     lo=2;hi=3;last_mode=6
     if (present(geometry)) then
-      last_mode=4
+      last_mode=6
       select case(geometry)
       case(1)
         lo=1;hi=2
       case(2)
         lo=n-1;hi=n
       case(3)
-        lo=1;hi=n;last_mode=2
+        lo=1;hi=n;last_mode=6
       end select
     end if
     nf=(hi-lo+1)*ratio
