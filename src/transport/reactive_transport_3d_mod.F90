@@ -20,6 +20,7 @@ module reactive_transport_3d_mod
 
   public :: reactive_isothermal_timestep_3d
   public :: reactive_transport_fluxes_3d
+  public :: physical_transport_ghosted_fluxes_3d
   public :: reactive_transport_ghosted_fluxes_3d
   public :: reactive_transport_face_flux_3d
   public :: reactive_transport_interface_theta_3d
@@ -1903,9 +1904,8 @@ contains
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
     real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:),theta
     logical, intent(out) :: ok
-    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
-    real(dp) :: heat,rate,speed(3)
-    integer :: dims(3),nv,face,a,i,j,k,idx(3)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    integer :: dims(3),nv
     ok=.false.
     if (any(faces=='isothermal_wall')) then
       if (.not.conduction.or..not.present(wall_temperature)) return
@@ -1916,10 +1916,44 @@ contains
     end if
     dims=n+4; nv=size(u,1)
     allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
-    allocate(gx,mold=ghost); allocate(gy,mold=ghost); allocate(gz,mold=ghost)
     call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall=.true., &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
     if (.not.ok) return
+    call physical_transport_ghosted_fluxes_3d(species,transport,u,t,ghost,gt,n,spacing,dt,faces, &
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity)
+  end subroutine
+
+  ! Caller supplies two valid layers, including neighbor donor budgets.
+  subroutine physical_transport_ghosted_fluxes_3d(species,transport,u,t,ghost,gt,n,spacing,dt,faces, &
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),ghost(:,:,:,:),gt(:,:,:),spacing(3),dt
+    real(dp), optional, intent(in) :: wall_temperature(:),wall_velocity(:,:)
+    integer, intent(in) :: n(3)
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:),theta
+    logical, intent(out) :: ok
+    real(dp), allocatable :: gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
+    real(dp) :: heat,rate,speed(3)
+    integer :: dims(3),face,a,i,j,k,idx(3)
+    ok=.false.;theta=1
+    dims=n+4
+    if (any(n<2).or.any(shape(u)/=[size(species)+5,n]).or.any(shape(t)/=n)) return
+    if (any(shape(ghost)/=[size(species)+5,dims]).or.any(shape(gt)/=dims)) return
+    if (any(shape(fx)/=[size(species)+5,n(1)+1,n(2),n(3)])) return
+    if (any(shape(fy)/=[size(species)+5,n(1),n(2)+1,n(3)])) return
+    if (any(shape(fz)/=[size(species)+5,n(1),n(2),n(3)+1])) return
+    if (any(faces=='isothermal_wall')) then
+      if (.not.conduction.or..not.present(wall_temperature)) return
+      if (size(wall_temperature)/=6) return
+    end if
+    if (present(wall_velocity)) then
+      if (any(shape(wall_velocity)/=[3,6])) return
+      if (.not.viscosity.and.any(abs(wall_velocity)>0.0_dp)) return
+    end if
+    allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
     call reactive_transport_fluxes_3d(species,transport,ghost,gt,dims(1),dims(2),dims(3), &
       spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok)
     if (.not.ok) return

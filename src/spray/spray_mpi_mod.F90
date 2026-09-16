@@ -8,7 +8,7 @@ module spray_mpi_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use spray_reactive_3d_mod, only: advance_spray_chemistry_3d
-  use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d
+  use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
@@ -659,7 +659,8 @@ contains
     end subroutine
   end subroutine
 
-  subroutine advance_mpi_spray_transport(comm,species,transport,state,temperature,spacing,cells,dt,enabled,minimum_theta,ok)
+  subroutine advance_mpi_spray_transport(comm,species,transport,state,temperature,spacing,cells,dt,enabled,minimum_theta,ok, &
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -668,15 +669,22 @@ contains
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
     integer, intent(in) :: cells(3)
+    character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    character(len=32) :: local_faces(6)
+    real(dp) :: local_change(size(state,1)),global_change(size(state,1)),rate(size(state,1)),velocity(3,6)
     logical, intent(out) :: ok
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:),left(:,:,:),right(:,:,:)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp), allocatable :: theta(:,:,:),theta_send(:,:),theta_left(:,:),theta_right(:,:)
     real(dp) :: controls(4),minimum(4),maximum(4),local_theta,global_theta,accepted_theta
-    integer :: config(8),minconfig(8),maxconfig(8),rank,nranks,ierr,first(3),extent(3)
+    integer :: config(9),minconfig(9),maxconfig(9),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next
     logical :: valid,agreed
+    local_change=0
+    if (present(boundary_change)) boundary_change=0
     ok=.false.;minimum_theta=1;accepted_theta=1;nvar=size(state,1)
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -684,12 +692,20 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=all(ieee_is_finite([spacing,dt])).and.size(transport)==size(species)
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
+    if (present(boundary_change)) valid=valid.and.present(faces).and.size(boundary_change)==nvar
+    if (present(faces)) then
+      if (any(faces=='isothermal_wall')) then
+        valid=valid.and.enabled(2).and.present(wall_temperature)
+        if (present(wall_temperature)) valid=valid.and.size(wall_temperature)==6
+      end if
+      if (present(wall_velocity)) valid=valid.and.(enabled(1).or.all(wall_velocity==0))
+    end if
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,merge(1,0,enabled)];controls=[spacing,dt]
-    call MPI_Allreduce(config,minconfig,8,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,nvar,merge(1,0,enabled),merge(1,0,present(faces))];controls=[spacing,dt]
+    call MPI_Allreduce(config,minconfig,9,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,maxconfig,8,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,maxconfig,9,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,minimum,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -708,51 +724,97 @@ contains
     call recover_reactive_temperatures_3d(species,gas,temperature,nx,ny,nz,temp,valid)
     call agree()
     if (.not.agreed) return
+    if (present(faces)) then
+      call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+      call agree()
+      if (.not.agreed) return
+      local_faces=faces;velocity=0
+      if (present(wall_velocity)) velocity=wall_velocity
+      if (rank/=0) then
+        local_faces(1)='outflow';velocity(:,1)=0
+      end if
+      if (rank/=nranks-1) then
+        local_faces(2)='outflow';velocity(:,2)=0
+      end if
+    end if
     if (dt<=tiny(1.0_dp).or..not.any(enabled(:3))) then
       ok=.true.;return
     end if
-    allocate(halo(nvar,0:nx+1,0:ny+1,0:nz+1),halo_t(0:nx+1,0:ny+1,0:nz+1))
+    if (.not.present(faces)) allocate(halo(nvar,0:nx+1,0:ny+1,0:nz+1),halo_t(0:nx+1,0:ny+1,0:nz+1))
     allocate(send(nvar+1,ny,nz),left(nvar+1,ny,nz),right(nvar+1,ny,nz))
     allocate(fx(nvar,0:nx,ny,nz),fy(nvar,nx,0:ny,nz),fz(nvar,nx,ny,0:nz))
     allocate(theta(nx,ny,nz),theta_send(ny,nz),theta_left(ny,nz),theta_right(ny,nz))
     previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
     do stage=1,2
-      send(:nvar,:,:)=gas(:,nx,:,:);send(nvar+1,:,:)=temp(nx,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3311,left,size(left),MPI_DOUBLE_PRECISION, &
-        previous,3311,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      send(:nvar,:,:)=gas(:,1,:,:);send(nvar+1,:,:)=temp(1,:,:)
-      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3312,right,size(right),MPI_DOUBLE_PRECISION, &
-        next,3312,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      do k=0,nz+1
-        km=modulo(k-1,nz)+1
-        do j=0,ny+1
-          jm=modulo(j-1,ny)+1
-          halo(:,1:nx,j,k)=gas(:,:,jm,km);halo_t(1:nx,j,k)=temp(:,jm,km)
-          halo(:,0,j,k)=left(:nvar,jm,km);halo_t(0,j,k)=left(nvar+1,jm,km)
-          halo(:,nx+1,j,k)=right(:nvar,jm,km);halo_t(nx+1,j,k)=right(nvar+1,jm,km)
+      if (present(faces)) then
+        call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+        call agree()
+        if (.not.agreed) return
+        call physical_transport_ghosted_fluxes_3d(species,transport,gas,temp,halo,halo_t,extent,spacing,dt, &
+          local_faces,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid,wall_temperature,velocity)
+        call agree()
+        if (.not.agreed) return
+        rate=0
+        do k=1,nz
+          do j=1,ny
+            if (rank==0) rate=rate+fx(:,0,j,k)*spacing(2)*spacing(3)
+            if (rank==nranks-1) rate=rate-fx(:,nx,j,k)*spacing(2)*spacing(3)
+          end do
         end do
-      end do
-      call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
-        spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4), &
-        fx,fy,fz,local_theta,valid,theta_cell_output=theta)
-      call agree()
-      if (.not.agreed) return
-      theta_send=theta(nx,:,:)
-      call MPI_Sendrecv(theta_send,size(theta_send),MPI_DOUBLE_PRECISION,next,3313, &
-        theta_left,size(theta_left),MPI_DOUBLE_PRECISION,previous,3313,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      theta_send=theta(1,:,:)
-      call MPI_Sendrecv(theta_send,size(theta_send),MPI_DOUBLE_PRECISION,previous,3314, &
-        theta_right,size(theta_right),MPI_DOUBLE_PRECISION,next,3314,comm,MPI_STATUS_IGNORE,ierr)
-      if (ierr/=MPI_SUCCESS) return
-      call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
-        spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid, &
-        exterior_theta_x_lower=theta_left,exterior_theta_x_upper=theta_right, &
-        periodic_theta_y=.true.,periodic_theta_z=.true.)
-      call agree()
-      if (.not.agreed) return
+        do k=1,nz
+          do i=1,nx
+            rate=rate+(fy(:,i,0,k)-fy(:,i,ny,k))*spacing(1)*spacing(3)
+          end do
+        end do
+        do j=1,ny
+          do i=1,nx
+            rate=rate+(fz(:,i,j,0)-fz(:,i,j,nz))*spacing(1)*spacing(2)
+          end do
+        end do
+        local_change=local_change+.5_dp*dt*rate
+        valid=all(ieee_is_finite(local_change))
+        call agree()
+        if (.not.agreed) return
+      else
+        send(:nvar,:,:)=gas(:,nx,:,:);send(nvar+1,:,:)=temp(nx,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3311,left,size(left),MPI_DOUBLE_PRECISION, &
+          previous,3311,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        send(:nvar,:,:)=gas(:,1,:,:);send(nvar+1,:,:)=temp(1,:,:)
+        call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3312,right,size(right),MPI_DOUBLE_PRECISION, &
+          next,3312,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        do k=0,nz+1
+          km=modulo(k-1,nz)+1
+          do j=0,ny+1
+            jm=modulo(j-1,ny)+1
+            halo(:,1:nx,j,k)=gas(:,:,jm,km);halo_t(1:nx,j,k)=temp(:,jm,km)
+            halo(:,0,j,k)=left(:nvar,jm,km);halo_t(0,j,k)=left(nvar+1,jm,km)
+            halo(:,nx+1,j,k)=right(:nvar,jm,km);halo_t(nx+1,j,k)=right(nvar+1,jm,km)
+          end do
+        end do
+        call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
+          spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4), &
+          fx,fy,fz,local_theta,valid,theta_cell_output=theta)
+        call agree()
+        if (.not.agreed) return
+        theta_send=theta(nx,:,:)
+        call MPI_Sendrecv(theta_send,size(theta_send),MPI_DOUBLE_PRECISION,next,3313, &
+          theta_left,size(theta_left),MPI_DOUBLE_PRECISION,previous,3313,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        theta_send=theta(1,:,:)
+        call MPI_Sendrecv(theta_send,size(theta_send),MPI_DOUBLE_PRECISION,previous,3314, &
+          theta_right,size(theta_right),MPI_DOUBLE_PRECISION,next,3314,comm,MPI_STATUS_IGNORE,ierr)
+        if (ierr/=MPI_SUCCESS) return
+        call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
+          spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid, &
+          exterior_theta_x_lower=theta_left,exterior_theta_x_upper=theta_right, &
+          periodic_theta_y=.true.,periodic_theta_z=.true.)
+        call agree()
+        if (.not.agreed) return
+      end if
       call MPI_Allreduce(local_theta,global_theta,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
       if (ierr/=MPI_SUCCESS) return
       accepted_theta=min(accepted_theta,global_theta)
@@ -773,6 +835,12 @@ contains
     call recover_reactive_temperatures_3d(species,candidate,temp,nx,ny,nz,next_temp,valid)
     call agree()
     if (.not.agreed) return
+    if (present(faces)) then
+      call MPI_Allreduce(local_change,global_change,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (.not.all(ieee_is_finite(global_change))) return
+      if (present(boundary_change)) boundary_change=global_change
+    end if
     state=candidate;temperature=next_temp;minimum_theta=accepted_theta;ok=.true.
   contains
     subroutine agree()

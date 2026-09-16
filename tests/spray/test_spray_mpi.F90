@@ -538,6 +538,9 @@ contains
     real(dp), allocatable :: saved_ghost(:,:,:,:),saved_t(:,:,:)
     real(dp), allocatable :: serial_u(:,:,:,:),serial_t(:,:,:),local_u(:,:,:,:),local_temp(:,:,:)
     real(dp) :: velocity(3,6),inlet(15,6),inlet_t(6),serial_change(15),change(15),delta(15),total_delta(15),inventory(15)
+    real(dp) :: theta_serial,theta_mpi
+    real(dp) :: wall_t(6)
+    real(dp), allocatable :: transport_initial(:,:,:,:)
     character(len=32) :: boundaries(6)
     real(dp), parameter :: spacing(3)=[1.0_dp,1.0_dp,1.0_dp]
     integer :: mode
@@ -582,12 +585,54 @@ contains
       inventory=sum(sum(sum(abs(reference),dim=4),dim=3),dim=2)*product(spacing)
       call require(all(abs(total_delta-change)<2e-12_dp*max(1e-12_dp,inventory)), &
         'MPI boundary flux accounts for total inventory change')
+      serial_u=reference;serial_t=reference_temperature;wall_t=600
+      do k=1,3
+        do j=1,3
+          do i=1,cells(1)
+            primitive=0;primitive(1)=1;primitive(2:4)=[2.0_dp*j,-1.0_dp*k,.5_dp*i]
+            primitive(6)=.1_dp+.08_dp*sin(2*acos(-1.0_dp)*real(i-1,dp)/cells(1))
+            primitive(9)=.2_dp;primitive(15)=1-sum(primitive(6:14))
+            primitive(5)=800*mixture_specific_gas_constant(species,primitive(6:15),ok)
+            call reactive_primitive_to_conserved(species,primitive,serial_u(:,i,j,k),serial_t(i,j,k),sound,ok)
+            call require(ok,'multispecies physical transport initial state')
+          end do
+        end do
+      end do
+      local_u=serial_u(:,first(1)+1:first(1)+dims(1),:,:)
+      local_temp=serial_t(first(1)+1:first(1)+dims(1),:,:);transport_initial=local_u
+      inventory=sum(sum(sum(abs(serial_u),dim=4),dim=3),dim=2)
+      call advance_reactive_transport_3d(species,transport,serial_u,serial_t,cells(1),3,3, &
+        .001_dp,.001_dp,.001_dp,1e-5_dp,.true.,.true.,.true.,.true.,theta_serial,ok, &
+        boundaries,serial_change,inlet,inlet_t,wall_t,velocity)
+      call require(ok,'serial physical-boundary transport reference')
+      call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,local_u,local_temp, &
+        [.001_dp,.001_dp,.001_dp],cells,1e-5_dp,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
+        boundaries,change,inlet,inlet_t,wall_t,velocity)
+      call require(ok,'MPI physical-boundary transport')
+      call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
+        max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
+        'MPI physical transport matches serial states')
+      call require(maxval(abs(local_temp-serial_t(first(1)+1:first(1)+dims(1),:,:)))<1e-8_dp, &
+        'MPI physical transport matches serial temperature')
+      call require(all(abs(change-serial_change)<1e-10_dp*max(1e-12_dp,abs(serial_change))), &
+        'MPI transport boundary ledger matches serial')
+      delta=sum(sum(sum(local_u-transport_initial,dim=4),dim=3),dim=2)*1e-9_dp
+      call MPI_Allreduce(delta,total_delta,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(all(abs(total_delta-change)<2e-12_dp*max(1e-12_dp,inventory*1e-9_dp)), &
+        'MPI transport boundary flux accounts for inventory change')
     end do
     local_u=u;local_temp=t
     call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e3_dp, &
       'hllc','mc',ok,boundaries,change,inlet,inlet_t)
     call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
       'MPI physical hydro failed stage rolls back state and boundary ledger')
+    local_u=u;local_temp=t;wall_t=600
+    if (rank==0) wall_t(4)=-1
+    call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,local_u,local_temp, &
+      [.001_dp,.001_dp,.001_dp],cells,1e-5_dp,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
+      boundaries,change,inlet,inlet_t,wall_t,velocity)
+    call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
+      'MPI invalid wall thermal data rolls back transport')
     saved_ghost=local_ghost;saved_t=local_t
     if (rank==0) boundaries(2)='slip_wall'
     call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &
