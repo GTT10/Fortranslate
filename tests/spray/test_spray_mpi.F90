@@ -520,12 +520,63 @@ program test_spray_mpi
   call require(ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'checkpoint scatters exact owner blocks')
   call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'checkpoint redistributes owner particles')
+  call check_film_checkpoint()
   call MPI_Barrier(MPI_COMM_WORLD,ierr)
   if (rank==0) then
     open(newunit=checkpoint_unit,file=trim(checkpoint_path),status='old');close(checkpoint_unit,status='delete')
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film_checkpoint()
+    type(spray_wall_film), allocatable :: patches(:)
+    type(spray_parcel), allocatable :: drops(:)
+    real(dp), allocatable :: cm(:,:),pm(:,:),gas(:,:,:,:),temp(:,:,:)
+    real(dp) :: wall(15),ref(15),inj(15),time
+    integer :: step,event,q,unit
+    integer(int64) :: mark
+    character(len=80) :: path
+    allocate(patches(1),cm(2,1),drops(0),pm(2,0))
+    patches(1)=spray_wall_film([real(first(1),dp)+.5_dp,0.0_dp,.5_dp],[0.0_dp,1.0_dp,0.0_dp], &
+      1e-9_dp,330.0_dp+rank,.001_dp,1e-6_dp,rank+1)
+    cm(:,1)=patches(1)%mass*[.25_dp,.75_dp]
+    gas=field;temp=temperature;wall=0;wall(5)=1.25_dp;ref=0;inj=0;time=1e-8_dp;step=3;event=2;mark=19
+    write(path,'(a,i0,a)') 'mpi-film-checkpoint-',nranks,'.chk'
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(path),'film-context',species,gas,temp,drops,pm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,step,event,mark,ref,inj,ok, &
+      wall_films=patches,film_mass=cm,wall_totals=wall)
+    call require(ok.and.size(patches)==1.and.patches(1)%temperature==330+rank,'film checkpoint write preserves ownership')
+    if (rank==0) then
+      call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(path),'film-context',species,gas,temp,drops,pm, &
+        [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,step,event,mark,ref,inj,ok, &
+        wall_films=patches,film_mass=cm,wall_totals=wall)
+    else
+      call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(path),'film-context',species,gas,temp,drops,pm, &
+        [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,step,event,mark,ref,inj,ok)
+    end if
+    call require(.not.ok.and.wall(5)==1.25_dp.and.size(patches)==1,'film mode mismatch rejects collectively')
+    deallocate(patches,cm);allocate(patches(0),cm(2,0));wall=0
+    gas=reference*0;temp=reference_temperature*0
+    call mpi_spray_checkpoint(MPI_COMM_SELF,.false.,trim(path),'film-context',species,gas,temp,drops,pm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,step,event,mark,ref,inj,ok, &
+      wall_films=patches,film_mass=cm,wall_totals=wall)
+    call require(ok.and.size(patches)==nranks.and.wall(5)==1.25_dp,'film changed-rank restart and wall budget')
+    call require(all(gas==reference).and.all(temp==reference_temperature),'film checkpoint exact gas')
+    do q=1,nranks
+      call require(patches(q)%temperature==329+q.and.patches(q)%material_id==q,'film restored source order/material')
+      call require(all(cm(:,q)==patches(q)%mass*[.25_dp,.75_dp]),'film restored component inventory')
+    end do
+    gas=field*0;temp=temperature*0
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(path),'film-context',species,gas,temp,drops,pm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,step,event,mark,ref,inj,ok, &
+      wall_films=patches,film_mass=cm,wall_totals=wall)
+    call require(ok.and.size(patches)==1,'film restart redistributes from root')
+    call require(patches(1)%temperature==330+rank,'film restart recovers original owner')
+    call MPI_Barrier(MPI_COMM_WORLD,ierr)
+    if (rank==0) then
+      open(newunit=unit,file=trim(path),status='old');close(unit,status='delete')
+    end if
+  end subroutine
+
   subroutine check_film_coupling()
     type(spray_wall_film), allocatable :: patches(:),original(:)
     type(spray_parcel), allocatable :: empty(:)

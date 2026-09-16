@@ -171,20 +171,23 @@ contains
   ! Stationary patches are owned by their containing Cartesian cell. Exact upper
   ! boundary coordinates select the final cell; physical film positions stay exact.
   ! Receive order is source-rank then original local order; films have no global ID.
-  subroutine migrate_mpi_wall_films(comm,films,component_mass,lower,spacing,cells,parts,maximum_films,ok)
+  subroutine migrate_mpi_wall_films(comm,films,component_mass,lower,spacing,cells,parts,maximum_films,ok,gather_rank)
     type(MPI_Comm), intent(in) :: comm
     type(spray_wall_film), allocatable, intent(inout) :: films(:)
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
     real(dp), intent(in) :: lower(3),spacing(3)
     integer, intent(in) :: cells(3),parts(3),maximum_films
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: gather_rank
+    integer :: destination
     type(spray_wall_film), allocatable :: candidate(:)
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(8),lowconfig(8),highconfig(8),nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(9),lowconfig(9),highconfig(9),nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
-    ok=.false.;nc=0
+    ok=.false.;nc=0;destination=-1
+    if (present(gather_rank)) destination=gather_rank
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(films).and.allocated(component_mass)
@@ -193,14 +196,15 @@ contains
     if (.not.agreed) return
     np=size(films)
     valid=nc>=1.and.nc<=16.and.size(component_mass,2)==np.and.np<=1000000
+    valid=valid.and.destination>=-1.and.destination<nranks
     valid=valid.and.maximum_films>=0.and.maximum_films<=1000000
     valid=valid.and.spray_cartesian_owner(lower,lower,spacing,cells,parts,[.false.,.false.,.false.])>=0
     call agree()
     if (.not.agreed) return
-    config=[cells,parts,nc,maximum_films];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,8,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,parts,nc,maximum_films,destination];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,9,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,8,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,9,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -254,17 +258,18 @@ contains
     if (.not.agreed) return
     call move_alloc(candidate,films);call move_alloc(masses,component_mass);ok=.true.
   contains
-    integer function owner(position) result(destination)
+    integer function owner(position) result(owner_rank)
       real(dp), intent(in) :: position(3)
       real(dp) :: probe(3)
       integer :: axis
-      destination=-1
+      owner_rank=-1
       if (any(position<lower).or.any(position>upper)) return
       probe=position
       do axis=1,3
         if (position(axis)==upper(axis)) probe(axis)=lower(axis)+(real(cells(axis),dp)-.5_dp)*spacing(axis)
       end do
-      destination=spray_cartesian_owner(probe,lower,spacing,cells,parts,[.false.,.false.,.false.])
+      owner_rank=spray_cartesian_owner(probe,lower,spacing,cells,parts,[.false.,.false.,.false.])
+      if (owner_rank>=0.and.destination>=0) owner_rank=destination
     end function
     subroutine agree()
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)

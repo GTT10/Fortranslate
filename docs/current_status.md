@@ -113,8 +113,10 @@ patches can now migrate to Cartesian owners while retaining geometry and compone
 inventories ([evidence](validation/spray-mpi-film-migration-20260917.md)). An MPI
 film-coupling API now connects heating/evaporation to owner-routed gas feedback
 with a global wall-energy ledger and whole-interval rollback
-([evidence](validation/spray-mpi-film-coupled-20260917.md)); wall-boundary application
-wiring and film restart remain open.
+([evidence](validation/spray-mpi-film-coupled-20260917.md)). MPI checkpoints now
+collect and redistribute film/component state and the wall budget across rank
+changes ([evidence](validation/spray-mpi-film-restart-20260917.md)); wall-boundary
+application wiring remains open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
