@@ -83,8 +83,8 @@ identifies rhoY components after energy; the final species slope is dependent on
 density and the other species slopes, preserving their sum. Temperature, when
 packed after the conserved fields, remains a guess for subsequent EOS recovery.
 This component bound is not a proof of nonlinear EOS admissibility; existing
-reactive flux/state checks can still reject a step. Scheduling subcycles remains
-open.
+reactive flux/state checks can still reject a step. The recursive hydro API below
+now supplies subcycle scheduling; transport and application wiring remain separate.
 Peer lookup currently scans nodes; no scaling qualification is implied.
 
 ## Conservative flux synchronization
@@ -385,7 +385,34 @@ be mixed within one call; all supplied active fluxes must span the same interval
 This routine does not choose intervals, reconstruct temperatures or perform EOS
 checks. Those remain the recursive hydro scheduler's responsibilities.
 
+## Recursive hydro subcycling
+
+`advance_amr_patch_tree_subcycle_hydro_3d` advances one coarse hydro interval
+transactionally. Every depth performs synchronous peer RK2 steps. The next depth
+performs `refinement_ratio` steps per parent interval, recursively; ratios 2 then
+3 produce counts 1/2/6. Ancestor prediction endpoints remain available while finer
+levels interpolate boundary values at both RK stage times. After a depth finishes,
+interval-scoped reflux and restriction reconcile it with descendants, temperature
+is recovered and effective fluxes return to its parent. Effective descendant fluxes
+are summed over each parent interval. The final root boundary ledger combines its
+original integrated surface flux and the fine-flux replacement.
+
+Normalized interval endpoints share exact parent endpoints at the last substep.
+Zero-width/underflowed intervals, failed RK stages, flux conflicts and failed EOS
+recovery reject the entire coarse step. State, temperature, budget, maximum reflux
+correction and optional `level_steps` counts commit together. The topology stays
+fixed throughout the coarse interval. Scratch states and endpoints currently copy
+full trees; this is not a memory/scaling optimization.
+
+`compute_amr_patch_tree_subcycle_cfl_3d` returns the minimum local hydro CFL bound
+multiplied by that depth's cumulative refinement ratio. The stepper accepts a
+caller-chosen coarse `dt`; it does not retry or enforce this bound internally.
+This hydro bound does not cover diffusion or external reservoir bounds.
+The application and combined reaction/transport driver still use the common-step
+path. Transport subcycling, coupled splitting and application checkpoint/timestep
+controls remain to be connected before enabling the recursive path there.
+
 ## Remaining integration
 
-Subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+Transport subcycling, coupled/application dispatch and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
