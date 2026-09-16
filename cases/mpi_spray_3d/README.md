@@ -44,7 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Distributed breakup/wall films and SGS remain to be integrated in this executable.
+Distributed KH child release, wall films and SGS remain to be integrated in this executable.
 
 ## Save and resume
 
@@ -209,3 +209,28 @@ Defaults preserve the previous monodisperse point-cone behavior. The requested
 Each nondefault injector configuration enters checkpoint identity. Changing it
 rejects restart. These are parcel-source models, not resolved nozzle geometry or
 experimental injector qualification.
+
+
+## Representative-drop breakup
+
+Set `breakup_model='etab'` or `'khrt'`, `surface_tension` (N/m) and
+`liquid_viscosity` (Pa s) to enable the existing representative breakup models.
+The default is `'none'`. KH-RT constants are `khrt_b0=.61`, `khrt_b1=7` and
+`khrt_c3=1`. The same settings apply to every port. For example:
+
+```fortran
+ breakup_model='khrt'
+ surface_tension=.072
+ liquid_viscosity=.001
+```
+
+Breakup decreases physical droplet mass and increases multiplicity, preserving
+parcel component inventories. Mixture density and thermal properties follow the
+current component masses and temperature; surface tension and viscosity are the
+supplied common constants. KH child shedding is not enabled in this executable.
+
+Particle CSVs include `deformation`, `deformation_rate` and `rt_time`.
+Checkpoints retain the appropriate deformation/RT state together with component
+masses and IDs. All breakup parameters are bound to restart identity. Changed
+parameters are rejected; default-disabled runs retain their earlier checkpoint
+context and schema.

@@ -98,8 +98,9 @@ common substep, collective feedback retry and end-of-interval migration with
 whole-interval rollback ([evidence](validation/spray-mpi-coupling-20260916.md)).
 Representative ETAB and KH-RT breakup now run inside the MPI mixed-particle
 candidate update with component-inventory preservation
-([evidence](validation/spray-mpi-breakup-20260917.md)); CLI/restart wiring and KH
-child release remain open.
+([evidence](validation/spray-mpi-breakup-20260917.md)). Breakup CLI settings and
+deformation/RT checkpoint state now support changed-rank continuation
+([evidence](validation/spray-mpi-breakup-app-20260917.md)); KH child release remains open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

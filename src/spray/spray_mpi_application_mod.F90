@@ -29,6 +29,8 @@ contains
   type(gas_transport_species), intent(in) :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
+  character(len=8) :: breakup_model='none'
+  real(dp) :: surface_tension=0,liquid_viscosity=0,khrt_b0=.61_dp,khrt_b1=7,khrt_c3=1
   type(spray_size_options) :: size_options,port_size(16)
   type(spray_nozzle_model) :: nozzle,port_nozzle(16)
   real(dp) :: nozzle_radius=0,port_nozzle_radius(16)=0
@@ -77,7 +79,7 @@ contains
     injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
-    size_options,port_size,nozzle,port_nozzle
+    size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -225,11 +227,24 @@ contains
       call append_injector_context(p,port_size(p),port_nozzle(p),port_nozzle_radius(p))
     end do
   end if
+  options%breakup_model=breakup_model;options%surface_tension=surface_tension;options%liquid_viscosity=liquid_viscosity
+  options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
+  call require(valid_spray_options(options),'Invalid breakup settings')
+  if (breakup_model/='none'.or.surface_tension/=0.or.liquid_viscosity/=0.or. &
+      khrt_b0/=.61_dp.or.khrt_b1/=7.or.khrt_c3/=1) then
+    write(profile_context,'(*(g0,1x))',iostat=status) 'representative-breakup-v1',breakup_model, &
+      surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3
+    call require(status==0,'Breakup context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint breakup context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end if
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
     call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(restart_path),trim(checkpoint_context),species, &
-      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok)
+      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
+      breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt')
     call require(ok,'Restart rejected: invalid data or incompatible model/input context')
     call require(time<=final_time.and.event>=0.and.event<=schedule_count, &
       'Restart time/event is incompatible with this run')
@@ -288,7 +303,8 @@ contains
   if (rank==0) close(history_unit)
   if (len_trim(checkpoint_path)>0) then
     call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),trim(checkpoint_context),species, &
-      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok)
+      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
+      breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt')
     call require(ok,'Checkpoint write rejected (existing destinations are not overwritten)')
   end if
   write(rank_text,'(i6.6)') rank
@@ -309,10 +325,12 @@ contains
   close(unit)
   open(newunit=unit,file=trim(output_prefix)//'.rank'//rank_text//'.particles.csv',status='new',action='write',iostat=status)
   call require(status==0,'Cannot create particle output')
-  write(unit,'(a)') 'id,x,y,z,u,v,w,mass,temperature,multiplicity,component_mass_1,component_mass_2'
+  write(unit,'(a)') 'id,x,y,z,u,v,w,mass,temperature,multiplicity,component_mass_1,component_mass_2,'// &
+    'deformation,deformation_rate,rt_time'
   do p=1,size(parcels)
     write(unit,'(*(g0,:,","))') parcels(p)%id,parcels(p)%position,parcels(p)%velocity,parcels(p)%mass, &
-      parcels(p)%temperature,parcels(p)%multiplicity,masses(:,p)
+      parcels(p)%temperature,parcels(p)%multiplicity,masses(:,p), &
+      parcels(p)%deformation,parcels(p)%deformation_rate,parcels(p)%rt_time
   end do
   close(unit)
   if (rank==0) print *, 'MPI spray completed: steps=',step,' time=',time

@@ -288,7 +288,33 @@ def main():
     assert len(scalar_drops) == 4
     assert len({row['mass'] for row in scalar_drops.values()}) == 4
     assert all(math.hypot(float(row['y']) - .002, float(row['z']) - .002) > 0 for row in scalar_drops.values())
-    print(f'PASS MPI spray application, injector options and restart: {args.ranks} ranks; artifacts: {work}')
+    for model in ['etab', 'khrt']:
+        breakup = f" breakup_model='{model}'\n surface_tension=.072\n liquid_viscosity=.001\n speed=1000"
+        run_variant(model, args.ranks, breakup)
+        run_variant(model + '_split', args.ranks, breakup + f"\n checkpoint_path='{model}.chk'", stop='1e-8')
+        run_variant(model + '_resume', 6 - args.ranks, breakup + f"\n restart_path='{model}.chk'")
+        for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+            reference = snapshots(model, suffix, keys)
+            actual = snapshots(model + '_resume', suffix, keys)
+            assert actual.keys() == reference.keys()
+            for key, expected in reference.items():
+                for column, value in expected.items():
+                    assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (model, key, column)
+        drops = snapshots(model, 'particles', ['id'])
+        if model == 'etab':
+            assert any(float(row['deformation']) > 0 for row in drops.values())
+        else:
+            # Initial multiplicity from harmonic mixture density and monodisperse size.
+            initial_drop_mass = (1 / (.5 / 1000 + .5 / 800)) * math.pi / 6 * (2e-5) ** 3
+            assert all(float(row['multiplicity']) > 1e-10 / (4 * initial_drop_mass) for row in drops.values())
+        breakup_history = rows(work / f'{model}.history.csv')
+        assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+                   abs(float(row['relative_energy_error'])) < 2e-11 for row in breakup_history)
+    run_variant('breakup_mismatch', args.ranks,
+                " breakup_model='khrt'\n surface_tension=.073\n liquid_viscosity=.001\n speed=1000\n restart_path='khrt.chk'",
+                expect_success=False)
+    assert not (work / 'breakup_mismatch.history.csv').exists()
+    print(f'PASS MPI spray application, breakup and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 
