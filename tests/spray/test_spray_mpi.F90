@@ -960,6 +960,7 @@ contains
     type(spray_parcel), allocatable :: empty(:)
     type(spray_options) :: settings
     type(spray_wall_options) :: walls
+    type(elementary_reaction), allocatable :: faulty(:),film_reactions(:)
     real(dp), allocatable :: cm(:,:),original_cm(:,:),empty_cm(:,:),gas(:,:,:,:),temp(:,:,:)
     real(dp) :: start(15),finish(15),global_start(15),global_finish(15),boundary(15),film_total
     integer :: count_steps,np
@@ -1001,6 +1002,30 @@ contains
     call MPI_Allreduce(finish,global_finish,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(all(abs(global_finish-global_start-boundary)<2e-12_dp*max(1e-12_dp,abs(global_start))), &
       'MPI gas film wall budgets close')
+    call load_h2o2_full_mechanism(film_reactions,ok);call require(ok,'film split mechanism')
+    patches=original;cm=original_cm;gas=field;temp=temperature;faulty=film_reactions
+    if (rank==nranks-1) faulty(1)%forward_rate%pre_exponential=-1
+    call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,faulty,transport,liquids,settings,gas,temp,empty,empty_cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,1e-7_dp,1e-12_dp, &
+      'implicit',count_steps,ok,boundary_faces=film_faces,boundary_change=boundary, &
+      wall_films=patches,film_mass=cm,film_settings=walls)
+    call require(.not.ok.and.count_steps==0.and.all(boundary==0),'late chemistry failure clears film split outputs')
+    call require(all(gas==field).and.all(temp==temperature).and.all(cm==original_cm).and. &
+      all(patches%mass==original%mass).and.all(patches%temperature==original%temperature), &
+      'late chemistry failure rolls back earlier film heating and evaporation')
+    call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,film_reactions,transport,liquids,settings,gas,temp,empty,empty_cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,1e-7_dp,1e-12_dp, &
+      'implicit',count_steps,ok,boundary_faces=film_faces,boundary_change=boundary, &
+      wall_films=patches,film_mass=cm,film_settings=walls)
+    call require(ok.and.count_steps>=4.and.boundary(5)>0,'symmetric film particle chemistry split')
+    if (rank==0) call require(patches(1)%temperature>330.and.patches(1)%mass<1e-9_dp,'split film heats and evaporates')
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],empty,liquids,empty_cm,finish,ok,patches,cm)
+    call require(ok,'film split final totals')
+    call MPI_Allreduce(finish,global_finish,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(global_finish(:5)-global_start(:5)-boundary(:5))< &
+      2e-12_dp*max(1e-12_dp,abs(global_start(:5)))),'film split mass momentum and wall energy budgets close')
+    call require(all(abs(element_totals(global_finish-global_start-boundary))< &
+      2e-10_dp*max(1e-12_dp,abs(element_totals(global_start)))),'film split element inventory closes')
   end subroutine
 
   subroutine check_film_migration()

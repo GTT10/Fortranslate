@@ -1138,7 +1138,8 @@ contains
   subroutine advance_mpi_mixture_reaction(comm,species,reactions,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+      wall_films,film_mass,film_settings)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1157,6 +1158,12 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(out) :: boundary_change(:)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: first_film_steps,last_film_steps
     real(dp), allocatable :: stage_change(:)
     real(dp) :: ledger(size(state,1))
     real(dp) :: sgs(3)
@@ -1166,11 +1173,12 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(14),minimum(14),maximum(14),chemistry_interval,transport_theta
+    real(dp) :: controls(15),minimum(15),maximum(15),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
     ok=.false.;substeps=0;method_code=0;ledger=0
+    first_film_steps=0;last_film_steps=0
     if (present(boundary_change)) boundary_change=0
     if (present(boundary_faces)) allocate(stage_change(size(state,1)))
     select case(trim(method))
@@ -1200,6 +1208,8 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
+    valid=valid.and.(present(wall_films).eqv.present(film_mass)).and.(present(wall_films).eqv.present(film_settings))
+    if (present(wall_films)) valid=valid.and.present(boundary_faces)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.all(ieee_is_finite([interval,rtol,atol,sgs]))
     valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.minval(sgs(2:))>=1e-6_dp.and.maxval(sgs(2:))<=1e6_dp
@@ -1214,15 +1224,25 @@ contains
     if (ierr/=MPI_SUCCESS) return
     if (.not.agreed) return
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
-      merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces))]
-    call MPI_Allreduce(controls,minimum,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces)),merge(1.0_dp,0.0_dp,present(wall_films))]
+    call MPI_Allreduce(controls,minimum,15,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,15,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
     if (present(last_id)) candidate_id=last_id
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    if (present(wall_films)) then
+      valid=allocated(wall_films).and.allocated(film_mass)
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS.or..not.agreed) return
+      patches=wall_films;patch_mass=film_mass
+      call advance_mpi_film_coupling(comm,species,transport,components,options,film_settings,gas,temp, &
+        patches,patch_mass,lower,spacing,cells,parts,.5_dp*interval,boundary_faces,first_film_steps,stage_change,valid)
+      if (.not.valid) return
+      ledger=ledger+stage_change
+    end if
     call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
       lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change)
     if (.not.valid) return
@@ -1273,13 +1293,33 @@ contains
       lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change)
     if (.not.valid) return
     if (allocated(stage_change)) ledger=ledger+stage_change
+    if (present(wall_films)) then
+      call advance_mpi_film_coupling(comm,species,transport,components,options,film_settings,gas,temp, &
+        patches,patch_mass,lower,spacing,cells,parts,.5_dp*interval,boundary_faces,last_film_steps,stage_change,valid)
+      if (.not.valid) return
+      ledger=ledger+stage_change
+    end if
     if (first_steps>huge(substeps)-last_steps) return
-    if (.not.all(ieee_is_finite(ledger))) return
+    substeps=first_steps+last_steps
+    if (first_film_steps>huge(substeps)-substeps) then
+      substeps=0;return
+    end if
+    substeps=substeps+first_film_steps
+    if (last_film_steps>huge(substeps)-substeps) then
+      substeps=0;return
+    end if
+    substeps=substeps+last_film_steps
+    if (.not.all(ieee_is_finite(ledger))) then
+      substeps=0;return
+    end if
     if (present(boundary_change)) boundary_change=ledger
     state=gas;temperature=temp
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     if (present(last_id)) last_id=candidate_id
-    substeps=first_steps+last_steps;ok=.true.
+    if (present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
+    ok=.true.
   end subroutine
 
   ! Advance KH shedding and construct local children with globally reserved IDs.
