@@ -53,6 +53,9 @@ also connected ([evidence](validation/amr-mpi-physical-app-20260917.md)). Fixed 
 and full-H2/O2 reacting AMR checkpoint/restart now retains canonical reaction,
 composition and integrator context for serial/MPI applications
 ([evidence](validation/amr-fixed-chemistry-restart-20260917.md)).
+The selected AMR runtimes remain independent of fixed-mechanism databases and now
+include distributed checkpoint I/O in their build
+([build isolation](validation/selected-amr-checkpoint-isolation-20260917.md)).
 
 Boundary-touching AMR now has a physical flux-correction API that replaces
 covered domain-surface fluxes in the boundary ledger and corrects only uncovered

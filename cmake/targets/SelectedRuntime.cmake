@@ -448,6 +448,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/io/amr_reactive_3d_checkpoint_mod.F90
     src/driver/amr_reactive_3d_application_mod.F90
   )
+  target_compile_definitions(pelef_selected_amr_reactive_3d_runtime PRIVATE PELEF_SELECTED_ONLY_RUNTIME)
   set_target_properties(
     pelef_selected_amr_reactive_3d_runtime
     PROPERTIES
@@ -484,6 +485,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       pelef_selected_mpi_amr_reactive_3d_runtime
       STATIC
       src/parallel/mpi_amr_sparse_reactive_3d_mod.F90
+      src/parallel/mpi_amr_checkpoint_3d_mod.F90
       src/driver/mpi_amr_reactive_3d_application_mod.F90
     )
     set_target_properties(

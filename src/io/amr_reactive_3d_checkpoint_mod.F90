@@ -11,8 +11,10 @@ module amr_reactive_3d_checkpoint_mod
     valid_arrhenius_rate, valid_troe_parameters
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
+#ifndef PELEF_SELECTED_ONLY_RUNTIME
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism,h2o2_full_source_sha256
+#endif
   use reactive_1d_mod, only: reactive_nvar, resolve_reactive_chemistry_integrator
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d, &
@@ -1578,6 +1580,7 @@ contains
     logical, intent(in) :: writing
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+#ifndef PELEF_SELECTED_ONLY_RUNTIME
     type(elementary_reaction), allocatable :: fixed_reactions(:)
     real(dp) :: composition(nspecies)
     character(len=8) :: integrator
@@ -1618,6 +1621,12 @@ contains
     end if
     if (index(message,'Selected ')==1) message='Fixed '//trim(message(10:))
     if (ok) message=''
+#else
+    ! Selected runtimes must not link fixed mechanism databases or accept their
+    ! chemistry checkpoint context. Selected context is supplied by the caller.
+    ok=.false.
+    message='Fixed chemistry checkpoints are unavailable in a selected runtime'
+#endif
   end subroutine fixed_checkpoint_context
 
   subroutine write_selected_checkpoint_context( &
