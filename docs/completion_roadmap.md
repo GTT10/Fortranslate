@@ -108,7 +108,8 @@ operate on local slabs, as do analytic coarse/fine initialization and checkpoint
 
 The regular 3D patch-tree geometry/state foundation now supports multiple children,
 recursive PCM initialization, bottom-up restriction and composite inventories.
-Next connect tree ghost filling and conservative hydro/reflux, then reaction/transport,
+Snapshot peer/ancestor ghost filling and physical boundaries are connected.
+Next connect temporal/PLM interpolation and conservative hydro/reflux, then reaction/transport,
 dynamic remap, MPI ownership and application/restart paths. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 

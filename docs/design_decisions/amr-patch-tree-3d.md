@@ -36,10 +36,31 @@ quantities; this module does not infer thermodynamic temperatures or chemistry.
 Invalid topology/state leaves destination objects or inventory vectors unchanged.
 The hierarchy owns its arrays; restriction uses a private candidate copy.
 
+## Snapshot ghost cells
+
+`fill_amr_patch_tree_ghosts_3d` builds a two-cell halo around one node. It
+constructs checked 64-bit global integer coordinates at every depth, searches
+all peer boxes at the requested resolution (including different parents), and
+falls back through coarser levels using PCM when no peer covers the cell.
+The result includes the unchanged interior and commits only on success.
+
+Its component layout is density, three momenta, total energy, then any species
+or other conserved components. Domain boundaries follow the existing regular
+3D conventions: paired periodic faces, outflow, reservoir inflow, slip wall,
+and adiabatic/isothermal no-slip walls. Euler mirroring flips normal momentum;
+optional viscous mirroring includes tangential velocity and moving-wall work.
+Corner face precedence matches the regular-grid helper. Temperature recovery
+and isothermal heat flux are separate operations and are not performed here.
+
+This operation samples one hierarchy snapshot. Callers must supply synchronized
+coarse values where required; temporal interpolation during subcycling and
+PLM coarse/fine interpolation remain to be connected. Peer lookup currently
+scans nodes; no scaling qualification is implied.
+
 ## Remaining integration
 
-This foundation does not yet evolve a multi-patch flow. Same-level and
-coarse/fine ghost filling, conservative flux correction and subcycling,
+This foundation does not yet evolve a multi-patch flow. Time-aware/high-order
+ghost filling, conservative flux correction and subcycling,
 thermodynamic recovery, chemistry/transport coupling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.

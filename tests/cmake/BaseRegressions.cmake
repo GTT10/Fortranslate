@@ -62,6 +62,9 @@ add_test(NAME unit_amr_hierarchy_3d COMMAND test_amr_hierarchy_3d)
 add_executable(test_amr_patch_tree_3d unit/test_amr_patch_tree_3d.F90)
 target_link_libraries(test_amr_patch_tree_3d PRIVATE pelef_core)
 add_test(NAME unit_amr_patch_tree_3d COMMAND test_amr_patch_tree_3d)
+add_executable(test_amr_patch_tree_ghost_3d unit/test_amr_patch_tree_ghost_3d.F90)
+target_link_libraries(test_amr_patch_tree_ghost_3d PRIVATE pelef_core)
+add_test(NAME unit_amr_patch_tree_ghost_3d COMMAND test_amr_patch_tree_ghost_3d)
 
 add_executable(
   test_amr_reactive_3d_config
