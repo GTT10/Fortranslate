@@ -140,7 +140,34 @@ tables remain shared. For example:
 An enabled shared rate profile applies separately to each port's event interval
 and overrides `port_mass`. It must cover every port interval. Overlapping intervals
 inject separate doses, so the supplied rate is per port, not a combined flow rate.
-Independent per-port rate tables are not yet exposed by this MPI executable.
+Each port can override this shared profile with its own table (below).
 Active port definitions are bound to checkpoint context. Rank-count changes retain
 completed event order and ID reservation. `port_count=0` preserves scalar behavior
 and the existing scalar checkpoint context.
+
+
+### Port-specific flow histories
+
+`port_profile_points(p)=2..64` enables `port_profile_times(:,p)` (s) and
+`port_profile_rates(:,p)` (kg/s, 0--1) for port `p`. Each table must increase in
+time and cover that port's complete event intervals. Trailing unused entries
+must be zero. Profiles for inactive ports or ports with no events are rejected.
+
+A port-specific table overrides the shared profile for that port. Ports with
+`port_profile_points(p)=0` use the shared profile when enabled, otherwise their
+fixed `port_mass`. The shared table need only cover the ports that use it. For
+example, added to the two-port example above:
+
+```fortran
+ injection_profile_points=2
+ injection_profile_times=0,1.5e-8
+ injection_profile_rates=.01,.01
+ port_profile_points=0,3
+ port_profile_times(:,2)=7.5e-9,1.5e-8,2.25e-8
+ port_profile_rates(:,2)=0,0,.04
+```
+
+Port 1 receives two 7.5e-11 kg doses. Port 2 consumes its first event without
+particles, then receives 1.5e-10 kg. The checkpoint binds every supplied table.
+The checkpoint context capacity is now 131072 characters to retain all 16 tables
+at 64 points each; existing shorter contexts and file schemas are unchanged.

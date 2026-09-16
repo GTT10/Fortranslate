@@ -12,6 +12,7 @@ module spray_checkpoint_mod
   implicit none
   private
   character(len=*), parameter :: magic='PELEF_SPRAY_3D_CHECKPOINT_V1'
+  integer, parameter, public :: spray_checkpoint_context_capacity=131072
   public :: write_spray_checkpoint, read_spray_checkpoint
   ! POSIX link publishes a completely closed temporary file without replacing an
   ! existing destination. This runtime is currently qualified on Linux only.
@@ -145,7 +146,7 @@ contains
     if (present(source_totals)) then
       if (.not.all(ieee_is_finite(source_totals))) return
     end if
-    if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>16384) return
+    if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>spray_checkpoint_context_capacity) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
     if (size(reference_totals) /= size(state,1) .or. size(injected_totals) /= size(state,1)) return
     if (.not. all(ieee_is_finite([time,reference_totals,injected_totals]))) return
@@ -305,7 +306,7 @@ contains
     real(dp) :: next_time,ref(size(state,1)),injected(size(state,1)),row(max(11,size(state,1)+1))
     character(len=64) :: tokens(12)
     integer :: unit,ios,i,j,k,p,dims(3),got(5),next_steps,next_event
-    character(len=16384) :: line
+    character(len=spray_checkpoint_context_capacity) :: line
     logical :: local_ok
     has_films=.false.
     if (present(film_state)) has_films=film_state

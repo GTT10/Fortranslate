@@ -196,7 +196,48 @@ def main():
     assert [int(row['parcels']) for row in profiled_ports] == [0, 5, 8, 8]
     assert math.isclose(float(profiled_ports[-1]['injected_mass']), 2.25e-10, rel_tol=1e-14)
     assert int(profiled_ports[-1]['last_id']) == 8
-    print(f'PASS MPI spray application, profile, multiport schedule and restart: {args.ranks} ranks; artifacts: {work}')
+    independent = (ports +
+                   '\n injection_profile_points=2' +
+                   '\n injection_profile_times=0,1.5e-8' +
+                   '\n injection_profile_rates=.01,.01' +
+                   '\n port_profile_points=0,3' +
+                   '\n port_profile_times(:,2)=7.5e-9,1.5e-8,2.25e-8' +
+                   '\n port_profile_rates(:,2)=0,0,.04')
+    run_variant('independent', args.ranks, independent)
+    independent_history = rows(work / 'independent.history.csv')
+    assert [int(row['parcels']) for row in independent_history] == [2, 4, 7, 7]
+    assert int(independent_history[-1]['events']) == 4
+    assert math.isclose(float(independent_history[-1]['injected_mass']), 3e-10, rel_tol=1e-14)
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in independent_history)
+    run_variant('independent_split', args.ranks, independent +
+                "\n checkpoint_path='independent.chk'", stop='7.5e-9')
+    run_variant('independent_resume', 6 - args.ranks, independent + "\n restart_path='independent.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('independent', suffix, keys)
+        actual = snapshots('independent_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    run_variant('independent_mismatch', args.ranks,
+                independent.replace('rates(:,2)=0,0,.04', 'rates(:,2)=0,0,.03') +
+                "\n restart_path='independent.chk'", expect_success=False)
+    assert not (work / 'independent_mismatch.history.csv').exists()
+    run_variant('independent_uncovered', args.ranks,
+                independent.replace('2.25e-8', '2e-8'), expect_success=False)
+    assert not (work / 'independent_uncovered.history.csv').exists()
+    # The maximum profile table must survive serialization and checkpoint context.
+    maximum = ' port_count=16\n port_events=16*1\n port_profile_points=16*64'
+    knots = ','.join(f'{i}e-9' for i in range(64))
+    for port in range(1, 17):
+        maximum += f'\n port_profile_times(:,{port})={knots}'
+    run_variant('maximum_profiles', args.ranks, maximum + "\n checkpoint_path='maximum.chk'", stop='0')
+    assert max(map(len, (work / 'maximum.chk').read_text().splitlines())) > 16384
+    run_variant('maximum_resume', 6 - args.ranks, maximum + "\n restart_path='maximum.chk'", stop='0')
+    maximum_history = rows(work / 'maximum_resume.history.csv')
+    assert int(maximum_history[-1]['events']) == 16 and int(maximum_history[-1]['last_id']) == 0
+    print(f'PASS MPI spray application, port profiles, schedule and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 

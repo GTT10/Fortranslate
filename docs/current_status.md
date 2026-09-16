@@ -110,7 +110,9 @@ global time-step selection/retry, coupled stepping, budget history and rank-loca
 CSV output ([evidence](validation/spray-mpi-application-20260917.md)). Scheduled
 independent multiport injection now merges up to 16 port schedules with deterministic
 simultaneous-event order and changed-rank restart
-([evidence](validation/spray-mpi-multiport-20260917.md)). Shared piecewise-linear injection
+([evidence](validation/spray-mpi-multiport-20260917.md)). Independent per-port rate
+tables now override the shared profile with complete restart identity
+([evidence](validation/spray-mpi-port-profiles-20260917.md)). Shared piecewise-linear injection
 profiles now provide per-event integrated mass, including zero-dose event handling
 and restart identity ([evidence](validation/spray-mpi-profile-20260917.md)). A shared MPI application
 now also serves `pelef_mpi_spray_3d_selected`, with 21-species FFCM1_Red execution

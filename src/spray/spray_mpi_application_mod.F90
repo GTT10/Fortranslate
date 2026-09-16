@@ -14,6 +14,7 @@ module spray_mpi_application_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: mixture_system_totals
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
+  use spray_checkpoint_mod, only: spray_checkpoint_context_capacity
   use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use spray_mixture_mod, only: mixture_evolution_id
   use spray_mpi_mod
@@ -35,6 +36,8 @@ contains
   integer :: injection_profile_points=0
   real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,profile_mass
   character(len=4096) :: profile_context
+  integer :: port_profile_points(16)=0
+  real(dp) :: port_profile_times(64,16)=0,port_profile_rates(64,16)=0
   integer :: port_count=0,port_events(16)=0,port_number(16)=4,schedule_count
   real(dp) :: port_start(16)=0,port_interval(16)=1e-8_dp,port_mass(16)=1e-10_dp
   real(dp) :: port_center(3,16),port_axis(3,16),port_fractions(2,16)=.5_dp
@@ -54,8 +57,8 @@ contains
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
   character(len=16) :: solver='hllc',limiter='mc'
   character(len=512) :: output_prefix='mpi_spray',restart_path='',checkpoint_path=''
-  character(len=16384) :: checkpoint_context
-  character(len=65536) :: input_record
+  character(len=spray_checkpoint_context_capacity) :: checkpoint_context
+  character(len=131072) :: input_record
   character(len=6) :: rank_text
   integer :: rank,nranks,ierr,unit,status,history_unit,first(3),extent(3),i,j,k,p,n,step,attempt,substeps,event
   integer(int64) :: last_id=0,local_count,global_count
@@ -69,7 +72,8 @@ contains
     rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix,restart_path,checkpoint_path, &
     injection_events,injection_start,injection_interval,injection_profile_points, &
     injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
-    port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature
+    port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
+    port_profile_points,port_profile_times,port_profile_rates
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -117,11 +121,37 @@ contains
   call require(all(injection_profile_times(injection_profile_points+1:)==0).and. &
     all(injection_profile_rates(injection_profile_points+1:)==0),'Unused injection profile entries')
   call build_schedule()
+  call require(all(port_profile_points>=0).and.all(port_profile_points<=64).and. &
+    all(port_profile_points/=1),'Invalid port profile point count')
+  call require(all(ieee_is_finite(port_profile_times)).and.all(ieee_is_finite(port_profile_rates)), &
+    'Nonfinite port profile')
+  call require(all(port_profile_points(port_count+1:)==0),'Profile supplied for inactive port')
+  do p=1,16
+    n=port_profile_points(p)
+    call require(all(port_profile_times(n+1:,p)==0).and.all(port_profile_rates(n+1:,p)==0), &
+      'Unused port profile entries')
+    if (n==0) cycle
+    call require(port_events(p)>0,'A port profile requires scheduled events')
+    call integrate_spray_injection_profile(port_profile_times(:n,p),port_profile_rates(:n,p),port_start(p), &
+      port_start(p)+real(port_events(p),dp)*port_interval(p),profile_mass,ok)
+    call require(ok,'Invalid port profile or incomplete schedule coverage')
+  end do
   if (injection_profile_points>0) then
     call require(schedule_count>0,'A profile requires scheduled events')
+    ! Validate the shared table even when every active port overrides it.
     call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
-      injection_profile_rates(:injection_profile_points),minval(event_times),maxval(event_ends),profile_mass,ok)
-    call require(ok,'Invalid profile or incomplete schedule coverage')
+      injection_profile_rates(:injection_profile_points),injection_profile_times(1), &
+      injection_profile_times(injection_profile_points),profile_mass,ok)
+    call require(ok,'Invalid shared profile')
+    do p=1,schedule_count
+      n=event_ports(p)
+      if (n>0) then
+        if (port_profile_points(n)>0) cycle
+      end if
+      call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
+        injection_profile_rates(:injection_profile_points),event_times(p),event_ends(p),profile_mass,ok)
+      call require(ok,'Incomplete shared profile coverage')
+    end do
   end if
   call require(gas_density>0.and.gas_temperature>0.and.all(gas_fractions>=0),'Invalid initial gas')
   call require(abs(sum(gas_fractions)-1)<1e-12_dp,'Gas fractions must sum to one')
@@ -174,6 +204,16 @@ contains
       checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
     end do
   end if
+  do p=1,port_count
+    n=port_profile_points(p)
+    if (n==0) cycle
+    write(profile_context,'(*(g0,1x))',iostat=status) 'port-linear-profile-v1',p,n, &
+      port_profile_times(:n,p),port_profile_rates(:n,p)
+    call require(status==0,'Port profile context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint port profile context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end do
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
@@ -330,7 +370,7 @@ contains
     integer(int64) :: candidate_id
     real(dp) :: amount,event_time,event_center(3),event_axis(3),event_fractions(2)
     real(dp) :: event_speed,event_angle,event_diameter,event_temperature
-    integer :: event_number,port
+    integer :: event_number,port,points
     do while(event<schedule_count)
       if (next_injection_time()>time) exit
       candidate=parcels;candidate_mass=masses;candidate_id=last_id;local_mass=0
@@ -344,7 +384,14 @@ contains
         event_speed=port_speed(port);event_angle=port_half_angle(port)
         event_diameter=port_diameter(port);event_temperature=port_temperature(port)
       end if
-      if (injection_profile_points>0) then
+      points=0
+      if (port>0) points=port_profile_points(port)
+      if (points>0) then
+        call integrate_spray_injection_profile(port_profile_times(:points,port),port_profile_rates(:points,port), &
+          next_injection_time(),event_ends(event+1),amount,ok)
+        call require(ok,'Port profile event integration failed')
+        if (amount==0) event_number=0
+      else if (injection_profile_points>0) then
         event_time=next_injection_time()
         call integrate_spray_injection_profile(injection_profile_times(:injection_profile_points), &
           injection_profile_rates(:injection_profile_points),event_time, &
