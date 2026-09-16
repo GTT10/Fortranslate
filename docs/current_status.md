@@ -100,7 +100,10 @@ Representative ETAB and KH-RT breakup now run inside the MPI mixed-particle
 candidate update with component-inventory preservation
 ([evidence](validation/spray-mpi-breakup-20260917.md)). Breakup CLI settings and
 deformation/RT checkpoint state now support changed-rank continuation
-([evidence](validation/spray-mpi-breakup-app-20260917.md)); KH child release remains open.
+([evidence](validation/spray-mpi-breakup-app-20260917.md)). A collective KH shedding
+API now constructs children with unique IDs, inherited composition and a gas-energy
+ledger ([evidence](validation/spray-mpi-kh-release-20260917.md)); coupled-step and
+application wiring remain open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

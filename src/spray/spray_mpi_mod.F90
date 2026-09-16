@@ -13,12 +13,14 @@ module spray_mpi_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
-  use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup
+  use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
+    construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
+  public :: advance_mpi_khrt_shedding
   public :: advance_mpi_spray_transport
   public :: advance_mpi_spray_hydro
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
@@ -348,6 +350,99 @@ contains
     state=gas;temperature=temp
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     substeps=first_steps+last_steps;ok=.true.
+  end subroutine
+
+  ! Advance KH shedding and construct local children with globally reserved IDs.
+  ! gas_energy(p) is the gas energy increment at original parent p (not a rate).
+  ! The caller must deposit it transactionally with these candidates.
+  subroutine advance_mpi_khrt_shedding(comm,components,options,parcels,component_mass,gas_density, &
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),gas_energy(:)
+    real(dp), intent(in) :: gas_density(:),gas_velocity(:,:),reynolds(:),dt
+    integer(int64), intent(inout) :: last_id
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
+    type(spray_khrt_release), allocatable :: releases(:)
+    type(spray_khrt_shedding_state) :: pending
+    type(spray_liquid) :: effective
+    real(dp), allocatable :: masses(:,:),fractions(:,:),energy(:),result_mass(:,:)
+    real(dp) :: rho,cp,e,axis(3),bounds(1),low(1),high(1)
+    integer :: np,nc,p,n,number,cursor,ierr
+    integer(int64) :: next_id,first_id
+    logical :: valid,agreed
+    ok=.false.
+    valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
+    call agree()
+    if (.not.agreed) return
+    np=size(parcels);nc=size(components)
+    valid=np<=1000000.and.nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,np])
+    valid=valid.and.size(gas_density)==np.and.size(reynolds)==np.and.all(shape(gas_velocity)==[3,np])
+    valid=valid.and.ieee_is_finite(dt).and.dt>=0.and.dt<=1e6_dp
+    call agree()
+    if (.not.agreed) return
+    bounds=[dt]
+    call MPI_Allreduce(bounds,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    candidate=parcels;masses=component_mass
+    allocate(releases(np),fractions(nc,np),energy(np));energy=0;fractions=0;number=0
+    do p=1,np
+      valid=valid_component_inventory(candidate(p),masses(:,p)).and.candidate(p)%id<=last_id
+      if (p>1) valid=valid.and.candidate(p)%id>candidate(p-1)%id
+      if (.not.valid) exit
+      if (candidate(p)%mass<=0) cycle
+      fractions(:,p)=masses(:,p)/candidate(p)%mass
+      call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      if (.not.valid) exit
+      effective=components(1);effective%density_model='constant';effective%density=rho
+      effective%density_coefficients=0;effective%density_temperature_range=0
+      effective%heat_capacity_model='constant';effective%heat_capacity=cp
+      effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+      effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
+      effective%boiling_model='reject';effective%critical_temperature=0
+      pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
+      call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
+        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
+      if (.not.valid) exit
+      candidate(p)%khrt_initial_count=pending%initial_count;candidate(p)%khrt_shed_volume=pending%shed_volume
+      masses(:,p)=candidate(p)%mass*fractions(:,p)
+      if (releases(p)%mass>0) number=number+4
+    end do
+    valid=valid.and.number<=options%maximum_parcels-np
+    call agree()
+    if (.not.agreed) return
+    next_id=last_id
+    call reserve_spray_ids(comm,number,next_id,first_id,valid)
+    if (.not.valid) return
+    allocate(result(np+number),result_mass(nc,np+number))
+    result(:np)=candidate;result_mass(:,:np)=masses;cursor=np
+    do p=1,np
+      if (releases(p)%mass<=0) cycle
+      axis=candidate(p)%velocity
+      if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
+      call construct_khrt_children(candidate(p),releases(p),axis,first_id+int(cursor-np,int64),children,energy(p),valid)
+      if (.not.valid) exit
+      result(cursor+1:cursor+4)=children
+      do n=1,4
+        result_mass(:,cursor+n)=children(n)%mass*fractions(:,p)
+      end do
+      cursor=cursor+4
+    end do
+    call agree()
+    if (.not.agreed) return
+    call move_alloc(result,parcels);call move_alloc(result_mass,component_mass);call move_alloc(energy,gas_energy)
+    last_id=next_id;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
   end subroutine
 
   subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &

@@ -244,6 +244,7 @@ program test_spray_mpi
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'negative species rolls back all owners')
   call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
+  call check_kh_release()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'initial coupled totals')
@@ -501,6 +502,55 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_kh_release()
+    type(spray_parcel), allocatable :: drops(:),original(:)
+    real(dp), allocatable :: cm(:,:),original_cm(:,:),energy(:),density(:),velocity(:,:),reynolds(:)
+    type(spray_options) :: settings
+    real(dp) :: initial(15),final(15),y(2)
+    integer :: np,q
+    integer(int64) :: mark
+    np=merge(1,0,rank<nranks-1)
+    allocate(drops(np),cm(2,np),density(np),velocity(3,np),reynolds(np),energy(1));energy=123
+    y=[.25_dp,.75_dp]
+    if (np>0) then
+      drops(1)=spray_parcel(int(rank+1,int64),[.25_dp,.25_dp,.25_dp], &
+        [0.0_dp,0.0_dp,0.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      cm(:,1)=drops(1)%mass*y
+    end if
+    density=10;velocity=0;velocity(1,:)=300;reynolds=2000
+    settings%breakup_model='khrt';settings%khrt_children=.true.
+    settings%surface_tension=.072_dp;settings%liquid_viscosity=.001_dp
+    settings%khrt_reference_diameter_cubed=1e-25_dp
+    settings%maximum_parcels=1;mark=int(nranks,int64);original=drops;original_cm=cm
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok)
+    call require(.not.ok.and.mark==nranks.and.all(energy==123),'KH capacity rollback includes IDs/energy')
+    call require(all(drops%mass==original%mass).and.all(cm==original_cm),'KH capacity rollback includes composition')
+    settings%maximum_parcels=100
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,initial,ok)
+    call require(ok,'KH initial inventory')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok)
+    call require(ok.and.size(drops)==5*np,'KH four-child release with empty rank')
+    call require(mark==nranks+4*(nranks-1),'KH collective ID watermark')
+    call require(size(energy)==np,'KH parent energy shape')
+    if (np>0) then
+      call require(energy(1)<0,'KH transverse kinetic energy debits gas')
+      do q=2,5
+        call require(drops(q)%id==nranks+4*rank+q-1,'KH rank-prefix child IDs')
+        call require(drops(q)%parent_id==rank+1,'KH child lineage')
+        call require(all(abs(cm(:,q)/drops(q)%mass-y)<1e-14_dp),'KH inherited composition')
+      end do
+    end if
+    do q=1,2
+      call require(abs(sum(cm(q,:)*drops%multiplicity)-sum(original_cm(q,:)*original%multiplicity)) &
+        <2e-12_dp*max(1e-30_dp,sum(original_cm(q,:)*original%multiplicity)),'KH component inventory conservation')
+    end do
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,final,ok)
+    call require(ok,'KH final inventory');final(5)=final(5)+sum(energy)
+    call require(all(abs(final-initial)<2e-12_dp*max(1e-12_dp,abs(initial))),'KH mass momentum energy species conservation')
+  end subroutine
+
   function element_totals(inventory) result(elements)
     real(dp), intent(in) :: inventory(15)
     real(dp) :: elements(4),atoms(4)
