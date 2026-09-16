@@ -29,6 +29,9 @@ contains
   type(gas_transport_species), intent(in) :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
+  type(spray_size_options) :: size_options,port_size(16)
+  type(spray_nozzle_model) :: nozzle,port_nozzle(16)
+  real(dp) :: nozzle_radius=0,port_nozzle_radius(16)=0
   type(spray_parcel), allocatable :: parcels(:)
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),masses(:,:)
   integer :: cells(3)=[8,4,4],number=4,max_steps=10000,injection_events=1
@@ -73,7 +76,8 @@ contains
     injection_events,injection_start,injection_interval,injection_profile_points, &
     injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
-    port_profile_points,port_profile_times,port_profile_rates
+    port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
+    size_options,port_size,nozzle,port_nozzle
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -214,6 +218,13 @@ contains
       'Checkpoint port profile context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end do
+  if (port_count==0) then
+    call append_injector_context(0,size_options,nozzle,nozzle_radius)
+  else
+    do p=1,port_count
+      call append_injector_context(p,port_size(p),port_nozzle(p),port_nozzle_radius(p))
+    end do
+  end if
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
@@ -307,6 +318,24 @@ contains
   if (rank==0) print *, 'MPI spray completed: steps=',step,' time=',time
   call MPI_Finalize(ierr)
 contains
+  subroutine append_injector_context(port,sizes,outlet,radius)
+    integer, intent(in) :: port
+    type(spray_size_options), intent(in) :: sizes
+    type(spray_nozzle_model), intent(in) :: outlet
+    real(dp), intent(in) :: radius
+    call require(all(ieee_is_finite([sizes%shape,sizes%std,sizes%minimum,sizes%maximum, &
+      radius,outlet%swirl,outlet%spread])),'Nonfinite injector options')
+    ! Default settings preserve the preceding checkpoint identity.
+    if (sizes%distribution=='weibull'.and.sizes%weighting=='mass'.and.sizes%std==0.and.sizes%shape==0.and. &
+        sizes%minimum==1e-12_dp.and.sizes%maximum==1.and.radius==0.and.outlet%profile=='legacy'.and. &
+        outlet%swirl==0.and.outlet%spread==0) return
+    write(profile_context,'(*(g0,1x))',iostat=status) 'injector-options-v1',port,sizes%distribution,sizes%weighting, &
+      sizes%std,sizes%shape,sizes%minimum,sizes%maximum,radius,outlet%profile,outlet%swirl,outlet%spread
+    call require(status==0,'Injector context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint injector context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end subroutine
   subroutine build_schedule()
     integer :: completed(16),q,e,selected
     real(dp) :: candidate_time,best_time
@@ -371,15 +400,20 @@ contains
     real(dp) :: amount,event_time,event_center(3),event_axis(3),event_fractions(2)
     real(dp) :: event_speed,event_angle,event_diameter,event_temperature
     integer :: event_number,port,points
+    type(spray_size_options) :: event_size
+    type(spray_nozzle_model) :: event_nozzle
+    real(dp) :: event_radius
     do while(event<schedule_count)
       if (next_injection_time()>time) exit
       candidate=parcels;candidate_mass=masses;candidate_id=last_id;local_mass=0
       amount=total_mass;event_number=number
+      event_size=size_options;event_nozzle=nozzle;event_radius=nozzle_radius
       event_center=center;event_axis=axis;event_fractions=fractions
       event_speed=speed;event_angle=half_angle;event_diameter=diameter;event_temperature=drop_temperature
       port=event_ports(event+1)
       if (port>0) then
         amount=port_mass(port);event_number=port_number(port)
+        event_size=port_size(port);event_nozzle=port_nozzle(port);event_radius=port_nozzle_radius(port)
         event_center=port_center(:,port);event_axis=port_axis(:,port);event_fractions=port_fractions(:,port)
         event_speed=port_speed(port);event_angle=port_half_angle(port)
         event_diameter=port_diameter(port);event_temperature=port_temperature(port)
@@ -402,7 +436,9 @@ contains
       if (rank==0) local_mass=amount
       call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(event_number,0,rank==0), &
         event_center,event_axis,event_speed,event_angle,event_diameter,event_temperature, &
-        options%maximum_parcels,candidate_id,candidate,delta,ok,liquids,event_fractions,candidate_mass)
+        options%maximum_parcels,candidate_id,candidate,delta,ok,liquids,event_fractions,candidate_mass, &
+        event_size%shape,event_size%minimum,event_size%maximum,event_size%weighting,event_size%distribution, &
+        event_size%std,event_radius,event_nozzle)
       call require(ok,'Scheduled injection rejected')
       call migrate_spray_parcels(MPI_COMM_WORLD,candidate,lower,spacing,cells,[nranks,1,1], &
         [.true.,.true.,.true.],options%maximum_parcels,ok,candidate_mass)

@@ -237,7 +237,58 @@ def main():
     run_variant('maximum_resume', 6 - args.ranks, maximum + "\n restart_path='maximum.chk'", stop='0')
     maximum_history = rows(work / 'maximum_resume.history.csv')
     assert int(maximum_history[-1]['events']) == 16 and int(maximum_history[-1]['last_id']) == 0
-    print(f'PASS MPI spray application, port profiles, schedule and restart: {args.ranks} ranks; artifacts: {work}')
+    shaped = (ports + """
+ port_events=1,1
+ port_start=0,0
+ port_nozzle_radius=4e-4,3e-4
+ port_nozzle(1)%profile='solid'
+ port_nozzle(2)%profile='hollow'
+ port_nozzle(2)%swirl=.3
+ port_nozzle(2)%spread=.02
+ port_size(1)%distribution='lognormal'
+ port_size(1)%std=4e-6
+ port_size(1)%minimum=1e-5
+ port_size(1)%maximum=4e-5
+ port_size(2)%shape=2
+ port_size(2)%weighting='number'
+ port_size(2)%minimum=1e-5
+ port_size(2)%maximum=5e-5""")
+    run_variant('shaped', args.ranks, shaped)
+    run_variant('shaped_initial', args.ranks, shaped + "\n checkpoint_path='shaped.chk'", stop='0')
+    shaped_particles = snapshots('shaped_initial', 'particles', ['id'])
+    diameters = {1: [], 2: []}
+    for (ident,), row in shaped_particles.items():
+        port = 1 if ident <= 2 else 2
+        rho = 1000 if port == 1 else 800
+        d = (6 * float(row['mass']) / (math.pi * rho)) ** (1 / 3)
+        assert 1e-5 <= d <= (4e-5 if port == 1 else 5e-5)
+        diameters[port].append(d)
+        radial = math.hypot(float(row['y']) - .002, float(row['z']) - .002)
+        assert 0 < radial <= (4e-4 if port == 1 else 3e-4) * (1 + 1e-12)
+        assert math.isclose(float(row['x']), .002 if port == 1 else .006, abs_tol=1e-15)
+    assert all(max(ds) > min(ds) * 1.01 for ds in diameters.values())
+    run_variant('shaped_resume', 6 - args.ranks, shaped + "\n restart_path='shaped.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('shaped', suffix, keys)
+        actual = snapshots('shaped_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    run_variant('shaped_mismatch', args.ranks,
+                shaped.replace('swirl=.3', 'swirl=.4') + "\n restart_path='shaped.chk'", expect_success=False)
+    assert not (work / 'shaped_mismatch.history.csv').exists()
+    run_variant('scalar_shaped', args.ranks, """ nozzle_radius=4e-4
+ nozzle%profile='solid'
+ size_options%distribution='normal'
+ size_options%std=4e-6
+ size_options%minimum=1e-5
+ size_options%maximum=4e-5""", stop='0')
+    scalar_drops = snapshots('scalar_shaped', 'particles', ['id'])
+    assert len(scalar_drops) == 4
+    assert len({row['mass'] for row in scalar_drops.values()}) == 4
+    assert all(math.hypot(float(row['y']) - .002, float(row['z']) - .002) > 0 for row in scalar_drops.values())
+    print(f'PASS MPI spray application, injector options and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 

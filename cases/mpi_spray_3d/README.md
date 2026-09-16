@@ -171,3 +171,41 @@ Port 1 receives two 7.5e-11 kg doses. Port 2 consumes its first event without
 particles, then receives 1.5e-10 kg. The checkpoint binds every supplied table.
 The checkpoint context capacity is now 131072 characters to retain all 16 tables
 at 64 points each; existing shorter contexts and file schemas are unchanged.
+
+
+## Nozzle geometry and size distributions
+
+The MPI application now passes the existing deterministic injector options through
+to scalar or independent-port injection. Namelist derived-type fields select the
+same models as the serial injector:
+
+```fortran
+ nozzle_radius=4e-4
+ nozzle%profile='solid'
+ nozzle%swirl=0.1
+ size_options%distribution='lognormal'
+ size_options%std=4e-6
+ size_options%minimum=1e-5
+ size_options%maximum=4e-5
+ size_options%weighting='mass'
+```
+
+With independent ports use `port_nozzle_radius(p)`, `port_nozzle(p)%profile`,
+`port_nozzle(p)%swirl`, `port_nozzle(p)%spread` and `port_size(p)%...` instead.
+Port defaults are independent of scalar settings.
+
+Nozzle profiles are `legacy` (default), `solid` and `hollow`. The latter two
+require a positive outlet radius (m). `swirl` and the hollow-only `spread` are
+angles in radians. The outlet lies normal to the port axis at its center.
+
+Size distributions are `weibull` (default), `normal`, `lognormal` and
+`chi-squared`, with `mass` or `number` CDF weighting. `minimum`/`maximum` are
+truncation diameters (m), default 1e-12/1. `shape` is the Weibull exponent (default
+zero gives a single size); `std` is used by normal/lognormal distributions in m.
+Defaults preserve the previous monodisperse point-cone behavior. The requested
+`diameter` / `port_diameter` provides the size parameter; see the serial
+[spray model guide](../../docs/spray.md) for distribution definitions.
+
+Each nondefault injector configuration enters checkpoint identity. Changing it
+rejects restart. These are parcel-source models, not resolved nozzle geometry or
+experimental injector qualification.
