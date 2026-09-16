@@ -288,7 +288,7 @@ contains
     integer :: ratio
 
     dt = 0.0_dp
-    ok = patch%is_strictly_interior() .and. valid_amr_reactive_shapes( &
+    ok = valid_amr_reactive_shapes( &
       species, patch, coarse_state, coarse_temperature, &
       fine_state, fine_temperature)
     if (.not. ok) return
@@ -438,7 +438,6 @@ contains
       boundary_change=0.0_dp
       if (size(boundary_change)/=size(coarse_state,1)) return
     end if
-    if (.not. patch%is_strictly_interior()) return
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return
@@ -1985,7 +1984,6 @@ contains
     integer :: reaction_index
 
     valid = .false.
-    if (.not. patch%is_strictly_interior()) return
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return

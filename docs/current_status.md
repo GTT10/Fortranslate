@@ -38,8 +38,10 @@ covered domain-surface fluxes in the boundary ledger and corrects only uncovered
 interior coarse cells ([evidence](validation/amr-boundary-reflux-20260917.md)).
 Serial PCM/PLM hydro now connects fine physical ghosts, subcycling, boundary
 ledger replacement and average-down for such patches
-([evidence](validation/amr-boundary-touching-hydro-20260917.md)). Reaction/transport,
-MPI, regridding, checkpoint and application activation remain open.
+([evidence](validation/amr-boundary-touching-hydro-20260917.md)). Cell-local reaction,
+reaction/hydro splitting and the state-based CFL helper now accept these patches
+([evidence](validation/amr-boundary-touching-reaction-20260917.md)). Transport, MPI,
+regridding, checkpoint and application activation remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
