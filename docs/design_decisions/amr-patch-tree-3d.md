@@ -365,6 +365,26 @@ choose substep counts, enforce per-level CFL, reconcile levels or update the
 composite boundary ledger. Until those pieces are connected, the application
 continues to use its existing common-timestep path.
 
+## Interval-scoped reflux
+
+`reflux_amr_patch_tree_3d` now accepts optional zero-based `minimum_depth` and
+an optional `synchronized_flux` output. The default depth zero retains full-tree
+behavior. For a deeper minimum, only that depth and descendants are reconciled,
+corrected and restricted; coarser states remain exact and their flux arrays may
+be unallocated. The returned flux array contains effective, area-restricted peer
+fluxes at active depths, with inactive entries unallocated. State, diagnostics
+and optional flux output commit together only on success.
+
+A nested subcycle can therefore reconcile its completed interval, accumulate
+those effective fluxes over later substeps, then include its parent's original
+flux when synchronizing the longer parent interval. Already corrected descendants
+receive only any new effective-minus-supplied flux difference. Root boundary
+correction is zero for a partial interval: its final physical boundary replacement
+is accounted when the root interval closes. No asynchronous time intervals may
+be mixed within one call; all supplied active fluxes must span the same interval.
+This routine does not choose intervals, reconstruct temperatures or perform EOS
+checks. Those remain the recursive hydro scheduler's responsibilities.
+
 ## Remaining integration
 
 Subcycle scheduling and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.

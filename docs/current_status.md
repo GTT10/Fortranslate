@@ -32,7 +32,9 @@ current peers ([evidence](validation/amr-tree-temporal-ghost-20260917.md)). Limi
 ([evidence](validation/amr-tree-plm-ghost-20260917.md)) and transport
 ([evidence](validation/amr-tree-transport-plm-20260917.md)); subcycle scheduling remains open. A single-depth RK2 hydro API now accepts coarse
 time endpoints and returns integrated face fluxes without changing inactive levels
-([evidence](validation/amr-tree-hydro-level-20260917.md)). A transactional tree
+([evidence](validation/amr-tree-hydro-level-20260917.md)). Reflux now supports
+completed intervals restricted to a minimum depth and returns effective fluxes
+for parent accumulation ([evidence](validation/amr-tree-interval-reflux-20260917.md)). A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

@@ -8,14 +8,14 @@ program test_amr_patch_tree_reflux_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   implicit none
   type(amr_patch_tree_3d) :: tree
-  type(amr_tree_state_3d) :: state,saved
+  type(amr_tree_state_3d) :: state,saved,uncorrected,staged
   type(amr_patch_3d) :: patches(5)
-  type(amr_tree_flux_3d), allocatable :: flux(:)
+  type(amr_tree_flux_3d), allocatable :: flux(:),merged(:),scoped(:),effective(:),saved_effective(:)
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:)
   real(dp) :: root(2,4,4,4),h(3,4),spacing(3),initial(2),final(2),expected(2),root_budget(2),budget(2),largest
-  real(dp) :: q(3),v(2),factor,area,old
-  integer :: node,n(3),level,i,j,k,mode,axis,idx(3),hi(3),child,lo_child(3),hi_child(3)
+  real(dp) :: q(3),v(2),factor,area,old,scoped_budget(2),scoped_max,reference_budget(2)
+  integer :: floor_depth,node,n(3),level,i,j,k,mode,axis,idx(3),hi(3),child,lo_child(3),hi_child(3)
   logical :: ok,covered
   character(len=32) :: faces(6)
   call initialize_amr_patch_3d(4,4,4,1,2,2,3,1,4,2,patches(1),ok)
@@ -107,6 +107,7 @@ program test_amr_patch_tree_reflux_3d
         end do
       end do
     end if
+    uncorrected=state
     budget=-17;largest=-19
     call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok)
     call require(ok,'tree flux correction')
@@ -118,14 +119,46 @@ program test_amr_patch_tree_reflux_3d
     call require(maxval(abs(budget-(expected-root_budget)))<2.e-13_dp,'root boundary ledger replacement')
     call require(maxval(abs([sum(state%fields(1)%values(1,:,:,:)),sum(state%fields(1)%values(2,:,:,:))]* &
       product(spacing)-final))<2.e-11_dp,'all corrections and restriction reach the root')
+    reference_budget=budget;staged=uncorrected;merged=flux
+    do floor_depth=2,0,-1
+      scoped=merged
+      do node=1,size(tree%nodes)
+        if (tree%nodes(node)%level>=floor_depth) cycle
+        deallocate(scoped(node)%x,scoped(node)%y,scoped(node)%z)
+      end do
+      scoped_budget=-17;scoped_max=-19
+      call reflux_amr_patch_tree_3d(tree,staged,scoped,spacing,faces,scoped_budget,scoped_max,ok, &
+        minimum_depth=floor_depth,synchronized_flux=effective)
+      call require(ok,'partial interval synchronization')
+      do node=1,size(tree%nodes)
+        if (tree%nodes(node)%level<floor_depth) then
+          call require(all(staged%fields(node)%values==uncorrected%fields(node)%values),'coarse interval untouched')
+          call require(.not.allocated(effective(node)%x),'inactive effective flux absent')
+        else
+          merged(node)=effective(node)
+        end if
+      end do
+      if (floor_depth>0) call require(all(scoped_budget==0),'root budget deferred')
+    end do
+    call require(maxval(abs(scoped_budget-reference_budget))<2e-13_dp,'composed interval boundary budget')
+    do node=1,size(tree%nodes)
+      call require(maxval(abs(staged%fields(node)%values-state%fields(node)%values))<2e-13_dp,'composed interval state')
+    end do
+    call reflux_amr_patch_tree_3d(tree,staged,merged,spacing,faces,scoped_budget,scoped_max,ok)
+    call require(ok,'reuse synchronized flux')
+    call require(scoped_max<2e-13_dp.and.maxval(abs(scoped_budget))<2e-13_dp,'no duplicate correction')
+
   end do
-  saved=state;budget=17;largest=19
+  saved=state;saved_effective=effective;budget=17;largest=19
+  call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok, &
+    minimum_depth=-1,synchronized_flux=effective)
+  call rollback("invalid minimum depth")
   old=flux(5)%x(1,1,4,4);flux(5)%x(1,1,4,4)=old+1
-  call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok)
+  call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok,synchronized_flux=effective)
   call rollback('inconsistent shared peer flux')
   flux(5)%x(1,1,4,4)=old
   flux(1)%z(1,1,1,1)=ieee_value(0.0_dp,ieee_quiet_nan)
-  call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok)
+  call reflux_amr_patch_tree_3d(tree,state,flux,spacing,faces,budget,largest,ok,synchronized_flux=effective)
   call rollback('nonfinite flux')
   print '(a)','test_amr_patch_tree_reflux_3d: PASS'
 contains
@@ -150,6 +183,9 @@ contains
     call require(.not.ok.and.all(budget==17).and.largest==19,'reject and preserve diagnostics: '//label)
     do node=1,6
       call require(all(state%fields(node)%values==saved%fields(node)%values),'preserve all levels: '//label)
+      call require(all(effective(node)%x==saved_effective(node)%x),'preserve synchronized x flux')
+      call require(all(effective(node)%y==saved_effective(node)%y),'preserve synchronized y flux')
+      call require(all(effective(node)%z==saved_effective(node)%z),'preserve synchronized z flux')
     end do
   end subroutine
   subroutine require(condition,label)

@@ -115,7 +115,8 @@ seams and physical boundary-ledger replacement. Synchronous SSPRK2 hydro now
 connects flux production and temperature recovery, using a common timestep
 bounded by all node CFL limits. Limited coarse-donor interpolation is connected
 for PLM hydro and transport. Single-depth RK2 stepping now exposes integrated
-fluxes and coarse-time endpoints; next connect recursive substeps and interval reflux. Exposed-cell chemistry and reaction/hydro splitting are connected;
+fluxes and coarse-time endpoints. Interval-scoped reflux can return corrected
+fluxes while preserving coarser endpoints; next connect the recursive substep scheduler. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.

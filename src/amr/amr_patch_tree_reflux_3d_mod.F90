@@ -2,6 +2,7 @@ module amr_patch_tree_reflux_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use amr_hierarchy_3d_mod, only: average_down_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
     amr_tree_integer_layout_3d,average_down_amr_patch_tree_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
@@ -16,7 +17,8 @@ module amr_patch_tree_reflux_3d_mod
   end type
   public :: reflux_amr_patch_tree_3d
 contains
-  subroutine reflux_amr_patch_tree_3d(tree,state,flux,root_spacing,faces,boundary_correction,maximum_correction,ok)
+  subroutine reflux_amr_patch_tree_3d(tree,state,flux,root_spacing,faces,boundary_correction,maximum_correction,ok, &
+      minimum_depth,synchronized_flux)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(inout) :: state
     type(amr_tree_flux_3d), intent(in) :: flux(:)
@@ -24,6 +26,8 @@ contains
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(inout) :: boundary_correction(:),maximum_correction
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: minimum_depth
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: synchronized_flux(:)
     type(amr_tree_state_3d) :: candidate
     type(amr_tree_flux_3d), allocatable :: work(:)
     type(face_marks), allocatable :: refined(:)
@@ -32,16 +36,20 @@ contains
     real(dp), allocatable :: spacing(:,:),budget(:),correction(:),delta_low(:),delta_high(:)
     logical, allocatable :: covered(:,:,:)
     real(dp) :: largest,area
-    integer :: node,child,parent,level,nvar,n(3),lo(3),hi(3),i,j,k,axis,idx(3),upper_idx(3)
+    integer :: node,child,parent,level,nvar,n(3),lo(3),hi(3),i,j,k,axis,idx(3),upper_idx(3),floor_depth
     logical :: valid
     ok=.false.
     if (.not.state%is_valid(tree)) return
+    floor_depth=0
+    if (present(minimum_depth)) floor_depth=minimum_depth
+    if (floor_depth<0.or.floor_depth>=tree%level_count()) return
     if (size(flux)/=size(tree%nodes).or..not.valid_reactive_boundaries_3d(faces)) return
     nvar=size(state%fields(1)%values,1)
     if (size(boundary_correction)/=nvar) return
     if (.not.all(ieee_is_finite(root_spacing))) return
     if (any(root_spacing<=0)) return
     do node=1,size(flux)
+      if (tree%nodes(node)%level<floor_depth) cycle
       n=tree%nodes(node)%shape
       if (any(n==huge(1))) return
       if (.not.allocated(flux(node)%x).or..not.allocated(flux(node)%y).or..not.allocated(flux(node)%z)) return
@@ -62,12 +70,13 @@ contains
     candidate=state;work=flux;budget=0;largest=0
     allocate(refined(size(flux)))
     do node=1,size(flux)
+      if (tree%nodes(node)%level<floor_depth) cycle
       n=tree%nodes(node)%shape
       allocate(refined(node)%x(n(1)+1,n(2),n(3)),refined(node)%y(n(1),n(2)+1,n(3)), &
         refined(node)%z(n(1),n(2),n(3)+1))
       refined(node)%x=.false.;refined(node)%y=.false.;refined(node)%z=.false.
     end do
-    do level=size(ratios),1,-1
+    do level=size(ratios),floor_depth+1,-1
       call synchronize_peers(level,valid)
       if (.not.valid) return
       do node=1,size(flux)
@@ -101,7 +110,7 @@ contains
         deallocate(covered)
       end do
       ! Updated child fluxes include deeper corrections before being area-averaged.
-      if (level>1) then
+      if (level>floor_depth+1) then
         do node=2,size(flux)
           if (tree%nodes(node)%level+1/=level) cycle
           parent=tree%nodes(node)%parent
@@ -112,6 +121,7 @@ contains
     end do
     n=tree%nodes(1)%shape
     do axis=1,3
+      if (floor_depth>0) exit
       if (faces(2*axis-1)=='periodic') cycle
       area=product(root_spacing)/root_spacing(axis)
       hi=n;hi(axis)=1
@@ -126,8 +136,28 @@ contains
       end do
     end do
     if (.not.all(ieee_is_finite(budget)).or..not.ieee_is_finite(largest)) return
-    call average_down_amr_patch_tree_3d(tree,candidate,valid)
-    if (.not.valid) return
+    if (floor_depth==0) then
+      call average_down_amr_patch_tree_3d(tree,candidate,valid)
+      if (.not.valid) return
+    else
+      ! Do not overwrite coarse endpoints that belong to a longer interval.
+      do node=size(tree%nodes),2,-1
+        parent=tree%nodes(node)%parent
+        if (tree%nodes(parent)%level<floor_depth) cycle
+        call average_down_3d(candidate%fields(parent)%values,candidate%fields(node)%values,tree%nodes(node)%patch,valid)
+        if (.not.valid) return
+      end do
+    end if
+    if (.not.candidate%is_valid(tree)) return
+    if (present(synchronized_flux)) then
+      do node=1,size(work)
+        if (tree%nodes(node)%level>=floor_depth) cycle
+        if (allocated(work(node)%x)) deallocate(work(node)%x)
+        if (allocated(work(node)%y)) deallocate(work(node)%y)
+        if (allocated(work(node)%z)) deallocate(work(node)%z)
+      end do
+      call move_alloc(work,synchronized_flux)
+    end if
     state=candidate;boundary_correction=budget;maximum_correction=largest;ok=.true.
   contains
     subroutine restrict_faces(child_node,parent_node,success)
