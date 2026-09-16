@@ -156,7 +156,12 @@ field gathering is needed for remapping. Ranks with no fine cells remain support
 Checkpoint geometry is broadcast before restart distribution, so rank counts
 can change. Fluid/chemistry/transport stepping and remapping remain rank-local.
 Checkpoint and CSV I/O still require root memory for the complete hierarchy.
-Coarse repartitioning and production scaling are not qualified.
+The library also provides `repartition_mpi_amr_sparse_3d` for explicit contiguous
+coarse-slab counts (at least one coarse column per rank). It transfers both
+levels and temperatures directly with MPI all-to-all exchange; subsequent
+remaps preserve those counts. The application still chooses equal coarse
+column counts: automatic load balancing and production scaling remain open.
+See [repartition evidence](../../docs/validation/amr-mpi-repartition-20260917.md).
 See [serial restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md)
 and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915.md).
 Multipatch/multilevel regridding and 3D EB coupling

@@ -76,6 +76,7 @@ module mpi_amr_sparse_reactive_3d_mod
     procedure :: local_value_count => sparse_hierarchy_local_value_count_3d
   end type mpi_amr_sparse_hierarchy_3d
 
+  public :: repartition_mpi_amr_sparse_3d
   public :: regrid_mpi_amr_sparse_3d
   public :: temperature_tag_mpi_amr_sparse_patch_3d
   public :: initialize_mpi_amr_sparse_distribution_3d
@@ -94,6 +95,128 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: advance_mpi_amr_sparse_full_3d
 
 contains
+
+  subroutine repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,coarse_counts,ok)
+    type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution
+    type(amr_patch_3d), intent(in) :: patch
+    type(mpi_amr_sparse_hierarchy_3d), intent(inout) :: hierarchy
+    integer, intent(in) :: coarse_counts(:)
+    logical, intent(out) :: ok
+    type(mpi_amr_sparse_distribution_3d) :: target
+    type(mpi_amr_sparse_hierarchy_3d) :: candidate
+    integer, allocatable :: reference(:)
+    integer :: ierr
+    logical :: local_ok,global_ok
+
+    ok=.false.
+    local_ok=hierarchy%is_valid(distribution,patch)
+    local_ok=local_ok.and.size(coarse_counts)==distribution%nranks
+    if (local_ok) local_ok=all(coarse_counts>=1).and. &
+      sum(int(coarse_counts,int64))==int(patch%coarse_nx,int64)
+    call sparse_collective_layout_matches_3d(distribution,patch,hierarchy%nvar,local_ok,global_ok)
+    if (.not.global_ok) return
+    reference=coarse_counts
+    call MPI_Bcast(reference,size(reference),MPI_INTEGER,0,distribution%comm,ierr)
+    call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+    if (.not.global_ok) return
+    call sparse_collective_logical_and_3d(distribution%comm,all(coarse_counts==reference),global_ok)
+    if (.not.global_ok) return
+    call initialize_mpi_amr_sparse_distribution_3d(patch,distribution%comm,target,local_ok,coarse_counts)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    candidate%nvar=hierarchy%nvar
+    call transfer_level(hierarchy%coarse_state,hierarchy%coarse_temperature, &
+      distribution%coarse_counts,distribution%coarse_displacements,target%coarse_counts,target%coarse_displacements, &
+      candidate%coarse_state,candidate%coarse_temperature,global_ok)
+    if (.not.global_ok) return
+    call transfer_level(hierarchy%fine_state,hierarchy%fine_temperature, &
+      distribution%fine_counts,distribution%fine_displacements,target%fine_counts,target%fine_displacements, &
+      candidate%fine_state,candidate%fine_temperature,global_ok)
+    if (.not.global_ok) return
+    call sparse_collective_logical_and_3d(distribution%comm,candidate%is_valid(target,patch),global_ok)
+    if (.not.global_ok) return
+    hierarchy=candidate;distribution=target;ok=.true.
+  contains
+    subroutine transfer_level(u,t,old_counts,old_offsets,new_counts,new_offsets,new_u,new_t,success)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+      integer, intent(in) :: old_counts(:),old_offsets(:),new_counts(:),new_offsets(:)
+      real(dp), allocatable, intent(out) :: new_u(:,:,:,:),new_t(:,:,:)
+      logical, intent(out) :: success
+      real(dp), allocatable :: send_values(:),receive_values(:)
+      integer, allocatable :: sc(:),rc(:),sd(:),rd(:)
+      integer :: nr,me,nv,ny,nz,old_first,old_last,new_first,new_last
+      integer :: peer,lo,hi,i,j,k,index,position,mpi_error,plane
+      integer(int64) :: wide_plane
+      logical :: valid
+
+      success=.false.
+      nr=distribution%nranks;me=distribution%rank+1
+      nv=size(u,1);ny=size(u,3);nz=size(u,4)
+      wide_plane=(int(nv,int64)+1)*int(ny,int64)
+      valid=wide_plane<=int(huge(1),int64)
+      if (valid) then
+        wide_plane=wide_plane*int(nz,int64)
+        valid=wide_plane<=int(huge(1),int64)
+      end if
+      if (valid) valid=wide_plane*int(max(old_counts(me),new_counts(me)),int64)<=int(huge(1),int64)
+      call sparse_collective_logical_and_3d(distribution%comm,valid,success)
+      if (.not.success) return
+      success=.false.;plane=int(wide_plane)
+      old_first=old_offsets(me)+1;old_last=old_offsets(me)+old_counts(me)
+      new_first=new_offsets(me)+1;new_last=new_offsets(me)+new_counts(me)
+      allocate(sc(nr),rc(nr),sd(nr),rd(nr))
+      sd=0;rd=0
+      do peer=1,nr
+        lo=max(old_first,new_offsets(peer)+1);hi=min(old_last,new_offsets(peer)+new_counts(peer))
+        sc(peer)=max(0,hi-lo+1)*plane
+        lo=max(new_first,old_offsets(peer)+1);hi=min(new_last,old_offsets(peer)+old_counts(peer))
+        rc(peer)=max(0,hi-lo+1)*plane
+        if (peer>1) then
+          sd(peer)=sd(peer-1)+sc(peer-1);rd(peer)=rd(peer-1)+rc(peer-1)
+        end if
+      end do
+      allocate(send_values(max(1,sum(sc))),receive_values(max(1,sum(rc))))
+      send_values=0;receive_values=0
+      do peer=1,nr
+        if (sc(peer)==0) cycle
+        position=sd(peer)
+        lo=max(old_first,new_offsets(peer)+1);hi=min(old_last,new_offsets(peer)+new_counts(peer))
+        do k=1,nz
+          do j=1,ny
+            do i=lo,hi
+              index=i-old_first+1
+              send_values(position+1:position+nv)=u(:,index,j,k)
+              send_values(position+nv+1)=t(index,j,k)
+              position=position+nv+1
+            end do
+          end do
+        end do
+      end do
+      call MPI_Alltoallv(send_values,sc,sd,MPI_DOUBLE_PRECISION,receive_values,rc,rd,MPI_DOUBLE_PRECISION, &
+        distribution%comm,mpi_error)
+      call sparse_collective_mpi_success_3d(distribution%comm,mpi_error,success)
+      if (.not.success) return
+      allocate(new_u(nv,new_counts(me),ny,nz),new_t(new_counts(me),ny,nz))
+      do peer=1,nr
+        if (rc(peer)==0) cycle
+        position=rd(peer)
+        lo=max(new_first,old_offsets(peer)+1);hi=min(new_last,old_offsets(peer)+old_counts(peer))
+        do k=1,nz
+          do j=1,ny
+            do i=lo,hi
+              index=i-new_first+1
+              new_u(:,index,j,k)=receive_values(position+1:position+nv)
+              new_t(index,j,k)=receive_values(position+nv+1)
+              position=position+nv+1
+            end do
+          end do
+        end do
+      end do
+      success=all(ieee_is_finite(new_u)).and.all(ieee_is_finite(new_t))
+      call sparse_collective_logical_and_3d(distribution%comm,success,valid)
+      success=valid
+    end subroutine transfer_level
+  end subroutine repartition_mpi_amr_sparse_3d
 
   subroutine regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok,reconstruction,limiter, &
       boundary_faces,inflow_state,inflow_temperature)
@@ -139,7 +262,8 @@ contains
         next_patch%coarse_k_lower,next_patch%coarse_k_upper,next_patch%refinement_ratio],dp), &
       reconstruction//'|'//limiter//merge('|physical','|periodic',present(boundary_faces)),local_ok,global_ok)
     if (.not.global_ok) return
-    call initialize_mpi_amr_sparse_distribution_3d(next_patch,distribution%comm,next_distribution,local_ok)
+    call initialize_mpi_amr_sparse_distribution_3d(next_patch,distribution%comm,next_distribution,local_ok, &
+      distribution%coarse_counts)
     if (local_ok) local_ok=all(next_distribution%coarse_counts==distribution%coarse_counts).and. &
       all(next_distribution%coarse_displacements==distribution%coarse_displacements)
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
@@ -4186,11 +4310,12 @@ contains
   end subroutine unpack_sparse_x_plane_3d
 
   subroutine initialize_mpi_amr_sparse_distribution_3d( &
-      patch, comm, distribution, ok)
+      patch, comm, distribution, ok, coarse_counts)
     type(amr_patch_3d), intent(in) :: patch
     type(MPI_Comm), intent(in) :: comm
     type(mpi_amr_sparse_distribution_3d), intent(out) :: distribution
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: coarse_counts(:)
 
     integer :: ierr, rank_index, candidate_rank, parent_first, parent_last
 
@@ -4204,13 +4329,27 @@ contains
         distribution%nranks < 1 .or. &
         distribution%nranks > patch%coarse_nx) return
 
+    if (present(coarse_counts)) then
+      if (size(coarse_counts)/=distribution%nranks) return
+      if (any(coarse_counts<1)) return
+      if (sum(int(coarse_counts,int64))/=int(patch%coarse_nx,int64)) return
+    end if
     allocate(distribution%coarse_counts(distribution%nranks))
     allocate(distribution%coarse_displacements(distribution%nranks))
     allocate(distribution%fine_counts(distribution%nranks))
     allocate(distribution%fine_displacements(distribution%nranks))
+    if (present(coarse_counts)) then
+      distribution%coarse_counts=coarse_counts
+      distribution%coarse_displacements(1)=0
+      do rank_index=2,distribution%nranks
+        distribution%coarse_displacements(rank_index)=distribution%coarse_displacements(rank_index-1)+ &
+          distribution%coarse_counts(rank_index-1)
+      end do
+    else
     call build_sparse_slab_counts_3d( &
       patch%coarse_nx, distribution%nranks, &
       distribution%coarse_counts, distribution%coarse_displacements)
+    end if
     distribution%fine_counts = 0
     distribution%fine_displacements = 0
     do rank_index = 1, distribution%nranks

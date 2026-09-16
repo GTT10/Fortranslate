@@ -9,7 +9,7 @@ program test_mpi_amr_regrid_3d
   use amr_reactive_3d_mod, only: regrid_amr_reactive_3d
   use mpi_amr_sparse_reactive_3d_mod, only: mpi_amr_sparse_distribution_3d,mpi_amr_sparse_hierarchy_3d, &
     initialize_mpi_amr_sparse_distribution_3d,scatter_mpi_amr_sparse_hierarchy_3d, &
-    gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d
+    gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_3d) :: patch,serial_patch,next_patch,bad,saved_patch
@@ -20,6 +20,7 @@ program test_mpi_amr_regrid_3d
   character(len=32), allocatable :: faces(:)
   character(len=32) :: method
   integer :: ierr,rank,i,j,k,r,mode,lo,hi
+  integer, allocatable :: counts(:)
   logical :: ok
 
   call MPI_Init(ierr)
@@ -49,7 +50,21 @@ program test_mpi_amr_regrid_3d
     end do
     call scatter_mpi_amr_sparse_hierarchy_3d(distribution,species,patch,0,c,t,f,ft,hierarchy,ok)
     call require(ok,'scatter')
+    allocate(counts(distribution%nranks))
     do mode=1,5
+      counts=1
+      if (modulo(mode,2)==1) then
+        counts(1)=9-distribution%nranks
+      else
+        counts(distribution%nranks)=9-distribution%nranks
+      end if
+      call repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,counts,ok)
+      call require(ok,'direct repartition')
+      call require(all(distribution%coarse_counts==counts),'requested coarse ownership')
+      call gather_mpi_amr_sparse_hierarchy_3d(distribution,patch,0,hierarchy,gc,gt,gf,gft,ok)
+      call require(ok,'gather repartition')
+      if (rank==0) call require(all(c==gc).and.all(t==gt).and.all(f==gf).and.all(ft==gft), &
+        'repartition preserves all state and temperature values')
       method='characteristic_plm';lo=3;hi=5
       if (mode==2) then
         allocate(faces(6));faces='outflow';faces(1)='slip_wall';faces(5)='no_slip_wall'
@@ -74,8 +89,21 @@ program test_mpi_amr_regrid_3d
       if (rank==0) call require(all(c==gc).and.all(t==gt).and.all(f==gf).and.all(ft==gft), &
         'states and temperatures exactly match serial')
       call require(distribution%is_valid(patch),'remapped ownership')
+      call require(all(distribution%coarse_counts==counts),'remap preserves chosen coarse partition')
     end do
     saved=hierarchy;saved_distribution=distribution;saved_patch=patch
+    counts=distribution%coarse_counts
+    if (rank==0) counts(1)=0
+    call repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,counts,ok)
+    call rollback()
+    if (distribution%nranks<8) then
+      counts=distribution%coarse_counts
+      if (rank==0) then
+        counts(1)=counts(1)-1;counts(2)=counts(2)+1
+      end if
+      call repartition_mpi_amr_sparse_3d(distribution,patch,hierarchy,counts,ok)
+      call rollback()
+    end if
     bad=patch
     if (rank==0) bad%coarse_i_lower=0
     call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,bad,ok,'pcm','mc',faces)
@@ -92,7 +120,7 @@ program test_mpi_amr_regrid_3d
     bad=patch
     call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,bad,ok,'pcm','mc',faces,inlet,it)
     call rollback()
-    deallocate(f,ft,faces)
+    deallocate(f,ft,faces,counts)
   end do
   if (rank==0) print '(a)','test_mpi_amr_regrid_3d: PASS'
   call MPI_Finalize(ierr)
@@ -103,7 +131,9 @@ contains
       all(hierarchy%coarse_temperature==saved%coarse_temperature).and. &
       all(hierarchy%fine_state==saved%fine_state).and.all(hierarchy%fine_temperature==saved%fine_temperature), &
       'failure preserves hierarchy')
-    call require(all(distribution%fine_counts==saved_distribution%fine_counts).and. &
+    call require(all(distribution%coarse_counts==saved_distribution%coarse_counts).and. &
+      all(distribution%coarse_displacements==saved_distribution%coarse_displacements).and. &
+      all(distribution%fine_counts==saved_distribution%fine_counts).and. &
       all(distribution%fine_displacements==saved_distribution%fine_displacements).and. &
       patch%coarse_i_lower==saved_patch%coarse_i_lower.and.patch%coarse_i_upper==saved_patch%coarse_i_upper, &
       'failure preserves geometry and ownership')
