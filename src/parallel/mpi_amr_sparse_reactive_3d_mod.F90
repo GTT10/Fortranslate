@@ -4,6 +4,8 @@ module mpi_amr_sparse_reactive_3d_mod
   use mpi_f08
   use constants_mod, only: mechanism_species_capacity
   use elementary_kinetics_mod, only: plog_capacity, chebyshev_capacity
+  use simulation_config_reactive_3d_mod, only: &
+    fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d,valid_wall_velocity_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -78,6 +80,7 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: gather_mpi_amr_sparse_hierarchy_3d
   public :: compute_mpi_amr_sparse_cfl_timestep_3d
   public :: compute_mpi_amr_sparse_transport_timestep_3d
+  public :: build_mpi_amr_sparse_boundary_halos_3d
   public :: build_mpi_amr_sparse_periodic_halos_3d
   public :: advance_mpi_amr_sparse_periodic_hydro_3d
   public :: advance_mpi_amr_sparse_hydro_3d
@@ -2981,6 +2984,115 @@ contains
     ok = ieee_is_finite(maximum_rate)
     if (ok) ok = maximum_rate > 0.0_dp
   end subroutine local_sparse_maximum_rate_3d
+
+  ! Two layers on every axis, retaining sparse one-column-per-rank support.
+  ! The periodic exchange supplies real neighbor columns; physical extensions
+  ! then replace only columns outside the global domain, including on a rank
+  ! one column inward from a wall. No full-level gather is required.
+  subroutine build_mpi_amr_sparse_boundary_halos_3d(distribution,state,temperature,faces, &
+      halo_state,halo_temperature,ok,viscous_wall,inflow_state,inflow_temperature,wall_velocity)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), allocatable, intent(inout) :: halo_state(:,:,:,:),halo_temperature(:,:,:)
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: viscous_wall
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
+    real(dp), allocatable :: raw(:,:,:,:),rt(:,:,:),extended(:,:,:,:),et(:,:,:)
+    real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),edge(:,:,:,:),edge_t(:,:,:),values(:),reference(:)
+    real(dp) :: velocities(3,6),edge_velocities(3,6)
+    character(len=32) :: canonical(6),local_faces(6),edge_faces(6)
+    integer :: options(4),low(4),high(4),ierr,n,ny,nz,nv,total,first,g,i,start,offset,count
+    logical :: local_ok,global_ok,viscous
+    ok=.false.;viscous=.false.
+    if (present(viscous_wall)) viscous=viscous_wall
+    options=[merge(1,0,viscous),merge(1,0,present(inflow_state)), &
+      merge(1,0,present(inflow_temperature)),merge(1,0,present(wall_velocity))]
+    call MPI_Allreduce(options,low,4,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(options,high,4,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    canonical=faces
+    call MPI_Bcast(canonical,192,MPI_CHARACTER,0,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    n=size(state,2);ny=size(state,3);nz=size(state,4);nv=size(state,1)
+    local_ok=all(canonical==faces).and.valid_reactive_boundaries_3d(faces).and.n>=1.and.ny>=2.and.nz>=2
+    local_ok=local_ok.and.allocated(distribution%coarse_counts).and.allocated(distribution%coarse_displacements)
+    if (local_ok) local_ok=size(distribution%coarse_counts)==distribution%nranks.and. &
+      size(distribution%coarse_displacements)==distribution%nranks
+    if (local_ok) local_ok=distribution%rank>=0.and.distribution%rank<distribution%nranks
+    if (local_ok) local_ok=distribution%coarse_counts(distribution%rank+1)==n.and. &
+      distribution%coarse_first==distribution%coarse_displacements(distribution%rank+1)+1
+    if (present(inflow_state)) local_ok=local_ok.and.all(shape(inflow_state)==[nv,6])
+    if (present(inflow_temperature)) local_ok=local_ok.and.size(inflow_temperature)==6
+    if (present(wall_velocity)) local_ok=local_ok.and.all(shape(wall_velocity)==[3,6])
+    if (present(wall_velocity)) then
+      if (local_ok) local_ok=valid_wall_velocity_3d(faces,wall_velocity)
+    end if
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    ! Validate transverse shapes and exchange before allocating replicated metadata.
+    call build_mpi_amr_sparse_periodic_halos_3d(distribution,state,temperature,raw,rt,global_ok)
+    if (.not.global_ok) return
+    total=sum(distribution%coarse_counts);first=distribution%coarse_first
+    local_ok=total>=2
+    count=nv*6*options(2)+6*options(3)+18*options(4)
+    allocate(values(count),reference(count));offset=0
+    if (present(inflow_state)) then
+      values(1:nv*6)=reshape(inflow_state,[nv*6]);offset=nv*6
+    end if
+    if (present(inflow_temperature)) then
+      values(offset+1:offset+6)=inflow_temperature;offset=offset+6
+    end if
+    if (present(wall_velocity)) values(offset+1:offset+18)=reshape(wall_velocity,[18])
+    reference=values
+    call MPI_Bcast(reference,count,MPI_DOUBLE_PRECISION,0,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    local_ok=local_ok.and.all(ieee_is_finite(values)).and.all(values==reference)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    velocities=0
+    if (present(wall_velocity)) velocities=wall_velocity
+    local_faces=faces;local_faces(1:2)='periodic';edge_velocities=velocities;edge_velocities(:,1:2)=0
+    allocate(extended(nv,n+8,ny+4,nz+4),et(n+8,ny+4,nz+4))
+    call fill_reactive_boundary_ghosts_3d(raw,rt,local_faces,extended,et,local_ok,viscous, &
+      inflow_state,inflow_temperature,edge_velocities)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    allocate(candidate,source=extended(:,3:n+6,:,:));allocate(ct,source=et(3:n+6,:,:))
+    allocate(edge(nv,6,ny+4,nz+4),edge_t(6,ny+4,nz+4))
+    if (first<=2.and.faces(1)/='periodic') then
+      start=4-first
+      edge_faces=faces;edge_faces(2)='outflow';edge_velocities=velocities;edge_velocities(:,2)=0
+      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
+        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+      if (local_ok) then
+        do i=1,2
+          g=first+i-3
+          if (g>=1) cycle
+          candidate(:,i,:,:)=edge(:,g+2,:,:);ct(i,:,:)=edge_t(g+2,:,:)
+        end do
+      end if
+    end if
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    if (first+n-1>=total-1.and.faces(2)/='periodic') then
+      start=total-first+2
+      edge_faces=faces;edge_faces(1)='outflow';edge_velocities=velocities;edge_velocities(:,1)=0
+      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
+        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+      if (local_ok) then
+        do i=n+3,n+4
+          g=first+i-3
+          if (g<=total) cycle
+          candidate(:,i,:,:)=edge(:,g-total+4,:,:);ct(i,:,:)=edge_t(g-total+4,:,:)
+        end do
+      end if
+    end if
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    call move_alloc(candidate,halo_state);call move_alloc(ct,halo_temperature);ok=.true.
+  end subroutine build_mpi_amr_sparse_boundary_halos_3d
 
   subroutine build_mpi_amr_sparse_periodic_halos_3d( &
       distribution, state, temperature, halo_state, halo_temperature, ok)

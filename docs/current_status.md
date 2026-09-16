@@ -18,6 +18,11 @@ Older milestone prose remains historical detail, not a current global status.
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
 | LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity or shared or per-port multicomponent compositions, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, selectable Schiller-Naumann or PelePhysics drag with ETAB deformation correction, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup, optional KH shed-mass children with conservative transverse velocities, and bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection from point or finite circular solid/hollow outlets with swirl with up to 16 independently configured ports and optional piecewise-linear shared or independent per-port injection-rate histories with optional discharge-based injection speed, and per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared size distributions, deviatoric Smagorinsky, coupled restart | Physical mixture boiling, general dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, lateral wall-film transport and impact qualification, calibrated properties and experimental validation |
 
+Sparse MPI AMR now has a physical ghost-layer API supporting one coarse column
+per rank, with exact serial face/corner comparisons and collective rollback
+([evidence](validation/amr-mpi-boundary-halo-20260917.md)). MPI physical-boundary
+stepping and application activation remain open.
+
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are
 connected to the regular coupled-step API with wall budgets, stationary film

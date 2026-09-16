@@ -14,7 +14,7 @@ program test_mpi_amr_reactive_3d
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: reactive_nvar, reactive_species_component
   use state_indices_mod, only: irho
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: &
@@ -40,7 +40,7 @@ program test_mpi_amr_reactive_3d
     scatter_mpi_amr_sparse_hierarchy_3d, &
     gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
-    build_mpi_amr_sparse_periodic_halos_3d, &
+    build_mpi_amr_sparse_periodic_halos_3d,build_mpi_amr_sparse_boundary_halos_3d, &
     advance_mpi_amr_sparse_periodic_hydro_3d, &
     advance_mpi_amr_sparse_hydro_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
@@ -383,6 +383,7 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, coarse_state, coarse_temperature, &
       sparse_halo_state, sparse_halo_temperature), &
     "two-plane sparse periodic halo bit parity")
+  call check_physical_halos()
   serial_coarse = coarse_state
   serial_coarse_temperature = coarse_temperature
   allocate(serial_flux_x, mold=serial_coarse)
@@ -699,6 +700,49 @@ program test_mpi_amr_reactive_3d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine check_physical_halos()
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),reference(:,:,:,:),rt(:,:,:),saved(:,:,:,:),st(:,:,:)
+    real(dp), allocatable :: inlet(:,:),it(:)
+    real(dp) :: velocity(3,6)
+    character(len=32) :: faces(6)
+    integer :: mode,lo,hi
+    allocate(reference(size(coarse_state,1),n+4,n+4,n+4),rt(n+4,n+4,n+4))
+    allocate(inlet(size(coarse_state,1),6),it(6))
+    inlet=spread(coarse_state(:,1,1,1),2,6);it=coarse_temperature(1,1,1)
+    lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last+4
+    do mode=1,3
+      faces='periodic';velocity=0
+      if (mode==1) then
+        faces(1)='slip_wall';faces(2)='outflow';faces(3)='slip_wall';faces(4)='outflow'
+      else if (mode==2) then
+        faces(1)='no_slip_wall';faces(2)='no_slip_wall';velocity(2,1)=20;velocity(3,2)=-10
+        faces(5)='inflow';faces(6)='outflow'
+      else
+        faces(1)='inflow';faces(2)='outflow';faces(3)='no_slip_wall';faces(4)='no_slip_wall'
+      end if
+      call fill_reactive_boundary_ghosts_3d(coarse_state,coarse_temperature,faces,reference,rt,ok, &
+        viscous_wall=mode==2,inflow_state=inlet,inflow_temperature=it,wall_velocity=velocity)
+      call require(ok,'serial physical halo reference')
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity)
+      call require(ok,'sparse physical halo fill')
+      call require(all(ghost==reference(:,lo:hi,:,:)).and.all(gt==rt(lo:hi,:,:)), &
+        'sparse physical ghost faces and corners exactly match serial')
+      saved=ghost;st=gt
+      if (sparse_distribution%rank==0) it(1)=ieee_value(0.0_dp,ieee_quiet_nan)
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity)
+      call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'one-rank invalid metadata preserves ghost outputs')
+      it=coarse_temperature(1,1,1)
+    end do
+    if (sparse_distribution%nranks>1) then
+      if (sparse_distribution%rank==0) faces(1)='outflow'
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,.false.,inlet,it,velocity)
+      call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'mismatched physical faces reject collectively')
+    end if
+  end subroutine check_physical_halos
 
   subroutine run_adversarial_sparse_transport_tests()
     character(len=8), parameter :: orientation_name(6) = [ &
