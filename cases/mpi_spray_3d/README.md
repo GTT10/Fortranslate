@@ -296,7 +296,7 @@ viscosity. Gas wall data pass through molecular transport and optional SGS.
 
 Particles leaving an inlet/outlet are removed. Wall crossings use stationary
 specular reflection; tangential gas-wall motion does not introduce moving-wall
-particle impact. Deposition/splash and film evolution remain separate APIs.
+particle impact. Enable mixed deposition/splash and film evolution through `impact` below.
 Injection migration wraps only periodic axes; injection outside a nonperiodic
 face is rejected. Use [boundary_mixture.nml](boundary_mixture.nml) for an open-x,
 temperature-controlled wall example with particle escape and SGS enabled.
@@ -304,6 +304,44 @@ temperature-controlled wall example with particle escape and SGS enabled.
 Nonperiodic history files append `boundary_mass,boundary_energy`, positive into
 the gas-plus-particle system. Mass/energy error columns subtract that cumulative
 ledger. Checkpoints bind face labels and wall data and persist the full boundary
-inventory using the existing boundary/film schema with zero films. Restart may
+inventory using the existing boundary/film schema, including active films. Restart may
 change MPI rank count; changing physical boundaries or wall data is rejected.
 The periodic default retains its existing history columns and checkpoint context.
+
+## Wall impacts and films
+
+The derived namelist group `impact` configures the existing mixed-liquid impact
+and stationary-film models. For example:
+
+```fortran
+ boundary_faces='periodic','periodic','periodic','periodic','slip_wall','slip_wall'
+ impact%enabled(5)=.true.
+ impact%temperature=350,350,350,350,350,350
+ impact%evolve=.true.
+ impact%liquid_conductivity=.6
+ surface_tension=.072
+ liquid_viscosity=.001
+```
+
+See [wall_film.nml](wall_film.nml) for a complete deposition/evaporation example.
+Impact-enabled faces must be walls; surface tension and liquid viscosity must be
+positive. `impact%temperature` controls the impact/film wall model independently
+of the gas-wall `wall_temperature`. `impact%evolve=.false.` retains deposited films
+without heating/evaporation. Other `spray_wall_options` fields, including contact
+angle, film capacity, minimum height and conductivity models, are accepted using
+the same derived namelist syntax and bound to restart context.
+
+When impact is enabled, history adds `films,film_mass` and total inventories include
+film mass, mixture internal energy and component inventories. Each rank writes
+`.films.csv` with material, position, normal, mass, temperature, diameter, height
+and whole-film component masses. Checkpoints preserve films and splash parent IDs;
+film model changes reject restart. Impact checkpoints use the versioned
+`_RET_V1` lineage extension, allowing consumed parents while enforcing
+`0 <= parent_id < child_id <= last_id`. Older strict-parent checkpoints keep
+their previous validation. Films have no global ID, so compare outputs by
+physical records rather than rank or row order after repartitioning.
+
+The MPI integration performs frozen-gas transfer/breakup before each synchronous
+collision batch and uses pre-batch film heights. Film heating/evaporation brackets
+the coupled update with half-steps. This differs from sequential serial impact
+ordering and does not establish physical wet-wall or spray validation.

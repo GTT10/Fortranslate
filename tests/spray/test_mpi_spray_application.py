@@ -394,6 +394,64 @@ def main():
                 physical.replace('600,600,600,600,600,600', '600,600,600,550,600,600') +
                 " restart_path='physical.chk'", expect_success=False)
     assert not (work / 'physical_mismatch.history.csv').exists()
+    wall_model = """
+ boundary_faces='periodic','periodic','periodic','periodic','slip_wall','slip_wall'
+ center=.004,.002,1e-10
+ axis=0,0,-1
+ speed=1
+ surface_tension=.072
+ liquid_viscosity=.001
+ impact%enabled(5)=.true.
+ impact%temperature=350,350,350,350,350,350
+ impact%evolve=.true.
+ impact%liquid_conductivity=.6
+ impact%minimum_height=1e-10
+"""
+    for model_name, model in [('film', wall_model), ('splash', wall_model.replace('speed=1', 'speed=100'))]:
+        run_variant(model_name, args.ranks, model)
+        run_variant(model_name + '_split', args.ranks, model + f" checkpoint_path='{model_name}.chk'", stop='1e-8')
+        reference_history = rows(work / f'{model_name}.history.csv')
+        assert int(reference_history[-1]['films']) > 0
+        assert float(reference_history[-1]['film_mass']) > 0
+        if model_name == 'film':
+            assert int(reference_history[-1]['parcels']) == 0
+        else:
+            assert int(reference_history[-1]['parcels']) > 4
+        def film_records(prefix):
+            records = [record for path in work.glob(f'{prefix}.rank*.films.csv') for record in rows(path)]
+            return sorted(records, key=lambda record: tuple(float(record[key]) for key in
+                          ['x', 'y', 'z', 'material_id', 'mass', 'temperature']))
+        reference_films = film_records(model_name)
+        assert any(float(record['temperature']) > 330 for record in reference_films)
+        for record in reference_films:
+            assert math.isclose(float(record['mass']), float(record['component_mass_1']) +
+                                float(record['component_mass_2']), rel_tol=2e-12)
+        for suffix, count in [('resume', args.ranks), ('redistributed', 6 - args.ranks)]:
+            name = model_name + '_' + suffix
+            run_variant(name, count, model + f" restart_path='{model_name}.chk'")
+            for kind, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+                expected, actual = snapshots(model_name, kind, keys), snapshots(name, kind, keys)
+                assert expected.keys() == actual.keys()
+                for key, record in expected.items():
+                    for column, value in record.items():
+                        if count == args.ranks:
+                            assert actual[key][column] == value, (name, key, column)
+                        else:
+                            assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25)
+            actual_films = film_records(name)
+            assert len(actual_films) == len(reference_films)
+            for expected, actual in zip(reference_films, actual_films):
+                for column, value in expected.items():
+                    if count == args.ranks:
+                        assert actual[column] == value, (name, column)
+                    else:
+                        assert math.isclose(float(actual[column]), float(value), rel_tol=2e-11, abs_tol=1e-25)
+            for record in rows(work / f'{name}.history.csv') + reference_history:
+                assert abs(float(record['relative_mass_error'])) < 2e-11
+                assert abs(float(record['relative_energy_error'])) < 2e-11
+    run_variant('film_mismatch', args.ranks, wall_model.replace('conductivity=.6', 'conductivity=.7') +
+                " restart_path='film.chk'", expect_success=False)
+    assert not (work / 'film_mismatch.history.csv').exists()
     print(f'PASS MPI spray application, SGS and restart: {args.ranks} ranks; artifacts: {work}')
 
 

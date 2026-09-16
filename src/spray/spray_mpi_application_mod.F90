@@ -11,7 +11,7 @@ module spray_mpi_application_mod
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
-  use spray_wall_impact_mod, only: spray_wall_film
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options,mixture_film_evolution_id
   use spray_parcel_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: mixture_system_totals
@@ -31,6 +31,7 @@ contains
   type(gas_transport_species), intent(in) :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
+  type(spray_wall_options) :: impact
   character(len=8) :: breakup_model='none'
   logical :: khrt_children=.false.
   real(dp) :: khrt_reference_diameter_cubed=0
@@ -46,7 +47,9 @@ contains
   real(dp) :: wall_temperature(6)=600,wall_velocity(3,6)=0
   real(dp) :: boundary_total(5+size(species)),boundary_step(5+size(species))
   real(dp) :: inlet_state(5+size(species),6),inlet_temperature(6)
-  logical :: physical_boundaries,periodic_axes(3)
+  logical :: physical_boundaries,periodic_axes(3),impact_active
+  real(dp) :: local_film_mass,global_film_mass
+  integer(int64) :: local_films,global_films
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),masses(:,:)
   integer :: cells(3)=[8,4,4],number=4,max_steps=10000,injection_events=1
   real(dp) :: injection_start=0,injection_interval=1e-8_dp
@@ -94,7 +97,7 @@ contains
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
     khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct, &
-    boundary_faces,wall_temperature,wall_velocity
+    boundary_faces,wall_temperature,wall_velocity,impact
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -289,6 +292,16 @@ contains
       'Checkpoint boundary context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
+  call require(valid_wall_options(impact,boundary_faces),'Invalid wall impact/film options')
+  impact_active=any(impact%enabled)
+  if (impact_active) then
+    call require(surface_tension>=1e-8_dp.and.liquid_viscosity>0,'Wall impact requires surface tension and viscosity')
+    write(input_record,'(*(g0,1x))',iostat=status) 'mpi-wall-impact-film-v1',mixture_film_evolution_id,impact
+    call require(status==0,'Wall impact context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(input_record)<=len(checkpoint_context), &
+      'Checkpoint wall model context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(input_record)
+  end if
   allocate(checkpoint_films(0),checkpoint_film_mass(2,0))
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
@@ -314,6 +327,7 @@ contains
       'relative_mass_error,relative_energy_error,'// &
       'events,last_id,injected_mass,injected_energy'
     if (physical_boundaries) write(history_unit,'(a)',advance='no') ',boundary_mass,boundary_energy'
+    if (impact_active) write(history_unit,'(a)',advance='no') ',films,film_mass'
     write(history_unit,'(a)') ''
   end if
   call budgets();call history()
@@ -336,10 +350,17 @@ contains
     ok=.false.
     do attempt=1,20
       if (dt<=0.or.time+dt<=time) exit
+      if (impact_active) then
+      call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
+        state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
+        solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
+        inlet_state,inlet_temperature,wall_temperature,wall_velocity,checkpoint_films,checkpoint_film_mass,impact)
+      else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
         solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
         inlet_state,inlet_temperature,wall_temperature,wall_velocity)
+      end if
       if (ok) exit
       dt=.5_dp*dt
     end do
@@ -386,6 +407,17 @@ contains
       parcels(p)%parent_id,parcels(p)%khrt_initial_count,parcels(p)%khrt_shed_volume
   end do
   close(unit)
+  if (impact_active) then
+    open(newunit=unit,file=trim(output_prefix)//'.rank'//rank_text//'.films.csv',status='new',action='write',iostat=status)
+    call require(status==0,'Cannot create film output')
+    write(unit,'(a)') 'material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height,component_mass_1,component_mass_2'
+    do p=1,size(checkpoint_films)
+      write(unit,'(*(g0,:,","))') checkpoint_films(p)%material_id,checkpoint_films(p)%position,checkpoint_films(p)%normal, &
+        checkpoint_films(p)%mass,checkpoint_films(p)%temperature,checkpoint_films(p)%diameter, &
+        checkpoint_films(p)%height,checkpoint_film_mass(:,p)
+    end do
+    close(unit)
+  end if
   if (rank==0) print *, 'MPI spray completed: steps=',step,' time=',time
   call MPI_Finalize(ierr)
 contains
@@ -528,13 +560,20 @@ contains
     call MPI_Abort(MPI_COMM_WORLD,1,ierr)
   end subroutine
   subroutine budgets()
-    call mixture_system_totals(state,spacing,parcels,liquids,masses,local_totals,ok)
+    call mixture_system_totals(state,spacing,parcels,liquids,masses,local_totals,ok,checkpoint_films,checkpoint_film_mass)
     call require(ok,'Inventory calculation failed')
     call MPI_Allreduce(local_totals,totals,size(totals),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(ierr==MPI_SUCCESS,'Inventory reduction failed')
     local_count=int(size(parcels),int64)
     call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(ierr==MPI_SUCCESS,'Particle count reduction failed')
+    if (impact_active) then
+      local_films=int(size(checkpoint_films),int64);local_film_mass=sum(checkpoint_films%mass)
+      call MPI_Allreduce(local_films,global_films,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(ierr==MPI_SUCCESS,'Film count reduction failed')
+      call MPI_Allreduce(local_film_mass,global_film_mass,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(ierr==MPI_SUCCESS,'Film inventory reduction failed')
+    end if
   end subroutine
   subroutine checkpoint(writing,path)
     logical, intent(in) :: writing
@@ -542,9 +581,10 @@ contains
     if (physical_boundaries) then
       call mpi_spray_checkpoint(MPI_COMM_WORLD,writing,path,trim(checkpoint_context),species, &
         state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
-        breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt',shedding_state=khrt_children, &
+        breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt', &
+        shedding_state=khrt_children,retired_parent_state=impact_active, &
         wall_films=checkpoint_films,film_mass=checkpoint_film_mass,wall_totals=boundary_total)
-      if (ok) ok=size(checkpoint_films)==0
+      if (ok.and..not.impact_active) ok=size(checkpoint_films)==0
     else
       call mpi_spray_checkpoint(MPI_COMM_WORLD,writing,path,trim(checkpoint_context),species, &
         state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
@@ -559,6 +599,7 @@ contains
       (totals(5)-initial_totals(5)-injected(5)-boundary_total(5))/max(1e-30_dp,abs(initial_totals(5)+injected(5))), &
       event,last_id,injected(1),injected(5)
     if (physical_boundaries) write(history_unit,'(a,g0,a,g0)',advance='no') ',',boundary_total(1),',',boundary_total(5)
+    if (impact_active) write(history_unit,'(a,i0,a,g0)',advance='no') ',',global_films,',',global_film_mass
     write(history_unit,'(a)') ''
     flush(history_unit)
   end subroutine

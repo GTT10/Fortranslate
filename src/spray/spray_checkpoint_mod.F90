@@ -84,10 +84,12 @@ contains
   end function
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
+      retired_parent_state)
     integer(int64), intent(in), optional :: last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
+    logical, intent(in), optional :: retired_parent_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
     character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -112,6 +114,8 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
+    has_retired=.false.
+    if (present(retired_parent_state)) has_retired=retired_parent_state
     has_shedding=.false.
     if (present(shedding_state)) has_shedding=shedding_state
     has_khrt=.false.
@@ -138,6 +142,10 @@ contains
     if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
     if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
     if (present(last_id)) expected_magic=trim(expected_magic)//'_ID_V1'
+    if (has_retired) then
+      if (.not.present(last_id).or..not.(has_split.or.has_films)) return
+      expected_magic=trim(expected_magic)//'_RET_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -180,7 +188,7 @@ contains
       if (.not.(has_split.or.has_films).and.parcels(p)%parent_id/=0) return
       if (.not.has_shedding.and.(parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0)) return
       if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
-      if (parcels(p)%parent_id>0) then
+      if (parcels(p)%parent_id>0.and..not.has_retired) then
         if (.not.parent_exists(parcels,p)) return
       end if
       if (.not.has_breakup) then
@@ -279,11 +287,13 @@ contains
 
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
-      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id)
+      source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
+      retired_parent_state)
     integer(int64), intent(inout), optional :: last_id
     integer(int64) :: candidate_last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding
+    logical, intent(in), optional :: retired_parent_state
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
     character(len=80) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
@@ -316,6 +326,8 @@ contains
     if (present(breakup_state)) has_breakup=breakup_state
     has_split=.false.
     if (present(split_state)) has_split=split_state
+    has_retired=.false.
+    if (present(retired_parent_state)) has_retired=retired_parent_state
     has_shedding=.false.
     if (present(shedding_state)) has_shedding=shedding_state
     has_khrt=.false.
@@ -344,6 +356,10 @@ contains
     if ((has_films.and.present(component_mass)).neqv.present(film_component_mass)) return
     if (present(film_component_mass)) expected_magic=trim(expected_magic)//'_FMIX_V1'
     if (present(last_id)) expected_magic=trim(expected_magic)//'_ID_V1'
+    if (has_retired) then
+      if (.not.present(last_id).or..not.(has_split.or.has_films)) return
+      expected_magic=trim(expected_magic)//'_RET_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -444,7 +460,7 @@ contains
         if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
         read(tokens(1),*,iostat=ios) drops(p)%parent_id
         if (ios/=0) goto 900
-        if (drops(p)%parent_id>0) then
+        if (drops(p)%parent_id>0.and..not.has_retired) then
           if (.not.parent_exists(drops,p)) goto 900
         end if
       end if

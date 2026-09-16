@@ -530,6 +530,7 @@ program test_spray_mpi
     'checkpoint scatters exact owner blocks')
   call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'checkpoint redistributes owner particles')
   call check_film_checkpoint()
+  call check_retired_parent_checkpoint()
   call MPI_Barrier(MPI_COMM_WORLD,ierr)
   if (rank==0) then
     open(newunit=checkpoint_unit,file=trim(checkpoint_path),status='old');close(checkpoint_unit,status='delete')
@@ -971,6 +972,49 @@ contains
     global_final(:5)=global_final(:5)+wall
     call require(all(abs(global_final-global_initial)<2e-12_dp*max(1e-12_dp,abs(global_initial))), &
       'wall event mass momentum energy species conservation')
+  end subroutine
+
+  subroutine check_retired_parent_checkpoint()
+    type(spray_parcel), allocatable :: drops(:)
+    type(spray_wall_film), allocatable :: films(:)
+    real(dp), allocatable :: cm(:,:),fm(:,:),gas(:,:,:,:),temp(:,:,:)
+    real(dp) :: ref(15),inj(15),wall(15),time
+    integer :: steps,event,unit,np
+    integer(int64) :: mark
+    character(len=100) :: path
+    write(path,'(a,i0,a)') 'mpi_retired_parent_',nranks,'.chk'
+    np=merge(1,0,rank==0);allocate(drops(np),cm(2,np),films(0),fm(2,0))
+    if (np>0) then
+      drops(1)=spray_parcel(2_int64,[.25_dp,.25_dp,.25_dp],[0.0_dp,0.0_dp,0.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      drops(1)%parent_id=1;cm(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+    end if
+    gas=field;temp=temperature;ref=0;inj=0;wall=0;time=0;steps=0;event=0;mark=2
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(path),'retired-parent-test',species,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,steps,event,mark,ref,inj,ok, &
+      wall_films=films,film_mass=fm,wall_totals=wall)
+    call require(.not.ok,'strict checkpoint still rejects a missing parent')
+    if (np>0) drops(1)%parent_id=2
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(path),'retired-parent-test',species,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,steps,event,mark,ref,inj,ok, &
+      wall_films=films,film_mass=fm,wall_totals=wall,retired_parent_state=.true.)
+    call require(.not.ok,'retired lineage still rejects self parent')
+    if (np>0) drops(1)%parent_id=1
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(path),'retired-parent-test',species,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,steps,event,mark,ref,inj,ok, &
+      wall_films=films,film_mass=fm,wall_totals=wall,retired_parent_state=.true.)
+    call require(ok,'retired lineage checkpoint write')
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(path),'retired-parent-test',species,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,steps,event,mark,ref,inj,ok, &
+      wall_films=films,film_mass=fm,wall_totals=wall)
+    call require(.not.ok,'retired lineage schema cannot be read as strict parent schema')
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(path),'retired-parent-test',species,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,time,steps,event,mark,ref,inj,ok, &
+      wall_films=films,film_mass=fm,wall_totals=wall,retired_parent_state=.true.)
+    call require(ok.and.mark==2.and.all(drops%parent_id==1),'retired lineage survives read')
+    call MPI_Barrier(MPI_COMM_WORLD,ierr)
+    if (rank==0) then
+      open(newunit=unit,file=trim(path),status='old');close(unit,status='delete')
+    end if
   end subroutine
 
   subroutine check_film_checkpoint()

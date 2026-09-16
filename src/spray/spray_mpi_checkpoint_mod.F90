@@ -17,10 +17,10 @@ contains
   ! replicated on other ranks. The caller binds all model tables in context.
   subroutine mpi_spray_checkpoint(comm,writing,path,context,species,state,temperature,parcels,component_mass, &
       lower,spacing,cells,time,steps,event,last_id,reference,injected,ok,breakup_state,khrt_state,shedding_state, &
-      wall_films,film_mass,wall_totals)
+      wall_films,film_mass,wall_totals,retired_parent_state)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
-    logical, intent(in), optional :: breakup_state,khrt_state,shedding_state
+    logical, intent(in), optional :: breakup_state,khrt_state,shedding_state,retired_parent_state
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference(:),injected(:)
@@ -41,15 +41,17 @@ contains
     real(dp), allocatable :: masses(:,:),global_state(:,:,:,:),global_t(:,:,:),local(:,:,:,:),packed(:),received(:)
     real(dp), allocatable :: ref(:),inj(:)
     integer, allocatable :: counts(:),offsets(:)
-    integer :: rank,nranks,ierr,nvar,nc,r,first(3),extent(3),config(10),low(10),high(10),step_data(2)
+    integer :: rank,nranks,ierr,nvar,nc,r,first(3),extent(3),config(11),low(11),high(11),step_data(2)
     integer(int64) :: next_id
     real(dp) :: next_time
-    logical :: valid,agreed,has_breakup,has_khrt,has_shedding
+    logical :: valid,agreed,has_breakup,has_khrt,has_shedding,has_retired
     character(len=256) :: message
     ok=.false.;has_breakup=.false.;has_khrt=.false.;has_shedding=.false.
     if (present(breakup_state)) has_breakup=breakup_state
     if (present(khrt_state)) has_khrt=khrt_state
     if (present(shedding_state)) has_shedding=shedding_state
+    has_retired=.false.
+    if (present(retired_parent_state)) has_retired=retired_parent_state
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
@@ -64,10 +66,10 @@ contains
     call agree()
     if (.not.agreed) return
     config=[cells,nvar,nc,merge(1,0,writing),merge(1,0,has_breakup),merge(1,0,has_khrt), &
-      merge(1,0,has_shedding),merge(1,0,has_films)]
-    call MPI_Allreduce(config,low,10,MPI_INTEGER,MPI_MIN,comm,ierr)
+      merge(1,0,has_shedding),merge(1,0,has_films),merge(1,0,has_retired)]
+    call MPI_Allreduce(config,low,11,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,high,10,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,high,11,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(low/=high)) return
     if (has_films) then
@@ -136,11 +138,13 @@ contains
           call write_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
               step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
             breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding, &
+            retired_parent_state=has_retired, &
             film_state=.true.,wall_films=patches,film_component_mass=patch_mass,boundary_totals=wall)
         else
           call write_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
               step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
-            breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding)
+            breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding, &
+            retired_parent_state=has_retired)
         end if
       end if
       call agree()
@@ -153,11 +157,13 @@ contains
         call read_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
           step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
           breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding, &
+            retired_parent_state=has_retired, &
           film_state=.true.,wall_films=patches,film_component_mass=patch_mass,boundary_totals=wall)
       else
         call read_spray_checkpoint(path,context,species,global_state,global_t,drops,next_time, &
           step_data(1),step_data(2),ref,inj,valid,message,component_mass=masses,last_id=next_id, &
-          breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding)
+          breakup_state=has_breakup,khrt_state=has_khrt,split_state=has_shedding,shedding_state=has_shedding, &
+            retired_parent_state=has_retired)
       end if
       if (valid) valid=size(masses,1)==nc
       if (valid) then
