@@ -25,6 +25,7 @@ program test_mpi_amr_reactive_3d
     composite_integrals_amr_3d
   use amr_reactive_3d_mod, only: &
     compute_amr_reactive_cfl_timestep_3d, advance_amr_reactive_hydro_3d, &
+    advance_amr_reactive_chemistry_3d, &
     advance_amr_reactive_strang_3d,element_integrals_from_reactive_integrals_3d
   use amr_reactive_transport_3d_mod, only: &
     compute_amr_reactive_transport_timestep_3d, &
@@ -43,6 +44,7 @@ program test_mpi_amr_reactive_3d
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     build_mpi_amr_sparse_periodic_halos_3d,build_mpi_amr_sparse_boundary_halos_3d, &
     advance_mpi_amr_sparse_periodic_hydro_3d,advance_mpi_amr_sparse_boundary_hydro_3d, &
+    advance_mpi_amr_sparse_chemistry_3d, &
     advance_mpi_amr_sparse_hydro_3d,advance_mpi_amr_sparse_strang_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
     advance_mpi_amr_sparse_transport_3d, advance_mpi_amr_sparse_full_3d
@@ -387,6 +389,7 @@ program test_mpi_amr_reactive_3d
   call check_physical_halos()
   call check_physical_coarse_hydro()
   call check_physical_hierarchy()
+  call check_boundary_distribution()
   serial_coarse = coarse_state
   serial_coarse_temperature = coarse_temperature
   allocate(serial_flux_x, mold=serial_coarse)
@@ -703,6 +706,73 @@ program test_mpi_amr_reactive_3d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine check_boundary_distribution()
+    type(amr_patch_3d) :: bp
+    type(mpi_amr_sparse_distribution_3d) :: dist
+    type(mpi_amr_sparse_hierarchy_3d) :: h,saved
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:)
+    real(dp), allocatable :: gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:),budget(:)
+    real(dp) :: r,theta,trial_interval
+    integer :: mode,lo,hi,i,j,k,nf
+    character(len=32) :: faces(6)
+    faces='outflow'
+    allocate(budget(size(coarse_state,1)))
+    do mode=1,3
+      lo=1;hi=2
+      if (mode==2) then
+        lo=n-1;hi=n
+      else if (mode==3) then
+        hi=n
+      end if
+      call initialize_amr_patch_3d(n,n,n,lo,hi,lo,hi,lo,hi,ratio,bp,ok)
+      call require(ok,'boundary distribution geometry')
+      call initialize_mpi_amr_sparse_distribution_3d(bp,MPI_COMM_WORLD,dist,ok)
+      call require(ok.and.dist%is_valid(bp),'boundary sparse distribution')
+      c=coarse_state;ct=coarse_temperature;nf=bp%fine_nx()
+      allocate(f(size(c,1),nf,nf,nf),ft(nf,nf,nf))
+      do k=1,nf
+        do j=1,nf
+          do i=1,nf
+            f(:,i,j,k)=c(:,lo+(i-1)/ratio,lo+(j-1)/ratio,lo+(k-1)/ratio)
+            ft(i,j,k)=ct(lo+(i-1)/ratio,lo+(j-1)/ratio,lo+(k-1)/ratio)
+          end do
+        end do
+      end do
+      call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,bp,0,c,ct,f,ft,h,ok)
+      call require(ok,'boundary hierarchy scatter')
+      call gather_mpi_amr_sparse_hierarchy_3d(dist,bp,0,h,gc,gt,gf,gft,ok)
+      call require(ok,'boundary hierarchy gather')
+      if (dist%rank==0) call require(all(gc==c).and.all(gt==ct).and.all(gf==f).and.all(gft==ft), &
+        'boundary hierarchy exact scatter gather')
+      saved=h
+      call advance_mpi_amr_sparse_hydro_3d(dist,species,bp,h,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,'pcm','mc',r,ok,faces,budget)
+      call require(.not.ok.and.r==0.and.all(budget==0),'boundary hydro remains explicitly unsupported')
+      call advance_mpi_amr_sparse_transport_3d(dist,species,transport,bp,h,dx,dy,dz,1e-7_dp, &
+        .true.,.true.,.true.,.true.,'mc',theta,r,ok,faces,budget)
+      call require(.not.ok.and.r==0.and.theta==1.and.all(budget==0),'boundary transport remains unsupported')
+      trial_interval=1e-7_dp
+      if (dist%rank==0) trial_interval=-1
+      call advance_mpi_amr_sparse_chemistry_3d(dist,species,reactions,bp,h,trial_interval,2e-7_dp,1e-12_dp,ok)
+      call require(.not.ok,'boundary chemistry collective invalid interval')
+      call require(all(h%coarse_state==saved%coarse_state).and.all(h%fine_state==saved%fine_state).and. &
+        all(h%coarse_temperature==saved%coarse_temperature).and.all(h%fine_temperature==saved%fine_temperature), &
+        'boundary failed operations preserve hierarchy')
+      call advance_amr_reactive_chemistry_3d(species,reactions,bp,c,ct,f,ft,1e-7_dp,2e-7_dp,1e-12_dp,ok)
+      call require(ok,'serial boundary local reaction')
+      call advance_mpi_amr_sparse_chemistry_3d(dist,species,reactions,bp,h,1e-7_dp,2e-7_dp,1e-12_dp,ok)
+      call require(ok,'MPI boundary local reaction')
+      call gather_mpi_amr_sparse_hierarchy_3d(dist,bp,0,h,gc,gt,gf,gft,ok)
+      call require(ok,'boundary reaction gather')
+      if (dist%rank==0) then
+        call require(all(gc==c).and.all(gt==ct).and.all(gf==f).and.all(gft==ft), &
+          'boundary local reaction exactly matches serial')
+        call require(any(c/=coarse_state),'boundary reaction is active')
+      end if
+      deallocate(f,ft)
+    end do
+  end subroutine check_boundary_distribution
 
   subroutine check_physical_hierarchy()
     type(amr_patch_3d) :: wall_patch

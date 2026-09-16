@@ -48,7 +48,10 @@ are connected ([evidence](validation/amr-boundary-touching-app-20260917.md)).
 Serial temperature-driven regridding now supports boundary-touching patches with
 explicit physical tagging and geometry-aware restart
 ([evidence](validation/amr-boundary-regrid-20260917.md)). Boundary-touching MPI
-stepping/regridding remain open.
+stepping/regridding remain open. Sparse MPI distribution, scatter/gather and
+cell-local reaction now accept boundary-touching geometry
+([evidence](validation/amr-mpi-boundary-distribution-20260917.md)); hierarchy
+hydro and transport retain explicit interior-patch guards.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

@@ -300,6 +300,8 @@ contains
       dz > 0.0_dp .and. interval >= 0.0_dp
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
+    ! Fine physical ghosts and domain-surface reflux are not connected yet.
+    if (local_ok) local_ok = patch%is_strictly_interior()
     if (local_ok) local_ok = compatible_transport_database(species, transport)
     if (local_ok) local_ok = .not. barodiffusion_enabled .or. &
       species_diffusion_enabled
@@ -1632,6 +1634,8 @@ contains
       dz > 0.0_dp .and. dt > 0.0_dp
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
+    ! Fine physical ghosts and domain-surface reflux are not connected yet.
+    if (local_ok) local_ok = patch%is_strictly_interior()
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
       trim(reconstruction) == "characteristic_plm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
@@ -3638,7 +3642,7 @@ contains
     if (ierr /= MPI_SUCCESS) return
     call MPI_Comm_size(comm, distribution%nranks, ierr)
     if (ierr /= MPI_SUCCESS) return
-    if (.not. patch%is_strictly_interior() .or. &
+    if (.not. patch%is_valid() .or. &
         distribution%nranks < 1 .or. &
         distribution%nranks > patch%coarse_nx) return
 
@@ -3728,7 +3732,7 @@ contains
     integer :: rank_index, candidate_rank, expected_fine_count
     integer :: expected_previous_fine_rank, expected_next_fine_rank
 
-    valid = patch%is_strictly_interior() .and. self%nranks >= 1 .and. &
+    valid = patch%is_valid() .and. self%nranks >= 1 .and. &
       self%rank >= 0 .and. self%rank < self%nranks .and. &
       allocated(self%coarse_counts) .and. &
       allocated(self%coarse_displacements) .and. &
