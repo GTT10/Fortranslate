@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check serial AMR physical-boundary inventories and exact restart output."""
+"""Check serial/MPI AMR physical-boundary inventories and exact restart output."""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +14,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--mpiexec', type=Path)
+    parser.add_argument('--numproc-flag', default='-n')
+    parser.add_argument('--mpiexec-preflag', action='append', default=[])
+    parser.add_argument('--mpiexec-postflag', action='append', default=[])
+    parser.add_argument('--ranks', type=int, default=4)
+    parser.add_argument('--restart-ranks', type=int, default=2)
+    parser.add_argument('--reference-executable', type=Path)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
@@ -27,7 +34,14 @@ def main() -> None:
         source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\n' + extra)
         path = work / f'{name}.nml'
         path.write_text(source)
-        result = subprocess.run([str(executable), str(path)], cwd=work,
+        command = [str(executable), str(path)]
+        if name.endswith('_reference') and args.reference_executable:
+            command[0] = str(args.reference_executable.resolve())
+        elif args.mpiexec:
+            ranks = args.ranks if name.endswith('_stopped') else args.restart_ranks
+            command = ([str(args.mpiexec.resolve()), args.numproc_flag, str(ranks)]
+                       + args.mpiexec_preflag + command + args.mpiexec_postflag)
+        result = subprocess.run(command, cwd=work,
                                 capture_output=True, text=True, timeout=180)
         output = result.stdout + result.stderr
         (work / f'{name}.log').write_text(output)
@@ -60,7 +74,17 @@ def main() -> None:
                           work / f'{label}_resumed_{level}.csv', f'{label}_{level}')
         ledger = lambda log: next(line for line in log.splitlines()
                                   if line.startswith('Conserved boundary change:'))
-        assert ledger(reference) == ledger(resumed)
+        if args.mpiexec:
+            original = [float(value) for value in ledger(reference).split(':')[1].split()]
+            restored = [float(value) for value in ledger(resumed).split(':')[1].split()]
+            assert len(original) == len(restored)
+            scales = [max(abs(a), abs(b)) for a, b in zip(original, restored)]
+            # Momentum is a vector; use a shared scale for cancelling components.
+            scales[1:4] = [max(scales[1:4])] * 3
+            assert all(abs(a-b) <= 2e-11 * scale + 1e-25
+                       for a, b, scale in zip(original, restored, scales)), (original, restored)
+        else:
+            assert ledger(reference) == ledger(resumed)
         assert any(float(value) != 0 for value in ledger(reference).split(':')[1].split())
         changed = (source.replace('1300', '1400') if label == 'inlet' else
                    source.replace('600, 600', '650, 600', 1))

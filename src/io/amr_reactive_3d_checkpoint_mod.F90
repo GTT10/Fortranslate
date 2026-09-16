@@ -35,12 +35,13 @@ module amr_reactive_3d_checkpoint_mod
   character(len=*), parameter :: transport_checkpoint_phase = &
     "POST_ACCEPTED_COARSE_STEP"
 
+  public :: amr_reactive_boundary_signature_3d
   public :: read_dynamic_amr_reactive_3d_checkpoint
   public :: write_amr_reactive_3d_checkpoint
   public :: read_amr_reactive_3d_checkpoint
 
 contains
-  function boundary_signature(config) result(signature)
+  function amr_reactive_boundary_signature_3d(config) result(signature)
     type(reactive_3d_config), intent(in) :: config
     character(len=32768) :: signature
     character(len=80) :: entry
@@ -55,7 +56,7 @@ contains
         config%inflow_composition_mole_fractions(i)
       signature=trim(signature)//' '//trim(entry)
     end do
-  end function boundary_signature
+  end function amr_reactive_boundary_signature_3d
 
   function dynamic_signature(config) result(signature)
     type(amr_reactive_3d_config), intent(in) :: config
@@ -468,7 +469,7 @@ contains
       end do
     end do
     if (physical_boundary) then
-      write(unit,'(a)',iostat=status) trim(boundary_signature(flow_config))
+      write(unit,'(a)',iostat=status) trim(amr_reactive_boundary_signature_3d(flow_config))
       if (status/=0) go to 900
       write(unit,'(*(es27.18e3,1x))',iostat=status) boundary_change
       if (status/=0) go to 900
@@ -495,7 +496,7 @@ contains
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
       transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
     real(dp), optional, intent(inout) :: boundary_change(:)
-    character(len=32768) :: stored_boundary_signature
+    character(len=32768) :: stored_amr_reactive_boundary_signature_3d
     logical :: physical_boundary
     integer, intent(inout), optional :: regrid_count
     type(amr_patch_3d) :: stored_patch
@@ -804,9 +805,9 @@ contains
       patch, candidate_coarse_state, candidate_fine_state, synchronized)
     if (.not. synchronized) go to 900
     if (physical_boundary) then
-      read(unit,'(a)',iostat=status) stored_boundary_signature
+      read(unit,'(a)',iostat=status) stored_amr_reactive_boundary_signature_3d
       if (status/=0) go to 900
-      if (trim(stored_boundary_signature)/=trim(boundary_signature(flow_config))) go to 900
+      if (trim(stored_amr_reactive_boundary_signature_3d)/=trim(amr_reactive_boundary_signature_3d(flow_config))) go to 900
       read(unit,*,iostat=status) candidate_boundary
       if (status/=0) go to 900
       if (.not.all(ieee_is_finite(candidate_boundary))) go to 900

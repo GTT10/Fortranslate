@@ -160,13 +160,17 @@ and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915
 Multipatch/multilevel regridding, physical coarse boundaries and 3D EB coupling
 remain open. The default interval zero preserves static runs.
 
-## Serial physical boundaries
+## Physical boundaries
 
 `physical_wall.nml` runs a strictly interior two-level patch with a 600 K
 isothermal wall moving tangentially at 20 m/s and an opposite outflow.
-The serial fixed and selected frontends accept the regular `reactive_3d`
+The serial and sparse MPI fixed/selected frontends accept the regular `reactive_3d`
 `boundary_faces`, reservoir inflow composition/temperature/pressure/velocity,
-and wall temperature/velocity settings. MPI AMR still requires periodic faces.
+and wall temperature/velocity settings. For example:
+
+```sh
+mpiexec -n 4 ./pelef_mpi_amr_reactive_3d ../cases/amr_reactive_3d/physical_wall.nml
+```
 
 Physical runs report `Conserved boundary change:` in conserved-variable order,
 positive into the composite hierarchy. Conservation diagnostics subtract this
@@ -179,6 +183,9 @@ with a boundary-settings signature and cumulative transfer. Restart rejects
 changed faces, wall settings or reservoir inputs. Periodic schemas 2–9 retain
 their layout. Existing fixed-mechanism chemistry-on restart restrictions remain;
 selected-mechanism context handling is shared, but the dated physical-boundary
-application check exercised only the fixed H2/O2 frontend.
+application checks exercised only the fixed H2/O2 frontends. MPI checkpoint
+restart is rank-neutral; four-to-two-rank physical restart is compared to serial
+CSV output and retains the global boundary ledger.
 
-See [application evidence](../../docs/validation/amr-physical-app-20260917.md).
+See [serial evidence](../../docs/validation/amr-physical-app-20260917.md) and
+[MPI evidence](../../docs/validation/amr-mpi-physical-app-20260917.md).

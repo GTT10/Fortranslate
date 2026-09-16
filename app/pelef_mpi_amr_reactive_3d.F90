@@ -46,7 +46,7 @@ program pelef_mpi_amr_reactive_3d
   call read_reactive_3d_configuration(trim(input_path), config, ok, message)
   if (.not. ok) call abort_run(trim(message), 2)
   call read_amr_reactive_3d_configuration( &
-    trim(input_path), config, amr_config, ok, message)
+    trim(input_path), config, amr_config, ok, message,allow_physical=.true.)
   if (.not. ok) call abort_run(trim(message), 2)
   if (argument_count == 2) then
     call get_command_argument(2, output_prefix)

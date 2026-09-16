@@ -15,7 +15,7 @@ program test_amr_reactive_transport_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
-  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     restrict_average_3d, composite_integrals_amr_3d
@@ -222,10 +222,33 @@ program test_amr_reactive_transport_3d
   call require(ok, "ratio-three AMR transport test")
 
   call run_physical_transport_tests()
+  call check_single_column_wall_timestep()
 
   write(*, '(a)') "test_amr_reactive_transport_3d: PASS"
 
 contains
+
+  subroutine check_single_column_wall_timestep()
+    real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
+    real(dp) :: twice_dt,once_dt,wall_t(6)
+    character(len=32) :: faces(6)
+    integer :: i,j,k
+    allocate(u(size(coarse_state,1),2,2,2),t(2,2,2))
+    do k=1,2
+      do j=1,2
+        do i=1,2
+          u(:,i,j,k)=coarse_state(:,1,1,1);t(i,j,k)=coarse_temperature(1,1,1)
+        end do
+      end do
+    end do
+    faces='no_slip_wall';faces(1:2)='isothermal_wall';wall_t=600
+    call reactive_isothermal_timestep_3d(species,transport,u,t,[dx,dy,dz],faces,wall_t,.3_dp,once_dt,ok)
+    call require(ok.and.once_dt>0,'two-column wall timestep')
+    call reactive_isothermal_timestep_3d(species,transport,u(:,1:1,:,:),t(1:1,:,:), &
+      [dx,dy,dz],faces,wall_t,.3_dp,twice_dt,ok)
+    call require(ok.and.abs(twice_dt-.5_dp*once_dt)<=1e-14_dp*once_dt, &
+      'single column touching two thermal walls halves the heat-exchange timestep')
+  end subroutine check_single_column_wall_timestep
 
   subroutine run_physical_transport_tests()
     real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:)

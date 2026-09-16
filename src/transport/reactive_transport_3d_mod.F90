@@ -1858,7 +1858,7 @@ contains
     real(dp) :: heat,rate,cell_rate,max_rate,value
     integer :: n(3),i,j,k,a,face,idx(3)
     dt=0.0_dp; ok=.false.; n=shape(t)
-    if (any(n<2)) return
+    if (any(n<1)) return
     if (.not.valid_transport_shapes_3d(u,t,reactive_nvar(size(species)),n(1),n(2),n(3))) return
     if (.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(cfl)) return
     if (cfl<=0.0_dp.or.cfl>0.5_dp) return
@@ -1867,11 +1867,10 @@ contains
       do j=1,n(2)
         do i=1,n(1)
           idx=[i,j,k]; cell_rate=0.0_dp
-          do a=1,3
-            face=0
-            if (idx(a)==1) face=2*a-1
-            if (idx(a)==n(a)) face=2*a
-            if (face==0) cycle
+          do face=1,6
+            a=(face+1)/2
+            if (modulo(face,2)==1.and.idx(a)/=1) cycle
+            if (modulo(face,2)==0.and.idx(a)/=n(a)) cycle
             if (faces(face)/='isothermal_wall') cycle
             call wall_heat_transfer_3d(species,transport,u(:,i,j,k),t(i,j,k),wall_t(face), &
               spacing(a),heat,rate,ok)
