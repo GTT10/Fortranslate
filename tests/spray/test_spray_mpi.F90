@@ -46,6 +46,7 @@ program test_spray_mpi
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
   call check_film_migration()
+  call check_film_query()
   allocate(parcels(2),masses(2,2))
   do p=1,2
     parcels(p)=spray_parcel(int(2*rank+p,int64),[.25_dp,.25_dp,.25_dp], &
@@ -528,6 +529,40 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film_query()
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: pos(:,:),normal(:,:),thickness(:),saved_thickness(:)
+    real(dp) :: expected,tolerance
+    integer :: np,nq
+    np=merge(2,0,rank<nranks-1);nq=merge(4,0,rank>0)
+    allocate(patches(np),pos(3,nq),normal(3,nq),thickness(1));thickness=123
+    if (np>0) then
+      patches(1)=spray_wall_film([.25_dp,.25_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp], &
+        1e-9_dp,330.0_dp,.2_dp,real(rank+1,dp)*1e-6_dp,1)
+      patches(2)=patches(1);patches(2)%normal=-patches(1)%normal;patches(2)%height=.01_dp
+    end if
+    if (nq>0) then
+      pos(:,1)=[.25_dp,.25_dp,0.0_dp];pos(:,2)=[.75_dp,.25_dp,0.0_dp]
+      pos(:,3)=[.25_dp,.25_dp,1e-5_dp];pos(:,4)=pos(:,1)
+      normal=0;normal(3,:)=1;normal(3,4)=-1
+    end if
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,1e-8_dp,thickness,ok)
+    call require(ok.and.size(thickness)==nq,'MPI film query supports empty sources and owners')
+    if (nq>0) then
+      expected=real(nranks*(nranks-1)/2,dp)*1e-6_dp
+      call require(abs(thickness(1)-expected)<1e-14_dp*expected,'MPI overlap sums remote film heights')
+      call require(thickness(2)==0.and.thickness(3)==0,'MPI film footprint and plane exclusion')
+      call require(abs(thickness(4)-.01_dp*(nranks-1))<1e-15_dp,'MPI film normal filtering')
+    end if
+    saved_thickness=thickness;tolerance=1e-8_dp
+    if (rank==0) tolerance=2e-8_dp
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,tolerance,thickness,ok)
+    call require(.not.ok.and.all(thickness==saved_thickness),'MPI film tolerance disagreement preserves output')
+    if (rank==1) normal(:,1)=0
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,1e-8_dp,thickness,ok)
+    call require(.not.ok.and.all(thickness==saved_thickness),'MPI invalid query rejects collectively')
+  end subroutine
+
   subroutine check_wall_impacts()
     type(spray_parcel), allocatable :: drops(:),original(:)
     type(spray_wall_film), allocatable :: patches(:)

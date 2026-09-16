@@ -17,7 +17,7 @@ module spray_mpi_mod
   use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
     construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
-  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options, &
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options,valid_wall_film, &
     valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange, &
     classify_wall_impact,resolve_mixture_wall_impact
   use spray_partition_mod
@@ -25,6 +25,7 @@ module spray_mpi_mod
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: sample_mpi_wall_film_thickness
   public :: resolve_mpi_wall_impacts
   public :: advance_mpi_film_coupling
   public :: migrate_mpi_wall_films
@@ -34,6 +35,85 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  ! Query distributed circular stationary film footprints without replicating films.
+  ! Bounded query batches visit every rank; rank-local film inventories stay local.
+  subroutine sample_mpi_wall_film_thickness(comm,films,positions,normals,plane_tolerance,thickness,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_wall_film), intent(in) :: films(:)
+    real(dp), intent(in) :: positions(:,:),normals(:,:),plane_tolerance
+    real(dp), allocatable, intent(inout) :: thickness(:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: query(:,:),local(:),total(:),candidate(:)
+    real(dp) :: delta(3),minimum,maximum,limit
+    integer :: rank,nranks,ierr,source,nq,count_queries,q,p
+    logical :: valid,agreed
+    ok=.false.;nq=size(positions,2)
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=size(films)<=1000000.and.nq<=125000.and.size(positions,1)==3.and.all(shape(normals)==[3,nq])
+    valid=valid.and.ieee_is_finite(plane_tolerance)
+    valid=valid.and.plane_tolerance>=0.and.plane_tolerance<=1e9_dp
+    call agree()
+    if (.not.agreed) return
+    valid=all(ieee_is_finite(positions)).and.all(ieee_is_finite(normals))
+    valid=valid.and.maxval(abs(positions))<=1e9_dp.and.maxval(abs(normals))<=1
+    do p=1,size(films)
+      valid=valid.and.valid_wall_film(films(p))
+    end do
+    call agree()
+    if (.not.agreed) return
+    do q=1,nq
+      valid=valid.and.abs(sum(normals(:,q)**2)-1)<1e-12_dp
+    end do
+    call agree()
+    if (.not.agreed) return
+    call MPI_Allreduce(plane_tolerance,minimum,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(plane_tolerance,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.minimum/=maximum) return
+    allocate(candidate(nq));candidate=0;limit=huge(1.0_dp)/real(nranks+1,dp)
+    do source=0,nranks-1
+      count_queries=nq
+      call MPI_Bcast(count_queries,1,MPI_INTEGER,source,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (count_queries==0) cycle
+      allocate(query(6,count_queries),local(count_queries),total(count_queries));local=0
+      if (rank==source) then
+        query(:3,:)=positions;query(4:,:)=normals
+      end if
+      call MPI_Bcast(query,size(query),MPI_DOUBLE_PRECISION,source,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      valid=.true.
+      do q=1,count_queries
+        do p=1,size(films)
+          if (maxval(abs(films(p)%normal-query(4:,q)))>1e-12_dp) cycle
+          delta=query(:3,q)-films(p)%position
+          if (abs(dot_product(delta,query(4:,q)))>plane_tolerance) cycle
+          if (norm2(delta)>.5_dp*films(p)%diameter) cycle
+          if (films(p)%height>limit-local(q)) then
+            valid=.false.;exit
+          end if
+          local(q)=local(q)+films(p)%height
+        end do
+        if (.not.valid) exit
+      end do
+      call agree()
+      if (.not.agreed) return
+      call MPI_Reduce(local,total,count_queries,MPI_DOUBLE_PRECISION,MPI_SUM,source,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (rank==source) candidate=total
+      deallocate(query,local,total)
+    end do
+    call move_alloc(candidate,thickness);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   ! Resolve supplied wall events. data rows: Kv,T/Tboil,Kcrit,film/d,We,Re.
   ! Geometry crossing and film-overlap queries remain the caller's responsibility.
   subroutine resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices,locations,normals,data, &
