@@ -18,11 +18,12 @@ Older milestone prose remains historical detail, not a current global status.
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets | Production scaling and scalable/distributed I/O |
 | LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity or shared or per-port multicomponent compositions, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, selectable Schiller-Naumann or PelePhysics drag with ETAB deformation correction, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup, optional KH shed-mass children with conservative transverse velocities, and bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection from point or finite circular solid/hollow outlets with swirl with up to 16 independently configured ports and optional piecewise-linear shared or independent per-port injection-rate histories with optional discharge-based injection speed, and per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared size distributions, deviatoric Smagorinsky, coupled restart | Physical mixture boiling, general dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, lateral wall-film transport and impact qualification, calibrated properties and experimental validation |
 
-Sparse MPI AMR has physical ghost layers and a coarse PCM/PLM hydro API supporting
+Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks
 ([ghosts](validation/amr-mpi-boundary-halo-20260917.md),
-[coarse hydro](validation/amr-mpi-boundary-hydro-20260917.md)). Physical coarse-fine
-coupling, transport and MPI application activation remain open.
+[coarse hydro](validation/amr-mpi-boundary-hydro-20260917.md),
+[hierarchy](validation/amr-mpi-physical-hierarchy-20260917.md)). Physical transport,
+reaction/full-split forwarding and MPI application activation remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

@@ -385,6 +385,7 @@ program test_mpi_amr_reactive_3d
     "two-plane sparse periodic halo bit parity")
   call check_physical_halos()
   call check_physical_coarse_hydro()
+  call check_physical_hierarchy()
   serial_coarse = coarse_state
   serial_coarse_temperature = coarse_temperature
   allocate(serial_flux_x, mold=serial_coarse)
@@ -701,6 +702,68 @@ program test_mpi_amr_reactive_3d
   if (ierr /= MPI_SUCCESS) error stop "MPI_Finalize failed"
 
 contains
+
+  subroutine check_physical_hierarchy()
+    type(amr_patch_3d) :: wall_patch
+    type(mpi_amr_sparse_distribution_3d) :: dist
+    type(mpi_amr_sparse_hierarchy_3d) :: h,saved
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:),inlet(:,:),it(:),budget(:),expected(:)
+    real(dp), allocatable :: before(:),after(:)
+    real(dp) :: r,rr
+    character(len=32) :: faces(6),method
+    integer :: i,j,k,mode,nv
+    call initialize_amr_patch_3d(n,n,n,2,3,2,3,2,3,ratio,wall_patch,ok)
+    call require(ok,'physical hierarchy near-wall patch')
+    call initialize_mpi_amr_sparse_distribution_3d(wall_patch,MPI_COMM_WORLD,dist,ok)
+    call require(ok,'physical hierarchy distribution')
+    c0=coarse_state;ct0=coarse_temperature;nv=size(c0,1)
+    allocate(f0(nv,4,4,4),ft0(4,4,4),inlet(nv,6),it(6),budget(nv),expected(nv),before(nv),after(nv))
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          f0(:,i,j,k)=c0(:,1+(i+1)/2,1+(j+1)/2,1+(k+1)/2)
+          ft0(i,j,k)=ct0(1+(i+1)/2,1+(j+1)/2,1+(k+1)/2)
+        end do
+      end do
+    end do
+    inlet=spread(c0(:,1,1,1),2,6);it=ct0(1,1,1)
+    faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
+    call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
+    call require(ok,'physical hierarchy initial inventory')
+    do mode=1,2
+      method='pcm'
+      if (mode==2) method='characteristic_plm'
+      c=c0;ct=ct0;f=f0;ft=ft0
+      call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it)
+      call require(ok,'serial physical hierarchy advance')
+      call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,wall_patch,0,c0,ct0,f0,ft0,h,ok)
+      call require(ok,'physical hierarchy scatter')
+      saved=h
+      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+      call require(ok,'sparse physical hierarchy advance')
+      call require(all(abs(budget-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
+        'physical hierarchy global boundary ledger')
+      call gather_mpi_amr_sparse_hierarchy_3d(dist,wall_patch,0,h,gc,gt,gf,gft,ok)
+      call require(ok,'physical hierarchy gather')
+      if (dist%rank==0) then
+        call require(all(gc==c).and.all(gt==ct).and.all(gf==f).and.all(gft==ft).and.r==rr, &
+          'physical hierarchy state temperature and reflux exactly match serial')
+        call composite_integrals_amr_3d(gc,gf,wall_patch,dx,dy,dz,after,ok)
+        call require(ok.and.all(abs(after-before-budget)<=2e-11_dp*max(1.0_dp,abs(before))), &
+          'physical hierarchy composite conservation')
+      end if
+      h=saved
+      if (dist%rank==dist%nranks-1) inlet(1,3)=-1
+      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+      call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
+        'physical hierarchy failure restores both levels and diagnostics')
+      inlet(1,3)=c0(1,1,1,1)
+    end do
+  end subroutine check_physical_hierarchy
 
   subroutine check_physical_coarse_hydro()
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),reference(:,:,:,:),rt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)

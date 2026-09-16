@@ -1437,7 +1437,8 @@ contains
 
   subroutine advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, hierarchy, dx, dy, dz, dt, &
-      riemann_solver, reconstruction, limiter, maximum_reflux_correction, ok)
+      riemann_solver, reconstruction, limiter, maximum_reflux_correction, ok, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -1447,6 +1448,11 @@ contains
     real(dp), intent(out) :: maximum_reflux_correction
     logical, intent(out) :: ok
 
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp) :: candidate_boundary(reactive_nvar(size(species)))
+    real(dp), allocatable :: full_y(:,:,:,:),full_z(:,:,:,:)
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
     real(dp), allocatable :: coarse_start(:, :, :, :)
     real(dp), allocatable :: coarse_start_temperature(:, :, :)
@@ -1471,7 +1477,8 @@ contains
     integer :: ratio, substep, ierr
 
     maximum_reflux_correction = 0.0_dp
-    ok = .false.
+    ok = .false.;candidate_boundary=0
+    if (present(boundary_change)) boundary_change=0
     local_ok = all(ieee_is_finite([dx, dy, dz, dt]))
     if (local_ok) local_ok = dx > 0.0_dp .and. dy > 0.0_dp .and. &
       dz > 0.0_dp .and. dt > 0.0_dp
@@ -1481,10 +1488,11 @@ contains
       trim(reconstruction) == "characteristic_plm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
+    if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(candidate_boundary)
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, [dx, dy, dz, dt], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
-        trim(limiter), local_ok, global_ok)
+        trim(limiter)//merge("|physical","|periodic",present(boundary_faces)), local_ok, global_ok)
     if (.not. global_ok) return
 
     ratio = patch%refinement_ratio
@@ -1502,6 +1510,21 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
     candidate%coarse_temperature = coarse_start_temperature
+    if (present(boundary_faces)) then
+      call advance_mpi_amr_sparse_boundary_hydro_3d(distribution,species,patch,candidate%coarse_state, &
+        candidate%coarse_temperature,dx,dy,dz,dt,riemann_solver,reconstruction,limiter,coarse_flux_x, &
+        full_y,full_z,boundary_faces,candidate_boundary,local_ok,inflow_state,inflow_temperature)
+      if (.not.local_ok) return
+      coarse_flux_y=full_y(:,:,1:,:);coarse_flux_z=full_z(:,:,:,1:)
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,coarse_start,coarse_start_temperature, &
+        boundary_faces,coarse_start_halo,coarse_start_halo_temperature,local_ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,candidate%coarse_state,candidate%coarse_temperature, &
+        boundary_faces,coarse_end_halo,coarse_end_halo_temperature,local_ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+    else
     call advance_mpi_amr_sparse_periodic_hydro_3d( &
       distribution, species, patch, candidate%coarse_state, &
       candidate%coarse_temperature, dx, dy, dz, dt, riemann_solver, &
@@ -1518,6 +1541,8 @@ contains
       distribution, candidate%coarse_state, candidate%coarse_temperature, &
       coarse_end_halo, coarse_end_halo_temperature, local_ok)
     if (.not. local_ok) return
+
+    end if
 
     allocate(fine_x_lower(hierarchy%nvar, covered_ny, covered_nz))
     allocate(fine_x_upper(hierarchy%nvar, covered_ny, covered_nz))
@@ -1594,6 +1619,7 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
 
+    if (present(boundary_change)) boundary_change=candidate_boundary
     hierarchy = candidate
     maximum_reflux_correction = global_reflux
     ok = .true.
@@ -2450,11 +2476,19 @@ contains
     real(dp) :: temperature_guess, sound_speed
     integer :: local_i, wrapped_j, wrapped_k
 
+    if (size(coarse_start,3)==patch%coarse_ny+4.and.size(coarse_start,4)==patch%coarse_nz+4) then
+      ! Padded physical slabs use actual global indices, including boundary ghosts.
+      local_i=coarse_i-distribution%coarse_first+3
+      wrapped_j=coarse_j+2;wrapped_k=coarse_k+2
+      ok=local_i>=1.and.local_i<=size(coarse_start,2).and.wrapped_j>=1.and. &
+        wrapped_j<=size(coarse_start,3).and.wrapped_k>=1.and.wrapped_k<=size(coarse_start,4)
+    else
     local_i = sparse_halo_local_x_index_3d( &
       distribution, patch%coarse_nx, coarse_i)
     wrapped_j = 1 + modulo(coarse_j - 1, patch%coarse_ny)
     wrapped_k = 1 + modulo(coarse_k - 1, patch%coarse_nz)
     ok = local_i >= 1 .and. local_i <= size(coarse_start, 2)
+    end if
     if (.not. ok) return
     state = (1.0_dp - alpha) * &
         coarse_start(:, local_i, wrapped_j, wrapped_k) + &
@@ -2521,12 +2555,16 @@ contains
 
     ok = .false.
     ratio = patch%refinement_ratio
+    if (size(coarse_start,3)==patch%coarse_ny+4.and.size(coarse_start,4)==patch%coarse_nz+4) then
+      im=coarse_i-1;ip=coarse_i+1;jm=coarse_j-1;jp=coarse_j+1;km=coarse_k-1;kp=coarse_k+1
+    else
     im = 1 + modulo(coarse_i - 2, patch%coarse_nx)
     ip = 1 + modulo(coarse_i, patch%coarse_nx)
     jm = 1 + modulo(coarse_j - 2, patch%coarse_ny)
     jp = 1 + modulo(coarse_j, patch%coarse_ny)
     km = 1 + modulo(coarse_k - 2, patch%coarse_nz)
     kp = 1 + modulo(coarse_k, patch%coarse_nz)
+    end if
     call time_interpolated_sparse_coarse_primitive_3d( &
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, coarse_i, coarse_j, coarse_k, &
