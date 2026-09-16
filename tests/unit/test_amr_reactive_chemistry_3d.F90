@@ -14,9 +14,9 @@ program test_amr_reactive_chemistry_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
-    restrict_average_3d
+    restrict_average_3d, composite_integrals_amr_3d
   use amr_reactive_3d_mod, only: &
-    composite_element_integrals_amr_3d, &
+    composite_element_integrals_amr_3d, element_integrals_from_reactive_integrals_3d, &
     advance_amr_reactive_chemistry_3d, &
     advance_amr_reactive_strang_3d, advance_amr_reactive_hydro_3d
   implicit none
@@ -172,11 +172,85 @@ program test_amr_reactive_chemistry_3d
       coarse_temperature, fine_state, fine_temperature), &
     "chemistry-disabled exact hydro dispatch")
 
+  call check_physical_split()
+
   write(*, '(2(a,es24.16))') &
     "chemistry change=", chemistry_change, ", element error=", element_error
   write(*, '(a)') "test_amr_reactive_chemistry_3d: PASS"
 
 contains
+
+  subroutine check_physical_split()
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:)
+    real(dp), allocatable :: c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: cr(:,:,:,:),ctr(:,:,:),fr(:,:,:,:),ftr(:,:,:)
+    real(dp), allocatable :: inlet(:,:),it(:),ledger(:),reference_ledger(:),before(:),after(:)
+    real(dp) :: e0(3),e1(3),eb(3),r,rr,scale(5)
+    character(len=32) :: faces(6),method
+    integer :: mode,nv
+    call initialize_uniform_hierarchy(species,patch,c0,ct0,f0,ft0,ok)
+    call require(ok,'physical split initial hierarchy')
+    nv=size(c0,1)
+    allocate(inlet(nv,6),it(6),ledger(nv),reference_ledger(nv),before(nv),after(nv))
+    inlet=spread(c0(:,1,1,1),2,6);it=ct0(1,1,1)
+    faces='periodic';faces(1)='inflow';faces(2)='outflow'
+    ! Different reservoir density makes the boundary budget nonzero.
+    inlet(:,1)=1.1_dp*inlet(:,1)
+    call composite_integrals_amr_3d(c0,f0,patch,dx,dy,dz,before,ok)
+    call require(ok,'physical split initial conserved inventory')
+    call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
+    call require(ok,'physical split initial elements')
+    do mode=1,2
+      method='pcm'
+      if (mode==2) method='characteristic_plm'
+      c=c0;ct=ct0;f=f0;ft=ft0
+      call advance_amr_reactive_strang_3d(species,reactions,patch,c,ct,f,ft,dx,dy,dz, &
+        chemistry_interval,'rusanov',.true.,2e-7_dp,1e-12_dp,r,ok,method,'mc', &
+        boundary_faces=faces,boundary_change=ledger,inflow_state=inlet,inflow_temperature=it)
+      call require(ok,'physical reaction-hydro-reaction split')
+      call composite_integrals_amr_3d(c,f,patch,dx,dy,dz,after,ok)
+      scale=max(abs(before(1:5)),abs(ledger(1:5)),1e-20_dp)
+      scale(2:4)=maxval(scale(2:4))
+      call require(ok.and.all(abs(after(1:5)-before(1:5)-ledger(1:5)) &
+        <=2e-11_dp*scale),'physical split Euler boundary balance')
+      call require(abs(ledger(1))>1e-20_dp,'physical split nonzero mass boundary flux')
+      call element_integrals_from_reactive_integrals_3d(species,after,e1,ok)
+      call require(ok,'physical split final elements')
+      call element_integrals_from_reactive_integrals_3d(species,ledger,eb,ok)
+      call require(ok.and.all(abs(e1-e0-eb)<=2e-10_dp*max(abs(e0),1e-30_dp)), &
+        'physical split elemental boundary balance')
+      cr=c0;ctr=ct0;fr=f0;ftr=ft0
+      call advance_amr_reactive_chemistry_3d(species,reactions,patch,cr,ctr,fr,ftr, &
+        .5_dp*chemistry_interval,2e-7_dp,1e-12_dp,ok)
+      call require(ok,'physical reference first reaction')
+      call advance_amr_reactive_hydro_3d(species,patch,cr,ctr,fr,ftr,dx,dy,dz,chemistry_interval, &
+        'rusanov',rr,ok,method,'mc',faces,reference_ledger,inlet,it)
+      call require(ok,'physical reference hydro')
+      call advance_amr_reactive_chemistry_3d(species,reactions,patch,cr,ctr,fr,ftr, &
+        .5_dp*chemistry_interval,2e-7_dp,1e-12_dp,ok)
+      call require(ok.and.hierarchy_matches(c,ct,f,ft,cr,ctr,fr,ftr).and.r==rr.and. &
+        all(ledger==reference_ledger),'physical split matches explicit phases exactly')
+      call require(maxval(abs(after(6:)-before(6:)-ledger(6:)))>1e-20_dp, &
+        'physical split exercises chemical conversion')
+      c=c0;ct=ct0;f=f0;ft=ft0
+      inlet(1,1)=-1
+      call advance_amr_reactive_strang_3d(species,reactions,patch,c,ct,f,ft,dx,dy,dz, &
+        chemistry_interval,'rusanov',.true.,2e-7_dp,1e-12_dp,r,ok,method,'mc', &
+        boundary_faces=faces,boundary_change=ledger,inflow_state=inlet,inflow_temperature=it)
+      call require(.not.ok.and.hierarchy_matches(c,ct,f,ft,c0,ct0,f0,ft0).and.r==0.and.all(ledger==0), &
+        'invalid physical inlet rolls back first reaction and all outputs')
+      inlet(1,1)=1.1_dp*c0(1,1,1,1)
+      cr=c0;ctr=ct0;fr=f0;ftr=ft0
+      call advance_amr_reactive_hydro_3d(species,patch,cr,ctr,fr,ftr,dx,dy,dz,chemistry_interval, &
+        'rusanov',rr,ok,method,'mc',faces,reference_ledger,inlet,it)
+      call require(ok,'physical disabled chemistry reference')
+      call advance_amr_reactive_strang_3d(species,reactions,patch,c,ct,f,ft,dx,dy,dz, &
+        chemistry_interval,'rusanov',.false.,2e-7_dp,1e-12_dp,r,ok,method,'mc', &
+        boundary_faces=faces,boundary_change=ledger,inflow_state=inlet,inflow_temperature=it)
+      call require(ok.and.hierarchy_matches(c,ct,f,ft,cr,ctr,fr,ftr).and.r==rr.and. &
+        all(ledger==reference_ledger),'physical chemistry-disabled exact dispatch')
+    end do
+  end subroutine check_physical_split
 
   subroutine initialize_uniform_hierarchy( &
       species, patch, coarse_state, coarse_temperature, &

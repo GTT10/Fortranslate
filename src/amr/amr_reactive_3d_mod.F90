@@ -399,7 +399,8 @@ contains
       species, reactions, patch, coarse_state, coarse_temperature, &
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
       chemistry_enabled, rtol, atol, maximum_reflux_correction, ok, &
-      reconstruction, limiter, chemistry_integrator)
+      reconstruction, limiter, chemistry_integrator, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -420,11 +421,20 @@ contains
     real(dp), allocatable :: coarse_candidate_temperature(:, :, :)
     real(dp), allocatable :: fine_candidate(:, :, :, :)
     real(dp), allocatable :: fine_candidate_temperature(:, :, :)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp) :: candidate_boundary(size(coarse_state,1))
     real(dp) :: candidate_reflux
     logical :: local_ok
 
     maximum_reflux_correction = 0.0_dp
     ok = .false.
+    candidate_boundary=0.0_dp
+    if (present(boundary_change)) then
+      boundary_change=0.0_dp
+      if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
     if (.not. patch%is_strictly_interior()) return
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
@@ -440,7 +450,8 @@ contains
       call dispatch_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
-        maximum_reflux_correction, ok, reconstruction, limiter)
+        maximum_reflux_correction, ok, reconstruction, limiter, &
+        boundary_faces,boundary_change,inflow_state,inflow_temperature)
       return
     end if
 
@@ -476,7 +487,8 @@ contains
     call dispatch_amr_reactive_hydro_3d( &
       species, patch, coarse_candidate, coarse_candidate_temperature, &
       fine_candidate, fine_candidate_temperature, dx, dy, dz, dt, &
-      riemann_solver, candidate_reflux, local_ok, reconstruction, limiter)
+      riemann_solver, candidate_reflux, local_ok, reconstruction, limiter, &
+      boundary_faces,candidate_boundary,inflow_state,inflow_temperature)
     if (.not. local_ok) return
 
     if (present(chemistry_integrator)) then
@@ -501,6 +513,7 @@ contains
     coarse_temperature = coarse_candidate_temperature
     fine_state = fine_candidate
     fine_temperature = fine_candidate_temperature
+    if (present(boundary_change)) boundary_change=candidate_boundary
     maximum_reflux_correction = candidate_reflux
     ok = .true.
   end subroutine advance_amr_reactive_strang_3d
@@ -1577,7 +1590,8 @@ contains
   subroutine dispatch_amr_reactive_hydro_3d( &
       species, patch, coarse_state, coarse_temperature, fine_state, &
       fine_temperature, dx, dy, dz, dt, riemann_solver, &
-      maximum_reflux_correction, ok, reconstruction, limiter)
+      maximum_reflux_correction, ok, reconstruction, limiter, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(inout) :: coarse_state(:, :, :, :)
@@ -1590,29 +1604,38 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: reconstruction, limiter
 
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+
     if (present(reconstruction)) then
       if (present(limiter)) then
         call advance_amr_reactive_hydro_3d( &
           species, patch, coarse_state, coarse_temperature, fine_state, &
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
           maximum_reflux_correction, ok, reconstruction=reconstruction, &
-          limiter=limiter)
+          limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       else
         call advance_amr_reactive_hydro_3d( &
           species, patch, coarse_state, coarse_temperature, fine_state, &
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
-          maximum_reflux_correction, ok, reconstruction=reconstruction)
+          maximum_reflux_correction, ok, reconstruction=reconstruction, &
+          boundary_faces=boundary_faces,boundary_change=boundary_change, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       end if
     else if (present(limiter)) then
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
-        maximum_reflux_correction, ok, limiter=limiter)
+        maximum_reflux_correction, ok, limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
     else
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
-        maximum_reflux_correction, ok)
+        maximum_reflux_correction, ok,boundary_faces=boundary_faces,boundary_change=boundary_change, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
     end if
   end subroutine dispatch_amr_reactive_hydro_3d
 
