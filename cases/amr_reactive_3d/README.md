@@ -205,3 +205,24 @@ Reacting fixed schemas are the corresponding nonreacting fixed schema plus 16:
 nonreacting and selected layouts remain unchanged. Reads commit only after all
 context, state and geometry checks pass, including the physical boundary ledger.
 See [focused restart evidence](../../docs/validation/amr-fixed-chemistry-restart-20260917.md).
+
+## Boundary-touching static patches (serial)
+
+The serial fixed and selected AMR frontends also accept fine patches that reach
+physical domain faces. For example:
+
+```sh
+./build/debug/pelef_amr_reactive_3d cases/amr_reactive_3d/physical_touching_wall.nml
+```
+
+This short reacting full-H2/O2 case refines the cold moving x-low wall. Fine
+wall heat/work fluxes enter the composite boundary ledger; wall thermal timestep
+limits account for both coarse and fine states. Checkpoint/restart retains the
+physical patch geometry and boundary/chemistry context with the existing static
+schemas. Periodic seams and dynamic regridding with a boundary-touching patch
+are rejected. MPI frontends currently retain strictly interior patches.
+
+[Application restart evidence](../../docs/validation/amr-boundary-touching-app-20260917.md)
+covers a full-H2/O2 reacting wall case and an elementary reacting corner case.
+The selected frontend shares this implementation; it has not been independently
+qualified for boundary-touching application inputs in that check.

@@ -78,7 +78,9 @@ contains
     logical :: ok, restarted, stopped_after_checkpoint
     logical :: selected_context, element_diagnostics
     integer :: step, nvar, covered_nx, covered_ny, covered_nz,face,i,j,k
-    character(len=32) :: faces(6)
+    character(len=32) :: faces(6),fine_faces(6)
+    logical :: touched(6)
+    real(dp) :: fine_wall_dt
     character(len=32), allocatable :: active_faces(:)
     real(dp), allocatable :: boundary_total(:),step_boundary(:),inflow_state(:,:),inflow_x(:),inflow_y(:),inlet_cube(:,:,:,:)
     real(dp) :: inflow_t(6),primitive(reactive_nprim(size(species))),sound_speed
@@ -112,8 +114,8 @@ contains
       amr_config%coarse_j_lower, amr_config%coarse_j_upper, &
       amr_config%coarse_k_lower, amr_config%coarse_k_upper, &
       amr_config%refinement_ratio, patch, ok)
-    if (.not. ok .or. .not. patch%is_strictly_interior()) then
-      error stop "Failed to construct strictly interior 3D AMR patch"
+    if (.not. ok) then
+      error stop "Failed to construct 3D AMR patch"
     end if
 
     nvar = reactive_nvar(size(species))
@@ -400,6 +402,20 @@ contains
           call reactive_isothermal_timestep_3d(species,transport,coarse_state,coarse_temperature,[dx,dy,dz], &
             faces,config%wall_temperature,config%transport_cfl,wall_dt,ok)
           if (.not.ok) error stop 'Invalid AMR wall thermal timestep'
+          touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+            patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+            patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+          fine_faces='outflow'
+          do face=1,6
+            if (touched(face)) fine_faces(face)=faces(face)
+          end do
+          if (any(fine_faces=='isothermal_wall')) then
+            call reactive_isothermal_timestep_3d(species,transport,fine_state,fine_temperature, &
+              [dx,dy,dz]/real(patch%refinement_ratio,dp),fine_faces,config%wall_temperature, &
+              config%transport_cfl,fine_wall_dt,ok)
+            if (.not.ok) error stop 'Invalid fine AMR wall thermal timestep'
+            wall_dt=min(wall_dt,real(patch%refinement_ratio,dp)**2*fine_wall_dt)
+          end if
           dt=min(dt,.5_dp*transport_dt,.5_dp*inlet_transport_dt,wall_dt)
         end if
         maximum_diffusivity = max( &

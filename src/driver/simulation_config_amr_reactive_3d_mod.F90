@@ -32,13 +32,13 @@ module simulation_config_amr_reactive_3d_mod
 contains
 
   subroutine read_amr_reactive_3d_configuration( &
-      path, base_config, config, ok, message, allow_selected,allow_physical)
+      path, base_config, config, ok, message, allow_selected,allow_physical,allow_boundary_patch)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(in) :: base_config
     type(amr_reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_physical
+    logical, intent(in), optional :: allow_selected,allow_physical,allow_boundary_patch
 
     integer :: refinement_ratio,regrid_interval_steps,regrid_buffer_cells
     real(dp) :: regrid_temperature_threshold
@@ -109,18 +109,21 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     call validate_amr_reactive_3d_configuration( &
-      base_config, config, ok, message, allow_selected=selected_allowed,allow_physical=allow_physical)
+      base_config, config, ok, message, allow_selected=selected_allowed,allow_physical=allow_physical, &
+      allow_boundary_patch=allow_boundary_patch)
   end subroutine read_amr_reactive_3d_configuration
 
   pure subroutine validate_amr_reactive_3d_configuration( &
-      base_config, config, ok, message, allow_selected,allow_physical)
+      base_config, config, ok, message, allow_selected,allow_physical,allow_boundary_patch)
     type(reactive_3d_config), intent(in) :: base_config
     type(amr_reactive_3d_config), intent(in) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_physical
+    logical, intent(in), optional :: allow_selected,allow_physical,allow_boundary_patch
 
-    logical :: selected_allowed, selected_model,physical_allowed
+    logical :: selected_allowed, selected_model,physical_allowed,touched(6)
+    character(len=32) :: faces(6)
+    integer :: margin
 
     ok = .false.
     message = ""
@@ -128,6 +131,14 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     physical_allowed=.false.
     if (present(allow_physical)) physical_allowed=allow_physical
+    margin=1
+    if (present(allow_boundary_patch)) then
+      if (allow_boundary_patch) margin=0
+    end if
+    faces=resolved_reactive_boundaries_3d(base_config)
+    touched=[config%coarse_i_lower==1,config%coarse_i_upper==base_config%nx, &
+      config%coarse_j_lower==1,config%coarse_j_upper==base_config%ny, &
+      config%coarse_k_lower==1,config%coarse_k_upper==base_config%nz]
     selected_model = trim(base_config%thermo_model) == "selected"
     if (.not.physical_allowed.and.any(resolved_reactive_boundaries_3d(base_config) /= "periodic")) then
       message = "Static 3D AMR currently requires periodic boundaries"
@@ -150,18 +161,22 @@ contains
       message='Regrid temperature threshold must be positive'
     else if (config%refinement_ratio < 2) then
       message = "3D AMR refinement_ratio must be at least two"
-    else if (config%coarse_i_lower <= 1 .or. &
-             config%coarse_i_upper >= base_config%nx .or. &
+    else if (config%coarse_i_lower <= margin .or. &
+             config%coarse_i_upper >= base_config%nx+1-margin .or. &
              config%coarse_i_upper < config%coarse_i_lower) then
-      message = "3D AMR x patch must be nonempty and strictly interior"
-    else if (config%coarse_j_lower <= 1 .or. &
-             config%coarse_j_upper >= base_config%ny .or. &
+      message = "3D AMR x patch lies outside the supported coarse-cell bounds"
+    else if (config%coarse_j_lower <= margin .or. &
+             config%coarse_j_upper >= base_config%ny+1-margin .or. &
              config%coarse_j_upper < config%coarse_j_lower) then
-      message = "3D AMR y patch must be nonempty and strictly interior"
-    else if (config%coarse_k_lower <= 1 .or. &
-             config%coarse_k_upper >= base_config%nz .or. &
+      message = "3D AMR y patch lies outside the supported coarse-cell bounds"
+    else if (config%coarse_k_lower <= margin .or. &
+             config%coarse_k_upper >= base_config%nz+1-margin .or. &
              config%coarse_k_upper < config%coarse_k_lower) then
-      message = "3D AMR z patch must be nonempty and strictly interior"
+      message = "3D AMR z patch lies outside the supported coarse-cell bounds"
+    else if (any(touched.and.faces=='periodic')) then
+      message='3D AMR patches touching periodic seams are not supported'
+    else if (any(touched).and.config%regrid_interval_steps>0) then
+      message='Boundary-touching 3D AMR currently requires a static patch'
     else if (len_trim(config%coarse_output_file) == 0 .or. &
              len_trim(config%fine_output_file) == 0) then
       message = "3D AMR output paths must be nonempty"

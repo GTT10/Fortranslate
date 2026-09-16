@@ -1703,7 +1703,8 @@ contains
     type(amr_patch_3d), intent(in) :: patch
     logical, intent(in) :: selected_context
 
-    logical :: physics_matches,geometry_matches
+    logical :: physics_matches,geometry_matches,touched(6)
+    character(len=32) :: faces(6)
 
     if (selected_context) then
       physics_matches = trim(flow_config%thermo_model) == "selected"
@@ -1719,7 +1720,13 @@ contains
       patch%coarse_k_lower == amr_config%coarse_k_lower .and. &
       patch%coarse_k_upper == amr_config%coarse_k_upper
     if (amr_config%regrid_interval_steps>0) geometry_matches=.true.
-    matches = patch%is_strictly_interior() .and. &
+    faces=resolved_reactive_boundaries_3d(flow_config)
+    touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
+      patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+      patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+    if (any(touched.and.faces=='periodic')) geometry_matches=.false.
+    if (any(touched).and.amr_config%regrid_interval_steps>0) geometry_matches=.false.
+    matches = patch%is_valid() .and. &
       patch%coarse_nx == flow_config%nx .and. &
       patch%coarse_ny == flow_config%ny .and. &
       patch%coarse_nz == flow_config%nz .and. &
@@ -1745,7 +1752,7 @@ contains
     integer :: nvar
 
     nvar = reactive_nvar(size(species))
-    valid = patch%is_strictly_interior() .and. &
+    valid = patch%is_valid() .and. &
       size(coarse_state, 1) == nvar .and. &
       size(coarse_state, 2) == patch%coarse_nx .and. &
       size(coarse_state, 3) == patch%coarse_ny .and. &

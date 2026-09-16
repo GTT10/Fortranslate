@@ -110,6 +110,26 @@ program test_amr_reactive_3d_config
   amr%coarse_i_lower = 1
   call validate_amr_reactive_3d_configuration(base, amr, ok, message)
   call require(.not. ok, "boundary-touching patch rejection")
+  call validate_amr_reactive_3d_configuration(base,amr,ok,message, &
+    allow_physical=.true.,allow_boundary_patch=.true.)
+  call require(.not.ok,'touching periodic seam rejection')
+  base%boundary_condition='outflow'
+  call validate_amr_reactive_3d_configuration(base,amr,ok,message,allow_physical=.true.)
+  call require(.not.ok,'MPI/default reader retains interior restriction')
+  call validate_amr_reactive_3d_configuration(base,amr,ok,message, &
+    allow_physical=.true.,allow_boundary_patch=.true.)
+  call require(ok,'opt-in physical boundary patch')
+  amr%regrid_interval_steps=1
+  call validate_amr_reactive_3d_configuration(base,amr,ok,message, &
+    allow_physical=.true.,allow_boundary_patch=.true.)
+  call require(.not.ok,'boundary patch dynamic regrid rejection')
+  amr%regrid_interval_steps=0
+  amr%coarse_i_lower=0
+  call validate_amr_reactive_3d_configuration(base,amr,ok,message, &
+    allow_physical=.true.,allow_boundary_patch=.true.)
+  call require(.not.ok,'boundary patch outside-domain rejection')
+  base%boundary_condition='periodic'
+
   amr = amr_reactive_3d_config()
   amr%refinement_ratio = 1
   call validate_amr_reactive_3d_configuration(base, amr, ok, message)

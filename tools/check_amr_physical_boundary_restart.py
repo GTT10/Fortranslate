@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
+    parser.add_argument('--touching', action='store_true')
     parser.add_argument('--mpiexec', type=Path)
     parser.add_argument('--numproc-flag', default='-n')
     parser.add_argument('--mpiexec-preflag', action='append', default=[])
@@ -53,6 +54,8 @@ def main() -> None:
         return output
 
     labels = ('dynamic', 'elementary') if args.reacting else ('wall', 'dynamic', 'inlet')
+    if args.touching:
+        labels = ('wall', 'elementary') if args.reacting else ('wall', 'inlet')
     for label in labels:
         source = template
         if args.reacting:
@@ -73,6 +76,12 @@ def main() -> None:
             source = source.replace("'isothermal_wall'", "'inflow'")
             source = source.replace('wall_velocity(2,1) = 20',
                                     'inflow_temperature(1)=1300, inflow_velocity(1,1)=30')
+        if args.touching:
+            source = source.replace('coarse_i_lower = 2', 'coarse_i_lower = 1')
+            if label == 'elementary':
+                source = source.replace("'periodic'", "'no_slip_wall'")
+                source = source.replace('coarse_j_lower = 2', 'coarse_j_lower = 1')
+                source = source.replace('coarse_k_lower = 2', 'coarse_k_lower = 1')
         reference = run(f'{label}_reference', source)
         stopped = run(f'{label}_stopped', source,
                       f"checkpoint_interval_steps=1, checkpoint_file='{label}.chk', stop_after_checkpoint=.true.,")
@@ -100,6 +109,9 @@ def main() -> None:
         changed = (source.replace('1300', '1400') if label == 'inlet' else
                    source.replace('600, 600', '650, 600', 1))
         run(f'{label}_changed', changed, f"restart_file='{label}.chk',", success=False)
+        if args.touching:
+            rejected = run(f'{label}_regrid', source, 'regrid_interval_steps=1,', success=False)
+            assert 'requires a static patch' in rejected
         if args.reacting:
             inactive = source.replace('chemistry_enabled = .true.', 'chemistry_enabled = .false.')
             run(f'{label}_inactive_reference', inactive)
@@ -109,7 +121,7 @@ def main() -> None:
             checkpoint = work / f'{label}.chk'
             original_checkpoint = checkpoint.read_text()
             assert 'FIXED_CONTEXT' in original_checkpoint
-            wrong_integrator = 'explicit' if label == 'dynamic' else 'implicit'
+            wrong_integrator = 'implicit' if label == 'elementary' else 'explicit'
             lines = original_checkpoint.splitlines()
             context_line = lines.index('FIXED_CONTEXT')
             lines[context_line + 2] = wrong_integrator
