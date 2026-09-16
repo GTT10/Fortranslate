@@ -124,6 +124,9 @@ queries now sum overlapping film heights across owners
 wrapper now computes mixture impact conditions, queries film thickness and resolves
 wall events ([evidence](validation/spray-mpi-wall-crossing-20260917.md)); integration
 with nonperiodic gas/particle stepping and the application remains open.
+A two-layer MPI ghost API now combines physical wall/inlet/outlet conditions with
+neighbor exchange, including transverse corners
+([evidence](validation/spray-mpi-boundary-ghost-20260917.md)).
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

@@ -1,5 +1,6 @@
 program test_spray_mpi
   use mpi_f08
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
@@ -389,6 +390,7 @@ program test_spray_mpi
   call advance_reactive_euler_ssprk2_plm_3d(species,reference,reference_temperature,cells(1),3,3, &
     1.0_dp,1.0_dp,1.0_dp,1e-5_dp,'mc','hllc',ok)
   call require(ok,'serial hydro reference')
+  call check_boundary_ghosts()
   call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,field,temperature,[1.0_dp,1.0_dp,1.0_dp], &
     cells,1e-5_dp,'hllc','mc',ok)
   call require(ok,'distributed hydro')
@@ -530,6 +532,43 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_boundary_ghosts()
+    real(dp), allocatable :: global_ghost(:,:,:,:),global_t(:,:,:),local_ghost(:,:,:,:),local_t(:,:,:),u(:,:,:,:),t(:,:,:)
+    real(dp), allocatable :: saved_ghost(:,:,:,:),saved_t(:,:,:)
+    real(dp) :: velocity(3,6),inlet(15,6),inlet_t(6)
+    character(len=32) :: boundaries(6)
+    integer :: mode
+    allocate(global_ghost(15,cells(1)+4,7,7),global_t(cells(1)+4,7,7))
+    u=reference(:,first(1)+1:first(1)+dims(1),:,:)
+    t=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
+    inlet=spread(reference(:,1,1,1),2,6);inlet_t=reference_temperature(1,1,1)
+    do mode=1,3
+      boundaries='periodic';velocity=0
+      if (mode/=1) then
+        boundaries(1)='slip_wall';boundaries(2)='outflow'
+        boundaries(3)='no_slip_wall';boundaries(4)='isothermal_wall'
+        velocity(1,3)=2;velocity(1,4)=-1
+      end if
+      if (mode==3) boundaries(1)='inflow'
+      call fill_reactive_boundary_ghosts_3d(reference,reference_temperature,boundaries,global_ghost,global_t,ok, &
+        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
+      call require(ok,'serial boundary ghost reference')
+      call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &
+        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
+      call require(ok,'MPI boundary ghost exchange')
+      call require(all(local_ghost==global_ghost(:,first(1)+1:first(1)+dims(1)+4,:,:)), &
+        'MPI ghost states exactly match serial including corners')
+      call require(all(local_t==global_t(first(1)+1:first(1)+dims(1)+4,:,:)), &
+        'MPI ghost temperatures exactly match serial')
+    end do
+    saved_ghost=local_ghost;saved_t=local_t
+    if (rank==0) boundaries(2)='slip_wall'
+    call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &
+      viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
+    call require(.not.ok.and.all(local_ghost==saved_ghost).and.all(local_t==saved_t), &
+      'MPI boundary disagreement rejects without changing ghost output')
+  end subroutine
+
   subroutine check_wall_crossing()
     type(spray_parcel), allocatable :: drops(:),children(:)
     type(spray_parcel) :: expected_parent

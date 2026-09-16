@@ -1,5 +1,7 @@
 module spray_mpi_mod
   use mpi_f08
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
+    valid_reactive_boundaries_3d,valid_wall_velocity_3d
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -25,6 +27,7 @@ module spray_mpi_mod
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: fill_mpi_spray_ghosts
   public :: impact_mpi_planar_walls
   public :: sample_mpi_wall_film_thickness
   public :: resolve_mpi_wall_impacts
@@ -36,6 +39,97 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine fill_mpi_spray_ghosts(comm,state,temperature,cells,faces,ghost,ghost_temperature,ok, &
+      viscous_wall,inflow_state,inflow_temperature,wall_velocity)
+    type(MPI_Comm), intent(in) :: comm
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
+    integer, intent(in) :: cells(3)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), allocatable, intent(inout) :: ghost(:,:,:,:),ghost_temperature(:,:,:)
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: viscous_wall
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
+    real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
+    real(dp) :: local_velocity(3,6)
+    integer :: rank,nranks,ierr,first(3),extent(3),nx,ny,nz,nvar,previous,next,f,config(11),low(11),high(11)
+    character(len=32) :: local_faces(6)
+    logical :: valid,agreed,viscous
+    ok=.false.;viscous=.false.
+    if (present(viscous_wall)) viscous=viscous_wall
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    nvar=size(state,1);config(:4)=[cells,nvar];config(11)=merge(1,0,viscous)
+    valid=valid_reactive_boundaries_3d(faces).and.nvar>=5.and.nvar<=256
+    do f=1,6
+      select case(trim(faces(f)))
+      case('periodic');config(4+f)=1
+      case('inflow');config(4+f)=2
+      case('outflow');config(4+f)=3
+      case('slip_wall');config(4+f)=4
+      case('no_slip_wall');config(4+f)=5
+      case('isothermal_wall');config(4+f)=6
+      case default;valid=.false.;config(4+f)=0
+      end select
+    end do
+    local_velocity=0
+    if (present(wall_velocity)) then
+      valid=valid.and.valid_wall_velocity_3d(faces,wall_velocity)
+      if (valid) local_velocity=wall_velocity
+    end if
+    call agree()
+    if (.not.agreed) return
+    call MPI_Allreduce(config,low,11,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,high,11,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
+    valid=valid.and.all(extent>=2).and.all(shape(state)==[nvar,extent]).and.all(shape(temperature)==extent)
+    call agree()
+    if (.not.agreed) return
+    nx=extent(1);ny=extent(2);nz=extent(3)
+    valid=2*(nvar+1)<=huge(1)/(ny+4)/(nz+4)
+    call agree()
+    if (.not.agreed) return
+    local_faces=faces;local_faces(1:2)='outflow';local_velocity(:,1:2)=0
+    previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
+    if (rank==0.and.faces(1)/='periodic') then
+      previous=MPI_PROC_NULL;local_faces(1)=faces(1)
+      if (present(wall_velocity)) local_velocity(:,1)=wall_velocity(:,1)
+    end if
+    if (rank==nranks-1.and.faces(2)/='periodic') then
+      next=MPI_PROC_NULL;local_faces(2)=faces(2)
+      if (present(wall_velocity)) local_velocity(:,2)=wall_velocity(:,2)
+    end if
+    allocate(candidate(nvar,nx+4,ny+4,nz+4),temp(nx+4,ny+4,nz+4))
+    call fill_reactive_boundary_ghosts_3d(state,temperature,local_faces,candidate,temp,valid,viscous_wall=viscous, &
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=local_velocity)
+    call agree()
+    if (.not.agreed) return
+    allocate(send(nvar+1,2,ny+4,nz+4),left(nvar+1,2,ny+4,nz+4),right(nvar+1,2,ny+4,nz+4))
+    send(:nvar,:,:,:)=candidate(:,nx+1:nx+2,:,:);send(nvar+1,:,:,:)=temp(nx+1:nx+2,:,:)
+    call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3331,left,size(left),MPI_DOUBLE_PRECISION, &
+      previous,3331,comm,MPI_STATUS_IGNORE,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    send(:nvar,:,:,:)=candidate(:,3:4,:,:);send(nvar+1,:,:,:)=temp(3:4,:,:)
+    call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3332,right,size(right),MPI_DOUBLE_PRECISION, &
+      next,3332,comm,MPI_STATUS_IGNORE,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (previous/=MPI_PROC_NULL) then
+      candidate(:,:2,:,:)=left(:nvar,:,:,:);temp(:2,:,:)=left(nvar+1,:,:,:)
+    end if
+    if (next/=MPI_PROC_NULL) then
+      candidate(:,nx+3:,:,:)=right(:nvar,:,:,:);temp(nx+3:,:,:)=right(nvar+1,:,:,:)
+    end if
+    call move_alloc(candidate,ghost);call move_alloc(temp,ghost_temperature);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine impact_mpi_planar_walls(comm,components,properties,settings,faces,molecular_weights,pressure, &
       previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,wall_change,ok)
     type(MPI_Comm), intent(in) :: comm
