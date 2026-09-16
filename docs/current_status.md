@@ -108,8 +108,11 @@ exchanges gas and species-limiter halos and connects as half-steps around hydro
 `pelef_mpi_spray_3d` executable now connects initial two-component cone injection,
 global time-step selection/retry, coupled stepping, budget history and rank-local
 CSV output ([evidence](validation/spray-mpi-application-20260917.md)). Scheduled
-independent multiport/rate-profile injection and selected-mechanism routing remain
-open. Repeated timed cone events now clip time steps, retain injected budgets and
+independent multiport/rate-profile injection remains open. A shared MPI application
+now also serves `pelef_mpi_spray_3d_selected`, with 21-species FFCM1_Red execution
+and restart evidence ([validation](validation/spray-selected-mpi-20260917.md)).
+The selected case also exposed and corrected roundoff-negative final-species mass
+closure ([correction](validation/reactive-zero-species-closure-20260917.md)). Repeated timed cone events now clip time steps, retain injected budgets and
 resume from the saved event count ([evidence](validation/spray-mpi-schedule-20260917.md)).
 MPI spray CLI save/restart
 now preserves model identity and budgets, with focused same-rank and 2↔4-rank

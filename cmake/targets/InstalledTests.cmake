@@ -645,9 +645,11 @@ if(PELEF_ENABLE_TESTS)
       $<TARGET_FILE:pelef_reactive_eb_3d_selected>
     )
     if(PELEF_ENABLE_MPI)
+      if(TARGET pelef_mpi_reactive_1d_selected)
+        list(APPEND PELEF_STACK_CHECK_TARGETS $<TARGET_FILE:pelef_mpi_reactive_1d_selected>)
+      endif()
       list(
         APPEND PELEF_STACK_CHECK_TARGETS
-        $<TARGET_FILE:pelef_mpi_reactive_1d_selected>
         $<TARGET_FILE:pelef_mpi_amr_reactive_1d_selected>
         $<TARGET_FILE:pelef_mpi_amr_reactive_3d_selected>
         $<TARGET_FILE:pelef_mpi_reactive_eb_patch_tree_2d_selected>

@@ -1,0 +1,10 @@
+&mpi_spray
+ cells=8,4,4
+ spacing=.001,.001,.001
+ final_time=2e-8
+ dt_max=1e-8
+ number=4
+ total_mass=1e-10
+ liquid_species='H2O','CH3OH'
+ output_prefix='periodic_mixture'
+/

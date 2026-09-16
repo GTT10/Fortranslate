@@ -98,7 +98,7 @@ function(pelef_add_mechanism_bundle)
     one_value_args
     NAME BUNDLE SOURCE PROBE_NAME REACTOR_NAME REACTIVE_1D_NAME
     AMR_REACTIVE_1D_NAME REACTIVE_2D_NAME REACTIVE_EB_2D_NAME
-    REACTIVE_EB_AMR_2D_NAME SPRAY_3D_NAME
+    REACTIVE_EB_AMR_2D_NAME SPRAY_3D_NAME MPI_SPRAY_3D_NAME
       REACTIVE_3D_NAME AMR_REACTIVE_3D_NAME
     REACTIVE_EB_3D_NAME
     MPI_REACTIVE_1D_NAME MPI_AMR_REACTIVE_1D_NAME
@@ -841,6 +841,17 @@ function(pelef_add_mechanism_bundle)
     add_executable("${PELEF_BUNDLE_SPRAY_3D_NAME}" "${configured_spray_3d}")
     target_link_libraries("${PELEF_BUNDLE_SPRAY_3D_NAME}" PRIVATE "${mechanism_target}" pelef_selected_spray_runtime)
     list(APPEND install_targets "${PELEF_BUNDLE_SPRAY_3D_NAME}")
+  endif()
+
+  if(PELEF_BUNDLE_MPI_SPRAY_3D_NAME)
+    if(NOT PELEF_ENABLE_MPI OR NOT TARGET pelef_selected_spray_runtime)
+      message(FATAL_ERROR "Selected MPI spray requires MPI, spray and selected runtime")
+    endif()
+    set(configured_mpi_spray "${bundle_directory}/${PELEF_BUNDLE_NAME}_mpi_spray_3d.F90")
+    configure_file("${PROJECT_SOURCE_DIR}/app/pelef_mpi_spray_3d_selected.F90.in" "${configured_mpi_spray}" @ONLY)
+    add_executable("${PELEF_BUNDLE_MPI_SPRAY_3D_NAME}" "${configured_mpi_spray}")
+    target_link_libraries("${PELEF_BUNDLE_MPI_SPRAY_3D_NAME}" PRIVATE "${mechanism_target}" pelef_selected_spray_runtime)
+    list(APPEND install_targets "${PELEF_BUNDLE_MPI_SPRAY_3D_NAME}")
   endif()
 
   if(PELEF_BUNDLE_AMR_REACTIVE_3D_NAME)

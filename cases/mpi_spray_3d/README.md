@@ -7,15 +7,16 @@ fresh output directory (input paths may be absolute):
 mpiexec -n 4 /path/to/build/pelef_mpi_spray_3d /path/to/cases/mpi_spray_3d/periodic_mixture.nml
 ```
 
-This fixed H2/O2-mechanism application advances periodic x-slab gas and two-component
+The fixed H2/O2 and selected-mechanism applications advance periodic x-slab gas and two-component
 particles with P/2-C/2-T/2-H-T/2-C/2-P/2 splitting. The example uses synthetic
 water/peroxide liquid properties; it is an implementation exercise, not a qualified
 physical spray model. Global cells must provide at least two x cells per rank and
 three y/z cells. Rank zero reads and broadcasts the `mpi_spray` namelist.
 
 The default initial gas is 800 K, density 1 kg/m3 and mass fractions H2=0.03,
-O2=0.23, N2=0.74. `gas_fractions(10)` follows the pinned mechanism order
-H2,H,O,O2,OH,H2O,HO2,H2O2,AR,N2. Liquid species, densities, heat capacities,
+O2=0.23, N2=0.74. `gas_fractions` follows the loaded mechanism order. The fixed order is
+H2,H,O,O2,OH,H2O,HO2,H2O2,AR,N2. Default fractions are assigned by the names H2,
+O2 and N2, so their positions may change in a selected mechanism. Liquid species, densities, heat capacities,
 boiling temperatures (at 101325 Pa), latent heats and injection mass fractions
 are configurable pairs. `number=0,total_mass=0` disables liquid injection.
 `injection_events` (default 1), `injection_start` (default 0) and
@@ -43,7 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Selected mechanisms, independent multiport schedules and rate profiles, distributed breakup/wall films
+Independent multiport schedules and rate profiles, distributed breakup/wall films
 and SGS remain to be integrated in this executable.
 
 ## Save and resume
@@ -69,3 +70,24 @@ The scheduled-injection context is `mpi-spray-application-v2`: reference budgets
 contain the initial gas and accumulated injection is stored separately. Older v1
 application checkpoints are rejected because they used a different reference
 budget convention. The underlying checkpoint file schema is unchanged.
+
+## Selected mechanism
+
+When `PELEF_MECHANISM_BUNDLE` is set alongside MPI and spray, CMake also builds
+`pelef_mpi_spray_3d_selected`. It uses the same application and checkpoint code
+with mechanism-sized gas arrays and the selected bundle SHA in checkpoint context.
+The existing importer/provenance and selected thermodynamic/transport validation
+remain in effect. Liquid vapor names must exist in the selected mechanism.
+
+`periodic_methanol_water.nml` exercises the 21-species FFCM1_Red bundle prepared
+by the [spray mechanism recipe](../../docs/spray.md). Its water/methanol liquid
+properties are synthetic defaults. Example:
+
+```sh
+mpiexec -n 4 /path/to/build/pelef_mpi_spray_3d_selected /path/to/cases/mpi_spray_3d/periodic_methanol_water.nml
+```
+
+The old selected MPI 1D executable requires its own 2/10-species initialization
+profiles and is omitted for other species counts. This does not disable the
+selected MPI spray or AMR targets. Qualification here covers 21 species, not every
+supported mechanism size or physical liquid-fuel ignition.

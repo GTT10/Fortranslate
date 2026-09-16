@@ -17,7 +17,8 @@ if(PELEF_ENABLE_SPRAY)
       src/les/les_smagorinsky_3d_mod.F90
     )
     if(PELEF_ENABLE_MPI)
-      target_sources(${target} PRIVATE src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90)
+      target_sources(${target} PRIVATE src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90
+        src/spray/spray_mpi_application_mod.F90)
       target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
     endif()
     set_target_properties(${target} PROPERTIES

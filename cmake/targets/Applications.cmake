@@ -1,6 +1,9 @@
 set(pelef_selected_spray_option)
 if(PELEF_ENABLE_SPRAY)
   set(pelef_selected_spray_option SPRAY_3D_NAME pelef_spray_3d_selected)
+  if(PELEF_ENABLE_MPI)
+    list(APPEND pelef_selected_spray_option MPI_SPRAY_3D_NAME pelef_mpi_spray_3d_selected)
+  endif()
 endif()
 if(PELEF_MECHANISM_BUNDLE)
   set(pelef_selected_test_option)
@@ -9,9 +12,14 @@ if(PELEF_MECHANISM_BUNDLE)
     list(APPEND pelef_selected_test_option ADD_TEST)
   endif()
   if(PELEF_ENABLE_MPI)
+    _pelef_read_mechanism_bundle_build_contract("${PELEF_MECHANISM_BUNDLE}" selected_mpi_contract)
+    if(selected_mpi_contract_nspecies EQUAL 2 OR selected_mpi_contract_nspecies EQUAL 10)
+      list(APPEND pelef_selected_mpi_option MPI_REACTIVE_1D_NAME pelef_mpi_reactive_1d_selected)
+    else()
+      message(STATUS "Skipping profile-specific selected MPI 1D executable for ${selected_mpi_contract_nspecies} species")
+    endif()
     list(
       APPEND pelef_selected_mpi_option
-      MPI_REACTIVE_1D_NAME pelef_mpi_reactive_1d_selected
       MPI_AMR_REACTIVE_1D_NAME pelef_mpi_amr_reactive_1d_selected
       MPI_AMR_REACTIVE_3D_NAME pelef_mpi_amr_reactive_3d_selected
       MPI_REACTIVE_EB_PATCH_TREE_2D_NAME

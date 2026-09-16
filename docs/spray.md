@@ -1839,9 +1839,9 @@ CSVs retain final fields. Existing output files are refused. See the
 [case and input guide](../cases/mpi_spray_3d/README.md) and
 [application evidence](validation/spray-mpi-application-20260917.md).
 
-This executable currently supports timed repeated injection and fixed-mechanism periodic
+The MPI executables currently support timed repeated injection and periodic
 flow. Its CSVs do not provide restart; the checkpoint API below does. Independent multiport/rate-profile
-injection, selected-mechanism routing, SGS and distributed wall/breakup events remain open.
+injection, SGS and distributed wall/breakup events remain open.
 
 ### Checkpoint ID reservation state
 
@@ -1905,3 +1905,20 @@ enter checkpoint context. Context v2 records initial-gas reference budgets and
 separate injected budgets, so earlier v1 application contexts are intentionally
 incompatible. Independent ports and time-varying rate profiles remain open for
 this MPI executable. See [schedule evidence](validation/spray-mpi-schedule-20260917.md).
+
+### Selected-mechanism MPI application
+
+`pelef_mpi_spray_3d_selected` is generated when MPI, spray and a mechanism bundle
+are enabled. Both MPI frontends call `run_mpi_spray_application`; gas arrays,
+flux budgets, CSV columns and initial mass fractions follow the loaded species
+count. Default H2/O2/N2 fractions are assigned by species name; explicit numeric
+`gas_fractions` uses bundle order. Checkpoint context contains the selected bundle
+SHA and retains schedule/restart identity checks.
+
+The 21-species FFCM1_Red water/methanol example passes the application, schedule
+and same/changed-rank restart checker. Its strict nonnegative-species check exposed
+a chemistry closure residual on absent HE; the separate
+[roundoff correction](validation/reactive-zero-species-closure-20260917.md) preserves
+mass by assigning a tiny negative closure residual to the largest component.
+Build/input instructions are in the [MPI case guide](../cases/mpi_spray_3d/README.md),
+with exact configuration and evidence [here](validation/spray-selected-mpi-20260917.md).
