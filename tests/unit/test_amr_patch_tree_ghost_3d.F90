@@ -86,6 +86,7 @@ program test_amr_patch_tree_ghost_3d
     end do
     deallocate(dense)
   end do
+  call temporal_checks()
   saved=ghost
   call fill_amr_patch_tree_ghosts_3d(tree,state,5,faces,ghost,ok)
   call require(.not.ok.and.all(ghost==saved),'missing reservoir preserves output')
@@ -109,6 +110,102 @@ program test_amr_patch_tree_ghost_3d
   call require(.not.ok.and.all(ghost==saved),'global integer-coordinate overflow rejects before allocation')
   print '(a)','test_amr_patch_tree_ghost_3d: PASS'
 contains
+  subroutine temporal_checks()
+    type(amr_tree_state_3d) :: future,incomplete
+    real(dp), allocatable :: full(:,:,:,:),refined(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:),snapshot(:,:,:,:)
+    real(dp), allocatable :: temperatures(:,:,:),expected_t(:,:,:)
+    real(dp) :: alpha(2),bad_alpha(2),wall(3,6)
+    character(len=32) :: boundary_faces(6)
+    integer :: endpoint,physical,depth,peer,side,target_depth,lower_box(3),upper_box(3)
+    logical :: success
+    allocate(future%fields(5))
+    do peer=1,3
+      future%fields(peer)%values=state%fields(peer)%values
+      future%fields(peer)%values(1,:,:,:)=future%fields(peer)%values(1,:,:,:)+.5_dp
+      future%fields(peer)%values(2:4,:,:,:)=future%fields(peer)%values(2:4,:,:,:)+16.0_dp
+      future%fields(peer)%values(5,:,:,:)=future%fields(peer)%values(5,:,:,:)+256.0_dp
+      future%fields(peer)%values(6,:,:,:)=future%fields(peer)%values(6,:,:,:)+.5_dp
+    end do
+    ! Future peer/finer fields 4 and 5 deliberately remain unallocated.
+    do endpoint=1,3
+      select case(endpoint)
+      case(1)
+        alpha=0
+      case(2)
+        alpha=1
+      case(3)
+        alpha=[.25_dp,.75_dp]
+      end select
+      do physical=1,2
+        boundary_faces='periodic';wall=0
+        if (physical==2) then
+          boundary_faces=[character(len=32)::'slip_wall','outflow','inflow','no_slip_wall','isothermal_wall','inflow']
+          wall=velocity
+        end if
+        do target_depth=1,2
+        full=(1-alpha(1))*root+alpha(1)*future%fields(1)%values
+        do depth=1,target_depth
+          side=4*2**depth
+          call initialize_amr_patch_3d(side/2,side/2,side/2,1,side/2,1,side/2,1,side/2,2,whole,success)
+          call require(success,'temporal dense geometry')
+          allocate(refined(6,side,side,side))
+          call prolong_pcm_3d(full,whole,refined,success)
+          call require(success,'temporal dense prolongation')
+          call move_alloc(refined,full)
+          do peer=2,5
+            if (tree%nodes(peer)%level/=depth) cycle
+            lower_box=origins(:,peer)+1;upper_box=origins(:,peer)+tree%nodes(peer)%shape
+            if (depth<target_depth) then
+              full(:,lower_box(1):upper_box(1),lower_box(2):upper_box(2),lower_box(3):upper_box(3))= &
+                (1-alpha(2))*state%fields(peer)%values+alpha(2)*future%fields(peer)%values
+            else
+              full(:,lower_box(1):upper_box(1),lower_box(2):upper_box(2),lower_box(3):upper_box(3))= &
+                state%fields(peer)%values
+            end if
+          end do
+        end do
+        allocate(temperatures(side,side,side),expected(6,side+4,side+4,side+4), &
+          expected_t(side+4,side+4,side+4));temperatures=300
+        call fill_reactive_boundary_ghosts_3d(full,temperatures,boundary_faces,expected,expected_t, &
+          success,.true.,inlet,inlet_t,wall)
+        call require(success,'temporal dense boundary oracle')
+        do peer=2,5
+          if (tree%nodes(peer)%level/=target_depth) cycle
+          call fill_amr_patch_tree_ghosts_3d(tree,state,peer,boundary_faces,actual,success, &
+            .true.,inlet,wall,future,alpha(:target_depth))
+          call require(success,'time-interpolated tree fill')
+          lower_box=origins(:,peer)+1;upper_box=origins(:,peer)+tree%nodes(peer)%shape+4
+          call require(all(actual==expected(:,lower_box(1):upper_box(1),lower_box(2):upper_box(2), &
+            lower_box(3):upper_box(3))),'temporal endpoints and per-donor-level fractions match dense oracle')
+          call require(all(actual(:,3:tree%nodes(peer)%shape(1)+2,3:tree%nodes(peer)%shape(2)+2, &
+            3:tree%nodes(peer)%shape(3)+2)==state%fields(peer)%values), &
+            'temporal interpolation leaves current fine interior exact')
+        end do
+        deallocate(full,temperatures,expected,expected_t)
+        end do
+      end do
+    end do
+    snapshot=actual;boundary_faces='periodic'
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success,coarse_future=future)
+    call require(.not.success.and.all(actual==snapshot),'missing time fractions preserve output')
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success,coarse_fractions=alpha)
+    call require(.not.success.and.all(actual==snapshot),'missing future state preserves output')
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success, &
+      coarse_future=future,coarse_fractions=alpha(:1))
+    call require(.not.success.and.all(actual==snapshot),'wrong fraction count rejected')
+    bad_alpha=[-.1_dp,.5_dp]
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success, &
+      coarse_future=future,coarse_fractions=bad_alpha)
+    call require(.not.success.and.all(actual==snapshot),'time extrapolation rejected')
+    bad_alpha=[.5_dp,ieee_value(0.0_dp,ieee_quiet_nan)]
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success, &
+      coarse_future=future,coarse_fractions=bad_alpha)
+    call require(.not.success.and.all(actual==snapshot),'nonfinite fraction rejected')
+    incomplete=future;deallocate(incomplete%fields(3)%values)
+    call fill_amr_patch_tree_ghosts_3d(tree,state,5,boundary_faces,actual,success, &
+      coarse_future=incomplete,coarse_fractions=alpha)
+    call require(.not.success.and.all(actual==snapshot),'missing coarse peer future rejected')
+  end subroutine temporal_checks
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

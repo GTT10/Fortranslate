@@ -8,7 +8,8 @@ module amr_patch_tree_ghost_3d_mod
   private
   public :: fill_amr_patch_tree_ghosts_3d
 contains
-  subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity)
+  subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
+      coarse_future,coarse_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: state
     integer, intent(in) :: node
@@ -17,12 +18,14 @@ contains
     logical, intent(out) :: ok
     logical, optional, intent(in) :: viscous_wall
     real(dp), optional, intent(in) :: inflow_state(:,:),wall_velocity(:,:)
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_future
+    real(dp), optional, intent(in) :: coarse_fractions(:)
     real(dp), allocatable :: candidate(:,:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
     integer :: i,j,k,axis,face,inlet,level,source_level,source,parent,other,nvar,local(3),dims(3)
-    real(dp) :: shift(3),old_momentum(3),rho
+    real(dp) :: shift(3),old_momentum(3),rho,fraction
     logical :: reflect(3),viscous,found
     ok=.false.
     if (.not.state%is_valid(tree)) return
@@ -30,6 +33,21 @@ contains
     if (.not.valid_reactive_boundaries_3d(faces)) return
     nvar=size(state%fields(1)%values,1)
     if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-4)) return
+    if (present(coarse_future).neqv.present(coarse_fractions)) return
+    if (present(coarse_future)) then
+      if (size(coarse_fractions)/=tree%nodes(node)%level) return
+      if (.not.all(ieee_is_finite(coarse_fractions))) return
+      if (any(coarse_fractions<0).or.any(coarse_fractions>1)) return
+      if (.not.allocated(coarse_future%fields)) return
+      if (size(coarse_future%fields)/=size(tree%nodes)) return
+      ! Only coarser levels need a future endpoint; peers/finer fields may be absent.
+      do other=1,size(tree%nodes)
+        if (tree%nodes(other)%level>=tree%nodes(node)%level) cycle
+        if (.not.allocated(coarse_future%fields(other)%values)) return
+        if (any(shape(coarse_future%fields(other)%values)/=[nvar,tree%nodes(other)%shape])) return
+        if (.not.all(ieee_is_finite(coarse_future%fields(other)%values))) return
+      end do
+    end if
     if (present(wall_velocity)) then
       if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
     end if
@@ -96,6 +114,15 @@ contains
               if (any(point-origin(:,source)>=int(tree%nodes(source)%shape,int64))) cycle
               local=int(point-origin(:,source))+1
               candidate(:,i,j,k)=state%fields(source)%values(:,local(1),local(2),local(3))
+              if (present(coarse_future).and.source_level<level) then
+                fraction=coarse_fractions(source_level)
+                if (fraction==1.0_dp) then
+                  candidate(:,i,j,k)=coarse_future%fields(source)%values(:,local(1),local(2),local(3))
+                else if (fraction>0.0_dp) then
+                  candidate(:,i,j,k)=(1.0_dp-fraction)*candidate(:,i,j,k)+ &
+                    fraction*coarse_future%fields(source)%values(:,local(1),local(2),local(3))
+                end if
+              end if
               found=.true.;exit
             end do
             if (found) exit

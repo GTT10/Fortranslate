@@ -36,7 +36,7 @@ quantities; this module does not infer thermodynamic temperatures or chemistry.
 Invalid topology/state leaves destination objects or inventory vectors unchanged.
 The hierarchy owns its arrays; restriction uses a private candidate copy.
 
-## Snapshot ghost cells
+## Ghost cells and coarse-time interpolation
 
 `fill_amr_patch_tree_ghosts_3d` builds a two-cell halo around one node. It
 constructs checked 64-bit global integer coordinates at every depth, searches
@@ -52,15 +52,30 @@ optional viscous mirroring includes tangential velocity and moving-wall work.
 Corner face precedence matches the regular-grid helper. Temperature recovery
 and isothermal heat flux are separate operations and are not performed here.
 
-This operation samples one hierarchy snapshot. Callers must supply synchronized
-coarse values where required; temporal interpolation during subcycling and
-PLM coarse/fine interpolation remain to be connected. Peer lookup currently
-scans nodes; no scaling qualification is implied.
+By default this operation samples one hierarchy snapshot. Optional paired
+`coarse_future` and `coarse_fractions` arguments interpolate only donors below
+the requested level. Fraction entry 1 belongs to the root, entry 2 to depth 1,
+and so on; the vector length must equal the requested node depth. Every fraction
+must be finite and in `[0,1]`. A donor uses its own depth's fraction, including
+fallback past the immediate parent. Fractions 0 and 1 copy the exact endpoints.
+All conserved components use the same convex weight. Boundary transforms are
+applied after sampling/interpolation; reservoir inflow overrides donor values.
+
+The future container must have one field slot per node, but only coarser slots
+need allocated, shape-compatible, finite data. Peer/finer future fields are
+unused and may remain unallocated. Current same-level peers and interiors are
+always copied directly. Both optional arguments are required together, and
+invalid interpolation input preserves the prior output.
+
+Callers own time brackets and choose a fraction for each coarse level at the
+fine stage time. They must supply synchronized coarse values where required.
+Scheduling subcycles and PLM coarse/fine interpolation remain to be connected.
+Peer lookup currently scans nodes; no scaling qualification is implied.
 
 ## Remaining integration
 
-This foundation does not yet evolve a multi-patch flow. Time-aware/high-order
-ghost filling, conservative flux correction and subcycling,
+This foundation does not yet evolve a multi-patch flow. PLM ghost filling,
+conservative flux correction and subcycling,
 thermodynamic recovery, chemistry/transport coupling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.

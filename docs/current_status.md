@@ -26,8 +26,10 @@ transactional initialization, bottom-up averaging and composite inventories
 [evidence](validation/amr-patch-tree-3d-20260917.md)). This is a geometry/state
 foundation. Snapshot ghost filling now exchanges peer data across parent boxes,
 uses PCM ancestor fallback and follows regular-grid periodic/physical boundary
-conventions ([evidence](validation/amr-tree-ghost-3d-20260917.md)). Time-aware/PLM
-ghost filling, hydro/reflux, chemistry/transport, dynamic
+conventions ([evidence](validation/amr-tree-ghost-3d-20260917.md)). Per-level coarse
+endpoint interpolation is also available for ghost donors while retaining exact
+current peers ([evidence](validation/amr-tree-temporal-ghost-20260917.md)). PLM
+ghost filling, hydro/reflux/subcycle scheduling, chemistry/transport, dynamic
 remapping, MPI ownership and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
