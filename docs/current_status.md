@@ -15,7 +15,7 @@ Older milestone prose remains historical detail, not a current global status.
 | 3D AMR | Two-level hierarchy, with serial/MPI boundary-touching physical patches; serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Multiple general patches/levels and broader scaling/physical-boundary qualification |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
-| Parallelism/output | Rank-parity and changed-rank restart for qualified subsets; distributed two-level MPI AMR CSV output | Production scaling, distributed checkpoint I/O and other output paths |
+| Parallelism/output | Rank-parity and changed-rank restart for qualified subsets; distributed two-level MPI AMR CSV output | Production scaling, distributed checkpoint reads and other output paths |
 | LES and spray | Opt-in regular 3D single-component parcels with per-port liquid identity or shared or per-port multicomponent compositions, density/pressure fits and vapor-state caps, and periodic/reservoir-inflow/outflow/specular parcel boundaries and adiabatic/isothermal tangentially moving gas walls; temperature-dependent liquid density/heat capacity and per-port breakup viscosity/surface tension, selectable Schiller-Naumann or PelePhysics drag with ETAB deformation correction, drag/heating/evaporation with Clausius or bounded Antoine saturation pressure and an optional near-boiling vapor-state cap, and ETAB and KH-RT representative-drop breakup, optional KH shed-mass children with conservative transverse velocities, and bounded computational splitting, conservative two-way coupling and uniform external acceleration with impulse/work ledger, deterministic cone/scheduled injection from point or finite circular solid/hollow outlets with swirl with up to 16 independently configured ports and optional piecewise-linear shared or independent per-port injection-rate histories with optional discharge-based injection speed, and per-port mass- or number-CDF Weibull/normal/lognormal/ChiSquared size distributions, deviatoric Smagorinsky, coupled restart | Physical mixture boiling, general dispersion/collision, particle MPI/AMR/EB, characteristic inlet models, near-wall turbulence, lateral wall-film transport and impact qualification, calibrated properties and experimental validation |
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
@@ -78,8 +78,11 @@ and composition diagnostics use distributed reductions
 ([evidence](validation/amr-mpi-distributed-csv-20260917.md)). Analytic initial
 conditions are also generated on local coarse/fine slabs, with local average-down
 and distributed initial inventories
-([evidence](validation/amr-mpi-local-initialization-20260917.md)). Checkpoint I/O
-still uses root aggregation.
+([evidence](validation/amr-mpi-local-initialization-20260917.md)). Checkpoint writes
+now serialize the existing format directly from local slabs after collective
+metadata, temperature and synchronization checks
+([evidence](validation/amr-mpi-checkpoint-output-20260917.md)). Checkpoint reads
+still allocate the full hierarchy on root.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

@@ -4,6 +4,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_domain_1d_mod.F90
     src/parallel/mpi_amr_reactive_3d_mod.F90
     src/parallel/mpi_amr_sparse_reactive_3d_mod.F90
+    src/parallel/mpi_amr_checkpoint_3d_mod.F90
     src/parallel/mpi_amr_patch_1d_mod.F90
     src/parallel/mpi_amr_sparse_patch_1d_mod.F90
     src/parallel/mpi_amr_eb_patch_tree_2d_mod.F90

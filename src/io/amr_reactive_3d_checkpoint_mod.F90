@@ -37,6 +37,7 @@ module amr_reactive_3d_checkpoint_mod
   character(len=*), parameter :: transport_checkpoint_phase = &
     "POST_ACCEPTED_COARSE_STEP"
 
+  public :: amr_checkpoint_envelope,checkpoint_temperature_is_consistent
   public :: amr_reactive_boundary_signature_3d
   public :: read_dynamic_amr_reactive_3d_checkpoint
   public :: write_amr_reactive_3d_checkpoint
@@ -209,7 +210,6 @@ contains
       bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
       transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
     real(dp), optional, intent(in) :: boundary_change(:)
-    logical :: physical_boundary
     integer, intent(in), optional :: regrid_count
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
@@ -233,10 +233,133 @@ contains
     real(dp), intent(in), optional :: maximum_transport_diffusivity
     real(dp), intent(in), optional :: minimum_transport_theta
 
-    integer :: unit, status, i, j, k, species_index, nvar, schema
-    logical :: synchronized, temperature_consistent, selected_context
-    logical :: transport_context
+    integer :: unit,status,i,j,k,nvar
+    logical :: synchronized,temperature_consistent
+    character(len=:), allocatable :: header,middle,footer
+    ok=.false.;message=''
+    nvar=reactive_nvar(size(species))
+    if (len_trim(path)==0) then
+      message='3D AMR checkpoint path is empty';return
+    end if
+    if (.not. valid_checkpoint_shapes( &
+        species, patch, coarse_state, coarse_temperature, &
+        fine_state, fine_temperature)) then
+      message = "Invalid 3D AMR checkpoint state"
+      return
+    end if
+    if (size(initial_integrals) /= nvar) then
+      message = "Invalid 3D AMR checkpoint state"
+      return
+    end if
+    if (.not. all(ieee_is_finite(initial_integrals)) .or. &
+        .not. all(ieee_is_finite(coarse_state)) .or. &
+        .not. all(ieee_is_finite(coarse_temperature)) .or. &
+        .not. all(ieee_is_finite(fine_state)) .or. &
+        .not. all(ieee_is_finite(fine_temperature))) then
+      message = "Invalid 3D AMR checkpoint state"
+      return
+    end if
+    if (minval(coarse_temperature) <= 0.0_dp .or. &
+        minval(fine_temperature) <= 0.0_dp) then
+      message = "Invalid 3D AMR checkpoint state"
+      return
+    end if
+    call checkpoint_levels_synchronized( &
+      patch, coarse_state, fine_state, synchronized)
+    if (.not. synchronized) then
+      message = "3D AMR checkpoint levels are not synchronized"
+      return
+    end if
+    call checkpoint_temperature_is_consistent( &
+      species, coarse_state, coarse_temperature, temperature_consistent)
+    if (.not. temperature_consistent) then
+      message = "3D AMR coarse checkpoint temperature is inconsistent"
+      return
+    end if
+    call checkpoint_temperature_is_consistent( &
+      species, fine_state, fine_temperature, temperature_consistent)
+    if (.not. temperature_consistent) then
+      message = "3D AMR fine checkpoint temperature is inconsistent"
+      return
+    end if
+    call amr_checkpoint_envelope(header,middle,footer,species,flow_config,amr_config,patch, &
+      time, steps, initial_integrals, maximum_reflux, ok, message, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
+    if (.not.ok) return
+    ok=.false.
+    open(newunit=unit, file=trim(path), status="replace", action="write", &
+      form="formatted", iostat=status)
+    if (status /= 0) then
+      write(message, '(a,1x,a)') &
+        "Could not create 3D AMR checkpoint:", trim(path)
+      return
+    end if
+    write(unit,'(a)',iostat=status) header(:len(header)-1)
+    if (status/=0) goto 900
+    do k = 1, size(coarse_state, 4)
+      do j = 1, size(coarse_state, 3)
+        do i = 1, size(coarse_state, 2)
+          write(unit, '(*(es27.18e3,1x))', iostat=status) &
+            coarse_state(:, i, j, k), coarse_temperature(i, j, k)
+          if (status /= 0) go to 900
+        end do
+      end do
+    end do
+    write(unit,'(a)',iostat=status) middle(:len(middle)-1)
+    if (status/=0) goto 900
+    do k = 1, size(fine_state, 4)
+      do j = 1, size(fine_state, 3)
+        do i = 1, size(fine_state, 2)
+          write(unit, '(*(es27.18e3,1x))', iostat=status) &
+            fine_state(:, i, j, k), fine_temperature(i, j, k)
+          if (status /= 0) go to 900
+        end do
+      end do
+    end do
+    write(unit,'(a)',iostat=status) footer(:len(footer)-1)
+    if (status/=0) goto 900
+    close(unit, iostat=status)
+    if (status /= 0) then
+      message = "Failed to close 3D AMR checkpoint"
+      return
+    end if
+    ok = .true.
+    return
 
+900 continue
+    close(unit)
+    message = "Failed while writing 3D AMR checkpoint"
+  end subroutine write_amr_reactive_3d_checkpoint
+
+  subroutine amr_checkpoint_envelope( &
+      header,middle,footer,species,flow_config,amr_config,patch, &
+      time, steps, initial_integrals, maximum_reflux, ok, message, &
+      bundle_sha256, chemistry_integrator, base_mole_fractions, reactions, &
+      transport, maximum_transport_diffusivity, minimum_transport_theta, regrid_count,boundary_change)
+    real(dp), optional, intent(in) :: boundary_change(:)
+    logical :: physical_boundary
+    integer, intent(in), optional :: regrid_count
+    character(len=:), allocatable, intent(out) :: header,middle,footer
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_3d_config), intent(in) :: flow_config
+    type(amr_reactive_3d_config), intent(in) :: amr_config
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: time
+    integer, intent(in) :: steps
+    real(dp), intent(in) :: initial_integrals(:), maximum_reflux
+    logical, intent(out) :: ok
+    character(len=*), intent(out) :: message
+    character(len=*), intent(in), optional :: bundle_sha256
+    character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), intent(in), optional :: base_mole_fractions(:)
+    type(elementary_reaction), intent(in), optional :: reactions(:)
+    type(gas_transport_species), intent(in), optional :: transport(:)
+    real(dp), intent(in), optional :: maximum_transport_diffusivity
+    real(dp), intent(in), optional :: minimum_transport_theta
+
+    integer :: unit,status,species_index,nvar,schema
+    logical :: synchronized,selected_context,transport_context
     ok = .false.
     message = ""
     physical_boundary=any(resolved_reactive_boundaries_3d(flow_config)/='periodic')
@@ -262,10 +385,6 @@ contains
     transport_context = present(transport) .or. &
       present(maximum_transport_diffusivity) .or. &
       present(minimum_transport_theta)
-    if (len_trim(path) == 0) then
-      message = "3D AMR checkpoint path is empty"
-      return
-    end if
     if (selected_context) then
       if (.not. present(bundle_sha256) .or. &
           .not. present(chemistry_integrator) .or. &
@@ -316,28 +435,12 @@ contains
     if (amr_config%regrid_interval_steps>0) schema=schema+4
     if (physical_boundary) schema=schema+8
     if (.not.selected_context.and.flow_config%chemistry_enabled) schema=schema+16
-    if (.not. valid_checkpoint_shapes( &
-        species, patch, coarse_state, coarse_temperature, &
-        fine_state, fine_temperature)) then
-      message = "Invalid 3D AMR checkpoint state"
-      return
-    end if
     if (size(initial_integrals) /= nvar) then
       message = "Invalid 3D AMR checkpoint state"
       return
     end if
-    if (.not. all(ieee_is_finite(initial_integrals)) .or. &
-        .not. all(ieee_is_finite(coarse_state)) .or. &
-        .not. all(ieee_is_finite(coarse_temperature)) .or. &
-        .not. all(ieee_is_finite(fine_state)) .or. &
-        .not. all(ieee_is_finite(fine_temperature))) then
-      message = "Invalid 3D AMR checkpoint state"
-      return
-    end if
-    if (minval(coarse_temperature) <= 0.0_dp .or. &
-        minval(fine_temperature) <= 0.0_dp) then
-      message = "Invalid 3D AMR checkpoint state"
-      return
+    if (.not.all(ieee_is_finite(initial_integrals))) then
+      message='Invalid checkpoint initial inventory';return
     end if
     if (.not. ieee_is_finite(time) .or. &
         .not. ieee_is_finite(maximum_reflux) .or. &
@@ -355,36 +458,15 @@ contains
       message = "Invalid 3D AMR checkpoint state"
       return
     end if
-    call checkpoint_levels_synchronized( &
-      patch, coarse_state, fine_state, synchronized)
-    if (.not. synchronized) then
-      message = "3D AMR checkpoint levels are not synchronized"
-      return
-    end if
-    call checkpoint_temperature_is_consistent( &
-      species, coarse_state, coarse_temperature, temperature_consistent)
-    if (.not. temperature_consistent) then
-      message = "3D AMR coarse checkpoint temperature is inconsistent"
-      return
-    end if
-    call checkpoint_temperature_is_consistent( &
-      species, fine_state, fine_temperature, temperature_consistent)
-    if (.not. temperature_consistent) then
-      message = "3D AMR fine checkpoint temperature is inconsistent"
-      return
-    end if
     if (.not. checkpoint_configuration_matches( &
           flow_config, amr_config, patch, selected_context)) then
       message = "Invalid 3D AMR checkpoint configuration"
       return
     end if
 
-    open(newunit=unit, file=trim(path), status="replace", action="write", &
-      form="formatted", iostat=status)
-    if (status /= 0) then
-      write(message, '(a,1x,a)') &
-        "Could not create 3D AMR checkpoint:", trim(path)
-      return
+    open(newunit=unit,status='scratch',form='formatted',action='readwrite',iostat=status)
+    if (status/=0) then
+      message='Cannot create checkpoint metadata scratch';return
     end if
     write(unit, '(a)', iostat=status) checkpoint_magic
     if (status /= 0) go to 900
@@ -460,29 +542,20 @@ contains
     write(unit, '(*(es27.18e3,1x))', iostat=status) initial_integrals
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
-      size(coarse_state, 2), size(coarse_state, 3), size(coarse_state, 4)
+      patch%coarse_nx,patch%coarse_ny,patch%coarse_nz
     if (status /= 0) go to 900
-    do k = 1, size(coarse_state, 4)
-      do j = 1, size(coarse_state, 3)
-        do i = 1, size(coarse_state, 2)
-          write(unit, '(*(es27.18e3,1x))', iostat=status) &
-            coarse_state(:, i, j, k), coarse_temperature(i, j, k)
-          if (status /= 0) go to 900
-        end do
-      end do
-    end do
-    write(unit, '(*(i0,1x))', iostat=status) &
-      size(fine_state, 2), size(fine_state, 3), size(fine_state, 4)
-    if (status /= 0) go to 900
-    do k = 1, size(fine_state, 4)
-      do j = 1, size(fine_state, 3)
-        do i = 1, size(fine_state, 2)
-          write(unit, '(*(es27.18e3,1x))', iostat=status) &
-            fine_state(:, i, j, k), fine_temperature(i, j, k)
-          if (status /= 0) go to 900
-        end do
-      end do
-    end do
+    call collect_records(unit,header,status)
+    if (status/=0) goto 900
+    rewind(unit,iostat=status)
+    if (status/=0) goto 900
+    write(unit,'(*(i0,1x))',iostat=status) patch%fine_nx(),patch%fine_ny(),patch%fine_nz()
+    if (status/=0) goto 900
+    endfile(unit,iostat=status)
+    if (status/=0) goto 900
+    call collect_records(unit,middle,status)
+    if (status/=0) goto 900
+    rewind(unit,iostat=status)
+    if (status/=0) goto 900
     if (physical_boundary) then
       write(unit,'(a)',iostat=status) trim(amr_reactive_boundary_signature_3d(flow_config))
       if (status/=0) go to 900
@@ -491,18 +564,41 @@ contains
     end if
     write(unit, '(a)', iostat=status) "END_CHECKPOINT"
     if (status /= 0) go to 900
-    close(unit, iostat=status)
-    if (status /= 0) then
-      message = "Failed to close 3D AMR checkpoint"
-      return
-    end if
-    ok = .true.
+    endfile(unit,iostat=status)
+    if (status/=0) goto 900
+    call collect_records(unit,footer,status)
+    if (status/=0) goto 900
+    close(unit,iostat=status)
+    ok=status==0
+    if (.not.ok) message='Failed to close checkpoint metadata scratch'
     return
+900 close(unit)
+    message='Failed to build checkpoint metadata'
+  end subroutine amr_checkpoint_envelope
 
-900 continue
-    close(unit)
-    message = "Failed while writing 3D AMR checkpoint"
-  end subroutine write_amr_reactive_3d_checkpoint
+  subroutine collect_records(unit,text,status)
+    use, intrinsic :: iso_fortran_env, only: iostat_end,iostat_eor
+    integer, intent(in) :: unit
+    character(len=:), allocatable, intent(out) :: text
+    integer, intent(out) :: status
+    character(len=4096) :: chunk
+    integer :: count
+    rewind(unit,iostat=status)
+    if (status/=0) return
+    text=''
+    do
+      read(unit,'(a)',advance='no',size=count,iostat=status) chunk
+      if (count>0) text=text//chunk(:count)
+      if (status==iostat_end) exit
+      if (status==iostat_eor) then
+        text=text//new_line('a')
+      else if (status/=0) then
+        return
+      end if
+    end do
+    status=0
+  end subroutine collect_records
+
 
   subroutine read_amr_reactive_3d_checkpoint( &
       path, species, flow_config, amr_config, patch, &

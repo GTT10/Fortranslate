@@ -28,15 +28,15 @@ module mpi_amr_reactive_3d_application_mod
     mpi_amr_sparse_distribution_3d, mpi_amr_sparse_hierarchy_3d, &
     initialize_mpi_amr_sparse_distribution_3d, temperature_tag_mpi_amr_sparse_patch_3d, regrid_mpi_amr_sparse_3d, &
     scatter_mpi_amr_sparse_hierarchy_3d, &
-    gather_mpi_amr_sparse_hierarchy_3d, &
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
     advance_mpi_amr_sparse_full_3d,balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
   use amr_reactive_3d_mod, only: &
     element_integrals_from_reactive_integrals_3d
   use amr_reactive_3d_checkpoint_mod, only: &
-    write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
+    read_amr_reactive_3d_checkpoint, &
     amr_reactive_3d_transport_operator, read_dynamic_amr_reactive_3d_checkpoint,amr_reactive_boundary_signature_3d
+  use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d
   implicit none
   private
 
@@ -567,63 +567,50 @@ contains
       step = step + 1
       if (amr_config%checkpoint_interval_steps > 0) then
         if (mod(step, amr_config%checkpoint_interval_steps) == 0) then
-          call gather_mpi_amr_sparse_hierarchy_3d( &
-            distribution, patch, 0, hierarchy, coarse_state, &
-            coarse_temperature, fine_state, fine_temperature, ok)
-          call collective_require( &
-            ok, "Failed to gather sparse MPI 3D AMR checkpoint state", 5)
           root_ok = .true.
-          if (rank == 0) then
-            if (selected_context) then
-              if (transport_enabled) then
-                call write_amr_reactive_3d_checkpoint( &
-                  trim(amr_config%checkpoint_file), species, config, &
-                  amr_config, patch, coarse_state, coarse_temperature, &
-                  fine_state, fine_temperature, time, step, &
-                  initial_integrals, maximum_reflux, root_ok, message, &
-                  bundle_sha256=bundle_sha256, &
-                  chemistry_integrator=chemistry_integrator, &
-                  base_mole_fractions=base_mole_fractions, &
-                  reactions=reactions, transport=transport, &
-                  maximum_transport_diffusivity=maximum_diffusivity, &
-                  minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
-                  boundary_change=boundary_total)
-              else
-                call write_amr_reactive_3d_checkpoint( &
-                  trim(amr_config%checkpoint_file), species, config, &
-                  amr_config, patch, coarse_state, coarse_temperature, &
-                  fine_state, fine_temperature, time, step, &
-                  initial_integrals, maximum_reflux, root_ok, message, &
-                  bundle_sha256=bundle_sha256, &
-                  chemistry_integrator=chemistry_integrator, &
-                  base_mole_fractions=base_mole_fractions, &
-                  reactions=reactions,regrid_count=regrid_count, &
-                  boundary_change=boundary_total)
-              end if
+          if (selected_context) then
+            if (transport_enabled) then
+              call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
+                trim(amr_config%checkpoint_file), species, config, &
+                amr_config, patch, time, step, &
+                initial_integrals, maximum_reflux, root_ok, message, &
+                bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, &
+                reactions=reactions, transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
+                boundary_change=boundary_total)
             else
-              if (transport_enabled) then
-                call write_amr_reactive_3d_checkpoint( &
-                  trim(amr_config%checkpoint_file), species, config, &
-                  amr_config, patch, coarse_state, coarse_temperature, &
-                  fine_state, fine_temperature, time, step, &
-                  initial_integrals, maximum_reflux, root_ok, message, &
-                  transport=transport, &
-                  maximum_transport_diffusivity=maximum_diffusivity, &
-                  minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
-                  boundary_change=boundary_total)
-              else
-                call write_amr_reactive_3d_checkpoint( &
-                  trim(amr_config%checkpoint_file), species, config, &
-                  amr_config, patch, coarse_state, coarse_temperature, &
-                  fine_state, fine_temperature, time, step, &
-                  initial_integrals, maximum_reflux, root_ok, message,regrid_count=regrid_count, &
-                  boundary_change=boundary_total)
-              end if
+              call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
+                trim(amr_config%checkpoint_file), species, config, &
+                amr_config, patch, time, step, &
+                initial_integrals, maximum_reflux, root_ok, message, &
+                bundle_sha256=bundle_sha256, &
+                chemistry_integrator=chemistry_integrator, &
+                base_mole_fractions=base_mole_fractions, &
+                reactions=reactions,regrid_count=regrid_count, &
+                boundary_change=boundary_total)
+            end if
+          else
+            if (transport_enabled) then
+              call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
+                trim(amr_config%checkpoint_file), species, config, &
+                amr_config, patch, time, step, &
+                initial_integrals, maximum_reflux, root_ok, message, &
+                transport=transport, &
+                maximum_transport_diffusivity=maximum_diffusivity, &
+                minimum_transport_theta=minimum_transport_theta,regrid_count=regrid_count, &
+                boundary_change=boundary_total)
+            else
+              call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
+                trim(amr_config%checkpoint_file), species, config, &
+                amr_config, patch, time, step, &
+                initial_integrals, maximum_reflux, root_ok, message,regrid_count=regrid_count, &
+                boundary_change=boundary_total)
             end if
           end if
-          call root_require(root_ok, message, 5)
-          deallocate(coarse_state, coarse_temperature, fine_state, &
-            fine_temperature)
+          call collective_require(root_ok, message, 5)
           if (rank == 0) then
             write(*, '(a,1x,a,a,i0,a,es24.16)') &
               "Wrote checkpoint:", trim(amr_config%checkpoint_file), &

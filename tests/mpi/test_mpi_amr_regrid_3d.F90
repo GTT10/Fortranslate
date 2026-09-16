@@ -12,6 +12,10 @@ program test_mpi_amr_regrid_3d
     gather_mpi_amr_sparse_hierarchy_3d,regrid_mpi_amr_sparse_3d,repartition_mpi_amr_sparse_3d, &
     balance_mpi_amr_sparse_3d,write_mpi_amr_sparse_csv_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
+  use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d
+  use amr_reactive_3d_checkpoint_mod, only: write_amr_reactive_3d_checkpoint
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_3d) :: patch,serial_patch,next_patch,bad,saved_patch
@@ -95,6 +99,7 @@ program test_mpi_amr_regrid_3d
       call require(all(distribution%coarse_counts==counts),'remap preserves chosen coarse partition')
       call check_balance()
       call check_csv(.false.)
+      call check_checkpoint()
     end do
     saved=hierarchy;saved_distribution=distribution;saved_patch=patch
     counts=distribution%coarse_counts
@@ -130,6 +135,56 @@ program test_mpi_amr_regrid_3d
   if (rank==0) print '(a)','test_mpi_amr_regrid_3d: PASS'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_checkpoint()
+    type(reactive_3d_config) :: flow
+    type(amr_reactive_3d_config) :: amr
+    character(len=128) :: path
+    character(len=256) :: message
+    real(dp) :: integrals(12),clock,saved_t,saved_cell(12)
+    integer :: parent
+    flow%nx=8;flow%ny=8;flow%nz=8;flow%thermo_model='elementary'
+    flow%boundary_condition='outflow';flow%chemistry_enabled=.false.;flow%transport_enabled=.false.
+    flow%final_time=1.0_dp
+    amr%coarse_i_lower=patch%coarse_i_lower;amr%coarse_i_upper=patch%coarse_i_upper
+    amr%coarse_j_lower=patch%coarse_j_lower;amr%coarse_j_upper=patch%coarse_j_upper
+    amr%coarse_k_lower=patch%coarse_k_lower;amr%coarse_k_upper=patch%coarse_k_upper
+    amr%refinement_ratio=r
+    integrals=0;clock=.1_dp
+    write(path,'(a,i0,a,i0,a)') 'distributed_checkpoint_np',distribution%nranks,'_r',r,'.chk'
+    call write_mpi_amr_checkpoint_3d(distribution,hierarchy,path,species,flow,amr,patch, &
+      clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
+    call require(ok,'distributed checkpoint write: '//trim(message))
+    if (rank==0) then
+      call write_amr_reactive_3d_checkpoint(trim(path)//'.serial',species,flow,amr,patch,c,t,f,ft, &
+        clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
+      call require(ok,'serial checkpoint write: '//trim(message))
+      call same_file(path)
+    end if
+    if (mode/=1) return
+    if (distribution%fine_count>0) then
+      saved_t=hierarchy%fine_temperature(1,1,1)
+      hierarchy%fine_temperature(1,1,1)=saved_t*1.1_dp
+    end if
+    call write_mpi_amr_checkpoint_3d(distribution,hierarchy,path,species,flow,amr,patch, &
+      clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
+    call require(.not.ok,'inconsistent distributed checkpoint temperature rejected')
+    if (distribution%fine_count>0) hierarchy%fine_temperature(1,1,1)=saved_t
+    if (distribution%fine_count>0) then
+      parent=distribution%coarse_local_index(max(distribution%coarse_first,patch%coarse_i_lower))
+      saved_cell=hierarchy%coarse_state(:,parent,patch%coarse_j_lower,patch%coarse_k_lower)
+      hierarchy%coarse_state(:,parent,patch%coarse_j_lower,patch%coarse_k_lower)=1.01_dp*saved_cell
+    end if
+    call write_mpi_amr_checkpoint_3d(distribution,hierarchy,path,species,flow,amr,patch, &
+      clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
+    call require(.not.ok.and.index(message,'not synchronized')>0,'unsynchronized distributed checkpoint rejected')
+    if (distribution%fine_count>0) &
+      hierarchy%coarse_state(:,parent,patch%coarse_j_lower,patch%coarse_k_lower)=saved_cell
+    if (rank==0) clock=.2_dp
+    call write_mpi_amr_checkpoint_3d(distribution,hierarchy,path,species,flow,amr,patch, &
+      clock,1,integrals,0.0_dp,ok,message,boundary_change=integrals)
+    call require(.not.ok,'inconsistent checkpoint metadata rejected')
+    if (rank==0) call same_file(path)
+  end subroutine check_checkpoint
   subroutine check_csv(check_rejection)
     logical, intent(in) :: check_rejection
     real(dp) :: xyz(8),fx(patch%fine_nx()),fy(patch%fine_ny()),fz(patch%fine_nz()),saved_density
