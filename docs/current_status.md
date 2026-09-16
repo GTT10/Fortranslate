@@ -22,8 +22,10 @@ Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks
 ([ghosts](validation/amr-mpi-boundary-halo-20260917.md),
 [coarse hydro](validation/amr-mpi-boundary-hydro-20260917.md),
-[hierarchy](validation/amr-mpi-physical-hierarchy-20260917.md)). Physical transport,
-reaction/full-split forwarding and MPI application activation remain open.
+[hierarchy](validation/amr-mpi-physical-hierarchy-20260917.md)). The
+[reaction/hydro split](validation/amr-mpi-physical-reaction-20260917.md) also forwards
+physical boundary data and budgets. Physical transport, full transport splitting
+and MPI application activation remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

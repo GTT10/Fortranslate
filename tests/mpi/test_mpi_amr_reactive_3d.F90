@@ -24,7 +24,8 @@ program test_mpi_amr_reactive_3d
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, &
     composite_integrals_amr_3d
   use amr_reactive_3d_mod, only: &
-    compute_amr_reactive_cfl_timestep_3d, advance_amr_reactive_hydro_3d
+    compute_amr_reactive_cfl_timestep_3d, advance_amr_reactive_hydro_3d, &
+    advance_amr_reactive_strang_3d,element_integrals_from_reactive_integrals_3d
   use amr_reactive_transport_3d_mod, only: &
     compute_amr_reactive_transport_timestep_3d, &
     advance_amr_reactive_transport_3d, advance_amr_reactive_full_3d
@@ -42,7 +43,7 @@ program test_mpi_amr_reactive_3d
     compute_mpi_amr_sparse_cfl_timestep_3d, &
     build_mpi_amr_sparse_periodic_halos_3d,build_mpi_amr_sparse_boundary_halos_3d, &
     advance_mpi_amr_sparse_periodic_hydro_3d,advance_mpi_amr_sparse_boundary_hydro_3d, &
-    advance_mpi_amr_sparse_hydro_3d, &
+    advance_mpi_amr_sparse_hydro_3d,advance_mpi_amr_sparse_strang_3d, &
     compute_mpi_amr_sparse_transport_timestep_3d, &
     advance_mpi_amr_sparse_transport_3d, advance_mpi_amr_sparse_full_3d
   implicit none
@@ -710,7 +711,7 @@ contains
     real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
     real(dp), allocatable :: gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:),inlet(:,:),it(:),budget(:),expected(:)
     real(dp), allocatable :: before(:),after(:)
-    real(dp) :: r,rr
+    real(dp) :: r,rr,e0(3),e1(3),eb(3)
     character(len=32) :: faces(6),method
     integer :: i,j,k,mode,nv
     call initialize_amr_patch_3d(n,n,n,2,3,2,3,2,3,ratio,wall_patch,ok)
@@ -731,18 +732,30 @@ contains
     faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
     call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
     call require(ok,'physical hierarchy initial inventory')
-    do mode=1,2
+    do mode=1,4
       method='pcm'
-      if (mode==2) method='characteristic_plm'
+      if (modulo(mode,2)==0) method='characteristic_plm'
       c=c0;ct=ct0;f=f0;ft=ft0
+      if (mode>2) then
+        call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,.true.,2e-7_dp,1e-12_dp,rr,ok,method,'mc', &
+          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it)
+      else
       call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
         config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it)
+      end if
       call require(ok,'serial physical hierarchy advance')
       call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,wall_patch,0,c0,ct0,f0,ft0,h,ok)
       call require(ok,'physical hierarchy scatter')
       saved=h
+      if (mode>2) then
+        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
+      else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
         config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+      end if
       call require(ok,'sparse physical hierarchy advance')
       call require(all(abs(budget-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
         'physical hierarchy global boundary ledger')
@@ -752,13 +765,34 @@ contains
         call require(all(gc==c).and.all(gt==ct).and.all(gf==f).and.all(gft==ft).and.r==rr, &
           'physical hierarchy state temperature and reflux exactly match serial')
         call composite_integrals_amr_3d(gc,gf,wall_patch,dx,dy,dz,after,ok)
+        call require(ok,'physical hierarchy final inventory')
+        if (mode>2) then
+          call require(all(abs(after(1:5)-before(1:5)-budget(1:5))<=2e-11_dp*max(1.0_dp,abs(before(1:5)))), &
+            'physical reacting hierarchy Euler balance')
+          call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
+          call require(ok,'physical reacting initial elements')
+          call element_integrals_from_reactive_integrals_3d(species,after,e1,ok)
+          call require(ok,'physical reacting final elements')
+          call element_integrals_from_reactive_integrals_3d(species,budget,eb,ok)
+          call require(ok.and.all(abs(e1-e0-eb)<=2e-10_dp*max(abs(e0),1e-30_dp)), &
+            'physical reacting hierarchy element balance')
+          call require(maxval(abs(after(6:)-before(6:)-budget(6:)))>1e-15_dp, &
+            'physical reacting hierarchy exercises chemistry')
+        else
         call require(ok.and.all(abs(after-before-budget)<=2e-11_dp*max(1.0_dp,abs(before))), &
           'physical hierarchy composite conservation')
+        end if
       end if
       h=saved
       if (dist%rank==dist%nranks-1) inlet(1,3)=-1
+      if (mode>2) then
+        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
+      else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
         config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+      end if
       call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
         'physical hierarchy failure restores both levels and diagnostics')
       inlet(1,3)=c0(1,1,1,1)

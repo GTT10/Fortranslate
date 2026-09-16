@@ -174,7 +174,8 @@ contains
   subroutine advance_mpi_amr_sparse_strang_3d( &
       distribution, species, reactions, patch, hierarchy, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, chemistry_enabled, rtol, &
-      atol, maximum_reflux_correction, ok, chemistry_integrator)
+      atol, maximum_reflux_correction, ok, chemistry_integrator, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -187,13 +188,18 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: chemistry_integrator
 
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp) :: candidate_boundary(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
     real(dp) :: contract_rtol, contract_atol
     logical :: local_ok, global_ok
     character(len=32) :: integrator_name
 
     maximum_reflux_correction = 0.0_dp
-    ok = .false.
+    ok = .false.;candidate_boundary=0
+    if (present(boundary_change)) boundary_change=0
     integrator_name = "disabled"
     contract_rtol = 0.0_dp
     contract_atol = 0.0_dp
@@ -218,12 +224,13 @@ contains
       if (local_ok) local_ok = size(reactions) >= 1
       if (local_ok) local_ok = rtol > 0.0_dp .and. atol > 0.0_dp
     end if
+    if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(candidate_boundary)
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, dt, contract_rtol, contract_atol, &
         merge(1.0_dp, 0.0_dp, chemistry_enabled)], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
-        trim(limiter) // "|" // trim(integrator_name), &
+        trim(limiter) // "|" // trim(integrator_name)//merge("|physical","|periodic",present(boundary_faces)), &
       local_ok, global_ok)
     if (.not. global_ok) return
 
@@ -237,7 +244,7 @@ contains
     call advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, candidate, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, &
-      maximum_reflux_correction, local_ok)
+      maximum_reflux_correction, local_ok,boundary_faces,candidate_boundary,inflow_state,inflow_temperature)
     if (.not. local_ok) then
       maximum_reflux_correction = 0.0_dp
       return
@@ -252,6 +259,7 @@ contains
       end if
     end if
 
+    if (present(boundary_change)) boundary_change=candidate_boundary
     hierarchy = candidate
     ok = .true.
   end subroutine advance_mpi_amr_sparse_strang_3d
