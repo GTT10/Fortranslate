@@ -61,6 +61,7 @@ add_library(
   src/amr/amr_patch_tree_transport_3d_mod.F90
   src/amr/amr_patch_tree_split_3d_mod.F90
   src/amr/amr_patch_tree_remap_3d_mod.F90
+  src/amr/amr_patch_tree_tagging_3d_mod.F90
   src/driver/amr_patch_tree_application_3d_mod.F90
   src/amr/amr_reactive_3d_mod.F90
   src/amr/amr_reactive_transport_3d_mod.F90

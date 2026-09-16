@@ -925,3 +925,7 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_checkpoint_3d")
 add_test(NAME unit_amr_patch_tree_checkpoint_3d COMMAND test_amr_patch_tree_checkpoint_3d)
 set_tests_properties(unit_amr_patch_tree_checkpoint_3d PROPERTIES
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_checkpoint_3d")
+
+add_executable(test_amr_patch_tree_tagging_3d unit/test_amr_patch_tree_tagging_3d.F90)
+target_link_libraries(test_amr_patch_tree_tagging_3d PRIVATE pelef_core)
+add_test(NAME unit_amr_patch_tree_tagging_3d COMMAND test_amr_patch_tree_tagging_3d)

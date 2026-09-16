@@ -56,7 +56,11 @@ selected mechanisms now use the same tree driver through an isolated runtime
 and physics-context comparison APIs are now available
 ([evidence](validation/amr-tree-checkpoint-api-20260917.md)). Fixed/selected application
 stop/restart now validates schedule position, geometry and continuation context
-([evidence](validation/amr-tree-restart-20260917.md)).
+([evidence](validation/amr-tree-restart-20260917.md)). A temperature-tagged topology
+builder now creates multiple tiled children over requested depths, including
+periodic buffers and fine-only hot-cell preservation
+([evidence](validation/amr-tree-tagging-20260917.md)); automatic application cadence
+and its restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

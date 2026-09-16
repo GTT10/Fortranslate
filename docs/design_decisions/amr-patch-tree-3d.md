@@ -265,8 +265,36 @@ temperatures, counters and diagnostics resume with the next unconsumed event.
 The primitive API does not independently infer an event schedule from its opaque
 caller-supplied identity or prove historical boundary-budget correctness.
 
+## Temperature-driven topology generation
+
+`tag_amr_patch_tree_temperature_3d` generates a new tree from exposed old-cell
+temperatures. Callers supply nondecreasing positive temperature thresholds and
+refinement ratios by depth, a parent-cell tile shape, a nonnegative tag buffer,
+a node budget (including root), and periodic flags per axis. The number of
+thresholds is the maximum refinement depth; an empty array requests root-only
+geometry. A tile is selected if its buffered volume intersects an exposed cell
+at or above that depth's threshold. Parent tiles partition the parent grid;
+clipped final tiles handle shapes not divisible by the requested tile size.
+
+Selection uses an exact integer common lattice for old and requested new levels.
+It does not average temperature before tagging: a hot fine cell remains visible
+even when the coarse parent is cold. Covered parent temperatures do not vote.
+Buffered queries see cells across parent boundaries and wrap periodic axes;
+physical domain faces do not wrap. Breadth-first parent order and k/j/i tile
+order make the output independent of old patch ordering. Multiple separated
+regions create separate children; absent tags remove old children.
+
+The complete candidate is validated before publication. Invalid controls,
+coordinate overflow, allocation failure and exhausted node budget leave the
+caller's tree unchanged. This API creates geometry only; the existing conservative
+reactive remapper transfers fields and recovers temperature. It scans hot cells
+for each candidate tile, so large-tree scaling remains unqualified. Tile selection
+is not a Berger-Rigoutsos clustering implementation or a proper-nesting guarantee.
+Application regrid cadence and automatic-geometry restart validation still need
+integration; prescribed schedules continue to use their existing path.
+
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling, automatic solution-based tagging,
+PLM coarse/fine interpolation, subcycle scheduling, automatic tagging application wiring,
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
