@@ -1788,7 +1788,24 @@ transport and component tables are a caller-owned common convention.
 
 The wrapper uses `advance_spray_chemistry_3d`, accepting native explicit/implicit
 chemistry and CVODE when compiled in. Focused MPI evidence currently covers native
-implicit chemistry. This is particle/reaction operator splitting; gas advection,
-molecular transport, SGS, walls and breakup are not advanced by this API. The
+implicit chemistry. Without hydro options this is particle/reaction operator splitting. Molecular
+transport, SGS, walls and breakup are not advanced by this API. The
 nonlinear particle substep remains first order despite symmetric ordering. See
 [reaction coupling evidence](validation/spray-mpi-reaction-20260916.md).
+
+### Distributed periodic gas advection
+
+`advance_mpi_spray_hydro` exchanges two x-cell layers with adjacent ranks and
+uses the existing characteristic PLM fluxes and SSPRK2 update. Decomposition is
+`[nranks,1,1]` with at least two x cells per rank and three global cells in y/z.
+All directions are periodic. Riemann solver (`rusanov`, `hllc`, `pelec`), limiter
+(`minmod`, `mc`), geometry and time step must agree collectively; species tables
+are the caller's common convention. The caller chooses a stable time step.
+Intermediate stages stay private until all ranks recover valid temperatures.
+
+Supplying both `hydro_solver` and `hydro_limiter` to
+`advance_mpi_mixture_reaction` enables particle-half / chemistry-half / hydro /
+chemistry-half / particle-half ordering. Gas and particle state commit only after
+all stages and final migration succeed. Omitting both retains reaction-only gas
+stepping. Molecular transport and the distributed application remain open. See
+[advection evidence](validation/spray-mpi-hydro-20260917.md).

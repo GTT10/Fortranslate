@@ -8,7 +8,7 @@ program test_spray_mpi
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use mixture_thermo_mod, only: mixture_specific_gas_constant
   use reactive_1d_mod, only: reactive_primitive_to_conserved
-  use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_euler_ssprk2_plm_3d
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use spray_parcel_mod
@@ -321,6 +321,55 @@ program test_spray_mpi
     'reaction coupling conserves global hydrodynamic inventories')
   call require(all(abs(element_totals(after)-element_totals(before))< &
     2e-10_dp*max(1e-12_dp,abs(element_totals(before)))),'reaction coupling conserves element inventories')
+  cells=[2*nranks+1,3,3]
+  call spray_cartesian_block(cells,[nranks,1,1],rank,first,dims,ok)
+  call require(ok,'hydro block')
+  deallocate(reference,reference_temperature)
+  allocate(reference(15,cells(1),3,3),reference_temperature(cells(1),3,3))
+  do k=1,3
+    do j=1,3
+      do i=1,cells(1)
+        primitive=0;primitive(15)=1
+        primitive(1)=1+.1_dp*sin(2*acos(-1.0_dp)*real(i-1,dp)/cells(1))
+        primitive(2:4)=[2.0_dp+.1_dp*j,-1.0_dp+.1_dp*k,.5_dp+.1_dp*i]
+        primitive(5)=101325+100*j*k
+        call reactive_primitive_to_conserved(species,primitive,reference(:,i,j,k),reference_temperature(i,j,k),sound,ok)
+        call require(ok,'hydro initial state')
+      end do
+    end do
+  end do
+  field=reference(:,first(1)+1:first(1)+dims(1),:,:)
+  temperature=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
+  saved_field=field;saved_temperature=temperature
+  call advance_reactive_euler_ssprk2_plm_3d(species,reference,reference_temperature,cells(1),3,3, &
+    1.0_dp,1.0_dp,1.0_dp,1e-5_dp,'mc','hllc',ok)
+  call require(ok,'serial hydro reference')
+  call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,field,temperature,[1.0_dp,1.0_dp,1.0_dp], &
+    cells,1e-5_dp,'hllc','mc',ok)
+  call require(ok,'distributed hydro')
+  call require(maxval(abs(field-reference(:,first(1)+1:first(1)+dims(1),:,:)))<1e-10_dp, &
+    'distributed hydro matches serial field')
+  call require(maxval(abs(temperature-reference_temperature(first(1)+1:first(1)+dims(1),:,:)))<1e-10_dp, &
+    'distributed hydro matches serial temperatures')
+  call require(maxval(abs(field-saved_field))>1e-6_dp,'hydro actually advances')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'full MPI split initial budgets')
+  call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
+    field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc')
+  call require(ok.and.steps>=2,'MPI particle reaction hydro split')
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'full MPI split final budgets')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after(:5)-before(:5))<2e-12_dp*max(1e-12_dp,abs(before(:5)))), &
+    'MPI particle reaction hydro conservation')
+  if (rank==nranks-1) field(1,1,1,1)=-1
+  saved_field=field;saved_temperature=temperature
+  call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,field,temperature,[1.0_dp,1.0_dp,1.0_dp], &
+    cells,1e-5_dp,'hllc','mc',ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'one rank invalid hydro state rolls back collectively')
   call MPI_Finalize(ierr)
 contains
   function element_totals(inventory) result(elements)

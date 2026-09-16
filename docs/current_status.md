@@ -99,7 +99,10 @@ whole-interval rollback ([evidence](validation/spray-mpi-coupling-20260916.md)).
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
-events, coupled gas advection/transport and application integration remain open.
+events, molecular transport and application integration remain open. Periodic
+x-slab gas advection now exchanges two halo layers and uses characteristic PLM /
+SSPRK2, including optional integration between reaction half-steps
+([evidence](validation/spray-mpi-hydro-20260917.md)).
 
 The spray CVODE branch now builds after removal of misplaced wall-film setup;
 focused native/CVODE chemistry tests pass
