@@ -25,9 +25,10 @@ module amr_patch_tree_application_3d_mod
   private
   public :: run_amr_patch_tree_application_3d
 contains
-  subroutine run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions,schedule_path)
+  subroutine run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
+      schedule_path,chemistry_integrator)
     character(len=*), intent(in) :: topology_path
-    character(len=*), optional, intent(in) :: schedule_path
+    character(len=*), optional, intent(in) :: schedule_path,chemistry_integrator
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -175,7 +176,7 @@ contains
         call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-          change,correction,theta,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
+          change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity)
         if (ok) exit
         dt=.5_dp*dt

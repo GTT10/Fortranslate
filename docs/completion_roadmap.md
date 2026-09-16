@@ -120,8 +120,8 @@ walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.
 The serial application now connects static topology input, analytic initialization,
 split evolution, scheduled conservative regridding and exposed-cell output.
-Next connect automatic solution-based tagging, MPI ownership, checkpoint/restart
-and selected-mechanism frontend paths. See the
+Configure-time selected-mechanism dispatch now uses an isolated tree runtime.
+Next connect automatic solution-based tagging, MPI ownership and checkpoint/restart. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

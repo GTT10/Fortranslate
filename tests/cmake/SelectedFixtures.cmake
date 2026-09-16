@@ -85,6 +85,7 @@ pelef_add_mechanism_bundle(
   NAME selected_elementary_fixture
   BUNDLE "${PELEF_TEST_ELEMENTARY_SELECTED_BUNDLE}"
   PROBE_NAME test_selected_elementary_bundle
+  AMR_TREE_REACTIVE_3D_NAME test_selected_elementary_amr_tree_3d
   REACTIVE_EB_3D_NAME test_selected_elementary_reactive_eb_3d
   ADD_TEST
 )
@@ -109,3 +110,11 @@ add_test(
     "${PROJECT_SOURCE_DIR}/cases/selected_reactive_eb_3d/fixture.nml"
 )
 
+
+add_test(NAME regression_selected_amr_tree_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_selected_amr_tree_3d.py"
+    --selected "$<TARGET_FILE:test_selected_elementary_amr_tree_3d>"
+    --fixed "$<TARGET_FILE:pelef_amr_tree_reactive_3d>"
+    --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/selected_amr_tree_3d")
+set_tests_properties(regression_selected_amr_tree_3d PROPERTIES TIMEOUT 240)

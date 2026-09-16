@@ -17,6 +17,22 @@ PCM/characteristic-PLM face reconstruction, physical boundaries, chemistry and
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
+## Configure-time selected mechanisms
+
+When `PELEF_MECHANISM_BUNDLE` is configured, the bundle generator also provides
+`pelef_amr_tree_reactive_3d_selected`. It accepts the same topology and optional
+schedule arguments. Set `thermo_model='selected'` and supply species names and
+mole fractions through `composition_count`, `composition_species`, and
+`composition_mole_fractions`, matching the selected bundle.
+
+The selected frontend loads generated thermo/reactions/transport, validates the
+initial/inflow/isothermal-wall temperature envelope and forwards the generated
+chemistry integrator. It logs the bundle SHA-256 and integrator. Its dedicated
+runtime links selected libraries without `pelef_core` or fixed database imports.
+For custom bundle targets, `pelef_add_mechanism_bundle` accepts
+`AMR_TREE_REACTIVE_3D_NAME`. The selected frontend is included in the bundle's
+normal install target set; an installed-binary audit is separate evidence.
+
 ## Topology file
 
 The first record is the number of child patches (zero is a root-only run).
@@ -82,6 +98,5 @@ files are not checkpoints.
 ## Remaining scope
 
 This frontend supports static or scheduled topologies with serial ownership.
-Automatic tagging, checkpoint/restart, MPI execution and a selected-mechanism frontend
-remain to be connected. Coarse/fine donors are PCM and time stepping is common
+Automatic tagging, checkpoint/restart and MPI execution remain to be connected. Coarse/fine donors are PCM and time stepping is common
 across levels; this is not subcycled or globally second-order AMR qualification.

@@ -50,8 +50,9 @@ patch topology, initializes analytic fields, evolves the split system and writes
 exposed-cell CSV plus composite budgets
 ([evidence](validation/amr-tree-application-20260917.md)). Prescribed-time topology
 changes now connect conservative remapping, exact event-time stepping and budget
-continuity ([evidence](validation/amr-tree-regrid-20260917.md)); checkpoint/restart and a
-selected-mechanism frontend remain open.
+continuity ([evidence](validation/amr-tree-regrid-20260917.md)). Configure-time
+selected mechanisms now use the same tree driver through an isolated runtime
+([evidence](validation/amr-tree-selected-20260917.md)); checkpoint/restart remains open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

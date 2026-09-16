@@ -227,9 +227,16 @@ near-zero cancellation scale. Initial inventories and accumulated boundary flux
 are preserved. Events at final time execute before output. Inflow bounds cover
 the finest scheduled spacing; active-tree bounds are recomputed each step.
 
+The configure-time selected frontend shares this driver through
+`pelef_selected_amr_tree_reactive_3d_runtime`. Generated thermo/reactions/transport
+and integrator choice are supplied by the frontend; the driver owns no fixed
+mechanism lookup. Fixed callers omit the optional integrator and retain existing
+automatic selection. Selected startup checks composition and the requested
+initial/inflow/isothermal-wall temperature envelope against the generated data.
+
 ## Remaining integration
 
 PLM coarse/fine interpolation, subcycle scheduling, automatic solution-based tagging,
-MPI decomposition, checkpoint/restart and selected-mechanism application dispatch must be
+MPI decomposition and checkpoint/restart must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

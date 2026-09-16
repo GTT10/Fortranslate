@@ -1,0 +1,132 @@
+program pelef_amr_tree_reactive_3d_selected
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use selected_mechanism_runtime_mod, only: &
+    prepare_selected_mechanism, validate_selected_temperature_range
+  use simulation_config_reactive_3d_mod, only: &
+    reactive_3d_config, read_reactive_3d_configuration, &
+    resolve_reactive_3d_selected_composition
+  use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
+  use amr_patch_tree_application_3d_mod, only: run_amr_patch_tree_application_3d
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_boundaries_3d
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    pelef_selected_chemistry_integrator => &
+      @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    pelef_load_selected_reactions => @PELEF_BUNDLE_LOADER_NAME@, &
+    pelef_load_selected_thermo => @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    pelef_load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  implicit none
+
+  character(len=*), parameter :: pelef_selected_bundle_sha256 = &
+    "@PELEF_BUNDLE_BUNDLE_SHA256@"
+
+  type(reactive_3d_config) :: config
+  type(nasa7_species), allocatable :: species(:)
+  type(elementary_reaction), allocatable :: reactions(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  character(len=24) :: transport_names(pelef_selected_species_count)
+  integer :: transport_geometries(pelef_selected_species_count)
+  real(dp) :: transport_values(5, pelef_selected_species_count)
+  real(dp) :: mole_fractions(pelef_selected_species_count)
+  real(dp) :: common_temperature_minimum, common_temperature_maximum
+  real(dp) :: requested_temperature_minimum, requested_temperature_maximum
+  character(len=1024) :: input_path,topology_path,schedule_path,message
+  character(len=32) :: faces(6)
+  integer :: face
+  logical :: ok
+
+  if (command_argument_count()<2.or.command_argument_count()>3) then
+    write(*, '(a)') "Usage: pelef_amr_tree_reactive_3d_selected <input.nml> <topology.dat> [schedule.dat]"
+    error stop 2
+  end if
+  call get_command_argument(1, input_path)
+  call get_command_argument(2,topology_path)
+  call read_reactive_3d_configuration( &
+    trim(input_path), config, ok, message, allow_selected=.true.)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  if (trim(config%thermo_model)/='selected') error stop "Tree selected frontend requires thermo_model='selected'"
+  call check_output_alias(input_path)
+  call check_output_alias(topology_path)
+  if (command_argument_count()==3) then
+    call get_command_argument(3,schedule_path)
+    call check_output_alias(schedule_path)
+  end if
+
+  call pelef_load_selected_thermo(species, ok)
+  if (.not. ok .or. .not. allocated(species)) then
+    error stop "Failed to load selected 3D AMR tree thermodynamics"
+  end if
+  call pelef_load_selected_reactions(reactions, ok)
+  if (.not. ok .or. .not. allocated(reactions)) then
+    error stop "Failed to load selected 3D AMR tree reactions"
+  end if
+  call pelef_load_selected_transport( &
+    transport_names, transport_geometries, transport_values, ok)
+  if (.not. ok) then
+    error stop "Failed to load selected 3D AMR tree transport data"
+  end if
+  call prepare_selected_mechanism( &
+    "Selected 3D AMR tree", pelef_selected_species_count, &
+    pelef_selected_reaction_count, species, reactions, transport_names, &
+    transport_geometries, transport_values, transport, &
+    common_temperature_minimum, common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  requested_temperature_minimum = config%initial_temperature
+  requested_temperature_maximum = config%initial_temperature
+  select case (trim(config%problem))
+  case ("reactive_hotspot")
+    requested_temperature_minimum = min( &
+      requested_temperature_minimum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+    requested_temperature_maximum = max( &
+      requested_temperature_maximum, &
+      config%initial_temperature + config%hotspot_temperature_rise)
+  case ("entropy_wave")
+    requested_temperature_minimum = config%initial_temperature / &
+      (1.0_dp + config%density_wave_amplitude)
+    requested_temperature_maximum = config%initial_temperature / &
+      (1.0_dp - config%density_wave_amplitude)
+  end select
+  call validate_selected_temperature_range( &
+    "Selected 3D AMR tree", requested_temperature_minimum, &
+    requested_temperature_maximum, common_temperature_minimum, &
+    common_temperature_maximum, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+
+  call resolve_reactive_3d_selected_composition( &
+    config, species, mole_fractions, ok, message)
+  if (.not. ok) then
+    write(*, '(a)') trim(message)
+    error stop 2
+  end if
+  write(*,'(a)') 'Bundle SHA-256: '//pelef_selected_bundle_sha256
+  write(*,'(a)') 'Chemistry integrator: '//pelef_selected_chemistry_integrator
+  if (command_argument_count()==3) then
+    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
+      trim(schedule_path),pelef_selected_chemistry_integrator)
+  else
+    call run_amr_patch_tree_application_3d(trim(topology_path),config,species,reactions,transport,mole_fractions, &
+      chemistry_integrator=pelef_selected_chemistry_integrator)
+  end if
+contains
+  subroutine check_output_alias(path)
+    character(len=*), intent(in) :: path
+    if (selected_reactor_paths_alias_lexically(path,config%output_file).or. &
+        selected_reactor_paths_alias_lexically(path,trim(config%output_file)//'.budget.csv')) &
+      error stop 'Selected tree output aliases input'
+  end subroutine
+end program pelef_amr_tree_reactive_3d_selected
