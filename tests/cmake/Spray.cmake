@@ -3,6 +3,12 @@ if(PELEF_ENABLE_SPRAY)
     add_executable(test_spray_mpi spray/test_spray_mpi.F90)
     target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
     foreach(ranks 2 4)
+      add_test(NAME spray_mpi_application_${ranks}
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+          --executable $<TARGET_FILE:pelef_mpi_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+          --ranks ${ranks} --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+          --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_application_${ranks}")
+      set_tests_properties(spray_mpi_application_${ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_migration_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi> ${MPIEXEC_POSTFLAGS})

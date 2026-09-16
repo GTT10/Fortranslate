@@ -1827,3 +1827,18 @@ options when any flag is true and adds transport half-steps around hydro:
 P/2-C/2-T/2-H-T/2-C/2-P/2. All stages retain the complete interval transaction.
 Gas SGS, walls, breakup and MPI application/restart integration remain open. See
 [transport evidence](validation/spray-mpi-transport-20260917.md).
+
+### MPI executable
+
+With spray and MPI enabled, `pelef_mpi_spray_3d` reads a root-broadcast `mpi_spray`
+namelist, initializes the fixed H2/O2 gas and a configurable two-component cone
+population, and advances the coupled periodic x-slab solver. Global hydro/transport
+limits choose the time step; rejected complete updates are retried by halving.
+History records global budgets and particle count, while rank-local gas/particle
+CSVs retain final fields. Existing output files are refused. See the
+[case and input guide](../cases/mpi_spray_3d/README.md) and
+[application evidence](validation/spray-mpi-application-20260917.md).
+
+This executable currently supports initial injection and fixed-mechanism periodic
+flow. Its CSVs do not provide restart. Scheduled injection, rank-neutral checkpoint,
+selected-mechanism routing, SGS and distributed wall/breakup events remain open.
