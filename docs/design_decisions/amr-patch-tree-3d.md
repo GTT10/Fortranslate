@@ -84,7 +84,8 @@ density and the other species slopes, preserving their sum. Temperature, when
 packed after the conserved fields, remains a guess for subsequent EOS recovery.
 This component bound is not a proof of nonlinear EOS admissibility; existing
 reactive flux/state checks can still reject a step. The recursive hydro API below
-now supplies subcycle scheduling; transport and application wiring remain separate.
+now supplies hydro subcycle scheduling; a separate transport scheduler uses ratio-squared substeps.
+Coupled/application wiring remains separate.
 Peer lookup currently scans nodes; no scaling qualification is implied.
 
 ## Conservative flux synchronization
@@ -409,10 +410,37 @@ multiplied by that depth's cumulative refinement ratio. The stepper accepts a
 caller-chosen coarse `dt`; it does not retry or enforce this bound internally.
 This hydro bound does not cover diffusion or external reservoir bounds.
 The application and combined reaction/transport driver still use the common-step
-path. Transport subcycling, coupled splitting and application checkpoint/timestep
-controls remain to be connected before enabling the recursive path there.
+path. The transport scheduler below now provides diffusive subcycling. Coupled splitting
+and application checkpoint/timestep controls remain to be connected before enabling
+the recursive path there.
+
+## Recursive transport subcycling
+
+`advance_amr_patch_tree_transport_level_3d` performs peer-synchronous transport
+SSPRK2 at one depth, with viscous/thermal/species/barodiffusive fluxes, physical
+wall data and coarse-time donor endpoints. It returns integrated RK fluxes and
+the minimum positivity-limiter scale without restriction or reflux. Both Euler
+states and the final average undergo EOS recovery. Final temperature recovery
+uses the average of initial and second-Euler temperatures, matching the regular
+transport convention. Nonactive depths and previous outputs remain unchanged.
+
+`advance_amr_patch_tree_subcycle_transport_3d` combines that primitive with the
+recursive endpoint/reflux sequence. A child executes `ratio**2` substeps, so ratios
+2 then 3 produce counts 1/4/36. Integer counts and their products are checked for
+overflow. The root physical budget includes fine boundary replacement; minimum
+transport theta and maximum reflux correction accumulate over the full interval.
+State, temperature, budgets and optional counts commit only on complete success.
+
+`compute_amr_patch_tree_subcycle_transport_timestep_3d` scales local diffusive
+and touched-isothermal-wall bounds by cumulative ratio squared, then takes their
+minimum. Spatial spacing still follows cumulative ratio, not its square. The
+reported maximum diffusivity is the maximum across nodes. As with hydro, the
+caller supplies dt and remains responsible for stability, reservoir bounds and
+retry policy. Full-tree scratch copies remain; this is not scaling qualification.
+These are transport APIs; the application still selects the existing synchronous
+reaction/transport/hydro split until coupled dispatch is connected.
 
 ## Remaining integration
 
-Transport subcycling, coupled/application dispatch and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
+Coupled/application subcycle dispatch and MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.

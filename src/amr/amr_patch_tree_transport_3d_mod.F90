@@ -16,6 +16,7 @@ module amr_patch_tree_transport_3d_mod
   implicit none
   private
   public :: advance_amr_patch_tree_transport_3d,compute_amr_patch_tree_transport_timestep_3d
+  public :: advance_amr_patch_tree_transport_level_3d
 contains
   subroutine compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,state,temperature, &
       root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature)
@@ -227,6 +228,169 @@ contains
       u=updated
     end subroutine
   end subroutine advance_amr_patch_tree_transport_3d
+  subroutine advance_amr_patch_tree_transport_level_3d(tree,species,transport,state,temperature,depth,root_spacing,dt,faces, &
+      viscosity,conduction,diffusion,barodiffusion,integrated_flux,minimum_theta,ok, &
+      coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
+      wall_temperature,wall_velocity,coarse_limiter)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    integer, intent(in) :: depth
+    real(dp), intent(in) :: root_spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: minimum_theta
+    real(dp), optional, intent(in) :: wall_temperature(:),wall_velocity(:,:)
+    character(len=*), optional, intent(in) :: coarse_limiter
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    character(len=32) :: local_faces(6)
+    real(dp) :: theta,local_theta
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    logical, intent(out) :: ok
+    ! Endpoints pack conserved components followed by a temperature guess.
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:),inflow_state(:,:),inflow_temperature(:)
+    type(amr_tree_state_3d) :: initial,candidate,temps,packed,updated
+    type(amr_tree_flux_3d), allocatable :: flux(:)
+    real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),recovered(:,:,:)
+    real(dp) :: rhs(reactive_nvar(size(species)))
+    integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,axis,level
+    logical :: valid
+    ok=.false.
+    call prepare(tree,species,state,temperature,root_spacing,h,valid)
+    if (.not.valid) return
+    if (depth<0.or.depth>=tree%level_count()) return
+    if (.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(dt)) return
+    if (dt<=0.or.(barodiffusion.and..not.diffusion)) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if (.not.valid) return
+    theta=1
+    nvar=reactive_nvar(size(species))
+    if (depth>0) then
+      if (.not.present(coarse_start).or..not.present(coarse_end).or. &
+          .not.present(fractions_start).or..not.present(fractions_end)) return
+    end if
+    if (present(coarse_start).neqv.present(coarse_end)) return
+    if (present(coarse_end).neqv.present(fractions_start)) return
+    if (present(fractions_start).neqv.present(fractions_end)) return
+    if (present(coarse_start)) then
+      if (size(fractions_start)/=depth.or.size(fractions_end)/=depth) return
+      if (.not.all(ieee_is_finite(fractions_start)).or..not.all(ieee_is_finite(fractions_end))) return
+      if (any(fractions_start<0).or.any(fractions_end>1).or.any(fractions_end<fractions_start)) return
+      if (.not.allocated(coarse_start%fields).or..not.allocated(coarse_end%fields)) return
+      if (size(coarse_start%fields)/=size(tree%nodes).or.size(coarse_end%fields)/=size(tree%nodes)) return
+      do peer=1,size(tree%nodes)
+        if (tree%nodes(peer)%level>=depth) cycle
+        n=tree%nodes(peer)%shape
+        if (.not.allocated(coarse_start%fields(peer)%values).or..not.allocated(coarse_end%fields(peer)%values)) return
+        if (any(shape(coarse_start%fields(peer)%values)/=[nvar+1,n]).or. &
+            any(shape(coarse_end%fields(peer)%values)/=[nvar+1,n])) return
+        if (.not.all(ieee_is_finite(coarse_start%fields(peer)%values)).or. &
+            .not.all(ieee_is_finite(coarse_end%fields(peer)%values))) return
+      end do
+    end if
+    if (any(faces=='inflow')) then
+      if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
+      if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
+      allocate(inlet(nvar+1,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+    end if
+    initial=state;candidate=state;temps=temperature
+    allocate(flux(size(tree%nodes)),packed%fields(size(tree%nodes)))
+    do stage=1,2
+      do peer=1,size(tree%nodes)
+        n=tree%nodes(peer)%shape
+        if (.not.allocated(packed%fields(peer)%values)) allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
+        packed%fields(peer)%values(:nvar,:,:,:)=candidate%fields(peer)%values
+        packed%fields(peer)%values(nvar+1,:,:,:)=temps%fields(peer)%values(1,:,:,:)
+        if (tree%nodes(peer)%level<depth) packed%fields(peer)%values=coarse_start%fields(peer)%values
+      end do
+      updated=candidate
+      do peer=1,size(tree%nodes)
+        if (tree%nodes(peer)%level/=depth) cycle
+        n=tree%nodes(peer)%shape;dims=n+4
+        endpoint=stage
+        call stage_ghost(peer,valid)
+        if (.not.valid) return
+        allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
+        local_faces='outflow';level=tree%nodes(peer)%level+1
+        do axis=1,3
+          if (origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
+          if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
+        end do
+        call physical_transport_ghosted_fluxes_3d(species,transport,candidate%fields(peer)%values, &
+          temps%fields(peer)%values(1,:,:,:),ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer),dt,local_faces, &
+          viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity)
+        if (.not.valid) return
+        theta=min(theta,local_theta)
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              rhs=-(fx(:,i+1,j,k)-fx(:,i,j,k))/h(1,peer) &
+                -(fy(:,i,j+1,k)-fy(:,i,j,k))/h(2,peer) &
+                -(fz(:,i,j,k+1)-fz(:,i,j,k))/h(3,peer)
+              updated%fields(peer)%values(:,i,j,k)=candidate%fields(peer)%values(:,i,j,k)+dt*rhs
+            end do
+          end do
+        end do
+        if (stage==1) then
+          flux(peer)%x=.5_dp*dt*fx
+          flux(peer)%y=.5_dp*dt*fy
+          flux(peer)%z=.5_dp*dt*fz
+        else
+          flux(peer)%x=flux(peer)%x+.5_dp*dt*fx
+          flux(peer)%y=flux(peer)%y+.5_dp*dt*fy
+          flux(peer)%z=flux(peer)%z+.5_dp*dt*fz
+        end if
+        deallocate(fx,fy,fz)
+      end do
+      do peer=1,size(tree%nodes)
+        if (tree%nodes(peer)%level/=depth) cycle
+        n=tree%nodes(peer)%shape;allocate(recovered(n(1),n(2),n(3)))
+        call recover_reactive_temperatures_3d(species,updated%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+          n(1),n(2),n(3),recovered,valid)
+        if (.not.valid) return
+        temps%fields(peer)%values(1,:,:,:)=recovered;deallocate(recovered)
+      end do
+      candidate=updated
+
+    end do
+    do peer=1,size(tree%nodes)
+      if (tree%nodes(peer)%level/=depth) cycle
+      candidate%fields(peer)%values=.5_dp*initial%fields(peer)%values+.5_dp*candidate%fields(peer)%values
+      temps%fields(peer)%values=.5_dp*(temperature%fields(peer)%values+temps%fields(peer)%values)
+      n=tree%nodes(peer)%shape;allocate(recovered(n(1),n(2),n(3)))
+      call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+        n(1),n(2),n(3),recovered,valid)
+      if (.not.valid) return
+      temps%fields(peer)%values(1,:,:,:)=recovered;deallocate(recovered)
+    end do
+    do peer=1,size(tree%nodes)
+      if (tree%nodes(peer)%level/=depth) cycle
+      if (.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
+          .not.all(ieee_is_finite(flux(peer)%z))) return
+    end do
+    state=candidate;temperature=temps;minimum_theta=theta;call move_alloc(flux,integrated_flux);ok=.true.
+  contains
+    subroutine stage_ghost(peer,success)
+      integer, intent(in) :: peer
+      logical, intent(out) :: success
+      real(dp), allocatable :: fractions(:)
+      if (present(fractions_start)) then
+        if (endpoint==1) then
+          fractions=fractions_start
+        else
+          fractions=fractions_end
+        end if
+      end if
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
+        coarse_future=coarse_end,coarse_fractions=fractions,coarse_limiter=coarse_limiter,species_count=size(species), &
+        viscous_wall=.true.,wall_velocity=wall_velocity)
+    end subroutine
+  end subroutine advance_amr_patch_tree_transport_level_3d
+
   subroutine prepare(tree,species,state,temperature,root_spacing,h,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)

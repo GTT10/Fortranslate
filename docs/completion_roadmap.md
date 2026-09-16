@@ -117,7 +117,8 @@ bounded by all node CFL limits. Limited coarse-donor interpolation is connected
 for PLM hydro and transport. Single-depth RK2 stepping now exposes integrated
 fluxes and coarse-time endpoints. Interval-scoped reflux can return corrected
 fluxes while preserving coarser endpoints. Recursive hydro subcycling and scaled
-coarse CFL selection are connected; next connect transport subcycles and coupled/application dispatch. Exposed-cell chemistry and reaction/hydro splitting are connected;
+coarse CFL selection are connected. Recursive transport uses ratio-squared substeps
+and scaled diffusion/wall bounds; next connect coupled/application dispatch. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.

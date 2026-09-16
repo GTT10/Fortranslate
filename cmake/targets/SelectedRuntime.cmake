@@ -490,6 +490,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/amr/amr_patch_tree_subcycle_3d_mod.F90
     src/amr/amr_patch_tree_chemistry_3d_mod.F90
     src/amr/amr_patch_tree_transport_3d_mod.F90
+    src/amr/amr_patch_tree_transport_subcycle_3d_mod.F90
     src/amr/amr_patch_tree_split_3d_mod.F90
     src/amr/amr_patch_tree_remap_3d_mod.F90
     src/amr/amr_patch_tree_tagging_3d_mod.F90
