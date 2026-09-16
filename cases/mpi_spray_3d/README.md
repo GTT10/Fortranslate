@@ -44,7 +44,7 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Distributed wall films and SGS remain to be integrated in this executable.
+Distributed wall films remain to be integrated in this executable.
 
 ## Save and resume
 
@@ -261,3 +261,24 @@ IDs are allocated by rank prefix at each release. Changed-rank restarts retain
 existing IDs, but future child IDs can differ when simultaneous releasing parents
 are spread across different partitions. The focused changed-rank case places its
 releasing population on one owner and therefore compares future IDs directly.
+
+
+## Smagorinsky SGS
+
+Set `les_cs>0` (at most 2) to enable the existing deviatoric Smagorinsky model.
+`les_prt` and `les_sct` default to 0.7 and control turbulent heat and species
+transport. `les_cs=0` is the default disabled setting.
+
+```fortran
+ les_cs=.1
+ les_prt=.7
+ les_sct=.7
+```
+
+The periodic x-slab MPI update exchanges two ghost layers, evaluates the shared
+serial face-flux kernel and advances with SSPRK2. SGS half-steps surround hydro,
+inside the molecular-transport half-steps. Each SGS stage rejects a diffusion
+number above 0.2 or inadmissible thermodynamics. The application retries the whole
+coupled step with a halved time interval; gas, particles and IDs remain transactional.
+The coefficients are bound to checkpoint context. This supplies a modeled SGS
+stress/heat/species flux; it does not establish validated LES or near-wall behavior.

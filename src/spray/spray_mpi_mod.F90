@@ -7,6 +7,7 @@ module spray_mpi_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use spray_reactive_3d_mod, only: advance_spray_chemistry_3d
   use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d
+  use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d
@@ -21,6 +22,7 @@ module spray_mpi_mod
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: advance_mpi_spray_les
   public :: advance_mpi_spray_transport
   public :: advance_mpi_spray_hydro
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
@@ -148,6 +150,93 @@ contains
     end subroutine
   end subroutine
 
+  subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: spacing(3),dt
+    integer, intent(in) :: cells(3)
+    real(dp), intent(in) :: cs,prt,sct
+    logical, intent(out) :: ok
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
+    real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
+    real(dp), allocatable :: rhs(:,:,:,:)
+    real(dp) :: controls(7),minimum(7),maximum(7),diffusivity
+    integer :: config(4),minconfig(4),maxconfig(4),rank,nranks,ierr,first(3),extent(3)
+    integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next
+    logical :: valid,agreed
+    ok=.false.;nvar=size(state,1)
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=all(ieee_is_finite([spacing,dt,cs,prt,sct]))
+    valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
+    call agree()
+    if (.not.agreed) return
+    config=[cells,nvar];controls=[spacing,dt,cs,prt,sct]
+    call MPI_Allreduce(config,minconfig,4,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,maxconfig,4,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,minimum,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,7,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(minconfig/=maxconfig).or.any(minimum/=maximum)) return
+    call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
+    valid=valid.and.extent(1)>=2.and.all(extent(2:)>=3)
+    valid=valid.and.all(shape(state)==[nvar,extent]).and.all(shape(temperature)==extent)
+    ! Bound the packed halo MPI count before allocating or sending it.
+    valid=valid.and.int(nvar+1,int64)*2*int(extent(2),int64)*int(extent(3),int64)<=huge(1)
+    call agree()
+    if (.not.agreed) return
+    nx=extent(1);ny=extent(2);nz=extent(3)
+    gas=state;allocate(temp(nx,ny,nz),next_temp(nx,ny,nz));candidate=gas
+    call recover_reactive_temperatures_3d(species,gas,temperature,nx,ny,nz,temp,valid)
+    call agree()
+    if (.not.agreed) return
+    allocate(halo(nvar,nx+4,ny+4,nz+4),halo_t(nx+4,ny+4,nz+4))
+    allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
+    allocate(rhs,mold=state)
+    previous=modulo(rank-1,nranks);next=modulo(rank+1,nranks)
+    do stage=1,2
+      send(:nvar,:,:,:)=gas(:,nx-1:nx,:,:);send(nvar+1,:,:,:)=temp(nx-1:nx,:,:)
+      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3321,left,size(left),MPI_DOUBLE_PRECISION, &
+        previous,3321,comm,MPI_STATUS_IGNORE,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      send(:nvar,:,:,:)=gas(:,:2,:,:);send(nvar+1,:,:,:)=temp(:2,:,:)
+      call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,previous,3322,right,size(right),MPI_DOUBLE_PRECISION, &
+        next,3322,comm,MPI_STATUS_IGNORE,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      do k=1,nz+4
+        km=modulo(k-3,nz)+1
+        do j=1,ny+4
+          jm=modulo(j-3,ny)+1
+          halo(:,3:nx+2,j,k)=gas(:,:,jm,km);halo_t(3:nx+2,j,k)=temp(:,jm,km)
+          halo(:,:2,j,k)=left(:nvar,:,jm,km);halo_t(:2,j,k)=left(nvar+1,:,jm,km)
+          halo(:,nx+3:,j,k)=right(:nvar,:,jm,km);halo_t(nx+3:,j,k)=right(nvar+1,:,jm,km)
+        end do
+      end do
+      call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid)
+      if (valid) valid=dt*diffusivity*sum(1.0_dp/spacing**2)<=.2_dp
+      call agree()
+      if (.not.agreed) return
+      candidate=gas+dt*rhs
+      if (stage==2) candidate=.5_dp*(state+gas+dt*rhs)
+      call recover_reactive_temperatures_3d(species,candidate,temp,nx,ny,nz,next_temp,valid)
+      call agree()
+      if (.not.agreed) return
+      gas=candidate;temp=next_temp
+    end do
+    state=gas;temperature=temp;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
@@ -251,7 +340,7 @@ contains
 
   subroutine advance_mpi_mixture_reaction(comm,species,reactions,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
-      hydro_solver,hydro_limiter,transport_flags,last_id)
+      hydro_solver,hydro_limiter,transport_flags,last_id,les_settings)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -266,13 +355,15 @@ contains
     character(len=*), intent(in) :: method
     character(len=*), intent(in), optional :: hydro_solver,hydro_limiter
     logical, intent(in), optional :: transport_flags(4)
+    real(dp), intent(in), optional :: les_settings(3)
+    real(dp) :: sgs(3)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     integer(int64), optional, intent(inout) :: last_id
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(10),minimum(10),maximum(10),chemistry_interval,transport_theta
+    real(dp) :: controls(13),minimum(13),maximum(13),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
@@ -282,6 +373,8 @@ contains
     case('explicit');method_code=2
     case('cvode');method_code=3
     end select
+    sgs=[0.0_dp,.7_dp,.7_dp]
+    if (present(les_settings)) sgs=les_settings
     enabled=.false.
     if (present(transport_flags)) enabled=transport_flags
     hydro_code=0;limit_code=0
@@ -302,7 +395,9 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
-    valid=valid.and.all(ieee_is_finite([interval,rtol,atol]))
+    valid=valid.and.all(ieee_is_finite([interval,rtol,atol,sgs]))
+    valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.minval(sgs(2:))>=1e-6_dp.and.maxval(sgs(2:))<=1e6_dp
+    valid=valid.and.(sgs(1)==0.or.present(hydro_solver))
     valid=valid.and.interval>=0.and.interval<=1e6_dp.and.min(rtol,atol)>0
     valid=valid.and.(.not.any(enabled).or.present(hydro_solver))
     valid=valid.and.(present(hydro_solver).eqv.present(hydro_limiter))
@@ -312,10 +407,11 @@ contains
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.agreed) return
-    controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp),merge(1.0_dp,0.0_dp,enabled)]
-    call MPI_Allreduce(controls,minimum,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
+      merge(1.0_dp,0.0_dp,enabled),sgs]
+    call MPI_Allreduce(controls,minimum,13,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,13,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
@@ -336,8 +432,16 @@ contains
           enabled,transport_theta,valid)
         if (.not.valid) return
       end if
+      if (sgs(1)>0) then
+        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid)
+        if (.not.valid) return
+      end if
       call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid)
       if (.not.valid) return
+      if (sgs(1)>0) then
+        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid)
+        if (.not.valid) return
+      end if
       if (any(enabled)) then
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
           enabled,transport_theta,valid)

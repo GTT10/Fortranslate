@@ -105,7 +105,10 @@ API now constructs children with unique IDs, inherited composition and a gas-ene
 ledger ([evidence](validation/spray-mpi-kh-release-20260917.md)). MPI coupled
 feedback, input and shedding/lineage restart are now connected, including ID
 rollback on rejected updates
-([evidence](validation/spray-mpi-kh-coupled-20260917.md)).
+([evidence](validation/spray-mpi-kh-coupled-20260917.md)). Periodic x-slab SGS now
+shares the serial Smagorinsky face kernel, with MPI SSPRK2, coupled half-steps,
+CLI coefficients and restart identity
+([evidence](validation/spray-mpi-les-20260917.md)).
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

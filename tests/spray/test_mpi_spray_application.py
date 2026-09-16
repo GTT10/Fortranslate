@@ -335,7 +335,29 @@ def main():
     run_variant('shedding_mismatch', args.ranks,
                 shedding.replace('cubed=1e-25', 'cubed=1e-24') + "\n restart_path='shedding.chk'", expect_success=False)
     assert not (work / 'shedding_mismatch.history.csv').exists()
-    print(f'PASS MPI spray application, KH children and restart: {args.ranks} ranks; artifacts: {work}')
+    sgs = ' les_cs=.2\n les_prt=.7\n les_sct=.7\n speed=1000'
+    run_variant('sgs_baseline', args.ranks, ' speed=1000')
+    run_variant('sgs', args.ranks, sgs)
+    run_variant('sgs_split', args.ranks, sgs + "\n checkpoint_path='sgs.chk'", stop='1e-8')
+    run_variant('sgs_resume', 6 - args.ranks, sgs + "\n restart_path='sgs.chk'")
+    for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+        reference = snapshots('sgs', suffix, keys)
+        actual = snapshots('sgs_resume', suffix, keys)
+        assert actual.keys() == reference.keys()
+        for key, expected in reference.items():
+            for column, value in expected.items():
+                assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (key, column)
+    sgs_gas = snapshots('sgs', 'gas', ['i', 'j', 'k'])
+    sgs_baseline = snapshots('sgs_baseline', 'gas', ['i', 'j', 'k'])
+    assert max(abs(float(sgs_gas[key]['mx']) - float(sgs_baseline[key]['mx']))
+               for key in sgs_baseline) > 1e-14
+    sgs_history = rows(work / 'sgs.history.csv')
+    assert all(abs(float(row['relative_mass_error'])) < 2e-11 and
+               abs(float(row['relative_energy_error'])) < 2e-11 for row in sgs_history)
+    run_variant('sgs_mismatch', args.ranks,
+                sgs.replace('cs=.2', 'cs=.3') + "\n restart_path='sgs.chk'", expect_success=False)
+    assert not (work / 'sgs_mismatch.history.csv').exists()
+    print(f'PASS MPI spray application, SGS and restart: {args.ranks} ranks; artifacts: {work}')
 
 
 

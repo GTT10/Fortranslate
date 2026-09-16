@@ -7,6 +7,7 @@ program test_spray_mpi
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use mixture_thermo_mod, only: mixture_specific_gas_constant
+  use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,advance_reactive_euler_ssprk2_plm_3d
@@ -417,6 +418,26 @@ program test_spray_mpi
   end do
   field=reference(:,first(1)+1:first(1)+dims(1),:,:)
   temperature=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
+  saved_field=field
+  saved_temperature=temperature
+  call advance_mpi_spray_les(MPI_COMM_WORLD,species,field,temperature,[.001_dp,.001_dp,.001_dp], &
+    cells,1e6_dp,.1_dp,.7_dp,.7_dp,ok)
+  call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+    'MPI SGS excessive diffusion step rolls back')
+  before=sum(sum(sum(reference,dim=4),dim=3),dim=2)
+  call advance_les_ssprk2_3d(species,reference,reference_temperature,[.001_dp,.001_dp,.001_dp], &
+    .1_dp,.7_dp,.7_dp,1e-6_dp,ok)
+  call require(ok,'serial SGS reference')
+  after=sum(sum(sum(reference,dim=4),dim=3),dim=2)
+  call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))),'SGS global conservation')
+  call advance_mpi_spray_les(MPI_COMM_WORLD,species,field,temperature,[.001_dp,.001_dp,.001_dp], &
+    cells,1e-6_dp,.1_dp,.7_dp,.7_dp,ok)
+  call require(ok,'MPI SGS update')
+  call require(all(abs(field-reference(:,first(1)+1:first(1)+dims(1),:,:))< &
+    2e-12_dp*max(1.0_dp,abs(reference(:,first(1)+1:first(1)+dims(1),:,:)))),'MPI SGS matches serial fields')
+  call require(maxval(abs(temperature-reference_temperature(first(1)+1:first(1)+dims(1),:,:)))<1e-8_dp, &
+    'MPI SGS matches serial temperature')
+  call require(maxval(abs(field-saved_field))>1e-6_dp,'SGS changes the gas')
   saved_field=field
   call advance_reactive_transport_3d(species,transport,reference,reference_temperature,cells(1),3,3, &
     .001_dp,.001_dp,.001_dp,1e-6_dp,.true.,.true.,.true.,.true.,serial_theta,ok)

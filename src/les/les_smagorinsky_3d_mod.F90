@@ -9,6 +9,7 @@ module les_smagorinsky_3d_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   implicit none
   private
+  public :: compute_les_ghosted_rhs_3d
   public :: smagorinsky_stress, compute_les_rhs_3d, advance_les_ssprk2_3d
 contains
   subroutine smagorinsky_stress(gradient, density, spacing, cs, viscosity, stress, ok)
@@ -91,6 +92,22 @@ contains
     if (.not.ok) return
     rhs=grhs(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
     if (present(boundary_rate)) boundary_rate=rate
+  end subroutine
+
+  ! Two supplied halo layers on every face; return only the active-cell RHS.
+  subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
+    integer, intent(in) :: cells(3)
+    real(dp), intent(out) :: rhs(:,:,:,:),diffusivity
+    logical, intent(out) :: ok
+    real(dp), allocatable :: full_rhs(:,:,:,:)
+    ok=.false.;rhs=0;diffusivity=0
+    if (any(cells<2).or.any(cells>huge(1)-4)) return
+    if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
+    allocate(full_rhs,mold=state)
+    call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells)
+    if (ok) rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
