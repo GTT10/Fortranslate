@@ -16,7 +16,7 @@ program test_spray_mpi
   use spray_parcel_mod
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_mpi_mod
-  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,mixture_impact_at_planar_wall
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
   implicit none
@@ -251,6 +251,7 @@ program test_spray_mpi
   call check_kh_release()
   call check_film_coupling()
   call check_wall_impacts()
+  call check_wall_crossing()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'initial coupled totals')
@@ -529,6 +530,60 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_wall_crossing()
+    type(spray_parcel), allocatable :: drops(:),children(:)
+    type(spray_parcel) :: expected_parent
+    type(spray_wall_film), allocatable :: patches(:),empty_films(:)
+    type(spray_wall_film) :: expected_film
+    type(spray_options) :: settings
+    type(spray_wall_options) :: walls
+    real(dp), allocatable :: cm(:,:),fm(:,:),previous(:,:),press(:),child_mass(:,:)
+    logical, allocatable :: hits(:)
+    real(dp) :: mw(2),parent_mass(2),film_components(2),wall(5),serial_wall(5),global_wall(5)
+    logical :: serial_hit
+    integer :: np,q
+    integer(int64) :: mark
+    character(len=16) :: face_names(6)
+    np=merge(2,0,rank<nranks-1)
+    allocate(drops(np),cm(2,np),fm(2,0),patches(0),empty_films(0),previous(3,np),press(np),hits(1))
+    hits=.true.;press=101325;mark=int(2*nranks,int64)
+    do q=1,np
+      drops(q)=spray_parcel(int(2*rank+q,int64),[.25_dp,.25_dp,-.1_dp], &
+        [.1_dp,0.0_dp,-1.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      previous(:,q)=[.25_dp,.25_dp,.1_dp];cm(:,q)=drops(q)%mass*[.25_dp,.75_dp]
+    end do
+    if (np>0) drops(2)%position(3)=.05_dp
+    mw=[species(liquids(1)%vapor_index)%molecular_weight,species(liquids(2)%vapor_index)%molecular_weight]
+    settings%surface_tension=.072_dp;settings%liquid_viscosity=.001_dp
+    face_names='periodic';face_names(5:6)='slip_wall';walls%enabled(5)=.true.
+    if (rank==0) previous(3,1)=-.01_dp
+    call impact_mpi_planar_walls(MPI_COMM_WORLD,liquids,settings,walls,face_names,mw,press,previous, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],drops,cm,patches,fm,mark,hits,wall,ok)
+    call require(.not.ok.and.size(hits)==1.and.all(hits).and.mark==2*nranks,'invalid previous position preserves hit/ID')
+    if (rank==0) previous(3,1)=.1_dp
+    serial_wall=0
+    if (np>0) then
+      expected_parent=drops(1);parent_mass=cm(:,1);film_components=0
+      call mixture_impact_at_planar_wall(expected_parent,previous(:,1),liquids,parent_mass,settings,mw,press(1), &
+        [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],walls,empty_films,mark+1,children,child_mass, &
+        expected_film,film_components,serial_wall,serial_hit,ok)
+      call require(ok.and.serial_hit,'serial wall crossing reference')
+    end if
+    call MPI_Allreduce(serial_wall,global_wall,5,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call impact_mpi_planar_walls(MPI_COMM_WORLD,liquids,settings,walls,face_names,mw,press,previous, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],drops,cm,patches,fm,mark,hits,wall,ok)
+    call require(ok.and.size(hits)==np.and.mark==2*nranks,'MPI wall crossing accepts without unused splash IDs')
+    call require(all(abs(wall-global_wall)<1e-13_dp*max(1e-12_dp,abs(global_wall))),'MPI crossing matches serial wall budget')
+    if (np>0) then
+      call require(hits(1).and..not.hits(2).and.size(patches)==1,'only crossed particle deposits')
+      call require(drops(1)%mass==expected_parent%mass.and.all(cm(:,1)==parent_mass),'MPI parent matches serial impact')
+      call require(all(patches(1)%position==expected_film%position).and.patches(1)%height==expected_film%height, &
+        'MPI film crossing geometry matches serial')
+      call require(all(fm(:,1)==film_components),'MPI deposited components match serial')
+      call require(drops(2)%mass==1e-9_dp.and.drops(2)%position(3)==.05_dp,'uncrossed particle unchanged')
+    end if
+  end subroutine
+
   subroutine check_film_query()
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: pos(:,:),normal(:,:),thickness(:),saved_thickness(:)

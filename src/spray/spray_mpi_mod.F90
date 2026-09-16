@@ -19,12 +19,13 @@ module spray_mpi_mod
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options,valid_wall_film, &
     valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange, &
-    classify_wall_impact,resolve_mixture_wall_impact
+    classify_wall_impact,resolve_mixture_wall_impact,mixture_impact_boiling_temperature
   use spray_partition_mod
   implicit none
   private
   public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
   public :: advance_mpi_khrt_shedding
+  public :: impact_mpi_planar_walls
   public :: sample_mpi_wall_film_thickness
   public :: resolve_mpi_wall_impacts
   public :: advance_mpi_film_coupling
@@ -35,6 +36,111 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine impact_mpi_planar_walls(comm,components,properties,settings,faces,molecular_weights,pressure, &
+      previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,wall_change,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: properties
+    type(spray_wall_options), intent(in) :: settings
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in) :: molecular_weights(:),pressure(:),previous(:,:),lower(3),upper(3)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),film_mass(:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    integer(int64), intent(inout) :: last_id
+    logical, allocatable, intent(inout) :: hit(:)
+    real(dp), intent(out) :: wall_change(5)
+    logical, intent(out) :: ok
+    integer, allocatable :: indices(:),wall_faces(:)
+    real(dp), allocatable :: location(:,:),normal(:,:),data(:,:),diameters(:),thickness(:)
+    logical, allocatable :: crossed(:)
+    real(dp) :: bounds(6),low(6),high(6),delta(3),earliest,fraction,boundary,rho,cp,e,boil,mu,un
+    real(dp) :: y(size(components)),sigma
+    integer :: np,nc,p,a,f,face,ne,n,ierr
+    logical :: valid,agreed
+    ok=.false.;wall_change=0
+    valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
+    valid=valid.and.valid_spray_options(properties).and.valid_wall_options(settings,faces)
+    valid=valid.and.all(ieee_is_finite([lower,upper])).and.all(upper>lower)
+    valid=valid.and.maxval(abs([lower,upper]))<=1e9_dp
+    call agree()
+    if (.not.agreed) return
+    np=size(parcels);nc=size(components)
+    valid=np<=125000.and.nc>=1.and.nc<=16.and.size(molecular_weights)==nc.and.size(pressure)==np
+    valid=valid.and.all(shape(previous)==[3,np]).and.all(shape(component_mass)==[nc,np])
+    call agree()
+    if (.not.agreed) return
+    valid=all(ieee_is_finite(previous)).and.all(ieee_is_finite(pressure))
+    valid=valid.and.all(pressure>=1).and.all(pressure<=1e10_dp)
+    do p=1,np
+      valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
+      valid=valid.and.all(previous(:,p)>=lower).and.all(previous(:,p)<upper)
+    end do
+    call agree()
+    if (.not.agreed) return
+    bounds=[lower,upper]
+    call MPI_Allreduce(bounds,low,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(bounds,high,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    allocate(indices(np),wall_faces(np),location(3,np),normal(3,np),crossed(np));crossed=.false.;ne=0
+    do p=1,np
+      if (parcels(p)%mass<=0) cycle
+      delta=parcels(p)%position-previous(:,p);earliest=2;face=0
+      do a=1,3
+        f=0;boundary=0
+        if (parcels(p)%position(a)<lower(a)) then
+          f=2*a-1;boundary=lower(a)
+        else if (parcels(p)%position(a)>=upper(a)) then
+          f=2*a;boundary=upper(a)
+        end if
+        if (f==0.or.delta(a)==0) cycle
+        fraction=(boundary-previous(a,p))/delta(a)
+        if (fraction<earliest) then
+          earliest=fraction;face=f
+        end if
+      end do
+      if (face==0) cycle
+      if (.not.settings%enabled(face)) cycle
+      ne=ne+1;indices(ne)=p;wall_faces(ne)=face;crossed(p)=.true.
+      a=(face+1)/2;location(:,ne)=previous(:,p)+earliest*delta;normal(:,ne)=0
+      location(a,ne)=merge(lower(a),upper(a),modulo(face,2)==1)
+      normal(a,ne)=merge(1.0_dp,-1.0_dp,modulo(face,2)==1)
+    end do
+    allocate(data(6,ne),diameters(ne));data=0;sigma=properties%surface_tension
+    do n=1,ne
+      p=indices(n);y=component_mass(:,p)/parcels(p)%mass
+      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid)
+      if (.not.valid) exit
+      call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure(p),boil,valid)
+      if (.not.valid) exit
+      mu=liquid_viscosity_at_temperature(properties,parcels(p)%temperature)
+      valid=mu>0.and.sigma>=1e-8_dp.and.sigma<=1e3_dp
+      if (.not.valid) exit
+      diameters(n)=(6*parcels(p)%mass/(acos(-1.0_dp)*rho))**(1.0_dp/3.0_dp)
+      un=abs(dot_product(parcels(p)%velocity,normal(:,n)))
+      data(5,n)=rho*diameters(n)*un**2/sigma;data(6,n)=un*diameters(n)*rho/mu
+      data(1,n)=sqrt(data(5,n)*sqrt(data(6,n)));data(2,n)=settings%temperature(wall_faces(n))/boil
+      data(3,n)=(26.788_dp*log(pressure(p)*1e-5_dp)+33.546_dp)* &
+        exp(-.006_dp*(settings%temperature(wall_faces(n))-260))+36
+    end do
+    call agree()
+    if (.not.agreed) return
+    call sample_mpi_wall_film_thickness(comm,films,location(:,:ne),normal(:,:ne), &
+      1e-10_dp*maxval(upper-lower),thickness,valid)
+    if (.not.valid) return
+    data(4,:)=thickness/diameters
+    call resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices(:ne),location(:,:ne),normal(:,:ne),data, &
+      settings%contact_angle,films,film_mass,properties%maximum_parcels,settings%maximum_films,last_id,wall_change,valid)
+    if (.not.valid) return
+    call move_alloc(crossed,hit);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
   ! Query distributed circular stationary film footprints without replicating films.
   ! Bounded query batches visit every rank; rank-local film inventories stay local.
   subroutine sample_mpi_wall_film_thickness(comm,films,positions,normals,plane_tolerance,thickness,ok)

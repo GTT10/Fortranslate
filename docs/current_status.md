@@ -120,8 +120,10 @@ mixed-wall impact event API now reserves splash IDs and commits parent, child,
 film and wall-budget updates transactionally
 ([evidence](validation/spray-mpi-impact-20260917.md)). Distributed film-footprint
 queries now sum overlapping film heights across owners
-([evidence](validation/spray-mpi-film-query-20260917.md)); crossing detection and
-wall-boundary application wiring remain open.
+([evidence](validation/spray-mpi-film-query-20260917.md)). An MPI planar-crossing
+wrapper now computes mixture impact conditions, queries film thickness and resolves
+wall events ([evidence](validation/spray-mpi-wall-crossing-20260917.md)); integration
+with nonperiodic gas/particle stepping and the application remains open.
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup
