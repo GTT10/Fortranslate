@@ -138,6 +138,9 @@ The MPI particle-coupling API now supports open-face removal, stationary wall
 reflection and nonperiodic owner migration with a replicated boundary ledger
 ([evidence](validation/spray-mpi-particle-boundary-20260917.md)). Mixed wall-impact/film
 evolution in the coupled driver and nonperiodic application wiring remain open.
+Physical boundary data now pass through the complete MPI particle/chemistry/
+transport/SGS/hydro split, with a summed boundary ledger and whole-step rollback
+([evidence](validation/spray-mpi-boundary-split-20260917.md)).
 Periodic particle/reaction splitting now connects cell-local chemistry between
 particle half-steps with collective whole-interval rollback
 ([evidence](validation/spray-mpi-reaction-20260916.md)). Distributed wall/breakup

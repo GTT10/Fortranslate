@@ -1137,7 +1137,8 @@ contains
 
   subroutine advance_mpi_mixture_reaction(comm,species,reactions,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
-      hydro_solver,hydro_limiter,transport_flags,last_id,les_settings)
+      hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1153,6 +1154,11 @@ contains
     character(len=*), intent(in), optional :: hydro_solver,hydro_limiter
     logical, intent(in), optional :: transport_flags(4)
     real(dp), intent(in), optional :: les_settings(3)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), allocatable :: stage_change(:)
+    real(dp) :: ledger(size(state,1))
     real(dp) :: sgs(3)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
@@ -1160,11 +1166,13 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(13),minimum(13),maximum(13),chemistry_interval,transport_theta
+    real(dp) :: controls(14),minimum(14),maximum(14),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
-    ok=.false.;substeps=0;method_code=0
+    ok=.false.;substeps=0;method_code=0;ledger=0
+    if (present(boundary_change)) boundary_change=0
+    if (present(boundary_faces)) allocate(stage_change(size(state,1)))
     select case(trim(method))
     case('implicit');method_code=1
     case('explicit');method_code=2
@@ -1191,6 +1199,7 @@ contains
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0
+    if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.all(ieee_is_finite([interval,rtol,atol,sgs]))
     valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.minval(sgs(2:))>=1e-6_dp.and.maxval(sgs(2:))<=1e6_dp
@@ -1205,18 +1214,19 @@ contains
     if (ierr/=MPI_SUCCESS) return
     if (.not.agreed) return
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
-      merge(1.0_dp,0.0_dp,enabled),sgs]
-    call MPI_Allreduce(controls,minimum,13,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces))]
+    call MPI_Allreduce(controls,minimum,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,13,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
     if (present(last_id)) candidate_id=last_id
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id)
+      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change)
     if (.not.valid) return
+    if (allocated(stage_change)) ledger=ledger+stage_change
     chemistry_interval=interval
     if (present(hydro_solver)) chemistry_interval=.5_dp*interval
     call advance_spray_chemistry_3d(species,reactions,gas,temp,chemistry_interval,rtol,atol,method,valid,message)
@@ -1226,23 +1236,33 @@ contains
     if (present(hydro_solver)) then
       if (any(enabled)) then
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
-          enabled,transport_theta,valid)
+          enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
+          wall_temperature,wall_velocity)
         if (.not.valid) return
+        if (allocated(stage_change)) ledger=ledger+stage_change
       end if
       if (sgs(1)>0) then
-        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid)
+        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
+          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
         if (.not.valid) return
+        if (allocated(stage_change)) ledger=ledger+stage_change
       end if
-      call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid)
+      call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid, &
+        boundary_faces,stage_change,inflow_state,inflow_temperature)
       if (.not.valid) return
+      if (allocated(stage_change)) ledger=ledger+stage_change
       if (sgs(1)>0) then
-        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid)
+        call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
+          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
         if (.not.valid) return
+        if (allocated(stage_change)) ledger=ledger+stage_change
       end if
       if (any(enabled)) then
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
-          enabled,transport_theta,valid)
+          enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
+          wall_temperature,wall_velocity)
         if (.not.valid) return
+        if (allocated(stage_change)) ledger=ledger+stage_change
       end if
       call advance_spray_chemistry_3d(species,reactions,gas,temp,chemistry_interval,rtol,atol,method,valid,message)
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
@@ -1250,9 +1270,12 @@ contains
       if (.not.agreed) return
     end if
     call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id)
+      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change)
     if (.not.valid) return
+    if (allocated(stage_change)) ledger=ledger+stage_change
     if (first_steps>huge(substeps)-last_steps) return
+    if (.not.all(ieee_is_finite(ledger))) return
+    if (present(boundary_change)) boundary_change=ledger
     state=gas;temperature=temp
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     if (present(last_id)) last_id=candidate_id

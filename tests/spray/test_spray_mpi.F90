@@ -393,6 +393,7 @@ program test_spray_mpi
     1.0_dp,1.0_dp,1.0_dp,1e-5_dp,'mc','hllc',ok)
   call require(ok,'serial hydro reference')
   call check_boundary_ghosts()
+  call check_boundary_split()
   call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,field,temperature,[1.0_dp,1.0_dp,1.0_dp], &
     cells,1e-5_dp,'hllc','mc',ok)
   call require(ok,'distributed hydro')
@@ -534,6 +535,51 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_boundary_split()
+    type(spray_parcel), allocatable :: drops(:)
+    type(spray_options) :: settings
+    real(dp), allocatable :: u(:,:,:,:),t(:,:,:),u0(:,:,:,:),t0(:,:,:),cm(:,:)
+    real(dp) :: ledger(15),local_before(15),local_after(15),total_before(15),total_after(15),wall_t(6)
+    character(len=32) :: boundary(6)
+    integer :: np,nstep
+    integer(int64) :: mark
+    u=reference(:,first(1)+1:first(1)+dims(1),:,:)
+    t=reference_temperature(first(1)+1:first(1)+dims(1),:,:);u0=u;t0=t
+    np=merge(1,0,rank==0);allocate(drops(np),cm(2,np));mark=17
+    if (rank==0) then
+      drops(1)=spray_parcel(1_int64,[1e-6_dp,.5_dp,.5_dp],[-1.0_dp,0.0_dp,0.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      cm(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+    end if
+    settings%drag=.false.;settings%heat=.false.;settings%evaporation=.false.
+    boundary='periodic';boundary(1:2)='outflow';boundary(3)='no_slip_wall';boundary(4)='isothermal_wall'
+    wall_t=600
+    if (rank==nranks-1) wall_t(4)=-1
+    call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
+      'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
+      boundary,ledger,wall_temperature=wall_t)
+    call require(.not.ok.and.nstep==0.and.all(u==u0).and.all(t==t0).and.mark==17.and.all(ledger==0), &
+      'late boundary transport failure rolls back whole split gas ID and ledger')
+    call require(size(drops)==np,'late boundary failure restores escaped particle')
+    if (rank==0) call require(drops(1)%position(1)==1e-6_dp.and.drops(1)%mass==1e-9_dp.and. &
+      all(cm(:,1)==1e-9_dp*[.25_dp,.75_dp]),'late boundary failure restores parcel inventory')
+    call mixture_system_totals(u,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local_before,ok)
+    call require(ok,'boundary split initial inventory')
+    call MPI_Allreduce(local_before,total_before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    wall_t=600
+    call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
+      'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
+      boundary,ledger,wall_temperature=wall_t)
+    call require(ok.and.nstep>=2.and.size(drops)==0.and.mark==17,'complete nonperiodic split with escaped parcel')
+    call mixture_system_totals(u,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local_after,ok)
+    call require(ok,'boundary split final inventory')
+    call MPI_Allreduce(local_after,total_after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(total_after-total_before-ledger)<2e-12_dp*max(1e-12_dp,abs(total_before))), &
+      'whole nonperiodic split inventory follows summed surface and particle ledger')
+    call require(maxval(abs(u-u0))>1e-5_dp,'nonperiodic split advances gas')
+  end subroutine
+
   subroutine check_boundary_ghosts()
     real(dp), allocatable :: global_ghost(:,:,:,:),global_t(:,:,:),local_ghost(:,:,:,:),local_t(:,:,:),u(:,:,:,:),t(:,:,:)
     real(dp), allocatable :: saved_ghost(:,:,:,:),saved_t(:,:,:)
