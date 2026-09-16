@@ -60,9 +60,11 @@ rank-neutral restart for boundary-touching geometry
 ([evidence](validation/amr-mpi-boundary-touching-app-20260917.md)).
 MPI physical-boundary temperature tagging, conservative remap and changed-rank
 restart are also connected
-([evidence](validation/amr-mpi-boundary-regrid-20260917.md)). Regridding still
-gathers full levels on rank zero; distributed remap and general patches/levels
-remain open.
+([evidence](validation/amr-mpi-boundary-regrid-20260917.md)). Temperature tagging
+now scans local slabs and reduces only tag bounds; unchanged patches skip full
+hierarchy gathering ([evidence](validation/amr-mpi-distributed-tagging-20260917.md)).
+Actual remapping still gathers full levels on rank zero; distributed remap and
+general patches/levels remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

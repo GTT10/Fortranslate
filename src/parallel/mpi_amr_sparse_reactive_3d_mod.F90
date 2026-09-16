@@ -28,7 +28,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use reactive_transport_3d_mod, only: &
     reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d, &
     reactive_transport_interface_theta_3d, reactive_transport_timestep_3d
-  use amr_hierarchy_3d_mod, only: amr_patch_3d
+  use amr_hierarchy_3d_mod, only: amr_patch_3d, initialize_amr_patch_3d
   implicit none
   private
 
@@ -76,6 +76,7 @@ module mpi_amr_sparse_reactive_3d_mod
     procedure :: local_value_count => sparse_hierarchy_local_value_count_3d
   end type mpi_amr_sparse_hierarchy_3d
 
+  public :: temperature_tag_mpi_amr_sparse_patch_3d
   public :: initialize_mpi_amr_sparse_distribution_3d
   public :: scatter_mpi_amr_sparse_hierarchy_3d
   public :: gather_mpi_amr_sparse_hierarchy_3d
@@ -92,6 +93,83 @@ module mpi_amr_sparse_reactive_3d_mod
   public :: advance_mpi_amr_sparse_full_3d
 
 contains
+
+  subroutine temperature_tag_mpi_amr_sparse_patch_3d(distribution,patch,t,threshold,buffer, &
+      next_patch,changed,ok,boundary_faces)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: t(:,:,:),threshold
+    integer, intent(in) :: buffer
+    type(amr_patch_3d), intent(out) :: next_patch
+    logical, intent(out) :: changed,ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_patch_3d) :: candidate
+    integer :: n(3),first(3),last(3),lo(3),hi(3),global_lo(3),global_hi(3)
+    integer :: metadata(17),reference(17),i,j,k,a,ierr,global_i
+    real(dp) :: reference_threshold
+    logical :: local_ok,global_ok
+
+    next_patch=patch;changed=.false.;ok=.false.
+    n=[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz]
+    first=2;last=n-1
+    local_ok=distribution%is_valid(patch)
+    if (present(boundary_faces)) then
+      local_ok=local_ok.and.valid_reactive_boundaries_3d(boundary_faces)
+      do a=1,3
+        if (boundary_faces(2*a-1)/='periodic') first(a)=1
+        if (boundary_faces(2*a)/='periodic') last(a)=n(a)
+      end do
+    end if
+    local_ok=local_ok.and.all(shape(t)==[distribution%coarse_count,n(2),n(3)])
+    local_ok=local_ok.and.buffer>=0.and.buffer<=maxval(n)
+    local_ok=local_ok.and.ieee_is_finite(threshold).and.all(ieee_is_finite(t))
+    local_ok=local_ok.and.all([patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]>=first)
+    local_ok=local_ok.and.all([patch%coarse_i_upper,patch%coarse_j_upper,patch%coarse_k_upper]<=last)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    ! Agree on the tagging contract before reducing rank-local extrema.
+    metadata=[n,patch%coarse_i_lower,patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
+      patch%coarse_k_lower,patch%coarse_k_upper,patch%refinement_ratio,buffer,first,last]
+    reference=metadata;reference_threshold=threshold
+    call MPI_Bcast(reference,size(reference),MPI_INTEGER,0,distribution%comm,ierr)
+    call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+    if (.not.global_ok) return
+    call MPI_Bcast(reference_threshold,1,MPI_DOUBLE_PRECISION,0,distribution%comm,ierr)
+    call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+    if (.not.global_ok) return
+    local_ok=all(metadata==reference).and.threshold==reference_threshold
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+
+    lo=n;hi=0
+    do k=first(3),last(3)
+      do j=first(2),last(2)
+        do i=1,distribution%coarse_count
+          global_i=distribution%coarse_first+i-1
+          if (global_i<first(1).or.global_i>last(1)) cycle
+          if (t(i,j,k)<threshold) cycle
+          lo=min(lo,[global_i,j,k]);hi=max(hi,[global_i,j,k])
+        end do
+      end do
+    end do
+    call MPI_Allreduce(lo,global_lo,3,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
+    call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+    if (.not.global_ok) return
+    call MPI_Allreduce(hi,global_hi,3,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
+    call sparse_collective_mpi_success_3d(distribution%comm,ierr,global_ok)
+    if (.not.global_ok) return
+    if (all(global_hi>0)) then
+      lo=max(first,global_lo-buffer);hi=min(last,global_hi+buffer)
+      call initialize_amr_patch_3d(n(1),n(2),n(3),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        patch%refinement_ratio,candidate,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      next_patch=candidate
+      changed=any(lo/=[patch%coarse_i_lower,patch%coarse_j_lower,patch%coarse_k_lower]).or. &
+        any(hi/=[patch%coarse_i_upper,patch%coarse_j_upper,patch%coarse_k_upper])
+    end if
+    ok=.true.
+  end subroutine temperature_tag_mpi_amr_sparse_patch_3d
 
   subroutine advance_mpi_amr_sparse_chemistry_3d( &
       distribution, species, reactions, patch, hierarchy, interval, &
