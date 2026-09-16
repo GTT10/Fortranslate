@@ -42,8 +42,10 @@ transactional reaction/hydro Strang splitting
 transport now includes viscous/thermal/species fluxes, nested reflux and physical
 wall budgets ([evidence](validation/amr-tree-transport-20260917.md)). A combined
 R/2-T/2-H-T/2-R/2 update now aggregates those boundary budgets transactionally
-([evidence](validation/amr-tree-split-20260917.md)). Dynamic remapping, MPI
-ownership and application/restart integration remain open.
+([evidence](validation/amr-tree-split-20260917.md)). A conservative overlap-remap
+API now supports changed patch layouts and refinement ratios, with transactional
+EOS recovery ([evidence](validation/amr-tree-remap-20260917.md)). Dynamic tagging/
+regrid scheduling, MPI ownership and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

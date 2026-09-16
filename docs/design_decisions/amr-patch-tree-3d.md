@@ -181,9 +181,37 @@ State, temperature and diagnostics commit only after the last reaction phase.
 The caller still chooses a common timestep using the hydro, diffusion and wall
 bounds and is responsible for retry after rejection.
 
+## Conservative topology remapping
+
+`remap_amr_patch_tree_3d` projects exposed old cells onto exposed new cells by
+intersection volume. Root dimensions and physical extent remain the same;
+patch locations, counts, depths and refinement ratios may change. Old covered
+parent values are ignored, so they need not be synchronized. New covered parents
+are filled by bottom-up restriction. This is piecewise-constant conservative
+projection; it does not reconstruct subcell slopes.
+
+Both topologies are represented on checked 64-bit least-common-multiple integer
+coordinates. Face positions and intersection lengths are exact until the final
+floating-point volume weights. Overflow is rejected before destination mutation.
+Weighted components and coverage use compensated sums; each target cell must
+have unit coverage within roundoff. The supplied old state/tree and new tree
+are read-only, and the destination state commits only after restriction and
+validation succeed. Distinct source and destination actual arguments are required.
+
+`remap_amr_patch_tree_reactive_3d` additionally remaps temperature as an EOS
+starting estimate, then recovers temperature from remapped conserved mixtures.
+Both output containers commit together only on success. This API accepts the
+new tree but does not replace the caller's active topology; callers publish
+that topology only after success.
+
+The implementation stores exposed old-cell descriptors and scans them for each
+exposed new cell. Storage does not allocate a global finest-grid raster, but
+work is quadratic in exposed cell counts. No scalable spatial search or timing
+qualification is claimed.
+
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling, dynamic remapping,
+PLM coarse/fine interpolation, subcycle scheduling, dynamic tagging/regrid scheduling,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
