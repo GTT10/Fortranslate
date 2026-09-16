@@ -72,6 +72,7 @@ program test_amr_reactive_3d
   call run_uniform_invariance( &
     species, patch, "characteristic_plm", "minmod", ok)
   call require(ok, "uniform minmod characteristic PLM AMR invariance")
+  call run_physical_boundaries()
   call run_public_api_validation_tests(species, patch, ok)
   call require(ok, "public AMR API validation and rollback")
   write(*, '(a,es24.16)') "composite conservation error=", conservation_error
@@ -93,6 +94,56 @@ program test_amr_reactive_3d
   write(*, '(a)') "test_amr_reactive_3d: PASS"
 
 contains
+
+  subroutine run_physical_boundaries()
+    integer, parameter :: n=12
+    type(amr_patch_3d) :: near_wall
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: baseline_f(:,:,:,:),baseline_ft(:,:,:),before(:),after(:),ledger(:),inlet(:,:),it(:)
+    real(dp) :: correction
+    character(len=32) :: faces(6),method
+    integer :: nv,mode
+    call initialize_amr_patch_3d(n,n,n,2,3,2,3,2,3,ratio,near_wall,ok)
+    call require(ok,'near-boundary AMR patch')
+    call initialize_public_api_hierarchy(species,near_wall,c0,ct0,f0,ft0,ok)
+    call require(ok,'physical AMR initial state')
+    nv=size(c0,1);allocate(before(nv),after(nv),ledger(nv),inlet(nv,6),it(6))
+    inlet=spread(c0(:,1,1,1),2,6);it=ct0(1,1,1)
+    do mode=1,2
+      method='pcm'
+      if (mode==2) method='characteristic_plm'
+      faces='periodic';faces(1)='slip_wall';faces(2)='outflow'
+      c=c0;ct=ct0;f=f0;ft=ft0
+      call composite_integrals_amr_3d(c,f,near_wall,.125_dp,.125_dp,.125_dp,before,ok)
+      call require(ok,'physical AMR initial integral')
+      call advance_amr_reactive_hydro_3d(species,near_wall,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+        'hllc',correction,ok,method,'mc',faces,ledger)
+      call require(ok,'physical AMR hydro advance')
+      call composite_integrals_amr_3d(c,f,near_wall,.125_dp,.125_dp,.125_dp,after,ok)
+      call require(ok.and.all(abs(after-before-ledger)<2e-11_dp*max(1.0_dp,abs(before))), &
+        'physical AMR composite inventory follows boundary flux')
+      call require(maxval(abs(ledger))>1e-10_dp,'physical AMR wall/outlet budget is exercised')
+      baseline_f=f;baseline_ft=ft
+      c=c0;ct=ct0;f=f0;ft=ft0;c(:,n,:,:)=2*c(:,n,:,:)
+      call advance_amr_reactive_hydro_3d(species,near_wall,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+        'hllc',correction,ok,method,'mc',faces,ledger)
+      call require(ok.and.all(f==baseline_f).and.all(ft==baseline_ft), &
+        'far outlet cannot wrap into near-wall coarse-fine interpolation')
+      c=c0;ct=ct0;f=f0;ft=ft0;faces(1)='inflow'
+      call advance_amr_reactive_hydro_3d(species,near_wall,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+        'hllc',correction,ok,method,'mc',faces,ledger,inlet,it)
+      call require(ok,'physical AMR reservoir inlet')
+      call composite_integrals_amr_3d(c,f,near_wall,.125_dp,.125_dp,.125_dp,after,ok)
+      call require(ok.and.all(abs(after-before-ledger)<2e-11_dp*max(1.0_dp,abs(before))), &
+        'physical AMR inlet ledger closes')
+      c=c0;ct=ct0;f=f0;ft=ft0;inlet(1,1)=-1
+      call advance_amr_reactive_hydro_3d(species,near_wall,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+        'hllc',correction,ok,method,'mc',faces,ledger,inlet,it)
+      call require(.not.ok.and.all(c==c0).and.all(f==f0).and.all(ct==ct0).and.all(ft==ft0).and.all(ledger==0), &
+        'physical AMR invalid inlet rolls back both levels and ledger')
+      inlet=spread(c0(:,1,1,1),2,6)
+    end do
+  end subroutine
 
   subroutine run_public_api_validation_tests(species, patch, ok_out)
     type(nasa7_species), intent(in) :: species(:)
@@ -337,9 +388,10 @@ contains
     real(dp), allocatable :: mass_fractions(:)
     real(dp) :: dx, dy, dz, density, fine_density
     logical :: local_ok
-    integer :: nvar
+    integer :: nvar,n
 
     ok_out = .false.
+    n=patch%coarse_nx
     config = reactive_3d_config()
     config%nx = n
     config%ny = n

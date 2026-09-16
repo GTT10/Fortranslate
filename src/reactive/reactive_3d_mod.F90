@@ -1193,8 +1193,12 @@ contains
   ! PLM stencil at the physical face, so periodic wrapping outside the padded
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
-      faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature)
+      faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
+      flux_x,flux_y,flux_z)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
+    ! Optional SSPRK2 mean upper-face fluxes, matching the periodic AMR API.
+    real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
+    real(dp), allocatable :: mean_x(:,:,:,:),mean_y(:,:,:,:),mean_z(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
@@ -1206,6 +1210,15 @@ contains
     integer :: n(3)
     logical :: local_ok
     ok=.false.; boundary_change=0.0_dp
+    if (present(flux_x)) flux_x=0
+    if (present(flux_y)) flux_y=0
+    if (present(flux_z)) flux_z=0
+    if ((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if (present(flux_x)) then
+      if (any(shape(flux_x)/=shape(state)).or.any(shape(flux_y)/=shape(state)).or.any(shape(flux_z)/=shape(state))) return
+      allocate(mean_x,mold=state);allocate(mean_y,mold=state);allocate(mean_z,mold=state)
+      mean_x=0;mean_y=0;mean_z=0
+    end if
     n=shape(temperature)
     if (size(boundary_change) /= size(state,1)) return
     if (.not. valid_reactive_3d_shapes(state,temperature,reactive_nvar(size(species)),n(1),n(2),n(3))) return
@@ -1230,6 +1243,9 @@ contains
     call recover_reactive_temperatures_3d(species,candidate,temp,n(1),n(2),n(3),recovered,local_ok)
     if (.not.local_ok) return
     boundary_change=0.5_dp*dt*(rate0+rate1)
+    if (present(flux_x)) then
+      flux_x=mean_x;flux_y=mean_y;flux_z=mean_z
+    end if
     state=candidate; temperature=recovered; ok=.true.
   contains
     subroutine boundary_rhs(u,t,du,rate,success)
@@ -1261,6 +1277,11 @@ contains
           end do
         end do
       end do
+      if (present(flux_x)) then
+        mean_x=mean_x+.5_dp*fx(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
+        mean_y=mean_y+.5_dp*fy(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
+        mean_z=mean_z+.5_dp*fz(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
+      end if
       ! Surface integral, independent of volume summation used by diagnostics.
       do k=3,n(3)+2
         do j=3,n(2)+2

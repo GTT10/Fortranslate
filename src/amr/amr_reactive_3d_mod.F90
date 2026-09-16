@@ -1,5 +1,6 @@
 module amr_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use elementary_kinetics_mod, only: &
@@ -14,7 +15,7 @@ module amr_reactive_3d_mod
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_3d_mod, only: &
-    compute_reactive_cfl_timestep_3d, &
+    compute_reactive_cfl_timestep_3d,advance_reactive_boundary_hydro_3d, &
     advance_reactive_euler_ssprk2_with_fluxes_3d, &
     advance_reactive_euler_ssprk2_plm_with_fluxes_3d, &
     compute_reactive_plm_slab_face_fluxes_3d, &
@@ -507,10 +508,17 @@ contains
   subroutine advance_amr_reactive_hydro_3d( &
       species, patch, coarse_state, coarse_temperature, &
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
-      maximum_reflux_correction, ok, reconstruction, limiter)
+      maximum_reflux_correction, ok, reconstruction, limiter, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
+    type(amr_patch_3d) :: interpolation_patch
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), allocatable :: start_ghost(:,:,:,:),end_ghost(:,:,:,:),start_gt(:,:,:),end_gt(:,:,:)
     real(dp), intent(inout) :: coarse_state(:, :, :, :)
+    real(dp) :: boundary_total(size(coarse_state,1))
     real(dp), intent(inout) :: coarse_temperature(:, :, :)
     real(dp), intent(inout) :: fine_state(:, :, :, :)
     real(dp), intent(inout) :: fine_temperature(:, :, :)
@@ -543,7 +551,11 @@ contains
     character(len=32) :: selected_reconstruction, selected_limiter
 
     maximum_reflux_correction = 0.0_dp
-    ok = .false.
+    ok = .false.;boundary_total=0
+    if (present(boundary_change)) then
+      boundary_change=0
+      if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
     selected_reconstruction = "pcm"
     selected_limiter = "mc"
     if (present(reconstruction)) then
@@ -581,6 +593,11 @@ contains
     allocate(coarse_flux_x, mold=coarse_state)
     allocate(coarse_flux_y, mold=coarse_state)
     allocate(coarse_flux_z, mold=coarse_state)
+    if (present(boundary_faces)) then
+      call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
+        boundary_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
+        inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z)
+    else
     select case (trim(selected_reconstruction))
     case ("pcm")
       call advance_reactive_euler_ssprk2_with_fluxes_3d( &
@@ -595,6 +612,7 @@ contains
         dx, dy, dz, dt, selected_limiter, riemann_solver, &
         coarse_flux_x, coarse_flux_y, coarse_flux_z, local_ok)
     end select
+    end if
     if (.not. local_ok) return
 
     allocate(fine_flux_x(nvar, 0:patch%fine_nx(), &
@@ -616,10 +634,39 @@ contains
     fine_z_lower = 0.0_dp
     fine_z_upper = 0.0_dp
 
+    ! Shift the patch into two physical coarse ghost layers so interpolation
+    ! slopes near a wall do not wrap to the opposite coarse boundary.
+    interpolation_patch=patch
+    if (present(boundary_faces)) then
+      allocate(start_ghost(nvar,patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4))
+      allocate(end_ghost,mold=start_ghost)
+      allocate(start_gt(patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4))
+      allocate(end_gt,mold=start_gt)
+      call fill_reactive_boundary_ghosts_3d(coarse_start,coarse_start_temperature,boundary_faces,start_ghost,start_gt, &
+        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+      call fill_reactive_boundary_ghosts_3d(coarse_candidate,coarse_candidate_temperature,boundary_faces,end_ghost,end_gt, &
+        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+      call initialize_amr_patch_3d(patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4, &
+        patch%coarse_i_lower+2,patch%coarse_i_upper+2,patch%coarse_j_lower+2,patch%coarse_j_upper+2, &
+        patch%coarse_k_lower+2,patch%coarse_k_upper+2,ratio,interpolation_patch,local_ok)
+      if (.not.local_ok) return
+    end if
     fine_dt = dt / real(ratio, dp)
     do substep = 1, ratio
       alpha_start = real(substep - 1, dp) / real(ratio, dp)
       alpha_end = real(substep, dp) / real(ratio, dp)
+      if (present(boundary_faces)) then
+      call advance_fine_patch_ssprk2_3d( &
+        species, interpolation_patch, start_ghost, start_gt, &
+        end_ghost, end_gt, &
+        fine_candidate, fine_candidate_temperature, &
+        dx / real(ratio, dp), dy / real(ratio, dp), &
+        dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
+        riemann_solver, selected_reconstruction, selected_limiter, &
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok)
+      else
       call advance_fine_patch_ssprk2_3d( &
         species, patch, coarse_start, coarse_start_temperature, &
         coarse_candidate, coarse_candidate_temperature, &
@@ -628,6 +675,7 @@ contains
         dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
         riemann_solver, selected_reconstruction, selected_limiter, &
         fine_flux_x, fine_flux_y, fine_flux_z, local_ok)
+      end if
       if (.not. local_ok) return
       call accumulate_fine_interface_fluxes_3d( &
         patch, fine_flux_x, fine_flux_y, fine_flux_z, &
@@ -658,6 +706,7 @@ contains
     if (.not. local_ok) return
     coarse_candidate_temperature = synchronized_coarse_temperature
 
+    if (present(boundary_change)) boundary_change=boundary_total
     coarse_state = coarse_candidate
     coarse_temperature = coarse_candidate_temperature
     fine_state = fine_candidate
