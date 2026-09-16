@@ -96,7 +96,9 @@ contains
     logical :: patch_changed
     integer :: regrid_count
     integer :: ierr, rank, nranks,face,i,j,k
-    character(len=32) :: faces(6),wall_faces(6)
+    character(len=32) :: faces(6),wall_faces(6),fine_faces(6)
+    logical :: touched(6)
+    real(dp) :: fine_wall_dt
     character(len=32), allocatable :: active_faces(:)
     character(len=32768) :: boundary_signature,root_signature
     real(dp), allocatable :: boundary_total(:),step_boundary(:),inflow_state(:,:),inflow_x(:),inflow_y(:),inlet_cube(:,:,:,:)
@@ -178,13 +180,15 @@ contains
         ok, "Selected sparse MPI 3D AMR rank context mismatch", 3)
     end if
 
+    call collective_require(.not.amr_config%regrid_physical_boundaries, &
+      "MPI boundary-touching regridding is not connected",2)
     call initialize_amr_patch_3d( &
       config%nx, config%ny, config%nz, &
       amr_config%coarse_i_lower, amr_config%coarse_i_upper, &
       amr_config%coarse_j_lower, amr_config%coarse_j_upper, &
       amr_config%coarse_k_lower, amr_config%coarse_k_upper, &
       amr_config%refinement_ratio, patch, ok)
-    if (ok) ok = patch%is_strictly_interior()
+    if (ok) ok = patch%is_valid()
     call collective_require(ok, "Failed to construct MPI 3D AMR patch", 2)
     call initialize_mpi_amr_sparse_distribution_3d( &
       patch, comm, distribution, ok)
@@ -544,6 +548,23 @@ contains
             hierarchy%coarse_temperature,[dx,dy,dz],wall_faces,config%wall_temperature, &
             config%transport_cfl,local_wall_dt,ok)
           call collective_require(ok,'Invalid MPI AMR wall thermal timestep',4)
+          if (distribution%fine_count>0) then
+            touched=[patch%coarse_i_lower==1.and.distribution%fine_first==1, &
+              patch%coarse_i_upper==patch%coarse_nx.and.distribution%fine_last==patch%fine_nx(), &
+              patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+              patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+            fine_faces='outflow'
+            do face=1,6
+              if (touched(face)) fine_faces(face)=faces(face)
+            end do
+            if (any(fine_faces=='isothermal_wall')) then
+              call reactive_isothermal_timestep_3d(species,transport,hierarchy%fine_state, &
+                hierarchy%fine_temperature,[dx,dy,dz]/real(patch%refinement_ratio,dp), &
+                fine_faces,config%wall_temperature,config%transport_cfl,fine_wall_dt,ok)
+              local_wall_dt=min(local_wall_dt,real(patch%refinement_ratio,dp)**2*fine_wall_dt)
+            end if
+          end if
+          call collective_require(ok,'Invalid MPI fine AMR wall thermal timestep',4)
           call MPI_Allreduce(local_wall_dt,wall_dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
           call collective_require(ierr==MPI_SUCCESS,'Failed to reduce AMR wall timestep',4)
           dt=min(dt,.5_dp*transport_dt,.5_dp*inlet_transport_dt,wall_dt)

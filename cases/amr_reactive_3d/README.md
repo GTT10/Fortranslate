@@ -175,8 +175,8 @@ mpiexec -n 4 ./pelef_mpi_amr_reactive_3d ../cases/amr_reactive_3d/physical_wall.
 Physical runs report `Conserved boundary change:` in conserved-variable order,
 positive into the composite hierarchy. Conservation diagnostics subtract this
 cumulative surface transfer. Inlet wave speeds, inlet diffusion and isothermal
-wall heat transfer also constrain the timestep. Fine patches remain strictly
-interior, including after temperature-tagged movement/resizing.
+wall heat transfer also constrain the timestep. Static fine patches may touch
+physical faces. MPI temperature-tagged movement/resizing retains interior patches.
 
 Checkpoint schemas 10–13 (static) and 14–17 (dynamic) extend the existing schema
 with a boundary-settings signature and cumulative transfer. Restart rejects
@@ -206,9 +206,9 @@ nonreacting and selected layouts remain unchanged. Reads commit only after all
 context, state and geometry checks pass, including the physical boundary ledger.
 See [focused restart evidence](../../docs/validation/amr-fixed-chemistry-restart-20260917.md).
 
-## Boundary-touching static patches (serial)
+## Boundary-touching static patches
 
-The serial fixed and selected AMR frontends also accept fine patches that reach
+The serial and sparse MPI fixed/selected AMR frontends accept fine patches that reach
 physical domain faces. For example:
 
 ```sh
@@ -220,11 +220,15 @@ wall heat/work fluxes enter the composite boundary ledger; wall thermal timestep
 limits account for both coarse and fine states. Checkpoint/restart retains the
 physical patch geometry and boundary/chemistry context with the existing static
 schemas. Periodic seams remain unsupported. Boundary-touching dynamic regridding is
-available in serial with the explicit setting below. MPI frontends currently
-retain strictly interior patches.
+available in serial with the explicit setting below. MPI currently accepts
+static boundary-touching geometry; its physical-boundary regridding option
+is rejected before initialization.
 
 [Application restart evidence](../../docs/validation/amr-boundary-touching-app-20260917.md)
 covers a full-H2/O2 reacting wall case and an elementary reacting corner case.
+The [MPI restart check](../../docs/validation/amr-mpi-boundary-touching-app-20260917.md)
+compares four-to-two-rank restart with serial output for these cases.
+Use `mpiexec -n 4 ./pelef_mpi_amr_reactive_3d` with the same static input.
 The selected frontend shares this implementation; it has not been independently
 qualified for boundary-touching application inputs in that check.
 
