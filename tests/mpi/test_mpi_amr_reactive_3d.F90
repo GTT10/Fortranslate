@@ -711,7 +711,7 @@ contains
     real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
     real(dp), allocatable :: gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:),inlet(:,:),it(:),budget(:),expected(:)
     real(dp), allocatable :: before(:),after(:)
-    real(dp) :: r,rr,e0(3),e1(3),eb(3)
+    real(dp) :: r,rr,e0(3),e1(3),eb(3),tw(6),wv(3,6),th,thr
     character(len=32) :: faces(6),method
     integer :: i,j,k,mode,nv
     call initialize_amr_patch_3d(n,n,n,2,3,2,3,2,3,ratio,wall_patch,ok)
@@ -732,11 +732,21 @@ contains
     faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
     call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
     call require(ok,'physical hierarchy initial inventory')
-    do mode=1,4
+    tw=600;tw(2)=900;wv=0;wv(2,1)=20;wv(3,2)=-10
+    do mode=1,6
       method='pcm'
       if (modulo(mode,2)==0) method='characteristic_plm'
+      if (mode>=5) faces(1:2)="isothermal_wall"
       c=c0;ct=ct0;f=f0;ft=ft0
-      if (mode>2) then
+      if (mode==5) then
+        call advance_amr_reactive_transport_3d(species,transport,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+          .true.,.true.,.true.,.true.,'mc',thr,rr,ok,faces,expected,inlet,it,tw,wv)
+      else if (mode==6) then
+        call advance_amr_reactive_full_3d(species,reactions,transport,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,thr,rr,ok,method,'mc', &
+          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it, &
+          wall_temperature=tw,wall_velocity=wv)
+      else if (mode>2) then
         call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,rr,ok,method,'mc', &
           boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it)
@@ -748,7 +758,15 @@ contains
       call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,wall_patch,0,c0,ct0,f0,ft0,h,ok)
       call require(ok,'physical hierarchy scatter')
       saved=h
-      if (mode>2) then
+      if (mode==5) then
+        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
+      else if (mode==6) then
+        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
+          wall_temperature=tw,wall_velocity=wv)
+      else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
@@ -766,7 +784,7 @@ contains
           'physical hierarchy state temperature and reflux exactly match serial')
         call composite_integrals_amr_3d(gc,gf,wall_patch,dx,dy,dz,after,ok)
         call require(ok,'physical hierarchy final inventory')
-        if (mode>2) then
+        if (mode==3.or.mode==4.or.mode==6) then
           call require(all(abs(after(1:5)-before(1:5)-budget(1:5))<=2e-11_dp*max(1.0_dp,abs(before(1:5)))), &
             'physical reacting hierarchy Euler balance')
           call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
@@ -785,7 +803,15 @@ contains
       end if
       h=saved
       if (dist%rank==dist%nranks-1) inlet(1,3)=-1
-      if (mode>2) then
+      if (mode==5) then
+        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
+      else if (mode==6) then
+        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
+          wall_temperature=tw,wall_velocity=wv)
+      else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
@@ -796,6 +822,7 @@ contains
       call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
         'physical hierarchy failure restores both levels and diagnostics')
       inlet(1,3)=c0(1,1,1,1)
+      if (mode>=5) call require(th==1,"physical transport rollback limiter diagnostic")
     end do
   end subroutine check_physical_hierarchy
 

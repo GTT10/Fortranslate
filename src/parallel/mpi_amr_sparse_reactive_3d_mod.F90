@@ -26,7 +26,7 @@ module mpi_amr_sparse_reactive_3d_mod
     compute_reactive_plm_face_fluxes_3d, &
     advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: &
-    reactive_transport_ghosted_fluxes_3d, &
+    reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d, &
     reactive_transport_interface_theta_3d, reactive_transport_timestep_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d
   implicit none
@@ -268,7 +268,8 @@ contains
       distribution, species, transport, patch, hierarchy, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
-      minimum_theta, maximum_reflux_correction, ok)
+      minimum_theta, maximum_reflux_correction, ok, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -281,6 +282,10 @@ contains
     real(dp), intent(out) :: minimum_theta, maximum_reflux_correction
     logical, intent(out) :: ok
 
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp) :: budget_one(reactive_nvar(size(species))),budget_two(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: stage, euler, candidate
     real(dp), allocatable :: recovered_temperature(:, :, :)
     real(dp) :: theta_one, theta_two, reflux_one, reflux_two
@@ -289,6 +294,7 @@ contains
     minimum_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
     ok = .false.
+    if (present(boundary_change)) boundary_change=0
     local_ok = all(ieee_is_finite([dx, dy, dz, interval]))
     if (local_ok) local_ok = dx > 0.0_dp .and. dy > 0.0_dp .and. &
       dz > 0.0_dp .and. interval >= 0.0_dp
@@ -299,6 +305,7 @@ contains
       species_diffusion_enabled
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
+    if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(budget_one)
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, interval, &
@@ -306,7 +313,7 @@ contains
         merge(1.0_dp, 0.0_dp, thermal_conduction_enabled), &
         merge(1.0_dp, 0.0_dp, species_diffusion_enabled), &
         merge(1.0_dp, 0.0_dp, barodiffusion_enabled)], &
-      "transport|" // trim(limiter), local_ok, global_ok)
+      "transport|" // trim(limiter)//merge("|physical","|periodic",present(boundary_faces)), local_ok, global_ok)
     if (.not. global_ok) return
     call sparse_collective_transport_matches_3d( &
       distribution, transport, .true., global_ok)
@@ -321,13 +328,15 @@ contains
       distribution, species, transport, patch, hierarchy, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, stage, &
-      theta_one, reflux_one, local_ok)
+      theta_one, reflux_one, local_ok, &
+      boundary_faces,budget_one,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
     call advance_mpi_amr_sparse_transport_euler_3d( &
       distribution, species, transport, patch, stage, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, euler, &
-      theta_two, reflux_two, local_ok)
+      theta_two, reflux_two, local_ok, &
+      boundary_faces,budget_two,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
 
     candidate = hierarchy
@@ -370,6 +379,7 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
 
+    if (present(boundary_change)) boundary_change=.5_dp*(budget_one+budget_two)
     hierarchy = candidate
     minimum_theta = min(theta_one, theta_two)
     maximum_reflux_correction = max(reflux_one, reflux_two)
@@ -382,7 +392,8 @@ contains
       chemistry_enabled, rtol, atol, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, minimum_transport_theta, &
-      maximum_reflux_correction, ok, chemistry_integrator)
+      maximum_reflux_correction, ok, chemistry_integrator, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -399,6 +410,10 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: chemistry_integrator
 
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp) :: stage_budget(reactive_nvar(size(species))),total_budget(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
     real(dp) :: stage_theta, stage_reflux, hydro_reflux
     real(dp) :: candidate_theta, candidate_reflux
@@ -408,7 +423,8 @@ contains
 
     minimum_transport_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
-    ok = .false.
+    ok = .false.;total_budget=0
+    if (present(boundary_change)) boundary_change=0
     candidate_theta = 1.0_dp
     candidate_reflux = 0.0_dp
     integrator_name = "disabled"
@@ -440,6 +456,7 @@ contains
       if (local_ok) local_ok = .not. barodiffusion_enabled .or. &
         species_diffusion_enabled
     end if
+    if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(total_budget)
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, dt, contract_rtol, contract_atol, &
@@ -450,14 +467,15 @@ contains
         merge(1.0_dp, 0.0_dp, species_diffusion_enabled), &
         merge(1.0_dp, 0.0_dp, barodiffusion_enabled)], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
-        trim(limiter) // "|" // trim(integrator_name), &
+        trim(limiter) // "|" // trim(integrator_name)//merge("|physical","|periodic",present(boundary_faces)), &
       local_ok, global_ok)
     if (.not. global_ok) return
     if (.not. transport_enabled) then
       call advance_mpi_amr_sparse_strang_3d( &
         distribution, species, reactions, patch, hierarchy, dx, dy, dz, &
         dt, riemann_solver, reconstruction, limiter, chemistry_enabled, &
-        rtol, atol, candidate_reflux, ok, chemistry_integrator)
+        rtol, atol, candidate_reflux, ok, chemistry_integrator, &
+        boundary_faces,boundary_change,inflow_state,inflow_temperature)
       if (ok) maximum_reflux_correction = candidate_reflux
       return
     end if
@@ -476,21 +494,27 @@ contains
       distribution, species, transport, patch, candidate, dx, dy, dz, &
       0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
-      stage_theta, stage_reflux, local_ok)
+      stage_theta, stage_reflux, local_ok, &
+      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
+    total_budget=total_budget+stage_budget
     candidate_theta = min(candidate_theta, stage_theta)
     candidate_reflux = max(candidate_reflux, stage_reflux)
     call advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, candidate, dx, dy, dz, dt, &
-      riemann_solver, reconstruction, limiter, hydro_reflux, local_ok)
+      riemann_solver, reconstruction, limiter, hydro_reflux, local_ok, &
+      boundary_faces,stage_budget,inflow_state,inflow_temperature)
     if (.not. local_ok) return
+    total_budget=total_budget+stage_budget
     candidate_reflux = max(candidate_reflux, hydro_reflux)
     call advance_mpi_amr_sparse_transport_3d( &
       distribution, species, transport, patch, candidate, dx, dy, dz, &
       0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
-      stage_theta, stage_reflux, local_ok)
+      stage_theta, stage_reflux, local_ok, &
+      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     if (.not. local_ok) return
+    total_budget=total_budget+stage_budget
     candidate_theta = min(candidate_theta, stage_theta)
     candidate_reflux = max(candidate_reflux, stage_reflux)
     if (chemistry_enabled) then
@@ -500,6 +524,7 @@ contains
       if (.not. local_ok) return
     end if
 
+    if (present(boundary_change)) boundary_change=total_budget
     hierarchy = candidate
     minimum_transport_theta = candidate_theta
     maximum_reflux_correction = candidate_reflux
@@ -510,7 +535,8 @@ contains
       distribution, species, transport, patch, hierarchy, dx, dy, dz, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
-      new_hierarchy, minimum_theta, maximum_reflux_correction, ok)
+      new_hierarchy, minimum_theta, maximum_reflux_correction, ok, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -544,6 +570,11 @@ contains
     real(dp), allocatable :: boundary_y_upper(:, :, :)
     real(dp), allocatable :: boundary_z_lower(:, :, :)
     real(dp), allocatable :: boundary_z_upper(:, :, :)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), allocatable :: full_y(:,:,:,:),full_z(:,:,:,:)
+    real(dp) :: candidate_budget(reactive_nvar(size(species)))
     real(dp) :: alpha, fine_dt, ratio_real
     real(dp) :: coarse_theta, fine_theta, local_reflux, global_reflux
     real(dp) :: interface_theta
@@ -555,8 +586,27 @@ contains
     new_hierarchy = hierarchy
     minimum_theta = 1.0_dp
     maximum_reflux_correction = 0.0_dp
-    ok = .false.
+    ok = .false.;candidate_budget=0
+    if (present(boundary_change)) boundary_change=0
 
+    if (present(boundary_faces)) then
+      call compute_sparse_boundary_transport_fluxes_3d(distribution,species,transport,patch, &
+        hierarchy%coarse_state,hierarchy%coarse_temperature,[dx,dy,dz],dt,boundary_faces, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
+        coarse_flux_x,full_y,full_z,coarse_theta,candidate_budget,local_ok, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      if (.not.local_ok) return
+      coarse_flux_y=full_y(:,:,1:,:);coarse_flux_z=full_z(:,:,:,1:)
+      do k=1,patch%coarse_nz
+        do j=1,patch%coarse_ny
+          do i=1,distribution%coarse_count
+            new_hierarchy%coarse_state(:,i,j,k)=hierarchy%coarse_state(:,i,j,k) &
+              -dt/dx*(coarse_flux_x(:,i,j,k)-coarse_flux_x(:,i-1,j,k)) &
+              -dt/dy*(full_y(:,i,j,k)-full_y(:,i,j-1,k))-dt/dz*(full_z(:,i,j,k)-full_z(:,i,j,k-1))
+          end do
+        end do
+      end do
+    else
     call compute_sparse_periodic_transport_fluxes_3d( &
       distribution, species, transport, patch, hierarchy%coarse_state, &
       hierarchy%coarse_temperature, dx, dy, dz, dt, viscosity_enabled, &
@@ -580,6 +630,7 @@ contains
         end do
       end do
     end do
+    end if
     allocate(recovered_temperature, mold=new_hierarchy%coarse_temperature)
     call recover_reactive_temperatures_3d( &
       species, new_hierarchy%coarse_state, hierarchy%coarse_temperature, &
@@ -591,6 +642,16 @@ contains
     if (.not. global_ok) return
     deallocate(recovered_temperature)
 
+    if (present(boundary_faces)) then
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,hierarchy%coarse_state,hierarchy%coarse_temperature, &
+        boundary_faces,coarse_start_halo,coarse_start_halo_temperature,local_ok, &
+        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+      if (.not.local_ok) return
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,new_hierarchy%coarse_state,new_hierarchy%coarse_temperature, &
+        boundary_faces,coarse_end_halo,coarse_end_halo_temperature,local_ok, &
+        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+      if (.not.local_ok) return
+    else
     call build_mpi_amr_sparse_periodic_halos_3d( &
       distribution, hierarchy%coarse_state, hierarchy%coarse_temperature, &
       coarse_start_halo, coarse_start_halo_temperature, local_ok)
@@ -601,6 +662,7 @@ contains
       coarse_end_halo_temperature, local_ok)
     if (.not. local_ok) return
 
+    end if
     ratio = patch%refinement_ratio
     ratio_real = real(ratio, dp)
     subcycles = ratio * ratio
@@ -774,6 +836,7 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
 
+    if (present(boundary_change)) boundary_change=candidate_budget
     maximum_reflux_correction = global_reflux
     ok = .true.
   end subroutine advance_mpi_amr_sparse_transport_euler_3d
@@ -1123,6 +1186,83 @@ contains
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, ok)
   end subroutine limit_sparse_fine_transport_interfaces_3d
+
+  subroutine compute_sparse_boundary_transport_fluxes_3d(distribution,species,transport,patch,u,t,spacing,dt,faces, &
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,budget,ok, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+    type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_patch_3d), intent(in) :: patch
+    real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), allocatable, intent(out) :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp), intent(out) :: theta,budget(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    real(dp) :: wall_data(7),reference(7),local_theta,local_budget(size(budget)),velocity(3,6)
+    character(len=32) :: local_faces(6)
+    integer :: n(3),nv,i,j,k,ierr
+    logical :: local_ok,global_ok
+    ok=.false.;theta=1;budget=0;wall_data=0
+    local_ok=.true.
+    if (present(wall_temperature)) then
+      local_ok=size(wall_temperature)==6
+      if (local_ok) then
+        wall_data(1:6)=wall_temperature;wall_data(7)=1
+        local_ok=all(ieee_is_finite(wall_temperature))
+      end if
+    end if
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    reference=wall_data
+    call MPI_Bcast(reference,7,MPI_DOUBLE_PRECISION,0,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call sparse_collective_logical_and_3d(distribution%comm,all(wall_data==reference),global_ok)
+    if (.not.global_ok) return
+    call build_mpi_amr_sparse_boundary_halos_3d(distribution,u,t,faces,ghost,gt,local_ok, &
+      viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+    if (.not.local_ok) return
+    n=shape(t);nv=size(u,1)
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    local_faces=faces;velocity=0
+    if (present(wall_velocity)) velocity=wall_velocity
+    if (distribution%coarse_first/=1) then
+      local_faces(1)='outflow';velocity(:,1)=0
+    end if
+    if (distribution%coarse_last/=patch%coarse_nx) then
+      local_faces(2)='outflow';velocity(:,2)=0
+    end if
+    call physical_transport_ghosted_fluxes_3d(species,transport,u,t,ghost,gt,n,spacing,dt,local_faces, &
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,local_ok,wall_temperature,velocity)
+    call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+    if (.not.global_ok) return
+    local_budget=0
+    do k=1,n(3)
+      do j=1,n(2)
+        if (distribution%coarse_first==1) local_budget=local_budget+dt*spacing(2)*spacing(3)*fx(:,0,j,k)
+        if (distribution%coarse_last==patch%coarse_nx) &
+          local_budget=local_budget-dt*spacing(2)*spacing(3)*fx(:,n(1),j,k)
+      end do
+    end do
+    do k=1,n(3)
+      do i=1,n(1)
+        local_budget=local_budget+dt*spacing(1)*spacing(3)*(fy(:,i,0,k)-fy(:,i,n(2),k))
+      end do
+    end do
+    do j=1,n(2)
+      do i=1,n(1)
+        local_budget=local_budget+dt*spacing(1)*spacing(2)*(fz(:,i,j,0)-fz(:,i,j,n(3)))
+      end do
+    end do
+    call MPI_Allreduce(local_budget,budget,nv,MPI_DOUBLE_PRECISION,MPI_SUM,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(local_theta,theta,1,MPI_DOUBLE_PRECISION,MPI_MIN,distribution%comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    ok=all(ieee_is_finite(budget))
+  end subroutine compute_sparse_boundary_transport_fluxes_3d
 
   subroutine compute_sparse_periodic_transport_fluxes_3d( &
       distribution, species, transport, patch, state, temperature, &

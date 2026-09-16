@@ -24,8 +24,10 @@ one coarse column per rank, with serial equality and collective rollback checks
 [coarse hydro](validation/amr-mpi-boundary-hydro-20260917.md),
 [hierarchy](validation/amr-mpi-physical-hierarchy-20260917.md)). The
 [reaction/hydro split](validation/amr-mpi-physical-reaction-20260917.md) also forwards
-physical boundary data and budgets. Physical transport, full transport splitting
-and MPI application activation remain open.
+physical boundary data and budgets. Physical molecular transport and the full
+reaction/transport/hydro split are also connected
+([evidence](validation/amr-mpi-physical-transport-20260917.md)). MPI application
+activation and boundary-aware timestep/restart wiring remain open.
 
 Ahamed wall-impact classification, splash velocities and azimuthal mass
 fractions, four-child construction and deposited cylindrical film patches are

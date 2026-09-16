@@ -1938,10 +1938,10 @@ contains
     logical, intent(out) :: ok
     real(dp), allocatable :: gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
     real(dp) :: heat,rate,speed(3)
-    integer :: dims(3),face,a,i,j,k,idx(3)
+    integer :: dims(3),face,a,i,j,k,idx(3),wall_index
     ok=.false.;theta=1
     dims=n+4
-    if (any(n<2).or.any(shape(u)/=[size(species)+5,n]).or.any(shape(t)/=n)) return
+    if (any(n<1).or.any(shape(u)/=[size(species)+5,n]).or.any(shape(t)/=n)) return
     if (any(shape(ghost)/=[size(species)+5,dims]).or.any(shape(gt)/=dims)) return
     if (any(shape(fx)/=[size(species)+5,n(1)+1,n(2),n(3)])) return
     if (any(shape(fy)/=[size(species)+5,n(1),n(2)+1,n(3)])) return
@@ -1968,11 +1968,11 @@ contains
         do j=1,n(2)
           do i=1,n(1)
             idx=[i,j,k]
-            do a=1,3
-              face=0
-              if (idx(a)==1) face=2*a-1
-              if (idx(a)==n(a)) face=2*a
-              if (face==0) cycle
+            do face=1,6
+              a=(face+1)/2
+              if (modulo(face,2)==1.and.idx(a)/=1) cycle
+              if (modulo(face,2)==0.and.idx(a)/=n(a)) cycle
+              wall_index=merge(0,n(a),modulo(face,2)==1)
               if (faces(face)/='isothermal_wall'.and.faces(face)/='no_slip_wall') cycle
               heat=0.0_dp
               if (faces(face)=='isothermal_wall') then
@@ -1985,11 +1985,11 @@ contains
               if (present(wall_velocity)) speed=wall_velocity(:,face)
               select case(a)
               case(1)
-                fx(5,merge(0,n(1),i==1),j,k)=heat+dot_product(speed,fx(2:4,merge(0,n(1),i==1),j,k))
+                fx(5,wall_index,j,k)=heat+dot_product(speed,fx(2:4,wall_index,j,k))
               case(2)
-                fy(5,i,merge(0,n(2),j==1),k)=heat+dot_product(speed,fy(2:4,i,merge(0,n(2),j==1),k))
+                fy(5,i,wall_index,k)=heat+dot_product(speed,fy(2:4,i,wall_index,k))
               case(3)
-                fz(5,i,j,merge(0,n(3),k==1))=heat+dot_product(speed,fz(2:4,i,j,merge(0,n(3),k==1)))
+                fz(5,i,j,wall_index)=heat+dot_product(speed,fz(2:4,i,j,wall_index))
               end select
             end do
           end do
