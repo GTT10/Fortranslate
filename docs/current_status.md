@@ -40,9 +40,10 @@ Cell chemistry now runs on exposed tree cells, with bottom-up restriction and
 transactional reaction/hydro Strang splitting
 ([evidence](validation/amr-tree-chemistry-20260917.md)). Synchronous molecular
 transport now includes viscous/thermal/species fluxes, nested reflux and physical
-wall budgets ([evidence](validation/amr-tree-transport-20260917.md)). Combined
-reaction/transport/hydro driver integration, dynamic remapping, MPI ownership
-and application/restart integration remain open.
+wall budgets ([evidence](validation/amr-tree-transport-20260917.md)). A combined
+R/2-T/2-H-T/2-R/2 update now aggregates those boundary budgets transactionally
+([evidence](validation/amr-tree-split-20260917.md)). Dynamic remapping, MPI
+ownership and application/restart integration remain open.
 
 Sparse MPI AMR has physical ghost layers and two-level PCM/PLM hydro supporting
 one coarse column per rank, with serial equality and collective rollback checks

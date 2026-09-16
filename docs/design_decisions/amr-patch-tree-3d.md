@@ -165,10 +165,25 @@ and wall temperatures also include isothermal-wall bounds on touched faces.
 Callers must supply those options for isothermal walls and enforce the resulting
 bound themselves. This remains a common timestep, not ratio-squared subcycling.
 
+## Combined split update
+
+`advance_amr_patch_tree_split_3d` composes R/2-T/2-H-T/2-R/2 using the tree
+chemistry, transport and hydro APIs. Boolean switches skip chemistry or each
+transport process; disabling all transport skips both transport stages.
+Disabled operators do not require usable reaction/transport data. Barodiffusion
+without species diffusion is rejected. Transport wall options are forwarded to
+both half steps, while hydro uses Euler boundary conventions.
+
+The boundary ledger sums both transport half-step ledgers and the hydro ledger.
+Maximum reflux correction is the maximum of the three flow phases; minimum
+species-flux theta is the minimum over the transport phases (one when disabled).
+State, temperature and diagnostics commit only after the last reaction phase.
+The caller still chooses a common timestep using the hydro, diffusion and wall
+bounds and is responsible for retry after rejection.
+
 ## Remaining integration
 
-PLM coarse/fine interpolation, subcycle scheduling,
-combined reaction/transport/hydro driver integration, dynamic remapping,
+PLM coarse/fine interpolation, subcycle scheduling, dynamic remapping,
 MPI decomposition, checkpoint/restart and application input/output must be
 connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
