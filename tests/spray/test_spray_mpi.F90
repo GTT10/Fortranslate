@@ -254,6 +254,7 @@ program test_spray_mpi
   call check_film_coupling()
   call check_wall_impacts()
   call check_wall_crossing()
+  call check_coupled_impact()
   call check_particle_boundaries()
   ! Existing injected parcels include an empty rank and move to their spatial owners.
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
@@ -714,6 +715,73 @@ contains
       'hllc','mc',ok,boundaries,change,inlet,inlet_t)
     call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
       'MPI physical hydro face disagreement rolls back')
+  end subroutine
+
+  subroutine check_coupled_impact()
+    type(spray_parcel), allocatable :: drops(:),original(:)
+    type(spray_wall_film), allocatable :: films(:)
+    type(spray_options) :: settings
+    type(spray_wall_options) :: walls
+    real(dp), allocatable :: cm(:,:),fm(:,:),gas(:,:,:,:),temp(:,:,:)
+    real(dp) :: local(15),initial(15),final(15),ledger(15),scale(15)
+    character(len=32) :: boundary(6)
+    integer :: np,nstep
+    integer(int64) :: mark
+    np=merge(1,0,rank<nranks-1);allocate(drops(np),cm(2,np),films(0),fm(2,0));mark=int(nranks,int64)
+    if (np>0) then
+      drops(1)=spray_parcel(int(rank+1,int64),[real(cells(1),dp)-.00025_dp,.25_dp,.001_dp], &
+        [1.0_dp,0.0_dp,-1.0_dp],1e-9_dp,330.0_dp,100.0_dp)
+      cm(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+    end if
+    original=drops;gas=field;temp=temperature
+    settings%drag=.false.;settings%heat=.false.;settings%evaporation=.false.
+    settings%surface_tension=.072_dp;settings%liquid_viscosity=.001_dp;settings%maximum_substeps=1
+    boundary='periodic';boundary(5:6)='slip_wall';walls%enabled(5)=.true.
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],.5_dp,nstep,ok,mark, &
+      boundary,ledger,films,fm,walls)
+    call require(.not.ok.and.nstep==0.and.size(films)==0.and.mark==nranks.and.all(ledger==0), &
+      'coupled impact exhaustion rolls back films IDs and ledger')
+    call require(all(gas==field).and.all(temp==temperature).and.all(drops%mass==original%mass), &
+      'coupled impact exhaustion rolls back gas and parent mass')
+    if (np>0) call require(all(drops(1)%position==original(1)%position).and. &
+      all(cm(:,1)==1e-9_dp*[.25_dp,.75_dp]),'coupled impact exhaustion restores parent position/composition')
+    settings%maximum_substeps=100
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local,ok,films,fm)
+    call require(ok,'coupled impact initial inventory')
+    call MPI_Allreduce(local,initial,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],.002_dp,nstep,ok,mark, &
+      boundary,ledger,films,fm,walls)
+    call require(ok.and.nstep==1.and.size(drops)==0.and.mark==nranks,'coupled deposition consumes parents without new IDs')
+    call require(size(films)==merge(nranks-1,0,rank==0),'new films migrate to spatial owner')
+    call require(all(abs(fm(1,:)-.25e-7_dp)<1e-20_dp).and.all(abs(fm(2,:)-.75e-7_dp)<1e-20_dp), &
+      'deposited film inherits whole-parcel component inventories')
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local,ok,films,fm)
+    call require(ok,'coupled impact final inventory')
+    call MPI_Allreduce(local,final,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(final-initial-ledger)<2e-12_dp*max(1e-12_dp,abs(initial))), &
+      'coupled gas particle film inventory includes wall exchange exactly once')
+    drops=original;deallocate(cm,films,fm);allocate(cm(2,np),films(0),fm(2,0));gas=field;temp=temperature
+    mark=int(nranks,int64)
+    if (np>0) then
+      drops(1)%position(1)=.25_dp;drops(1)%velocity(3)=-40;cm(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+    end if
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local,ok,films,fm)
+    call require(ok,'coupled splash initial inventory')
+    call MPI_Allreduce(local,initial,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,settings,gas,temp,drops,cm, &
+      [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-4_dp,nstep,ok,mark, &
+      boundary,ledger,films,fm,walls)
+    call require(ok.and.mark==nranks+4*(nranks-1),'coupled splash reserves global child IDs')
+    call require(size(drops)==merge(4*(nranks-1),0,rank==0),'splash children migrate to owner')
+    call require(all(drops%parent_id>=1).and.all(drops%parent_id<nranks),'splash lineage survives migration')
+    call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local,ok,films,fm)
+    call require(ok,'coupled splash final inventory')
+    call MPI_Allreduce(local,final,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    scale=max(1e-12_dp,abs(initial));scale(2:4)=max(1e-12_dp,norm2(initial(2:4)))
+    call require(all(abs(final-initial-ledger)<2e-12_dp*scale), &
+      'coupled splash gas particle film and wall budgets close')
   end subroutine
 
   subroutine check_particle_boundaries()

@@ -190,6 +190,7 @@ contains
           f=2*a;boundary=upper(a)
         end if
         if (f==0.or.delta(a)==0) cycle
+        if (faces(f)=='periodic') cycle
         fraction=(boundary-previous(a,p))/delta(a)
         if (fraction<earliest) then
           earliest=fraction;face=f
@@ -201,6 +202,9 @@ contains
       a=(face+1)/2;location(:,ne)=previous(:,p)+earliest*delta;normal(:,ne)=0
       location(a,ne)=merge(lower(a),upper(a),modulo(face,2)==1)
       normal(a,ne)=merge(1.0_dp,-1.0_dp,modulo(face,2)==1)
+      do a=1,3
+        if (faces(2*a)=='periodic') location(a,ne)=lower(a)+modulo(location(a,ne)-lower(a),upper(a)-lower(a))
+      end do
     end do
     allocate(data(6,ne),diameters(ne));data=0;sigma=properties%surface_tension
     do n=1,ne
@@ -1243,8 +1247,14 @@ contains
       if (.not.valid) return
       ledger=ledger+stage_change
     end if
-    call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change)
+    if (present(wall_films)) then
+      call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+        lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change, &
+        patches,patch_mass,film_settings)
+    else
+      call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+        lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change)
+    end if
     if (.not.valid) return
     if (allocated(stage_change)) ledger=ledger+stage_change
     chemistry_interval=interval
@@ -1289,8 +1299,14 @@ contains
       if (ierr/=MPI_SUCCESS) return
       if (.not.agreed) return
     end if
-    call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-      lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change)
+    if (present(wall_films)) then
+      call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+        lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change, &
+        patches,patch_mass,film_settings)
+    else
+      call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
+        lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change)
+    end if
     if (.not.valid) return
     if (allocated(stage_change)) ledger=ledger+stage_change
     if (present(wall_films)) then
@@ -1416,7 +1432,8 @@ contains
   end subroutine
 
   subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &
-      parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok,last_id,boundary_faces,boundary_change)
+      parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
+      wall_films,film_mass,film_settings)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1431,6 +1448,13 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    type(spray_wall_film), allocatable :: patches(:),trial_patches(:)
+    real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
+    logical, allocatable :: hit(:)
+    real(dp) :: impact_wall(5),wall_ledger(5),mw(size(components))
     real(dp) :: ledger(size(state,1)),trial_ledger(size(state,1)),global_ledger(size(state,1)),exchange(5)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64) :: accepted_id,trial_id
@@ -1448,7 +1472,7 @@ contains
     integer :: p,n,np,nvar,nc,ierr,attempt,count_steps,kept,min_nc,max_nc
     logical :: valid,agreed,accepted
     character(len=32) :: faces(6)
-    faces='periodic';ledger=0
+    faces='periodic';ledger=0;wall_ledger=0
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
     ok=.false.;substeps=0
@@ -1459,9 +1483,11 @@ contains
     valid=valid.and.size(components)>=1.and.size(components)<=16
     valid=valid.and.valid_spray_boundary_faces(faces)
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
+    valid=valid.and.(present(wall_films).eqv.present(film_mass)).and.(present(wall_films).eqv.present(film_settings))
+    if (present(wall_films)) valid=valid.and.present(boundary_faces).and.present(last_id)
     call agree()
     if (.not.agreed) return
-    child_flag=merge(1,0,options%khrt_children)+2*merge(1,0,present(boundary_faces))
+    child_flag=merge(1,0,options%khrt_children)+2*merge(1,0,present(boundary_faces))+4*merge(1,0,present(wall_films))
     call MPI_Allreduce(child_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(child_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
@@ -1492,6 +1518,17 @@ contains
     call agree()
     if (.not.agreed) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    if (present(wall_films)) then
+      valid=allocated(wall_films).and.allocated(film_mass)
+      call agree()
+      if (.not.agreed) return
+      patches=wall_films;patch_mass=film_mass
+      do n=1,nc
+        mw(n)=species(components(n)%vapor_index)%molecular_weight
+      end do
+      call migrate_mpi_wall_films(comm,patches,patch_mass,lower,spacing,cells,parts,film_settings%maximum_films,valid)
+      if (.not.valid) return
+    end if
     allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np))
     do p=1,np
       positions(:,p)=drops(p)%position
@@ -1587,6 +1624,18 @@ contains
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
         end if
+        impact_wall=0
+        if (agreed.and.present(wall_films)) then
+          trial_patches=patches;trial_patch_mass=patch_mass
+          call prepare_impacts()
+          call agree()
+          if (agreed) then
+            call impact_mpi_planar_walls(comm,components,options,film_settings,faces,mw,impact_pressure,impact_previous, &
+              lower,lower+length,trial,next_mass,trial_patches,trial_patch_mass,trial_id,hit,impact_wall,valid)
+            if (valid) valid=size(trial)<=125000
+            call agree()
+          end if
+        end if
         if (agreed.and.present(boundary_faces)) then
           call apply_boundaries()
           call agree()
@@ -1603,6 +1652,16 @@ contains
       if (.not.accepted) return
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
       ledger=ledger+trial_ledger
+      if (present(wall_films)) then
+        patches=trial_patches;patch_mass=trial_patch_mass;wall_ledger=wall_ledger+impact_wall
+        kept=count(drops%mass>0);survivors=pack(drops,drops%mass>0)
+        allocate(kept_mass(nc,kept));kept=0
+        do p=1,size(drops)
+          if (drops(p)%mass<=0) cycle
+          kept=kept+1;kept_mass(:,kept)=masses(:,p)
+        end do
+        call move_alloc(survivors,drops);call move_alloc(kept_mass,masses)
+      end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
     np=size(drops)
@@ -1615,15 +1674,50 @@ contains
       [faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic'], &
       options%maximum_parcels,valid,kept_mass)
     if (.not.valid) return
+    if (present(wall_films)) then
+      call migrate_mpi_wall_films(comm,patches,patch_mass,lower,spacing,cells,parts,film_settings%maximum_films,valid)
+      if (.not.valid) return
+    end if
     call MPI_Allreduce(ledger,global_ledger,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
+    global_ledger(:5)=global_ledger(:5)-wall_ledger
     if (.not.all(ieee_is_finite(global_ledger))) return
     if (present(boundary_change)) boundary_change=global_ledger
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
     if (present(last_id)) last_id=accepted_id
+    if (present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     substeps=count_steps;ok=.true.
   contains
+    subroutine prepare_impacts()
+      integer :: q,parent,lo,hi,mid
+      if (allocated(impact_previous)) deallocate(impact_previous,impact_pressure)
+      allocate(impact_previous(3,size(trial)),impact_pressure(size(trial)))
+      valid=.true.
+      do q=1,size(trial)
+        parent=q
+        if (q>np) then
+          lo=1;hi=np;parent=0
+          do while(lo<=hi)
+            mid=lo+(hi-lo)/2
+            if (drops(mid)%id==trial(q)%parent_id) then
+              parent=mid;exit
+            else if (drops(mid)%id<trial(q)%parent_id) then
+              lo=mid+1
+            else
+              hi=mid-1
+            end if
+          end do
+          if (parent==0) then
+            valid=.false.;return
+          end if
+        end if
+        impact_previous(:,q)=positions(:,parent);impact_pressure(q)=1
+        if (drops(parent)%mass>0) impact_pressure(q)=primitive(5,parent)
+      end do
+    end subroutine
     subroutine apply_boundaries()
       integer :: q,c
       valid=.true.

@@ -137,7 +137,9 @@ returns a global surface ledger ([evidence](validation/spray-mpi-boundary-les-20
 The MPI particle-coupling API now supports open-face removal, stationary wall
 reflection and nonperiodic owner migration with a replicated boundary ledger
 ([evidence](validation/spray-mpi-particle-boundary-20260917.md)). Mixed wall-impact/film
-creation in the coupled driver remains open.
+creation now participates in the coupled driver transaction
+([evidence](validation/spray-mpi-impact-coupled-20260917.md)); application controls
+and physical qualification remain open.
 Physical boundary data now pass through the complete MPI particle/chemistry/
 transport/SGS/hydro split, with a summed boundary ledger and whole-step rollback
 ([evidence](validation/spray-mpi-boundary-split-20260917.md)). Application inputs now
