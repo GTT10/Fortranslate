@@ -12,8 +12,8 @@ module spray_mpi_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
-    advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction
-  use spray_breakup_mod, only: split_spray_parcels
+    advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
+  use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces
   use spray_partition_mod
   implicit none
@@ -365,6 +365,9 @@ contains
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
+    type(spray_liquid) :: effective
+    type(spray_film) :: film
+    real(dp) :: old_mass
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: masses(:,:),next_mass(:,:),kept_mass(:,:),positions(:,:),field(:,:,:,:),samples(:,:)
     real(dp), allocatable :: primitive(:,:),tg(:),change(:,:)
@@ -377,8 +380,8 @@ contains
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
-    ! Wall events and breakup require their own distributed candidate inventories.
-    valid=valid.and.options%breakup_model=='none'.and..not.options%khrt_children
+    ! Child shedding needs collective ID reservation; representative breakup does not.
+    valid=valid.and..not.options%khrt_children
     valid=valid.and.size(components)>=1.and.size(components)<=16
     call agree()
     if (.not.agreed) return
@@ -464,6 +467,24 @@ contains
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
             next_mass(:,p),options,dt,change(:,p),valid)
           if (.not.valid) exit
+          if (trial(p)%mass>0.and.options%breakup_model/='none') then
+            old_mass=trial(p)%mass;y=next_mass(:,p)/old_mass
+            call liquid_mixture_properties(components,y,trial(p)%temperature,rho,cp,e,valid)
+            if (.not.valid) exit
+            effective=components(1);effective%density=rho;effective%density_model='constant'
+            effective%density_coefficients=0;effective%density_temperature_range=0
+            effective%heat_capacity=cp;effective%heat_capacity_model='constant'
+            effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+            effective%reference_temperature=trial(p)%temperature;effective%reference_energy=e
+            effective%boiling_model='reject';effective%critical_temperature=0
+            call build_mixture_film(species,transport,primitive(:,p),tg(p),trial(p),components,y,options, &
+              film,rates,hv,valid)
+            if (.not.valid) exit
+            call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
+              film%density,film%viscosity,dt,valid)
+            if (.not.valid) exit
+            next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
+          end if
           trial(p)%position=lower+modulo(trial(p)%position-lower,length)
         end do
         call agree()

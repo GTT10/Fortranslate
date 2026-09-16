@@ -271,6 +271,39 @@ program test_spray_mpi
   do p=1,size(parcels)
     call require(parcels(p)%velocity(3)<10.0_dp,'coupled drag changes velocity')
   end do
+  ! Representative breakup changes drop mass/multiplicity, retaining full component inventory.
+  saved=parcels;saved_mass=masses;saved_field=field;saved_temperature=temperature
+  options%drag=.false.;options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+  do n=1,2
+    parcels=saved;masses=saved_mass;field=saved_field;temperature=saved_temperature
+    options%breakup_model='etab'
+    if (n==2) options%breakup_model='khrt'
+    do p=1,size(parcels)
+      parcels(p)%velocity=[1000.0_dp,0.0_dp,0.0_dp];parcels(p)%deformation=1.1_dp
+    end do
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+    call require(ok,'breakup initial totals')
+    call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
+      parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,steps,ok)
+    call require(ok.and.steps>0,'MPI representative breakup accepts')
+    call require(size(parcels)==size(saved),'representative breakup preserves parcel count')
+    do p=1,size(parcels)
+      call require(parcels(p)%mass<saved(p)%mass,'breakup reduces physical drop mass')
+      call require(parcels(p)%multiplicity>saved(p)%multiplicity,'breakup increases multiplicity')
+      call require(all(abs(masses(:,p)*parcels(p)%multiplicity-saved_mass(:,p)*saved(p)%multiplicity) &
+        <2e-12_dp*saved_mass(:,p)*saved(p)%multiplicity),'breakup retains each component inventory')
+    end do
+    call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+    call require(ok,'breakup final totals')
+    call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))),'breakup preserves coupled totals')
+  end do
+  parcels=saved;masses=saved_mass;field=saved_field;temperature=saved_temperature
+  options%breakup_model='none';options%drag=.true.;options%surface_tension=0;options%liquid_viscosity=0
+  call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'restore pre-breakup totals')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   options%heat=.true.;options%evaporation=.true.
   before=after
   call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
