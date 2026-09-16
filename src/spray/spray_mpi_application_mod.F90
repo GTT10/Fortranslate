@@ -10,6 +10,8 @@ module spray_mpi_application_mod
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: mixture_system_totals
@@ -37,6 +39,14 @@ contains
   type(spray_nozzle_model) :: nozzle,port_nozzle(16)
   real(dp) :: nozzle_radius=0,port_nozzle_radius(16)=0
   type(spray_parcel), allocatable :: parcels(:)
+  type(spray_wall_film), allocatable :: checkpoint_films(:)
+  real(dp), allocatable :: checkpoint_film_mass(:,:)
+  character(len=32) :: boundary_faces(6)='periodic'
+  character(len=32), allocatable :: active_faces(:)
+  real(dp) :: wall_temperature(6)=600,wall_velocity(3,6)=0
+  real(dp) :: boundary_total(5+size(species)),boundary_step(5+size(species))
+  real(dp) :: inlet_state(5+size(species),6),inlet_temperature(6)
+  logical :: physical_boundaries,periodic_axes(3)
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),masses(:,:)
   integer :: cells(3)=[8,4,4],number=4,max_steps=10000,injection_events=1
   real(dp) :: injection_start=0,injection_interval=1e-8_dp
@@ -83,7 +93,8 @@ contains
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
-    khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct
+    khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct, &
+    boundary_faces,wall_temperature,wall_velocity
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -261,12 +272,28 @@ contains
       'Checkpoint SGS context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
+  call require(valid_reactive_boundaries_3d(boundary_faces),'Invalid gas/particle boundary faces')
+  call require(valid_wall_velocity_3d(boundary_faces,wall_velocity),'Invalid tangential wall velocity')
+  call require(all(ieee_is_finite(wall_temperature)).and.all(wall_temperature>0),'Invalid wall temperature')
+  physical_boundaries=any(boundary_faces/='periodic')
+  periodic_axes=[boundary_faces(1)=='periodic',boundary_faces(3)=='periodic',boundary_faces(5)=='periodic']
+  inlet_state=spread(gas_cell,2,6);inlet_temperature=initial_t;boundary_total=0
+  if (physical_boundaries) then
+    allocate(active_faces(6));active_faces=boundary_faces
+    if (any(boundary_faces=='isothermal_wall')) call require(transport_flags(2),'Isothermal walls require conduction')
+    if (any(wall_velocity/=0)) call require(transport_flags(1),'Moving gas walls require viscosity')
+    write(profile_context,'(*(g0,1x))',iostat=status) 'mpi-physical-boundaries-v1',boundary_faces, &
+      wall_temperature,wall_velocity
+    call require(status==0,'Boundary context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint boundary context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end if
+  allocate(checkpoint_films(0),checkpoint_film_mass(2,0))
   allocate(parcels(0),masses(2,0));local_mass=0
   time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
   if (len_trim(restart_path)>0) then
-    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(restart_path),trim(checkpoint_context),species, &
-      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
-      breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt',shedding_state=khrt_children)
+    call checkpoint(.false.,trim(restart_path))
     call require(ok,'Restart rejected: invalid data or incompatible model/input context')
     call require(time<=final_time.and.event>=0.and.event<=schedule_count, &
       'Restart time/event is incompatible with this run')
@@ -283,8 +310,11 @@ contains
     call require(status==0,'Cannot create history (existing files are not overwritten)')
     write(history_unit,'(a)') '# mechanism_sha256='//trim(mechanism_hash)
     write(history_unit,'(a,i0)') '# initial_id_high_watermark=',last_id
-    write(history_unit,'(a)') 'step,time,parcels,substeps,mass,mx,my,mz,energy,relative_mass_error,relative_energy_error,'// &
+    write(history_unit,'(a)',advance='no') 'step,time,parcels,substeps,mass,mx,my,mz,energy,'// &
+      'relative_mass_error,relative_energy_error,'// &
       'events,last_id,injected_mass,injected_energy'
+    if (physical_boundaries) write(history_unit,'(a)',advance='no') ',boundary_mass,boundary_energy'
+    write(history_unit,'(a)') ''
   end if
   call budgets();call history()
   do while(time<final_time)
@@ -308,11 +338,13 @@ contains
       if (dt<=0.or.time+dt<=time) exit
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
-        solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct])
+        solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
+        inlet_state,inlet_temperature,wall_temperature,wall_velocity)
       if (ok) exit
       dt=.5_dp*dt
     end do
     call require(ok,'Coupled update rejected after retries')
+    boundary_total=boundary_total+boundary_step
     if (event<schedule_count.and.dt==next_injection_time()-time) then
       time=next_injection_time()
     else
@@ -324,9 +356,7 @@ contains
   end do
   if (rank==0) close(history_unit)
   if (len_trim(checkpoint_path)>0) then
-    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),trim(checkpoint_context),species, &
-      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
-      breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt',shedding_state=khrt_children)
+    call checkpoint(.true.,trim(checkpoint_path))
     call require(ok,'Checkpoint write rejected (existing destinations are not overwritten)')
   end if
   write(rank_text,'(i6.6)') rank
@@ -482,7 +512,7 @@ contains
         event_size%std,event_radius,event_nozzle)
       call require(ok,'Scheduled injection rejected')
       call migrate_spray_parcels(MPI_COMM_WORLD,candidate,lower,spacing,cells,[nranks,1,1], &
-        [.true.,.true.,.true.],options%maximum_parcels,ok,candidate_mass)
+        periodic_axes,options%maximum_parcels,ok,candidate_mass)
       call require(ok,'Scheduled particle migration rejected')
       call MPI_Allreduce(delta,global_delta,size(delta),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
       call require(ierr==MPI_SUCCESS,'Injection budget reduction failed')
@@ -506,12 +536,30 @@ contains
     call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(ierr==MPI_SUCCESS,'Particle count reduction failed')
   end subroutine
+  subroutine checkpoint(writing,path)
+    logical, intent(in) :: writing
+    character(len=*), intent(in) :: path
+    if (physical_boundaries) then
+      call mpi_spray_checkpoint(MPI_COMM_WORLD,writing,path,trim(checkpoint_context),species, &
+        state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
+        breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt',shedding_state=khrt_children, &
+        wall_films=checkpoint_films,film_mass=checkpoint_film_mass,wall_totals=boundary_total)
+      if (ok) ok=size(checkpoint_films)==0
+    else
+      call mpi_spray_checkpoint(MPI_COMM_WORLD,writing,path,trim(checkpoint_context),species, &
+        state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok, &
+        breakup_state=breakup_model/='none',khrt_state=breakup_model=='khrt',shedding_state=khrt_children)
+    end if
+  end subroutine
+
   subroutine history()
     if (rank/=0) return
-    write(history_unit,'(*(g0,:,","))') step,time,global_count,substeps,totals(:5), &
-      (totals(1)-initial_totals(1)-injected(1))/max(1e-30_dp,abs(initial_totals(1)+injected(1))), &
-      (totals(5)-initial_totals(5)-injected(5))/max(1e-30_dp,abs(initial_totals(5)+injected(5))), &
+    write(history_unit,'(*(g0,:,","))',advance='no') step,time,global_count,substeps,totals(:5), &
+      (totals(1)-initial_totals(1)-injected(1)-boundary_total(1))/max(1e-30_dp,abs(initial_totals(1)+injected(1))), &
+      (totals(5)-initial_totals(5)-injected(5)-boundary_total(5))/max(1e-30_dp,abs(initial_totals(5)+injected(5))), &
       event,last_id,injected(1),injected(5)
+    if (physical_boundaries) write(history_unit,'(a,g0,a,g0)',advance='no') ',',boundary_total(1),',',boundary_total(5)
+    write(history_unit,'(a)') ''
     flush(history_unit)
   end subroutine
   end subroutine

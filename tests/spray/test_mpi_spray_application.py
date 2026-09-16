@@ -357,6 +357,43 @@ def main():
     run_variant('sgs_mismatch', args.ranks,
                 sgs.replace('cs=.2', 'cs=.3') + "\n restart_path='sgs.chk'", expect_success=False)
     assert not (work / 'sgs_mismatch.history.csv').exists()
+    physical = """
+ boundary_faces='outflow','outflow','no_slip_wall','isothermal_wall','periodic','periodic'
+ wall_temperature=600,600,600,600,600,600
+ wall_velocity(1,3)=2
+ center=1e-8,.002,.002
+ axis=-1,0,0
+ gas_velocity=10,0,0
+ les_cs=.2
+"""
+    run_variant('physical', args.ranks, physical)
+    run_variant('physical_split', args.ranks, physical + " checkpoint_path='physical.chk'", stop='1e-8')
+    physical_history = rows(work / 'physical.history.csv')
+    assert int(physical_history[-1]['parcels']) == 0
+    assert abs(float(physical_history[-1]['boundary_energy'])) > 1e-14
+    for name, count in [('physical_resume', args.ranks), ('physical_redistributed', 6 - args.ranks)]:
+        run_variant(name, count, physical + " restart_path='physical.chk'")
+        for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+            expected = snapshots('physical', suffix, keys)
+            actual = snapshots(name, suffix, keys)
+            assert expected.keys() == actual.keys()
+            for key, record in expected.items():
+                for column, value in record.items():
+                    if count == args.ranks:
+                        assert actual[key][column] == value, (name, key, column)
+                    else:
+                        assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25)
+        resumed_history = rows(work / f'{name}.history.csv')
+        for row in resumed_history + physical_history:
+            assert abs(float(row['relative_mass_error'])) < 2e-11
+            assert abs(float(row['relative_energy_error'])) < 2e-11
+        for column in ['boundary_mass', 'boundary_energy']:
+            assert math.isclose(float(resumed_history[-1][column]), float(physical_history[-1][column]),
+                                rel_tol=2e-11, abs_tol=1e-25)
+    run_variant('physical_mismatch', args.ranks,
+                physical.replace('600,600,600,600,600,600', '600,600,600,550,600,600') +
+                " restart_path='physical.chk'", expect_success=False)
+    assert not (work / 'physical_mismatch.history.csv').exists()
     print(f'PASS MPI spray application, SGS and restart: {args.ranks} ranks; artifacts: {work}')
 
 

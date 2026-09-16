@@ -1,4 +1,4 @@
-# Periodic MPI mixed spray
+# MPI mixed spray
 
 Build with `PELEF_ENABLE_MPI=ON` and `PELEF_ENABLE_SPRAY=ON`, then run from a
 fresh output directory (input paths may be absolute):
@@ -7,7 +7,7 @@ fresh output directory (input paths may be absolute):
 mpiexec -n 4 /path/to/build/pelef_mpi_spray_3d /path/to/cases/mpi_spray_3d/periodic_mixture.nml
 ```
 
-The fixed H2/O2 and selected-mechanism applications advance periodic x-slab gas and two-component
+The fixed H2/O2 and selected-mechanism applications advance x-slab gas and two-component
 particles with P/2-C/2-T/2-H-T/2-C/2-P/2 splitting. The example uses synthetic
 water/peroxide liquid properties; it is an implementation exercise, not a qualified
 physical spray model. Global cells must provide at least two x cells per rank and
@@ -36,7 +36,7 @@ Outputs use `output_prefix`:
 
 - `.history.csv`: step, time, global parcel count, particle substeps, total
   gas-plus-liquid mass/momentum/energy, relative mass/energy drift after subtracting
-  accumulated injection, event count, current ID watermark and injected budgets. Comment
+  accumulated injection and boundary exchange, event count, current ID watermark and injected budgets. Comment
   headers retain the mechanism SHA and initial ID high-water mark.
 - `.rankNNNNNN.gas.csv`: local cells with global integer indices, temperature and
   conserved gas fields.
@@ -282,3 +282,28 @@ number above 0.2 or inadmissible thermodynamics. The application retries the who
 coupled step with a halved time interval; gas, particles and IDs remain transactional.
 The coefficients are bound to checkpoint context. This supplies a modeled SGS
 stress/heat/species flux; it does not establish validated LES or near-wall behavior.
+
+## Physical boundaries
+
+`boundary_faces(6)` orders x-low, x-high, y-low, y-high, z-low, z-high.
+The default is periodic. Supported values are `periodic`, `inflow`, `outflow`,
+`slip_wall`, `no_slip_wall` and `isothermal_wall`; periodic faces must be paired.
+Inlet gas uses the configured initial gas density, temperature, velocity and
+composition on every inlet face. `wall_temperature(6)` defaults to 600 K;
+`wall_velocity(3,6)` defaults to zero and permits only tangential wall motion.
+Isothermal walls require molecular conduction; nonzero wall velocity requires
+viscosity. Gas wall data pass through molecular transport and optional SGS.
+
+Particles leaving an inlet/outlet are removed. Wall crossings use stationary
+specular reflection; tangential gas-wall motion does not introduce moving-wall
+particle impact. Deposition/splash and film evolution remain separate APIs.
+Injection migration wraps only periodic axes; injection outside a nonperiodic
+face is rejected. Use [boundary_mixture.nml](boundary_mixture.nml) for an open-x,
+temperature-controlled wall example with particle escape and SGS enabled.
+
+Nonperiodic history files append `boundary_mass,boundary_energy`, positive into
+the gas-plus-particle system. Mass/energy error columns subtract that cumulative
+ledger. Checkpoints bind face labels and wall data and persist the full boundary
+inventory using the existing boundary/film schema with zero films. Restart may
+change MPI rank count; changing physical boundaries or wall data is rejected.
+The periodic default retains its existing history columns and checkpoint context.

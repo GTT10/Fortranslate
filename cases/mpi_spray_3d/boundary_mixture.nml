@@ -1,0 +1,16 @@
+&mpi_spray
+ cells=8,4,4
+ spacing=.001,.001,.001
+ final_time=2e-8
+ dt_max=1e-8
+ number=4
+ total_mass=1e-10
+ center=1e-8,.002,.002
+ axis=-1,0,0
+ gas_velocity=10,0,0
+ boundary_faces='outflow','outflow','no_slip_wall','isothermal_wall','periodic','periodic'
+ wall_temperature=600,600,600,600,600,600
+ wall_velocity(1,3)=2
+ les_cs=.2
+ output_prefix='boundary_mixture'
+/
