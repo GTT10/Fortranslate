@@ -8,7 +8,7 @@ if(PELEF_ENABLE_SPRAY)
           --executable $<TARGET_FILE:pelef_mpi_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
           --ranks ${ranks} --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
           --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_application_${ranks}")
-      set_tests_properties(spray_mpi_application_${ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS ${ranks})
+      set_tests_properties(spray_mpi_application_${ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
       add_test(NAME spray_mpi_migration_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi> ${MPIEXEC_POSTFLAGS})

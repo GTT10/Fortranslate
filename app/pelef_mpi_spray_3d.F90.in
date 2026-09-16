@@ -16,6 +16,8 @@ program pelef_mpi_spray_3d
   use spray_parcel_mod
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: mixture_system_totals
+  use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
+  use spray_mixture_mod, only: mixture_evolution_id
   use spray_mpi_mod
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -37,10 +39,11 @@ program pelef_mpi_spray_3d
   logical :: transport_flags(4)=.true.
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
   character(len=16) :: solver='hllc',limiter='mc'
-  character(len=512) :: output_prefix='mpi_spray',input_path
+  character(len=512) :: output_prefix='mpi_spray',input_path,restart_path='',checkpoint_path=''
+  character(len=16384) :: checkpoint_context
   character(len=65536) :: input_record
   character(len=6) :: rank_text
-  integer :: rank,nranks,ierr,unit,status,history_unit,first(3),extent(3),i,j,k,p,n,step,attempt,substeps
+  integer :: rank,nranks,ierr,unit,status,history_unit,first(3),extent(3),i,j,k,p,n,step,attempt,substeps,event
   integer(int64) :: last_id=0,local_count,global_count
   real(dp) :: primitive(15),gas_cell(15),sound,initial_t,time,dt,local_dt,transport_dt,max_diffusivity
   real(dp) :: injected(15),local_totals(15),totals(15),initial_totals(15),local_mass
@@ -48,7 +51,7 @@ program pelef_mpi_spray_3d
   namelist /mpi_spray/ cells,spacing,lower,gas_density,gas_temperature,gas_velocity,gas_fractions, &
     number,total_mass,center,axis,speed,half_angle,diameter,drop_temperature,fractions, &
     liquid_density,liquid_cp,boiling_temperature,latent_heat,liquid_species,final_time,dt_max,cfl, &
-    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix
+    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix,restart_path,checkpoint_path
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -101,16 +104,35 @@ program pelef_mpi_spray_3d
       boiling_temperature(n),101325.0_dp,latent_heat(n),liquids(n),ok)
     call require(ok,'Invalid liquid properties')
   end do
+  ! Bind all physical/evolution inputs, excluding rank count, paths, stop time
+  ! and the maximum-step guard, which may change when continuing a run.
+  write(checkpoint_context,'(*(g0,1x))',iostat=status) 'mpi-spray-application-v1', &
+    '@PELEF_SPRAY_FIXED_SHA256@',mixture_evolution_id,cells,lower,spacing, &
+    gas_density,gas_temperature,gas_velocity,gas_fractions,number,total_mass,center,axis,speed,half_angle, &
+    diameter,drop_temperature,fractions,liquid_species,liquid_density,liquid_cp,boiling_temperature,latent_heat, &
+    dt_max,cfl,rtol,atol,chemistry,solver,limiter,transport_flags
+  call require(status==0,'Checkpoint context serialization failed')
   allocate(parcels(0),masses(2,0));local_mass=0
-  if (rank==0) local_mass=total_mass
-  call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(number,0,rank==0), &
-    center,axis,speed,half_angle,diameter,drop_temperature,options%maximum_parcels,last_id,parcels,injected,ok, &
-    liquids,fractions,masses)
-  call require(ok,'Injection rejected')
-  call migrate_spray_parcels(MPI_COMM_WORLD,parcels,lower,spacing,cells,[nranks,1,1], &
-    [.true.,.true.,.true.],options%maximum_parcels,ok,masses)
-  call require(ok,'Initial particle migration rejected')
-  time=0;step=0;substeps=0
+  time=0;step=0;substeps=0;event=0;initial_totals=0;injected=0
+  if (len_trim(restart_path)>0) then
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(restart_path),trim(checkpoint_context),species, &
+      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok)
+    call require(ok,'Restart rejected: invalid data or incompatible model/input context')
+    call require(time<=final_time.and.event==0,'Restart time/event is incompatible with this run')
+  else
+    if (rank==0) local_mass=total_mass
+    call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),local_mass,merge(number,0,rank==0), &
+      center,axis,speed,half_angle,diameter,drop_temperature,options%maximum_parcels,last_id,parcels,injected,ok, &
+      liquids,fractions,masses)
+    call require(ok,'Injection rejected')
+    call MPI_Allreduce(injected,local_totals,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(ierr==MPI_SUCCESS,'Injection budget reduction failed')
+    injected=local_totals
+    call migrate_spray_parcels(MPI_COMM_WORLD,parcels,lower,spacing,cells,[nranks,1,1], &
+      [.true.,.true.,.true.],options%maximum_parcels,ok,masses)
+    call require(ok,'Initial particle migration rejected')
+    call budgets();initial_totals=totals
+  end if
   if (rank==0) then
     open(newunit=history_unit,file=trim(output_prefix)//'.history.csv',status='new',action='write',iostat=status)
     call require(status==0,'Cannot create history (existing files are not overwritten)')
@@ -118,7 +140,7 @@ program pelef_mpi_spray_3d
     write(history_unit,'(a,i0)') '# global_id_high_watermark=',last_id
     write(history_unit,'(a)') 'step,time,parcels,substeps,mass,mx,my,mz,energy,relative_mass_error,relative_energy_error'
   end if
-  call budgets();initial_totals=totals;call history()
+  call budgets();call history()
   do while(time<final_time)
     call require(step<max_steps,'Maximum time steps reached')
     call compute_reactive_cfl_timestep_3d(species,state,temperature,extent(1),extent(2),extent(3), &
@@ -148,6 +170,11 @@ program pelef_mpi_spray_3d
     call budgets();call history()
   end do
   if (rank==0) close(history_unit)
+  if (len_trim(checkpoint_path)>0) then
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),trim(checkpoint_context),species, &
+      state,temperature,parcels,masses,lower,spacing,cells,time,step,event,last_id,initial_totals,injected,ok)
+    call require(ok,'Checkpoint write rejected (existing destinations are not overwritten)')
+  end if
   write(rank_text,'(i6.6)') rank
   open(newunit=unit,file=trim(output_prefix)//'.rank'//rank_text//'.gas.csv',status='new',action='write',iostat=status)
   call require(status==0,'Cannot create gas output')

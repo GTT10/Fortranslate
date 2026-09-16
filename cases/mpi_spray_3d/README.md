@@ -37,5 +37,23 @@ Outputs use `output_prefix`:
   multiplicity and per-drop component masses in configured liquid order.
 
 Existing files are not overwritten. CSV output is not a restart checkpoint.
-Rank-neutral restart, selected mechanisms, scheduled/multiport injection,
-distributed breakup/wall films and SGS remain to be integrated in this executable.
+Selected mechanisms, scheduled/multiport injection, distributed breakup/wall films
+and SGS remain to be integrated in this executable.
+
+## Save and resume
+
+Set `checkpoint_path='step.chk'` to save the final accepted state. Set
+`restart_path='step.chk'` in a subsequent run, choose a fresh `output_prefix`, and
+increase `final_time` to continue. Initial injection is skipped on restart. Gas,
+particles, component masses, budgets, time, step count and the ID high-water mark
+are restored. The MPI rank count may change if the new partition still has at
+least two x cells per rank. The implementation gathers checkpoint data on root;
+it is intended for bounded cases, not production parallel I/O.
+
+The checkpoint binds the mechanism, mixture evolution, geometry, liquid properties,
+injection definition and numerical controls. These must match. Rank count,
+checkpoint/output paths, `final_time` and `max_steps` may change. Invalid or
+incompatible checkpoints are rejected before output history is created. Existing
+checkpoint destinations are refused. Focused same-rank continuation matches final
+CSV values exactly; changed-rank continuation is compared with floating-point
+tolerance, not claimed bitwise identical.

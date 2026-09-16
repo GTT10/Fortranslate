@@ -15,8 +15,8 @@ drag/heating/evaporation, conservative two-way exchange, scheduled injection,
 restart, deviatoric Smagorinsky fluxes and cell-local CVODE chemistry.
 A pinned 21-species methanol mechanism exercises liquid-fuel combustion.
 An experimental [MPI periodic mixed-spray executable](cases/mpi_spray_3d/README.md)
-now connects fixed-mechanism gas/particle stepping and CSV output; MPI spray
-checkpoint/restart remains open.
+now connects fixed-mechanism gas/particle stepping, CSV output and rank-neutral
+checkpoint/restart for bounded periodic cases.
 This is not complete PeleC parity or a validated diesel spray solver.
 
 Start with [current status and evidence](docs/current_status.md). In

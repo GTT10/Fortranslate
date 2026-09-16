@@ -1825,7 +1825,7 @@ caller-owned common convention. The caller chooses a stable time step.
 Optional `transport_flags(4)` in `advance_mpi_mixture_reaction` requires hydro
 options when any flag is true and adds transport half-steps around hydro:
 P/2-C/2-T/2-H-T/2-C/2-P/2. All stages retain the complete interval transaction.
-Gas SGS, walls, breakup and MPI application/restart integration remain open. See
+Gas SGS, walls and breakup remain open. See
 [transport evidence](validation/spray-mpi-transport-20260917.md).
 
 ### MPI executable
@@ -1840,8 +1840,8 @@ CSVs retain final fields. Existing output files are refused. See the
 [application evidence](validation/spray-mpi-application-20260917.md).
 
 This executable currently supports initial injection and fixed-mechanism periodic
-flow. Its CSVs do not provide restart. Scheduled injection, rank-neutral checkpoint,
-selected-mechanism routing, SGS and distributed wall/breakup events remain open.
+flow. Its CSVs do not provide restart; the checkpoint API below does. Scheduled
+injection, selected-mechanism routing, SGS and distributed wall/breakup events remain open.
 
 ### Checkpoint ID reservation state
 
@@ -1853,7 +1853,7 @@ live particle ID; it may exceed all live IDs because particles can evaporate.
 Overflow, malformed records and smaller watermarks reject without changing state
 or the caller's watermark. Existing checkpoint modes remain unchanged when this
 argument is omitted. This is the persistence API needed by collective MPI ID
-reservation; MPI field/particle collection and CLI restart are still open. See
+reservation and is used by MPI field/particle collection and CLI restart below. See
 [ID checkpoint evidence](validation/spray-id-checkpoint-20260917.md).
 
 ### MPI checkpoint collection and redistribution
@@ -1876,5 +1876,16 @@ the MPI executable. Its caller must bind geometry, ordered property/mechanism
 and evolution identity in `context`; root path/context govern file access.
 The temporary root gas buffer is bounded to 100 million real values and particle
 collection to one million records. These are bounded root-I/O APIs, not scalable
-parallel checkpoint I/O. CLI restart remains to be connected. See
+parallel checkpoint I/O. The MPI CLI now uses these APIs for save/restart. See
 [collection evidence](validation/spray-mpi-checkpoint-20260917.md).
+
+### MPI executable restart
+
+`checkpoint_path` saves the last accepted state; `restart_path` restores it before
+initial history output and skips initial injection. A model/evolution context binds
+geometry, mechanism, ordered liquid properties, injection definition and numerical
+controls. Output paths, stop time, maximum-step guard and rank count are excluded
+so runs can continue in a new decomposition. Initial reference and injection
+budgets remain those of the saved run. See the
+[restart guide](../cases/mpi_spray_3d/README.md#save-and-resume) and
+[application evidence](validation/spray-mpi-restart-application-20260917.md).

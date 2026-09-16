@@ -58,7 +58,50 @@ def main():
     (work / 'repeat.log').write_text(repeated.stdout + repeated.stderr)
     assert repeated.returncode != 0
     assert (work / 'periodic_mixture.history.csv').read_bytes() == original
-    print(f'PASS MPI spray application: {args.ranks} ranks; artifacts: {work}')
+    source = args.input.read_text()
+
+    def run_variant(name, rank_count, additions, stop=None, expect_success=True):
+        text = source.replace("output_prefix='periodic_mixture'", f"output_prefix='{name}'")
+        if stop is not None:
+            text = text.replace('final_time=2e-8', f'final_time={stop}')
+        text = text.replace('\n/', '\n' + additions + '\n/')
+        path = work / f'{name}.nml'
+        path.write_text(text)
+        invocation = [str(args.mpiexec.resolve()), '-n', str(rank_count),
+                      str(args.executable.resolve()), str(path)]
+        output = subprocess.run(invocation, cwd=work, capture_output=True, text=True, timeout=90)
+        (work / f'{name}.log').write_text(output.stdout + output.stderr)
+        assert (output.returncode == 0) == expect_success, output.stdout + output.stderr
+
+    def snapshots(prefix, suffix, keys):
+        records = [row for path in sorted(work.glob(f'{prefix}.rank*.{suffix}.csv')) for row in rows(path)]
+        return {tuple(int(row[key]) for key in keys): row for row in records}
+
+    run_variant('split', args.ranks, " checkpoint_path='split.chk'", stop='1e-8')
+    assert (work / 'split.chk').is_file()
+    reference_gas = snapshots('periodic_mixture', 'gas', ['i', 'j', 'k'])
+    reference_particles = snapshots('periodic_mixture', 'particles', ['id'])
+    for name, count in [('resumed', args.ranks), ('redistributed', 6 - args.ranks)]:
+        run_variant(name, count, " restart_path='split.chk'")
+        for reference, actual in [
+            (reference_gas, snapshots(name, 'gas', ['i', 'j', 'k'])),
+            (reference_particles, snapshots(name, 'particles', ['id'])),
+        ]:
+            assert actual.keys() == reference.keys()
+            for key, expected in reference.items():
+                for column, value in expected.items():
+                    if name == 'resumed':
+                        assert actual[key][column] == value, (name, key, column)
+                    else:
+                        assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (name, key, column)
+        resumed_history = rows(work / f'{name}.history.csv')
+        assert int(resumed_history[0]['step']) == 1 and int(resumed_history[-1]['step']) == 2
+        assert int(resumed_history[-1]['parcels']) == 4
+        assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
+    run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
+    assert not (work / 'incompatible.history.csv').exists()
+    print(f'PASS MPI spray application and restart: {args.ranks} ranks; artifacts: {work}')
+
 
 
 if __name__ == '__main__':

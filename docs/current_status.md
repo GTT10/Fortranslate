@@ -108,7 +108,9 @@ exchanges gas and species-limiter halos and connects as half-steps around hydro
 `pelef_mpi_spray_3d` executable now connects initial two-component cone injection,
 global time-step selection/retry, coupled stepping, budget history and rank-local
 CSV output ([evidence](validation/spray-mpi-application-20260917.md)). Scheduled
-injection, MPI spray CLI restart and selected-mechanism routing remain open.
+injection and selected-mechanism routing remain open. MPI spray CLI save/restart
+now preserves model identity and budgets, with focused same-rank and 2↔4-rank
+continuation evidence ([validation](validation/spray-mpi-restart-application-20260917.md)).
 The checkpoint API now collects mixed particles and owner gas blocks into a root
 file and redistributes them with a different communicator size
 ([evidence](validation/spray-mpi-checkpoint-20260917.md)).
