@@ -99,7 +99,7 @@ contains
     character(len=32) :: faces(6),wall_faces(6),fine_faces(6)
     logical :: touched(6)
     real(dp) :: fine_wall_dt
-    character(len=32), allocatable :: active_faces(:)
+    character(len=32), allocatable :: active_faces(:),regrid_faces(:)
     character(len=32768) :: boundary_signature,root_signature
     real(dp), allocatable :: boundary_total(:),step_boundary(:),inflow_state(:,:),inflow_x(:),inflow_y(:),inlet_cube(:,:,:,:)
     real(dp) :: inflow_t(6),primitive(reactive_nprim(size(species))),sound_speed
@@ -135,6 +135,8 @@ contains
     end if
     call consensus_integer_vector(comm,[amr_config%regrid_interval_steps,amr_config%regrid_buffer_cells],ok)
     call collective_require(ok,'MPI regrid settings differ by rank',2)
+    call consensus_logical_vector(comm,[amr_config%regrid_physical_boundaries],ok)
+    call collective_require(ok,'MPI physical regrid policy differs by rank',2)
     call consensus_real_vector(comm,[amr_config%regrid_temperature_threshold],ok)
     call collective_require(ok,'MPI regrid threshold differs by rank',2)
     ok = size(species) > 0 .and. size(reactions) > 0
@@ -180,8 +182,6 @@ contains
         ok, "Selected sparse MPI 3D AMR rank context mismatch", 3)
     end if
 
-    call collective_require(.not.amr_config%regrid_physical_boundaries, &
-      "MPI boundary-touching regridding is not connected",2)
     call initialize_amr_patch_3d( &
       config%nx, config%ny, config%nz, &
       amr_config%coarse_i_lower, amr_config%coarse_i_upper, &
@@ -222,6 +222,7 @@ contains
     call collective_require(ierr==MPI_SUCCESS,'Failed to broadcast AMR boundary settings',3)
     call collective_require(boundary_signature==root_signature,'MPI AMR boundary settings differ across ranks',3)
     if (any(faces/='periodic')) allocate(active_faces,source=faces)
+    if (amr_config%regrid_physical_boundaries) allocate(regrid_faces,source=faces)
     if (rank == 0) then
       coarse_state = 0.0_dp
       coarse_temperature = 0.0_dp
@@ -498,10 +499,11 @@ contains
           root_ok=.true.; patch_changed=.false.
           if (rank==0) then
             call temperature_tag_patch_3d(patch,coarse_temperature,amr_config%regrid_temperature_threshold, &
-              amr_config%regrid_buffer_cells,next_patch,patch_changed,root_ok)
+              amr_config%regrid_buffer_cells,next_patch,patch_changed,root_ok,regrid_faces)
             if (root_ok.and.patch_changed) then
               call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state, &
-                fine_temperature,next_patch,root_ok,config%reconstruction,config%limiter)
+                fine_temperature,next_patch,root_ok,config%reconstruction,config%limiter, &
+                regrid_faces,inflow_state,inflow_t)
               if (root_ok) then
                 regrid_count=regrid_count+1
                 write(*,'(a,i0,a,6(i0,1x))') 'Regrid at step ',step,': ',patch%coarse_i_lower, &

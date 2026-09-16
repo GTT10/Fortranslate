@@ -157,7 +157,7 @@ and checkpoint I/O still require root memory for the complete hierarchy; this
 is not a scalable distributed-remap implementation.
 See [serial restart evidence](../../docs/validation/dynamic-amr-restart-20260915.md)
 and [MPI regrid/restart evidence](../../docs/validation/mpi-dynamic-amr-20260915.md).
-Multipatch/multilevel regridding, physical coarse boundaries and 3D EB coupling
+Multipatch/multilevel regridding and 3D EB coupling
 remain open. The default interval zero preserves static runs.
 
 ## Physical boundaries
@@ -176,7 +176,8 @@ Physical runs report `Conserved boundary change:` in conserved-variable order,
 positive into the composite hierarchy. Conservation diagnostics subtract this
 cumulative surface transfer. Inlet wave speeds, inlet diffusion and isothermal
 wall heat transfer also constrain the timestep. Static fine patches may touch
-physical faces. MPI temperature-tagged movement/resizing retains interior patches.
+physical faces. Temperature-tagged movement/resizing can include physical faces with the
+explicit setting below.
 
 Checkpoint schemas 10–13 (static) and 14–17 (dynamic) extend the existing schema
 with a boundary-settings signature and cumulative transfer. Restart rejects
@@ -220,9 +221,7 @@ wall heat/work fluxes enter the composite boundary ledger; wall thermal timestep
 limits account for both coarse and fine states. Checkpoint/restart retains the
 physical patch geometry and boundary/chemistry context with the existing static
 schemas. Periodic seams remain unsupported. Boundary-touching dynamic regridding is
-available in serial with the explicit setting below. MPI currently accepts
-static boundary-touching geometry; its physical-boundary regridding option
-is rejected before initialization.
+available in serial and sparse MPI with the explicit setting below.
 
 [Application restart evidence](../../docs/validation/amr-boundary-touching-app-20260917.md)
 covers a full-H2/O2 reacting wall case and an elementary reacting corner case.
@@ -232,16 +231,21 @@ Use `mpiexec -n 4 ./pelef_mpi_amr_reactive_3d` with the same static input.
 The selected frontend shares this implementation; it has not been independently
 qualified for boundary-touching application inputs in that check.
 
-## Physical-boundary regridding (serial)
+## Physical-boundary regridding
 
 Set `regrid_physical_boundaries = .true.` together with a positive
 `regrid_interval_steps` to let temperature tags and their buffer reach physical
 faces. Periodic axes retain an interior-cell margin. The example
 `dynamic_touching_wall.nml` expands the wall-touching patch at step zero and can
-be run with the same serial executable as the static example.
+be run with the same serial or MPI executable as the static example.
 
 Remapping preserves overlapping fine states, restricts derefined cells, and
 uses physical coarse ghosts for conservative limited prolongation of new cells.
 Checkpoint context includes this tagging mode, the moved patch and regrid count.
 The default remains interior tagging, preserving existing serial/MPI cases.
-See [dynamic-boundary evidence](../../docs/validation/amr-boundary-regrid-20260917.md).
+MPI compares the tagging policy across ranks, performs the conservative remap
+on rank zero, then rebuilds ownership and redistributes the new hierarchy.
+Checkpoint/restart retains the tagging policy and supports changed rank counts.
+This still requires root memory for the complete hierarchy.
+See [serial evidence](../../docs/validation/amr-boundary-regrid-20260917.md) and
+[MPI dynamic-boundary evidence](../../docs/validation/amr-mpi-boundary-regrid-20260917.md).

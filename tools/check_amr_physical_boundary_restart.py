@@ -110,6 +110,15 @@ def main() -> None:
         else:
             assert ledger(reference) == ledger(resumed)
         assert any(float(value) != 0 for value in ledger(reference).split(':')[1].split())
+        if args.dynamic_touching:
+            checkpoint = work / f'{label}.chk'
+            original_checkpoint = checkpoint.read_text()
+            assert ' PHYSICAL_TAGGING_V1' in original_checkpoint
+            try:
+                checkpoint.write_text(original_checkpoint.replace(' PHYSICAL_TAGGING_V1', '', 1))
+                run(f'{label}_tagging_policy', source, f"restart_file='{label}.chk',", success=False)
+            finally:
+                checkpoint.write_text(original_checkpoint)
         changed = (source.replace('1300', '1400') if label == 'inlet' else
                    source.replace('600, 600', '650, 600', 1))
         run(f'{label}_changed', changed, f"restart_file='{label}.chk',", success=False)

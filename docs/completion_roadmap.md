@@ -95,13 +95,13 @@ reimplemented. Their restrictions remain explicit in current status.
 
 Regular 3D hydro/chemistry/molecular transport now accepts per-face prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip conditions with prescribed tangential wall velocity
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
-Characteristic inflow and moving geometry, AMR/EB and particle boundary coupling
+Characteristic inflow and moving geometry, general EB and AMR-particle boundary coupling
 remain part of the completion work.
 
 Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with conservative
-remapping, overlap reuse and geometry-aware changed-rank restart. Distributed remapping
-without root aggregation, general patches/levels and
-physical/EB boundaries remain open; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
+remapping, overlap reuse and geometry-aware changed-rank restart, including
+physical-boundary tagging and boundary-touching patches. Distributed remapping
+without root aggregation, general patches/levels and EB coupling remain open; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and
 restores local ID ordering, with collective input/capacity rejection. Distributed
