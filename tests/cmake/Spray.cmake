@@ -21,6 +21,11 @@ if(PELEF_ENABLE_SPRAY)
   add_test(NAME spray_amr_tree_partition COMMAND test_spray_amr_tree_partition)
   set_tests_properties(spray_amr_tree_partition PROPERTIES LABELS "spray;amr" TIMEOUT 30)
   if(PELEF_ENABLE_MPI)
+    add_test(NAME spray_mpi_amr_adaptation
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_adaptation" --multiport --adaptive)
+    set_tests_properties(spray_mpi_amr_adaptation PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_ports
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"

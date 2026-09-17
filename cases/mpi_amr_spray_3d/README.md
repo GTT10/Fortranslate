@@ -79,6 +79,27 @@ unless absolute. The solver lands on that time and atomically remaps gas and
 particles. The root physical domain/resolution remains fixed. `root.dat` is a
 coarsening target; `tree.dat` refines one corner.
 
+For temperature-driven adaptation, set `adaptation_interval` to a positive
+number of completed gas steps. Configure `refinement_levels` (0 through 16),
+`refinement_ratios`, `temperature_thresholds`, `tile_shape`, `tag_buffer` and
+`maximum_nodes`. Thresholds must be positive and nondecreasing; ratios are at
+least two. For example:
+
+```fortran
+ adaptation_interval=1, refinement_levels=1, refinement_ratios=2
+ temperature_thresholds=1005., tile_shape=1,1,1, tag_buffer=0, maximum_nodes=100
+```
+
+This uses the existing composite-temperature tagger. When topology changes,
+gas and particles remap together and owners are assigned round-robin. The
+initial tree comes from the topology input; checks begin after completed steps,
+including the final step. A zero interval disables adaptation. Automatic
+adaptation and `regrid_time` are mutually exclusive. Adaptation occurs before
+injection and saving at a shared step/time. On restart, the saved topology is
+restored and the saved step's adaptation check is not repeated. The next due
+completed step resumes checking; adaptation controls bind the checkpoint context.
+This does not perform measured-work load balancing or particle-density tagging.
+
 Each step calls particle half / reaction-transport-hydro / particle half,
 retrying rejected whole steps at half the interval. Gas CSV contains exposed
 composite cells only. `<output_file>.particles.<rank>.csv` contains each rank's
@@ -95,7 +116,7 @@ integrator are printed by the selected frontend.
 The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This initial executable supports periodic
 boundaries, initial or scheduled multiport injection and one optional prescribed
-regrid. Automatic tagging/rebalancing, wall
+regrid or temperature-driven adaptation. Measured-work rebalancing, wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.
 

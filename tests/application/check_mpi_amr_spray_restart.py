@@ -14,6 +14,7 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--multiport', action='store_true')
+p.add_argument('--adaptive', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -36,6 +37,12 @@ if a.multiport:
         ' port_half_angles=.1,.2,port_diameters=1.e-5,2.e-5,port_temperatures=350.,340.,\n'
         ' port_fractions(1:2,1)=.25,.75,port_fractions(1:2,2)=.75,.25,port_radii=1.e-5,2.e-5,\n'
         " port_nozzles(1)%profile='solid',port_nozzles(2)%profile='hollow',port_nozzles(2)%swirl=.2")
+
+if a.adaptive:
+    gas = gas.replace('hotspot_temperature_rise=0.', 'hotspot_temperature_rise=100.')
+    spray = spray.replace(f"regrid_time=1.e-8,regrid_topology='{case / 'root.dat'}'",
+        'adaptation_interval=1,refinement_levels=1,refinement_ratios=2,\n'
+        ' temperature_thresholds=1005.,tile_shape=1,1,1,tag_buffer=0,maximum_nodes=100')
 
 
 def run(name, ranks, controls, good=True, changed=False):
@@ -86,6 +93,15 @@ if a.multiport:
     assert [row[2] for row in particles] == [1.]*8 + [2.]*8
     assert all(row[3] < .001 if row[2] == 1 else row[3] > .003 for row in particles)
     assert all(row[12] < row[13] if row[2] == 1 else row[12] > row[13] for row in particles)
+if a.adaptive:
+    fields = read(continued, 4)[0]
+    assert {row[1] for row in fields} == {0., 1.}
+    assert len({row[0] for row in fields}) > 2
+    full_log = (full / 'run.log').read_text()
+    resumed_log = (continued / 'run.log').read_text()
+    assert 'Adaptation check step: 1 ' in full_log
+    assert 'Adaptation check step: 1 ' not in resumed_log
+    assert 'Adaptation check step: 2 ' in resumed_log
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
 # A complete marker with a truncated particle payload must fail before CSV output.
 for suffix in ('', '.gas', '.particles'):

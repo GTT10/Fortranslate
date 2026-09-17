@@ -17,6 +17,7 @@ module spray_mpi_amr_application_mod
   use mpi_amr_patch_tree_thermo_3d_mod, only: compute_mpi_amr_tree_cfl_3d,recover_mpi_amr_tree_temperatures_3d
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
   use amr_patch_tree_checkpoint_3d_mod, only: build_amr_tree_checkpoint_context_3d
   use spray_mpi_amr_checkpoint_mod, only: mpi_amr_spray_checkpoint
@@ -48,7 +49,7 @@ contains
     real(dp), intent(in) :: mole_fractions(:)
     type(MPI_Comm), intent(in) :: comm
     type(reactive_3d_config) :: local
-    type(amr_patch_tree_3d) :: tree,target
+    type(amr_patch_tree_3d) :: tree,target,tagged
     type(amr_tree_state_3d) :: state,temperature
     type(spray_parcel), allocatable :: parcels(:)
     type(spray_liquid), allocatable :: liquids(:)
@@ -60,6 +61,9 @@ contains
     real(dp) :: lower(3),spacing(3),h(3),density,time,dt,transport_dt,diffusivity,correction,theta,stop_time
     integer :: rank,nranks,ierr,unit,ios,node,n(3),i,p,nv,step,attempt,particle_steps,number
     integer :: component_count,parcel_count,maximum_parcels
+    integer :: adaptation_interval,refinement_levels,refinement_ratios(16),tile_shape(3),tag_buffer,maximum_nodes
+    integer :: last_adaptation_step
+    real(dp) :: temperature_thresholds(16)
     integer, parameter :: maximum_events=1024
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
     real(dp) :: port_centers(3,16),port_axes(3,16),port_speeds(16),port_half_angles(16), &
@@ -83,7 +87,8 @@ contains
       reference_pressure,latent_heat,parcel_count,total_mass,center,axis,speed,half_angle,diameter,drop_temperature, &
       maximum_parcels,options,subcycling,regrid_time,regrid_topology, &
       injection_events,injection_times,event_parcels,event_mass,event_ports,port_count,port_centers,port_axes, &
-      port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles
+      port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles, &
+      adaptation_interval,refinement_levels,refinement_ratios,tile_shape,tag_buffer,maximum_nodes,temperature_thresholds
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
@@ -95,6 +100,8 @@ contains
     parcel_count=1;total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp]
     speed=10;half_angle=0;diameter=1e-5_dp;drop_temperature=350;maximum_parcels=100000
     subcycling=.false.;regrid_time=-1;regrid_topology='';regridded=.false.
+    adaptation_interval=0;refinement_levels=1;refinement_ratios=2;tile_shape=4;tag_buffer=1;maximum_nodes=4096
+    temperature_thresholds=1200;last_adaptation_step=0
     injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
     port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
     port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
@@ -125,6 +132,18 @@ contains
     if (component_count<1.or.component_count>16) call fatal('Invalid liquid component count')
     if (.not.ieee_is_finite(regrid_time)) call fatal('Invalid regrid time')
     if ((regrid_time>=0).neqv.(len_trim(regrid_topology)>0)) call fatal('Regrid needs time and topology')
+    if (adaptation_interval<0) call fatal('Invalid adaptation interval')
+    if (adaptation_interval>0) then
+      if (regrid_time>=0) call fatal('Automatic adaptation cannot use a prescribed regrid')
+      if (refinement_levels<0.or.refinement_levels>16) call fatal('Invalid refinement depth')
+      if (any(refinement_ratios(:refinement_levels)<2)) call fatal('Invalid refinement ratios')
+      if (.not.all(ieee_is_finite(temperature_thresholds(:refinement_levels)))) call fatal('Nonfinite thresholds')
+      if (any(temperature_thresholds(:refinement_levels)<=0)) call fatal('Invalid thresholds')
+      do i=2,refinement_levels
+        if (temperature_thresholds(i)<temperature_thresholds(i-1)) call fatal('Thresholds must not decrease')
+      end do
+      if (any(tile_shape<1).or.tag_buffer<0.or.maximum_nodes<1) call fatal('Invalid tagging bounds')
+    end if
     if (port_count<0.or.port_count>16) call fatal('Invalid port count')
     if (port_count==0) then
       port_count=1;port_centers(:,1)=center;port_axes(:,1)=axis;port_speeds(1)=speed
@@ -218,7 +237,18 @@ contains
       if (event/=count(injection_times(:injection_events)<=time)+1) call fatal('Restart injection event mismatch')
       if (regridded.neqv.(regrid_time>=0.and.time>=regrid_time)) call fatal('Restart regrid event mismatch')
       if (regridded) expected_tree=tree_key(target)
-      if (tree_key(tree)/=expected_tree) call fatal('Restart topology mismatch')
+      if (adaptation_interval==0) then
+        if (tree_key(tree)/=expected_tree) call fatal('Restart topology mismatch')
+      else if (step<adaptation_interval) then
+        if (tree_key(tree)/=expected_tree) call fatal('Restart initial topology mismatch')
+      else
+        call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+        if (.not.ok) call fatal('Restart adaptive layout invalid')
+        if (size(tree%nodes)>maximum_nodes.or.tree%level_count()>refinement_levels+1) &
+          call fatal('Restart adaptation bounds mismatch')
+        if (any(ratios(2:)/=refinement_ratios(:size(ratios)-1))) call fatal('Restart refinement ratios mismatch')
+      end if
+      last_adaptation_step=step
       if (checkpoint_time>=0.and.checkpoint_time<time) call fatal('Checkpoint time precedes restart')
     end if
     do
@@ -229,6 +259,23 @@ contains
             lower,spacing,[.true.,.true.,.true.],maximum_parcels,ok)
           if (.not.ok) call fatal('Coupled regrid failed')
           regridded=.true.
+        end if
+      end if
+      if (adaptation_interval>0) then
+        if (step>last_adaptation_step) then
+          if (mod(step,adaptation_interval)==0) then
+            call tag_mpi_amr_tree_temperature_3d(tree,owners,temperature,temperature_thresholds(:refinement_levels), &
+              refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,[.true.,.true.,.true.],tagged,comm,ok)
+            if (.not.ok) call fatal('Automatic temperature tagging failed')
+            if (tree_key(tagged)/=tree_key(tree)) then
+              assigned=[(modulo(node-1,nranks),node=1,size(tagged%nodes))]
+              call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
+                lower,spacing,[.true.,.true.,.true.],maximum_parcels,ok)
+              if (.not.ok) call fatal('Adaptive gas/particle remap failed')
+            end if
+            last_adaptation_step=step
+            if (rank==0) write(*,'(a,i0,a,i0)') 'Adaptation check step: ',step,' Nodes: ',size(tree%nodes)
+          end if
         end if
       end if
       do while (event<=injection_events)
