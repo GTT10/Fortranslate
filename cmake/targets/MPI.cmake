@@ -6,6 +6,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_eb_tree_halo_3d_mod.F90
     src/parallel/mpi_eb_tree_flux_3d_mod.F90
     src/parallel/mpi_eb_tree_hydro_3d_mod.F90
+    src/parallel/mpi_eb_tree_subcycle_hydro_3d_mod.F90
     src/parallel/mpi_eb_tree_transport_3d_mod.F90
     src/parallel/mpi_eb_tree_full_3d_mod.F90
     src/parallel/mpi_eb_tree_timestep_3d_mod.F90

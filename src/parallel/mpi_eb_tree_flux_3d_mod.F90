@@ -35,9 +35,10 @@ contains
 
   ! Match serial peer ordering, deepest-first replacement, and exposed-cell reflux.
   ! State, temperature and flux are owner-local; geometry is replicated.
-  ! All three outputs commit only after collective success and averaging.
+  ! All three outputs commit only after collective success. The peers-only mode
+  ! corrects provisional endpoints without restriction or descendant averaging.
   subroutine synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,state,temperature,flux,comm,ok, &
-      minimum_level,maximum_level)
+      minimum_level,maximum_level,peers_only)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -47,6 +48,7 @@ contains
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     integer, optional, intent(in) :: minimum_level,maximum_level
+    logical, optional, intent(in) :: peers_only
     type(amr_tree_state_3d) :: candidate,temps
     type(eb_integrated_flux_3d), allocatable :: effective(:)
     type(eb_integrated_flux_3d) :: received,restricted
@@ -56,7 +58,7 @@ contains
     integer(int64) :: offset(3),section_origin(3)
     logical, allocatable :: refined(:,:,:)
     integer :: nv,rank,status,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),n(3),ratio,ios
-    integer :: levels(2),low(2),high(2)
+    integer :: levels(3),low(3),high(3)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
     call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
@@ -67,12 +69,13 @@ contains
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
-    levels=[0,tree%level_count()-1]
+    levels=[0,tree%level_count()-1,0]
+    if (present(peers_only)) levels(3)=merge(1,0,peers_only)
     if (present(minimum_level)) levels(1)=minimum_level
     if (present(maximum_level)) levels(2)=maximum_level
-    call MPI_Allreduce(levels,low,2,MPI_INTEGER,MPI_MIN,comm,status)
+    call MPI_Allreduce(levels,low,3,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(levels,high,2,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(levels,high,3,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high).or.levels(1)<0.or.levels(2)<levels(1).or.levels(2)>=tree%level_count()) return
     valid=size(flux)==size(owners)
@@ -110,13 +113,26 @@ contains
       if (.not.ready) return
       valid=.true.
       if (rank==owners(receiver)) then
-        call reconcile_reactive_eb_peer_flux_3d(species,geometry(owner),geometry(receiver),int(offset), &
-          received,effective(receiver),ok=valid)
+        if (levels(3)==1) then
+          call reconcile_reactive_eb_peer_flux_3d(species,geometry(owner),geometry(receiver),int(offset), &
+            received,effective(receiver),candidate%fields(receiver)%values,temps%fields(receiver)%values(1,:,:,:),valid)
+        else
+          call reconcile_reactive_eb_peer_flux_3d(species,geometry(owner),geometry(receiver),int(offset), &
+            received,effective(receiver),ok=valid)
+        end if
       end if
       call agree(valid,comm,ready)
       if (.not.ready) return
     end do
     end do
+    ! Provisional level endpoints need peer corrections before child substeps,
+    ! without restriction or averaging from descendants at another time.
+    if (levels(3)==1) then
+      call move_alloc(candidate%fields,state%fields)
+      call move_alloc(temps%fields,temperature%fields)
+      flux=effective;ok=.true.
+      return
+    end if
     do depth=levels(2),levels(1),-1
     do node=1,size(owners)
       if (tree%nodes(node)%level/=depth) cycle
