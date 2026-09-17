@@ -112,7 +112,36 @@ def main():
     alias = options(checkpoint_file="'checkpoint_alias.nml'", checkpoint_interval_steps=1)
     run('checkpoint_alias.nml', alias, False)
     assert (work / 'checkpoint_alias.nml').read_text() == alias
-    print('PASS: two-level EB application, inventories, exact restart and rejected-input preservation')
+    retry_case = source.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.').replace(
+        'transport_enabled=.true.', 'transport_enabled=.false.').replace('time_step=1.0e-8', 'time_step=1.0e-3').replace(
+        'final_time=3.0e-8', 'final_time=1.0e-3').replace('maximum_steps=10', 'maximum_steps=1000')
+    log = run('retry.nml', retry_case, True)
+    rejected = int(log.split('Rejected trials this invocation: ')[1].splitlines()[0])
+    assert rejected > 0, 'case must exercise rejected updates'
+    retry_saved = output.read_bytes(), budget_path.read_bytes()
+    exhausted = retry_case.replace('\n/', '\n maximum_step_retries=0,\n/')
+    run('exhausted.nml', exhausted, False)
+    assert retry_saved == (output.read_bytes(), budget_path.read_bytes())
+    stopped_retry = retry_case.replace('\n/', "\n checkpoint_file='retry.chk', checkpoint_interval_steps=1, "
+                                      "stop_after_checkpoint=.true.,\n/")
+    log = run('retry_stop.nml', stopped_retry, True)
+    assert 'Completed steps: 1' in log
+    first_saved = output.read_bytes(), budget_path.read_bytes()
+    accepted_dt = float((work / 'retry.chk').read_text().splitlines()[3].split()[1])
+    assert 0 < accepted_dt < 1e-3
+    # Replaying only the accepted interval with retries disabled proves the
+    # rejected trials did not alter state or cumulative inventory diagnostics.
+    direct = exhausted.replace('time_step=1.0e-3', f'time_step={accepted_dt:.17e}').replace(
+        'final_time=1.0e-3', f'final_time={accepted_dt:.17e}')
+    run('retry_direct.nml', direct, True)
+    assert first_saved == (output.read_bytes(), budget_path.read_bytes()), 'rejected trial leaked state'
+    resumed_retry = retry_case.replace('\n/', "\n restart_file='retry.chk',\n/")
+    run('retry_resume.nml', resumed_retry, True)
+    assert retry_saved == (output.read_bytes(), budget_path.read_bytes()), 'retry continuation mismatch'
+    invalid_retry = retry_case.replace('\n/', '\n maximum_step_retries=-1,\n/')
+    run('invalid_retry.nml', invalid_retry, False)
+    assert retry_saved == (output.read_bytes(), budget_path.read_bytes())
+    print('PASS: two-level EB application, inventories, exact restart, transactional retry and rejected-input preservation')
 
 
 if __name__ == '__main__':

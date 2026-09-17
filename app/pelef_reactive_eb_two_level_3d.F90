@@ -27,7 +27,7 @@ program pelef_reactive_eb_two_level_3d
   character(len=512) :: level_set_file='',section_file='',output_file='eb_two_level.csv'
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp,time_step=1.e-8_dp,final_time=3.e-8_dp
   character(len=512) :: checkpoint_file='',restart_file=''
-  integer :: checkpoint_interval_steps=0
+  integer :: checkpoint_interval_steps=0,maximum_step_retries=12
   logical :: stop_after_checkpoint=.false.
   real(dp) :: rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,viscosity_enabled=.true.
@@ -36,12 +36,12 @@ program pelef_reactive_eb_two_level_3d
     extrusion_axis,level_set_file,section_file,output_file,domain_lower,domain_upper,plane_position,time_step,final_time, &
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
-    checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),uf(:,:,:,:),tf(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
   real(dp) :: time,dt,theta,error,minimum_theta,minimum_dt
-  integer :: unit,status,close_status,nvar,step,dims(3),nf(3),c
+  integer :: unit,status,close_status,nvar,step,dims(3),nf(3),c,retry,rejected_steps
   character(len=1024) :: input_path,message,budget_path
   logical :: ok
   if (command_argument_count()/=1) error stop 'Usage: pelef_reactive_eb_two_level_3d <input.nml>'
@@ -75,6 +75,7 @@ program pelef_reactive_eb_two_level_3d
   if (output_file==input_path.or.budget_path==input_path.or.output_file==level_set_file.or. &
     budget_path==level_set_file.or.output_file==section_file.or.budget_path==section_file) &
     error stop 'Output aliases an input file'
+  if (maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step retry limit (0:60)'
   if (checkpoint_interval_steps<0) error stop 'Invalid checkpoint interval'
   if ((checkpoint_interval_steps>0.and.len_trim(checkpoint_file)==0).or. &
     (stop_after_checkpoint.and.checkpoint_interval_steps==0)) error stop 'Invalid checkpoint policy'
@@ -127,16 +128,23 @@ program pelef_reactive_eb_two_level_3d
       mask=.not.refined)+fine%dx*fine%dy*fine%dz*sum(abs(uf(c,:,:,:))*fine%volume_fraction))
   end do
   total_boundary=0._dp;total_wall=0._dp;total_chemical=0._dp
-  time=0._dp;step=0;minimum_theta=1._dp;minimum_dt=0._dp
+  time=0._dp;step=0;minimum_theta=1._dp;minimum_dt=0._dp;rejected_steps=0
   if (len_trim(restart_file)>0) call restore_checkpoint()
   do while(time<final_time)
     if (step>=maximum_steps) error stop 'Maximum steps reached before final time'
     dt=min(time_step,final_time-time)
-    if (time+dt<=time) error stop 'Time step cannot advance time'
-    call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,fine_lower,refinement_ratio, &
-      riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
-      species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator)
-    if (.not.ok) error stop 'Two-level EB step rejected; reduce time_step or inspect input'
+    do retry=0,maximum_step_retries
+      if (time+dt<=time) error stop 'Time step cannot advance time'
+      ! The full update is transactional: a rejected trial leaves both grids,
+      ! per-step ledgers and the limiter untouched. Count only accepted steps.
+      call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,fine_lower,refinement_ratio, &
+        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
+        species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator)
+      if (ok) exit
+      rejected_steps=rejected_steps+1
+      if (retry==maximum_step_retries) error stop 'Two-level EB step retry limit exhausted'
+      dt=0.5_dp*dt
+    end do
     total_boundary=total_boundary+boundary;total_wall=total_wall+wall;total_chemical=total_chemical+chemical
     time=time+dt;step=step+1;minimum_theta=min(minimum_theta,theta)
     if (step==1) minimum_dt=dt
@@ -150,6 +158,7 @@ program pelef_reactive_eb_two_level_3d
   end do
   call check_balance()
   call write_output()
+  write(*,'(a,i0)') 'Rejected trials this invocation: ',rejected_steps
   write(*,'(a,i0)') 'Completed steps: ',step
   write(*,'(a,es24.16)') 'Final time: ',time
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
