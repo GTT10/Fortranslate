@@ -546,8 +546,13 @@ faces, regrid reassignment and transactional validation are supported
 this ownership map and a shared Cartesian/AMR particle exchange, preserving
 component and breakup payloads with collective validation/rollback through
 particle crossings, owner changes and regridding
-([evidence](validation/spray-amr-migration-20260918.md)). Tree gas
-sampling/deposition, coupled stepping and EB solid handling remain open.
+([evidence](validation/spray-amr-migration-20260918.md)). Serial composite-field
+sampling/deposition now uses a shared positive cloud-overlap stencil over exposed
+cells, with volume-scaled deposition and covered-parent averaging
+([evidence](validation/spray-amr-coupling-20260918.md)). MPI field exchange,
+thermodynamically admissible gas feedback, coupled particle stepping and EB solid
+handling remain open. Coarse/fine interpolation currently uses piecewise-constant
+cell values; higher-order interface treatment/convergence remain unqualified.
 
 Particle MPI groundwork now includes Cartesian cell ownership and stable send-buffer
 partitioning with component/KH state preservation
