@@ -10,7 +10,8 @@ program test_eb_reactive_wall_flux_3d
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
+    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d, &
+    build_level_set_eb_geometry_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_slip_wall_flux_3d, reactive_eb_slip_wall_source_3d, &
     reactive_eb_flux_divergence_3d
@@ -106,7 +107,8 @@ program test_eb_reactive_wall_flux_3d
   call verify_plane_balance("z", imz)
   block
     type(eb_geometry_2d) :: section
-    real(dp) :: phi(0:nx,0:ny),weighted_residual
+    real(dp) :: phi(0:nx,0:ny),sphere(0:nx,0:ny,0:nz),weighted_residual
+    integer :: mode
     do j=0,ny
       do i=0,nx
         phi(i,j)=(real(i,dp)/nx-.5_dp)**2+(real(j,dp)/ny-.5_dp)**2-.29_dp**2
@@ -116,6 +118,19 @@ program test_eb_reactive_wall_flux_3d
     call require(ok,'curved wall section')
     call extrude_eb_geometry_3d(section,3,nz,0._dp,1._dp,geometry,ok)
     call require(ok,'curved wall extrusion')
+    do mode=1,2
+      if (mode==2) then
+        do k=0,nz
+          do j=0,ny
+            do i=0,nx
+              sphere(i,j,k)=(real(i,dp)/nx-.5_dp)**2+(real(j,dp)/ny-.5_dp)**2 &
+                +(real(k,dp)/nz-.5_dp)**2-.29_dp**2
+            end do
+          end do
+        end do
+        call build_level_set_eb_geometry_3d(sphere,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],geometry,ok)
+        call require(ok,'fully 3D spherical wall')
+      end if
     ! Reuse the uniform-pressure Cartesian face fluxes from the plane check.
     call reactive_eb_flux_divergence_3d(species,state,temperature_field,geometry,x_flux,y_flux,z_flux,rhs,ok)
     call require(ok,'curved wall pressure divergence')
@@ -130,6 +145,7 @@ program test_eb_reactive_wall_flux_3d
     end do
     call require(weighted_residual<=2.e-10_dp*pressure*max(geometry%dx*geometry%dy, &
       geometry%dx*geometry%dz,geometry%dy*geometry%dz),'curved wall uniform-pressure balance')
+    end do
   end block
 
 

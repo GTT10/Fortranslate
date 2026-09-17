@@ -1,6 +1,7 @@
 module eb_geometry_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use eb_polyhedron_clip_mod, only: clip_level_set_triangle,clip_level_set_tetrahedron
   use eb_geometry_2d_mod, only: eb_geometry_2d
   implicit none
   private
@@ -56,9 +57,141 @@ module eb_geometry_3d_mod
     procedure :: is_valid => eb_geometry_3d_is_valid
   end type eb_geometry_3d
 
-  public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
+  public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
 
 contains
+
+  ! Six tetrahedra per Cartesian cell, using the common lower-to-upper diagonal.
+  ! Positive nodal level set is fluid; facets use linear tetrahedral interpolation.
+  subroutine build_level_set_eb_geometry_3d(phi,lower,upper,geometry,ok)
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3)
+    type(eb_geometry_3d), intent(inout) :: geometry
+    logical, intent(out) :: ok
+    integer, parameter :: permutations(3,6)=reshape([1,2,3,1,3,2,2,1,3,2,3,1,3,1,2,3,2,1],[3,6])
+    type(eb_geometry_3d) :: candidate
+    integer :: dims(3),index(3),bits(3,4),i,j,k,t,d,side,a,b,q,r,ids(4)
+    logical :: connected(8,8),active(8),reached(8)
+    real(dp) :: h(3),center(3),vertices(3,4),values(4),v,m(3),area,wm(3),ni(3)
+    real(dp) :: total_v,total_m(3),total_area,total_wm(3),total_ni(3),norm,fraction,face_area,face_m(3),offset(3)
+    logical :: valid
+    ok=.false.;dims=shape(phi)-1
+    if (any(dims<1).or..not.all(ieee_is_finite(phi))) return
+    if (.not.all(ieee_is_finite(lower)).or..not.all(ieee_is_finite(upper)).or.any(upper<=lower)) return
+    h=(upper-lower)/real(dims,dp)
+    if (.not.all(ieee_is_finite(h)).or.any(h<=0._dp)) return
+    if (.not.ieee_is_finite(product(h)).or.product(h)<=tiny(1._dp)) return
+    candidate%nx=dims(1);candidate%ny=dims(2);candidate%nz=dims(3)
+    candidate%x_lower=lower(1);candidate%x_upper=upper(1);candidate%dx=h(1)
+    candidate%y_lower=lower(2);candidate%y_upper=upper(2);candidate%dy=h(2)
+    candidate%z_lower=lower(3);candidate%z_upper=upper(3);candidate%dz=h(3)
+    call allocate_geometry_arrays(candidate)
+    call clear_geometry_arrays(candidate)
+    do k=1,dims(3)
+      do j=1,dims(2)
+        do i=1,dims(1)
+          index=[i,j,k];center=lower+(real(index,dp)-.5_dp)*h
+          total_v=0._dp;total_m=0._dp;total_area=0._dp;total_wm=0._dp;total_ni=0._dp
+          connected=.false.;active=.false.
+          do t=1,6
+            bits=0;bits(permutations(1,t),2)=1
+            bits(:,3)=bits(:,2);bits(permutations(2,t),3)=1;bits(:,4)=1
+            call sample_vertices()
+            ids=1+bits(1,:)+2*bits(2,:)+4*bits(3,:)
+            do q=1,4
+              if (values(q)<=0._dp) cycle
+              active(ids(q))=.true.
+              do r=1,4
+                if (values(r)>0._dp) connected(ids(q),ids(r))=.true.
+              end do
+            end do
+            call clip_level_set_tetrahedron(vertices,values,v,m,area,wm,ni,valid)
+            if (.not.valid) return
+            total_v=total_v+v;total_m=total_m+m
+            total_area=total_area+area;total_wm=total_wm+wm;total_ni=total_ni+ni
+          end do
+          ! A single cell state cannot represent disconnected positive-volume
+          ! fluid components. Connectivity follows the actual tetrahedral mesh.
+          if (any(active)) then
+            reached=.false.;reached(findloc(active,.true.,dim=1))=.true.
+            do t=1,8
+              do q=1,8
+                if (reached(q)) reached=reached.or.connected(:,q)
+              end do
+            end do
+            if (any(active.and..not.reached)) return
+          end if
+          fraction=total_v/product(h)
+          if (fraction< -classification_tolerance.or.fraction>1._dp+classification_tolerance) return
+          candidate%volume_fraction(i,j,k)=max(0._dp,min(1._dp,fraction))
+          if (fraction<=classification_tolerance) then
+            candidate%cell_type(i,j,k)=eb_covered_cell_3d
+          else if (fraction>=1._dp-classification_tolerance) then
+            candidate%cell_type(i,j,k)=eb_regular_cell_3d
+          else
+            if (total_area<=0._dp) return
+            norm=norm2(total_ni)
+            if (norm<=tiny(1._dp)) return
+            candidate%cell_type(i,j,k)=eb_cut_cell_3d
+            offset=total_m/total_v/h
+            candidate%cell_centroid_x(i,j,k)=offset(1)
+            candidate%cell_centroid_y(i,j,k)=offset(2)
+            candidate%cell_centroid_z(i,j,k)=offset(3)
+            candidate%boundary_area(i,j,k)=total_area
+            offset=center+total_wm/total_area
+            candidate%boundary_centroid_x(i,j,k)=offset(1)
+            candidate%boundary_centroid_y(i,j,k)=offset(2)
+            candidate%boundary_centroid_z(i,j,k)=offset(3)
+            candidate%boundary_normal_x(i,j,k)=total_ni(1)/norm
+            candidate%boundary_normal_y(i,j,k)=total_ni(2)/norm
+            candidate%boundary_normal_z(i,j,k)=total_ni(3)/norm
+            candidate%boundary_normal_integral_x(i,j,k)=total_ni(1)
+            candidate%boundary_normal_integral_y(i,j,k)=total_ni(2)
+            candidate%boundary_normal_integral_z(i,j,k)=total_ni(3)
+          end if
+          do d=1,3
+            a=mod(d,3)+1;b=mod(d+1,3)+1
+            do side=0,1
+              bits=0;bits(d,:)=side;bits(a,2:3)=1;bits(b,3:4)=1
+              call sample_vertices()
+              call clip_level_set_triangle(vertices(:,[1,2,3]),values([1,2,3]),face_area,face_m,valid)
+              if (.not.valid) return
+              call clip_level_set_triangle(vertices(:,[1,3,4]),values([1,3,4]),area,wm,valid)
+              if (.not.valid) return
+              face_area=face_area+area;face_m=face_m+wm
+              fraction=max(0._dp,min(1._dp,face_area/(h(a)*h(b))))
+              offset=0._dp
+              if (face_area>0._dp) offset=face_m/face_area/h
+              select case(d)
+              case(1)
+                candidate%x_face_fraction(i-1+side,j,k)=fraction
+                candidate%x_face_centroid_y(i-1+side,j,k)=offset(2)
+                candidate%x_face_centroid_z(i-1+side,j,k)=offset(3)
+              case(2)
+                candidate%y_face_fraction(i,j-1+side,k)=fraction
+                candidate%y_face_centroid_x(i,j-1+side,k)=offset(1)
+                candidate%y_face_centroid_z(i,j-1+side,k)=offset(3)
+              case(3)
+                candidate%z_face_fraction(i,j,k-1+side)=fraction
+                candidate%z_face_centroid_x(i,j,k-1+side)=offset(1)
+                candidate%z_face_centroid_y(i,j,k-1+side)=offset(2)
+              end select
+            end do
+          end do
+        end do
+      end do
+    end do
+    if (.not.candidate%is_valid()) return
+    geometry=candidate;ok=.true.
+  contains
+    subroutine sample_vertices()
+      integer :: vertex
+      do vertex=1,4
+        vertices(:,vertex)=(real(bits(:,vertex),dp)-.5_dp)*h
+        values(vertex)=phi(i-1+bits(1,vertex),j-1+bits(2,vertex),k-1+bits(3,vertex))
+      end do
+    end subroutine
+  end subroutine build_level_set_eb_geometry_3d
+
 
   ! Extrude an already validated piecewise-linear 2D section. Cyclic coordinates:
   ! axis 1 -> section(y,z), axis 2 -> section(z,x), axis 3 -> section(x,y).

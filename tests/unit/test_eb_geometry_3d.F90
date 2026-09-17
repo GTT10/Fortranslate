@@ -4,7 +4,7 @@ program test_eb_geometry_3d
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
+    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
   implicit none
 
   integer, parameter :: nx = 10
@@ -203,6 +203,68 @@ program test_eb_geometry_3d
     section%volume_fraction(1,1)=-1._dp
     call extrude_eb_geometry_3d(section,3,3,2._dp,4.5_dp,prior,ok)
     call require(.not.ok.and.prior%is_valid(),'invalid section preserves geometry')
+  end block
+
+  block
+    type(eb_geometry_3d) :: cut,opposite,saved
+    real(dp) :: phi(0:10,0:8,0:6),volume,expected,moment(3),position(3),cell_volume
+    integer :: ii,jj,kk
+    do kk=0,6
+      do jj=0,8
+        do ii=0,10
+          phi(ii,jj,kk)=real(ii,dp)/10+real(jj,dp)/8+real(kk,dp)/6-2.13_dp
+        end do
+      end do
+    end do
+    call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cut,ok)
+    call require(ok.and.cut%is_valid(),'fully 3D oblique plane')
+    cell_volume=cut%dx*cut%dy*cut%dz
+    expected=.87_dp**3/6._dp
+    volume=sum(cut%volume_fraction)*cell_volume
+    call assert_close(volume,expected,tolerance,'analytic corner tetrahedron volume')
+    call assert_close(sum(cut%boundary_area),sqrt(3._dp)*.87_dp**2/2._dp,tolerance,'analytic oblique facet area')
+    moment=0._dp
+    do kk=1,6
+      do jj=1,8
+        do ii=1,10
+          position=[(real(ii,dp)-.5_dp+cut%cell_centroid_x(ii,jj,kk))*cut%dx, &
+            (real(jj,dp)-.5_dp+cut%cell_centroid_y(ii,jj,kk))*cut%dy, &
+            (real(kk,dp)-.5_dp+cut%cell_centroid_z(ii,jj,kk))*cut%dz]
+          moment=moment+position*cut%volume_fraction(ii,jj,kk)*cell_volume
+        end do
+      end do
+    end do
+    call assert_close(maxval(abs(moment/volume-(1._dp-.87_dp/4._dp))),0._dp,tolerance,'analytic 3D centroid')
+    do kk=0,6
+      do jj=0,8
+        do ii=0,10
+          phi(ii,jj,kk)=(real(ii,dp)/10-.5_dp)**2+(real(jj,dp)/8-.5_dp)**2 &
+            +(real(kk,dp)/6-.5_dp)**2-.29_dp**2
+        end do
+      end do
+    end do
+    call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cut,ok)
+    call require(ok.and.cut%is_valid(),'faceted fully 3D sphere')
+    call build_level_set_eb_geometry_3d(-phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],opposite,ok)
+    call require(ok.and.opposite%is_valid(),'complementary sphere')
+    call assert_close(maxval(abs(cut%volume_fraction+opposite%volume_fraction-1._dp)),0._dp, &
+      tolerance,'cellwise complement volume')
+    call assert_close(maxval(abs(cut%boundary_area-opposite%boundary_area)),0._dp,tolerance,'complement wall area')
+    call assert_close(maxval(abs(cut%boundary_normal_integral_x+opposite%boundary_normal_integral_x)), &
+      0._dp,tolerance,'complement x normal')
+    call assert_close(maxval(abs(cut%boundary_normal_integral_y+opposite%boundary_normal_integral_y)), &
+      0._dp,tolerance,'complement y normal')
+    call assert_close(maxval(abs(cut%boundary_normal_integral_z+opposite%boundary_normal_integral_z)), &
+      0._dp,tolerance,'complement z normal')
+    call assert_close(maximum_geometric_residual(cut),0._dp,tolerance,'sphere discrete closure')
+    call require(count(cut%cell_type==eb_covered_cell_3d)>0.and.count(cut%cell_type==eb_cut_cell_3d)>0, &
+      'sphere has covered and cut cells')
+    saved=cut;phi(0,0,0)=ieee_value(0._dp,ieee_quiet_nan)
+    call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cut,ok)
+    call require(.not.ok.and.all(cut%volume_fraction==saved%volume_fraction),'bad 3D level set rollback')
+    phi=-1._dp;phi(1,0,0)=1._dp;phi(0,1,0)=1._dp
+    call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cut,ok)
+    call require(.not.ok.and.all(cut%volume_fraction==saved%volume_fraction),'disconnected cell rejected atomically')
   end block
 
   write(*, '(a)') "test_eb_geometry_3d: PASS"

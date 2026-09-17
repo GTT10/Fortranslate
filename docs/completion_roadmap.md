@@ -100,8 +100,10 @@ remain part of the completion work. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
 normal integrals and uniform-pressure balance. Nonplanar section-file geometry now connects
 to fixed/selected application inputs and geometry-bound restart. Outward-neighbor StateRedist connects
-nonplanar hydro/transport/reaction updates in a focused extruded-section case; arbitrary
-fully 3D surfaces and EB-AMR-MPI coupling remain open.
+nonplanar hydro/transport/reaction updates in a focused extruded-section case.
+A 3D nodal level-set builder now supplies tetrahedrally reconstructed cell/face
+metrics and pressure balance. Next wire this geometry into application/restart
+and coupled updates; broader stabilization and EB-AMR-MPI coupling remain open.
 
 Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with conservative
 remapping, overlap reuse and geometry-aware changed-rank restart, including
