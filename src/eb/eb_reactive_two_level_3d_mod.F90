@@ -20,6 +20,7 @@ module eb_reactive_two_level_3d_mod
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
   end type eb_reactive_patch_3d
+  public :: tag_reactive_eb_temperature_3d
   public :: remap_reactive_eb_multipatch_3d
   public :: advance_reactive_eb_multipatch_full_3d
   public :: advance_reactive_eb_multipatch_euler_3d,advance_reactive_eb_multipatch_transport_3d
@@ -28,6 +29,109 @@ module eb_reactive_two_level_3d_mod
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
   public :: advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_full_3d
 contains
+  ! Deterministic coarse-index tiles selected by hot exposed fluid cells.
+  ! Parent values hidden by fine patches and solid-cell values do not vote.
+  subroutine tag_reactive_eb_temperature_3d(coarse,coarse_temperature,lower,ratio,patches, &
+      threshold,tile_shape,buffer,maximum_patches,tag_lower,tag_upper,ok)
+    type(eb_geometry_3d), intent(in) :: coarse
+    real(dp), intent(in) :: coarse_temperature(:,:,:),threshold
+    integer, intent(in) :: lower(:,:),ratio,tile_shape(3),buffer,maximum_patches
+    type(eb_reactive_patch_3d), intent(in) :: patches(:)
+    integer, allocatable, intent(inout) :: tag_lower(:,:),tag_upper(:,:)
+    logical, intent(out) :: ok
+    type(eb_geometry_3d) :: section,restricted
+    logical, allocatable :: refined(:,:,:),hot(:,:,:),padded(:,:,:)
+    integer, allocatable :: candidate_lower(:,:),candidate_upper(:,:)
+    integer :: n(3),d(3),upper(3),index(3),lo(3),hi(3),tile(3),pad(3)
+    integer :: p,i,j,k,count,pass,allocation_status
+    real(dp) :: temperature
+    logical :: valid
+    ok=.false.
+    if (.not.coarse%is_valid()) return
+    if (.not.ieee_is_finite(threshold)) return
+    if (threshold<=0._dp.or.ratio<1.or.any(tile_shape<1).or.buffer<0.or.maximum_patches<1) return
+    n=[coarse%nx,coarse%ny,coarse%nz]
+    if (any(shape(coarse_temperature)/=n).or.any(shape(lower)/=[3,size(patches)])) return
+    allocate(refined(n(1),n(2),n(3)),hot(n(1),n(2),n(3)),padded(n(1),n(2),n(3)),stat=allocation_status)
+    if (allocation_status/=0) return
+    refined=.false.;hot=.false.;padded=.false.
+    do p=1,size(patches)
+      if (.not.patches(p)%geometry%is_valid().or..not.allocated(patches(p)%temperature)) return
+      d=[patches(p)%geometry%nx,patches(p)%geometry%ny,patches(p)%geometry%nz]
+      if (any(shape(patches(p)%temperature)/=d)) return
+      if (any(mod(d,ratio)/=0).or.any(lower(:,p)<1).or.any(lower(:,p)>n)) return
+      if (any(d/ratio>n-lower(:,p)+1)) return
+      upper=lower(:,p)+d/ratio-1
+      if (any(refined(lower(1,p):upper(1),lower(2,p):upper(2),lower(3,p):upper(3)))) return
+      call coarsen_eb_geometry_3d(patches(p)%geometry,ratio,restricted,valid)
+      if (.not.valid) return
+      call extract_eb_geometry_3d(coarse,lower(:,p),upper,section,valid)
+      if (.not.valid) return
+      if (.not.matching_metrics(section,restricted)) return
+      refined(lower(1,p):upper(1),lower(2,p):upper(2),lower(3,p):upper(3))=.true.
+      do k=1,d(3)
+      do j=1,d(2)
+      do i=1,d(1)
+        if (patches(p)%geometry%volume_fraction(i,j,k)<=0._dp) cycle
+        temperature=patches(p)%temperature(i,j,k)
+        if (.not.ieee_is_finite(temperature)) return
+        if (temperature<=0._dp) return
+        if (temperature<threshold) cycle
+        index=lower(:,p)+([i,j,k]-1)/ratio
+        hot(index(1),index(2),index(3))=.true.
+      end do
+      end do
+      end do
+    end do
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if (refined(i,j,k).or.coarse%volume_fraction(i,j,k)<=0._dp) cycle
+      temperature=coarse_temperature(i,j,k)
+      if (.not.ieee_is_finite(temperature)) return
+      if (temperature<=0._dp) return
+      if (temperature>=threshold) hot(i,j,k)=.true.
+    end do
+    end do
+    end do
+    ! Clip before adding the halo width, including arbitrarily large buffers.
+    pad=min(buffer,n)
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if (.not.hot(i,j,k)) cycle
+      index=[i,j,k];lo=index-min(pad,index-1);hi=index+min(pad,n-index)
+      padded(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.true.
+    end do
+    end do
+    end do
+    tile=min(tile_shape,n)
+    do pass=1,2
+      count=0
+      do k=1,n(3),tile(3)
+      do j=1,n(2),tile(2)
+      do i=1,n(1),tile(1)
+        lo=[i,j,k];hi=lo+min(tile-1,n-lo)
+        if (.not.any(padded(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)))) cycle
+        ! A buffered tile made entirely of solid cells needs no fine patch.
+        if (.not.any(coarse%volume_fraction(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))>0._dp)) cycle
+        if (count==maximum_patches) return
+        count=count+1
+        if (pass==2) then
+          candidate_lower(:,count)=lo;candidate_upper(:,count)=hi
+        end if
+      end do
+      end do
+      end do
+      if (pass==1) then
+        allocate(candidate_lower(3,count),candidate_upper(3,count),stat=allocation_status)
+        if (allocation_status/=0) return
+      end if
+    end do
+    call move_alloc(candidate_lower,tag_lower);call move_alloc(candidate_upper,tag_upper)
+    ok=.true.
+  end subroutine tag_reactive_eb_temperature_3d
+
   ! Fixed-geometry conservative regridding. New patch geometries are supplied
   ! by the caller. Old/new arrays must be distinct; all output publishes once.
   subroutine remap_reactive_eb_multipatch_3d(species,coarse,old_lower,old_ratio,old_patches, &

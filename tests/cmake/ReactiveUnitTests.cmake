@@ -712,3 +712,7 @@ add_test(NAME regression_scheduled_eb_two_level_3d
     --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/scheduled.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/scheduled_eb_two_level_3d")
 set_tests_properties(regression_scheduled_eb_two_level_3d PROPERTIES TIMEOUT 180)
+
+add_executable(test_eb_temperature_tagging_3d unit/test_eb_temperature_tagging_3d.F90)
+target_link_libraries(test_eb_temperature_tagging_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_temperature_tagging_3d COMMAND test_eb_temperature_tagging_3d)
