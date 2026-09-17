@@ -51,7 +51,29 @@ wall and chemistry inventories. CSVs are analysis outputs, not restart files. Ou
 not alias the gas, spray or geometry inputs; checks normalize lexical absolute
 paths, not filesystem symlinks.
 
-Checkpoint/restart settings are explicitly rejected. Independent nozzle ports, physical
+## Save and resume
+
+The existing gas settings `checkpoint_interval_steps=N` and
+`checkpoint_file='run.chk'` publish immutable snapshots named `run.chk.stepN`,
+`run.chk.step2N`, etc. `stop_after_checkpoint=.true.` exits after the first new
+snapshot. Saving happens after all injections at the accepted time, before final
+CSV output. Resume with `restart_file='run.chk.stepN'`; the saved step is not
+immediately saved again. Use a fresh prefix when rerunning a save, because an
+existing snapshot is never overwritten.
+
+Snapshots include gas, temperature, every parcel field, component masses, next
+event, last ID, initial gas inventory and cumulative injected/exterior/wall/
+chemistry ledgers. Restart skips initial injection and resumes pending events.
+Final time, maximum step count, output paths and checkpoint controls may change.
+Geometry values, gas configuration, mechanism/transport tables, liquid options,
+spray schedule and timestep controls must match. The context currently has a
+131072-character capacity; large geometry/mechanism combinations can exceed it
+and are explicitly rejected. This is a bounded serial format, with Linux atomic
+publication inherited from the spray checkpoint API, not a power-loss durability
+or cross-compiler restart guarantee. Covered cells retain valid EOS states from
+the initializer and are checked by the existing checkpoint reader.
+
+Independent nozzle ports, physical
 outer-boundary particle events, wall-film formation and distributed EB/AMR
 particles remain open. Trial trajectories must stay in the root domain. The
 particle source/drift split is first order; this synthetic implementation case

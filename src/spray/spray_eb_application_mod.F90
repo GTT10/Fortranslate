@@ -10,13 +10,16 @@ module spray_eb_application_mod
   use reactive_1d_mod, only: reactive_nvar
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
-  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,write_reactive_eb_3d_csv
+  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,write_reactive_eb_3d_csv, &
+    reactive_eb_integrals_3d
   use reactive_eb_cfl_3d_mod, only: compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive
   use spray_eb_field_mod, only: eb_spray_stencil
+  use spray_checkpoint_mod, only: write_spray_checkpoint,read_spray_checkpoint,spray_checkpoint_context_capacity
+  use amr_reactive_3d_checkpoint_mod, only: write_selected_checkpoint_context
   implicit none
   private
   public :: run_eb_spray_application
@@ -49,15 +52,18 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales
     type(eb_geometry_3d) :: g
+    type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_liquid) :: effective
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: phi(:,:,:),state(:,:,:,:),temperature(:,:,:),masses(:,:)
-    real(dp), allocatable :: boundary(:),wall(:),chemical(:),sb(:),sw(:),sc(:),injected(:)
+    real(dp), allocatable :: boundary(:),wall(:),chemical(:),sb(:),sw(:),sc(:),injected(:),initial(:)
     real(dp) :: time,dt,hydro_dt,transport_dt,diffusivity,theta,rho,cp,e
     integer :: unit,status,close_status,nv,n,p,step,attempt,particle_steps,next_event
     integer(int64) :: last_id
     logical :: ok
+    integer :: last_checkpoint_step
+    character(len=:), allocatable :: context,checkpoint_path
     character(len=1024) :: message
     character(len=24) :: component_label
     character(len=:), allocatable :: header
@@ -71,8 +77,8 @@ contains
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
     if (config%geometry_type/='level_set') error stop 'EB spray requires nodal level-set geometry'
-    if (config%checkpoint_interval_steps/=0.or.len_trim(config%restart_file)>0.or.config%stop_after_checkpoint) &
-      error stop 'EB spray checkpoint is not yet supported'
+    if(len_trim(config%restart_file)>0) call check_checkpoint_path(config%restart_file)
+    if(config%checkpoint_interval_steps>0) call check_checkpoint_path(config%checkpoint_file)
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=status)
     if(status/=0) error stop 'Cannot open EB spray input'
     read(unit,nml=eb_spray,iostat=status)
@@ -107,16 +113,48 @@ contains
     allocate(drops(0),masses(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
-    allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv))
+    allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv),initial(nv))
     call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
-    time=0;step=0;boundary=0;wall=0;chemical=0;injected=0
+    call reactive_eb_integrals_3d(state,g,initial,ok)
+    if(.not.ok) error stop 'Invalid initial EB gas inventory'
+    time=0;step=0;boundary=0;wall=0;chemical=0;injected=0;last_checkpoint_step=0
+    if(config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0) call build_context()
+    if(len_trim(config%restart_file)>0) then
+      call read_spray_checkpoint(config%restart_file,context,species,state,temperature,drops,time,step,next_event, &
+        initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
+        breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
+        component_mass=masses,last_id=last_id)
+      if(.not.ok) then
+        write(*,'(a)') trim(message)
+        error stop 'EB spray restart rejected'
+      end if
+      call validate_restart()
+      last_checkpoint_step=step
+    end if
     do
       do while(next_event<=injection_events)
         if(injection_times(next_event)>time) exit
         call inject_event()
         next_event=next_event+1
       end do
+      if(config%checkpoint_interval_steps>0.and.step>last_checkpoint_step) then
+        if(modulo(step,config%checkpoint_interval_steps)==0) then
+          write(component_label,'(i0)') step
+          checkpoint_path=trim(config%checkpoint_file)//'.step'//trim(component_label)
+          call check_checkpoint_path(checkpoint_path)
+          call write_spray_checkpoint(checkpoint_path,context,species,state,temperature,drops,time,step,next_event, &
+            initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
+            breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
+            component_mass=masses,last_id=last_id)
+          if(.not.ok) then
+            write(*,'(a)') trim(message)
+            error stop 'EB spray checkpoint rejected'
+          end if
+          last_checkpoint_step=step
+          if(config%stop_after_checkpoint) exit
+        end if
+      end if
       if(time>=config%final_time) exit
       if(step>=config%maximum_steps) error stop 'EB spray maximum_steps exhausted'
       call compute_reactive_eb_cfl_timestep_3d(species,state,temperature,g,config%cfl,hydro_dt,ok)
@@ -169,6 +207,78 @@ contains
     write(*,'(a,*(es25.16,1x))') 'Wall inventory: ',wall
     write(*,'(a,*(es25.16,1x))') 'Chemistry inventory: ',chemical
   contains
+    subroutine build_context()
+      integer :: scratch,ios,j,k,length
+      character(len=spray_checkpoint_context_capacity) :: line
+      character(len=32) :: method
+      real(dp) :: composition(size(species))
+      canonical=config
+      canonical%final_time=0;canonical%maximum_steps=0;canonical%output_file=''
+      canonical%checkpoint_interval_steps=0;canonical%checkpoint_file='';canonical%restart_file=''
+      canonical%stop_after_checkpoint=.false.;canonical%level_set_file=''
+      method='default';if(present(integrator)) method=integrator
+      composition=0
+      if(present(mole_fractions)) composition=mole_fractions
+      open(newunit=scratch,status='scratch',form='formatted',delim='quote',iostat=ios)
+      if(ios/=0) error stop 'Cannot prepare EB checkpoint context'
+      write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V1'
+      if(ios==0) write(scratch,*,iostat=ios) canonical
+      if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
+      do j=1,size(species)
+        if(ios==0) write(scratch,*,iostat=ios) species(j)
+        if(ios==0) write(scratch,*,iostat=ios) transport(j)
+      end do
+      if(ios==0) call write_selected_checkpoint_context(scratch,reactions,'EB_SPRAY_V1',method,composition, &
+        config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,ios)
+      do k=0,g%nz
+      do j=0,g%ny
+        if(ios==0) write(scratch,'(*(es26.17e3,1x))',iostat=ios) phi(:,j,k)
+      end do
+      end do
+      if(ios/=0) error stop 'Cannot serialize EB checkpoint context'
+      rewind(scratch,iostat=ios)
+      if(ios/=0) error stop 'Cannot rewind EB checkpoint context'
+      context=''
+      do
+        read(scratch,'(a)',iostat=ios) line
+        if(ios<0) exit
+        if(ios/=0.or.len_trim(line)==len(line)) error stop 'EB checkpoint context line exceeds capacity'
+        length=len(context)+len_trim(line)+1
+        if(length>spray_checkpoint_context_capacity) error stop 'EB checkpoint context exceeds capacity'
+        context=context//trim(line)//'|'
+      end do
+      close(scratch)
+    end subroutine
+    subroutine validate_restart()
+      integer :: q,expected_count,cells(3,8)
+      real(dp) :: weights(8),volumes(8)
+      logical :: valid
+      if(time>config%final_time.or.step>config%maximum_steps) error stop 'Restart exceeds continuation limits'
+      if(next_event<1.or.next_event>injection_events+1) error stop 'Invalid restart event index'
+      if(next_event<=injection_events) then
+        if(injection_times(next_event)<=time) error stop 'Unprocessed restart injection event'
+      end if
+      if(next_event>1) then
+        if(injection_times(next_event-1)>time) error stop 'Restart injection ahead of time'
+      end if
+      expected_count=count(injection_scales(:next_event-1)>0)*number
+      if(size(drops)/=expected_count.or.last_id/=int(expected_count,int64)) error stop 'Invalid restart injection IDs'
+      if(size(drops)>min(125000,options%maximum_parcels)) error stop 'Restart exceeds population capacity'
+      if(any(shape(masses)/=[nc,size(drops)])) error stop 'Restart component shape mismatch'
+      cells=0;weights=0;volumes=0
+      do q=1,size(drops)
+        if(drops(q)%id/=int(q,int64)) error stop 'Restart parcel ID sequence mismatch'
+        call eb_spray_stencil(g,phi,drops(q)%position,cells,weights,volumes,valid)
+        if(.not.valid) error stop 'Restart parcel outside fluid'
+      end do
+    end subroutine
+    subroutine check_checkpoint_path(path)
+      character(len=*), intent(in) :: path
+      call check_output(path)
+      if(selected_reactor_paths_alias_lexically(absolute_path(path),absolute_path(config%output_file)).or. &
+         selected_reactor_paths_alias_lexically(absolute_path(path), &
+           absolute_path(trim(config%output_file)//'.particles.csv'))) error stop 'Checkpoint aliases CSV output'
+    end subroutine
     subroutine inject_event()
       type(spray_parcel), allocatable :: added(:),candidate(:)
       real(dp), allocatable :: candidate_mass(:,:)

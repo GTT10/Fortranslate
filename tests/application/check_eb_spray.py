@@ -14,6 +14,7 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--scheduled', action='store_true')
+p.add_argument('--restart', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -64,6 +65,52 @@ if a.scheduled:
     # Tied positive events have identical evolution, and the zero event consumes no IDs.
     for left, right in zip(rows[:2], rows[2:4]):
         assert all(left[key] == right[key] for key in left if key != 'id')
+if a.restart:
+    full_gas = (work / 'gas.csv').read_bytes()
+    full_particles = (work / 'gas.csv.particles.csv').read_bytes()
+    full_log = result.stdout
+    base_gas = (work / 'gas.nml').read_text()
+    split = base_gas.replace(" output_file=", " checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='save.chk'\n output_file=")
+    (work / 'split.nml').write_text(split)
+    run = subprocess.run([exe, 'split.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'save.log').write_text(run.stdout + run.stderr)
+    assert run.returncode == 0, (work, run.stderr)
+    checkpoint = work / 'save.chk.step1'
+    assert checkpoint.exists()
+    resume = base_gas.replace(" output_file=", " restart_file='save.chk.step1'\n output_file=")
+    (work / 'resume.nml').write_text(resume)
+    run = subprocess.run([exe, 'resume.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'resume.log').write_text(run.stdout + run.stderr)
+    assert run.returncode == 0, (work, run.stderr)
+    assert (work / 'gas.csv').read_bytes() == full_gas
+    assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+    for label in ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chemistry inventory:'):
+        before = next(line for line in full_log.splitlines() if line.startswith(label))
+        after = next(line for line in run.stdout.splitlines() if line.startswith(label))
+        assert before == after, (label, work)
+    # Immutable publication, context change and a truncated payload must reject.
+    run = subprocess.run([exe, 'split.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'overwrite.log').write_text(run.stdout + run.stderr)
+    assert run.returncode != 0
+    changed = (work / 'spray.nml').read_text().replace('liquid_temperature=350', 'liquid_temperature=351')
+    (work / 'changed.nml').write_text(changed)
+    run = subprocess.run([exe, 'resume.nml', 'changed.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'context.log').write_text(run.stdout + run.stderr)
+    assert run.returncode != 0
+    geometry = (work / 'level_set.dat').read_bytes()
+    lines = geometry.decode().splitlines()
+    lines[1:] = [' '.join(f'{float(value) + 1e-8:.16e}' for value in line.split()) for line in lines[1:]]
+    (work / 'level_set.dat').write_text('\n'.join(lines) + '\n')
+    run = subprocess.run([exe, 'resume.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'geometry_context.log').write_text(run.stdout + run.stderr)
+    (work / 'level_set.dat').write_bytes(geometry)
+    assert run.returncode != 0
+    payload = checkpoint.read_bytes()
+    (work / 'truncated.chk').write_bytes(payload[:-50])
+    (work / 'truncated.nml').write_text(resume.replace('save.chk.step1', 'truncated.chk'))
+    run = subprocess.run([exe, 'truncated.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+    (work / 'truncated.log').write_text(run.stdout + run.stderr)
+    assert run.returncode != 0 and checkpoint.read_bytes() == payload
 # An output alias must fail before overwriting the spray input (absolute/relative mix).
 original = (work / 'spray.nml').read_bytes()
 gas = (work / 'gas.nml').read_text().replace("output_file='gas.csv'", f"output_file='{work / 'spray.nml'}'")

@@ -85,12 +85,12 @@ contains
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state)
+      retired_parent_state,chemistry_totals)
     integer(int64), intent(in), optional :: last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical, intent(in), optional :: retired_parent_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
-    character(len=80) :: expected_magic
+    character(len=128) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -99,7 +99,7 @@ contains
     integer, intent(in) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    real(dp), intent(in), optional :: boundary_totals(:),source_totals(:)
+    real(dp), intent(in), optional :: boundary_totals(:),source_totals(:),chemistry_totals(:)
     real(dp), intent(in), optional :: component_mass(:,:),film_component_mass(:,:)
     real(dp), allocatable :: check(:,:,:)
     character(len=:), allocatable :: temporary
@@ -129,6 +129,10 @@ contains
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
     end if
+    if (present(chemistry_totals)) then
+      if (size(chemistry_totals)/=size(state,1)) return
+      expected_magic=trim(expected_magic)//'_CHEM_V1'
+    end if
     if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
     if (has_films) then
       if (.not.present(wall_films)) return
@@ -156,6 +160,9 @@ contains
     end if
     if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>spray_checkpoint_context_capacity) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
+    if (present(chemistry_totals)) then
+      if (.not.all(ieee_is_finite(chemistry_totals))) return
+    end if
     if (size(reference_totals) /= size(state,1) .or. size(injected_totals) /= size(state,1)) return
     if (.not. all(ieee_is_finite([time,reference_totals,injected_totals]))) return
     if (time < 0.0_dp .or. steps < 0 .or. event < 0 .or. size(parcels)>1000000) return
@@ -231,6 +238,9 @@ contains
     if (present(source_totals)) then
       if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) source_totals
     end if
+    if (present(chemistry_totals)) then
+      if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) chemistry_totals
+    end if
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
@@ -288,13 +298,13 @@ contains
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state)
+      retired_parent_state,chemistry_totals)
     integer(int64), intent(inout), optional :: last_id
     integer(int64) :: candidate_last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical, intent(in), optional :: retired_parent_state
     logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
-    character(len=80) :: expected_magic
+    character(len=128) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -305,11 +315,11 @@ contains
     integer, intent(inout) :: steps,event
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    real(dp), intent(inout), optional :: boundary_totals(:),source_totals(:)
+    real(dp), intent(inout), optional :: boundary_totals(:),source_totals(:),chemistry_totals(:)
     real(dp), allocatable, intent(inout), optional :: component_mass(:,:),film_component_mass(:,:)
     real(dp), allocatable :: mass_candidate(:,:),film_mass_candidate(:,:)
     integer :: component_count(1)
-    real(dp) :: source(size(state,1))
+    real(dp) :: source(size(state,1)),chemical(size(state,1))
     real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
@@ -342,6 +352,10 @@ contains
     if (present(source_totals)) then
       expected_magic=trim(expected_magic)//'_FORCE_V1'
       if (size(source_totals)/=size(state,1)) return
+    end if
+    if (present(chemistry_totals)) then
+      if (size(chemistry_totals)/=size(state,1)) return
+      expected_magic=trim(expected_magic)//'_CHEM_V1'
     end if
     if (has_materials) expected_magic=trim(expected_magic)//'_MAT_V1'
     if (has_films) then
@@ -419,6 +433,11 @@ contains
       call read_real_row(unit,source,ios)
       if (ios/=0) goto 900
       if (.not.all(ieee_is_finite(source))) goto 900
+    end if
+    if (present(chemistry_totals)) then
+      call read_real_row(unit,chemical,ios)
+      if (ios/=0) goto 900
+      if (.not.all(ieee_is_finite(chemical))) goto 900
     end if
     allocate(candidate,mold=state); allocate(temp,mold=temperature); allocate(check,mold=temperature)
     allocate(drops(got(5)))
@@ -528,6 +547,7 @@ contains
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source
+    if (present(chemistry_totals)) chemistry_totals=chemical
     if (has_films) call move_alloc(patches,wall_films)
     if (present(component_mass)) call move_alloc(mass_candidate,component_mass)
     if (present(film_component_mass)) call move_alloc(film_mass_candidate,film_component_mass)
