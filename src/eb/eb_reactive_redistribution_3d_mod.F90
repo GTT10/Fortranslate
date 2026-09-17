@@ -343,7 +343,11 @@ contains
           if (kappa >= target) cycle
           call select_outward_state_receiver( &
             geometry, i, j, k, target, ni, nj, nk, local_ok)
-          if (.not. local_ok) return
+          if (.not. local_ok) then
+            call redistribute_connected_neighborhoods( &
+              geometry, provisional_state, target, redistributed_state, ok)
+            return
+          end if
           receiving_kappa = geometry%volume_fraction(ni, nj, nk)
           if (kappa + receiving_kappa + weight_tolerance < target) return
           has_neighbor(i, j, k) = .true.
@@ -462,6 +466,117 @@ contains
     redistributed_state = candidate
     ok = .true.
   end subroutine reactive_eb_weighted_state_redistribute_3d
+
+  ! Fallback for connected clusters without a target-sized outward receiver.
+  ! Every active cell owns a neighborhood; large cells retain a singleton.
+  ! Equal membership shares make both averaging passes conservative and convex.
+  ! The growth threshold is the raw volume, not the overlap-adjusted volume;
+  ! this construction alone does not establish a general small-cell CFL bound.
+  subroutine redistribute_connected_neighborhoods(geometry, state, target, result, ok)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:,:,:,:), target
+    real(dp), intent(out) :: result(:,:,:,:)
+    logical, intent(out) :: ok
+    type :: neighborhood
+      integer, allocatable :: member(:)
+    end type neighborhood
+    type(neighborhood), allocatable :: groups(:)
+    integer, allocatable :: queue(:), seen(:), memberships(:)
+    real(dp), allocatable :: kappa(:), candidate(:,:,:,:), average(:)
+    real(dp) :: volume, weight, aperture
+    integer :: nx, ny, nz, ncell, root, head, tail, cell, other, m, count, allocation_status
+    integer :: i, j, k, axis, offset, index(3), dims(3)
+
+    ! Caller has checked shapes, geometry, target and finite input.
+    result=0._dp
+    ok=.false.
+    nx=geometry%nx; ny=geometry%ny; nz=geometry%nz
+    if (nx>huge(ncell)/ny) return
+    ncell=nx*ny
+    if (ncell>huge(ncell)/nz) return
+    ncell=ncell*nz
+    dims=[nx,ny,nz]
+    allocate(groups(ncell),queue(ncell),seen(ncell),memberships(ncell), &
+      kappa(ncell),candidate(size(state,1),nx,ny,nz),average(size(state,1)),stat=allocation_status)
+    if (allocation_status/=0) return
+    kappa=reshape(geometry%volume_fraction,[ncell])
+    memberships=merge(1,0,kappa>0._dp)
+    seen=0
+    do root=1,ncell
+      if (kappa(root)<=0._dp.or.kappa(root)>=target) cycle
+      head=1; tail=1; queue(1)=root; seen(root)=root
+      volume=kappa(root)
+      do while (volume<target.and.head<=tail)
+        cell=queue(head)
+        call decode(cell,i,j,k)
+        ! Deterministic breadth-first order: x-, x+, y-, y+, z-, z+.
+        do axis=1,3
+          do offset=-1,1,2
+            if (volume>=target) exit
+            index=[i,j,k]; index(axis)=index(axis)+offset
+            if (any(index<1).or.any(index>dims)) cycle
+            other=index(1)+nx*((index(2)-1)+ny*(index(3)-1))
+            if (seen(other)==root.or.kappa(other)<=0._dp) cycle
+            select case(axis)
+            case(1)
+              aperture=geometry%x_face_fraction(i+min(offset,0),j,k)
+            case(2)
+              aperture=geometry%y_face_fraction(i,j+min(offset,0),k)
+            case(3)
+              aperture=geometry%z_face_fraction(i,j,k+min(offset,0))
+            end select
+            if (aperture<=0._dp) cycle
+            tail=tail+1; queue(tail)=other; seen(other)=root
+            volume=volume+kappa(other)
+          end do
+        end do
+        head=head+1
+      end do
+      if (volume<target) return
+      allocate(groups(root)%member(tail),stat=allocation_status)
+      if (allocation_status/=0) return
+      groups(root)%member=queue(:tail)
+      do m=2,tail
+        other=queue(m)
+        memberships(other)=memberships(other)+1
+      end do
+    end do
+
+    candidate=0._dp
+    do root=1,ncell
+      if (kappa(root)<=0._dp) cycle
+      count=1
+      if (allocated(groups(root)%member)) count=size(groups(root)%member)
+      volume=0._dp; average=0._dp
+      do m=1,count
+        cell=root
+        if (allocated(groups(root)%member)) cell=groups(root)%member(m)
+        call decode(cell,i,j,k)
+        weight=kappa(cell)/real(memberships(cell),dp)
+        volume=volume+weight
+        average=average+weight*state(:,i,j,k)
+      end do
+      if (volume<=0._dp.or..not.ieee_is_finite(volume)) return
+      average=average/volume
+      do m=1,count
+        cell=root
+        if (allocated(groups(root)%member)) cell=groups(root)%member(m)
+        call decode(cell,i,j,k)
+        candidate(:,i,j,k)=candidate(:,i,j,k)+average/real(memberships(cell),dp)
+      end do
+    end do
+    if (any(.not.ieee_is_finite(candidate))) return
+    result=candidate
+    ok=.true.
+  contains
+    subroutine decode(id,i,j,k)
+      integer, intent(in) :: id
+      integer, intent(out) :: i,j,k
+      i=mod(id-1,nx)+1
+      j=mod((id-1)/nx,ny)+1
+      k=(id-1)/(nx*ny)+1
+    end subroutine decode
+  end subroutine redistribute_connected_neighborhoods
 
   subroutine select_outward_state_receiver( &
       geometry,i,j,k,target,neighbor_i,neighbor_j,neighbor_k,ok)

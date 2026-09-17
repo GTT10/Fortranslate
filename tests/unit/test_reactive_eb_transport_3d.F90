@@ -43,19 +43,22 @@ program test_reactive_eb_transport_3d
   call check_axis(species, transport, "y")
   call check_axis(species, transport, "z")
   call check_full_driver(species, reactions, transport)
-  call check_curved_driver(species,reactions,transport)
+  call check_curved_driver(species,reactions,transport,.false.)
+  call check_curved_driver(species,reactions,transport,.true.)
   write(*, '(a)') "test_reactive_eb_transport_3d: PASS"
 
 contains
 
-  subroutine check_curved_driver(species,reactions,transport)
+  subroutine check_curved_driver(species,reactions,transport,cluster)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_2d) :: section
     type(eb_geometry_3d) :: geometry
     type(reactive_eb_3d_config) :: config
+    logical, intent(in) :: cluster
     real(dp) :: phi(0:10,0:8),theta,initial_elements(3),final_elements(3),error
+    real(dp) :: primitive(reactive_nprim(size(species))),recovered_temperature,sound_speed
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),result(:,:,:,:),temps(:,:,:)
     real(dp), allocatable :: hydro(:,:,:,:),diffused(:,:,:,:),before(:),after(:)
     integer :: i,j,nvar,mode
@@ -69,12 +72,26 @@ contains
     call require(valid,'curved full-driver section')
     call extrude_eb_geometry_3d(section,3,3,0._dp,1._dp,geometry,valid)
     call require(valid,'curved full-driver geometry')
+    if (cluster) then
+      call build_axis_plane_eb_geometry_3d(10,8,3,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+        'x',.99_dp,geometry,valid)
+      call require(valid,'cluster full-driver geometry')
+      call require(maxval(geometry%volume_fraction)<.5_dp,'full-driver cluster has no large receiver')
+    end if
     config%nx=10;config%ny=8;config%nz=3
     nvar=reactive_nvar(size(species))
     allocate(state(nvar,10,8,3),temperature(10,8,3),result(nvar,10,8,3),temps(10,8,3))
     allocate(hydro(nvar,10,8,3),diffused(nvar,10,8,3),before(nvar),after(nvar))
     call initialize_reactive_eb_density_sheet_3d(species,config,geometry,state,temperature,valid)
     call require(valid,'curved full-driver initial state')
+    if (cluster) then
+      call reactive_conserved_to_primitive(species,state(:,10,4,2),temperature(10,4,2), &
+        primitive,recovered_temperature,sound_speed,valid)
+      call require(valid,'cluster primitive recovery')
+      primitive(irho)=1.1_dp*primitive(irho)
+      call reactive_primitive_to_conserved(species,primitive,state(:,10,4,2),temperature(10,4,2),sound_speed,valid)
+      call require(valid,'cluster density perturbation at fixed pressure')
+    end if
     call reactive_eb_integrals_3d(state,geometry,before,valid)
     call require(valid,'curved initial inventories')
     call reactive_eb_element_integrals_3d(species,state,geometry,initial_elements,valid)

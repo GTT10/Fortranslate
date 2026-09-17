@@ -30,10 +30,74 @@ program test_eb_reactive_redistribution_3d
   call check_transverse_neighbors()
   call check_reactive_advance()
   call check_curved_state()
+  call check_connected_clusters()
 
   write(*, '(a)') "test_eb_reactive_redistribution_3d: PASS"
 
 contains
+
+  subroutine check_connected_clusters()
+    type(eb_geometry_3d) :: geometry
+    type(eb_geometry_2d) :: section
+    real(dp), allocatable :: state(:,:,:,:),result(:,:,:,:)
+    real(dp) :: phi(0:4,0:4),before,after
+    integer :: axis,i,j,k,component,dims(3)
+    character(len=1), parameter :: axes(3)=["x","y","z"]
+    logical :: ok
+
+    do axis=1,3
+      dims=[8,8,8]; dims(axis)=1
+      call build_axis_plane_eb_geometry_3d(dims(1),dims(2),dims(3), &
+        0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,axes(axis),.96_dp,geometry,ok)
+      call require(ok,'thin boundary sheet geometry')
+      call require(maxval(geometry%volume_fraction)<.5_dp,'no large receiver exists')
+      allocate(state(2,dims(1),dims(2),dims(3)),result(2,dims(1),dims(2),dims(3)))
+      do k=1,dims(3)
+        do j=1,dims(2)
+          do i=1,dims(1)
+            state(:,i,j,k)=[real(i+3*j+7*k,dp),real(2*i-j+k,dp)]
+          end do
+        end do
+      end do
+      call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok)
+      call require(ok,'connected small-cell fallback')
+      do component=1,2
+        before=sum(state(component,:,:,:)*geometry%volume_fraction)
+        after=sum(result(component,:,:,:)*geometry%volume_fraction)
+        call assert_close(after,before,2.e-12_dp*max(1._dp,abs(before)),'cluster conservation')
+        call require(minval(result(component,:,:,:))>=minval(state(component,:,:,:))-1.e-12_dp, &
+          'cluster convex lower bound')
+        call require(maxval(result(component,:,:,:))<=maxval(state(component,:,:,:))+1.e-12_dp, &
+          'cluster convex upper bound')
+      end do
+      call require(maxval(abs(result-state))>1.e-4_dp,'cluster redistribution active')
+      state=7._dp
+      call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok)
+      call require(ok.and.maxval(abs(result-state))<1.e-12_dp,'cluster constants preserved')
+      deallocate(state,result)
+    end do
+
+    ! Two thin fluid strips separated by covered cells: no cross-solid mixing.
+    do j=0,4
+      do i=0,4
+        phi(i,j)=abs(real(i,dp)/4._dp-.5_dp)-.45_dp
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,ok)
+    call require(ok,'separated strips section')
+    call extrude_eb_geometry_3d(section,3,1,0._dp,1._dp,geometry,ok)
+    call require(ok,'separated strips geometry')
+    allocate(state(1,4,4,1),result(1,4,4,1))
+    state=99._dp; state(:,1,:,:)=2._dp; state(:,4,:,:)=8._dp
+    call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok)
+    call require(ok,'separate connected components')
+    call require(maxval(abs(result(:,1,:,:)-2._dp))<1.e-12_dp.and. &
+      maxval(abs(result(:,4,:,:)-8._dp))<1.e-12_dp,'solid prevents neighborhood mixing')
+    call require(all(result(:,2:3,:,:)==0._dp),'cluster covered cells zero')
+    ! Each connected component has volume .8, below a requested target of 1.
+    call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok,1._dp)
+    call require(.not.ok.and.all(result==0._dp),'insufficient connected volume fails transactionally')
+  end subroutine check_connected_clusters
 
   subroutine check_curved_state()
     type(eb_geometry_2d) :: section
