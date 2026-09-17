@@ -151,8 +151,10 @@ A serial fixed-mechanism
 [tree application](../cases/reactive_eb_tree_3d/README.md) now connects static
 input, coupled steps, exposed-cell/budget CSVs and staged checkpoint saving
 with exact focused continuation ([application evidence](validation/eb-tree-application-20260918.md)).
-Selected frontend, dynamic regridding, automatic intervals, subcycling and MPI
-remain open for the EB tree application.
+Optional automatic common intervals now combine all-node cut-cell hydro and
+diffusion bounds with global donor maxima and restart-bound policy
+([interval evidence](validation/eb-tree-auto-interval-20260918.md)). Selected
+frontend, dynamic regridding, subcycling and MPI remain open for the EB tree application.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

@@ -26,6 +26,13 @@ the existing geometry builder on the full finest lattice. Coarsening must
 represent the geometry at every level; unsupported geometry is rejected.
 
 `time_step` is the maximum common interval; `final_time` clips the last step.
+With `automatic_timestep=.true.`, `hydro_cfl` (default 0.5) and
+`transport_cfl` (default 0.35) bound the common interval using every patch's
+cut-cell volume/open-face metrics and global donor signal/diffusivity maxima.
+The estimate uses an averaged snapshot, includes hidden parents which are
+advanced before restriction, and remains capped by `time_step`/remaining time.
+The full-interval diffusion bound is conservatively applied despite split
+half steps. It is not a chemistry accuracy estimate.
 Rejected steps halve their interval up to `maximum_step_retries` (default 12).
 `maximum_steps` bounds accepted steps; reaching it early is an error.
 `chemistry_enabled` and `transport_enabled` are independent. Enabled transport
@@ -44,7 +51,7 @@ cell sums recover the final inventories without counting covered parents.
 
 Set `checkpoint_file`, `checkpoint_interval_steps`, and optionally
 `stop_after_checkpoint=.true.`. Continue with `restart_file` and the same
-topology, geometry, physics, integrator and time_step. Output names and final
+topology, geometry, physics, integrator, time_step, automatic mode and CFL coefficients. Output names and final
 limits may change within the existing embedded checkpoint contract. Use a
 different checkpoint destination from the restart source.
 
@@ -58,7 +65,7 @@ Replacement is not filesystem-atomic if an I/O error occurs during copying.
 This is a serial static-tree, fixed-mechanism application using common-interval
 Euler operators, spatial PCM donors, hydro outflow and closed diffusion
 boundaries. It is not a convergence or physical validation case. Selected
-mechanisms, automatic intervals, regridding, recursive subcycling, MPI and
+mechanisms, regridding, recursive subcycling, MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.
