@@ -61,8 +61,24 @@ The gas depositor validates incoming active states and recovers final EOS
 temperatures before publishing state and temperature together. Covered cells
 are untouched. Sampling also publishes only after every query succeeds. The
 caller must provide consistent mass/species feedback; this layer has no small-cell
-redistribution or timestep selection. These serial single-grid APIs are not yet
-connected to an EB drag/heating/evaporation interval or a distributed application.
+redistribution or timestep selection.
+
+`spray_eb_step_mod`'s `advance_eb_mixture_coupling` connects these APIs to the
+existing multicomponent drag/heating/evaporation kernel and representative-drop
+ETAB/KH-RT breakup. It selects common particle substeps from drag, component
+loss, temperature change and cell transit limits. Each substep applies sources
+first, then follows the updated velocity through stationary specular EB contacts;
+this is a first-order source/drift split. The source kernel's free-space
+trapezoidal position update is replaced by this EB trajectory. Feedback is
+deposited at the pre-substep position. Wall impulse/energy is returned separately
+as `boundary_change(5)` with the particle-change sign; it is not deposited into
+gas. Failed gas recovery or trajectories retry up to 30 halvings, and the entire
+interval publishes gas, temperature, parcels, component masses and wall ledger
+together. Failed intervals return zero substeps and preserve other outputs.
+The API retains zero-mass records, bounds the population to 125000 and rejects
+KH child creation. Each drift allows at most 32 contacts and requires trial
+endpoints within the root domain. Gas transport/chemistry stepping, exterior
+boundary events, liquid wall films and MPI/AMR evolution remain separate work.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

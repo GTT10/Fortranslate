@@ -46,6 +46,7 @@ if(PELEF_ENABLE_SPRAY)
     add_library(${target} STATIC src/spray/spray_eb_intersection_mod.F90
       src/spray/spray_eb_drift_mod.F90
       src/spray/spray_eb_field_mod.F90
+      src/spray/spray_eb_step_mod.F90
       src/spray/spray_amr_tree_partition_mod.F90
       src/spray/spray_amr_tree_coupling_mod.F90)
     if(PELEF_ENABLE_MPI)
