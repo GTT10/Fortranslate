@@ -5,6 +5,8 @@ module eb_reactive_patch_tree_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use gas_transport_mod, only: gas_transport_species
+  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
@@ -21,6 +23,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: advance_reactive_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d
@@ -145,6 +148,71 @@ contains
     end do
     tree=candidate;ok=.true.
   end subroutine average_down_reactive_eb_tree_3d
+
+  ! Common-interval molecular transport with closed physical boundaries.
+  subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
+      diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(in) :: dt
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: boundary_change(:),minimum_theta
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: snapshot,candidate
+    type(eb_integrated_flux_3d), allocatable :: flux(:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),boundary(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp) :: theta,stage_theta
+    logical :: faces(6)
+    integer :: nv,node,n(3),depth,c
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
+    if (size(boundary_change)/=nv) return
+    if (.not.valid_tree(tree,nv)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if (.not.valid) return
+    snapshot=tree
+    call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+    if (.not.valid) return
+    candidate=snapshot
+    allocate(flux(size(tree%nodes)),boundary(nv));theta=1._dp
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid)
+      if (.not.valid) return
+      depth=tree%topology%nodes(node)%level+1
+      ! Physical domain faces remain closed to diffusion. Parent patch edges
+      ! inside the domain are donor interfaces, even when no peer exists.
+      faces=[origin(1,node)>0,origin(1,node)+n(1)<domain(1,depth), &
+        origin(2,node)>0,origin(2,node)+n(2)<domain(2,depth), &
+        origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
+      call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
+        dt,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
+        candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
+      if (.not.valid) return
+      theta=min(theta,stage_theta)
+      deallocate(ghost,gt)
+    end do
+    call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid)
+    if (.not.valid) return
+    n=tree%topology%nodes(1)%shape
+    associate(g=>tree%nodes(1)%geometry,f=>flux(1))
+    do c=1,nv
+      boundary(c)=g%dy*g%dz*sum(g%x_face_fraction(0,:,:)*f%x(c,0,:,:)- &
+        g%x_face_fraction(n(1),:,:)*f%x(c,n(1),:,:))+ &
+        g%dx*g%dz*sum(g%y_face_fraction(:,0,:)*f%y(c,:,0,:)- &
+        g%y_face_fraction(:,n(2),:)*f%y(c,:,n(2),:))+ &
+        g%dx*g%dy*sum(g%z_face_fraction(:,:,0)*f%z(c,:,:,0)- &
+        g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
+    end do
+    end associate
+    if (.not.all(ieee_is_finite(boundary))) return
+    tree=candidate;boundary_change=boundary;minimum_theta=theta;ok=.true.
+  end subroutine advance_reactive_eb_tree_transport_3d
 
   ! Serial common-interval Euler hydro, spatial PCM donors and outflow edges.
   ! Every node reads the same averaged snapshot; all outputs commit together.
