@@ -125,7 +125,7 @@ Particle IDs must be globally unique and locally increasing. The interval and
 component count are checked collectively; local particle populations may be
 empty. This API advances particle exchange against the gas, without gas
 hydrodynamics/chemistry, regridding, injection or checkpoint orchestration.
-AMR wall-film coupling and EB collisions remain open.
+Planar wall-film coupling is described below; EB collisions remain open.
 
 The particle-interval API also accepts optional `boundary_faces` and
 `boundary_change`. Periodic faces wrap; inflow/outflow faces remove exiting
@@ -177,8 +177,8 @@ reports only accepted film substeps; `particle_steps` retains its particle-only
 meaning. Failure returns zero counts and preserves films along with the other
 state and diagnostics. Existing calls without films retain the original split.
 Particle halves also create films through the existing planar impact model.
-Application film controls remain unfinished integration; the checkpoint API can
-carry film state.
+The fixed/selected AMR applications expose this through `walls` settings and
+carry films through adaptation, rebalancing and checkpoint continuation.
 
 The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
@@ -215,8 +215,9 @@ and particles together after accepted steps. Gas per-face reservoir inflow,
 outflow and adiabatic/isothermal tangentially moving walls now connect to the
 particle removal/specular model. Regridding, tagging, balancing and injection
 migration use the corresponding periodic axes. Reservoir CFL and transport
-bounds use the current finest spacing after adaptation. Wall films and EB
-particle handling remain open.
+bounds use the current finest spacing after adaptation. Optional `walls` controls
+enable planar impacts and film evolution, including film CSVs and restart; EB
+particle handling remains open.
 
 `migrate_mpi_amr_wall_films` in `spray_mpi_amr_film_mod` assigns stationary
 mixed-liquid film patches to the owner of their finest containing AMR cell.
@@ -229,8 +230,8 @@ It checks collective topology/owners/domain/component count/capacity and stages
 all output until validation and exchange succeed. The one-million-per-rank
 send/receive bound matches the existing Cartesian film migration. Empty ranks
 and globally empty films are supported. This is a library ownership operation;
-Application film controls remain open; particle intervals create films and the
-remap/checkpoint APIs carry them.
+Particle intervals create films; the application passes them through remap,
+balancing and checkpoint operations when wall impact is enabled.
 
 `rebalance_mpi_amr_spray` also accepts the optional group `wall_films`,
 `film_mass`, `maximum_films`. When gas-work costs select new owners, films
@@ -254,7 +255,7 @@ Gas, film/component arrays and the integrated wall-energy ledger publish only
 on whole-interval success. Failed intervals preserve the incoming ledger and
 state. This advances exchange against gas, not gas transport/chemistry or impact
 creation; the reacting wrapper supplies coupled splitting. Application film
-controls remain open.
+controls are described in the AMR case guide.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
@@ -281,7 +282,7 @@ Reads validate film records and the final footer/EOF, then migrate to finest
 owners on the reading communicator. Gas, particles, films and all metadata
 publish together only after every validation and capacity check succeeds.
 A different rank count, including one rank, is supported by the library. The
-application does not yet expose film settings or pass these checkpoint arrays.
+application passes these arrays when any `walls%enabled` face is active.
 
 
 ## Build and run

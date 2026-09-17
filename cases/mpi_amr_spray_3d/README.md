@@ -133,7 +133,7 @@ The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This executable supports periodic, reservoir inflow/outflow and wall
 boundaries, initial or scheduled multiport injection and one optional prescribed
 regrid or temperature-driven adaptation, and gas-work-based rebalancing. Wall
-films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
+films are opt-in through `walls` below; EB handling is not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.
 
 ## Checkpoint and changed-rank continuation
@@ -195,7 +195,8 @@ faces. Gas reservoir state uses `inflow_temperature`, `inflow_pressure`,
 `inflow_velocity` and optional named inflow composition. Without that composition,
 it uses the initial gas composition. Gas `wall_temperature` and `wall_velocity`
 retain their existing thermal/tangential wall meanings. These controls do not
-add droplet thermal-wall exchange, wall films or EB impact physics.
+add droplet thermal-wall exchange or EB impact physics. Film formation and
+evolution require the explicit `walls` controls below.
 
 `Boundary inventory:` reports cumulative gas-plus-particle mass, three momenta,
 total energy and species exchanges in conserved-variable order. Positive values
@@ -203,3 +204,36 @@ add inventory to the domain. It is separate from `Injected inventory:` and is
 saved/restored with the gas checkpoint. Faces and reservoir/wall data bind the
 checkpoint context. Place injection outlets inside the physical domain;
 injection migration rejects exterior points on nonperiodic axes.
+
+### Opt-in wall impact and films
+
+Add `walls` settings to `&amr_spray`, and select a compatible wall face in the
+gas namelist. For a low-x wall, a synthetic setup is:
+
+```fortran
+ walls%enabled(1)=.true.,walls%temperature=300.
+ walls%evolve=.true.,walls%liquid_conductivity=.6,walls%minimum_height=1.e-10
+ walls%maximum_films=100000
+ options%surface_tension=.072,options%liquid_viscosity=.001
+```
+
+All wall faces are disabled by default. Enabled faces use the existing planar
+impact model to deposit films or produce reflected/splashed parcels. Positive
+liquid viscosity at each port temperature and a valid surface tension are
+required. `walls%evolve` enables film heating and evaporation; it requires at
+least one enabled wall. Gas wall temperatures and film wall temperatures are
+separate existing model controls, so configure them consistently for the intended
+case. These example properties are implementation fixtures, not calibrated data.
+
+Films start empty and form through impacts. Coupled steps, prescribed/adaptive
+regridding and gas-work rebalancing carry film state transactionally. Film settings
+bind the checkpoint context; continuation restores film state and cumulative wall
+exchange. Newly serialized settings can reject checkpoints from older application
+builds even when defaults were used; cross-build compatibility is not promised.
+
+Each rank writes `<output_file>.films.<rank>.csv` with material, position, normal,
+mass, temperature, diameter, height and component masses, including a header when
+that rank has no films. Film patches have no global ID and may change output rank
+or row order after restart. These CSVs are analysis output; restart uses the
+checkpoint's V2 particle/film payload. No lateral film transport or EB impact
+geometry is implemented in this path.

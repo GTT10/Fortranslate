@@ -27,6 +27,7 @@ module spray_mpi_amr_application_mod
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use mpi_amr_tree_work_mod, only: begin_tree_work,end_tree_work
   use spray_parcel_mod
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mpi_mod, only: inject_mpi_cone_parcels
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
   use spray_mpi_amr_reactive_mod, only: advance_mpi_amr_spray_reactive
@@ -59,6 +60,10 @@ contains
     type(spray_parcel), allocatable :: parcels(:)
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_options) :: options
+    type(spray_wall_options) :: walls
+    type(spray_wall_film), allocatable :: films(:)
+    real(dp), allocatable :: film_mass(:,:)
+    logical :: wall_active
     real(dp), allocatable :: masses(:,:),x(:),y(:),z(:),mf(:),ledger(:),global_ledger(:)
     integer, allocatable :: owners(:),assigned(:),ratios(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -101,7 +106,7 @@ contains
       injection_events,injection_times,event_parcels,event_mass,event_ports,port_count,port_centers,port_axes, &
       port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles, &
       adaptation_interval,refinement_levels,refinement_ratios,tile_shape,tag_buffer,maximum_nodes,temperature_thresholds, &
-      rebalance_interval,rebalance_minimum_gain
+      rebalance_interval,rebalance_minimum_gain,walls
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
@@ -193,6 +198,19 @@ contains
     call check_output(trim(config%output_file)//'.particles.'//trim(suffix)//'.csv')
     options%maximum_parcels=maximum_parcels
     if (.not.valid_spray_options(options)) call fatal('Invalid spray options')
+    if (.not.valid_wall_options(walls,faces)) call fatal('Invalid wall impact/film options')
+    wall_active=any(walls%enabled)
+    if (walls%evolve.and..not.wall_active) call fatal('Film evolution requires enabled walls')
+    if (wall_active) then
+      if (options%surface_tension<1e-8_dp.or.options%surface_tension>1e3_dp) call fatal('Impact needs surface tension')
+      do i=1,port_count
+        if (liquid_viscosity_at_temperature(options,port_temperatures(i))<=0) &
+          call fatal('Impact needs valid liquid viscosity at each port temperature')
+      end do
+      allocate(films(0),film_mass(component_count,0))
+      write(suffix,'(i0)') rank
+      call check_output(trim(config%output_file)//'.films.'//trim(suffix)//'.csv')
+    end if
     allocate(liquids(component_count),parcels(0),masses(component_count,0))
     do i=1,component_count
       call initialize_spray_liquid(species,trim(vapor_names(i)),liquid_density(i),liquid_cp(i), &
@@ -290,8 +308,14 @@ contains
       if (.not.regridded.and.regrid_time>=0) then
         if (time==regrid_time) then
           assigned=[(modulo(node-1,nranks),node=1,size(target%nodes))]
-          call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
-            lower,spacing,periodic,maximum_parcels,ok)
+          if (wall_active) then
+            call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
+              lower,spacing,periodic,maximum_parcels,ok, &
+              wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+          else
+            call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
+              lower,spacing,periodic,maximum_parcels,ok)
+          end if
           if (.not.ok) call fatal('Coupled regrid failed')
           regridded=.true.
         end if
@@ -304,8 +328,14 @@ contains
             if (.not.ok) call fatal('Automatic temperature tagging failed')
             if (tree_key(tagged)/=tree_key(tree)) then
               assigned=[(modulo(node-1,nranks),node=1,size(tagged%nodes))]
-              call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
-                lower,spacing,periodic,maximum_parcels,ok)
+              if (wall_active) then
+                call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
+                  lower,spacing,periodic,maximum_parcels,ok, &
+                  wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+              else
+                call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
+                  lower,spacing,periodic,maximum_parcels,ok)
+              end if
               if (.not.ok) call fatal('Adaptive gas/particle remap failed')
             end if
             last_adaptation_step=step
@@ -355,15 +385,28 @@ contains
           if (.not.ok) call fatal('Cannot start gas work sampling')
         end if
         correction=0;theta=1
-        call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
-          state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
-          config%chemistry_enabled,config%transport_enabled.and.config%viscosity_enabled, &
-          config%transport_enabled.and.config%thermal_conduction_enabled, &
-          config%transport_enabled.and.config%species_diffusion_enabled, &
-          config%transport_enabled.and.config%barodiffusion_enabled, &
-          config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
-          ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
-          config%wall_temperature,config%wall_velocity)
+        if (wall_active) then
+          call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
+            state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
+            config%chemistry_enabled,config%transport_enabled.and.config%viscosity_enabled, &
+            config%transport_enabled.and.config%thermal_conduction_enabled, &
+            config%transport_enabled.and.config%species_diffusion_enabled, &
+            config%transport_enabled.and.config%barodiffusion_enabled, &
+            config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
+            ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
+            config%wall_temperature,config%wall_velocity, &
+            wall_films=films,film_mass=film_mass,film_settings=walls)
+        else
+          call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
+            state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
+            config%chemistry_enabled,config%transport_enabled.and.config%viscosity_enabled, &
+            config%transport_enabled.and.config%thermal_conduction_enabled, &
+            config%transport_enabled.and.config%species_diffusion_enabled, &
+            config%transport_enabled.and.config%barodiffusion_enabled, &
+            config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
+            ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
+            config%wall_temperature,config%wall_velocity)
+        end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
@@ -378,8 +421,14 @@ contains
       end if
       step=step+1
       if (sample_work) then
-        call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
-          periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
+        if (wall_active) then
+          call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
+            periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok, &
+            wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+        else
+          call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
+            periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
+        end if
         if (.not.ok) call fatal('Coupled gas/particle rebalance failed')
         if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' Migrated: ',redistributed
       end if
@@ -405,6 +454,7 @@ contains
     end do
     close(unit,iostat=ios)
     if (ios/=0) call fatal('Cannot close particle CSV')
+    if (wall_active) call write_films()
     if (rank==0) then
       write(*,'(a,i0,a,es24.16,a,i0)') 'Steps: ',step,' Final time: ',time,' Last particle ID: ',last_id
       write(*,'(a,l1)') 'Regridded: ',regridded
@@ -413,6 +463,28 @@ contains
       write(*,'(a,*(es24.16,1x))') 'Boundary inventory: ',boundary
     end if
   contains
+    subroutine write_films()
+      integer :: f,c,out,status
+      character(len=:), allocatable :: names,path
+      write(suffix,'(i0)') rank
+      path=trim(config%output_file)//'.films.'//trim(suffix)//'.csv'
+      open(newunit=out,file=path,status='replace',action='write',iostat=status)
+      if (status/=0) call fatal('Cannot open film CSV')
+      names='material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+      do c=1,component_count
+        write(suffix,'(i0)') c
+        names=names//',component_mass_'//trim(suffix)
+      end do
+      write(out,'(a)',iostat=status) names
+      if (status/=0) call fatal('Cannot write film CSV header')
+      do f=1,size(films)
+        write(out,'(i0,",",*(es25.16e3,:,","))',iostat=status) films(f)%material_id,films(f)%position, &
+          films(f)%normal,films(f)%mass,films(f)%temperature,films(f)%diameter,films(f)%height,film_mass(:,f)
+        if (status/=0) call fatal('Cannot write film CSV')
+      end do
+      close(out,iostat=status)
+      if (status/=0) call fatal('Cannot close film CSV')
+    end subroutine
     subroutine inlet_timestep()
       ! Recompute on the current tree: adaptation may change the finest spacing.
       inlet_dt=huge(1._dp)
@@ -447,8 +519,14 @@ contains
     subroutine checkpoint(writing,path)
       logical, intent(in) :: writing
       character(len=*), intent(in) :: path
-      call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
-        time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary)
+      if (wall_active) then
+        call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
+          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary, &
+          wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+      else
+        call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
+          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary)
+      end if
       if (.not.ok) call fatal('AMR spray checkpoint operation failed')
     end subroutine
     function tree_key(geometry) result(key)
@@ -532,6 +610,8 @@ contains
       write(rank_text,'(i0)') rank
       output=trim(config%output_file)//'.particles.'//trim(rank_text)//'.csv'
       if (paths_alias(path,output)) call fatal('Checkpoint aliases particle output')
+      output=trim(config%output_file)//'.films.'//trim(rank_text)//'.csv'
+      if (paths_alias(path,output)) call fatal('Checkpoint aliases film output')
     end subroutine
     subroutine check_output(path)
       character(len=*), intent(in) :: path

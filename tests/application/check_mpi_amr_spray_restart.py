@@ -18,6 +18,7 @@ p.add_argument('--adaptive', action='store_true')
 p.add_argument('--rebalance', action='store_true')
 p.add_argument('--physical', action='store_true')
 p.add_argument('--inflow', action='store_true')
+p.add_argument('--films', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -67,6 +68,14 @@ if a.inflow:
     spray = spray.replace('port_centers(:,1)=.000001', 'port_centers(:,1)=.00075')
     spray = spray.replace('port_axes(:,1)=-1.', 'port_axes(:,1)=1.')
 
+if a.films:
+    assert a.physical and not a.inflow
+    spray = spray.replace('port_centers(:,1)=.000001', 'port_centers(:,1)=1.e-9')
+    spray = spray.replace('port_speeds=1000.,1000.', 'port_speeds=1.,1000.')
+    spray = spray.replace('\n/\n', '\n walls%enabled(1)=.true.,walls%temperature=300.,walls%evolve=.true.,\n'
+        ' walls%liquid_conductivity=.6,walls%minimum_height=1.e-10,\n'
+        ' options%surface_tension=.072,options%liquid_viscosity=.001\n/\n')
+
 
 def run(name, ranks, controls, good=True, changed=False, changed_boundary=False):
     folder = work / name
@@ -95,6 +104,12 @@ def read(folder, ranks):
     for rank in range(ranks):
         with (folder / f'amr_spray.csv.particles.{rank}.csv').open() as f:
             particles += [[float(x) for x in r] for r in list(csv.reader(f))[1:]]
+    if a.films:
+        films = []
+        for rank in range(ranks):
+            with (folder / f'amr_spray.csv.films.{rank}.csv').open() as f:
+                films += [[float(x) for x in r] for r in list(csv.reader(f))[1:]]
+        return fields, sorted(particles), sorted(films)
     return fields, sorted(particles)
 
 
@@ -112,8 +127,8 @@ for expected, actual in zip(read(full, 2), read(continued, 4)):
             assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
 assert f'Injection events applied: {4 if a.multiport else 3}' in (continued / 'run.log').read_text()
 particles = read(continued, 4)[1]
-assert len(particles) == (8 if a.physical else 16 if a.multiport else 12)
-if a.multiport:
+assert len(particles) == (0 if a.films else 8 if a.physical else 16 if a.multiport else 12)
+if a.multiport and not a.films:
     assert [row[2] for row in particles] == [1.]*8 + ([] if a.physical else [2.]*8)
     assert all(row[3] < .001 if row[2] == 1 else row[3] > .003 for row in particles)
     assert all(row[12] < row[13] if row[2] == 1 else row[12] > row[13] for row in particles)
@@ -125,11 +140,25 @@ if a.physical:
     expected_boundary = boundary_inventory(full)
     actual_boundary = boundary_inventory(continued)
     assert expected_boundary[0] < 0
-    if not a.inflow:
+    if not a.inflow and not a.films:
         assert expected_boundary[1] > 0
     for left, right in zip(expected_boundary, actual_boundary):
         assert math.isclose(left, right, rel_tol=2e-12, abs_tol=1e-25), (left, right)
     assert all(row[6] > 0 for row in particles), 'low-wall parcels must reflect'
+if a.films:
+    films = read(continued, 4)[2]
+    assert len(films) == 8
+    assert all(row[0] == 1 and row[1] == 0 and row[4] == 1 for row in films)
+    assert all(row[7] > 0 and row[9] > 0 and row[10] > 0 for row in films)
+    assert sum(row[7] for row in films) < 5e-11, 'deposited films must evaporate'
+    saved_lines = (split / 'state.particles').read_text().splitlines()
+    assert saved_lines[0] == 'PELEF_AMR_PARTICLES_V2'
+    saved_parcels = int(saved_lines[2].split()[1])
+    saved_films = int(saved_lines[4 + saved_parcels])
+    assert saved_films == 4, 'first injection must deposit before checkpoint'
+    saved_film_mass = sum(float(line.split()[7]) for line in
+                          saved_lines[5 + saved_parcels:5 + saved_parcels + saved_films])
+    assert sum(sorted(row[7] for row in films)[:4]) < saved_film_mass, 'saved films must continue evaporating'
 if a.adaptive:
     fields = read(continued, 4)[0]
     assert {row[1] for row in fields} == {0., 1.}
