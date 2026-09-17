@@ -62,9 +62,9 @@ def main() -> None:
         compare(reference, run(f'branched_mpi_{ranks}', 'branched.dat', ranks))
     reference = run('root_serial', 'root.dat')
     compare(reference, run('root_mpi_3', 'root.dat', 3))
-    run('unsupported_subcycling', 'branched.dat', 2,
-        extra='\n&amr_tree_timestepping\n subcycling=.true.\n/\n',
-        fail='does not yet support subcycling groups')
+    run('unsupported_tree_group', 'branched.dat', 2,
+        extra='\n&amr_tree_unknown\n subcycling=.true.\n/\n',
+        fail='Unsupported MPI tree configuration group')
     # Alias a topology to the output name without changing the input template.
     folder = (args.workdir / 'topology_alias').resolve()
     folder.mkdir(parents=True, exist_ok=True)

@@ -123,8 +123,8 @@ checkpoint continuation are now connected. MPI patch-owner scatter/gather is
 implemented, and sparse owner-cell queries provide the payload exchange primitive;
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
-MPI shared/periodic face flux synchronization is implemented. Next connect
-MPI application subcycling dispatch and mode-aware checkpoint identity. Recursive MPI
+MPI shared/periodic face flux synchronization is implemented. MPI application subcycling dispatch and mode-aware checkpoint identity are now connected.
+Next qualify dynamic-tree recursive execution and improve partitioning/distributed output. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive
 hydro now connects ratio-based steps, interval reflux and scaled coarse CFL.

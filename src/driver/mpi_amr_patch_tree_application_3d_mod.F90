@@ -26,6 +26,8 @@ module mpi_amr_patch_tree_application_3d_mod
     amr_tree_integer_layout_3d,composite_integrals_amr_patch_tree_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: compute_mpi_amr_tree_cfl_3d,recover_mpi_amr_tree_temperatures_3d
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
+  use mpi_amr_patch_tree_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_cfl_3d
+  use mpi_amr_patch_tree_transport_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_transport_timestep_3d
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d
@@ -78,11 +80,13 @@ contains
     real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
     logical :: periodic(3)
     integer :: checkpoint_interval_steps
-    logical :: stop_after_checkpoint,use_implicit
+    logical :: stop_after_checkpoint,use_implicit,subcycling
     logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
+    namelist /amr_tree_timestepping/ subcycling
+    subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
@@ -92,7 +96,7 @@ contains
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI size')
     call check_paths(input_path)
     call check_paths(topology_path)
-    ! The synchronous entry point must not silently ignore unsupported serial extensions.
+    ! Read tree-specific controls before the shared regular-grid configuration.
     open(newunit=unit,file=input_path,status='old',action='read',iostat=status)
     if (status/=0) call fatal('Cannot open MPI tree input')
     do
@@ -104,6 +108,13 @@ contains
         c=iachar(message(i:i))
         if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
       end do
+      if (index(message,'&amr_tree_timestepping')==1.or.index(message,'$amr_tree_timestepping')==1) then
+        backspace(unit,iostat=status)
+        if (status/=0) call fatal('Cannot locate tree timestepping configuration')
+        read(unit,nml=amr_tree_timestepping,iostat=status)
+        if (status/=0) call fatal('Invalid tree timestepping configuration')
+        cycle
+      end if
       if (index(message,'&amr_tree_adaptation')==1.or.index(message,'$amr_tree_adaptation')==1) then
         backspace(unit,iostat=status)
         if (status/=0) call fatal('Cannot locate tree adaptation configuration')
@@ -117,7 +128,7 @@ contains
         read(unit,nml=amr_tree_checkpoint,iostat=status)
         if (status/=0) call fatal('Invalid MPI tree checkpoint configuration')
       else if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) then
-        call fatal('MPI tree application does not yet support subcycling groups')
+        call fatal('Unsupported MPI tree configuration group')
       end if
     end do
     close(unit)
@@ -182,6 +193,7 @@ contains
       schedule_identity=schedule_identity//trim(message)//new_line('a')//tree_key(events(event))
     end do
     if (present(schedule_path)) close(unit)
+    if (subcycling) schedule_identity=schedule_identity//'subcycling-v1'//new_line('a')
 
     if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       identity='fixed:'//trim(config%thermo_model)
@@ -258,6 +270,7 @@ contains
       q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mass_fractions
       call reactive_primitive_to_conserved(species,q,inlet(:,face),inlet_t(face),sound,ok)
       if (.not.ok) call fatal('Invalid inflow state')
+      if (subcycling) min_h=root_h
       inlet_dt=min(inlet_dt,config%cfl/sum((abs(q(2:4))+sound)/min_h))
       if (config%transport_enabled) then
         do k=1,2
@@ -288,6 +301,7 @@ contains
     if (allocated(global_state%fields)) deallocate(global_state%fields)
     if (rank==0) then
       write(*,'(a)') 'PeleF '//pelef_version//' experimental MPI regular 3D patch tree'
+      write(*,'(a,l1)') 'Subcycling: ',subcycling
       write(*,'(a,i0,a,i0,a,i0)') 'Ranks: ',nranks,' Nodes: ',count+1,' Levels: ',tree%level_count()
     end if
     do
@@ -323,12 +337,21 @@ contains
       stop_time=config%final_time
       if (event<=nevents) stop_time=event_times(event)
       if (step>=config%maximum_steps) call fatal('Tree maximum_steps reached')
-      call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_h,config%cfl,dt,comm,ok)
+      if (subcycling) then
+        call compute_mpi_amr_tree_subcycle_cfl_3d(tree,owners,species,state,temperature,root_h,config%cfl,dt,comm,ok)
+      else
+        call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_h,config%cfl,dt,comm,ok)
+      end if
       if (.not.ok) call fatal('Invalid MPI tree hydro timestep')
       dt=min(dt,inlet_dt,stop_time-time)
       if (config%transport_enabled) then
-        call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature,root_h, &
-          config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
+        if (subcycling) then
+          call compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,state,temperature,root_h, &
+            config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
+        else
+          call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature,root_h, &
+            config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
+        end if
         if (.not.ok) call fatal('Invalid MPI tree transport timestep')
         dt=min(dt,transport_dt)
       end if
@@ -338,7 +361,7 @@ contains
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,comm,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity)
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling)
         if (ok) exit
         dt=.5_dp*dt
       end do

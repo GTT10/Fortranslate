@@ -12,6 +12,7 @@ def main():
     for option in ('fixed', 'selected', 'serial-fixed', 'serial-selected', 'case-dir', 'workdir'):
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--scheduled', action='store_true')
+    parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--numproc-flag', default='-n')
     args = parser.parse_args()
@@ -19,6 +20,14 @@ def main():
     template = (case / 'hotspot.nml').read_text()
     if not args.scheduled:
         template = template.replace('cfl=0.2', 'cfl=0.002')
+    topology = case / 'branched.dat'
+    if args.subcycling:
+        if args.scheduled:
+            parser.error('The bounded subcycle fixture does not use a schedule')
+        args.workdir.mkdir(parents=True, exist_ok=True)
+        topology = (args.workdir / 'subcycle_tree.dat').resolve()
+        topology.write_text('1\n1 1 1 1 1 1 1 2\n')
+        template += '\n&amr_tree_timestepping subcycling=.true. /\n'
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
     for kind in ('fixed', 'selected'):
         config = template
@@ -37,7 +46,7 @@ def main():
         def run(label, content, ranks=2, error=None, schedule=None):
             inputs.write_text(content)
             binary = getattr(args, kind if ranks else 'serial_' + kind).resolve()
-            command = [str(binary), str(inputs), str(case / 'branched.dat')]
+            command = [str(binary), str(inputs), str(topology)]
             if args.scheduled:
                 command.append(str(schedule or case / 'regrid.dat'))
             if ranks:
@@ -60,7 +69,9 @@ def main():
         baseline = [p.read_bytes() for p in outputs]
         if args.scheduled:
             assert 'Regrids: 3' in log
-            run('continuous_serial', config, 0)
+        if args.scheduled or args.subcycling:
+            serial_log = run('continuous_serial', config, 0)
+            assert int(re.search(r'Steps:\s+(\d+)', serial_log).group(1)) == steps
             compare()
         save = "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true. /\n"
         restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
@@ -85,8 +96,15 @@ def main():
             changed_schedule = folder / 'changed_schedule.dat'
             changed_schedule.write_text("3\n2.0e-10 " + repr(str(case / 'moved_ratio3.dat')) +
                                         "\n5e-10 " + repr(str(case / 'root.dat')) +
-                                        "\n1e-9 " + repr(str(case / 'branched.dat')) + "\n")
+                                        "\n1e-9 " + repr(str(topology)) + "\n")
             run('changed_schedule', config + restart, 3, 'Invalid MPI tree restart checkpoint/context', changed_schedule)
+        if args.subcycling:
+            run('malformed_subcycling', config + '\n&amr_tree_timestepping subcycling=invalid /\n',
+                3, 'Invalid tree timestepping configuration')
+            compare()
+            run('changed_subcycling', config.replace('subcycling=.true.', 'subcycling=.false.') + restart,
+                3, 'Invalid MPI tree restart checkpoint/context')
+            compare()
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart,
             3, 'Invalid MPI tree restart checkpoint/context')
         checkpoint.write_bytes(saved[:saved.rfind(b'END_AMR_TREE_CHECKPOINT')])
@@ -106,7 +124,7 @@ def main():
         run('malformed', config + '\n&amr_tree_checkpoint checkpoint_interval_steps=1\n', 3,
             'Invalid MPI tree checkpoint configuration')
         compare()
-    print('PASS: fixed/selected MPI restart, serial interchange, exact output and rejected checkpoint guards; scheduled=', args.scheduled)
+    print('PASS: fixed/selected MPI restart, serial interchange, exact output and rejected checkpoint guards; scheduled=', args.scheduled, 'subcycling=', args.subcycling)
 
 
 if __name__ == '__main__':

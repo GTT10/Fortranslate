@@ -1016,3 +1016,22 @@ The outer candidate transaction retains all state and diagnostics until every
 stage succeeds. Failure after earlier chemistry or transport work discards that
 work. Default/false mode retains common-step arithmetic. Application namelist,
 scaled bound selection and checkpoint mode identity are the next integration.
+
+
+## MPI application recursive mode
+
+The fixed/selected MPI application reads `amr_tree_timestepping` with the same
+`subcycling` default and semantics as serial. It selects scaled hydro and
+transport/wall bounds and forwards the mode into the complete split transaction.
+Reservoir bounds use root spacing in recursive mode, since substep counts cancel
+the spatial refinement factors. Common-step bounds remain unchanged. Retry,
+event clipping, adaptation checks and checkpoint cadence count complete coarse
+intervals; no unfinished substep is published or saved.
+
+The canonical schedule/adaptation identity appends `subcycling-v1` only when
+enabled, at the same location as serial. Thus old common-mode contexts remain
+compatible, recursive checkpoints can cross serial/MPI frontends and rank counts,
+and a different mode is rejected before payload publication. Rank zero logs the
+selected mode. Unknown tree groups and malformed timestepping inputs fail explicitly.
+The focused application test covers a static two-level tree; dynamic recursive
+application qualification remains separate.
