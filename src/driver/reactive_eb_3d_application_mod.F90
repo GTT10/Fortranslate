@@ -8,12 +8,12 @@ module reactive_eb_3d_application_mod
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d
+    eb_regular_cell_3d
   use reactive_eb_cfl_3d_mod, only: &
     compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: &
     reactive_eb_transport_timestep_3d
-  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
+  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_checkpoint_mod, only: &
     write_reactive_eb_3d_checkpoint, read_reactive_eb_3d_checkpoint
   use reactive_eb_3d_driver_mod, only: &
@@ -59,6 +59,7 @@ contains
     real(dp) :: minimum_temperature, maximum_temperature
     real(dp) :: maximum_speed, maximum_closure_error
     character(len=1024) :: message
+    logical :: wall_momentum(3)
     logical :: ok, restarted, stopped_after_checkpoint, selected_context
     integer :: step, nvar, component, normal_momentum
 
@@ -86,12 +87,7 @@ contains
       error stop "Reactive EB 3D chemistry requires supported H/O/N species"
     end if
 
-    call build_axis_plane_eb_geometry_3d( &
-      config%nx, config%ny, config%nz, &
-      config%x_lower, config%x_upper, &
-      config%y_lower, config%y_upper, &
-      config%z_lower, config%z_upper, &
-      config%plane_axis, config%plane_position, geometry, ok)
+    call build_configured_eb_geometry_3d(config,geometry,ok)
     if (.not. ok) error stop "Failed to build public 3D EB geometry"
 
     nvar = reactive_nvar(size(species))
@@ -237,6 +233,8 @@ contains
         final_element_integrals - initial_element_integrals) / &
         max(1.0e-30_dp, abs(initial_element_integrals)))
     end if
+    normal_momentum=imx
+    if (config%geometry_type=='plane') then
     select case (trim(config%plane_axis))
     case ("x")
       normal_momentum = imx
@@ -247,9 +245,19 @@ contains
     case default
       error stop "Unexpected public 3D EB plane axis"
     end select
+    end if
+    wall_momentum=[any(geometry%boundary_normal_integral_x/=0._dp), &
+      any(geometry%boundary_normal_integral_y/=0._dp),any(geometry%boundary_normal_integral_z/=0._dp)]
     conservation_error = 0.0_dp
     do component = 1, nvar
-      if (component == normal_momentum) cycle
+      select case(component)
+      case(imx)
+        if (wall_momentum(1)) cycle
+      case(imy)
+        if (wall_momentum(2)) cycle
+      case(imz)
+        if (wall_momentum(3)) cycle
+      end select
       if (config%chemistry_enabled .and. component > ncons) cycle
       component_error = abs( &
         final_integrals(component) - initial_integrals(component)) / &
@@ -299,8 +307,15 @@ contains
     write(*, '(a,1x,a)') "Input:", trim(input_path)
     write(*, '(a,i0,a,i0,a,i0)') &
       "Grid: nx=", config%nx, ", ny=", config%ny, ", nz=", config%nz
+    write(*,'(a,a)') 'Geometry: ',trim(config%geometry_type)
+    if (config%geometry_type=='extruded') then
+      write(*,'(a,a)') 'Extrusion axis: ',trim(config%extrusion_axis)
+      write(*,'(a,3es24.16)') 'Momentum changes: ',final_integrals(imx:imz)-initial_integrals(imx:imz)
+    end if
+    if (config%geometry_type=='plane') then
     write(*, '(a,1x,a)') "Plane axis:", trim(config%plane_axis)
     write(*, '(a,es24.16)') "Plane position: ", config%plane_position
+    end if
     write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
     write(*, '(a,1x,a)') "Redistribution:", trim(config%redistribution)
     write(*, '(a,l2)') "Chemistry: ", config%chemistry_enabled
@@ -347,7 +362,7 @@ contains
       conservation_error
     write(*, '(a,es24.16)') "Maximum elemental conservation error: ", &
       element_conservation_error
-    write(*, '(a,es24.16)') "Normal momentum change: ", &
+    if (config%geometry_type=='plane') write(*, '(a,es24.16)') "Normal momentum change: ", &
       normal_momentum_change
     write(*, '(a,es24.16)') "Minimum density: ", minimum_density
     write(*, '(a,es24.16)') "Maximum density: ", maximum_density

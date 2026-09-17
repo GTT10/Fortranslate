@@ -374,3 +374,11 @@ set_tests_properties(
     "${SELECTED_REACTIVE_EB_3D_FIXED_REJECTION_WORK_DIRECTORY}"
 )
 
+
+add_test(NAME regression_reactive_eb_extruded_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_extruded_3d.py"
+    --fixed $<TARGET_FILE:pelef_reactive_eb_3d>
+    --selected $<TARGET_FILE:test_selected_elementary_reactive_eb_3d>
+    --case-dir "${PROJECT_SOURCE_DIR}/cases/reactive_eb_extruded_3d"
+    --workdir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_extruded_3d")
+set_tests_properties(regression_reactive_eb_extruded_3d PROPERTIES TIMEOUT 300)

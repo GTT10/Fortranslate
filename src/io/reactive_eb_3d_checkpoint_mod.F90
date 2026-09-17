@@ -15,7 +15,7 @@ module reactive_eb_3d_checkpoint_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_species_component, &
     reactive_conserved_to_primitive
-  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
+  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,reactive_eb_geometry_identity
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
   implicit none
@@ -291,7 +291,7 @@ contains
       config%initial_velocity_x, config%initial_velocity_y, &
       config%initial_velocity_z
     if (status /= 0) go to 900
-    write(unit, '(a)', iostat=status) trim(config%plane_axis)
+    write(unit, '(a)', iostat=status) reactive_eb_geometry_identity(config)
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%riemann_solver)
     if (status /= 0) go to 900
@@ -1140,6 +1140,13 @@ contains
       valid = .false.
       return
     end if
+    if (config%geometry_type=='extruded') then
+      valid=(config%extrusion_axis=='x'.or.config%extrusion_axis=='y'.or.config%extrusion_axis=='z') &
+        .and.len_trim(config%section_file)>0
+      return
+    else if (config%geometry_type/='plane') then
+      valid=.false.;return
+    end if
     select case (trim(config%plane_axis))
     case ("x")
       axis_lower = config%x_lower
@@ -1332,7 +1339,7 @@ contains
       stored_ints(2) == expected_ints(2) .and. &
       stored_ints(3) == expected_ints(3) .and. &
       all(stored_flags(1:6) == expected_flags(1:6)) .and. &
-      trim(stored_axis) == trim(config%plane_axis) .and. &
+      trim(stored_axis) == reactive_eb_geometry_identity(config) .and. &
       trim(stored_solver) == trim(config%riemann_solver) .and. &
       trim(stored_redistribution) == trim(config%redistribution) .and. &
       all(checkpoint_real_matches(stored_reals(1:6), expected_reals(1:6))) .and. &

@@ -1,6 +1,8 @@
 module simulation_config_reactive_eb_3d_mod
-  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   use nasa7_thermo_mod, only: nasa7_species
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
@@ -24,6 +26,9 @@ module simulation_config_reactive_eb_3d_mod
     real(dp) :: z_upper = 1.0_dp
     real(dp) :: final_time = 5.0e-5_dp
     real(dp) :: cfl = 0.5_dp
+    character(len=16) :: geometry_type = "plane"
+    character(len=8) :: extrusion_axis = "z"
+    character(len=512) :: section_file = ""
     character(len=8) :: plane_axis = "x"
     real(dp) :: plane_position = 0.395_dp
     character(len=32) :: riemann_solver = "rusanov"
@@ -57,11 +62,79 @@ module simulation_config_reactive_eb_3d_mod
     character(len=512) :: output_file = "reactive_eb_3d.csv"
   end type reactive_eb_3d_config
 
+  public :: build_configured_eb_geometry_3d,reactive_eb_geometry_identity
   public :: read_reactive_eb_3d_configuration
   public :: validate_reactive_eb_3d_configuration
   public :: resolve_reactive_eb_3d_selected_composition
 
 contains
+
+  function reactive_eb_geometry_identity(config) result(identity)
+    type(reactive_eb_3d_config), intent(in) :: config
+    character(len=:), allocatable :: identity
+    identity=trim(config%plane_axis)
+    if (config%geometry_type=='extruded') identity='extruded:'//trim(config%extrusion_axis)
+  end function
+
+  subroutine build_configured_eb_geometry_3d(config,geometry,ok)
+    type(reactive_eb_3d_config), intent(in) :: config
+    type(eb_geometry_3d), intent(inout) :: geometry
+    logical, intent(out) :: ok
+    type(eb_geometry_3d) :: candidate
+    type(eb_geometry_2d) :: section
+    real(dp), allocatable :: phi(:,:)
+    real(dp) :: lo(3),hi(3)
+    integer :: dims(3),axis,a,b,unit,status,header(2),close_status
+    character(len=1024) :: trailing
+    ok=.false.
+    if (config%geometry_type=='plane') then
+      call build_axis_plane_eb_geometry_3d(config%nx,config%ny,config%nz,config%x_lower,config%x_upper, &
+        config%y_lower,config%y_upper,config%z_lower,config%z_upper,config%plane_axis,config%plane_position,candidate,ok)
+      if (ok) geometry=candidate
+      return
+    end if
+    if (config%geometry_type/='extruded') return
+    select case(config%extrusion_axis)
+    case('x');axis=1
+    case('y');axis=2
+    case('z');axis=3
+    case default;return
+    end select
+    a=mod(axis,3)+1;b=mod(axis+1,3)+1
+    dims=[config%nx,config%ny,config%nz]
+    if (any(dims<2)) return
+    lo=[config%x_lower,config%y_lower,config%z_lower]
+    hi=[config%x_upper,config%y_upper,config%z_upper]
+    if (.not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi)).or.any(hi<=lo)) return
+    open(newunit=unit,file=trim(config%section_file),status='old',action='read',iostat=status)
+    if (status/=0) return
+    header=-1
+    read(unit,*,iostat=status) header
+    if (status==0) then
+      if (any(header/=[dims(a),dims(b)])) status=1
+    end if
+    if (status==0) allocate(phi(0:dims(a),0:dims(b)),stat=status)
+    if (status==0) then
+      phi=ieee_value(0._dp,ieee_quiet_nan)
+      read(unit,*,iostat=status) phi
+    end if
+    if (status==0) then
+      do
+        read(unit,'(a)',iostat=status) trailing
+        if (status/=0) exit
+        if (len_trim(trailing)/=0) then
+          status=1;exit
+        end if
+      end do
+      if (is_iostat_end(status)) status=0
+    end if
+    close(unit,iostat=close_status)
+    if (status/=0.or.close_status/=0) return
+    call build_eb_geometry_2d(phi,lo(a),hi(a),lo(b),hi(b),section,ok)
+    if (.not.ok) return
+    call extrude_eb_geometry_3d(section,axis,dims(axis),lo(axis),hi(axis),candidate,ok)
+    if (ok) geometry=candidate
+  end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
       path, config, ok, message, allow_selected)
@@ -80,7 +153,9 @@ contains
     real(dp) :: transport_cfl
     real(dp) :: regular_density, cut_density, initial_pressure
     real(dp) :: initial_velocity_x, initial_velocity_y, initial_velocity_z
-    character(len=8) :: plane_axis
+    character(len=8) :: plane_axis,extrusion_axis
+    character(len=16) :: geometry_type
+    character(len=512) :: section_file
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
     integer :: composition_count
@@ -96,6 +171,7 @@ contains
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, &
+      geometry_type,extrusion_axis,section_file, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
@@ -121,6 +197,7 @@ contains
     z_upper = config%z_upper
     final_time = config%final_time
     cfl = config%cfl
+    geometry_type=config%geometry_type;extrusion_axis=config%extrusion_axis;section_file=config%section_file
     plane_axis = config%plane_axis
     plane_position = config%plane_position
     riemann_solver = config%riemann_solver
@@ -182,6 +259,8 @@ contains
     config%z_upper = z_upper
     config%final_time = final_time
     config%cfl = cfl
+    config%geometry_type=trim(geometry_type);config%extrusion_axis=trim(extrusion_axis)
+    config%section_file=trim(section_file)
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
     config%riemann_solver = trim(riemann_solver)
@@ -345,6 +424,23 @@ contains
                config%restart_file, config%output_file)) then
       message = "Reactive EB 3D restart and output paths must differ"
       return
+    end if
+
+    if (config%geometry_type=='extruded') then
+      if (config%extrusion_axis/='x'.and.config%extrusion_axis/='y'.and.config%extrusion_axis/='z') then
+        message='Reactive EB 3D extrusion_axis must be x, y, or z';return
+      end if
+      if (len_trim(config%section_file)==0) then
+        message='Reactive EB 3D extrusion requires section_file';return
+      end if
+      if (paths_alias_lexically(config%section_file,config%output_file).or. &
+          paths_alias_lexically(config%section_file,config%checkpoint_file).or. &
+          paths_alias_lexically(config%section_file,config%restart_file)) then
+        message='Reactive EB 3D section file must differ from output/checkpoint paths';return
+      end if
+      ok=.true.;return
+    else if (config%geometry_type/='plane') then
+      message='Reactive EB 3D geometry_type must be plane or extruded';return
     end if
 
     select case (trim(config%plane_axis))

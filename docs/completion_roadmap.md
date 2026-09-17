@@ -98,8 +98,8 @@ with integrated boundary-flux accounting; see the [case guide](../cases/reactive
 Characteristic inflow and moving geometry, general EB and AMR-particle boundary coupling
 remain part of the completion work. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
-normal integrals and uniform-pressure balance. Next connect nonplanar geometry
-to application inputs and restart. Outward-neighbor StateRedist now connects
+normal integrals and uniform-pressure balance. Nonplanar section-file geometry now connects
+to fixed/selected application inputs and geometry-bound restart. Outward-neighbor StateRedist connects
 nonplanar hydro/transport/reaction updates in a focused extruded-section case; arbitrary
 fully 3D surfaces and EB-AMR-MPI coupling remain open.
 

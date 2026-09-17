@@ -26,6 +26,9 @@ The fixed-mechanism `pelef_mpi_amr_tree_reactive_3d` and configure-time selected
 `pelef_mpi_amr_tree_reactive_3d_selected` executables support static, scheduled or temperature-adapted topologies
 with owner-local stepping, rank-neutral checkpoint/restart and the same final CSV format.
 
+An experimental [extruded 3D EB case](cases/reactive_eb_extruded_3d/README.md)
+connects faceted level-set sections to fixed/selected reaction, transport and restart.
+
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,
 planar single-level 3D embedded boundaries are not arbitrary 3D geometry, and

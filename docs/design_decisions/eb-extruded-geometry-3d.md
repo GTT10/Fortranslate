@@ -46,3 +46,27 @@ is retained; no chain, multi-neighbor region or traversal through solid is added
 This is a bounded extension, not general small-cell agglomeration. The coupled
 library driver now has a faceted-cylinder test through hydro, transport and reaction;
 application geometry/restart configuration is still separate work.
+
+
+## Application configuration and restart
+
+The common EB3D configuration now selects plane (default) or extruded geometry.
+The latter reads a transverse nodal level-set file, validates its mesh dimensions
+and finite samples, builds a private 2D section, then publishes validated extruded
+geometry. The section path must differ lexically from output/checkpoint/restart
+paths. Missing values are initialized to quiet NaN before list-directed input,
+so incomplete/null records cannot become unintended geometry.
+
+The existing checkpoint axis record stays x/y/z for planes and carries
+`extruded:x`, `extruded:y` or `extruded:z` for extrusion. This prevents mode/axis
+aliasing without changing the planar record layout. Existing metric-by-metric
+geometry comparison binds restart to the section's constructed geometry, not its
+file path. Standalone continuation still requires the section input. Geometry
+matching tolerances are unchanged; raw file hashing is not introduced.
+
+For each momentum direction the application checks whether any embedded normal
+integral is nonzero. A wall can exert force in such directions, so they are
+reported as momentum changes and excluded from the invariant test, just as the
+single normal component was for an axis plane. Mass, energy, elemental and other
+existing gates retain their tolerances. No integrated wall-force ledger or
+curved-wall physical validation is implied.
