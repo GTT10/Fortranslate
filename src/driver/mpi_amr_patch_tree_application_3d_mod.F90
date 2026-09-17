@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_application_3d_mod
     read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d
   use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
+  use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
   use mpi_f08
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -52,7 +53,7 @@ contains
     real(dp), intent(in) :: mole_fractions(:)
     type(MPI_Comm), intent(in) :: comm
     type(reactive_3d_config) :: local
-    type(amr_patch_tree_3d) :: tree
+    type(amr_patch_tree_3d) :: tree,tagged_tree
     type(amr_patch_tree_3d), allocatable :: events(:)
     real(dp), allocatable :: event_times(:)
     real(dp) :: max_remap_error
@@ -71,10 +72,19 @@ contains
     character(len=:), allocatable :: row
     character(len=1024) :: checkpoint_file,restart_file
     character(len=:), allocatable :: context,identity,integrator,schedule_identity,expected_tree
+    integer, parameter :: maximum_tag_levels=16
+    integer :: regrid_interval_steps,refinement_levels,refinement_ratios(maximum_tag_levels)
+    integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
+    real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
+    logical :: periodic(3)
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit
     logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
+      temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
+    regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
+    temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
@@ -94,16 +104,35 @@ contains
         c=iachar(message(i:i))
         if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
       end do
+      if (index(message,'&amr_tree_adaptation')==1.or.index(message,'$amr_tree_adaptation')==1) then
+        backspace(unit,iostat=status)
+        if (status/=0) call fatal('Cannot locate tree adaptation configuration')
+        read(unit,nml=amr_tree_adaptation,iostat=status)
+        if (status/=0) call fatal('Invalid tree adaptation configuration')
+        cycle
+      end if
       if (index(message,'&amr_tree_checkpoint')==1.or.index(message,'$amr_tree_checkpoint')==1) then
         backspace(unit,iostat=status)
         if (status/=0) call fatal('Cannot locate MPI tree checkpoint group')
         read(unit,nml=amr_tree_checkpoint,iostat=status)
         if (status/=0) call fatal('Invalid MPI tree checkpoint configuration')
       else if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) then
-        call fatal('MPI tree application does not yet support adaptation or subcycling groups')
+        call fatal('MPI tree application does not yet support subcycling groups')
       end if
     end do
     close(unit)
+    if (regrid_interval_steps<0) call fatal('Negative automatic tree regrid interval')
+    if (regrid_interval_steps>0) then
+      if (present(schedule_path)) call fatal('Automatic tree adaptation cannot use a prescribed schedule')
+      if (refinement_levels<0.or.refinement_levels>maximum_tag_levels) call fatal('Invalid tree refinement depth')
+      if (any(refinement_ratios(:refinement_levels)<2)) call fatal('Invalid tree refinement ratios')
+      if (.not.all(ieee_is_finite(temperature_thresholds(:refinement_levels)))) call fatal('Nonfinite tree thresholds')
+      if (any(temperature_thresholds(:refinement_levels)<=0)) call fatal('Invalid tree temperature thresholds')
+      do i=2,refinement_levels
+        if (temperature_thresholds(i)<temperature_thresholds(i-1)) call fatal('Tree thresholds must not decrease')
+      end do
+      if (any(tile_shape<1).or.tag_buffer<0.or.maximum_nodes<1) call fatal('Invalid tree tagging bounds')
+    end if
     if (checkpoint_interval_steps<0) call fatal('Negative MPI tree checkpoint interval')
     if (stop_after_checkpoint.and.checkpoint_interval_steps==0) call fatal('Checkpoint stop requires positive interval')
     if (checkpoint_interval_steps>0.and.len_trim(checkpoint_file)==0) call fatal('Missing MPI tree checkpoint path')
@@ -117,6 +146,14 @@ contains
     end if
     call read_topology(topology_path,tree)
     schedule_identity=tree_key(tree)
+    if (regrid_interval_steps>0) then
+      write(message,'(*(i0,1x))') regrid_interval_steps,refinement_levels,tile_shape,tag_buffer,maximum_nodes
+      schedule_identity=schedule_identity//'automatic-v1 '//trim(message)//new_line('a')
+      do i=1,refinement_levels
+        write(message,'(i0,1x,es27.18e3)') refinement_ratios(i),temperature_thresholds(i)
+        schedule_identity=schedule_identity//trim(message)//new_line('a')
+      end do
+    end if
     nevents=0
     if (present(schedule_path)) then
       open(newunit=unit,file=schedule_path,status='old',action='read',iostat=status)
@@ -185,11 +222,24 @@ contains
     call mass_fractions_from_mole_fractions(species,mole_fractions,mass_fractions,ok)
     if (.not.ok) call fatal('Invalid initial mass fractions')
     faces=resolved_reactive_boundaries_3d(config)
+    periodic=[faces(1)=="periodic",faces(3)=="periodic",faces(5)=="periodic"]
     viscosity=config%transport_enabled.and.config%viscosity_enabled
     conduction=config%transport_enabled.and.config%thermal_conduction_enabled
     diffusion=config%transport_enabled.and.config%species_diffusion_enabled
     barodiffusion=config%transport_enabled.and.config%barodiffusion_enabled
     min_h=minval(h,dim=2)
+    if (regrid_interval_steps>0) then
+      tag_spacing=root_h
+      do i=1,refinement_levels
+        tag_spacing=tag_spacing/real(refinement_ratios(i),dp)
+      end do
+      if (any(tag_spacing<=tiny(1.0_dp))) call fatal('Automatic tree spacing underflow')
+      min_h=min(min_h,tag_spacing)
+      ! Validate the requested integer lattice before any evolution/output.
+      call tag_mpi_amr_tree_temperature_3d(tree,owners,temperature,temperature_thresholds(:refinement_levels), &
+        refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,periodic,tagged_tree,comm,ok)
+      if (.not.ok) call fatal('Invalid initial automatic tree proposal')
+    end if
     do event=1,nevents
       call include_event_spacing(events(event))
     end do
@@ -245,6 +295,18 @@ contains
         if (time==event_times(event)) then
           call apply_event(events(event))
           regrids=regrids+1;event=event+1
+        end if
+      end if
+      if (regrid_interval_steps>0) then
+        if (step>last_tag_step) then
+          if (mod(step,regrid_interval_steps)==0) then
+            call tag_mpi_amr_tree_temperature_3d(tree,owners,temperature,temperature_thresholds(:refinement_levels), &
+              refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,periodic,tagged_tree,comm,ok)
+            if (.not.ok) call fatal('Automatic tree tagging failed')
+            if (tree_key(tree)/=tree_key(tagged_tree)) call apply_event(tagged_tree)
+            regrids=regrids+1;last_tag_step=step
+            if (rank==0) write(*,'(a,i0,a,i0)') 'Automatic regrid check at step ',step,' Nodes: ',size(tree%nodes)
+          end if
         end if
       end if
       if (checkpoint_interval_steps>0) then
@@ -400,17 +462,23 @@ contains
       type(amr_tree_checkpoint_3d) :: snapshot
       type(amr_tree_state_3d) :: absolute_state
       real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(4)
-      integer :: peer,nconserved
+      integer :: peer,nconserved,applied
       if (rank==0) then
         call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
           [config%nx,config%ny,config%nz],snapshot,ok)
         if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
         if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
           call fatal('MPI tree restart exceeds run limits')
-        if (snapshot%regrids/=count_events(snapshot%time)) call fatal('MPI tree restart schedule position mismatch')
-        expected_tree=tree_key(tree)
-        if (snapshot%regrids>0) expected_tree=tree_key(events(snapshot%regrids))
-        if (tree_key(snapshot%tree)/=expected_tree) call fatal('MPI tree restart geometry mismatch')
+        applied=count_events(snapshot%time)
+        if (regrid_interval_steps>0) applied=snapshot%steps/regrid_interval_steps
+        if (snapshot%regrids/=applied) call fatal('MPI tree restart adaptation/schedule position mismatch')
+        if (regrid_interval_steps>0.and.applied>0) then
+          call validate_adaptive_geometry(snapshot%tree)
+        else
+          expected_tree=tree_key(tree)
+          if (applied>0) expected_tree=tree_key(events(applied))
+          if (tree_key(snapshot%tree)/=expected_tree) call fatal('MPI tree restart geometry mismatch')
+        end if
         if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
           call fatal('Tree restart initial inventory mismatch')
         ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
@@ -449,8 +517,14 @@ contains
       call MPI_Bcast(scalars,4,MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart diagnostics')
       time=scalars(1);max_correction=scalars(2);min_theta=scalars(3);max_remap_error=scalars(4)
-      regrids=count_events(time);event=regrids+1;last_checkpoint_step=step
-      if (regrids>0) tree=events(regrids)
+      regrids=count_events(time);event=regrids+1;last_checkpoint_step=step;last_tag_step=step
+      if (regrid_interval_steps>0) then
+        regrids=step/regrid_interval_steps
+        if (rank==0) tree=snapshot%tree
+        call distribute_restart_geometry()
+      else if (regrids>0) then
+        tree=events(regrids)
+      end if
       call reset_layout()
       ! The reader validates context, EOS, averages and ledger before any owned payload changes.
       call scatter_mpi_amr_tree_3d(tree,owners,snapshot%state,state,comm,0,ok)
@@ -517,6 +591,59 @@ contains
       close(input)
       call initialize_amr_patch_tree_3d(shapes(:,1),parents,patches,result,valid)
       if (.not.valid) call fatal('Invalid tree topology')
+    end subroutine
+    subroutine validate_adaptive_geometry(geometry)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      integer :: peer,depth,parent,lower(3),upper(3),dims(3)
+      if (size(geometry%nodes)>maximum_nodes.or.geometry%level_count()>refinement_levels+1) &
+        call fatal('Tree restart exceeds adaptation bounds')
+      do peer=2,size(geometry%nodes)
+        depth=geometry%nodes(peer)%level;parent=geometry%nodes(peer)%parent
+        dims=geometry%nodes(parent)%shape
+        associate(box=>geometry%nodes(peer)%patch)
+          lower=[box%coarse_i_lower,box%coarse_j_lower,box%coarse_k_lower]
+          upper=[box%coarse_i_upper,box%coarse_j_upper,box%coarse_k_upper]
+          if (box%refinement_ratio/=refinement_ratios(depth)) call fatal('Tree restart adaptation ratio mismatch')
+        end associate
+        if (any(mod(lower-1,tile_shape)/=0)) call fatal('Tree restart tile alignment mismatch')
+        if (any(int(upper,int64)/=min(int(dims,int64),int(lower,int64)+int(tile_shape,int64)-1))) &
+          call fatal('Tree restart tile extent mismatch')
+      end do
+    end subroutine
+    subroutine distribute_restart_geometry()
+      type(amr_patch_3d), allocatable :: patches(:)
+      integer, allocatable :: records(:,:),parents(:),shapes(:,:)
+      integer :: nchild,peer,parent,dims(3),lower(3),upper(3),ratio,ios,ierr
+      logical :: valid
+      nchild=0
+      if (rank==0) nchild=size(tree%nodes)-1
+      call MPI_Bcast(nchild,1,MPI_INTEGER,0,comm,ierr)
+      if (ierr/=MPI_SUCCESS) call fatal('Cannot distribute adaptive tree size')
+      if (nchild<0.or.nchild>huge(1)/8) call fatal('Adaptive tree metadata exceeds MPI count')
+      allocate(records(8,nchild),parents(nchild),patches(nchild),shapes(3,nchild+1),stat=ios)
+      if (ios/=0) call fatal('Cannot allocate adaptive restart geometry')
+      if (rank==0) then
+        do peer=1,nchild
+          associate(item=>tree%nodes(peer+1),box=>tree%nodes(peer+1)%patch)
+            records(:,peer)=[item%parent,box%coarse_i_lower,box%coarse_i_upper, &
+              box%coarse_j_lower,box%coarse_j_upper,box%coarse_k_lower,box%coarse_k_upper,box%refinement_ratio]
+          end associate
+        end do
+      end if
+      call MPI_Bcast(records,8*nchild,MPI_INTEGER,0,comm,ierr)
+      if (ierr/=MPI_SUCCESS) call fatal('Cannot distribute adaptive restart geometry')
+      shapes(:,1)=[config%nx,config%ny,config%nz]
+      do peer=1,nchild
+        parent=records(1,peer);parents(peer)=parent
+        if (parent<1.or.parent>peer) call fatal('Invalid adaptive restart parent')
+        dims=shapes(:,parent);lower=records([2,4,6],peer);upper=records([3,5,7],peer);ratio=records(8,peer)
+        call initialize_amr_patch_3d(dims(1),dims(2),dims(3),lower(1),upper(1),lower(2),upper(2), &
+          lower(3),upper(3),ratio,patches(peer),valid)
+        if (.not.valid) call fatal('Invalid distributed adaptive restart patch')
+        shapes(:,peer+1)=[patches(peer)%fine_nx(),patches(peer)%fine_ny(),patches(peer)%fine_nz()]
+      end do
+      call initialize_amr_patch_tree_3d(shapes(:,1),parents,patches,tree,valid)
+      if (.not.valid) call fatal('Invalid distributed adaptive restart tree')
     end subroutine
     integer function count_events(at_time) result(applied)
       real(dp), intent(in) :: at_time

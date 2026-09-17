@@ -124,9 +124,10 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-coarse-time endpoints/subcycling and MPI temperature-adaptation application dispatch.
+coarse-time endpoints/subcycling. MPI temperature-adaptation application dispatch
+and adaptation-aware changed-rank continuation are connected.
 MPI temperature tagging now generates deterministic trees from owner-local hot
-exposed cells; automatic application controls/restart policy remain to be connected.
+exposed cells; fixed/selected application controls and restart policy are connected.
 Scheduled MPI tree remapping and event-aware checkpoint continuation are connected.
 Sparse conservative MPI tree remapping now supports changed geometry/ratios/owners
 with collective rollback and reactive temperature recovery.
@@ -147,7 +148,7 @@ The serial application now connects static topology input, analytic initializati
 split evolution, scheduled conservative regridding and exposed-cell output.
 Configure-time selected-mechanism dispatch now uses an isolated tree runtime.
 Tree snapshot I/O, application stop/restart and schedule-position checks are implemented. Temperature-driven tiled topology generation, successful-step application cadence
-and automatic-geometry restart are connected. MPI ownership remains open. See the
+and automatic-geometry restart are connected for serial and MPI ownership. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
 Particle Cartesian MPI migration now preserves parcel/component payloads and

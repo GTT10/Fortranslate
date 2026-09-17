@@ -70,7 +70,10 @@ MPI transport/wall timestep selection and the full common-step reaction/transpor
 composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
 The fixed-mechanism MPI tree executable now connects static topology, owner-local
 initialization/stepping, timestep retries and serial-format final CSV/budget output
-([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI temperature-adaptation application dispatch and coarse-time interpolation/subcycling remain open.
+([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI coarse-time interpolation/subcycling remains open.
+Fixed/selected MPI applications now connect temperature-adaptation controls,
+post-step tagging/remapping and adaptation-aware changed-rank checkpoint continuation
+([evidence](validation/amr-tree-mpi-adaptation-20260917.md)).
 A distributed temperature-tagging API now shares only hot exposed-cell boxes and
 uses the serial tile builder to produce identical geometry across ranks
 ([evidence](validation/amr-tree-mpi-tagging-20260917.md)).
@@ -99,7 +102,7 @@ wall budgets ([evidence](validation/amr-tree-transport-20260917.md)). A combined
 R/2-T/2-H-T/2-R/2 update now aggregates those boundary budgets transactionally
 ([evidence](validation/amr-tree-split-20260917.md)). A conservative overlap-remap
 API now supports changed patch layouts and refinement ratios, with transactional
-EOS recovery ([evidence](validation/amr-tree-remap-20260917.md)). Automatic solution-based tagging and MPI ownership remain open. The experimental
+EOS recovery ([evidence](validation/amr-tree-remap-20260917.md)). Automatic solution-based tagging and MPI ownership are now connected as described above. The experimental
 [serial tree application](../cases/amr_tree_reactive_3d/README.md) now reads explicit
 patch topology, initializes analytic fields, evolves the split system and writes
 exposed-cell CSV plus composite budgets

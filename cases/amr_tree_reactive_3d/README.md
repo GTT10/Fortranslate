@@ -231,12 +231,16 @@ Event times clip the timestep exactly. Each event conservatively remaps old
 exposed cells to the new round-robin owners, checks component inventories and
 updates geometry before checkpointing/output. The inventory check transfers
 compensated accumulators in serial cell order without gathering field payloads.
-The `amr_tree_adaptation` and `amr_tree_timestepping` groups remain rejected;
-automatic MPI tagging and subcycling are not yet connected. The `amr_tree_checkpoint` group uses the same controls and
+The `amr_tree_adaptation` group accepts the same controls as serial and is exclusive
+with a schedule argument. After each configured step interval, owners identify
+hot exposed cells and generate the same tile geometry on every rank. Geometry
+changes use sparse conservative remapping before checkpoint/output. The requested
+finest spacing bounds reservoir timesteps. The `amr_tree_timestepping` group remains
+rejected; MPI subcycling is not yet connected. The `amr_tree_checkpoint` group uses the same controls and
 format as serial. Rank zero reads/writes the checkpoint, validates its context,
-scheduled geometry, consumed event count, EOS, averages and ledger, then redistributes payloads according
+scheduled/adaptive geometry, consumed event or adaptation-check count, EOS, averages and ledger, then redistributes payloads according
 to the current rank count. Fixed/selected checkpoints can be exchanged with the
-corresponding serial frontend for static or scheduled synchronous runs. The selected bundle
+corresponding serial frontend for static, scheduled or automatic synchronous runs. The selected bundle
 SHA-256 remains part of checkpoint identity. A requested checkpoint stop returns
 before final CSV output; a restart resumes step counters without resaving the
 loaded step. Checkpoint files must not alias input, schedule, any scheduled topology or output paths. Input
@@ -247,8 +251,8 @@ Whole-patch ownership and root output are not a production scaling claim.
 ## Remaining scope
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
-The MPI frontend currently supports static/scheduled synchronous execution with restart; temperature adaptation
-and subcycling remain to be connected there. Characteristic-PLM hydro enables limited
+The MPI frontend currently supports static/scheduled/automatic synchronous execution with restart;
+subcycling remains to be connected there. Characteristic-PLM hydro enables limited
 linear coarse donors with the configured limiter for both hydro and transport.
 PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
 AMR convergence and large-tree scaling remain unqualified.
@@ -269,4 +273,10 @@ stepping. Its isolated MPI runtime links selected libraries without `pelef_core`
 or fixed mechanism databases. Custom bundle targets can use
 `MPI_AMR_TREE_REACTIVE_3D_NAME`; the target participates in bundle installation.
 The same schedule/checkpoint controls, output alias checks and root CSV gathers as
-the fixed MPI frontend apply. MPI automatic adaptation/subcycling remain open.
+the fixed MPI frontend apply. MPI subcycling remains open.
+
+Automatic MPI restart retains the saved temperature guesses, tile geometry and
+adaptation-check counter. Rank zero validates the configured depth, ratios, tile
+alignment and node budget before broadcasting geometry metadata and scattering
+payloads to the current owners. The saved step is not tagged again on restart.
+Changing adaptation thresholds or cadence changes checkpoint identity and is rejected.

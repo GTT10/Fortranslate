@@ -868,3 +868,20 @@ Hot-cell geometry/temperature is replicated, so this is not a production scaling
 claim for nearly all-hot domains. Construction still scans tiles against hot
 cells. Automatic application invocation and restart adaptation counters remain a
 subsequent integration layer.
+
+## Automatic MPI application adaptation
+
+The fixed/selected MPI driver now accepts the serial adaptation namelist and
+context records. Scheduled and automatic modes remain mutually exclusive.
+Initial proposal validation checks lattice/node limits; the finest requested
+spacing supplies conservative reservoir bounds. After each configured successful
+step interval, distributed temperature tagging proposes geometry and the sparse
+reactive remapper applies changes. The adaptation counter advances even when
+geometry is unchanged, matching serial checkpoint semantics.
+
+Adaptation precedes checkpoint/output, including the final step. Restart checks
+`steps / regrid_interval_steps`, permitted depth/ratios/node count and tile bounds.
+Only rank zero reads the file; validated parent/box/ratio metadata is broadcast
+and rebuilt on every rank before owner-local state/temperature scattering. The
+last completed step is recorded to prevent duplicate tagging at continuation.
+Serial/MPI checkpoint context and payloads remain compatible for common timesteps.
