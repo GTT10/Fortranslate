@@ -538,6 +538,14 @@ Conservation, rollback, byte-parity, and short-time H2/O2 tests do not establish
 physical ignition/spray validation or complete PeleC equivalence. Choosing a
 license remains an owner decision.
 
+AMR particle ownership now locates each parcel in the finest covering regular
+3D tree cell and constructs stable owner-rank bins while preserving all parcel
+fields and optional component inventories. Periodic lookup, half-open patch
+faces, regrid reassignment and transactional validation are supported
+([evidence](validation/spray-amr-partition-20260918.md)). Tree MPI particle
+migration, gas sampling/deposition, coupled stepping and EB solid handling remain
+open; this ownership API does not imply those integrations are complete.
+
 Particle MPI groundwork now includes Cartesian cell ownership and stable send-buffer
 partitioning with component/KH state preservation
 ([evidence](validation/spray-partition-20260916.md)). MPI migration and receive-side ID ordering now pass 2/4-rank checks
