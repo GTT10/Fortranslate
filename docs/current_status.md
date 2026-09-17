@@ -171,8 +171,11 @@ and binds bundle/composition identity on restart
 ([selected evidence](validation/eb-tree-selected-20260918.md)).
 Tree face halos now optionally interpolate provisional ancestor endpoints
 with independent per-level fractions while preserving current peer donors
-([time-halo evidence](validation/eb-tree-time-halo-20260918.md)); recursive
-substep advancement remains open.
+([time-halo evidence](validation/eb-tree-time-halo-20260918.md)). A serial
+recursive hydro API now advances ratio-based fine substeps, reconciles peers,
+accumulates effective transfers and refluxes each parent interval
+([subcycle hydro evidence](validation/eb-tree-subcycle-hydro-20260918.md));
+subcycled transport, coupled/application integration and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
