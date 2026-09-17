@@ -103,7 +103,10 @@ checkpoint continuation are now connected
 ([evidence](validation/amr-tree-mpi-subcycle-application-20260917.md)).
 Focused hydro-only scheduled/adaptive recursive cases now cover fixed/selected
 serial parity and changed-rank restart
-([evidence](validation/amr-tree-mpi-subcycle-dynamic-20260917.md)). MPI transport now advances one depth with
+([evidence](validation/amr-tree-mpi-subcycle-dynamic-20260917.md)). Scheduled recursive full-split
+execution now also combines chemistry, molecular transport, moving walls, PLM,
+measured-work rebalancing and V2 changed-rank continuation with exact serial bytes
+([evidence](validation/amr-tree-mpi-dynamic-split-20260917.md)). MPI transport now advances one depth with
 coarse-time donors, moving/isothermal walls and integrated face fluxes
 ([evidence](validation/amr-tree-mpi-transport-level-20260917.md)). MPI hydro
 now advances one depth with coarse-time donors and returns integrated face fluxes
