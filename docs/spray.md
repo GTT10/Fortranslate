@@ -228,7 +228,13 @@ Component property tables remain shared; per-particle component masses determine
 subsequent mixture evolution. The particle material ID records its injection
 port, including across remap, migration and restart. See the
 [port input guide](../cases/mpi_eb_spray_3d/README.md) and
-[port evidence](validation/spray-mpi-eb-ports-20260918.md). See
+[port evidence](validation/spray-mpi-eb-ports-20260918.md).
+Port-specific 2--64 point mass-flow tables now use the existing piecewise-linear
+integrator over explicit event start/end intervals. Their integrated masses,
+scaled by the event multipliers, replace prescribed packet masses. Zero-area
+events reserve no IDs; restart reconstructs the effective positive-event counts.
+The complete profile/interval input is context-bound. See
+[profile evidence](validation/spray-mpi-eb-profile-20260918.md). See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
