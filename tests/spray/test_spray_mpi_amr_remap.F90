@@ -3,6 +3,7 @@ program test_spray_mpi_amr_remap
   use spray_mpi_amr_remap_mod, only: remap_mpi_amr_spray
   use amr_patch_tree_remap_3d_mod, only: remap_amr_patch_tree_reactive_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use gas_transport_mod, only: gas_transport_species
@@ -24,6 +25,9 @@ program test_spray_mpi_amr_remap
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
+  type(spray_wall_film), allocatable :: films(:),saved_films(:)
+  real(dp), allocatable :: film_mass(:,:),saved_film_mass(:,:)
+  integer :: film_capacity=100
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   real(dp), allocatable :: root(:,:,:,:),primitive(:),cell(:),y(:),before(:),after(:),scale(:)
@@ -114,11 +118,21 @@ program test_spray_mpi_amr_remap
   if (rank==nranks-1) then
     drops=all_drops;masses=all_mass
   end if
+  allocate(films(merge(1,0,rank==nranks-1)),film_mass(2,merge(1,0,rank==nranks-1)))
+  if (size(films)>0) then
+    films(1)=spray_wall_film([.004_dp,.0005_dp,.0005_dp],[-1._dp,0._dp,0._dp], &
+      1e-9_dp,330._dp,.001_dp,1e-6_dp,2)
+    film_mass(:,1)=films(1)%mass*[.25_dp,.75_dp]
+  end if
+  saved_films=films;saved_film_mass=film_mass
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses;saved_owners=owners
   target=root_tree;target_owners=[0];capacity=1
   call remap()
   call require(.not.ok,'particle capacity rejects coarsening');call unchanged()
-  capacity=100
+  capacity=100;film_capacity=0
+  call remap()
+  call require(.not.ok,'late film capacity rejects after gas/particle remap');call unchanged()
+  film_capacity=100
   if (rank==owners(3)) local%fields(3)%values(1,1,1,1)=-1
   saved=local
   call remap()
@@ -140,6 +154,21 @@ program test_spray_mpi_amr_remap
     call require(ok,'serial gas reference')
     call remap()
     call require(ok,'coupled topology change')
+    q=size(films)
+    call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(q==1,'global film count')
+    do p=1,size(films)
+      call require(all(films(p)%position==[.004_dp,.0005_dp,.0005_dp]).and. &
+        all(films(p)%normal==[-1._dp,0._dp,0._dp]),'exact closed-wall film geometry')
+      call require(films(p)%mass==1e-9_dp.and.films(p)%temperature==330.and. &
+        films(p)%diameter==.001_dp.and.films(p)%height==1e-6_dp.and.films(p)%material_id==2,'film payload')
+      call require(all(film_mass(:,p)==1e-9_dp*[.25_dp,.75_dp]),'film component inventory')
+      if (mode==2) then
+        call require(rank==target_owners(3),'film at nested upper wall owner')
+      else
+        call require(rank==target_owners(1),'film at root upper wall owner')
+      end if
+    end do
     call require(size(tree%nodes)==size(target%nodes).and.all(owners==target_owners),'published topology and owners')
     do node=1,size(tree%nodes)
       if (owners(node)==rank) then
@@ -179,10 +208,15 @@ program test_spray_mpi_amr_remap
 contains
   subroutine remap()
     call remap_mpi_amr_spray(MPI_COMM_WORLD,species,tree,owners,local,local_t,drops,masses,target,target_owners, &
-      zero,spacing,[.true.,.true.,.true.],capacity,ok)
+      zero,spacing,[.true.,.true.,.true.],capacity,ok,films,film_mass,film_capacity)
   end subroutine
   subroutine unchanged()
     integer :: a
+    call require(size(films)==size(saved_films).and.all(film_mass==saved_film_mass),'film rollback')
+    do a=1,size(films)
+      call require(all(films(a)%position==saved_films(a)%position).and. &
+        films(a)%mass==saved_films(a)%mass.and.films(a)%temperature==saved_films(a)%temperature,'film state rollback')
+    end do
     call require(size(tree%nodes)==size(original_tree%nodes).and.all(owners==saved_owners),'topology rollback')
     call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'particle count and components rollback')
     do a=1,size(drops)

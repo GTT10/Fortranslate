@@ -183,7 +183,12 @@ positions and breakup/lineage payloads remain unchanged. Periodic flags control
 lookup; nonperiodic exterior parcels reject. The caller retains the unchanged
 ID watermark and chooses the new topology/owners and per-rank receive capacity.
 This API does not choose the new topology. The MPI AMR spray application can
-schedule one caller-prescribed topology file.
+schedule one caller-prescribed topology file. Optional `wall_films`, `film_mass`
+and `maximum_films` must be supplied together and consistently on all ranks.
+Their private finest-owner migration follows successful gas/particle remap, so
+film capacity or geometry failure also preserves the original gas, particle,
+film and topology state. Exact wall coordinates and all film fields survive
+coarsening/refinement. Film-free calls retain their existing behavior.
 
 `pelef_mpi_amr_spray_3d` and `pelef_mpi_amr_spray_3d_selected` share
 `spray_mpi_amr_application_mod`. They take gas, topology and spray input paths,
@@ -210,8 +215,8 @@ It checks collective topology/owners/domain/component count/capacity and stages
 all output until validation and exchange succeed. The one-million-per-rank
 send/receive bound matches the existing Cartesian film migration. Empty ranks
 and globally empty films are supported. This is a library ownership operation;
-AMR film creation, whole gas/particle/film remap, application controls
-and film checkpoint integration remain open.
+AMR film creation, application controls and film checkpoint integration remain
+open; the coupled remap API above can carry existing films.
 
 `advance_mpi_amr_film_coupling` in `spray_mpi_amr_film_step_mod` advances
 stationary planar mixed films with existing heating/evaporation kernels and
