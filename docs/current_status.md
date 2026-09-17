@@ -134,8 +134,11 @@ A serial tree flux synchronization API now reconciles peer faces, restricts
 fine transfers into both incident parent-level patches, corrects exposed
 states and averages down in one transaction
 ([flux evidence](validation/eb-tree-flux-20260918.md)). Manufactured-transfer
-conservation tests cover nested and one-sided refinement; complete multilevel
-EB hydro/transport evolution and MPI remain open.
+conservation tests cover nested and one-sided refinement. A serial common-step
+Euler hydro API now connects snapshot halos, all-node updates, synchronization
+and separate exposed-wall/physical-boundary budgets transactionally
+([hydro evidence](validation/eb-tree-hydro-20260918.md)). Multilevel transport,
+combined stepping, application/restart integration and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
