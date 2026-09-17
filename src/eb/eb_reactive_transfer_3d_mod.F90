@@ -6,6 +6,7 @@ module eb_reactive_transfer_3d_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
   implicit none
   private
+  public :: face_metrics
   public :: restrict_reactive_eb_state_3d,prolong_reactive_eb_state_pcm_3d
   public :: fill_reactive_eb_patch_halo_3d,overlay_reactive_eb_peer_halo_3d
 contains

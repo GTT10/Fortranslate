@@ -3,6 +3,7 @@ if(PELEF_ENABLE_MPI)
     pelef_mpi_support
     src/parallel/mpi_domain_1d_mod.F90
     src/parallel/mpi_eb_tree_transfer_3d_mod.F90
+    src/parallel/mpi_eb_tree_halo_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
     src/parallel/mpi_amr_tree_work_mod.F90
     src/parallel/mpi_amr_patch_tree_csv_3d_mod.F90
