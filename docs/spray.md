@@ -125,7 +125,7 @@ Particle IDs must be globally unique and locally increasing. The interval and
 component count are checked collectively; local particle populations may be
 empty. This API advances particle exchange against the gas, without gas
 hydrodynamics/chemistry, regridding, injection or checkpoint orchestration.
-AMR physical-boundary/wall-film coupling and EB collisions remain open.
+AMR wall-film coupling and EB collisions remain open.
 
 The particle-interval API also accepts optional `boundary_faces` and
 `boundary_change`. Periodic faces wrap; inflow/outflow faces remove exiting
@@ -136,15 +136,19 @@ integrated boundary ledger contains gas-plus-particle inventory changes in
 mass, momentum, total energy and species order. It includes represented liquid
 mass/momentum/energy carried out of the domain and wall impulse. The ledger
 publishes only with whole-interval success and otherwise retains its incoming
-value. This particle API is connected; the reacting wrapper/application and
-checkpoint path still use periodic boundaries pending full physical-boundary
-integration.
+value. The reacting wrapper accepts the same faces and ledger. The application
+and checkpoint path still use periodic boundaries pending full integration.
 
 `advance_mpi_amr_spray_reactive` in `spray_mpi_amr_reactive_mod` composes a
 particle half-interval, the existing AMR reaction/transport/hydro split, and a
 second particle half-interval. The gas step accepts its existing reconstruction,
 limiter, Riemann solver, chemistry integrator, transport switches and optional
-recursive subcycling. The wrapper uses periodic faces and keeps all stage
+recursive subcycling. Optional `boundary_faces` defaults to periodic;
+`inflow_state`, `inflow_temperature`, `wall_temperature` and `wall_velocity`
+forward the existing gas boundary data. Optional `boundary_change` returns the
+sum of both particle halves and the gas boundary inventory, replacing its input
+only on success. It uses conserved mass, momentum, total energy and species
+order; chemical species conversion is not a boundary contribution. The wrapper keeps all stage
 outputs private: gas, temperatures, particles, component masses, ID watermark
 and gas correction/limiter diagnostics publish only after both particle halves
 and the gas step succeed. Failure returns zero particle substeps and leaves

@@ -105,7 +105,7 @@ if(PELEF_ENABLE_SPRAY)
       add_test(NAME spray_mpi_amr_reactive_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_amr_reactive> ${MPIEXEC_POSTFLAGS})
-      set_tests_properties(spray_mpi_amr_reactive_${ranks} PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 60 PROCESSORS ${ranks})
+      set_tests_properties(spray_mpi_amr_reactive_${ranks} PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 120 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_amr_boundaries_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_amr_boundaries> ${MPIEXEC_POSTFLAGS})

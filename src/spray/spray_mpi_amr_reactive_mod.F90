@@ -15,12 +15,13 @@ module spray_mpi_amr_reactive_mod
   private
   public :: advance_mpi_amr_spray_reactive
 contains
-  ! Periodic S/2 - (R/2 T/2 H T/2 R/2) - S/2 with atomic publication.
+  ! S/2 - (R/2 T/2 H T/2 R/2) - S/2 with atomic publication.
   ! Common tables/options and globally unique parcel IDs are caller contracts.
   subroutine advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
       state,temperature,parcels,component_mass,lower,spacing,dt,reconstruction,limiter,solver, &
       chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol,particle_steps, &
-      maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling)
+      maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -41,37 +42,54 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     character(len=*), optional, intent(in) :: chemistry_integrator
     logical, optional, intent(in) :: subcycling
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     type(amr_tree_state_3d) :: gas,temp
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
     real(dp) :: boundary(reactive_nvar(size(species))),correction,theta
+    real(dp) :: first_boundary(reactive_nvar(size(species))),second_boundary(reactive_nvar(size(species)))
     integer(int64) :: candidate_id
     integer :: first_steps,second_steps,ierr
     logical :: valid,agreed
-    character(len=8), parameter :: faces(6)='periodic'
+    character(len=32) :: faces(6)
     ok=.false.;particle_steps=0
     valid=allocated(parcels).and.allocated(component_mass).and.ieee_is_finite(dt)
     if (valid) valid=dt>0.and.dt<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
+    if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(boundary)
+    faces='periodic'
+    if (present(boundary_faces)) then
+      valid=valid.and.all(len_trim(boundary_faces)<=len(faces))
+      faces=boundary_faces
+    end if
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     candidate_id=0
     if (present(last_id)) candidate_id=last_id
     call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
-      drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id)
+      drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id,faces,first_boundary)
     if (.not.valid) return
     boundary=0;correction=0;theta=1
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,gas,temp,spacing,dt,faces, &
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
-      boundary,correction,theta,comm,valid,chemistry_integrator=chemistry_integrator,subcycling=subcycling)
+      boundary,correction,theta,comm,valid,chemistry_integrator=chemistry_integrator,subcycling=subcycling, &
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
+      wall_velocity=wall_velocity)
     if (.not.valid) return
     call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
-      drops,masses,lower,spacing,.5_dp*dt,second_steps,valid,candidate_id)
+      drops,masses,lower,spacing,.5_dp*dt,second_steps,valid,candidate_id,faces,second_boundary)
     if (.not.valid) return
+    boundary=boundary+first_boundary+second_boundary
+    valid=all(ieee_is_finite(boundary))
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     if (present(last_id)) last_id=candidate_id
+    if (present(boundary_change)) boundary_change=boundary
     maximum_correction=correction;minimum_theta=theta
     particle_steps=first_steps+second_steps;ok=.true.
   end subroutine

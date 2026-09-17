@@ -27,6 +27,8 @@ program test_spray_mpi_amr_reactive
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
   type(elementary_reaction), allocatable :: reactions(:)
+  real(dp), allocatable :: boundary(:)
+  character(len=32) :: faces(6)
   real(dp) :: correction,theta
   integer :: mode
   character(len=8) :: solver
@@ -49,6 +51,7 @@ program test_spray_mpi_amr_reactive
   call require(ok,'thermodynamics')
   nv=reactive_nvar(size(species))
   allocate(root(nv,4,4,4),primitive(nv),cell(nv),y(size(species)),before(nv),after(nv),scale(nv))
+  allocate(boundary(nv));boundary=123;faces='periodic'
   water=0;nitrogen=0
   do p=1,size(species)
     if (species(p)%name=='H2O') water=p
@@ -111,6 +114,7 @@ program test_spray_mpi_amr_reactive
   solver='invalid';recursive=.false.;chemistry=.false.
   call coupled()
   call require(.not.ok.and.steps==0.and.correction==123.and.theta==456,'gas-stage failure preserves diagnostics')
+  call require(all(boundary==123),'gas failure preserves boundary ledger')
   call unchanged()
   solver='hllc'
   do mode=1,2
@@ -128,14 +132,37 @@ program test_spray_mpi_amr_reactive
   call require(ok,'reacting coupled continuation')
   call totals(after)
   call require(all(abs(after(:5)-before(:5))<=3.e-12_dp*scale(:5)),'reacting mass momentum energy conservation')
-  if (rank==0) print *, 'PASS: periodic MPI AMR reacting spray step'
+  ! Open gas/particle boundary and specular wall, with gas transport enabled.
+  chemistry=.false.;faces(1)='slip_wall';faces(2)='outflow'
+  do mode=1,2
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    recursive=mode==2
+    do p=1,size(drops)
+      drops(p)%velocity=[0._dp,10._dp,5._dp]
+      if (p==1) then
+        drops(p)%position(1)=3.999_dp*spacing(1);drops(p)%velocity(1)=1000
+      else if (p==3) then
+        drops(p)%position(1)=.001_dp*spacing(1);drops(p)%velocity(1)=-1000
+      end if
+    end do
+    call totals(before)
+    call coupled()
+    call require(ok,'physical boundary common/recursive coupled step')
+    call totals(after)
+    scale=max(abs(before),abs(after),abs(boundary),1.e-30_dp)
+    call require(all(abs(after-before-boundary)<=3.e-12_dp*scale),'combined gas and parcel boundary budget')
+    q=size(drops)
+    call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(q==2,'coupled outflow removes parcel')
+  end do
+  if (rank==0) print *, 'PASS: MPI AMR reacting spray periodic and physical boundaries'
   call MPI_Finalize(ierr)
 contains
   subroutine coupled()
     call advance_mpi_amr_spray_reactive(MPI_COMM_WORLD,tree,owners,species,reactions,transport,liquids,options, &
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &
       .true.,.true.,.true.,.false.,1.e-6_dp,1.e-12_dp,steps,correction,theta,ok,last_id, &
-      chemistry_integrator='implicit',subcycling=recursive)
+      chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary)
   end subroutine
   subroutine unchanged()
     integer :: a
