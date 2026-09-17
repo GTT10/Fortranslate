@@ -16,7 +16,7 @@ a.work.mkdir(parents=True, exist_ok=True)
 case = a.source / 'cases/mpi_amr_spray_3d'
 
 
-def run(name, ranks, empty=False):
+def run(name, ranks, empty=False, scheduled=False):
     work = a.work / name
     work.mkdir(exist_ok=True)
     gas = (case / 'gas.nml').read_text()
@@ -29,6 +29,9 @@ def run(name, ranks, empty=False):
     if empty:
         spray = spray.replace('parcel_count=4,total_mass=1.e-10', 'parcel_count=0,total_mass=0.')
     spray = spray.replace('\n/\n', f"\n regrid_time=1.e-8,regrid_topology='{case / 'root.dat'}'\n/\n")
+    if scheduled:
+        spray = spray.replace('\n/\n', '\n injection_events=2,injection_times=0.,1.e-8,\n'
+                              ' event_parcels=4,4,event_mass=4.e-11,6.e-11\n/\n')
     (work / 'spray.nml').write_text(spray)
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=work,
@@ -36,6 +39,7 @@ def run(name, ranks, empty=False):
     (work / 'run.log').write_text(result.stdout)
     assert result.returncode == 0, result.stdout
     assert 'Regridded: T' in result.stdout, result.stdout
+    assert f'Injection events applied: {2 if scheduled else 1}' in result.stdout, result.stdout
     with (work / 'amr_spray.csv').open() as f:
         gas_rows = [{k: float(v) for k, v in row.items()} for row in csv.DictReader(f)]
     assert len(gas_rows) == 64 and all(row['level'] == 0 for row in gas_rows)
@@ -46,7 +50,8 @@ def run(name, ranks, empty=False):
             rows = list(csv.reader(f))[1:]
             particles.extend([[float(x) for x in row] for row in rows])
     particles.sort(key=lambda row: row[0])
-    assert len(particles) == (0 if empty else 4)
+    assert len(particles) == (0 if empty else (8 if scheduled else 4))
+    assert [r[0] for r in particles] == list(range(1, len(particles) + 1))
     for row in particles:
         assert all(math.isfinite(x) for x in row)
         assert abs(row[10] - 350) > 1e-8 and row[3] > .00075, row
@@ -61,20 +66,21 @@ def integrate(rows, key):
 
 
 baseline, _ = run('empty', 2, True)
-gas2, particles2 = run('two', 2)
-gas4, particles4 = run('four', 4)
-for gas, particles in [(gas2, particles2), (gas4, particles4)]:
-    mass = integrate(gas, 'rho') + math.fsum(r[9] * r[11] for r in particles)
-    expected = integrate(baseline, 'rho') + 1e-10
-    assert abs(mass - expected) <= 3e-12 * expected, (mass, expected)
-    for c, (name, fraction) in enumerate([('H2O', .25), ('H2O2', .75)]):
-        total = integrate(gas, 'rhoY_' + name) + math.fsum(r[12+c] * r[11] for r in particles)
-        expected = integrate(baseline, 'rhoY_' + name) + fraction * 1e-10
-        assert abs(total - expected) <= 3e-12 * expected, (name, total, expected)
-for left, right in zip(gas2, gas4):
-    for key in left:
-        assert math.isclose(left[key], right[key], rel_tol=2e-12, abs_tol=1e-25), (key, left[key], right[key])
-for left, right in zip(particles2, particles4):
-    for x, y in zip(left, right):
-        assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
-print('PASS: AMR spray CLI, initial injection, regrid, mass/species budget and 2/4-rank parity')
+for scheduled in (False, True):
+    gas2, particles2 = run('events_two' if scheduled else 'two', 2, scheduled=scheduled)
+    gas4, particles4 = run('events_four' if scheduled else 'four', 4, scheduled=scheduled)
+    for gas, particles in [(gas2, particles2), (gas4, particles4)]:
+        mass = integrate(gas, 'rho') + math.fsum(r[9] * r[11] for r in particles)
+        expected = integrate(baseline, 'rho') + 1e-10
+        assert abs(mass - expected) <= 3e-12 * expected, (mass, expected)
+        for c, (name, fraction) in enumerate([('H2O', .25), ('H2O2', .75)]):
+            total = integrate(gas, 'rhoY_' + name) + math.fsum(r[12+c] * r[11] for r in particles)
+            expected = integrate(baseline, 'rhoY_' + name) + fraction * 1e-10
+            assert abs(total - expected) <= 3e-12 * expected, (name, total, expected)
+    for left, right in zip(gas2, gas4):
+        for key in left:
+            assert math.isclose(left[key], right[key], rel_tol=2e-12, abs_tol=1e-25), (key, left[key], right[key])
+    for left, right in zip(particles2, particles4):
+        for x, y in zip(left, right):
+            assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
+print('PASS: AMR spray CLI, initial/scheduled injection, regrid, mass/species budget and 2/4-rank parity')

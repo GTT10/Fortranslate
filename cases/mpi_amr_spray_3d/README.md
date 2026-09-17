@@ -27,6 +27,25 @@ fields can be set as namelist components, e.g. `options%breakup_model='etab'`,
 with the required liquid viscosity/surface tension. `subcycling=.true.` selects
 recursive gas steps; the driver retains a conservative finest-grid CFL bound.
 
+For timed injection, set `injection_events` (1 through 1024), strictly increasing
+nonnegative `injection_times`, and matching `event_parcels` and `event_mass`
+arrays. Each event uses the same liquid composition and cone settings. This
+explicit schedule replaces the default time-zero injection; when
+`injection_events=0` (default), `parcel_count` and `total_mass` retain their
+original time-zero meaning. A zero-mass event must also have zero parcels.
+For example:
+
+```fortran
+ injection_events=2, injection_times=0.,1.e-8
+ event_parcels=4,4, event_mass=4.e-11,6.e-11
+```
+
+The solver lands exactly on each event. If regridding and injection coincide,
+the new grid is established first. Events at final time are applied before
+output; later events remain unapplied. New parcels, component masses, IDs and
+the cumulative injection ledger publish only after injection and migration
+succeed. The summary reports the number of applied events.
+
 An optional single scheduled regrid is specified by `regrid_time` and
 `regrid_topology` in `amr_spray`. The latter path is relative to the run directory
 unless absolute. The solver lands on that time and atomically remaps gas and
@@ -48,7 +67,7 @@ integrator are printed by the selected frontend.
 
 The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This initial executable supports periodic
-boundaries, one initial injection and one optional prescribed regrid. Timed or
-multiport injection, automatic tagging/rebalancing, checkpoint/restart, wall
+boundaries, initial or scheduled single-cone injection and one optional prescribed
+regrid. Multiport injection, automatic tagging/rebalancing, checkpoint/restart, wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.

@@ -49,6 +49,9 @@ contains
     real(dp) :: lower(3),spacing(3),h(3),density,time,dt,transport_dt,diffusivity,correction,theta,stop_time
     integer :: rank,nranks,ierr,unit,ios,node,n(3),i,p,nv,step,attempt,particle_steps,number
     integer :: component_count,parcel_count,maximum_parcels
+    integer, parameter :: maximum_events=1024
+    integer :: injection_events,event,event_parcels(maximum_events)
+    real(dp) :: injection_times(maximum_events),event_mass(maximum_events)
     character(len=24) :: vapor_names(16)
     real(dp) :: fractions(16),liquid_density(16),liquid_cp(16),reference_temperature(16), &
       reference_pressure(16),latent_heat(16)
@@ -60,7 +63,8 @@ contains
     character(len=:), allocatable :: header
     namelist /amr_spray/ component_count,vapor_names,fractions,liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,parcel_count,total_mass,center,axis,speed,half_angle,diameter,drop_temperature, &
-      maximum_parcels,options,subcycling,regrid_time,regrid_topology
+      maximum_parcels,options,subcycling,regrid_time,regrid_topology, &
+      injection_events,injection_times,event_parcels,event_mass
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
@@ -72,6 +76,7 @@ contains
     parcel_count=1;total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp]
     speed=10;half_angle=0;diameter=1e-5_dp;drop_temperature=350;maximum_parcels=100000
     subcycling=.false.;regrid_time=-1;regrid_topology='';regridded=.false.
+    injection_events=0;injection_times=0;event_parcels=0;event_mass=0
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
     read(unit,nml=amr_spray,iostat=ios)
@@ -80,6 +85,21 @@ contains
     if (component_count<1.or.component_count>16) call fatal('Invalid liquid component count')
     if (.not.ieee_is_finite(regrid_time)) call fatal('Invalid regrid time')
     if ((regrid_time>=0).neqv.(len_trim(regrid_topology)>0)) call fatal('Regrid needs time and topology')
+    if (injection_events<0.or.injection_events>maximum_events) call fatal('Invalid injection event count')
+    if (injection_events==0) then
+      injection_events=1;injection_times(1)=0;event_parcels(1)=parcel_count;event_mass(1)=total_mass
+    end if
+    if (.not.all(ieee_is_finite(injection_times(:injection_events))).or. &
+        .not.all(ieee_is_finite(event_mass(:injection_events)))) call fatal('Nonfinite injection schedule')
+    if (any(injection_times(:injection_events)<0).or.any(event_mass(:injection_events)<0).or. &
+        any(event_parcels(:injection_events)<0).or.any(event_parcels(:injection_events)>maximum_parcels)) &
+      call fatal('Invalid injection schedule values')
+    do i=1,injection_events
+      if ((event_parcels(i)==0).neqv.(event_mass(i)==0)) call fatal('Injection count/mass mismatch')
+      if (i>1) then
+        if (injection_times(i)<=injection_times(i-1)) call fatal('Injection times must strictly increase')
+      end if
+    end do
     call check_output(trim(config%output_file))
     write(suffix,'(i0)') rank
     call check_output(trim(config%output_file)//'.particles.'//trim(suffix)//'.csv')
@@ -118,19 +138,7 @@ contains
     if (.not.ok) call fatal('Initial parent synchronization failed')
     call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok)
     if (.not.ok) call fatal('Initial gas recovery failed')
-    number=0;local_mass=0;last_id=0
-    if (rank==0) then
-      number=parcel_count;local_mass=total_mass
-    end if
-    call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,center,axis,speed,half_angle,diameter,drop_temperature, &
-      maximum_parcels,last_id,parcels,ledger,ok,liquids,fractions(:component_count),masses)
-    if (.not.ok) call fatal('Initial injection failed')
-    call MPI_Allreduce(ledger,global_ledger,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
-    if (ierr/=MPI_SUCCESS) call fatal('Injection ledger reduction failed')
-    call migrate_amr_tree_spray_parcels(comm,tree,owners,parcels,lower,spacing,[.true.,.true.,.true.], &
-      maximum_parcels,ok,masses)
-    if (.not.ok) call fatal('Initial particle migration failed')
-    time=0;step=0
+    time=0;step=0;event=1;last_id=0;global_ledger=0
     do
       if (.not.regridded.and.regrid_time>=0) then
         if (time==regrid_time) then
@@ -141,9 +149,16 @@ contains
           regridded=.true.
         end if
       end if
+      if (event<=injection_events) then
+        if (time==injection_times(event)) then
+          call inject_event()
+          event=event+1
+        end if
+      end if
       if (time>=config%final_time) exit
       if (step>=config%maximum_steps) call fatal('Maximum steps reached')
       stop_time=config%final_time
+      if (event<=injection_events) stop_time=min(stop_time,injection_times(event))
       if (.not.regridded.and.regrid_time>time) stop_time=min(stop_time,regrid_time)
       ! Finest-level bounds also safely bound recursive gas stepping.
       call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,spacing,config%cfl,dt,comm,ok)
@@ -202,9 +217,34 @@ contains
     if (rank==0) then
       write(*,'(a,i0,a,es24.16,a,i0)') 'Steps: ',step,' Final time: ',time,' Last particle ID: ',last_id
       write(*,'(a,l1)') 'Regridded: ',regridded
+      write(*,'(a,i0)') 'Injection events applied: ',event-1
       write(*,'(a,*(es24.16,1x))') 'Injected inventory: ',global_ledger
     end if
   contains
+    subroutine inject_event()
+      type(spray_parcel), allocatable :: candidate(:)
+      real(dp), allocatable :: candidate_mass(:,:)
+      real(dp) :: added(nv),next_ledger(nv)
+      integer(int64) :: next_id
+      candidate=parcels;candidate_mass=masses;next_id=last_id
+      number=0;local_mass=0
+      if (rank==0) then
+        number=event_parcels(event);local_mass=event_mass(event)
+      end if
+      call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,center,axis,speed,half_angle,diameter, &
+        drop_temperature,maximum_parcels,next_id,candidate,ledger,ok,liquids,fractions(:component_count),candidate_mass)
+      if (.not.ok) call fatal('Scheduled injection failed')
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,[.true.,.true.,.true.], &
+        maximum_parcels,ok,candidate_mass)
+      if (.not.ok) call fatal('Scheduled particle migration failed')
+      call MPI_Allreduce(ledger,added,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if (ierr/=MPI_SUCCESS) call fatal('Injection ledger reduction failed')
+      if (any(abs(global_ledger)>huge(1._dp)-abs(added))) call fatal('Injection ledger overflow')
+      next_ledger=global_ledger+added
+      if (.not.all(ieee_is_finite(next_ledger))) call fatal('Nonfinite injection ledger')
+      call move_alloc(candidate,parcels);call move_alloc(candidate_mass,masses)
+      last_id=next_id;global_ledger=next_ledger
+    end subroutine
     subroutine check_output(path)
       character(len=*), intent(in) :: path
       if (selected_reactor_paths_alias_lexically(path,input_path).or. &
