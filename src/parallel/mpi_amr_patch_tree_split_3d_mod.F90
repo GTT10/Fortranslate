@@ -9,17 +9,19 @@ module mpi_amr_patch_tree_split_3d_mod
   use mpi_amr_patch_tree_chemistry_3d_mod, only: advance_mpi_amr_tree_chemistry_3d,clone_mpi_amr_tree_inputs_3d
   use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d
   use mpi_amr_patch_tree_transport_3d_mod, only: advance_mpi_amr_tree_transport_3d
+  use mpi_amr_patch_tree_subcycle_3d_mod, only: advance_mpi_amr_tree_subcycle_hydro_3d
+  use mpi_amr_patch_tree_transport_subcycle_3d_mod, only: advance_mpi_amr_tree_subcycle_transport_3d
   implicit none
   private
   public :: advance_mpi_amr_tree_split_3d
 contains
-  ! R/2 - T/2 - H - T/2 - R/2, over one common interval on owner-local fields.
+  ! R/2 - T/2 - H - T/2 - R/2, over one coarse interval, optionally with recursive flow/transport steps.
   ! Disabled operators are skipped. All stage outputs remain private until
   ! the complete composition succeeds, including the final chemistry solve.
   subroutine advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary_change,maximum_correction,minimum_theta,comm,ok,chemistry_integrator, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,subcycling)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -37,16 +39,20 @@ contains
     character(len=:), allocatable :: transport_limiter
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),stage_budget(size(boundary_change)),largest,stage_max,theta,stage_theta
-    logical :: valid,transport_enabled
-    integer :: rank,status,flags(5),low(5),high(5)
+    logical, optional, intent(in) :: subcycling
+    logical :: valid,transport_enabled,recursive_steps
+    integer :: rank,status,flags(6),low(6),high(6)
     ok=.false.
     valid=ieee_is_finite(dt).and.dt>0.and..not.(barodiffusion.and..not.diffusion)
     call agree(valid)
     if (.not.valid) return
-    flags=[merge(1,0,chemistry),merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion),merge(1,0,barodiffusion)]
-    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    recursive_steps=.false.
+    if (present(subcycling)) recursive_steps=subcycling
+    flags=[merge(1,0,chemistry),merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion), &
+      merge(1,0,barodiffusion),merge(1,0,recursive_steps)]
+    call MPI_Allreduce(flags,low,6,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,6,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     if (reconstruction=='characteristic_plm') transport_limiter=limiter
@@ -63,8 +69,13 @@ contains
       if (.not.valid) return
     end if
     stage_budget=0;stage_max=0
-    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,candidate,temps,spacing,dt,faces,reconstruction,limiter,solver, &
-      stage_budget,stage_max,comm,valid,inflow_state,inflow_temperature)
+    if (recursive_steps) then
+      call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,candidate,temps,spacing,dt,faces, &
+        reconstruction,limiter,solver,stage_budget,stage_max,comm,valid,inflow_state,inflow_temperature)
+    else
+      call advance_mpi_amr_tree_hydro_3d(tree,owners,species,candidate,temps,spacing,dt,faces,reconstruction,limiter,solver, &
+        stage_budget,stage_max,comm,valid,inflow_state,inflow_temperature)
+    end if
     if (.not.valid) return
     budget=budget+stage_budget;largest=max(largest,stage_max)
     if (transport_enabled) then
@@ -87,9 +98,15 @@ contains
     subroutine transport_half(success)
       logical, intent(out) :: success
       stage_budget=0;stage_max=0;stage_theta=1
-      call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
-        viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,comm,success, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      if (recursive_steps) then
+        call advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,transport,candidate,temps,spacing, &
+          .5_dp*dt,faces,viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,comm,success, &
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      else
+        call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,candidate,temps,spacing,.5_dp*dt,faces, &
+          viscosity,conduction,diffusion,barodiffusion,stage_budget,stage_max,stage_theta,comm,success, &
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter=transport_limiter)
+      end if
       if (.not.success) return
       budget=budget+stage_budget;largest=max(largest,stage_max);theta=min(theta,stage_theta)
     end subroutine

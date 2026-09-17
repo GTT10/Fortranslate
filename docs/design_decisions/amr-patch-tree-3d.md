@@ -999,3 +999,20 @@ maximum diffusivity. Controls, optional wall inputs and face choices must agree
 across ranks. Empty owners contribute huge dt and zero diffusivity. Coefficient
 identity remains the caller's contract; advance does not enforce dt or retry.
 Recursive split composition and application mode dispatch remain to be connected.
+
+
+## MPI recursive split composition
+
+`advance_mpi_amr_tree_split_3d` accepts optional `subcycling`, default false.
+Its effective value joins the collectively agreed operator flags before any
+stage runs, preventing ranks from entering different communication schedules.
+When enabled, both transport half-intervals use ratio-squared recursive steps
+and the full hydro interval uses ratio-based recursive steps. Chemistry retains
+the existing exposed-cell coarse half-intervals. The order is R/2 T/2 H T/2 R/2,
+matching the serial split API. Disabled operators are skipped, and PLM forwards
+the configured coarse-donor limiter to transport.
+
+The outer candidate transaction retains all state and diagnostics until every
+stage succeeds. Failure after earlier chemistry or transport work discards that
+work. Default/false mode retains common-step arithmetic. Application namelist,
+scaled bound selection and checkpoint mode identity are the next integration.

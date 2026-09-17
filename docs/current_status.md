@@ -73,7 +73,8 @@ initialization/stepping, timestep retries and serial-format final CSV/budget out
 ([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI recursive hydro subcycling and its scaled coarse CFL bound are now connected
 ([evidence](validation/amr-tree-mpi-subcycle-hydro-20260917.md)). MPI recursive transport now connects ratio-squared steps, interval reflux and scaled
 diffusion/wall bounds ([evidence](validation/amr-tree-mpi-subcycle-transport-20260917.md)).
-Coupled/application subcycling dispatch remains open. MPI transport now advances one depth with
+MPI reaction/transport/hydro composition now accepts recursive stepping
+([evidence](validation/amr-tree-mpi-subcycle-split-20260917.md)); application mode dispatch remains open. MPI transport now advances one depth with
 coarse-time donors, moving/isothermal walls and integrated face fluxes
 ([evidence](validation/amr-tree-mpi-transport-level-20260917.md)). MPI hydro
 now advances one depth with coarse-time donors and returns integrated face fluxes
