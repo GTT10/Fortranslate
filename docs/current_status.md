@@ -59,9 +59,11 @@ The application now optionally selects a common interval from both grids,
 with donor bounds and mode-aware restart
 ([evidence](validation/eb-two-level-auto-dt-20260917.md)). A library hydro path
 now advances ratio-based fine substeps with coarse-time face donors, accumulated
-fluxes and final reflux ([evidence](validation/eb-subcycle-hydro-20260917.md));
-reaction/transport subcycling, application wiring, multi-patch and MPI EB
-stepping remain open.
+fluxes and final reflux ([evidence](validation/eb-subcycle-hydro-20260917.md)).
+The transport library now uses ratio-squared fine steps and accumulates
+accepted limited fluxes ([evidence](validation/eb-subcycle-transport-20260917.md));
+coupled composition, application subcycling, multi-patch and MPI EB stepping
+remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
