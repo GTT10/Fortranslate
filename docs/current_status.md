@@ -113,8 +113,11 @@ transactional capacity rejection. Adaptive application and restart dispatch
 remain open ([tagging evidence](validation/eb-temperature-tagging-20260917.md)).
 Multipatch update APIs now accept zero fine patches and retain exact
 single-grid split behavior and exchange budgets, enabling the numerical
-endpoint for full derefinement; zero-patch application/restart wiring remains
-open ([coarse-only evidence](validation/eb-coarse-only-20260917.md)).
+endpoint for full derefinement ([coarse-only evidence](validation/eb-coarse-only-20260917.md)).
+Fixed/selected applications now support coarse-only initialization, scheduled
+2-to-0-to-2 patch transitions and exact checkpoint continuation through the
+empty topology. Temperature-policy dispatch remains open
+([application evidence](validation/eb-zero-patch-application-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

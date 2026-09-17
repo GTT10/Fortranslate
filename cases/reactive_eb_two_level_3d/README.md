@@ -30,7 +30,7 @@ and scales fine bounds by the corresponding substep count.
 [`scheduled.nml`](scheduled.nml) and the selected-mechanism
 [`selected_scheduled.nml`](selected_scheduled.nml) change patch counts 2→1→2.
 Set `regrid_count` (0–16), strictly increasing positive `regrid_times(event)`,
-`regrid_patch_count(event)` (1–16), and inclusive coarse-cell boxes
+`regrid_patch_count(event)` (0–16), and inclusive coarse-cell boxes
 `regrid_lower(:,patch,event)` / `regrid_upper(:,patch,event)`. All events are
 validated up front. Geometry and refinement ratio stay fixed; scheduled
 patches must be nonoverlapping and lie within the coarse domain.
@@ -48,8 +48,17 @@ bind the original topology, complete schedule and completed-event index.
 Restart rebuilds the saved layout, verifies that the event index agrees with
 the saved time, and resumes without repeating a completed event. A schedule
 change is rejected. Temperature tagging, changing the refinement ratio in the
-application, zero fine patches and distributed EB regridding remain open.
+application and distributed EB regridding remain open.
 [Scheduled application evidence](../../docs/validation/eb-scheduled-application-20260917.md).
+
+Set `patch_count=0` for coarse-only initialization, or set a scheduled
+`regrid_patch_count(event)=0` to remove all fine patches. The solver continues
+reaction, transport and hydro on the coarse grid with the same cumulative
+budgets and can add fine patches at a later event. Empty-topology CSVs contain
+only level-0 fluid cells. Static coarse-only checkpoints use the separate
+`PELEF_EB_COARSE_CHECKPOINT_V1`–`V4` headers; scheduled checkpoints retain the
+schedule envelope while omitting fine-grid records when none exist.
+[Zero-patch application evidence](../../docs/validation/eb-zero-patch-application-20260917.md).
 
 `geometry_type` accepts `plane`, `extruded` or `level_set`, with the same geometry
 file formats as the existing [extruded](../reactive_eb_extruded_3d/README.md) and
