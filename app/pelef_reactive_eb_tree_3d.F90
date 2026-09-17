@@ -248,7 +248,7 @@ program pelef_reactive_eb_tree_3d
     dt=min(time_step,final_time-record%time)
     if (automatic_timestep) then
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
-        .true.,.true.,.true.,estimated_dt,ok)
+        .true.,.true.,.true.,estimated_dt,ok,subcycling)
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
     end if

@@ -66,9 +66,10 @@ accumulated and reconciled after each parent interval. Reaction halves still
 operate on the exposed composite state around the transport/hydro operators.
 
 The default remains a common interval. `time_step` bounds the root interval;
-retries halve it transactionally. Automatic interval selection currently keeps
-the conservative all-node common bound even in subcycled mode, rather than
-scaling it upward by refinement ratios. Checkpoints mark subcycled execution
+retries halve it transactionally. In subcycled mode, automatic interval selection
+converts each patch bound to the root interval using the cumulative refinement
+ratio for hydro and its square for diffusion. Hidden parent updates and global
+donor maxima remain included. Checkpoints mark subcycled execution
 and reject continuation with a different stepping mode. This composition
 retains Euler updates and does not claim second-order time accuracy.
 

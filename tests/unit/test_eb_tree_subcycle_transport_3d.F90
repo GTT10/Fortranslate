@@ -9,6 +9,9 @@ program test_eb_tree_subcycle_transport_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_subcycle_transport_3d
+  use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
+  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
+  use eb_reactive_patch_tree_3d_mod, only: reactive_eb_tree_timestep_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -75,6 +78,7 @@ program test_eb_tree_subcycle_transport_3d
   end do
   call average_down_reactive_eb_tree_3d(species,tree,ok)
   call require(ok,'initial average down')
+  call check_timestep()
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
@@ -107,6 +111,53 @@ program test_eb_tree_subcycle_transport_3d
   end do
   print *, 'test_eb_tree_subcycle_transport_3d: PASS'
 contains
+  subroutine check_timestep()
+    real(dp) :: donors(4),signals(4),dmax,dummy,local_dt,h(5),d(5),actual,common,expected,cfl
+    real(dp), parameter :: hydro_steps(5)=[1._dp,2._dp,2._dp,4._dp,4._dp]
+    integer :: n,mode
+    logical :: good
+    donors=0._dp;dmax=0._dp
+    do n=1,count
+      associate(p=>tree%nodes(n))
+      call reactive_eb_signal_speeds_3d(species,p%state,p%temperature,p%geometry,signals,good)
+      call require(good,'independent signals')
+      donors=max(donors,signals)
+      call reactive_eb_transport_patch_timestep_3d(species,transport,p%state,p%temperature,p%geometry, &
+        .35_dp,.true.,.true.,.true.,local_dt,dummy,good)
+      call require(good,'independent diffusivity')
+      dmax=max(dmax,dummy)
+      end associate
+    end do
+    ! Exercise both hydro-limited and diffusion-limited root intervals.
+    do mode=1,2
+      cfl=.35_dp
+      if (mode==2) cfl=1.e-10_dp
+      do n=1,count
+        associate(p=>tree%nodes(n))
+        call compute_reactive_eb_euler_cfl_timestep_3d(species,p%state,p%temperature,p%geometry, &
+          .5_dp,h(n),good,donors)
+        call require(good,'independent hydro bound')
+        call reactive_eb_transport_patch_timestep_3d(species,transport,p%state,p%temperature,p%geometry, &
+          cfl,.true.,.true.,.true.,d(n),dummy,good,dmax)
+        call require(good,'independent diffusion bound')
+        end associate
+      end do
+      expected=min(minval(h(:count)*hydro_steps(:count)),minval(d(:count)*hydro_steps(:count)**2))
+      call reactive_eb_tree_timestep_3d(species,transport,tree,.5_dp,cfl,.true., &
+        .true.,.true.,.true.,actual,good,subcycling=.true.)
+      call require(good,'recursive timestep')
+      call require(abs(actual/expected-1._dp)<1.e-13_dp,'scaled patch bounds')
+      call reactive_eb_tree_timestep_3d(species,transport,tree,.5_dp,cfl,.true., &
+        .true.,.true.,.true.,common,good)
+      call require(good,'common timestep')
+      call require(abs(common/min(minval(h(:count)),minval(d(:count)))-1._dp)<1.e-13_dp,'common patch bounds')
+      call require(actual>common,'subcycling relaxes fine-patch bound')
+      actual=17._dp
+      call reactive_eb_tree_timestep_3d(species,transport,tree,-1._dp,cfl,.true., &
+        .true.,.true.,.true.,actual,good,subcycling=.true.)
+      call require(.not.good.and.actual==17._dp,'failed estimate preserves interval')
+    end do
+  end subroutine check_timestep
   subroutine unchanged_tree()
     integer :: n
     do n=1,size(tree%nodes)

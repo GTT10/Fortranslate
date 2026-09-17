@@ -816,3 +816,10 @@ add_test(NAME regression_eb_tree_subcycle_3d
     --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/scheduled.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_subcycle_3d" --scheduled --subcycling)
 set_tests_properties(regression_eb_tree_subcycle_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME regression_eb_tree_subcycle_auto_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_application_3d.py"
+    --exe "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+    --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/input.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_subcycle_auto_3d" --automatic --subcycling)
+set_tests_properties(regression_eb_tree_subcycle_auto_3d PROPERTIES TIMEOUT 180)

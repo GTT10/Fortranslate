@@ -26,7 +26,7 @@ def main():
         template = template.replace('maximum_steps=20', 'maximum_steps=200, automatic_timestep=.true., hydro_cfl=1.e-5')
 
     if args.subcycling:
-        template = template.replace('maximum_steps=20', 'maximum_steps=20, subcycling=.true.')
+        template = template.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
 
     def run(name, extra='', text=None, success=True):
         directory = work / name

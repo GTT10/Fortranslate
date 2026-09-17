@@ -363,7 +363,7 @@ contains
   ! Bound every patch update, including hidden parent cells which are advanced
   ! before restriction. Global donor maxima cover peer and ancestor halos.
   subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
-      transport_enabled,viscosity,conduction,diffusion,dt,ok)
+      transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
@@ -371,14 +371,23 @@ contains
     logical, intent(in) :: transport_enabled,viscosity,conduction,diffusion
     real(dp), intent(inout) :: dt
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: subcycling
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
     type(eb_reactive_tree_3d) :: snapshot
-    real(dp) :: speeds(4),donors(4),diffusivity,maximum_diffusivity,interval,candidate
-    integer :: node
-    logical :: valid,active
+    real(dp) :: speeds(4),donors(4),diffusivity,maximum_diffusivity,interval,candidate,factor
+    integer :: node,level
+    logical :: valid,active,recursive
     ok=.false.
     if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) return
     if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) return
     if (.not.valid_tree(tree,reactive_nvar(size(species)))) return
+    recursive=.false.
+    if (present(subcycling)) recursive=subcycling
+    if (recursive) then
+      call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+      if (.not.valid) return
+    end if
     snapshot=tree
     call average_down_reactive_eb_tree_3d(species,snapshot,valid)
     if (.not.valid) return
@@ -404,13 +413,20 @@ contains
       if (.not.any(g%volume_fraction>0._dp)) cycle
       call compute_reactive_eb_euler_cfl_timestep_3d(species,u,t,g,hydro_cfl,interval,valid,donors)
       if (.not.valid) return
-      candidate=min(candidate,interval)
+      factor=1._dp
+      if (recursive) then
+        level=tree%topology%nodes(node)%level+1
+        factor=real(domain(1,level),dp)/real(domain(1,1),dp)
+      end if
+      ! Compare before multiplying so an inactive huge bound cannot overflow.
+      if (interval<candidate/factor) candidate=interval*factor
       if (transport_enabled) then
         call reactive_eb_transport_patch_timestep_3d(species,transport,u,t,g,transport_cfl, &
           viscosity,conduction,diffusion,interval,diffusivity,valid,maximum_diffusivity)
         if (.not.valid) return
         ! Conservatively use a full-interval diffusion bound for split halves.
-        candidate=min(candidate,interval)
+        factor=factor*factor
+        if (interval<candidate/factor) candidate=interval*factor
       end if
       end associate
     end do
