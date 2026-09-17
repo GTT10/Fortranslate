@@ -83,7 +83,8 @@ contains
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit,subcycling
     logical :: ok,viscosity,conduction,diffusion,barodiffusion
-    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    logical :: checkpoint_indexed
+    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,checkpoint_indexed
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_distribution/ partitioning
@@ -92,6 +93,7 @@ contains
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
+    checkpoint_indexed=.false.
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
@@ -439,7 +441,8 @@ contains
       snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
       snapshot%maximum_remap_error=max_remap_error
       snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
-      call write_mpi_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,owners,state,temperature,comm,ok)
+      call write_mpi_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,owners,state,temperature,comm,ok, &
+        indexed=checkpoint_indexed)
       if (.not.ok) call fatal('Cannot write MPI tree checkpoint')
     end subroutine
     subroutine restore_checkpoint()

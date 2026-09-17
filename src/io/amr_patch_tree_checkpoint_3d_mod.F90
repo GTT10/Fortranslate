@@ -17,9 +17,11 @@ module amr_patch_tree_checkpoint_3d_mod
     type(amr_patch_tree_3d) :: tree
     type(amr_tree_state_3d) :: state,temperature
     real(dp), allocatable :: initial(:),boundary(:)
+    integer(int64), allocatable :: record_offsets(:)
     real(dp) :: time=0,maximum_reflux=0,minimum_theta=1,maximum_remap_error=0
     integer :: steps=0,regrids=0
   end type
+  public :: checkpoint_record_offsets_3d
   public :: read_amr_tree_checkpoint_header_3d
   public :: build_amr_tree_checkpoint_context_3d,write_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d
 contains
@@ -84,18 +86,31 @@ contains
 900 close(unit)
   end subroutine
 
-  subroutine write_amr_tree_checkpoint_3d(path,species,context,snapshot,ok)
+  subroutine write_amr_tree_checkpoint_3d(path,species,context,snapshot,ok,indexed)
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_checkpoint_3d), intent(in) :: snapshot
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: indexed
+    logical :: with_index,valid
+    integer(int64), allocatable :: offsets(:)
     integer :: unit,status,node,i,j,k,n(3),start,finish
     ok=.false.
     if (.not.valid_snapshot(snapshot,species)) return
     if (.not.valid_context(context)) return
+    with_index=.false.
+    if (present(indexed)) with_index=indexed
+    if (with_index) then
+      call checkpoint_record_offsets_3d(snapshot%tree,size(snapshot%initial),offsets,valid)
+      if (.not.valid) return
+    end if
     open(newunit=unit,file=path,status='replace',action='write',iostat=status)
     if (status/=0) return
-    write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V1'
+    if (with_index) then
+      write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V2'
+    else
+      write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V1'
+    end if
     if (status/=0) go to 900
     write(unit,'(i0)',iostat=status) len(context)
     if (status/=0) go to 900
@@ -120,6 +135,12 @@ contains
       end associate
       if (status/=0) go to 900
     end do
+    if (with_index) then
+      do node=1,size(offsets)
+        write(unit,'(i0)',iostat=status) offsets(node)
+        if (status/=0) go to 900
+      end do
+    end if
     do node=1,size(snapshot%tree%nodes)
       n=snapshot%tree%nodes(node)%shape
       do k=1,n(3)
@@ -146,14 +167,17 @@ contains
     type(amr_tree_checkpoint_3d) :: candidate
     character(len=65536) :: line
     integer :: unit,status,count,nvar,n(3),node,i,j,k
+    integer(int64) :: payload_start,position
     logical :: valid
     ok=.false.
     if (.not.valid_context(context)) return
-    open(newunit=unit,file=path,status='old',action='read',iostat=status)
+    open(newunit=unit,file=path,status='old',action='read',access='stream',form='formatted',iostat=status)
     if (status/=0) return
     call read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,candidate,valid)
     if (.not.valid) go to 900
     count=size(candidate%tree%nodes);nvar=size(candidate%initial)
+    inquire(unit=unit,pos=payload_start,iostat=status)
+    if (status/=0) go to 900
     allocate(candidate%state%fields(count),candidate%temperature%fields(count))
     do node=1,count
       n=candidate%tree%nodes(node)%shape
@@ -169,7 +193,17 @@ contains
           end do
         end do
       end do
+      if (allocated(candidate%record_offsets)) then
+        inquire(unit=unit,pos=position,iostat=status)
+        if (status/=0) go to 900
+        if (position-payload_start/=candidate%record_offsets(node+1)) go to 900
+      end if
     end do
+    if (allocated(candidate%record_offsets)) then
+      inquire(unit=unit,pos=position,iostat=status)
+      if (status/=0) go to 900
+      if (position-payload_start/=candidate%record_offsets(count+1)) go to 900
+    end if
     read(unit,'(a)',iostat=status) line
     if (status/=0) go to 900
     if (trim(line)/='END_AMR_TREE_CHECKPOINT') go to 900
@@ -180,7 +214,7 @@ contains
 900 close(unit)
   end subroutine
 
-  ! Read only the V1 metadata from an already-open formatted unit.
+  ! Read only V1/V2 metadata from an already-open formatted unit.
   subroutine read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,snapshot,ok)
     integer, intent(in) :: unit,root_shape(3)
     type(nasa7_species), intent(in) :: species(:)
@@ -192,12 +226,14 @@ contains
     integer, allocatable :: parents(:),shapes(:,:)
     character(len=65536) :: line
     integer :: status,count,nvar,n(3),node,start,finish,context_length,lo(3),hi(3),ratio,parent
-    logical :: valid
+    integer(int64), allocatable :: expected_offsets(:)
+    logical :: valid,indexed
     ok=.false.
     if (.not.valid_context(context)) return
     read(unit,'(a)',iostat=status) line
     if (status/=0) return
-    if (trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') return
+    indexed=trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V2'
+    if (.not.indexed.and.trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') return
     read(unit,*,iostat=status) context_length
     if (status/=0) return
     if (context_length/=len(context)) return
@@ -233,7 +269,43 @@ contains
     end do
     call initialize_amr_patch_tree_3d(root_shape,parents,patches,candidate%tree,valid)
     if (.not.valid) return
+    if (indexed) then
+      call checkpoint_record_offsets_3d(candidate%tree,nvar,expected_offsets,valid)
+      if (.not.valid) return
+      allocate(candidate%record_offsets(size(expected_offsets)),stat=status)
+      if (status/=0) return
+      do node=1,size(expected_offsets)
+        read(unit,*,iostat=status) candidate%record_offsets(node)
+        if (status/=0) return
+      end do
+      if (any(candidate%record_offsets/=expected_offsets)) return
+    end if
     snapshot=candidate;ok=.true.
+  end subroutine
+
+  subroutine checkpoint_record_offsets_3d(tree,nvar,offsets,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: nvar
+    integer(int64), allocatable, intent(out) :: offsets(:)
+    logical, intent(out) :: ok
+    integer(int64) :: cells,width
+    integer :: node,axis,status
+    ok=.false.
+    if (.not.tree%is_valid().or.nvar<1) return
+    width=28_int64*(int(nvar,int64)+1_int64)
+    allocate(offsets(size(tree%nodes)+1),stat=status)
+    if (status/=0) return
+    offsets(1)=0
+    do node=1,size(tree%nodes)
+      cells=1
+      do axis=1,3
+        if (cells>huge(cells)/int(tree%nodes(node)%shape(axis),int64)) return
+        cells=cells*int(tree%nodes(node)%shape(axis),int64)
+      end do
+      if (cells>(huge(cells)-offsets(node))/width) return
+      offsets(node+1)=offsets(node)+cells*width
+    end do
+    ok=.true.
   end subroutine
 
   logical function valid_context(context) result(valid)

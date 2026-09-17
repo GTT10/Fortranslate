@@ -1120,3 +1120,23 @@ The old root snapshot scatter and separate adaptive-geometry broadcast are remov
 Current partition policy determines restored owners; rank and policy changes remain
 compatible with serial V1 checkpoints. Removing the index scan requires additional
 indexed-format work and is not claimed by this memory-bounded reader.
+
+
+## Optional indexed checkpoint V2
+
+`checkpoint_indexed` selects V2 when saving; default false retains V1 bytes.
+The V2 magic precedes the unchanged context/ledger/topology records, followed by
+one int64 relative byte offset per node plus the payload-end offset. Offsets are
+relative to the first cell record, avoiding dependence on header lengths. A
+shared checked geometry/record-width helper builds the index for both writers
+and validates it in the common header reader. Fixed-width records contain nvar+1
+ES27.18E3 fields separated by one space and terminated with LF, so each cell
+occupies exactly 28*(nvar+1) bytes.
+
+Readers auto-detect the format. MPI adds the payload-start stream position to
+the verified offsets and seeks to the footer directly; each owner then reads
+its node ranges. Serial and MPI readers verify consumed bytes against node
+intervals. Wrong offsets, overflow, wrong footer/EOF and noncanonical V2 record
+lengths reject candidates. V1 keeps its existing list-directed compatibility and
+streamed indexing path. Index presence is not a physical restart-context change;
+new readers accept either format, but V1-only older executables cannot read V2.

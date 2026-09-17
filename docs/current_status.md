@@ -60,7 +60,10 @@ with serial-byte compatibility
 ([evidence](validation/amr-tree-mpi-checkpoint-write-20260917.md)). Restart now
 reads indexed node ranges on their assigned owners and validates candidates
 without constructing or scattering full root fields
-([evidence](validation/amr-tree-mpi-checkpoint-read-20260917.md)).
+([evidence](validation/amr-tree-mpi-checkpoint-read-20260917.md)). Optional V2
+checkpoints now store validated relative offsets, eliminating that reader's
+root payload scan while retaining V1 input support
+([evidence](validation/amr-tree-indexed-checkpoint-20260917.md)).
 MPI applications now optionally assign whole patches by estimated cell-step work
 at initialization, regridding and restart
 ([evidence](validation/amr-tree-mpi-partition-20260917.md)).

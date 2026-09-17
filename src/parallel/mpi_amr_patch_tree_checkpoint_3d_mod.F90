@@ -1,11 +1,13 @@
 module mpi_amr_patch_tree_checkpoint_3d_mod
   use mpi_f08
+  use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d
+  use amr_patch_tree_checkpoint_3d_mod, only: &
+    amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d,checkpoint_record_offsets_3d
   use amr_reactive_3d_checkpoint_mod, only: checkpoint_temperature_is_consistent
   use mpi_amr_patch_tree_chemistry_3d_mod, only: clone_mpi_amr_tree_inputs_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
@@ -27,6 +29,7 @@ contains
     type(amr_tree_checkpoint_3d) :: candidate
     integer, allocatable :: assigned(:)
     integer(MPI_OFFSET_KIND), allocatable :: offsets(:)
+    integer(MPI_OFFSET_KIND) :: payload_start,position,footer_position
     real(dp) :: scratch(reactive_nvar(size(species))+1)
     character(len=65536) :: line
     character(len=:), allocatable :: header
@@ -76,25 +79,39 @@ contains
     ! zero to index node positions, preserving the serial list-directed syntax.
     ! Only offsets are broadcast; no complete state is retained on rank zero.
     if (rank==0) then
-      scan_nodes: do node=1,size(assigned)
-        inquire(unit=unit,pos=offsets(node),iostat=ios)
-        if (ios/=0) then
-          valid=.false.;exit
+      if (allocated(candidate%record_offsets)) then
+        inquire(unit=unit,pos=payload_start,iostat=ios)
+        valid=ios==0
+        if (valid) valid=candidate%record_offsets(size(assigned)+1)<=huge(payload_start)-payload_start
+        if (valid) then
+          offsets=payload_start+candidate%record_offsets(:size(assigned))
+          footer_position=payload_start+candidate%record_offsets(size(assigned)+1)
         end if
-        n=candidate%tree%nodes(node)%shape
-        do k=1,n(3)
-          do j=1,n(2)
-            do i=1,n(1)
-              read(unit,*,iostat=ios) scratch
-              if (ios/=0) then
-                valid=.false.;exit scan_nodes
-              end if
+      else
+        scan_nodes: do node=1,size(assigned)
+          inquire(unit=unit,pos=offsets(node),iostat=ios)
+          if (ios/=0) then
+            valid=.false.;exit
+          end if
+          n=candidate%tree%nodes(node)%shape
+          do k=1,n(3)
+            do j=1,n(2)
+              do i=1,n(1)
+                read(unit,*,iostat=ios) scratch
+                if (ios/=0) then
+                  valid=.false.;exit scan_nodes
+                end if
+              end do
             end do
           end do
-        end do
-      end do scan_nodes
+        end do scan_nodes
+      end if
       if (valid) then
-        read(unit,'(a)',iostat=ios) line
+        if (allocated(candidate%record_offsets)) then
+          read(unit,'(a)',pos=footer_position,iostat=ios) line
+        else
+          read(unit,'(a)',iostat=ios) line
+        end if
         valid=ios==0.and.trim(line)=='END_AMR_TREE_CHECKPOINT'
         if (valid) then
           read(unit,'(a)',iostat=ios) line
@@ -134,6 +151,15 @@ contains
           end do
         end do
       end do
+      if (allocated(candidate%record_offsets)) then
+        inquire(unit=unit,pos=position,iostat=ios)
+        if (ios/=0) then
+          valid=.false.;exit
+        end if
+        if (position-offsets(node)/=candidate%record_offsets(node+1)-candidate%record_offsets(node)) then
+          valid=.false.;exit
+        end if
+      end if
     end do nodes
     call agree_checkpoint(comm,valid)
 900 close(unit,iostat=ios)
@@ -148,7 +174,7 @@ contains
   end subroutine
 
   ! Metadata carries tree/ledger/counters; its state/temperature components are unused.
-  subroutine write_mpi_amr_tree_checkpoint_3d(path,species,context,metadata,owners,state,temperature,comm,ok)
+  subroutine write_mpi_amr_tree_checkpoint_3d(path,species,context,metadata,owners,state,temperature,comm,ok,indexed)
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_checkpoint_3d), intent(in) :: metadata
@@ -156,6 +182,10 @@ contains
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: indexed
+    integer(int64), allocatable :: record_offsets(:)
+    character(len=32) :: index_line
+    logical :: with_index
     type(MPI_File) :: file
     type(MPI_Status) :: io_status
     integer(MPI_OFFSET_KIND), allocatable :: offsets(:)
@@ -166,6 +196,24 @@ contains
     logical :: valid
     ok=.false.;nvar=reactive_nvar(size(species))
     call prepare_checkpoint(path,species,context,metadata,owners,state,temperature,comm,header,rank,valid)
+    if (.not.valid) return
+    with_index=.false.
+    if (present(indexed)) with_index=indexed
+    index_line='V1'
+    if (with_index) index_line='V2'
+    call same_checkpoint_string(comm,index_line,valid)
+    if (.not.valid) return
+    if (with_index) then
+      call checkpoint_record_offsets_3d(metadata%tree,nvar,record_offsets,valid)
+      call agree_checkpoint(comm,valid)
+      if (.not.valid) return
+      header='PELEF_AMR_TREE_3D_CHECKPOINT_V2'//header(len('PELEF_AMR_TREE_3D_CHECKPOINT_V1')+1:)
+      do node=1,size(record_offsets)
+        write(index_line,'(i0)') record_offsets(node)
+        header=header//trim(index_line)//achar(10)
+      end do
+    end if
+    call same_checkpoint_string(comm,header,valid)
     if (.not.valid) return
     allocate(offsets(size(owners)),stat=ios)
     valid=ios==0;call agree_checkpoint(comm,valid)

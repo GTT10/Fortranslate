@@ -67,13 +67,15 @@ contains
     integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
     real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
     logical :: periodic(3),stop_after_checkpoint,subcycling
-    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    logical :: checkpoint_indexed
+    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,checkpoint_indexed
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_timestepping/ subcycling
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
+    checkpoint_indexed=.false.
     checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
     last_checkpoint_step=0
     if (present(input_path)) then
@@ -417,7 +419,7 @@ contains
       snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
       snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
       snapshot%maximum_remap_error=max_remap_error
-      call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok)
+      call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok,indexed=checkpoint_indexed)
       if (.not.ok) error stop 'Cannot write tree checkpoint'
     end subroutine
     subroutine restore_checkpoint()

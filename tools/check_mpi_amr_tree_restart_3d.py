@@ -13,6 +13,7 @@ def main():
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
+    parser.add_argument('--indexed', action='store_true')
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--numproc-flag', default='-n')
     args = parser.parse_args()
@@ -78,6 +79,8 @@ def main():
             assert int(re.search(r'Steps:\s+(\d+)', serial_log).group(1)) == steps
             compare()
         save = "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true. /\n"
+        if args.indexed:
+            save = save.replace('stop_after_checkpoint=.true.', 'stop_after_checkpoint=.true., checkpoint_indexed=.true.')
         restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
         log = run('stop_mpi_2', config + save)
         assert 'Stopped after checkpoint at step 1' in log
@@ -109,6 +112,17 @@ def main():
             run('changed_subcycling', config.replace('subcycling=.true.', 'subcycling=.false.') + restart,
                 3, 'Invalid MPI tree restart checkpoint/context')
             compare()
+        if args.indexed:
+            assert saved.startswith(b'PELEF_AMR_TREE_3D_CHECKPOINT_V2\n')
+            first, length, rest = saved.split(b'\n', 2)
+            context_size = int(length)
+            context, records = rest[:context_size], rest[context_size:].splitlines(keepends=True)
+            nodes = int(records[0].split()[0])
+            records[nodes + 2] = b'1\n'  # First relative node offset must be zero.
+            checkpoint.write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
+            run('wrong_index', config + restart, 3, 'Invalid MPI tree restart checkpoint/context')
+            compare()
+            checkpoint.write_bytes(saved)
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart,
             3, 'Invalid MPI tree restart checkpoint/context')
         checkpoint.write_bytes(saved[:saved.rfind(b'END_AMR_TREE_CHECKPOINT')])

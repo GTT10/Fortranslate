@@ -261,6 +261,20 @@ and output lexical aliases are rejected after resolving relative paths against
 the working directory. This POSIX path check does not resolve symlinks/hard links.
 Whole-patch ownership and distributed CSV output are not a production scaling claim.
 
+### Indexed checkpoints
+
+Add `checkpoint_indexed=.true.` to `amr_tree_checkpoint` when saving to select
+V2 with checked relative byte offsets for every node and the payload end. Serial
+and MPI fixed/selected frontends support this option and produce identical bytes.
+Readers detect V1/V2 automatically; the format choice does not affect physical
+checkpoint identity. The default remains V1.
+
+V2 lets MPI readers seek directly to owned ranges and the footer without scanning
+all cell records on rank zero. Its canonical fixed-width ASCII records use LF
+newlines; the stored index is checked against geometry, variable count and actual
+consumed record lengths. V1 retains the flexible list-directed text path and its
+bounded-memory index scan. Older executables that only recognize V1 cannot read V2.
+
 ## MPI work-weighted patch ownership
 
 The MPI frontends accept this optional group:
