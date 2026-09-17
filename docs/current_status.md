@@ -54,8 +54,10 @@ CFL library estimate now includes cut-cell fluid volume, open faces, embedded
 wall area and optional remote signal bounds
 ([evidence](validation/eb-euler-cfl-20260917.md)). A plain Euler diffusion
 interval now scales open-face conductance by fluid volume and accepts a remote
-diffusivity bound ([evidence](validation/eb-patch-diffusion-cfl-20260917.md)); application timestep selection,
-multi-patch, subcycled
+diffusivity bound ([evidence](validation/eb-patch-diffusion-cfl-20260917.md)).
+The application now optionally selects a common interval from both grids,
+with donor bounds and mode-aware restart
+([evidence](validation/eb-two-level-auto-dt-20260917.md)); multi-patch, subcycled
 and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children

@@ -20,8 +20,16 @@ and `domain_upper` default to the unit cube. Initial densities, pressure and
 composition use the existing elementary density-sheet defaults.
 
 `time_step` is a user-supplied fixed maximum interval, clipped at `final_time`.
-Choose it to satisfy the explicit small-cell hydro and diffusion limits; there
-is no automatic CFL selector. Rejected updates now halve the trial interval
+Set `automatic_timestep=.true.` to further limit the common interval using
+both grids' cut-cell hydro and diffusion estimates. `hydro_cfl` defaults to
+0.5 (range `(0,1]`), and `transport_cfl` to 0.35 (range `(0,0.5]`).
+Coarse parents are averaged privately before estimation; signal speeds and
+diffusivity bounds include donors from both grids. Automatic selection is off
+by default, retaining fixed-cap behavior. The selected interval bounds each
+transport half-step conservatively. These pre-step estimates do not control
+chemistry error or guarantee coupled stability.
+[Selection evidence](../../docs/validation/eb-two-level-auto-dt-20260917.md).
+Rejected updates halve the trial interval
 without changing either grid or accumulated budgets. `maximum_step_retries`
 (default 12, range 0–60) limits halvings per accepted step; zero disables retry.
 The next step starts again from the user maximum, clipped by remaining time.
@@ -44,7 +52,9 @@ Set `checkpoint_file` and a positive `checkpoint_interval_steps` to save after
 accepted steps. `stop_after_checkpoint=.true.` stops after the first scheduled
 save and writes the current CSV outputs. Restart by setting `restart_file`;
 `final_time` and `maximum_steps` may increase. Geometry, patch topology, physics,
-chemical integrator and `time_step` must match the saved run.
+chemical integrator, `time_step`, automatic-selection mode and CFL controls
+must match the saved run. Fixed mode retains V1 checkpoints; automatic mode
+writes V2 with the same record layout and mode-specific magic.
 
 A single file contains both grids and cumulative budgets. The reader validates
 the complete file before restoring either grid. A failed read leaves existing
