@@ -149,8 +149,20 @@ The gas wrapper recovers EOS temperatures only in positive-fluid-volume cells
 and commits gas and temperature together after all ranks succeed. Failed source
 updates, inconsistent coarse/fine fluid volumes or invalid EOS states preserve
 the whole incoming gas/temperature state. Small-cell source redistribution is
-not provided; timestep rejection remains the caller's responsibility. Particle
-time integration has not yet been connected to these distributed EB APIs.
+not provided; timestep rejection remains the caller's responsibility.
+
+`advance_mpi_amr_mixture_coupling` accepts paired `eb_geometry` and `nodal_phi`
+to connect MPI EB sampling/deposition, mixed-liquid drag/heating/evaporation,
+representative-drop breakup, specular drift and final finest-owner migration.
+Common source/cell-transit substeps and bounded trial halving remain active.
+The EB path replaces the free-space position update with source-first drift at
+updated velocity, as in the serial EB interval. Local wall exchanges accumulate
+only for accepted substeps and are summed once into the returned global boundary
+ledger. The full interval publishes gas, temperature, particles, component masses
+and ledger together. Exhaustion or late migration failure leaves them unchanged.
+EB mode rejects explicit exterior-face settings, wall-film arguments and KH
+child creation; trajectories must stay inside the root domain. This is a particle
+interval, not yet a distributed EB gas/spray split or executable lifecycle.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

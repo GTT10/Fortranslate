@@ -16,16 +16,18 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
+  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use spray_eb_drift_mod, only: drift_spray_level_set
   implicit none
   private
   public :: advance_mpi_amr_mixture_coupling
 contains
-  ! Regular AMR: common particle substeps and whole-interval rollback.
+  ! Regular or nodal EB AMR: common particle substeps and whole-interval rollback.
   ! Species, transport, liquids and options must be identical on every rank.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -45,6 +47,9 @@ contains
     type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
     type(spray_wall_options), optional, intent(in) :: film_settings
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    integer :: eb_hits
     type(spray_wall_film), allocatable :: patches(:),trial_patches(:)
     real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
     real(dp) :: mw(size(components)),impact_wall(5),wall_ledger(5)
@@ -72,8 +77,12 @@ contains
     logical :: periodic(3)
     logical :: valid,agreed,accepted
     ok=.false.;substeps=0;faces='periodic';ledger=0;wall_ledger=0
+    if(present(eb_geometry)) faces="slip_wall"
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
+    if(present(eb_geometry)) valid=valid.and..not.present(boundary_faces).and. &
+      .not.present(wall_films).and..not.options%khrt_children
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -91,7 +100,7 @@ contains
     if (present(film_settings)) valid=valid.and.valid_wall_options(film_settings,faces)
     call agree()
     if (.not.agreed) return
-    film_flag=merge(1,0,present(wall_films))
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(eb_geometry))+4*merge(1,0,present(nodal_phi))
     call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
@@ -149,7 +158,7 @@ contains
     change=0
     ! This collective also validates geometry and the original gas on every rank.
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
-      lower,spacing,periodic,valid)
+      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree()
@@ -180,7 +189,7 @@ contains
         positions(:,p)=drops(p)%position
       end do
       call sample_mpi_amr_tree_spray_field(comm,tree,owners,field,nvar+1,positions, &
-        lower,spacing,periodic,samples,valid)
+        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
       if (.not.valid) return
       local_dt=interval-elapsed
       do p=1,np
@@ -241,7 +250,11 @@ contains
               next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
             end if
           end if
-          if (.not.present(boundary_faces)) trial(p)%position=lower+modulo(trial(p)%position-lower,length)
+          if(present(eb_geometry)) then
+            trial(p)%position=drops(p)%position
+          else if(.not.present(boundary_faces)) then
+            trial(p)%position=lower+modulo(trial(p)%position-lower,length)
+          end if
         end do
         call agree()
         if (agreed.and.options%khrt_children) then
@@ -250,6 +263,12 @@ contains
           if (valid) valid=size(trial)<=125000
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
+        end if
+        if(agreed.and.present(eb_geometry)) then
+          exchange=0;eb_hits=0
+          call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid)
+          if(valid) trial_ledger(:5)=exchange
+          call agree()
         end if
         impact_wall=0
         if (agreed.and.present(wall_films)) then
@@ -270,7 +289,7 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -298,8 +317,13 @@ contains
       if (drops(p)%mass<=0) cycle
       kept=kept+1;survivors(kept)=drops(p);kept_mass(:,kept)=masses(:,p)
     end do
-    call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
-      options%maximum_parcels,valid,kept_mass)
+    if(present(eb_geometry)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,survivors,lower,spacing, &
+        options%maximum_parcels,valid,kept_mass)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
+        options%maximum_parcels,valid,kept_mass)
+    end if
     if (.not.valid) return
     if (present(wall_films)) then
       call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,film_settings%maximum_films,valid)
