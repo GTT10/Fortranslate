@@ -139,6 +139,18 @@ publishes only with whole-interval success and otherwise retains its incoming
 value. The reacting wrapper and application accept the same faces and ledger;
 checkpoint continuation preserves the cumulative inventory.
 
+The particle interval accepts optional `wall_films`, `film_mass` and
+`film_settings` together, requiring explicit faces and a shared `last_id`.
+It reuses `impact_mpi_planar_walls` before generic boundary handling: earliest
+nonperiodic crossing, distributed existing-film thickness, mixture impact
+classification, deposited films and optional splash children. KH children use
+the parent's pre-step position and sampled pressure for impact geometry.
+Accepted substeps retain private films and accumulate the already global wall
+impulse/energy separately from rank-local flow exchanges. Final migration and
+publication include films; the returned boundary ledger subtracts what the wall
+received. Rejected trials and whole intervals preserve incoming film/ID state.
+This retains the existing planar impact model, not EB collision geometry.
+
 `advance_mpi_amr_spray_reactive` in `spray_mpi_amr_reactive_mod` composes a
 particle half-interval, the existing AMR reaction/transport/hydro split, and a
 second particle half-interval. The gas step accepts its existing reconstruction,
@@ -156,15 +168,16 @@ caller state and diagnostics unchanged. The caller chooses/retries the overall
 gas timestep; particle halves select their own common substeps.
 
 Optional `wall_films`, `film_mass` and `film_settings` must be supplied together
-and consistently on all ranks. They wrap the composition in film half-intervals:
+and consistently on all ranks, with `last_id` for impact-created children.
+They wrap the composition in film half-intervals:
 F/2–S/2–gas–S/2–F/2. Film gas exchange and wall heat use the existing AMR film
 interval, with private film state until the full step succeeds. The boundary
 ledger includes both film wall-energy contributions. Optional `film_steps`
 reports only accepted film substeps; `particle_steps` retains its particle-only
 meaning. Failure returns zero counts and preserves films along with the other
 state and diagnostics. Existing calls without films retain the original split.
-This evolves supplied stationary films; particle wall-impact creation and
-application/checkpoint film state are still separate unfinished integration.
+Particle halves also create films through the existing planar impact model.
+Application/checkpoint film state remains unfinished integration.
 
 The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
@@ -215,8 +228,8 @@ It checks collective topology/owners/domain/component count/capacity and stages
 all output until validation and exchange succeed. The one-million-per-rank
 send/receive bound matches the existing Cartesian film migration. Empty ranks
 and globally empty films are supported. This is a library ownership operation;
-AMR film creation, application controls and film checkpoint integration remain
-open; the coupled remap API above can carry existing films.
+Application controls and film checkpoint integration remain open; the particle
+interval creates films and the coupled remap API carries them.
 
 `rebalance_mpi_amr_spray` also accepts the optional group `wall_films`,
 `film_mass`, `maximum_films`. When gas-work costs select new owners, films

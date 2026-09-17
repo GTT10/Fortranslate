@@ -73,7 +73,7 @@ contains
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(boundary)
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
     valid=valid.and.(present(wall_films).eqv.present(film_settings))
-    if (present(wall_films)) valid=valid.and.allocated(wall_films)
+    if (present(wall_films)) valid=valid.and.allocated(wall_films).and.present(last_id)
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
     faces='periodic'
     if (present(boundary_faces)) then
@@ -97,8 +97,14 @@ contains
     end if
     candidate_id=0
     if (present(last_id)) candidate_id=last_id
-    call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
-      drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id,faces,first_boundary)
+    if (present(wall_films)) then
+      call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
+        drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id,faces,first_boundary, &
+        patches,patch_mass,film_settings)
+    else
+      call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
+        drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id,faces,first_boundary)
+    end if
     if (.not.valid) return
     boundary=0;correction=0;theta=1
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,gas,temp,spacing,dt,faces, &
@@ -107,8 +113,14 @@ contains
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
       wall_velocity=wall_velocity)
     if (.not.valid) return
-    call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
-      drops,masses,lower,spacing,.5_dp*dt,second_steps,valid,candidate_id,faces,second_boundary)
+    if (present(wall_films)) then
+      call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
+        drops,masses,lower,spacing,.5_dp*dt,second_steps,valid,candidate_id,faces,second_boundary, &
+        patches,patch_mass,film_settings)
+    else
+      call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
+        drops,masses,lower,spacing,.5_dp*dt,second_steps,valid,candidate_id,faces,second_boundary)
+    end if
     if (.not.valid) return
     if (present(wall_films)) then
       call advance_mpi_amr_film_coupling(comm,species,transport,liquids,options,film_settings,gas,temp, &

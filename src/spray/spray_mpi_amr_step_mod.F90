@@ -11,7 +11,9 @@ module spray_mpi_amr_step_mod
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
   use spray_breakup_mod, only: advance_spray_breakup
   use spray_coupling_3d_mod, only: valid_spray_boundary_faces,apply_parcel_boundaries
-  use spray_mpi_mod, only: advance_mpi_khrt_shedding
+  use spray_mpi_mod, only: advance_mpi_khrt_shedding,impact_mpi_planar_walls
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
@@ -22,7 +24,8 @@ contains
   ! Regular AMR: common particle substeps and whole-interval rollback.
   ! Species, transport, liquids and options must be identical on every rank.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
-      tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change)
+      tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
+      wall_films,film_mass,film_settings)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -39,6 +42,14 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_change(:)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    type(spray_wall_film), allocatable :: patches(:),trial_patches(:)
+    real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
+    real(dp) :: mw(size(components)),impact_wall(5),wall_ledger(5)
+    logical, allocatable :: hit(:)
+    integer :: film_flag
     real(dp) :: ledger(reactive_nvar(size(species))),trial_ledger(reactive_nvar(size(species)))
     real(dp) :: global_ledger(reactive_nvar(size(species))),exchange(5)
     character(len=32) :: faces(6),reference_faces(6)
@@ -60,7 +71,7 @@ contains
     real(dp) :: minimum_spacing
     logical :: periodic(3)
     logical :: valid,agreed,accepted
-    ok=.false.;substeps=0;faces='periodic';ledger=0
+    ok=.false.;substeps=0;faces='periodic';ledger=0;wall_ledger=0
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.ieee_is_finite(interval)
@@ -73,8 +84,18 @@ contains
       end do
     end if
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(ledger)
+    valid=valid.and.(present(wall_films).eqv.present(film_mass))
+    valid=valid.and.(present(wall_films).eqv.present(film_settings))
+    if (present(wall_films)) valid=valid.and.allocated(wall_films).and.present(last_id).and.present(boundary_faces)
+    if (present(film_mass)) valid=valid.and.allocated(film_mass)
+    if (present(film_settings)) valid=valid.and.valid_wall_options(film_settings,faces)
     call agree()
     if (.not.agreed) return
+    film_flag=merge(1,0,present(wall_films))
+    call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
     reference_faces=faces
     call MPI_Bcast(reference_faces,32*6,MPI_CHARACTER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -113,6 +134,14 @@ contains
     call agree()
     if (.not.agreed) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    if (present(wall_films)) then
+      patches=wall_films;patch_mass=film_mass
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,film_settings%maximum_films,valid)
+      if (.not.valid) return
+      do n=1,nc
+        mw(n)=species(components(n)%vapor_index)%molecular_weight
+      end do
+    end if
     allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np))
     do p=1,np
       positions(:,p)=drops(p)%position
@@ -222,6 +251,18 @@ contains
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
         end if
+        impact_wall=0
+        if (agreed.and.present(wall_films)) then
+          trial_patches=patches;trial_patch_mass=patch_mass
+          call prepare_impacts()
+          call agree()
+          if (agreed) then
+            call impact_mpi_planar_walls(comm,components,options,film_settings,faces,mw,impact_pressure,impact_previous, &
+              lower,lower+length,trial,next_mass,trial_patches,trial_patch_mass,trial_id,hit,impact_wall,valid)
+            if (valid) valid=size(trial)<=125000
+            call agree()
+          end if
+        end if
         if (agreed) then
           if (present(boundary_faces)) call apply_boundaries()
           call agree()
@@ -239,6 +280,16 @@ contains
       if (.not.accepted) return
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
       ledger=ledger+trial_ledger
+      if (present(wall_films)) then
+        patches=trial_patches;patch_mass=trial_patch_mass;wall_ledger=wall_ledger+impact_wall
+        kept=count(drops%mass>0);survivors=pack(drops,drops%mass>0)
+        allocate(kept_mass(nc,kept));kept=0
+        do p=1,size(drops)
+          if (drops(p)%mass<=0) cycle
+          kept=kept+1;kept_mass(:,kept)=masses(:,p)
+        end do
+        call move_alloc(survivors,drops);call move_alloc(kept_mass,masses)
+      end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
     np=size(drops)
@@ -250,15 +301,50 @@ contains
     call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
       options%maximum_parcels,valid,kept_mass)
     if (.not.valid) return
+    if (present(wall_films)) then
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,film_settings%maximum_films,valid)
+      if (.not.valid) return
+    end if
     call MPI_Allreduce(ledger,global_ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
+    global_ledger(:5)=global_ledger(:5)-wall_ledger
     if (.not.all(ieee_is_finite(global_ledger))) return
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
+    if (present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     if (present(last_id)) last_id=accepted_id
     if (present(boundary_change)) boundary_change=global_ledger
     substeps=count_steps;ok=.true.
   contains
+    subroutine prepare_impacts()
+      integer :: q,parent,lo,hi,mid
+      if (allocated(impact_previous)) deallocate(impact_previous,impact_pressure)
+      allocate(impact_previous(3,size(trial)),impact_pressure(size(trial)))
+      valid=.true.
+      do q=1,size(trial)
+        parent=q
+        if (q>np) then
+          lo=1;hi=np;parent=0
+          do while(lo<=hi)
+            mid=lo+(hi-lo)/2
+            if (drops(mid)%id==trial(q)%parent_id) then
+              parent=mid;exit
+            else if (drops(mid)%id<trial(q)%parent_id) then
+              lo=mid+1
+            else
+              hi=mid-1
+            end if
+          end do
+          if (parent==0) then
+            valid=.false.;return
+          end if
+        end if
+        impact_previous(:,q)=positions(:,parent);impact_pressure(q)=1
+        if (drops(parent)%mass>0) impact_pressure(q)=primitive(5,parent)
+      end do
+    end subroutine
     subroutine apply_boundaries()
       integer :: q,c
       valid=.true.

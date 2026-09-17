@@ -112,7 +112,7 @@ program test_spray_mpi_amr_film_reactive
   allocate(parcels(0),parcel_mass(2,0))
   call load_h2o2_full_mechanism(reactions,ok)
   call require(ok,'reaction table')
-  recursive=.false.;solver='hllc';correction=123;theta=456
+  recursive=.false.;solver='hllc';correction=123;theta=456;last_id=0
   faces='periodic';faces(1:2)='slip_wall'
   walls%enabled(1:2)=.true.;walls%evolve=.true.;walls%temperature=400
   walls%liquid_conductivity=.6_dp;walls%minimum_height=1e-10_dp
@@ -154,7 +154,7 @@ contains
     call advance_mpi_amr_spray_reactive(MPI_COMM_WORLD,tree,owners,species,reactions,transport,liquids,options, &
       local,local_t,parcels,parcel_mass,zero,spacing,interval,'pcm','minmod',solver, &
       .false.,.true.,.true.,.true.,.false.,1e-6_dp,1e-12_dp,particle_steps,correction,theta,ok, &
-      subcycling=recursive,boundary_faces=faces,boundary_change=boundary,wall_films=drops,film_mass=masses, &
+      last_id=last_id,subcycling=recursive,boundary_faces=faces,boundary_change=boundary,wall_films=drops,film_mass=masses, &
       film_settings=walls,film_steps=steps)
   end subroutine
   subroutine unchanged()
