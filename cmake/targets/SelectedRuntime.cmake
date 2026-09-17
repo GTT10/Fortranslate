@@ -532,6 +532,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     add_library(pelef_selected_mpi_amr_tree_reactive_3d_runtime STATIC
       src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_csv_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_checkpoint_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_split_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_transport_3d_mod.F90

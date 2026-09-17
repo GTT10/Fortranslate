@@ -1078,3 +1078,23 @@ remain separate work. Preflight failures preserve the destination, while actual
 I/O failure after open/truncation can leave a partial file; no rename transaction
 or parallel-filesystem performance claim is made. Formatting twice trades CPU
 work for bounded output memory and input validation before destructive I/O.
+
+
+## Owner-local checkpoint saving
+
+The MPI checkpoint writer accepts replicated tree/ledger/counter metadata plus
+owner-local state and temperature. Before opening the destination it clones local
+fields, performs distributed averaging and compares the result with input using
+the serial 64-epsilon parent tolerance. The shared checkpoint EOS/temperature
+consistency helper validates each owned patch. Metadata finiteness/counters,
+context structure, identical path/header and checked byte offsets are also
+validated collectively. Failure preserves the prior destination and input fields.
+
+The header retains the V1 serial format; fixed-width state/temperature rows have
+precomputed node intervals in the file. Owners write bounded chunks independently
+with MPI-IO; rank zero writes metadata and the footer. The collective file-size
+operation removes stale tails. No state gather or serial-writer fallback is used.
+Temporary validation copies stay on their owners. Actual I/O failure can leave a
+partial destination; this is not an atomic rename transaction. Loading still uses
+the validated serial root reader and owner scatter. Checkpoint bytes and physical
+identity do not depend on ranks or assignment policy.

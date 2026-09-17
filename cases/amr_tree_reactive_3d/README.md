@@ -228,8 +228,10 @@ by patch owners through MPI-IO at predetermined byte offsets, preserving serial
 node/cell order and formatting. All rows are validated before opening the file;
 owner buffers hold bounded chunks. The final budget uses serial-order compensated
 accumulators with only small-vector broadcasts, and rank zero writes its CSV.
-Initialization, numerical stepping and final CSV output do not gather full fields. Checkpoint
-save/load still uses root field payloads. I/O errors after opening may leave a
+Initialization, numerical stepping, final CSV output and checkpoint saves do not
+gather full fields. Checkpoint saves use owner-local MPI-IO after distributed
+EOS/parent-average validation; the bytes remain compatible with serial. Checkpoint
+loading still uses root field payloads. I/O errors after opening may leave a
 partial output; this is not an atomic filesystem transaction.
 The bounded regression checks byte equality for the elementary hotspot case.
 
@@ -244,7 +246,8 @@ hot exposed cells and generate the same tile geometry on every rank. Geometry
 changes use sparse conservative remapping before checkpoint/output. The requested
 finest spacing bounds common-step reservoir timesteps; recursive mode uses root
 spacing. The `amr_tree_timestepping` group selects the recursive mode described above. The `amr_tree_checkpoint` group uses the same controls and
-format as serial. Rank zero reads/writes the checkpoint, validates its context,
+format as serial. Owners write their checkpoint rows directly. On restart, rank
+zero reads the checkpoint and validates its context,
 scheduled/adaptive geometry, consumed event or adaptation-check count, EOS, averages and ledger, then redistributes payloads according
 to the current rank count. Fixed/selected checkpoints can be exchanged with the
 corresponding serial frontend for static, scheduled or automatic runs in either timestep mode. The selected bundle

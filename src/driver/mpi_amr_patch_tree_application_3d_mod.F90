@@ -1,6 +1,6 @@
 module mpi_amr_patch_tree_application_3d_mod
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
-    read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
+    read_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d
   use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
   use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
@@ -31,7 +31,8 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
-    gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d,partition_amr_tree_3d
+    scatter_mpi_amr_tree_3d,partition_amr_tree_3d
+  use mpi_amr_patch_tree_checkpoint_3d_mod, only: write_mpi_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
   implicit none
   private
@@ -434,20 +435,12 @@ contains
     end function
     subroutine save_checkpoint()
       type(amr_tree_checkpoint_3d) :: snapshot
-      call gather_mpi_amr_tree_3d(tree,owners,state,snapshot%state,comm,0,ok)
-      if (.not.ok) call fatal('Cannot gather MPI checkpoint state')
-      call gather_mpi_amr_tree_3d(tree,owners,temperature,snapshot%temperature,comm,0,ok)
-      if (.not.ok) call fatal('Cannot gather MPI checkpoint temperature')
-      if (rank==0) then
-        snapshot%tree=tree;snapshot%initial=initial;snapshot%boundary=budget
-        snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
-        snapshot%maximum_remap_error=max_remap_error
-        snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
-        call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok)
-        if (.not.ok) call fatal('Cannot write MPI tree checkpoint')
-      end if
-      call MPI_Barrier(comm,status)
-      if (status/=MPI_SUCCESS) call fatal('Cannot synchronize MPI checkpoint completion')
+      snapshot%tree=tree;snapshot%initial=initial;snapshot%boundary=budget
+      snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
+      snapshot%maximum_remap_error=max_remap_error
+      snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
+      call write_mpi_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,owners,state,temperature,comm,ok)
+      if (.not.ok) call fatal('Cannot write MPI tree checkpoint')
     end subroutine
     subroutine restore_checkpoint()
       type(amr_tree_checkpoint_3d) :: snapshot
