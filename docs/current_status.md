@@ -214,7 +214,10 @@ restart match the focused serial case
 MPI ancestor halo donors now support independent time fractions at each depth,
 with exact focused serial parity and collective rollback
 ([temporal MPI evidence](validation/mpi-eb-tree-time-halo-20260918.md)).
-EB tree MPI subcycling, selected-target
+MPI recursive hydro now uses ratio-based fine intervals, provisional peer-corrected
+endpoints and accumulated effective fluxes, matching focused serial U/T exactly
+([MPI subcycle hydro evidence](validation/mpi-eb-tree-subcycle-hydro-20260918.md)).
+EB tree MPI transport/coupled/application subcycling, selected-target
 wiring and distributed I/O remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
