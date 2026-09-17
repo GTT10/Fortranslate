@@ -1,4 +1,5 @@
 program test_reactive_eb_3d_checkpoint
+  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -64,6 +65,12 @@ program test_reactive_eb_3d_checkpoint
   integer :: steps, read_steps, saved_steps, nvar
   logical :: ok
   character(len=256) :: message
+
+  real(dp), allocatable :: boundary(:),wall(:),chemistry(:),rb(:),rw(:),rc(:),atoms(:,:),fractions(:)
+  character(len=1), allocatable :: names(:)
+  character(len=64), allocatable :: sha
+  character(len=8), allocatable :: integrator
+  character(len=*), parameter :: exchange_path='reactive_eb_exchange.chk',exchange_bad='reactive_eb_exchange_bad.chk'
 
   call remove_file(checkpoint_path)
   call remove_file(truncated_path)
@@ -448,9 +455,133 @@ program test_reactive_eb_3d_checkpoint
   call remove_file(selected_truncated_path)
   call remove_file(selected_invalid_write_path)
   call check_embedded_records()
+  call check_exchange_records()
   write(*, '(a)') "test_reactive_eb_3d_checkpoint: PASS"
 
 contains
+
+  subroutine check_exchange_records()
+    integer :: mode,i,stream,ios,exchange_line
+    character(len=4096) :: line
+    allocate(boundary(nvar),wall(nvar),chemistry(nvar),rb(nvar),rw(nvar),rc(nvar))
+    do i=1,nvar
+      boundary(i)=real(i,dp)*1.e-12_dp
+      wall(i)=-real(i,dp)*2.e-12_dp
+      chemistry(i)=real(i,dp)*3.e-12_dp
+    end do
+    do mode=1,3
+      if (mode==2) then
+        sha=selected_bundle_sha256
+        integrator='explicit'
+        fractions=selected_mole_fractions
+      else if (mode==3) then
+        names=['H','O','N']
+        allocate(atoms(3,size(species)),source=0._dp)
+        do i=1,size(species)
+          select case(trim(species(i)%name))
+          case('H2'); atoms(:,i)=[2._dp,0._dp,0._dp]
+          case('H'); atoms(:,i)=[1._dp,0._dp,0._dp]
+          case('O'); atoms(:,i)=[0._dp,1._dp,0._dp]
+          case('O2'); atoms(:,i)=[0._dp,2._dp,0._dp]
+          case('OH'); atoms(:,i)=[1._dp,1._dp,0._dp]
+          case('H2O'); atoms(:,i)=[2._dp,1._dp,0._dp]
+          case('N2'); atoms(:,i)=[0._dp,0._dp,2._dp]
+          end select
+        end do
+      end if
+      call write_exchange()
+      call require(ok,'write exchange checkpoint')
+      if (mode==1) then
+        call require_checkpoint_schema(exchange_path,4,'SPECIES')
+      else
+        call require_checkpoint_schema(exchange_path,mode+3,'SELECTED_CONTEXT')
+      end if
+      rb=-1._dp;rw=-2._dp;rc=-3._dp
+      call read_exchange(exchange_path)
+      call require(ok,'read exchange checkpoint')
+      call require(all(rb==boundary).and.all(rw==wall).and.all(rc==chemistry),'exact exchange round trip')
+      call require(all(read_state==state).and.all(read_temperature==temperature),'exchange state round trip')
+      open(newunit=stream,file=exchange_path,status='old',action='read')
+      exchange_line=0
+      do
+        read(stream,'(a)',iostat=ios) line
+        call require(ios==0,'find exchange record')
+        exchange_line=exchange_line+1
+        if (line=='EXCHANGES') exit
+      end do
+      close(stream)
+      call save_targets()
+      call replace_checkpoint_line(exchange_path,exchange_bad,exchange_line,'INVALID_EXCHANGES')
+      call read_exchange(exchange_bad)
+      call require_exchange_rollback('bad exchange marker')
+      boundary(1)=ieee_value(0._dp,ieee_quiet_nan)
+      write(line,'(*(es27.18e3,1x))') boundary
+      boundary(1)=1.e-12_dp
+      call replace_checkpoint_line(exchange_path,exchange_bad,exchange_line+1,trim(line))
+      call read_exchange(exchange_bad)
+      call require_exchange_rollback('nonfinite exchange')
+      call make_prefix_checkpoint(exchange_path,exchange_bad,exchange_line+2)
+      call read_exchange(exchange_bad)
+      call require_exchange_rollback('truncated exchange')
+      call make_bad_temperature_checkpoint(exchange_path,exchange_bad,nvar)
+      call read_exchange(exchange_bad)
+      call require_exchange_rollback('state failure after exchange parse')
+      ! Preflight must leave a previously written checkpoint intact.
+      boundary(1)=ieee_value(0._dp,ieee_quiet_nan)
+      call write_exchange()
+      call require(.not.ok,'nonfinite exchange writer rejection')
+      boundary(1)=1.e-12_dp
+      call read_exchange(exchange_path)
+      call require(ok.and.all(rb==boundary),'invalid writer preserves existing checkpoint')
+    end do
+    call save_targets()
+    call read_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,restart_config,read_geometry, &
+      read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+      read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,boundary_change=rb)
+    call require_exchange_rollback('incomplete reader exchange context')
+    call read_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,restart_config,read_geometry, &
+      read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+      read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message, &
+      boundary_change=rb(:nvar-1),wall_change=rw,chemistry_change=rc)
+    call require_exchange_rollback('wrong reader exchange dimensions')
+    call write_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,write_config,geometry, &
+      state,temperature,time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+      maximum_diffusivity,minimum_theta,ok,message,boundary_change=boundary)
+    call require(.not.ok,'incomplete writer exchange context')
+    call write_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,write_config,geometry, &
+      state,temperature,time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+      maximum_diffusivity,minimum_theta,ok,message, &
+      boundary_change=boundary,wall_change=wall(:nvar-1),chemistry_change=chemistry)
+    call require(.not.ok,'wrong writer exchange dimensions')
+    call read_exchange(exchange_path)
+    call require(ok.and.all(rb==boundary),'invalid context writers preserve existing checkpoint')
+    call remove_file(exchange_path)
+    call remove_file(exchange_bad)
+  end subroutine check_exchange_records
+
+  subroutine write_exchange()
+    call write_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,write_config,geometry, &
+      state,temperature,time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+      maximum_diffusivity,minimum_theta,ok,message,bundle_sha256=sha,chemistry_integrator=integrator, &
+      base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
+      boundary_change=boundary,wall_change=wall,chemistry_change=chemistry)
+  end subroutine write_exchange
+
+  subroutine read_exchange(path)
+    character(len=*), intent(in) :: path
+    call read_reactive_eb_3d_checkpoint(path,species,reactions,transport,restart_config,read_geometry, &
+      read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+      read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,bundle_sha256=sha, &
+      chemistry_integrator=integrator,base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
+      boundary_change=rb,wall_change=rw,chemistry_change=rc)
+  end subroutine read_exchange
+
+  subroutine require_exchange_rollback(label)
+    character(len=*), intent(in) :: label
+    call require(.not.ok,label//' rejected')
+    call require_targets_unchanged(label//' state rollback')
+    call require(all(rb==boundary).and.all(rw==wall).and.all(rc==chemistry),label//' exchange rollback')
+  end subroutine require_exchange_rollback
 
   subroutine check_embedded_records()
     integer :: stream,record,ios

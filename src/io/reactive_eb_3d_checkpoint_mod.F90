@@ -26,6 +26,8 @@ module reactive_eb_3d_checkpoint_mod
   integer, parameter :: checkpoint_schema_fixed = 1
   integer, parameter :: checkpoint_schema_selected = 2
   integer, parameter :: checkpoint_schema_elements = 3
+  ! Schemas 4/5/6 add complete cumulative exchange vectors to 1/2/3.
+  integer, parameter :: checkpoint_exchange_offset = 3
   integer, parameter :: bundle_sha256_length = 64
   integer, parameter :: n_config_reals = 19
   integer, parameter :: n_config_ints = 5
@@ -60,7 +62,8 @@ contains
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
+      boundary_change, wall_change, chemistry_change)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -84,6 +87,7 @@ contains
     integer, intent(in), optional :: checkpoint_unit
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
+    real(dp), optional, intent(in) :: boundary_change(:),wall_change(:),chemistry_change(:)
 
     integer :: element_index
     integer :: unit, status, nvar, species_index, reaction_index,plog_index
@@ -99,6 +103,16 @@ contains
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
+    if (present(boundary_change).or.present(wall_change).or.present(chemistry_change)) then
+      if (.not.(present(boundary_change).and.present(wall_change).and.present(chemistry_change))) then
+        message='Incomplete checkpoint exchange context'
+        return
+      end if
+      if (size(boundary_change)/=nvar.or.size(wall_change)/=nvar.or.size(chemistry_change)/=nvar) then
+        message='Invalid checkpoint exchange dimensions'
+        return
+      end if
+    end if
     if (.not.valid_element_context(size(species),size(initial_element_integrals),element_names,element_atoms)) then
       message='Invalid checkpoint element context'
       return
@@ -177,6 +191,14 @@ contains
       schema = checkpoint_schema_fixed
     end if
 
+    if (present(boundary_change)) then
+      if (.not.all(ieee_is_finite(boundary_change)).or..not.all(ieee_is_finite(wall_change)).or. &
+          .not.all(ieee_is_finite(chemistry_change))) then
+        message='Nonfinite checkpoint exchange'
+        return
+      end if
+      schema=schema+checkpoint_exchange_offset
+    end if
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.true.)) then
         message="Checkpoint unit is not open for the requested formatted operation"
@@ -438,6 +460,16 @@ contains
     write(unit, '(*(es27.18e3,1x))', iostat=status) diagnostic_values
     if (status /= 0) go to 900
 
+    if (present(boundary_change)) then
+      write(unit,'(a)',iostat=status) 'EXCHANGES'
+      if (status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) boundary_change
+      if (status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) wall_change
+      if (status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) chemistry_change
+      if (status/=0) go to 900
+    end if
     write(unit, '(a)', iostat=status) "STATE"
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
@@ -475,7 +507,8 @@ contains
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
+      boundary_change, wall_change, chemistry_change)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -499,6 +532,7 @@ contains
     integer, intent(in), optional :: checkpoint_unit
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
 
     type(eb_geometry_3d) :: candidate_geometry
     real(dp), allocatable :: candidate_state(:, :, :, :)
@@ -507,6 +541,8 @@ contains
     real(dp), allocatable :: candidate_l1_integrals(:)
     real(dp) :: candidate_element_integrals(size(initial_element_integrals))
     real(dp) :: stored_atoms(size(species))
+    real(dp) :: candidate_boundary(reactive_nvar(size(species))),candidate_wall(reactive_nvar(size(species)))
+    real(dp) :: candidate_chemistry(reactive_nvar(size(species)))
     integer :: element_index,stored_element_count
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
@@ -551,6 +587,16 @@ contains
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
+    if (present(boundary_change).or.present(wall_change).or.present(chemistry_change)) then
+      if (.not.(present(boundary_change).and.present(wall_change).and.present(chemistry_change))) then
+        message='Incomplete checkpoint exchange context'
+        return
+      end if
+      if (size(boundary_change)/=nvar.or.size(wall_change)/=nvar.or.size(chemistry_change)/=nvar) then
+        message='Invalid checkpoint exchange dimensions'
+        return
+      end if
+    end if
     if (.not.valid_element_context(size(species),size(initial_element_integrals),element_names,element_atoms)) then
       message='Invalid checkpoint element context'
       return
@@ -618,6 +664,7 @@ contains
       expected_schema = checkpoint_schema_fixed
     end if
 
+    if (present(boundary_change)) expected_schema=expected_schema+checkpoint_exchange_offset
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.false.)) then
         message="Checkpoint unit is not open for the requested formatted operation"
@@ -1006,6 +1053,20 @@ contains
           stored_minimum_dt, stored_maximum_transport_diffusivity, &
           stored_minimum_transport_theta)) go to 900
 
+    if (present(boundary_change)) then
+      read(unit,'(a)',iostat=status) marker
+      if (status/=0) go to 900
+      if (marker/='EXCHANGES') go to 900
+      read(unit,*,iostat=status) candidate_boundary
+      if (status/=0) go to 900
+      read(unit,*,iostat=status) candidate_wall
+      if (status/=0) go to 900
+      read(unit,*,iostat=status) candidate_chemistry
+      if (status/=0) go to 900
+      if (.not.all(ieee_is_finite(candidate_boundary)).or..not.all(ieee_is_finite(candidate_wall)).or. &
+          .not.all(ieee_is_finite(candidate_chemistry))) go to 900
+    end if
+
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
     if (trim(marker) /= "STATE") go to 900
@@ -1042,6 +1103,9 @@ contains
 
     ! Nothing above this point aliases a public restart target.  Publish the
     ! complete candidate only after every record and EOS check has passed.
+    if (present(boundary_change)) then
+      boundary_change=candidate_boundary;wall_change=candidate_wall;chemistry_change=candidate_chemistry
+    end if
     geometry = candidate_geometry
     state = candidate_state
     temperature = candidate_temperature
