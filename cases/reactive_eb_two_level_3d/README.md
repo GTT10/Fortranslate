@@ -47,8 +47,8 @@ for the same fixed/automatic and common/subcycled mode combinations. They
 bind the original topology, complete schedule and completed-event index.
 Restart rebuilds the saved layout, verifies that the event index agrees with
 the saved time, and resumes without repeating a completed event. A schedule
-change is rejected. Temperature tagging, changing the refinement ratio in the
-application and distributed EB regridding remain open.
+change is rejected. Changing the refinement ratio in the application and distributed EB regridding
+remain open.
 [Scheduled application evidence](../../docs/validation/eb-scheduled-application-20260917.md).
 
 Set `patch_count=0` for coarse-only initialization, or set a scheduled
@@ -59,6 +59,29 @@ only level-0 fluid cells. Static coarse-only checkpoints use the separate
 `PELEF_EB_COARSE_CHECKPOINT_V1`–`V4` headers; scheduled checkpoints retain the
 schedule envelope while omitting fine-grid records when none exist.
 [Zero-patch application evidence](../../docs/validation/eb-zero-patch-application-20260917.md).
+
+## Temperature-selected regridding
+
+[`adaptive.nml`](adaptive.nml) and [`selected_adaptive.nml`](selected_adaptive.nml)
+set `temperature_adaptive=.true.` and reuse `regrid_count`/`regrid_times` for
+evaluation times. Do not supply prescribed regrid boxes in this mode.
+`tag_temperature` is an inclusive Kelvin threshold; `tag_tile_shape(3)` gives
+coarse-cell tile dimensions; `tag_buffer` expands detected regions in coarse
+cells; `tag_maximum_patches` is a hard capacity limit (1–16).
+
+Exposed coarse and fine fluid temperatures select deterministic nonoverlapping
+tiles. Fine hot cells are considered directly even if their parent average is
+cold. Covered parents and solid cells do not vote. No hot cells removes all
+fine patches. Capacity overflow fails before replacing output files instead
+of dropping selected regions. The finest geometry and refinement ratio remain
+fixed.
+
+Temperature checkpoints use `PELEF_EB_TEMPERATURE_CHECKPOINT_V1`–`V4`, binding
+initial topology, evaluation times, threshold, tile shape, buffer, capacity and
+completed selected layouts. Future layouts are selected from the resumed
+solution; completed events are not repeated. Stored layouts must respect the
+tile partition and canonical order. A changed temperature policy is rejected.
+[Adaptive application evidence](../../docs/validation/eb-adaptive-application-20260917.md).
 
 `geometry_type` accepts `plane`, `extruded` or `level_set`, with the same geometry
 file formats as the existing [extruded](../reactive_eb_extruded_3d/README.md) and
@@ -126,7 +149,7 @@ restart source and checkpoint destination.
 [Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
 
 Both executables are serial. Prescribed patch schedules are connected;
-temperature-adaptive patches and MPI are not yet connected.
+temperature-selected patches are connected; MPI is not yet connected.
 [Multiple-patch application evidence](../../docs/validation/eb-multipatch-application-20260917.md).
 [Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
 

@@ -103,21 +103,23 @@ A serial fixed-geometry two-level EB remapper now conservatively moves, adds
 or removes fine patches, preserves same-resolution overlap, and supports
 ratio changes with coarse-donor initialization and transactional failure.
 Fixed/selected serial applications now connect prescribed patch schedules,
-event-aligned stepping and schedule-bound checkpoint continuation; temperature
-tagging and distributed EB evolution remain open
+event-aligned stepping and schedule-bound checkpoint continuation; distributed
+EB evolution remains open
 ([remap evidence](validation/eb-remap-20260917.md),
 [scheduled application evidence](validation/eb-scheduled-application-20260917.md)).
 An EB temperature-tagging API now selects deterministic coarse-index tiles
 from exposed coarse/fine fluid temperatures, with buffered tagging and
-transactional capacity rejection. Adaptive application and restart dispatch
-remain open ([tagging evidence](validation/eb-temperature-tagging-20260917.md)).
+transactional capacity rejection ([tagging evidence](validation/eb-temperature-tagging-20260917.md)).
 Multipatch update APIs now accept zero fine patches and retain exact
 single-grid split behavior and exchange budgets, enabling the numerical
 endpoint for full derefinement ([coarse-only evidence](validation/eb-coarse-only-20260917.md)).
 Fixed/selected applications now support coarse-only initialization, scheduled
 2-to-0-to-2 patch transitions and exact checkpoint continuation through the
-empty topology. Temperature-policy dispatch remains open
-([application evidence](validation/eb-zero-patch-application-20260917.md)).
+empty topology ([application evidence](validation/eb-zero-patch-application-20260917.md)).
+Temperature-policy inputs now connect exposed-cell tagging, conservative
+remapping and policy-bound adaptive restart at requested evaluation times.
+High-temperature and no-hot-cell cases exercise both refinement and complete
+derefinement ([adaptive evidence](validation/eb-adaptive-application-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
