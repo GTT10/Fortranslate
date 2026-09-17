@@ -20,7 +20,7 @@ module eb_reactive_two_level_3d_mod
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
   end type eb_reactive_patch_3d
-  public :: advance_reactive_eb_multipatch_euler_3d
+  public :: advance_reactive_eb_multipatch_euler_3d,advance_reactive_eb_multipatch_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_euler_3d
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
@@ -36,6 +36,43 @@ contains
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),wall_change(:)
     type(eb_reactive_patch_3d), intent(inout) :: patches(:)
     logical, intent(out) :: ok
+    call advance_multipatch_euler(species,coarse,lower,ratio,solver,dt, &
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok)
+  end subroutine advance_reactive_eb_multipatch_euler_3d
+
+  subroutine advance_reactive_eb_multipatch_transport_3d(species,transport,coarse,lower,ratio,dt, &
+      viscosity,conduction,diffusion,barodiffusion,coarse_state,coarse_temperature,patches,boundary_change,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: coarse
+    integer, intent(in) :: lower(:,:),ratio
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),minimum_theta
+    type(eb_reactive_patch_3d), intent(inout) :: patches(:)
+    logical, intent(out) :: ok
+    real(dp) :: wall(size(boundary_change))
+    call advance_multipatch_euler(species,coarse,lower,ratio,'rusanov',dt, &
+      coarse_state,coarse_temperature,patches,boundary_change,wall,ok,transport,viscosity,conduction, &
+      diffusion,barodiffusion,minimum_theta)
+  end subroutine advance_reactive_eb_multipatch_transport_3d
+
+  subroutine advance_multipatch_euler(species,coarse,lower,ratio,solver,dt, &
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: coarse
+    integer, intent(in) :: lower(:,:),ratio
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),wall_change(:)
+    type(eb_reactive_patch_3d), intent(inout) :: patches(:)
+    logical, intent(out) :: ok
+    type(gas_transport_species), optional, intent(in) :: transport(:)
+    logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), optional, intent(inout) :: minimum_theta
+    real(dp) :: theta,stage_theta
+    logical :: faces(6)
     type(eb_reactive_patch_3d), allocatable :: candidate_patches(:)
     type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
     type(eb_integrated_flux_3d) :: coarse_flux,effective,restricted_flux
@@ -93,11 +130,18 @@ contains
     end do
     candidate=initial;temps=initial_t;candidate_patches=patches
     allocate(fine_flux(np),wall(nvar),boundary(nvar),source(nvar,n(1),n(2),n(3)))
-    call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
-      integrated_flux=coarse_flux)
-    if (.not.valid) return
-    call reactive_eb_slip_wall_source_3d(species,initial,initial_t,coarse,source,valid)
-    if (.not.valid) return
+    theta=1._dp;source=0._dp
+    if (present(transport)) then
+      call advance_reactive_eb_transport_patch_euler_3d(species,transport,coarse,dt,viscosity,conduction, &
+        diffusion,barodiffusion,candidate,temps,coarse_flux,theta,valid)
+      if (.not.valid) return
+    else
+      call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
+        integrated_flux=coarse_flux)
+      if (.not.valid) return
+      call reactive_eb_slip_wall_source_3d(species,initial,initial_t,coarse,source,valid)
+      if (.not.valid) return
+    end if
     do c=1,nvar
       wall(c)=dt*coarse%dx*coarse%dy*coarse%dz*sum(source(c,:,:,:)*coarse%volume_fraction,mask=.not.refined)
     end do
@@ -119,13 +163,26 @@ contains
           patches(q)%state,patches(q)%temperature,ghost,ghost_t,valid)
         if (.not.valid) return
       end do
-      call advance_reactive_eb_euler_3d(species,patches(p)%state,patches(p)%temperature,patches(p)%geometry, &
-        solver,dt,candidate_patches(p)%state,candidate_patches(p)%temperature,valid,ghost,ghost_t,fine_flux(p))
-      if (.not.valid) return
+      if (present(transport)) then
+        faces=[lower(1,p)>1,upper(1,p)<n(1),lower(2,p)>1,upper(2,p)<n(2),lower(3,p)>1,upper(3,p)<n(3)]
+        call advance_reactive_eb_transport_patch_euler_3d(species,transport,patches(p)%geometry,dt,viscosity, &
+          conduction,diffusion,barodiffusion,candidate_patches(p)%state,candidate_patches(p)%temperature, &
+          fine_flux(p),stage_theta,valid,ghost,ghost_t,faces)
+        if (.not.valid) return
+        theta=min(theta,stage_theta)
+      else
+        call advance_reactive_eb_euler_3d(species,patches(p)%state,patches(p)%temperature,patches(p)%geometry, &
+          solver,dt,candidate_patches(p)%state,candidate_patches(p)%temperature,valid,ghost,ghost_t,fine_flux(p))
+        if (.not.valid) return
+      end if
       deallocate(ghost,ghost_t)
       allocate(source(nvar,dims(1,p),dims(2,p),dims(3,p)))
-      call reactive_eb_slip_wall_source_3d(species,patches(p)%state,patches(p)%temperature,patches(p)%geometry,source,valid)
-      if (.not.valid) return
+      source=0._dp
+      if (.not.present(transport)) then
+        call reactive_eb_slip_wall_source_3d(species,patches(p)%state,patches(p)%temperature, &
+          patches(p)%geometry,source,valid)
+        if (.not.valid) return
+      end if
       do c=1,nvar
         wall(c)=wall(c)+dt*patches(p)%geometry%dx*patches(p)%geometry%dy*patches(p)%geometry%dz* &
           sum(source(c,:,:,:)*patches(p)%geometry%volume_fraction)
@@ -172,8 +229,10 @@ contains
     end do
     if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall))) return
     coarse_state=candidate;coarse_temperature=temps;patches=candidate_patches
-    boundary_change=boundary;wall_change=wall;ok=.true.
-  end subroutine advance_reactive_eb_multipatch_euler_3d
+    boundary_change=boundary;wall_change=wall
+    if (present(minimum_theta)) minimum_theta=theta
+    ok=.true.
+  end subroutine advance_multipatch_euler
 
   pure logical function box_precedes(left,right) result(precedes)
     integer, intent(in) :: left(3),right(3)
