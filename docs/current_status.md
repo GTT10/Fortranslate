@@ -70,7 +70,9 @@ MPI transport/wall timestep selection and the full common-step reaction/transpor
 composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
 The fixed-mechanism MPI tree executable now connects static topology, owner-local
 initialization/stepping, timestep retries and serial-format final CSV/budget output
-([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI transport level stepping and recursive subcycling remain open. MPI hydro
+([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI recursive subcycling remains open. MPI transport now advances one depth with
+coarse-time donors, moving/isothermal walls and integrated face fluxes
+([evidence](validation/amr-tree-mpi-transport-level-20260917.md)). MPI hydro
 now advances one depth with coarse-time donors and returns integrated face fluxes
 ([evidence](validation/amr-tree-mpi-hydro-level-20260917.md)). MPI ghost filling now
 accepts coarse time endpoints and per-depth interpolation fractions, with optional

@@ -934,3 +934,26 @@ shared ghost sampler checks stage fractions. A disagreement discovered at stage
 two rolls back the complete call. Species coefficient identity remains a caller
 contract. The caller supplies a stable dt; the API does not compute/enforce CFL
 or retry failed steps. Recursive level scheduling remains separate work.
+
+## MPI single-depth transport step
+
+`advance_mpi_amr_tree_transport_level_3d` advances one zero-based depth using the
+shared molecular-transport kernel, sparse coarse-time ghosts and owner-local EOS
+recovery. Current/endpoint packing and controls match the hydro level API. It
+supports viscosity, conduction, species diffusion and barodiffusion, optional
+PCM/MC/minmod coarse donors, reservoir inflow and prescribed moving/isothermal
+walls on only the physical faces touched by an active patch.
+
+The serial transport ordering is retained: recover temperature after both Euler
+stages, combine the initial and second-stage conserved states, average initial
+and second-stage temperature guesses, then recover temperature once more. Face
+flux integrals sum half-dt contributions from both stages. The reported minimum
+positivity factor is the minimum across active owners and both stages; empty
+owners contribute one. Inactive states/temperatures remain unchanged and their
+flux slots are unallocated.
+
+Private candidates cover the whole call, including late second-stage failures;
+state, temperature, flux and minimum factor publish together. The API performs
+no reflux, averaging down, CFL enforcement or dt retry. Recursive ratio-squared
+transport intervals and interval flux synchronization remain to be connected.
+Species/transport coefficient identity across ranks remains a caller contract.

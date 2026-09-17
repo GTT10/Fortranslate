@@ -622,3 +622,15 @@ if(PELEF_ENABLE_MPI)
       TIMEOUT 120 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_executable(test_mpi_amr_patch_tree_transport_level_3d unit/test_mpi_amr_patch_tree_transport_level_3d.F90)
+  target_link_libraries(test_mpi_amr_patch_tree_transport_level_3d PRIVATE pelef_mpi_support)
+  foreach(tree_ranks IN ITEMS 2 3)
+    add_test(NAME unit_mpi_amr_patch_tree_transport_level_3d_${tree_ranks}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${tree_ranks} ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_amr_patch_tree_transport_level_3d> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_amr_patch_tree_transport_level_3d_${tree_ranks} PROPERTIES
+      TIMEOUT 120 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()
