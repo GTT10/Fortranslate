@@ -66,8 +66,10 @@ Reaction halves now wrap both subcycled operators, and the application connects
 scaled interval selection and mode-aware restart
 ([evidence](validation/eb-subcycle-full-20260917.md)). Same-level peer face
 halos now have a transactional overlay API with shared-metric checks
-([evidence](validation/eb-peer-halo-20260917.md)); multi-patch and MPI EB
-stepping remain open.
+([evidence](validation/eb-peer-halo-20260917.md)). An owner/receiver peer-flux
+API now corrects receiver inventories and reconciles shared physical transfer
+transactionally ([evidence](validation/eb-peer-flux-20260917.md)); multi-patch
+and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
