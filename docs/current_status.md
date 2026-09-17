@@ -130,6 +130,12 @@ Spatial EB tree face halos now use a private averaged snapshot with same-level
 peer precedence, ancestor fallback and physical outflow, including neighbors
 under different parents. Multilevel flux synchronization and stepping remain
 open ([halo evidence](validation/eb-tree-halo-20260918.md)).
+A serial tree flux synchronization API now reconciles peer faces, restricts
+fine transfers into both incident parent-level patches, corrects exposed
+states and averages down in one transaction
+([flux evidence](validation/eb-tree-flux-20260918.md)). Manufactured-transfer
+conservation tests cover nested and one-sided refinement; complete multilevel
+EB hydro/transport evolution and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
