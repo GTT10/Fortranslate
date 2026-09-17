@@ -2,6 +2,7 @@ module spray_mpi_amr_application_mod
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -17,6 +18,8 @@ module spray_mpi_amr_application_mod
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
+  use amr_patch_tree_checkpoint_3d_mod, only: build_amr_tree_checkpoint_context_3d
+  use spray_mpi_amr_checkpoint_mod, only: mpi_amr_spray_checkpoint
   use spray_parcel_mod
   use spray_mpi_mod, only: inject_mpi_cone_parcels
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
@@ -25,6 +28,14 @@ module spray_mpi_amr_application_mod
   implicit none
   private
   public :: run_mpi_amr_spray_application
+  interface
+    function system_getcwd(buffer,length) bind(C,name='getcwd') result(pointer)
+      import c_char,c_size_t,c_ptr
+      character(kind=c_char), intent(out) :: buffer(*)
+      integer(c_size_t), value :: length
+      type(c_ptr) :: pointer
+    end function
+  end interface
 contains
   subroutine run_mpi_amr_spray_application(input_path,topology_path,spray_path,config,species,reactions, &
       transport,mole_fractions,comm,chemistry_integrator)
@@ -60,7 +71,11 @@ contains
     character(len=32) :: faces(6)
     character(len=1024) :: regrid_topology,particle_path
     character(len=24) :: suffix
-    character(len=:), allocatable :: header
+    character(len=:), allocatable :: header,context,spray_context,expected_tree,method
+    character(len=1024) :: checkpoint_file,restart_file,context_line
+    real(dp) :: checkpoint_time
+    logical :: stop_after_checkpoint,checkpoint_written
+    namelist /amr_spray_checkpoint/ checkpoint_file,restart_file,checkpoint_time,stop_after_checkpoint
     namelist /amr_spray/ component_count,vapor_names,fractions,liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,parcel_count,total_mass,center,axis,speed,half_angle,diameter,drop_temperature, &
       maximum_parcels,options,subcycling,regrid_time,regrid_topology, &
@@ -80,8 +95,27 @@ contains
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
     read(unit,nml=amr_spray,iostat=ios)
-    close(unit)
     if (ios/=0) call fatal('Invalid amr_spray namelist')
+    checkpoint_file='';restart_file='';checkpoint_time=-1;stop_after_checkpoint=.false.;checkpoint_written=.false.
+    rewind(unit)
+    read(unit,nml=amr_spray_checkpoint,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_checkpoint namelist')
+    if (.not.ieee_is_finite(checkpoint_time)) call fatal('Invalid checkpoint time')
+    if ((checkpoint_time>=0).neqv.(len_trim(checkpoint_file)>0)) call fatal('Checkpoint requires path and time')
+    if (stop_after_checkpoint.and.checkpoint_time<0) call fatal('Stop requires a checkpoint')
+    if (len_trim(checkpoint_file)>0) then
+      call check_checkpoint_path(trim(checkpoint_file))
+      call check_checkpoint_path(trim(checkpoint_file)//'.gas')
+      call check_checkpoint_path(trim(checkpoint_file)//'.particles')
+      call check_checkpoint_path(trim(checkpoint_file)//'.pending')
+    end if
+    if (len_trim(restart_file)>0) then
+      call check_checkpoint_path(trim(restart_file))
+      call check_checkpoint_path(trim(restart_file)//'.gas')
+      call check_checkpoint_path(trim(restart_file)//'.particles')
+      call check_checkpoint_path(trim(restart_file)//'.pending')
+    end if
     if (component_count<1.or.component_count>16) call fatal('Invalid liquid component count')
     if (.not.ieee_is_finite(regrid_time)) call fatal('Invalid regrid time')
     if ((regrid_time>=0).neqv.(len_trim(regrid_topology)>0)) call fatal('Regrid needs time and topology')
@@ -113,6 +147,25 @@ contains
     end do
     call read_topology(topology_path,tree)
     if (regrid_time>=0) call read_topology(trim(regrid_topology),target)
+    open(newunit=unit,status='scratch',form='formatted',iostat=ios)
+    if (ios/=0) call fatal('Cannot allocate checkpoint context')
+    write(unit,nml=amr_spray,iostat=ios)
+    if (ios/=0) call fatal('Cannot serialize spray context')
+    rewind(unit);spray_context=''
+    do
+      read(unit,'(a)',iostat=ios) context_line
+      if (ios<0) exit
+      if (ios/=0) call fatal('Cannot read spray context')
+      spray_context=spray_context//trim(context_line)//achar(10)
+    end do
+    close(unit)
+    spray_context=spray_context//tree_key(tree)
+    if (regrid_time>=0) spray_context=spray_context//tree_key(target)
+    method='explicit'
+    if (present(chemistry_integrator)) method=chemistry_integrator
+    call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
+      'AMR_SPRAY_V1:'//trim(config%thermo_model),method,spray_context,context,ok)
+    if (.not.ok) call fatal('Cannot bind AMR spray checkpoint context')
     owners=[(modulo(node-1,nranks),node=1,size(tree%nodes))]
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) call fatal('Invalid tree coordinate layout')
@@ -139,6 +192,16 @@ contains
     call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok)
     if (.not.ok) call fatal('Initial gas recovery failed')
     time=0;step=0;event=1;last_id=0;global_ledger=0
+    expected_tree=tree_key(tree)
+    if (len_trim(restart_file)>0) then
+      call checkpoint(.false.,trim(restart_file))
+      if (time>config%final_time.or.step>config%maximum_steps) call fatal('Restart exceeds run limits')
+      if (event/=count(injection_times(:injection_events)<=time)+1) call fatal('Restart injection event mismatch')
+      if (regridded.neqv.(regrid_time>=0.and.time>=regrid_time)) call fatal('Restart regrid event mismatch')
+      if (regridded) expected_tree=tree_key(target)
+      if (tree_key(tree)/=expected_tree) call fatal('Restart topology mismatch')
+      if (checkpoint_time>=0.and.checkpoint_time<time) call fatal('Checkpoint time precedes restart')
+    end if
     do
       if (.not.regridded.and.regrid_time>=0) then
         if (time==regrid_time) then
@@ -155,9 +218,20 @@ contains
           event=event+1
         end if
       end if
+      if (.not.checkpoint_written.and.checkpoint_time>=0) then
+        if (time==checkpoint_time) then
+          call checkpoint(.true.,trim(checkpoint_file))
+          checkpoint_written=.true.
+          if (stop_after_checkpoint) then
+            if (rank==0) write(*,'(a,es24.16)') 'Stopped after checkpoint at time: ',time
+            return
+          end if
+        end if
+      end if
       if (time>=config%final_time) exit
       if (step>=config%maximum_steps) call fatal('Maximum steps reached')
       stop_time=config%final_time
+      if (.not.checkpoint_written.and.checkpoint_time>time) stop_time=min(stop_time,checkpoint_time)
       if (event<=injection_events) stop_time=min(stop_time,injection_times(event))
       if (.not.regridded.and.regrid_time>time) stop_time=min(stop_time,regrid_time)
       ! Finest-level bounds also safely bound recursive gas stepping.
@@ -221,6 +295,28 @@ contains
       write(*,'(a,*(es24.16,1x))') 'Injected inventory: ',global_ledger
     end if
   contains
+    subroutine checkpoint(writing,path)
+      logical, intent(in) :: writing
+      character(len=*), intent(in) :: path
+      call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
+        time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok)
+      if (.not.ok) call fatal('AMR spray checkpoint operation failed')
+    end subroutine
+    function tree_key(geometry) result(key)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      character(len=:), allocatable :: key
+      character(len=512) :: record
+      integer :: peer
+      write(record,'(*(i0,1x))') size(geometry%nodes),geometry%nodes(1)%shape
+      key=trim(record)//achar(10)
+      do peer=2,size(geometry%nodes)
+        associate(item=>geometry%nodes(peer),box=>geometry%nodes(peer)%patch)
+          write(record,'(*(i0,1x))') item%parent,box%coarse_i_lower,box%coarse_i_upper, &
+            box%coarse_j_lower,box%coarse_j_upper,box%coarse_k_lower,box%coarse_k_upper,box%refinement_ratio
+        end associate
+        key=key//trim(record)//achar(10)
+      end do
+    end function
     subroutine inject_event()
       type(spray_parcel), allocatable :: candidate(:)
       real(dp), allocatable :: candidate_mass(:,:)
@@ -245,13 +341,49 @@ contains
       call move_alloc(candidate,parcels);call move_alloc(candidate_mass,masses)
       last_id=next_id;global_ledger=next_ledger
     end subroutine
+    logical function paths_alias(left,right) result(same)
+      character(len=*), intent(in) :: left,right
+      same=selected_reactor_paths_alias_lexically(absolute_path(left),absolute_path(right))
+    end function
+    function absolute_path(path) result(value)
+      character(len=*), intent(in) :: path
+      character(len=:), allocatable :: value
+      character(kind=c_char) :: buffer(4096)
+      type(c_ptr) :: pointer
+      integer :: index
+      if (len_trim(path)==0) call fatal('Empty MPI tree path')
+      if (path(1:1)=='/') then
+        value=trim(path)
+      else
+        pointer=system_getcwd(buffer,int(size(buffer),c_size_t))
+        if (.not.c_associated(pointer)) call fatal('Cannot resolve MPI tree working directory')
+        value=''
+        do index=1,size(buffer)
+          if (buffer(index)==c_null_char) exit
+          value=value//buffer(index)
+        end do
+        value=value//'/'//trim(path)
+      end if
+      if (len(value)>1024) call fatal('MPI tree path exceeds lexical comparison capacity')
+    end function
+    subroutine check_checkpoint_path(path)
+      character(len=*), intent(in) :: path
+      character(len=24) :: rank_text
+      character(len=:), allocatable :: output
+      call check_output(path)
+      if (paths_alias(path,trim(config%output_file))) &
+        call fatal('Checkpoint aliases gas output')
+      write(rank_text,'(i0)') rank
+      output=trim(config%output_file)//'.particles.'//trim(rank_text)//'.csv'
+      if (paths_alias(path,output)) call fatal('Checkpoint aliases particle output')
+    end subroutine
     subroutine check_output(path)
       character(len=*), intent(in) :: path
-      if (selected_reactor_paths_alias_lexically(path,input_path).or. &
-          selected_reactor_paths_alias_lexically(path,topology_path).or. &
-          selected_reactor_paths_alias_lexically(path,spray_path)) call fatal('Output aliases input')
+      if (paths_alias(path,input_path).or. &
+          paths_alias(path,topology_path).or. &
+          paths_alias(path,spray_path)) call fatal('Output aliases input')
       if (len_trim(regrid_topology)>0) then
-        if (selected_reactor_paths_alias_lexically(path,trim(regrid_topology))) call fatal('Output aliases regrid input')
+        if (paths_alias(path,trim(regrid_topology))) call fatal('Output aliases regrid input')
       end if
     end subroutine
     subroutine fatal(message)

@@ -51,7 +51,8 @@ if(PELEF_ENABLE_SPRAY)
         src/spray/spray_mpi_amr_step_mod.F90
         src/spray/spray_mpi_amr_reactive_mod.F90
         src/spray/spray_mpi_amr_remap_mod.F90
-        src/spray/spray_mpi_amr_application_mod.F90)
+        src/spray/spray_mpi_amr_application_mod.F90
+        src/spray/spray_mpi_amr_checkpoint_mod.F90)
       if(target STREQUAL "pelef_selected_spray_tree_runtime")
         target_link_libraries(${target} PUBLIC pelef_selected_mpi_amr_tree_reactive_3d_runtime)
       else()

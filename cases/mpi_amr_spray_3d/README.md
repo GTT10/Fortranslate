@@ -68,6 +68,50 @@ integrator are printed by the selected frontend.
 The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This initial executable supports periodic
 boundaries, initial or scheduled single-cone injection and one optional prescribed
-regrid. Multiport injection, automatic tagging/rebalancing, checkpoint/restart, wall
+regrid. Multiport injection, automatic tagging/rebalancing, wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.
+
+## Checkpoint and changed-rank continuation
+
+Add a separate group to the spray input:
+
+```fortran
+&amr_spray_checkpoint
+ checkpoint_file='saved_state', checkpoint_time=1.e-8
+ stop_after_checkpoint=.true.
+/
+```
+
+The driver lands on the requested time and applies coincident regrid/injection
+operations before saving. Without `stop_after_checkpoint`, it continues normally.
+A prefix is immutable: choose a new one for every save. The complete checkpoint
+consists of `saved_state`, `saved_state.gas` and `saved_state.particles`; keep
+these together with the same prefix. `saved_state.pending` is the retained
+reservation/manifest staging file. A failed save may leave incomplete files,
+but it does not publish the `saved_state` completion marker. Use a fresh prefix
+after such a failure. Publication uses POSIX hard links on a shared filesystem;
+this is atomic visibility, not a power-loss durability guarantee.
+
+To resume, replace the checkpoint group with:
+
+```fortran
+&amr_spray_checkpoint
+ restart_file='/path/to/saved_state'
+/
+```
+
+The MPI rank count may change. Gas nodes are reassigned round-robin and saved
+particles migrate to their finest owners. Saved state includes topology, gas
+U/T, every parcel/component and breakup/lineage field, time/step count, ID
+watermark, next injection event, regrid status and cumulative injected inventory.
+Consumed events are not repeated; future events continue from their original
+schedule. The prefix/context and paired generation must match and malformed
+payloads reject before output.
+
+Gas/transport/liquid tables, numerical options, injection schedule, topology
+inputs and spray settings are bound into the checkpoint context. Continuation
+limits and gas output path may change; checkpoint controls are excluded from the
+context. `maximum_parcels` remains per-rank capacity, and checkpoint gathering
+currently limits the global population to one million parcels on rank zero.
+Gas payload I/O remains distributed. CSV analysis files are not restart files.

@@ -19,7 +19,8 @@ mixed-particle interval now connects sampling, particle evolution, feedback and
 final migration. A reacting-step wrapper also connects the existing AMR gas
 solver. Fixed/selected [MPI AMR spray executables](../cases/mpi_amr_spray_3d/README.md)
 now connect initial or timed injection, coupled steps, one scheduled regrid and gas/particle
-CSV output. Checkpoint orchestration remains open for these executables.
+CSV output. Checkpoint/restart now preserves the gas/particle state and event
+position across MPI rank-count changes.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -141,7 +142,7 @@ The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
 The selected library links the selected MPI tree runtime; it does not acquire
 the fixed-mechanism core. The MPI AMR spray application below supplies setup,
-initial or timed injection and a prescribed regrid; checkpoint orchestration remains open.
+initial or timed injection, a prescribed regrid and checkpoint/restart.
 
 `remap_mpi_amr_spray` in `spray_mpi_amr_remap_mod` connects conservative gas
 remapping and particle migration for a changed regular tree or owner map. It
@@ -162,8 +163,18 @@ initialize owner-local gas, inject a mixed-liquid cone at one or more specified 
 advance coupled steps with whole-step retries and optionally remap at one
 specified time. Gas CSV contains only exposed cells; separate per-rank particle
 CSVs are analysis outputs. See the [case guide](../cases/mpi_amr_spray_3d/README.md)
-for controls and limitations. Multiport injection, automatic tagging,
-checkpoint/restart and AMR physical-boundary/EB particle handling remain open.
+for controls and limitations. Multiport injection, automatic tagging and AMR
+physical-boundary/EB particle handling remain open.
+
+`mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
+indexed gas payloads and a rank-zero particle archive, then publishes an immutable
+completion marker with a POSIX hard link. Both payloads bind the same generation
+and numerical/model context. Reads validate both before publishing topology,
+owner-local gas and redistributed particles. The archive includes composition,
+lineage and breakup fields, ID watermark, time/steps, next injection event,
+regrid status and injected inventory. Rank-zero particle collection is bounded
+to one million global parcels. The application exposes one checkpoint time,
+optional stop and changed-rank continuation; see the case guide for file handling.
 
 ## Build and run
 
