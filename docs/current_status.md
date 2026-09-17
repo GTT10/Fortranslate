@@ -155,6 +155,11 @@ Optional automatic common intervals now combine all-node cut-cell hydro and
 diffusion bounds with global donor maxima and restart-bound policy
 ([interval evidence](validation/eb-tree-auto-interval-20260918.md)). Selected
 frontend, dynamic regridding, subcycling and MPI remain open for the EB tree application.
+A conservative tree remap library now supports patch movement, coarsening and
+refinement on an unchanged refinement lattice, with exact same-level overlap
+and transactional geometry/EOS rejection
+([remap evidence](validation/eb-tree-remap-20260918.md)); schedule/adaptation
+integration remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
