@@ -35,8 +35,10 @@ boundary/wall inventories transactionally
 reaction halves now wrap that update with composite chemical inventories
 ([evidence](validation/eb-two-level-chemistry-20260917.md)). Molecular-transport
 fluxes now accept selectable face donors, including the species limiter
-([evidence](validation/eb-transport-halo-20260917.md)); hierarchy transport
-composition, multi-patch, subcycled and MPI EB stepping remain open.
+([evidence](validation/eb-transport-halo-20260917.md)). A synchronized two-level
+transport step now connects limited fluxes, reflux and averaging
+([evidence](validation/eb-two-level-transport-20260917.md)); combined physics,
+multi-patch, subcycled and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
