@@ -28,8 +28,11 @@ and interior coarse/fine reflux now have conservative transactional library APIs
 halos, and plain Euler returns accepted flux integrals
 ([evidence](validation/eb-face-halo-20260917.md)). Geometry extraction and PCM
 coarse-donor/outflow face halos now feed fine-patch Euler updates
-([evidence](validation/eb-patch-halo-20260917.md)); synchronized hierarchy and MPI
-stepping are not yet connected.
+([evidence](validation/eb-patch-halo-20260917.md)). A serial one-patch, two-level
+Euler hydro API now connects both updates, reflux, averaging and separate composite
+boundary/wall inventories transactionally
+([evidence](validation/eb-two-level-hydro-20260917.md)). Multi-patch, reacting/transport,
+subcycled and MPI EB hierarchy stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
