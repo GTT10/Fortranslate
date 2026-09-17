@@ -8,17 +8,183 @@ module eb_reactive_two_level_3d_mod
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d,fill_reactive_eb_patch_halo_3d
+  use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d,fill_reactive_eb_patch_halo_3d, &
+    overlay_reactive_eb_peer_halo_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
-  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,restrict_eb_integrated_flux_3d,reflux_reactive_eb_state_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,restrict_eb_integrated_flux_3d,reflux_reactive_eb_state_3d, &
+    reconcile_reactive_eb_peer_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   implicit none
   private
+  type, public :: eb_reactive_patch_3d
+    type(eb_geometry_3d) :: geometry
+    real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
+  end type eb_reactive_patch_3d
+  public :: advance_reactive_eb_multipatch_euler_3d
   public :: advance_reactive_eb_two_level_subcycled_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_euler_3d
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
   public :: advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_full_3d
 contains
+  subroutine advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: coarse
+    integer, intent(in) :: lower(:,:),ratio
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),wall_change(:)
+    type(eb_reactive_patch_3d), intent(inout) :: patches(:)
+    logical, intent(out) :: ok
+    type(eb_reactive_patch_3d), allocatable :: candidate_patches(:)
+    type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
+    type(eb_integrated_flux_3d) :: coarse_flux,effective,restricted_flux
+    type(eb_geometry_3d) :: section,restricted
+    integer, allocatable :: upper(:,:),dims(:,:),order(:)
+    logical, allocatable :: refined(:,:,:)
+    real(dp), allocatable :: initial(:,:,:,:),initial_t(:,:,:),candidate(:,:,:,:),temps(:,:,:)
+    real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source(:,:,:,:),wall(:),boundary(:)
+    integer :: n(3),np,nvar,p,q,a,b,c,idx,offset(3)
+    logical :: valid
+    ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
+    if (np<1.or.ratio<1.or..not.ieee_is_finite(dt)) return
+    if (dt<=0._dp.or..not.coarse%is_valid()) return
+    if (any(shape(lower)/=[3,np])) return
+    n=[coarse%nx,coarse%ny,coarse%nz]
+    if (any(shape(coarse_state)/=[nvar,n]).or.any(shape(coarse_temperature)/=n)) return
+    if (size(boundary_change)/=nvar.or.size(wall_change)/=nvar) return
+    allocate(upper(3,np),dims(3,np),order(np),refined(n(1),n(2),n(3)))
+    refined=.false.
+    do p=1,np
+      if (.not.patches(p)%geometry%is_valid()) return
+      if (.not.allocated(patches(p)%state).or..not.allocated(patches(p)%temperature)) return
+      dims(:,p)=[patches(p)%geometry%nx,patches(p)%geometry%ny,patches(p)%geometry%nz]
+      if (any(mod(dims(:,p),ratio)/=0).or.any(lower(:,p)<1).or.any(lower(:,p)>n)) return
+      if (any(dims(:,p)/ratio>n-lower(:,p)+1)) return
+      upper(:,p)=lower(:,p)+dims(:,p)/ratio-1
+      if (any(shape(patches(p)%state)/=[nvar,dims(:,p)]).or. &
+        any(shape(patches(p)%temperature)/=dims(:,p))) return
+      if (any(refined(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)))) return
+      refined(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p))=.true.
+      call coarsen_eb_geometry_3d(patches(p)%geometry,ratio,restricted,valid)
+      if (.not.valid) return
+      call extract_eb_geometry_3d(coarse,lower(:,p),upper(:,p),section,valid)
+      if (.not.valid) return
+      if (.not.matching_metrics(section,restricted)) return
+      order(p)=p
+    end do
+    ! Lexicographic box origins define face ownership and summation order,
+    ! independent of the caller's patch-array permutation.
+    do a=2,np
+      idx=order(a);b=a-1
+      do while(b>=1)
+        if (.not.box_precedes(lower(:,idx),lower(:,order(b)))) exit
+        order(b+1)=order(b);b=b-1
+      end do
+      order(b+1)=idx
+    end do
+    initial=coarse_state;initial_t=coarse_temperature
+    do a=1,np
+      p=order(a)
+      call restrict_reactive_eb_state_3d(species,patches(p)%geometry,ratio,patches(p)%state,patches(p)%temperature, &
+        initial(:,lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)), &
+        initial_t(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)),valid)
+      if (.not.valid) return
+    end do
+    candidate=initial;temps=initial_t;candidate_patches=patches
+    allocate(fine_flux(np),wall(nvar),boundary(nvar),source(nvar,n(1),n(2),n(3)))
+    call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
+      integrated_flux=coarse_flux)
+    if (.not.valid) return
+    call reactive_eb_slip_wall_source_3d(species,initial,initial_t,coarse,source,valid)
+    if (.not.valid) return
+    do c=1,nvar
+      wall(c)=dt*coarse%dx*coarse%dy*coarse%dz*sum(source(c,:,:,:)*coarse%volume_fraction,mask=.not.refined)
+    end do
+    deallocate(source)
+    do a=1,np
+      p=order(a)
+      allocate(ghost(nvar,0:dims(1,p)+1,0:dims(2,p)+1,0:dims(3,p)+1), &
+        ghost_t(0:dims(1,p)+1,0:dims(2,p)+1,0:dims(3,p)+1))
+      call fill_reactive_eb_patch_halo_3d(species,coarse,patches(p)%geometry,lower(:,p),ratio,initial,initial_t, &
+        patches(p)%state,patches(p)%temperature,ghost,ghost_t,valid)
+      if (.not.valid) return
+      do b=1,np
+        q=order(b)
+        if (q==p) cycle
+        offset=lower(:,q)-lower(:,p)
+        if (any(offset < -dims(:,q)/ratio).or.any(offset>dims(:,p)/ratio)) cycle
+        offset=offset*ratio
+        call overlay_reactive_eb_peer_halo_3d(species,patches(p)%geometry,patches(q)%geometry,offset, &
+          patches(q)%state,patches(q)%temperature,ghost,ghost_t,valid)
+        if (.not.valid) return
+      end do
+      call advance_reactive_eb_euler_3d(species,patches(p)%state,patches(p)%temperature,patches(p)%geometry, &
+        solver,dt,candidate_patches(p)%state,candidate_patches(p)%temperature,valid,ghost,ghost_t,fine_flux(p))
+      if (.not.valid) return
+      deallocate(ghost,ghost_t)
+      allocate(source(nvar,dims(1,p),dims(2,p),dims(3,p)))
+      call reactive_eb_slip_wall_source_3d(species,patches(p)%state,patches(p)%temperature,patches(p)%geometry,source,valid)
+      if (.not.valid) return
+      do c=1,nvar
+        wall(c)=wall(c)+dt*patches(p)%geometry%dx*patches(p)%geometry%dy*patches(p)%geometry%dz* &
+          sum(source(c,:,:,:)*patches(p)%geometry%volume_fraction)
+      end do
+      deallocate(source)
+    end do
+    do a=1,np
+      p=order(a)
+      do b=a+1,np
+        q=order(b);offset=lower(:,q)-lower(:,p)
+        if (any(offset < -dims(:,q)/ratio).or.any(offset>dims(:,p)/ratio)) cycle
+        offset=offset*ratio
+        call reconcile_reactive_eb_peer_flux_3d(species,patches(p)%geometry,patches(q)%geometry,offset, &
+          fine_flux(p),fine_flux(q),candidate_patches(q)%state,candidate_patches(q)%temperature,valid)
+        if (.not.valid) return
+      end do
+    end do
+    effective=coarse_flux
+    do a=1,np
+      p=order(a)
+      call restrict_eb_integrated_flux_3d(patches(p)%geometry,ratio,fine_flux(p),restricted_flux,valid)
+      if (.not.valid) return
+      effective%x(:,lower(1,p)-1:upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p))=restricted_flux%x
+      effective%y(:,lower(1,p):upper(1,p),lower(2,p)-1:upper(2,p),lower(3,p):upper(3,p))=restricted_flux%y
+      effective%z(:,lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p)-1:upper(3,p))=restricted_flux%z
+    end do
+    call reflux_reactive_eb_state_3d(species,coarse,refined,coarse_flux,effective,candidate,temps,valid)
+    if (.not.valid) return
+    do a=1,np
+      p=order(a)
+      call restrict_reactive_eb_state_3d(species,patches(p)%geometry,ratio, &
+        candidate_patches(p)%state,candidate_patches(p)%temperature, &
+        candidate(:,lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)), &
+        temps(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)),valid)
+      if (.not.valid) return
+    end do
+    do c=1,nvar
+      boundary(c)=coarse%dy*coarse%dz*sum( &
+        coarse%x_face_fraction(0,:,:)*effective%x(c,0,:,:)-coarse%x_face_fraction(n(1),:,:)*effective%x(c,n(1),:,:)) &
+        +coarse%dx*coarse%dz*sum( &
+        coarse%y_face_fraction(:,0,:)*effective%y(c,:,0,:)-coarse%y_face_fraction(:,n(2),:)*effective%y(c,:,n(2),:)) &
+        +coarse%dx*coarse%dy*sum( &
+        coarse%z_face_fraction(:,:,0)*effective%z(c,:,:,0)-coarse%z_face_fraction(:,:,n(3))*effective%z(c,:,:,n(3)))
+    end do
+    if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall))) return
+    coarse_state=candidate;coarse_temperature=temps;patches=candidate_patches
+    boundary_change=boundary;wall_change=wall;ok=.true.
+  end subroutine advance_reactive_eb_multipatch_euler_3d
+
+  pure logical function box_precedes(left,right) result(precedes)
+    integer, intent(in) :: left(3),right(3)
+    integer :: axis
+    precedes=.false.
+    do axis=1,3
+      if (left(axis)==right(axis)) cycle
+      precedes=left(axis)<right(axis);return
+    end do
+  end function box_precedes
+
   ! Symmetric reaction/hydro composition; the Euler hydro stage remains first
   ! order. Only exposed coarse cells and active fine cells own chemical solves.
   subroutine advance_reactive_eb_two_level_strang_3d(species,reactions,coarse,fine,lower,ratio,solver,dt, &

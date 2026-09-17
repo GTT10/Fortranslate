@@ -685,3 +685,7 @@ add_test(
     --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/reference.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_two_level_3d"
 )
+
+add_executable(test_eb_multipatch_3d unit/test_eb_multipatch_3d.F90)
+target_link_libraries(test_eb_multipatch_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_multipatch_3d COMMAND test_eb_multipatch_3d)
