@@ -137,8 +137,11 @@ states and averages down in one transaction
 conservation tests cover nested and one-sided refinement. A serial common-step
 Euler hydro API now connects snapshot halos, all-node updates, synchronization
 and separate exposed-wall/physical-boundary budgets transactionally
-([hydro evidence](validation/eb-tree-hydro-20260918.md)). Multilevel transport,
-combined stepping, application/restart integration and MPI remain open.
+([hydro evidence](validation/eb-tree-hydro-20260918.md)). A matching molecular
+transport API now uses limited node fluxes and globally identified closed
+physical faces with transactional synchronization
+([transport evidence](validation/eb-tree-transport-20260918.md)). Combined
+stepping, application/restart integration and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
