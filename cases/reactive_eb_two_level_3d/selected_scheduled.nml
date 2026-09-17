@@ -1,0 +1,17 @@
+&eb_two_level
+ nx=8, ny=8, nz=8, refinement_ratio=2,
+ geometry_type='plane', plane_axis='z', plane_position=0.31,
+ patch_count=2,
+ patch_lower=2,2,2, 3,2,2, patch_upper=2,3,3, 3,3,3,
+ regrid_count=2, regrid_times=1.5e-8, 2.5e-8,
+ regrid_patch_count=1,2,
+ regrid_lower(:,1,1)=2,2,2, regrid_upper(:,1,1)=3,3,3,
+ regrid_lower(:,1,2)=1,1,2, regrid_upper(:,1,2)=2,2,3,
+ regrid_lower(:,2,2)=3,3,2, regrid_upper(:,2,2)=4,4,3,
+ time_step=1.0e-8, final_time=3.0e-8, maximum_steps=20,
+ chemistry_enabled=.true., transport_enabled=.true.,
+ chemistry_integrator='implicit', riemann_solver='rusanov',
+ composition_count=3, composition_species='H2','O2','N2',
+ composition_mole_fractions=0.29572,0.14785,0.55643,
+ output_file='eb_scheduled.csv'
+/

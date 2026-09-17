@@ -35,7 +35,7 @@ program pelef_reactive_eb_two_level_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
   use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d, &
-    eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d
+    eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d,remap_reactive_eb_multipatch_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
 #ifndef PELEF_SELECTED_EB_TWO_LEVEL
@@ -62,6 +62,10 @@ program pelef_reactive_eb_two_level_3d
   type(eb_geometry_3d), pointer :: fine
   type(eb_reactive_patch_3d), allocatable, target :: patches(:)
   real(dp), pointer :: uf(:,:,:,:),tf(:,:,:)
+  integer :: regrid_count=0,regrid_stage=0,regrid_patch_count(16)=0
+  integer :: regrid_lower(3,16,16)=0,regrid_upper(3,16,16)=0
+  integer :: original_count,original_lower(3,16),original_upper(3,16)
+  real(dp) :: regrid_times(16)=0._dp,next_time
   integer :: patch_count=1,patch_lower(3,16)=0,patch_upper(3,16)=0
   integer :: nx=8,ny=8,nz=8,refinement_ratio=2,fine_lower(3)=[2,2,2],fine_upper(3)=[3,3,3],maximum_steps=100
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z',riemann_solver='rusanov'
@@ -86,7 +90,8 @@ program pelef_reactive_eb_two_level_3d
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
     automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper, &
-    composition_count,composition_species,composition_mole_fractions
+    composition_count,composition_species,composition_mole_fractions, &
+    regrid_count,regrid_times,regrid_patch_count,regrid_lower,regrid_upper
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
@@ -118,6 +123,8 @@ program pelef_reactive_eb_two_level_3d
     if (any(patch_lower(:,p)<1).or.any(patch_upper(:,p)<patch_lower(:,p)).or.any(patch_upper(:,p)>dims)) &
       error stop 'Invalid patch box'
   end do
+  original_count=patch_count;original_lower=patch_lower;original_upper=patch_upper
+  call validate_schedule()
   allocate(patches(patch_count))
   fine=>patches(1)%geometry
   if (any(fine_lower<1).or.any(fine_upper<fine_lower).or.any(fine_upper>dims)) error stop 'Invalid fine patch box'
@@ -257,6 +264,7 @@ program pelef_reactive_eb_two_level_3d
   do while(time<final_time)
     if (step>=maximum_steps) error stop 'Maximum steps reached before final time'
     dt=min(time_step,final_time-time)
+    if (regrid_stage<regrid_count) dt=min(dt,regrid_times(regrid_stage+1)-time)
     if (automatic_timestep) call limit_timestep(dt)
     do retry=0,maximum_step_retries
       if (time+dt<=time) error stop 'Time step cannot advance time'
@@ -279,9 +287,20 @@ program pelef_reactive_eb_two_level_3d
       dt=0.5_dp*dt
     end do
     total_boundary=total_boundary+boundary;total_wall=total_wall+wall;total_chemical=total_chemical+chemical
-    time=time+dt;step=step+1;minimum_theta=min(minimum_theta,theta)
+    next_time=time+dt
+    if (regrid_stage<regrid_count) then
+      if (dt==regrid_times(regrid_stage+1)-time) next_time=regrid_times(regrid_stage+1)
+    end if
+    time=next_time;step=step+1;minimum_theta=min(minimum_theta,theta)
     if (step==1) minimum_dt=dt
     minimum_dt=min(minimum_dt,dt)
+    if (regrid_stage<regrid_count) then
+      if (time>=regrid_times(regrid_stage+1)) then
+        call activate_layout(regrid_stage+1,.true.)
+        regrid_stage=regrid_stage+1
+        call check_balance()
+      end if
+    end if
     if (checkpoint_interval_steps>0) then
       if (mod(step,checkpoint_interval_steps)==0) then
         call save_checkpoint()
@@ -293,11 +312,117 @@ program pelef_reactive_eb_two_level_3d
   call write_output()
   write(*,'(a,i0)') 'Rejected trials this invocation: ',rejected_steps
   write(*,'(a,i0)') 'Completed steps: ',step
+  if (regrid_count>0) write(*,'(a,i0)') 'Completed regrids: ',regrid_stage
   write(*,'(a,es24.16)') 'Final time: ',time
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum transport theta: ',minimum_theta
   write(*,'(a,es24.16)') 'Minimum accepted dt: ',minimum_dt
 contains
+  subroutine validate_schedule()
+    integer :: event,a,b,n
+    if (regrid_count<0.or.regrid_count>16) error stop 'Invalid regrid_count (0:16)'
+    do event=1,regrid_count
+      if (.not.ieee_is_finite(regrid_times(event))) error stop 'Nonfinite regrid time'
+      if (regrid_times(event)<=0._dp) error stop 'Nonpositive regrid time'
+      if (event>1) then
+        if (regrid_times(event)<=regrid_times(event-1)) error stop 'Regrid times must increase'
+      end if
+      n=regrid_patch_count(event)
+      if (n<1.or.n>16) error stop 'Invalid scheduled patch count (1:16)'
+      do a=1,n
+        if (any(regrid_lower(:,a,event)<1).or.any(regrid_upper(:,a,event)>dims).or. &
+          any(regrid_upper(:,a,event)<regrid_lower(:,a,event))) error stop 'Invalid scheduled patch box'
+        do b=1,a-1
+          if (all(regrid_lower(:,a,event)<=regrid_upper(:,b,event)).and. &
+            all(regrid_lower(:,b,event)<=regrid_upper(:,a,event))) error stop 'Overlapping scheduled patches'
+        end do
+      end do
+    end do
+  end subroutine validate_schedule
+
+  subroutine activate_layout(event,remapping)
+    integer, intent(in) :: event
+    logical, intent(in) :: remapping
+    type(eb_reactive_patch_3d), allocatable, target :: candidates(:)
+    integer :: a,n,d(3)
+    logical :: valid
+    n=regrid_patch_count(event)
+    allocate(candidates(n))
+    do a=1,n
+      call extract_eb_geometry_3d(full,(regrid_lower(:,a,event)-1)*refinement_ratio+1, &
+        regrid_upper(:,a,event)*refinement_ratio,candidates(a)%geometry,valid)
+      if (.not.valid) error stop 'Cannot extract scheduled patch'
+      d=[candidates(a)%geometry%nx,candidates(a)%geometry%ny,candidates(a)%geometry%nz]
+      allocate(candidates(a)%state(nvar,d(1),d(2),d(3)),candidates(a)%temperature(d(1),d(2),d(3)))
+      candidates(a)%state=0._dp;candidates(a)%temperature=0._dp
+    end do
+    if (remapping) then
+      call remap_reactive_eb_multipatch_3d(species,coarse,patch_lower(:,1:patch_count),refinement_ratio, &
+        patches,regrid_lower(:,1:n,event),refinement_ratio,candidates,uc,tc,valid)
+      if (.not.valid) error stop 'Scheduled EB remap failed'
+    end if
+    call move_alloc(candidates,patches)
+    patch_count=n;patch_lower=0;patch_upper=0
+    patch_lower(:,1:n)=regrid_lower(:,1:n,event);patch_upper(:,1:n)=regrid_upper(:,1:n,event)
+    fine_lower=patch_lower(:,1);fine_upper=patch_upper(:,1)
+    fine=>patches(1)%geometry;uf=>patches(1)%state;tf=>patches(1)%temperature
+    refined=.false.
+    do a=1,n
+      refined(patch_lower(1,a):patch_upper(1,a),patch_lower(2,a):patch_upper(2,a), &
+        patch_lower(3,a):patch_upper(3,a))=.true.
+    end do
+  end subroutine activate_layout
+
+  subroutine schedule_record(stream,reading)
+    integer, intent(in) :: stream
+    logical, intent(in) :: reading
+    integer :: ios,n,stage,a,count_saved,lower_saved(3,16),upper_saved(3,16)
+    real(dp) :: times(16)
+    character(len=64) :: marker
+    if (.not.reading) then
+      write(stream,'(a)',iostat=ios) 'REGRID_SCHEDULE'
+      if (ios/=0) error stop 'Schedule marker write failed'
+      write(stream,*,iostat=ios) regrid_count,regrid_stage,original_count
+      if (ios/=0) error stop 'Schedule header write failed'
+      write(stream,*,iostat=ios) original_lower(:,1:original_count),original_upper(:,1:original_count)
+      if (ios/=0) error stop 'Initial topology write failed'
+      write(stream,'(*(es26.17e3,1x))',iostat=ios) regrid_times(1:regrid_count)
+      if (ios/=0) error stop 'Schedule times write failed'
+      do a=1,regrid_count
+        n=regrid_patch_count(a)
+        write(stream,*,iostat=ios) n,regrid_lower(:,1:n,a),regrid_upper(:,1:n,a)
+        if (ios/=0) error stop 'Schedule topology write failed'
+      end do
+      return
+    end if
+    read(stream,'(a)',iostat=ios) marker
+    if (ios/=0.or.marker/='REGRID_SCHEDULE') error stop 'Invalid schedule marker'
+    read(stream,*,iostat=ios) n,stage,count_saved
+    if (ios/=0) error stop 'Missing schedule header'
+    if (n/=regrid_count.or.stage<0.or.stage>n.or.count_saved/=original_count) error stop 'Schedule header mismatch'
+    read(stream,*,iostat=ios) lower_saved(:,1:count_saved),upper_saved(:,1:count_saved)
+    if (ios/=0) error stop 'Missing initial topology'
+    if (any(lower_saved(:,1:count_saved)/=original_lower(:,1:count_saved)).or. &
+      any(upper_saved(:,1:count_saved)/=original_upper(:,1:count_saved))) error stop 'Initial topology mismatch'
+    read(stream,*,iostat=ios) times(1:n)
+    if (ios/=0) error stop 'Missing schedule times'
+    if (any(times(1:n)/=regrid_times(1:n))) error stop 'Schedule times mismatch'
+    do a=1,regrid_count
+      ! Read the count first without letting an untrusted value set bounds.
+      read(stream,*,iostat=ios) count_saved
+      if (ios/=0) error stop 'Missing scheduled topology'
+      if (count_saved/=regrid_patch_count(a)) error stop 'Scheduled patch count mismatch'
+      backspace(stream,iostat=ios)
+      if (ios/=0) error stop 'Cannot reread scheduled topology'
+      read(stream,*,iostat=ios) count_saved,lower_saved(:,1:count_saved),upper_saved(:,1:count_saved)
+      if (ios/=0) error stop 'Invalid scheduled topology'
+      if (any(lower_saved(:,1:count_saved)/=regrid_lower(:,1:count_saved,a)).or. &
+        any(upper_saved(:,1:count_saved)/=regrid_upper(:,1:count_saved,a))) error stop 'Scheduled topology mismatch'
+    end do
+    regrid_stage=stage
+    if (stage>0) call activate_layout(stage,.false.)
+  end subroutine schedule_record
+
   function checkpoint_magic() result(magic)
     character(len=64) :: magic
     ! V1/V2 retain common-step fixed/automatic compatibility. V3/V4 select
@@ -314,6 +439,14 @@ contains
       if (subcycling) then
         magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V3'
         if (automatic_timestep) magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V4'
+      end if
+    end if
+    if (regrid_count>0) then
+      magic='PELEF_EB_SCHEDULED_CHECKPOINT_V1'
+      if (automatic_timestep) magic='PELEF_EB_SCHEDULED_CHECKPOINT_V2'
+      if (subcycling) then
+        magic='PELEF_EB_SCHEDULED_CHECKPOINT_V3'
+        if (automatic_timestep) magic='PELEF_EB_SCHEDULED_CHECKPOINT_V4'
       end if
     end if
   end function checkpoint_magic
@@ -527,6 +660,7 @@ contains
     if (ios/=0) error stop 'Cannot stage two-level checkpoint'
     write(scratch,'(a)',iostat=ios) trim(checkpoint_magic())
     if (ios/=0) error stop 'Checkpoint magic write failed'
+    if (regrid_count>0) call schedule_record(scratch,.false.)
     write(scratch,*,iostat=ios) refinement_ratio,fine_lower,fine_upper
     if (ios/=0) error stop 'Checkpoint topology write failed'
     if (patch_count>1) then
@@ -572,7 +706,7 @@ contains
 
   subroutine restore_checkpoint()
     integer :: stream,ios,ratio,lower(3),upper(3),saved_step,component,patch_index,saved_count
-    integer :: stored_lower(3,patch_count-1),stored_upper(3,patch_count-1)
+    integer, allocatable :: stored_lower(:,:),stored_upper(:,:)
     type(eb_reactive_patch_3d), allocatable :: extras(:)
     real(dp) :: saved_time,saved_dt,saved_theta,saved_time_step
     real(dp) :: saved_initial(nvar),saved_scale(nvar),saved_boundary(nvar),saved_wall(nvar),saved_chemical(nvar)
@@ -587,6 +721,8 @@ contains
     read(stream,'(a)',iostat=ios) marker
     if (ios/=0) error stop 'Missing checkpoint magic'
     if (marker/=checkpoint_magic()) error stop 'Invalid checkpoint magic or timestep mode'
+    if (regrid_count>0) call schedule_record(stream,.true.)
+    allocate(stored_lower(3,patch_count-1),stored_upper(3,patch_count-1))
     ratio=-1;lower=-1;upper=-1
     read(stream,*,iostat=ios) ratio,lower,upper
     if (ios/=0) error stop 'Missing checkpoint topology'
@@ -611,6 +747,10 @@ contains
     if (.not.all(ieee_is_finite([saved_time_step,saved_time,saved_dt,saved_theta]))) &
       error stop 'Nonfinite checkpoint clock'
     if (saved_step<1) error stop 'Invalid checkpoint step'
+    if (regrid_count>0) then
+      if (count(regrid_times(1:regrid_count)<=saved_time)/=regrid_stage) &
+        error stop 'Checkpoint regrid stage disagrees with time'
+    end if
     if (saved_time_step/=time_step) error stop 'Checkpoint time_step mismatch'
     read(stream,*,iostat=ios) saved_initial,saved_scale,saved_boundary,saved_wall,saved_chemical
     if (ios/=0) error stop 'Missing checkpoint inventories'
