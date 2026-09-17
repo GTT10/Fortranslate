@@ -250,6 +250,13 @@ a V2 patch byte-length index, allowing direct owner reads without a full root
 scan. Serial readers also accept V2; legacy V1 saves retain the bounded-memory
 scan fallback ([evidence](validation/mpi-eb-tree-index-20260918.md)). Geometry
 remains replicated and scaling qualification remains open.
+The MPI EB application can now rebalance whole patches using sampled owner-local
+reaction/hydro/transport kernel time, with a configurable interval and minimum
+estimated load improvement. Accepted common or recursive steps provide samples;
+failed retry samples are discarded. State and temperature migrate together
+without interpolation or a root gather
+([evidence](validation/mpi-eb-tree-rebalance-20260918.md)). Timing-dependent owner
+maps are performance state and do not constrain checkpoint restart identity.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
