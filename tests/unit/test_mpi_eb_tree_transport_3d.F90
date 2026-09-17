@@ -12,6 +12,8 @@ program test_mpi_eb_tree_transport_3d
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_transport_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
+  use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
+  use eb_reactive_patch_tree_3d_mod, only: reactive_eb_tree_timestep_3d
   use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
@@ -106,8 +108,8 @@ contains
   subroutine check_mpi_transport()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
-    real(dp) :: b(nv),limiter,inventory(nv),error,dt
-    integer :: owners(count),p,mode,failure
+    real(dp) :: b(nv),limiter,inventory(nv),error,dt,expected_dt,actual_dt,hcfl,tcfl
+    integer :: owners(count),p,mode,failure,estimate_mode
     logical :: good,visc
     do p=1,count
       geometry(p)=saved%nodes(p)%geometry
@@ -123,6 +125,26 @@ contains
         lt%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
       end do
       initial=local;it=lt;b=17._dp;limiter=19._dp
+      do estimate_mode=1,3
+        hcfl=.5_dp;tcfl=.35_dp
+        if (estimate_mode==3) tcfl=1.e-10_dp
+        call reactive_eb_tree_timestep_3d(species,transport,saved,hcfl,tcfl,estimate_mode/=1, &
+          .true.,.true.,.true.,expected_dt,good)
+        call require(good,'serial estimate')
+        call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,estimate_mode/=1, &
+          .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good)
+        call require(good.and.actual_dt==expected_dt,'exact MPI hydro/diffusion bound')
+      end do
+      actual_dt=17._dp
+      if (rank==0) hcfl=.25_dp
+      call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,.true., &
+        .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good)
+      call require(.not.good.and.actual_dt==17._dp,'inconsistent CFL preserves estimate')
+      do p=1,count
+        if (owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==initial%fields(p)%values),'estimate preserves U')
+        call require(all(lt%fields(p)%values==it%fields(p)%values),'estimate preserves T')
+      end do
       call advance_mpi_eb_tree_transport_3d(species,transport,topology,owners,geometry,1.e-8_dp, &
         .true.,.true.,.true.,.true.,local,lt,b,limiter,MPI_COMM_WORLD,good)
       call require(good,'MPI transport')

@@ -3,6 +3,7 @@ program pelef_reactive_eb_tree_3d
   use mpi_f08
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
 #endif
@@ -122,8 +123,8 @@ program pelef_reactive_eb_tree_3d
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
 #ifdef PELEF_MPI_EB_TREE
-  if (subcycling.or.automatic_timestep.or.regrid_count/=0.or.temperature_adaptive) &
-    error stop 'MPI EB tree currently requires static topology and fixed common intervals'
+  if (subcycling.or.regrid_count/=0.or.temperature_adaptive) &
+    error stop 'MPI EB tree currently requires static topology and common intervals'
 #endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
@@ -274,8 +275,13 @@ program pelef_reactive_eb_tree_3d
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
     if (automatic_timestep) then
+#ifdef PELEF_MPI_EB_TREE
+      call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
+        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok)
+#else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
         .true.,.true.,.true.,estimated_dt,ok,subcycling)
+#endif
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
     end if

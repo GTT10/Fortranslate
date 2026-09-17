@@ -4,6 +4,7 @@ import argparse
 import csv
 import math
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -15,10 +16,13 @@ def main():
     parser.add_argument('--mpiexec', type=Path, required=True)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
+    parser.add_argument('--automatic', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     template = args.input.read_text().replace("output_file='eb_tree.csv'", "output_file='result.csv'")
+    if args.automatic:
+        template = template.replace('&eb_tree', '&eb_tree\n automatic_timestep=.true.,hydro_cfl=5.e-5,', 1)
     env = os.environ.copy()
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
 
@@ -42,6 +46,9 @@ def main():
     third = run('mpi3', 3)
     stop_policy = "checkpoint_file='saved.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true.,"
     stopped = run('stopped2', 2, stop_policy)
+    if args.automatic:
+        match = re.search(r'Minimum accepted interval:\s+(\S+)', (stopped / 'run.log').read_text())
+        assert match and 0 < float(match[1]) < 1e-9, 'automatic interval did not shorten first step'
     resumed = run('resumed2', 2, f"restart_file='{stopped / 'saved.chk'}',")
     changed = run('resumed3', 3, f"restart_file='{stopped / 'saved.chk'}',")
     to_serial = run('mpi_to_serial', 0, f"restart_file='{stopped / 'saved.chk'}',")
@@ -78,7 +85,9 @@ def main():
     for name, extra in (
         ('corrupt', f"restart_file='{broken}',"),
         ('wrong_policy', f"restart_file='{stopped / 'saved.chk'}',time_step=2.e-9,"),
-        ('unsupported_auto', 'automatic_timestep=.true.,'),
+        ('wrong_auto', f"restart_file='{stopped / 'saved.chk'}',automatic_timestep={'.false.' if args.automatic else '.true.'},"),
+        ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
+        ('unsupported_subcycle', 'subcycling=.true.,'),
     ):
         directory = work / name
         directory.mkdir(exist_ok=True)
@@ -87,6 +96,9 @@ def main():
             path.write_text('sentinel\n')
         run(name, 2, extra + "checkpoint_file='protected.chk',checkpoint_interval_steps=1,", success=False)
         assert all(path.read_text() == 'sentinel\n' for path in paths), name
+        if name in ('wrong_auto', 'wrong_cfl'):
+            expected_error = 'Restart interval mode mismatch' if name == 'wrong_auto' else 'Restart CFL mismatch'
+            assert expected_error in (directory / 'run.log').read_text(), name
     print(f'PASS: serial/2/3-rank exact state, same-rank exact budget, changed-rank and serial restart; residual={worst:.17e}')
 
 
