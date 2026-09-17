@@ -14,6 +14,8 @@ program pelef_reactive_eb_two_level_3d
   use reactive_eb_3d_driver_mod, only: reactive_eb_integrals_3d,reactive_eb_element_integrals_3d
   use reactive_eb_3d_checkpoint_mod, only: write_reactive_eb_3d_checkpoint,read_reactive_eb_3d_checkpoint
   use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d
+  use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
+  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
   use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -29,6 +31,8 @@ program pelef_reactive_eb_two_level_3d
   character(len=512) :: checkpoint_file='',restart_file=''
   integer :: checkpoint_interval_steps=0,maximum_step_retries=12
   logical :: stop_after_checkpoint=.false.
+  logical :: automatic_timestep=.false.
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
   real(dp) :: rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,viscosity_enabled=.true.
   logical :: thermal_conduction_enabled=.true.,species_diffusion_enabled=.true.,barodiffusion_enabled=.true.
@@ -36,7 +40,8 @@ program pelef_reactive_eb_two_level_3d
     extrusion_axis,level_set_file,section_file,output_file,domain_lower,domain_upper,plane_position,time_step,final_time, &
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
-    checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries
+    checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
+    automatic_timestep,hydro_cfl,transport_cfl
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),uf(:,:,:,:),tf(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
@@ -75,6 +80,9 @@ program pelef_reactive_eb_two_level_3d
   if (output_file==input_path.or.budget_path==input_path.or.output_file==level_set_file.or. &
     budget_path==level_set_file.or.output_file==section_file.or.budget_path==section_file) &
     error stop 'Output aliases an input file'
+  if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) error stop 'Nonfinite CFL controls'
+  if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) &
+    error stop 'Invalid CFL controls'
   if (maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step retry limit (0:60)'
   if (checkpoint_interval_steps<0) error stop 'Invalid checkpoint interval'
   if ((checkpoint_interval_steps>0.and.len_trim(checkpoint_file)==0).or. &
@@ -87,6 +95,7 @@ program pelef_reactive_eb_two_level_3d
       checkpoint_file==level_set_file.or.checkpoint_file==section_file.or.checkpoint_file==restart_file) &
       error stop 'Checkpoint aliases another file'
   end if
+  config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
   config%redistribution='none'
   config%maximum_steps=maximum_steps;config%final_time=final_time;config%riemann_solver=riemann_solver
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
@@ -133,6 +142,7 @@ program pelef_reactive_eb_two_level_3d
   do while(time<final_time)
     if (step>=maximum_steps) error stop 'Maximum steps reached before final time'
     dt=min(time_step,final_time-time)
+    if (automatic_timestep) call limit_timestep(dt)
     do retry=0,maximum_step_retries
       if (time+dt<=time) error stop 'Time step cannot advance time'
       ! The full update is transactional: a rejected trial leaves both grids,
@@ -163,7 +173,69 @@ program pelef_reactive_eb_two_level_3d
   write(*,'(a,es24.16)') 'Final time: ',time
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum transport theta: ',minimum_theta
+  write(*,'(a,es24.16)') 'Minimum accepted dt: ',minimum_dt
 contains
+  function checkpoint_magic() result(magic)
+    character(len=32) :: magic
+    ! V1 retains fixed-step compatibility. V2 uses identical records, with
+    ! automatic selection and the CFL controls bound by each patch config.
+    magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V1'
+    if (automatic_timestep) magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V2'
+  end function checkpoint_magic
+
+  subroutine limit_timestep(interval)
+    real(dp), intent(inout) :: interval
+    real(dp), allocatable :: parent(:,:,:,:),parent_t(:,:,:)
+    real(dp) :: coarse_speeds(4),fine_speeds(4),donors(4),coarse_dt,fine_dt,coarse_d,fine_d,donor_d,unused_d
+    logical :: valid,fine_active
+    ! Match the parent averaging used at the start of the coupled update;
+    ! estimation must not publish state changes of its own.
+    parent=uc;parent_t=tc
+    call restrict_reactive_eb_state_3d(species,fine,refinement_ratio,uf,tf, &
+      parent(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)), &
+      parent_t(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)),valid)
+    if (.not.valid) error stop 'Cannot average parents for timestep selection'
+    call reactive_eb_signal_speeds_3d(species,parent,parent_t,coarse,coarse_speeds,valid)
+    if (.not.valid) error stop 'Invalid coarse timestep state'
+    fine_active=any(fine%volume_fraction>0._dp)
+    fine_speeds=0._dp
+    if (fine_active) then
+      call reactive_eb_signal_speeds_3d(species,uf,tf,fine,fine_speeds,valid)
+      if (.not.valid) error stop 'Invalid fine timestep state'
+    end if
+    donors=max(coarse_speeds,fine_speeds)
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,parent,parent_t,coarse,hydro_cfl,coarse_dt,valid,donors)
+    if (.not.valid) error stop 'Cannot select coarse hydro interval'
+    fine_dt=huge(1._dp)
+    if (fine_active) then
+      call compute_reactive_eb_euler_cfl_timestep_3d(species,uf,tf,fine,hydro_cfl,fine_dt,valid,donors)
+      if (.not.valid) error stop 'Cannot select fine hydro interval'
+    end if
+    interval=min(interval,coarse_dt,fine_dt)
+    if (.not.transport_enabled) return
+    call reactive_eb_transport_patch_timestep_3d(species,transport,parent,parent_t,coarse,transport_cfl, &
+      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,coarse_dt,coarse_d,valid)
+    if (.not.valid) error stop 'Cannot evaluate coarse diffusivity'
+    fine_d=0._dp
+    if (fine_active) then
+      call reactive_eb_transport_patch_timestep_3d(species,transport,uf,tf,fine,transport_cfl, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,fine_dt,fine_d,valid)
+      if (.not.valid) error stop 'Cannot evaluate fine diffusivity'
+    end if
+    donor_d=max(coarse_d,fine_d)
+    call reactive_eb_transport_patch_timestep_3d(species,transport,parent,parent_t,coarse,transport_cfl, &
+      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,coarse_dt,unused_d,valid,donor_d)
+    if (.not.valid) error stop 'Cannot select coarse diffusion interval'
+    fine_dt=huge(1._dp)
+    if (fine_active) then
+      call reactive_eb_transport_patch_timestep_3d(species,transport,uf,tf,fine,transport_cfl, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,fine_dt,unused_d,valid,donor_d)
+      if (.not.valid) error stop 'Cannot select fine diffusion interval'
+    end if
+    ! Bound the full interval, conservatively also bounding each transport half.
+    interval=min(interval,coarse_dt,fine_dt)
+  end subroutine limit_timestep
+
   subroutine check_balance()
     call inventory(current)
     ! Use initial L1, final and exchange scales with an absolute floor of one.
@@ -235,7 +307,7 @@ contains
     call check_balance()
     open(newunit=scratch,status='scratch',form='formatted',action='readwrite',iostat=ios)
     if (ios/=0) error stop 'Cannot stage two-level checkpoint'
-    write(scratch,'(a)',iostat=ios) 'PELEF_EB_TWO_LEVEL_CHECKPOINT_V1'
+    write(scratch,'(a)',iostat=ios) checkpoint_magic()
     if (ios/=0) error stop 'Checkpoint magic write failed'
     write(scratch,*,iostat=ios) refinement_ratio,fine_lower,fine_upper
     if (ios/=0) error stop 'Checkpoint topology write failed'
@@ -286,7 +358,7 @@ contains
     if (ios/=0) error stop 'Cannot open two-level restart'
     read(stream,'(a)',iostat=ios) marker
     if (ios/=0) error stop 'Missing checkpoint magic'
-    if (marker/='PELEF_EB_TWO_LEVEL_CHECKPOINT_V1') error stop 'Invalid checkpoint magic'
+    if (marker/=checkpoint_magic()) error stop 'Invalid checkpoint magic or timestep mode'
     ratio=-1;lower=-1;upper=-1
     read(stream,*,iostat=ios) ratio,lower,upper
     if (ios/=0) error stop 'Missing checkpoint topology'

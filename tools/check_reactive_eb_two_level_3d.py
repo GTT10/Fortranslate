@@ -141,7 +141,48 @@ def main():
     invalid_retry = retry_case.replace('\n/', '\n maximum_step_retries=-1,\n/')
     run('invalid_retry.nml', invalid_retry, False)
     assert retry_saved == (output.read_bytes(), budget_path.read_bytes())
-    print('PASS: two-level EB application, inventories, exact restart, transactional retry and rejected-input preservation')
+    # Automatic mode also visits transport selection in the reference coupled
+    # run; its small user cap should retain the original accepted arithmetic.
+    run('auto_coupled.nml', options(automatic_timestep='.true.'), True)
+    assert saved == (output.read_bytes(), budget_path.read_bytes())
+    auto_case = retry_case.replace('final_time=1.0e-3', 'final_time=1.0e-4').replace(
+        '\n/', '\n automatic_timestep=.true.,\n/')
+    log = run('auto.nml', auto_case, True)
+    assert 'Rejected trials this invocation: 0' in log, log
+    auto_saved = output.read_bytes(), budget_path.read_bytes()
+    auto_stop = auto_case.replace('\n/', "\n checkpoint_file='auto.chk', checkpoint_interval_steps=1, "
+                                 "stop_after_checkpoint=.true.,\n/")
+    run('auto_stop.nml', auto_stop, True)
+    first_auto = output.read_bytes(), budget_path.read_bytes()
+    auto_records = (work / 'auto.chk').read_text().splitlines()
+    assert auto_records[0].strip() == 'PELEF_EB_TWO_LEVEL_CHECKPOINT_V2'
+    auto_dt = float(auto_records[3].split()[1])
+    assert 0 < auto_dt < 1e-4
+    direct_auto = auto_case.replace('automatic_timestep=.true.', 'automatic_timestep=.false.').replace(
+        'time_step=1.0e-3', f'time_step={auto_dt:.17e}').replace('final_time=1.0e-4', f'final_time={auto_dt:.17e}')
+    run('auto_direct.nml', direct_auto, True)
+    assert first_auto == (output.read_bytes(), budget_path.read_bytes())
+    auto_resume = auto_case.replace('\n/', "\n restart_file='auto.chk',\n/")
+    run('auto_resume.nml', auto_resume, True)
+    assert auto_saved == (output.read_bytes(), budget_path.read_bytes())
+    run('auto_wrong_mode.nml', auto_resume.replace('automatic_timestep=.true.', 'automatic_timestep=.false.'), False)
+    run('auto_wrong_cfl.nml', auto_resume.replace('\n/', '\n hydro_cfl=0.25,\n/'), False)
+    assert auto_saved == (output.read_bytes(), budget_path.read_bytes())
+    # Micrometre geometry makes diffusion dominate; halve only transport CFL
+    # and require the saved first interval to halve as well.
+    diffusion_case = source.replace('plane_position=0.31', 'plane_position=0.31e-6').replace(
+        'chemistry_enabled=.true.', 'chemistry_enabled=.false.').replace('time_step=1.0e-8', 'time_step=1.0e-6')
+    diffusion_case = diffusion_case.replace('\n/', "\n domain_upper=1e-6,1e-6,1e-6, automatic_timestep=.true., "
+                                            "checkpoint_file='diffusion.chk', checkpoint_interval_steps=1, "
+                                            "stop_after_checkpoint=.true.,\n/")
+    log = run('auto_diffusion.nml', diffusion_case, True)
+    assert 'Rejected trials this invocation: 0' in log
+    diffusion_dt = float((work / 'diffusion.chk').read_text().splitlines()[3].split()[1])
+    log = run('auto_diffusion_half.nml', diffusion_case.replace('\n/', '\n transport_cfl=0.175,\n/'), True)
+    assert 'Rejected trials this invocation: 0' in log
+    half_dt = float((work / 'diffusion.chk').read_text().splitlines()[3].split()[1])
+    assert math.isclose(half_dt, diffusion_dt / 2, rel_tol=1e-12)
+    print('PASS: two-level EB application, budgets, restart, retries and automatic hydro/diffusion intervals')
 
 
 if __name__ == '__main__':
