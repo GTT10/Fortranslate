@@ -9,9 +9,10 @@ AMR/EB/MPI applications or claim those features are connected to particles.
 An AMR ownership library now locates parcels in the finest covering regular
 3D patch-tree cell and constructs stable rank-grouped send buffers using a
 caller-supplied owner map. It handles periodic lookup and reassignment after
-regridding while preserving parcel/component state. This is the ownership and
-partition stage; tree MPI migration, gas sampling/deposition and coupled AMR
-particle stepping remain to be connected.
+regridding while preserving parcel/component state. An MPI migration API now
+uses this ownership and the shared parcel exchange to transfer particles to
+their gas patch owners. Tree gas sampling/deposition and coupled AMR particle
+stepping remain to be connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -28,6 +29,18 @@ values on validation failure. Empty populations/ranks are supported. Coordinates
 follow the existing spray bound of magnitude at most 1e9 m; root spacings are
 between 1e-12 and 1e9 m, and integer level domains are limited to 2^52 cells per
 axis for floating coordinate lookup. This API does not classify EB solids.
+
+With MPI enabled, the tree library exports `migrate_amr_tree_spray_parcels`
+from `spray_mpi_amr_tree_mod`. Every rank supplies the same validated topology,
+owner map, root bounds/spacing and periodic flags; component payload presence
+and count must agree. Input parcel IDs are locally increasing and must be
+globally unique. Received records are sorted by ID, and duplicate IDs arriving
+at one rank reject the transaction. Each rank can set its own receive capacity
+up to one million parcels. Capacity, metadata or received-state validation
+failure leaves all ranks' original parcel/component arrays unchanged. Empty
+populations/ranks, periodic lookup, ownership changes and regrid reassignment
+are supported. This API migrates an already accepted particle population; it
+does not update gas fields, particle trajectories, checkpoint data or EB impacts.
 
 ## Build and run
 

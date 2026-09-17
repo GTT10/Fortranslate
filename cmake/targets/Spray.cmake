@@ -18,7 +18,8 @@ if(PELEF_ENABLE_SPRAY)
       src/les/les_smagorinsky_3d_mod.F90
     )
     if(PELEF_ENABLE_MPI)
-      target_sources(${target} PRIVATE src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90
+      target_sources(${target} PRIVATE src/spray/spray_mpi_exchange_mod.F90
+        src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90
         src/spray/spray_mpi_application_mod.F90)
       target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
     endif()
@@ -43,6 +44,10 @@ if(PELEF_ENABLE_SPRAY)
   pelef_add_spray_runtime(pelef_spray_runtime pelef_core)
   function(pelef_add_spray_tree_runtime target spray_base tree_base)
     add_library(${target} STATIC src/spray/spray_amr_tree_partition_mod.F90)
+    if(PELEF_ENABLE_MPI)
+      target_sources(${target} PRIVATE src/spray/spray_mpi_amr_tree_mod.F90)
+      target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
+    endif()
     set_target_properties(${target} PROPERTIES
       Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}_modules")
     target_include_directories(${target} PUBLIC
