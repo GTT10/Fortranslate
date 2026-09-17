@@ -57,8 +57,11 @@ interval now scales open-face conductance by fluid volume and accepts a remote
 diffusivity bound ([evidence](validation/eb-patch-diffusion-cfl-20260917.md)).
 The application now optionally selects a common interval from both grids,
 with donor bounds and mode-aware restart
-([evidence](validation/eb-two-level-auto-dt-20260917.md)); multi-patch, subcycled
-and MPI EB stepping remain open.
+([evidence](validation/eb-two-level-auto-dt-20260917.md)). A library hydro path
+now advances ratio-based fine substeps with coarse-time face donors, accumulated
+fluxes and final reflux ([evidence](validation/eb-subcycle-hydro-20260917.md));
+reaction/transport subcycling, application wiring, multi-patch and MPI EB
+stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
