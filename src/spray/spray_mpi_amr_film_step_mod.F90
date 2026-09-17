@@ -14,6 +14,7 @@ module spray_mpi_amr_film_step_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
+  use eb_geometry_3d_mod, only: eb_geometry_3d
   implicit none
   private
   public :: advance_mpi_amr_film_coupling
@@ -21,8 +22,10 @@ contains
   ! Common film substeps, owner-local gas feedback and whole-interval publication.
   ! All model tables/options are identical across ranks by caller contract.
   subroutine advance_mpi_amr_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
-      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok)
+      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi)
     type(MPI_Comm), intent(in) :: comm
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -50,10 +53,23 @@ contains
     real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,conductivity,tdot,elapsed,dt,local_dt,wall_energy
     real(dp) :: ledger,trial_ledger,global_ledger,controls(3),low(3),high(3)
     integer :: np,nc,nvar,p,c,axis,face,attempt,count_steps,ierr,node,shape3(3)
-    logical :: valid,agreed,accepted
+    logical :: valid,agreed,accepted,eb
+    integer :: flag,lowflag,highflag
+    real(dp) :: probe_offset,wall_temperature
     ok=.false.;substeps=0
+    flag=merge(1,0,present(eb_geometry))+2*merge(1,0,present(nodal_phi))
+    call MPI_Allreduce(flag,lowflag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(flag,highflag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.lowflag/=highflag) return
+    if (flag/=0.and.flag/=3) return
+    eb=flag==3
     valid=allocated(films).and.allocated(film_mass).and.valid_spray_options(options)
-    valid=valid.and.valid_wall_options(wall_options,faces).and.ieee_is_finite(interval)
+    reference_faces=faces
+    if (eb) reference_faces='slip_wall'
+    valid=valid.and.valid_wall_options(wall_options,reference_faces).and.ieee_is_finite(interval)
+    if (eb) valid=valid.and.all(wall_options%temperature==wall_options%temperature(1)).and. &
+      all(faces/='periodic')
     valid=valid.and.interval>=0.and.interval<=1e6_dp.and.size(transport)==size(species)
     call agree()
     if (.not.agreed) return
@@ -83,7 +99,7 @@ contains
     periodic=faces([1,3,5])=='periodic'
     gas=state;temp=temperature;patches=films;masses=film_mass
     ! Validate the tree and closed film positions before any stencil lookup.
-    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid)
+    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid,nodal_phi)
     if (.not.valid) return
     np=size(patches)
     valid=np<=125000
@@ -94,6 +110,14 @@ contains
     minimum_h=spacing*real(domain(:,1),dp)/real(domain(:,size(ratios)),dp)
 
     allocate(positions(3,np),change(nvar,np),rates(nc,np),hv(nc,np),qg(np),qw(np))
+    if (eb) then
+      ! Migration already checks surface position/normal and rank agreement.
+      probe_offset=max(1e-8_dp*minval((upper-lower)/real(shape(nodal_phi)-1,dp)), &
+        128*epsilon(1._dp)*maxval(abs([lower,upper])))
+      do p=1,np
+        positions(:,p)=patches(p)%position+probe_offset*patches(p)%normal
+      end do
+    else
     do p=1,np
       axis=maxloc(abs(patches(p)%normal),dim=1)
       face=2*axis-merge(1,0,patches(p)%normal(axis)>0)
@@ -107,10 +131,11 @@ contains
       ! Probe adjacent fluid cells without moving the exact stationary wall patch.
       positions(:,p)=max(lower+.5_dp*minimum_h,min(upper-.5_dp*minimum_h,patches(p)%position))
     end do
+    end if
     call agree();if (.not.agreed) return
     change=0
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
-      lower,spacing,periodic,valid)
+      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
     if (.not.valid) return
     elapsed=0;ledger=0;count_steps=0
     do while(wall_options%evolve.and.elapsed<interval)
@@ -127,20 +152,25 @@ contains
         field%fields(node)%values(nvar+1,:,:,:)=temp%fields(node)%values(1,:,:,:)
       end do
       call sample_mpi_amr_tree_spray_field(comm,tree,owners,field,nvar+1,positions, &
-        lower,spacing,periodic,samples,valid)
+        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
       if (.not.valid) return
       local_dt=interval-elapsed;rates=0;hv=0;qg=0;qw=0
       do p=1,np
         if (patches(p)%mass<=0) cycle
-        axis=maxloc(abs(patches(p)%normal),dim=1)
-        face=2*axis-merge(1,0,patches(p)%normal(axis)>0)
-        valid=wall_options%enabled(face)
-        if (.not.valid) exit
+        if (eb) then
+          wall_temperature=wall_options%temperature(1)
+        else
+          axis=maxloc(abs(patches(p)%normal),dim=1)
+          face=2*axis-merge(1,0,patches(p)%normal(axis)>0)
+          valid=wall_options%enabled(face)
+          if (.not.valid) exit
+          wall_temperature=wall_options%temperature(face)
+        end if
         call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive,tg,sound,valid)
         if (.not.valid) exit
         conductivity=wall_liquid_conductivity_at_temperature(wall_options,patches(p)%material_id,patches(p)%temperature)
         call mixture_wall_film_rates(patches(p),components,masses(:,p),species,transport,primitive,tg,options, &
-          conductivity,wall_options%temperature(face),rates(:,p),hv(:,p),qg(p),qw(p),tdot,valid)
+          conductivity,wall_temperature,rates(:,p),hv(:,p),qg(p),qw(p),tdot,valid)
         if (.not.valid) exit
         do c=1,nc
           if (rates(c,p)>0.and.masses(c,p)>mixture_trace_fraction*patches(p)%mass) &
@@ -169,7 +199,7 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -185,7 +215,7 @@ contains
     do c=1,nc
       kept_mass(c,:)=pack(masses(c,:),patches%mass>0)
     end do
-    call migrate_mpi_amr_wall_films(comm,tree,owners,kept,kept_mass,lower,spacing,wall_options%maximum_films,valid)
+    call migrate_mpi_amr_wall_films(comm,tree,owners,kept,kept_mass,lower,spacing,wall_options%maximum_films,valid,nodal_phi)
     if (.not.valid) return
     call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
