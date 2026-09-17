@@ -220,8 +220,11 @@ endpoints and accumulated effective fluxes, matching focused serial U/T exactly
 MPI molecular transport now uses ratio-squared substeps and limited-flux
 accumulation; the coupled API selects recursive H/T inside reaction splitting
 ([MPI recursive coupling evidence](validation/mpi-eb-tree-subcycle-full-20260918.md)).
-EB tree MPI application subcycling and scaled automatic intervals, selected-target
-wiring and distributed I/O remain open.
+The MPI application now dispatches recursive steps and mode-bound restart.
+Automatic root intervals scale hydro bounds by cumulative refinement and diffusion
+bounds by its square, with focused scheduled and automatic restart parity
+([MPI subcycled application evidence](validation/mpi-eb-tree-subcycle-application-20260918.md)).
+EB tree selected-target MPI wiring and distributed I/O remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
