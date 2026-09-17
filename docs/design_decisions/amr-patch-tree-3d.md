@@ -910,3 +910,27 @@ It validates only fields at or below that depth and rejects requests beyond it;
 Default calls retain full-tree validation. This permits partial future endpoints
 without placeholder allocation or full-field communication. Numerical level
 stepping and recursive flux accumulation still need to consume these donors.
+
+## MPI single-depth hydro step
+
+`advance_mpi_amr_tree_hydro_level_3d` advances only owned nodes at a selected
+zero-based depth and returns owner-local time-integrated face fluxes. It reuses
+the existing PCM/characteristic-PLM flux kernels, sparse temporal ghost sampler
+and owner-local EOS recovery. Endpoints pack conserved components plus a stored
+temperature guess; they are required for depths above zero and only coarser
+owned fields must be allocated. Stage one/two use their respective fraction
+vectors and retain current same-level peers.
+
+The API follows serial SSPRK2 order: Euler stage one, active temperature recovery,
+Euler stage two, half-initial/half-stage-two combination, then active temperature
+recovery from the first-stage guess. Face integrals use half-dt times each stage
+flux in serial arithmetic order. No averaging down, peer synchronization or
+reflux occurs here; those belong to the enclosing completed level interval.
+Inactive state/temperature fields are preserved and inactive flux slots remain
+unallocated. All result objects commit only after successful collective completion.
+
+Depth, dt/spacing, options and endpoint presence are agreed across ranks. The
+shared ghost sampler checks stage fractions. A disagreement discovered at stage
+two rolls back the complete call. Species coefficient identity remains a caller
+contract. The caller supplies a stable dt; the API does not compute/enforce CFL
+or retry failed steps. Recursive level scheduling remains separate work.

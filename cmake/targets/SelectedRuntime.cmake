@@ -536,6 +536,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_amr_patch_tree_transport_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_chemistry_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_hydro_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_hydro_level_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_thermo_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_flux_peers_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
