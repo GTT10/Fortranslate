@@ -31,6 +31,21 @@ level zero and fine cells at level one. Coordinates are fluid centroids.
 accumulated boundary, wall and chemical contributions. The application checks
 their balance before writing outputs, using a scale with an absolute floor of one.
 
-The current executable is fixed-mechanism and serial. Checkpoint/restart,
-selected-mechanism CLI support, dynamic/multiple patches and MPI are not yet
-connected. [Focused evidence](../../docs/validation/eb-two-level-application-20260917.md).
+## Checkpoint continuation
+
+Set `checkpoint_file` and a positive `checkpoint_interval_steps` to save after
+accepted steps. `stop_after_checkpoint=.true.` stops after the first scheduled
+save and writes the current CSV outputs. Restart by setting `restart_file`;
+`final_time` and `maximum_steps` may increase. Geometry, patch topology, physics,
+chemical integrator and `time_step` must match the saved run.
+
+A single file contains both grids and cumulative budgets. The reader validates
+the complete file before restoring either grid. A failed read leaves existing
+CSV outputs untouched. Checkpoint replacement is staged for validation but is
+not atomic against storage failure. Use distinct paths for inputs, outputs,
+restart source and checkpoint destination.
+[Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
+
+The current executable is fixed-mechanism and serial. Selected-mechanism CLI
+support, dynamic/multiple patches and MPI are not yet connected.
+[Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
