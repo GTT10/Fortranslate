@@ -647,7 +647,10 @@ primitive now migrates AMR particles with collective nodal EB fluid checks
 ([evidence](validation/spray-mpi-eb-tree-20260918.md)). Composite EB particle
 stencils now combine exposed coarse/fine support, physical fluid volumes and
 centroid visibility checks
-([evidence](validation/spray-eb-tree-stencil-20260918.md)). Independent ports,
+([evidence](validation/spray-eb-tree-stencil-20260918.md)). MPI sampling now
+uses these stencils to fetch only requested owner-local field values, with
+collective geometry checks and transactional sample publication
+([evidence](validation/spray-mpi-eb-sample-20260918.md)). Independent ports,
 distributed EB particle evolution, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
