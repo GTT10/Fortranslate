@@ -173,8 +173,13 @@ failure returns zero particle steps and preserves the caller state/diagnostics.
 The wall ledger includes both particle impulses; exterior and chemistry ledgers
 come from the gas operator. All use change-in-system signs. Optional gas
 integrator and subcycling settings pass through to the existing gas solver.
-The particle restrictions above remain. Distributed EB injection/restart and
-application integration remain open. See
+The particle restrictions above remain. Fixed and selected MPI EB spray
+executables now connect initial mixed-liquid cone injection, coupled evolution,
+combined gas/particle budgets and per-rank particle CSV output. See the
+[example and controls](../cases/mpi_eb_spray_3d/README.md) and
+[application evidence](validation/spray-mpi-eb-application-20260918.md).
+Timed events, checkpoint/restart, regridding and rebalancing remain open for
+this executable connection. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or

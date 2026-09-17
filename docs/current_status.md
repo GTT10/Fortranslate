@@ -659,8 +659,12 @@ conservative gas feedback and final owner migration with whole-interval rollback
 ([evidence](validation/spray-mpi-eb-step-20260918.md)). A distributed EB gas/spray
 split now combines particle half-steps with MPI reaction/transport/hydro and
 commits state and global ledgers atomically
-([evidence](validation/spray-mpi-eb-reactive-20260918.md)). Independent ports,
-distributed EB application integration, liquid wall impacts, lateral film transport and
+([evidence](validation/spray-mpi-eb-reactive-20260918.md)). Fixed/selected MPI EB
+spray executables now connect initial mixed-liquid injection, coupled stepping,
+combined budgets and per-rank particle output
+([evidence](validation/spray-mpi-eb-application-20260918.md)). Timed injection,
+restart/regridding/rebalancing in this EB spray application, independent ports,
+liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
