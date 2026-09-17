@@ -15,6 +15,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--multiport', action='store_true')
 p.add_argument('--adaptive', action='store_true')
+p.add_argument('--rebalance', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -43,6 +44,9 @@ if a.adaptive:
     spray = spray.replace(f"regrid_time=1.e-8,regrid_topology='{case / 'root.dat'}'",
         'adaptation_interval=1,refinement_levels=1,refinement_ratios=2,\n'
         ' temperature_thresholds=1005.,tile_shape=1,1,1,tag_buffer=0,maximum_nodes=100')
+
+if a.rebalance:
+    spray = spray.replace('\n/\n', '\n rebalance_interval=1,rebalance_minimum_gain=0.\n/\n')
 
 
 def run(name, ranks, controls, good=True, changed=False):
@@ -102,6 +106,8 @@ if a.adaptive:
     assert 'Adaptation check step: 1 ' in full_log
     assert 'Adaptation check step: 1 ' not in resumed_log
     assert 'Adaptation check step: 2 ' in resumed_log
+if a.rebalance:
+    assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
 # A complete marker with a truncated particle payload must fail before CSV output.
 for suffix in ('', '.gas', '.particles'):

@@ -98,7 +98,23 @@ adaptation and `regrid_time` are mutually exclusive. Adaptation occurs before
 injection and saving at a shared step/time. On restart, the saved topology is
 restored and the saved step's adaptation check is not repeated. The next due
 completed step resumes checking; adaptation controls bind the checkpoint context.
-This does not perform measured-work load balancing or particle-density tagging.
+This does not perform particle-density tagging.
+
+Set `rebalance_interval` to a positive number of accepted gas steps to sample
+existing per-patch gas work timers on those steps. `rebalance_minimum_gain`
+(default 0.1) is the required fractional reduction in estimated peak rank work.
+The driver resets timing on each retry and uses only the accepted attempt.
+Ownership changes commit gas and particle migration together; receive-capacity
+failure preserves their prior ownership/state. Rebalancing runs after the step,
+before the next adaptation/injection/checkpoint processing. It preserves the
+geometry and does not interpolate gas fields.
+
+The measured cost covers instrumented gas operators, not particle exchange,
+particle models or all MPI communication. Timing-dependent owner maps are not
+promised to repeat exactly between runs. Checkpoints remain rank-neutral;
+restart starts with round-robin owners and resumes measurements on the next
+due step. These controls bind the checkpoint context. A zero interval disables
+measurement/rebalancing. This functionality is not scaling qualification.
 
 Each step calls particle half / reaction-transport-hydro / particle half,
 retrying rejected whole steps at half the interval. Gas CSV contains exposed
@@ -116,7 +132,7 @@ integrator are printed by the selected frontend.
 The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This initial executable supports periodic
 boundaries, initial or scheduled multiport injection and one optional prescribed
-regrid or temperature-driven adaptation. Measured-work rebalancing, wall
+regrid or temperature-driven adaptation, and gas-work-based rebalancing. Wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.
 

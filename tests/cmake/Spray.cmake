@@ -21,6 +21,11 @@ if(PELEF_ENABLE_SPRAY)
   add_test(NAME spray_amr_tree_partition COMMAND test_spray_amr_tree_partition)
   set_tests_properties(spray_amr_tree_partition PROPERTIES LABELS "spray;amr" TIMEOUT 30)
   if(PELEF_ENABLE_MPI)
+    add_test(NAME spray_mpi_amr_rebalance_application
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_rebalance_application" --multiport --adaptive --rebalance)
+    set_tests_properties(spray_mpi_amr_rebalance_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_adaptation
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
@@ -41,6 +46,11 @@ if(PELEF_ENABLE_SPRAY)
         --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
         --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_application")
     set_tests_properties(spray_mpi_amr_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
+    add_executable(test_spray_mpi_amr_balance spray/test_spray_mpi_amr_balance.F90)
+    target_link_libraries(test_spray_mpi_amr_balance PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
+    if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(test_spray_mpi_amr_balance PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+    endif()
     add_executable(test_spray_mpi_amr_remap spray/test_spray_mpi_amr_remap.F90)
     target_link_libraries(test_spray_mpi_amr_remap PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
@@ -79,6 +89,10 @@ if(PELEF_ENABLE_SPRAY)
     add_executable(test_spray_mpi spray/test_spray_mpi.F90)
     target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
     foreach(ranks 2 4)
+      add_test(NAME spray_mpi_amr_balance_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_amr_balance> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(spray_mpi_amr_balance_${ranks} PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 60 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_amr_remap_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_amr_remap> ${MPIEXEC_POSTFLAGS})

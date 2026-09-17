@@ -21,6 +21,8 @@ module spray_mpi_amr_application_mod
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
   use amr_patch_tree_checkpoint_3d_mod, only: build_amr_tree_checkpoint_context_3d
   use spray_mpi_amr_checkpoint_mod, only: mpi_amr_spray_checkpoint
+  use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
+  use mpi_amr_tree_work_mod, only: begin_tree_work,end_tree_work
   use spray_parcel_mod
   use spray_mpi_mod, only: inject_mpi_cone_parcels
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
@@ -62,7 +64,10 @@ contains
     integer :: rank,nranks,ierr,unit,ios,node,n(3),i,p,nv,step,attempt,particle_steps,number
     integer :: component_count,parcel_count,maximum_parcels
     integer :: adaptation_interval,refinement_levels,refinement_ratios(16),tile_shape(3),tag_buffer,maximum_nodes
-    integer :: last_adaptation_step
+    integer :: last_adaptation_step,rebalance_interval
+    real(dp) :: rebalance_minimum_gain
+    real(dp), allocatable :: measured_cost(:)
+    logical :: sample_work,redistributed
     real(dp) :: temperature_thresholds(16)
     integer, parameter :: maximum_events=1024
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
@@ -88,7 +93,8 @@ contains
       maximum_parcels,options,subcycling,regrid_time,regrid_topology, &
       injection_events,injection_times,event_parcels,event_mass,event_ports,port_count,port_centers,port_axes, &
       port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles, &
-      adaptation_interval,refinement_levels,refinement_ratios,tile_shape,tag_buffer,maximum_nodes,temperature_thresholds
+      adaptation_interval,refinement_levels,refinement_ratios,tile_shape,tag_buffer,maximum_nodes,temperature_thresholds, &
+      rebalance_interval,rebalance_minimum_gain
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
@@ -100,6 +106,7 @@ contains
     parcel_count=1;total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp]
     speed=10;half_angle=0;diameter=1e-5_dp;drop_temperature=350;maximum_parcels=100000
     subcycling=.false.;regrid_time=-1;regrid_topology='';regridded=.false.
+    rebalance_interval=0;rebalance_minimum_gain=.1_dp
     adaptation_interval=0;refinement_levels=1;refinement_ratios=2;tile_shape=4;tag_buffer=1;maximum_nodes=4096
     temperature_thresholds=1200;last_adaptation_step=0
     injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
@@ -132,6 +139,8 @@ contains
     if (component_count<1.or.component_count>16) call fatal('Invalid liquid component count')
     if (.not.ieee_is_finite(regrid_time)) call fatal('Invalid regrid time')
     if ((regrid_time>=0).neqv.(len_trim(regrid_topology)>0)) call fatal('Regrid needs time and topology')
+    if (rebalance_interval<0.or..not.ieee_is_finite(rebalance_minimum_gain)) call fatal('Invalid rebalance controls')
+    if (rebalance_minimum_gain<0.or.rebalance_minimum_gain>=1) call fatal('Invalid rebalance minimum gain')
     if (adaptation_interval<0) call fatal('Invalid adaptation interval')
     if (adaptation_interval>0) then
       if (regrid_time>=0) call fatal('Automatic adaptation cannot use a prescribed regrid')
@@ -310,8 +319,14 @@ contains
         if (.not.ok) call fatal('Transport timestep failed')
         dt=min(dt,transport_dt)
       end if
+      sample_work=.false.
+      if (rebalance_interval>0) sample_work=mod(step+1,rebalance_interval)==0
       do attempt=1,20
         if (time+dt<=time) call fatal('Timestep cannot advance time')
+        if (sample_work) then
+          call begin_tree_work(size(tree%nodes),ok)
+          if (.not.ok) call fatal('Cannot start gas work sampling')
+        end if
         correction=0;theta=1
         call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
           state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -321,6 +336,7 @@ contains
           config%transport_enabled.and.config%barodiffusion_enabled, &
           config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
           ok,last_id,chemistry_integrator,subcycling)
+        if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
       end do
@@ -331,6 +347,12 @@ contains
         time=time+dt
       end if
       step=step+1
+      if (sample_work) then
+        call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
+          [.true.,.true.,.true.],measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
+        if (.not.ok) call fatal('Coupled gas/particle rebalance failed')
+        if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' Migrated: ',redistributed
+      end if
     end do
     call write_mpi_amr_tree_csv_3d(trim(config%output_file),tree,owners,species,state,temperature,lower,spacing,time,comm,ok)
     if (.not.ok) call fatal('Gas CSV output failed')

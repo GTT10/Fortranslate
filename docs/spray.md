@@ -163,7 +163,8 @@ initialize owner-local gas, inject mixed-liquid cones from up to 16 ports at spe
 advance coupled steps with whole-step retries and remap at a prescribed time
 or at step-based temperature-adaptation checks. Gas CSV contains only exposed cells; separate per-rank particle
 CSVs are analysis outputs. See the [case guide](../cases/mpi_amr_spray_3d/README.md)
-for controls and limitations. Measured-work rebalancing and AMR
+for controls and limitations. Gas-work-based rebalancing moves owner-local gas
+and particles together after accepted steps. AMR
 physical-boundary/EB particle handling remain open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
