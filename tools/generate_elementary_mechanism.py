@@ -272,6 +272,7 @@ def validate_species_data(data: dict[str, Any], species: list[str]) -> None:
         if any(
             not isinstance(element, str)
             or not element
+            or any(ord(char) < 32 or ord(char) > 126 for char in element)
             or finite_float(amount, name) <= 0.0
             for element, amount in composition.items()
         ):
@@ -456,7 +457,8 @@ def validate(data: dict[str, Any]) -> None:
         f"{prefix}_duplicate_reactions",
     ]
     if "thermo" in data or "transport" in data:
-        generated_symbols.append(f"{prefix}_chemistry_integrator")
+        generated_symbols.extend((f"{prefix}_chemistry_integrator", f"{prefix}_nelements",
+                                  f"{prefix}_element_names", f"{prefix}_element_atoms"))
     generated_symbols.extend(
         f"{prefix}_{species_symbol_stem(name)}_index" for name in species
     )
@@ -772,6 +774,33 @@ def emit_parameter_array(
         lines.append("    " + ", ".join(chunk) + suffix)
 
 
+def emit_element_metadata(lines: list[str], data: dict[str, Any], prefix: str) -> None:
+    """Publish source element composition, preserving labels and species order."""
+    records = data["thermo"]
+    elements = sorted({element for record in records for element in record["composition"]})
+    width = max(map(len, elements))
+    lines.extend([
+        f"  integer, parameter, public :: {prefix}_nelements = {len(elements)}",
+        f"  character(len={width}), parameter, public :: &",
+        f"    {prefix}_element_names({len(elements)}) = [ character(len={width}) :: &",
+    ])
+    for index, element in enumerate(elements):
+        chunks = [element[offset:offset + 40] for offset in range(0, len(element), 40)]
+        for chunk_index, chunk in enumerate(chunks):
+            literal = "'" + chunk.replace("'", "''") + "'"
+            suffix = " // &" if chunk_index + 1 < len(chunks) else (", &" if index + 1 < len(elements) else " ]")
+            lines.append("      " + literal + suffix)
+    lines.extend([
+        "  real(dp), parameter, public :: &",
+        f"    {prefix}_element_atoms({len(elements)},{len(records)}) = reshape([ &",
+    ])
+    values = [fortran_real(float(record["composition"].get(element, 0.0)))
+              for record in records for element in elements]
+    for offset in range(0, len(values), 2):
+        suffix = ", &" if offset + 2 < len(values) else f" ], [{len(elements)},{len(records)}])"
+        lines.append("      " + ", ".join(values[offset:offset + 2]) + suffix)
+
+
 def generate(data: dict[str, Any]) -> str:
     species: list[str] = data["species"]
     reactions: list[dict[str, Any]] = data["reactions"]
@@ -814,6 +843,8 @@ def generate(data: dict[str, Any]) -> str:
             f"{prefix}_chemistry_integrator",
             data["chemistry_integrator"],
         )
+    if has_species_data:
+        emit_element_metadata(lines, data, prefix)
     source = data.get("source")
     if isinstance(source, dict):
         for name, value in (

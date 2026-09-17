@@ -115,6 +115,40 @@ class GenerateMechanismBundleTest(unittest.TestCase):
             ],
         }
 
+    def test_element_metadata_compiles_and_preserves_species_columns(self):
+        records = [{"composition": composition} for composition in
+                   ({"C": 1, "H": 4}, {"C": 1, "O": 2}, {"Ar": 1})]
+        lines = []
+        generator.emit_element_metadata(lines, {"thermo": records}, "fixture")
+        declarations = "\n".join(lines).replace(", public ::", " ::")
+        program = ("program check_elements\nuse precision_mod, only: dp\nimplicit none\n" + declarations +
+                   "\nif (fixture_nelements/=4) stop 1\n"
+                   "if (any(fixture_element_names/=[character(len=2)::'Ar','C','H','O'])) stop 2\n"
+                   "if (any(fixture_element_atoms(:,1)/=[0._dp,1._dp,4._dp,0._dp])) stop 3\n"
+                   "if (any(fixture_element_atoms(:,2)/=[0._dp,1._dp,0._dp,2._dp])) stop 4\n"
+                   "if (any(fixture_element_atoms(:,3)/=[1._dp,0._dp,0._dp,0._dp])) stop 5\nend program\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "elements.f90"
+            source.write_text(program)
+            compiler = shutil.which("gfortran")
+            self.assertIsNotNone(compiler)
+            result = subprocess.run([compiler, "-std=f2018", f"-J{root}",
+                                     str(PROJECT_ROOT / "src/core/precision_mod.F90"), str(source),
+                                     "-o", str(root / "check")], cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(root / "check")], cwd=root).returncode, 0)
+
+    def test_element_metadata_names_are_safe_and_reserved(self):
+        data = self.bundle()
+        data["loader_name"] = "test_bundle_element_atoms"
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+        data = self.bundle()
+        data["thermo"][0]["composition"] = {"C\nH": 1}
+        with self.assertRaises(ValueError):
+            generator.validate(data)
+
     def test_two_species_bundle_emits_thermo_and_transport_loaders(self):
         data = self.bundle()
         generator.validate(data)

@@ -26,6 +26,7 @@ module reactive_eb_3d_driver_mod
   public :: advance_reactive_eb_strang_3d
   public :: advance_reactive_eb_full_3d
   public :: reactive_eb_integrals_3d
+  public :: reactive_eb_composition_integrals_3d
   public :: reactive_eb_element_integrals_3d
   public :: reactive_eb_element_species_supported_3d
   public :: reactive_eb_extrema_3d
@@ -429,6 +430,42 @@ contains
       ok = ok .and. all(ieee_is_finite(l1_integrals))
     end if
   end subroutine reactive_eb_integrals_3d
+
+  subroutine reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,integrals,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),element_atoms(:,:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(inout) :: integrals(:)
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(integrals)),amount,volume
+    integer :: i,j,k,s,nvar
+    ok=.false.
+    nvar=reactive_nvar(size(species))
+    if (size(integrals)<1.or.size(species)<1.or..not.geometry%is_valid()) return
+    if (any(shape(element_atoms)/=[size(integrals),size(species)])) return
+    if (any(shape(state)/=[nvar,geometry%nx,geometry%ny,geometry%nz])) return
+    if (.not.all(ieee_is_finite(element_atoms)).or.any(element_atoms<0._dp)) return
+    if (any(maxval(element_atoms,dim=1)<=0._dp)) return
+    if (.not.all(ieee_is_finite(species%molecular_weight))) return
+    if (any(species%molecular_weight<=0._dp)) return
+    candidate=0._dp;volume=geometry%dx*geometry%dy*geometry%dz
+    do k=1,geometry%nz
+      do j=1,geometry%ny
+        do i=1,geometry%nx
+          if (geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+          if (.not.all(ieee_is_finite(state(:,i,j,k)))) return
+          do s=1,size(species)
+            amount=state(reactive_species_component(s),i,j,k)
+            if (amount<0._dp) return
+            amount=amount/species(s)%molecular_weight*geometry%volume_fraction(i,j,k)*volume
+            candidate=candidate+element_atoms(:,s)*amount
+          end do
+        end do
+      end do
+    end do
+    if (.not.all(ieee_is_finite(candidate))) return
+    integrals=candidate;ok=.true.
+  end subroutine reactive_eb_composition_integrals_3d
 
   subroutine reactive_eb_element_integrals_3d( &
       species, state, geometry, element_integrals, ok)
