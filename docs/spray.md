@@ -173,6 +173,19 @@ This source API does not yet connect distributed particle impacts, reactive
 composition or the MPI application/checkpoint path. See
 [MPI EB film exchange evidence](validation/spray-mpi-eb-film-step-20260918.md).
 
+`advance_mpi_eb_spray_reactive` now accepts optional `films`, `film_mass` and
+`film_settings` together, plus an optional `film_steps` output. It composes
+particle half / film half / reactive gas / film half / particle half intervals.
+All optional-state presence is agreed across ranks before entering collectives.
+Gas, particles, films, component arrays and diagnostics publish only after the
+entire composition succeeds; wall heat joins the existing gas and particle wall
+ledger. `particle_steps` continues to count only particle substeps, while
+`film_steps` counts both film halves and is zero on failure. Film settings retain
+the uniform-temperature and nonperiodic EB source restrictions above. Parcels
+still reflect specularly: films must be supplied by the caller, and distributed
+impact generation and application persistence remain open. See
+[reactive MPI film evidence](validation/spray-mpi-eb-film-reactive-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
