@@ -672,6 +672,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_eb_tree_checkpoint_read_3d_mod.F90
       src/parallel/mpi_eb_tree_checkpoint_3d_mod.F90
       src/parallel/mpi_eb_tree_csv_3d_mod.F90
+      src/parallel/mpi_eb_tree_initialize_3d_mod.F90
       src/parallel/mpi_eb_tree_transfer_3d_mod.F90
       src/parallel/mpi_eb_tree_halo_3d_mod.F90
       src/parallel/mpi_eb_tree_flux_3d_mod.F90

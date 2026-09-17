@@ -1,11 +1,12 @@
 program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
   use mpi_f08
+  use mpi_eb_tree_initialize_3d_mod, only: initialize_mpi_eb_tree_3d
   use mpi_eb_tree_checkpoint_read_3d_mod, only: read_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
@@ -263,15 +264,20 @@ program pelef_reactive_eb_tree_3d
   root_config=config;root_config%nx=n(1);root_config%ny=n(2);root_config%nz=n(3)
   call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok,base_mole_fractions)
   if (.not.ok) error stop 'Initial state failed'
+#ifdef PELEF_MPI_EB_TREE
+  call initialize_owned()
+  call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,mpi_state,current,MPI_COMM_WORLD,ok)
+#else
   call initialize_reactive_eb_tree_3d(species,topology,geometry_levels(topology%level_count()),u,t,tree,ok)
   if (.not.ok) error stop 'Tree initialization failed'
   call integrate_reactive_eb_tree_3d(tree,current,ok)
+#endif
   if (.not.ok) error stop 'Initial inventory failed'
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
 #ifdef PELEF_MPI_EB_TREE
-  if (.not.distributed) call distribute_initial()
+  deallocate(u,t)
 #endif
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
@@ -361,39 +367,21 @@ program pelef_reactive_eb_tree_3d
 #endif
 contains
 #ifdef PELEF_MPI_EB_TREE
-  subroutine distribute_initial()
-    type(amr_tree_state_3d) :: global,gt
-    integer :: p,dims(3)
+  subroutine initialize_owned()
+    integer :: p
     logical :: valid
     call partition_amr_tree_3d(topology,mpi_size,0,mpi_owners,valid)
     if (.not.valid) error stop 'MPI tree partition failed'
-    allocate(mpi_geometry(size(tree%nodes)))
+    call initialize_mpi_eb_tree_3d(species,topology,mpi_owners,geometry_levels(topology%level_count()),u,t, &
+      mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
+    if (.not.valid) error stop 'MPI tree initialization failed'
+    tree%topology=topology
+    if (allocated(tree%nodes)) deallocate(tree%nodes)
+    allocate(tree%nodes(size(topology%nodes)))
     do p=1,size(tree%nodes)
-      mpi_geometry(p)=tree%nodes(p)%geometry
+      tree%nodes(p)%geometry=mpi_geometry(p)
     end do
-    if (mpi_rank==0) then
-      allocate(global%fields(size(tree%nodes)),gt%fields(size(tree%nodes)))
-      do p=1,size(tree%nodes)
-        dims=topology%nodes(p)%shape
-        global%fields(p)%values=tree%nodes(p)%state
-        allocate(gt%fields(p)%values(1,dims(1),dims(2),dims(3)))
-        gt%fields(p)%values(1,:,:,:)=tree%nodes(p)%temperature
-      end do
-    end if
-    call scatter_mpi_amr_tree_3d(topology,mpi_owners,global,mpi_state,MPI_COMM_WORLD,0,valid)
-    if (.not.valid) error stop 'MPI state scatter failed'
-    call scatter_mpi_amr_tree_3d(topology,mpi_owners,gt,mpi_temperature,MPI_COMM_WORLD,0,valid)
-    if (.not.valid) error stop 'MPI temperature scatter failed'
-    call release_tree_values()
-    deallocate(u,t)
     distributed=.true.
-  end subroutine
-  subroutine release_tree_values()
-    integer :: p
-    do p=1,size(tree%nodes)
-      if (allocated(tree%nodes(p)%state)) deallocate(tree%nodes(p)%state)
-      if (allocated(tree%nodes(p)%temperature)) deallocate(tree%nodes(p)%temperature)
-    end do
   end subroutine
 #endif
   subroutine make_layout(number,parents,refinement,lo,hi,result)
@@ -424,6 +412,11 @@ contains
 #ifdef PELEF_MPI_EB_TREE
     integer, allocatable :: next_owners(:)
     integer :: p
+    if (.not.remapping) then
+      topology=layouts(stage);regrid_stage=stage
+      call initialize_owned()
+      return
+    end if
     if (distributed.and.remapping) then
       level=max(topology%level_count(),layouts(stage)%level_count())
       call partition_amr_tree_3d(layouts(stage),mpi_size,0,next_owners,valid)
@@ -729,7 +722,6 @@ contains
     if (ios/=0) error stop 'Cannot open restart'
 #ifdef PELEF_MPI_EB_TREE
     call envelope(unit,.true.,header_only=.true.)
-    call distribute_initial()
     call read_mpi_eb_tree_checkpoint_3d(trim(restart_file),unit,species,reactions,transport,config,topology,mpi_owners, &
       mpi_geometry,mpi_state,mpi_temperature,record,MPI_COMM_WORLD,ok, &
       bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
