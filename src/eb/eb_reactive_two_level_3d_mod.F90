@@ -14,6 +14,7 @@ module eb_reactive_two_level_3d_mod
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   implicit none
   private
+  public :: advance_reactive_eb_two_level_subcycled_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_euler_3d
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
   public :: advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_full_3d
@@ -234,6 +235,25 @@ contains
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
   end subroutine advance_reactive_eb_two_level_transport_3d
 
+  ! Diffusive refinement uses ratio squared fine steps per coarse interval.
+  subroutine advance_reactive_eb_two_level_subcycled_transport_3d(species,transport,coarse,fine,lower,ratio,dt, &
+      viscosity,conduction,diffusion,barodiffusion,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+      boundary_change,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: coarse,fine
+    integer, intent(in) :: lower(3),ratio
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),fine_state(:,:,:,:),fine_temperature(:,:,:)
+    real(dp), intent(inout) :: boundary_change(:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp) :: wall(size(boundary_change))
+    call advance_two_level_euler(species,coarse,fine,lower,ratio,'rusanov',dt, &
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle=.true.)
+  end subroutine advance_reactive_eb_two_level_subcycled_transport_3d
+
   subroutine advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
@@ -249,7 +269,7 @@ contains
     logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
     real(dp), optional, intent(inout) :: minimum_theta
     logical, optional, intent(in) :: subcycle
-    real(dp) :: coarse_theta,fine_theta,sub_dt,elapsed,fraction
+    real(dp) :: coarse_theta,fine_theta,step_theta,sub_dt,elapsed,fraction
     integer :: substeps,substep,i,j,k
     real(dp), allocatable :: donor(:,:,:,:),donor_t(:,:,:),next_child(:,:,:,:),next_t(:,:,:)
     real(dp), allocatable :: sub_wall(:,:,:,:),fine_wall_change(:)
@@ -266,10 +286,16 @@ contains
     logical :: valid
     ok=.false.
     substeps=1
+    if (ratio<1) return
     if (present(subcycle)) then
-      if (subcycle) substeps=ratio
+      if (subcycle) then
+        substeps=ratio
+        if (present(transport)) then
+          if (ratio>huge(ratio)/ratio) return
+          substeps=ratio*ratio
+        end if
+      end if
     end if
-    if (present(transport).and.substeps/=1) return
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0._dp.or.ratio<1) return
     if (.not.coarse%is_valid().or..not.fine%is_valid()) return
@@ -301,22 +327,25 @@ contains
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,coarse,dt,viscosity,conduction, &
         diffusion,barodiffusion,candidate,temps,coarse_flux,coarse_theta,valid)
       if (.not.valid) return
-      call advance_reactive_eb_transport_patch_euler_3d(species,transport,fine,dt,viscosity,conduction, &
-        diffusion,barodiffusion,child,child_t,fine_flux,fine_theta,valid,ghost,ghost_t,faces)
-      if (.not.valid) return
     else
-    call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
-      integrated_flux=coarse_flux)
-    if (.not.valid) return
+      call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
+        integrated_flux=coarse_flux)
+      if (.not.valid) return
+    end if
     if (substeps==1) then
-      call advance_reactive_eb_euler_3d(species,fine_state,fine_temperature,fine,solver,dt,child,child_t,valid, &
-        ghost,ghost_t,fine_flux)
+      if (present(transport)) then
+        call advance_reactive_eb_transport_patch_euler_3d(species,transport,fine,dt,viscosity,conduction, &
+          diffusion,barodiffusion,child,child_t,fine_flux,fine_theta,valid,ghost,ghost_t,faces)
+      else
+        call advance_reactive_eb_euler_3d(species,fine_state,fine_temperature,fine,solver,dt,child,child_t,valid, &
+          ghost,ghost_t,fine_flux)
+      end if
       if (.not.valid) return
     else
       allocate(donor,source=initial);allocate(donor_t,source=initial_t)
       allocate(next_child,source=child);allocate(next_t,source=child_t)
       allocate(sub_wall(nvar,nf(1),nf(2),nf(3)),fine_wall_change(nvar))
-      fine_wall_change=0._dp;elapsed=0._dp
+      fine_wall_change=0._dp;elapsed=0._dp;fine_theta=1._dp
       do substep=1,substeps
         sub_dt=dt/real(substeps,dp)
         if (substep==substeps) sub_dt=dt-elapsed
@@ -338,15 +367,23 @@ contains
             child,child_t,ghost,ghost_t,valid)
           if (.not.valid) return
         end if
-        call reactive_eb_slip_wall_source_3d(species,child,child_t,fine,sub_wall,valid)
-        if (.not.valid) return
-        do c=1,nvar
-          fine_wall_change(c)=fine_wall_change(c)+sub_dt*fine%dx*fine%dy*fine%dz* &
-            sum(sub_wall(c,:,:,:)*fine%volume_fraction)
-        end do
-        call advance_reactive_eb_euler_3d(species,child,child_t,fine,solver,sub_dt,next_child,next_t,valid, &
-          ghost,ghost_t,sub_flux)
-        if (.not.valid) return
+        if (present(transport)) then
+          next_child=child;next_t=child_t
+          call advance_reactive_eb_transport_patch_euler_3d(species,transport,fine,sub_dt,viscosity,conduction, &
+            diffusion,barodiffusion,next_child,next_t,sub_flux,step_theta,valid,ghost,ghost_t,faces)
+          if (.not.valid) return
+          fine_theta=min(fine_theta,step_theta)
+        else
+          call reactive_eb_slip_wall_source_3d(species,child,child_t,fine,sub_wall,valid)
+          if (.not.valid) return
+          do c=1,nvar
+            fine_wall_change(c)=fine_wall_change(c)+sub_dt*fine%dx*fine%dy*fine%dz* &
+              sum(sub_wall(c,:,:,:)*fine%volume_fraction)
+          end do
+          call advance_reactive_eb_euler_3d(species,child,child_t,fine,solver,sub_dt,next_child,next_t,valid, &
+            ghost,ghost_t,sub_flux)
+          if (.not.valid) return
+        end if
         child=next_child;child_t=next_t
         if (substep==1) then
           fine_flux=sub_flux
@@ -357,7 +394,6 @@ contains
         end if
         elapsed=elapsed+sub_dt
       end do
-    end if
     end if
     call restrict_eb_integrated_flux_3d(fine,ratio,fine_flux,patch_flux,valid)
     if (.not.valid) return

@@ -7,7 +7,8 @@ program test_eb_two_level_transport_3d
     reactive_conserved_to_primitive,reactive_mass_fraction_component
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_transport_3d
+  use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_transport_3d, &
+    advance_reactive_eb_two_level_subcycled_transport_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -19,9 +20,10 @@ program test_eb_two_level_transport_3d
   type(reactive_eb_3d_config) :: config
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),uf(:,:,:,:),tf(:,:,:),sc(:,:,:,:),stc(:,:,:),sf(:,:,:,:),stf(:,:,:)
   real(dp), allocatable :: boundary(:),wall(:),before(:),after(:),saved_b(:),saved_w(:)
+  procedure(advance_reactive_eb_two_level_transport_3d), pointer :: advance
   logical :: refined(4,4,4),ok
-  integer :: ratio,mode,n,nvar,lo(3),hi(3),step,c,i,j,k,fl(3),fh(3)
-  real(dp) :: coarse_amount,fine_amount
+  integer :: scheme,ratio,mode,n,nvar,lo(3),hi(3),step,c,i,j,k,fl(3),fh(3)
+  real(dp) :: coarse_amount,fine_amount,interval,reference_theta
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok)
@@ -38,6 +40,13 @@ program test_eb_two_level_transport_3d
     call require(ok,'full fine geometry')
     call coarsen_eb_geometry_3d(full,ratio,coarse,ok)
     call require(ok,'coarse geometry')
+    do scheme=1,2
+    advance=>advance_reactive_eb_two_level_transport_3d
+    interval=1.e-8_dp
+    if (scheme==2) then
+      advance=>advance_reactive_eb_two_level_subcycled_transport_3d
+      interval=1.e-5_dp
+    end if
     do mode=1,2
       lo=2
       if(mode==2) lo=1
@@ -72,7 +81,7 @@ program test_eb_two_level_transport_3d
       do step=1,3
         call inventory(before)
         sc=uc;stc=tc;sf=uf;stf=tf
-        call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lo,ratio,1.e-8_dp, &
+        call advance(species,transport,coarse,fine,lo,ratio,interval, &
           .true.,.true.,.true.,.true.,uc,tc,uf,tf,boundary,theta,ok)
         call require(ok,'synchronized two-level transport step')
         call inventory(after)
@@ -96,27 +105,34 @@ program test_eb_two_level_transport_3d
         end do
         call require(all(tc>0._dp).and.all(tf>0._dp),'positive temperatures')
         call require(maxval(abs(uf-sf))>1.e-12_dp,'fine evolution nonzero')
+        if (scheme==2.and.step==1) then
+          call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lo,ratio,interval, &
+            .true.,.true.,.true.,.true.,sc,stc,sf,stf,saved_b,reference_theta,ok)
+          call require(ok,'common-step transport reference')
+          call require(maxval(abs(uf-sf))>1.e-12_dp,'subcycled transport differs from one fine Euler step')
+        end if
         call require(theta>=0._dp.and.theta<=1._dp,'valid transport limiter')
         call require(all(boundary==0._dp),'closed physical transport boundary')
         call require(all(uc(:,:,:,1)==sc(:,:,:,1)).and.all(tc(:,:,1)==stc(:,:,1)), &
           'covered coarse storage unchanged')
       end do
       sc=uc;stc=tc;sf=uf;stf=tf;saved_b=boundary;saved_w=wall;saved_theta=theta
-      call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lo,ratio,1.e8_dp, &
+      call advance(species,transport,coarse,fine,lo,ratio,1.e8_dp, &
         .true.,.true.,.true.,.true.,uc,tc,uf,tf,boundary,theta,ok)
       call require(.not.ok,'nonphysical large step rejected')
       call unchanged()
       call build_axis_plane_eb_geometry_3d(n,n,n,fine%x_lower,fine%x_upper,fine%y_lower,fine%y_upper, &
         fine%z_lower,fine%z_upper,'z',.311_dp,bad,ok)
       call require(ok,'valid but inconsistent fine geometry')
-      call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,bad,lo,ratio,1.e-8_dp, &
+      call advance(species,transport,coarse,bad,lo,ratio,1.e-8_dp, &
         .true.,.true.,.true.,.true.,uc,tc,uf,tf,boundary,theta,ok)
       call require(.not.ok,'coarse fine geometry mismatch rejected')
       call unchanged()
-      call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lo,0,1.e-8_dp, &
+      call advance(species,transport,coarse,fine,lo,0,1.e-8_dp, &
         .true.,.true.,.true.,.true.,uc,tc,uf,tf,boundary,theta,ok)
       call require(.not.ok,'invalid ratio rejected')
       call unchanged()
+    end do
     end do
     deallocate(uf,tf,sf,stf)
   end do
