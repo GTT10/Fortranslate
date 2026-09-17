@@ -1,6 +1,7 @@
 program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
   use mpi_f08
+  use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
@@ -779,9 +780,11 @@ contains
     integer :: i,j,k,c,child,lo(3),hi(3)
     logical, allocatable :: exposed(:,:,:)
 #ifdef PELEF_MPI_EB_TREE
-    call collect_root()
+    call write_mpi_eb_tree_csv_3d(trim(output_file),topology,mpi_owners,species,mpi_state,mpi_temperature, &
+      mpi_geometry,MPI_COMM_WORLD,ok)
+    if (.not.ok) error stop 'MPI CSV write failed'
     if (mpi_rank/=0) return
-#endif
+#else
     open(newunit=unit,file=trim(output_file),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open CSV'
     write(unit,'(a)',advance='no') 'node,level,i,j,k,fluid_volume,temperature,rho,rhou,rhov,rhow,rhoE'
@@ -815,6 +818,7 @@ contains
     end do
     close(unit,iostat=ios)
     if (ios/=0) error stop 'CSV close failed'
+#endif
     open(newunit=unit,file=trim(budget_path),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open budget CSV'
     write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,residual'
