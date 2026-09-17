@@ -47,6 +47,7 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_eb_drift_mod.F90
       src/spray/spray_eb_field_mod.F90
       src/spray/spray_eb_step_mod.F90
+      src/spray/spray_eb_reactive_mod.F90
       src/spray/spray_amr_tree_partition_mod.F90
       src/spray/spray_amr_tree_coupling_mod.F90)
     if(PELEF_ENABLE_MPI)
@@ -84,6 +85,7 @@ if(PELEF_ENABLE_SPRAY)
     pelef_add_spray_runtime(pelef_selected_spray_runtime pelef_selected_reactive_3d_runtime)
     pelef_add_spray_tree_runtime(pelef_selected_spray_tree_runtime
       pelef_selected_spray_runtime pelef_selected_amr_tree_reactive_3d_runtime)
+    target_link_libraries(pelef_selected_spray_tree_runtime PUBLIC pelef_selected_reactive_eb_3d_runtime)
   endif()
   file(SHA256 "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json" PELEF_SPRAY_FIXED_SHA256)
   configure_file(app/pelef_spray_3d.F90.in "${CMAKE_CURRENT_BINARY_DIR}/pelef_spray_3d.F90" @ONLY)

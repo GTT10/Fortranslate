@@ -77,8 +77,22 @@ interval publishes gas, temperature, parcels, component masses and wall ledger
 together. Failed intervals return zero substeps and preserve other outputs.
 The API retains zero-mass records, bounds the population to 125000 and rejects
 KH child creation. Each drift allows at most 32 contacts and requires trial
-endpoints within the root domain. Gas transport/chemistry stepping, exterior
-boundary events, liquid wall films and MPI/AMR evolution remain separate work.
+endpoints within the root domain. Exterior boundary events, liquid wall films
+and MPI/AMR evolution remain separate work.
+
+`spray_eb_reactive_mod` adds `advance_eb_spray_reactive`: a particle half-interval,
+the existing `advance_reactive_eb_full_3d` gas update, then a second particle
+half-interval. It passes gas solver, redistribution, chemistry integrator and
+molecular-transport controls to the existing EB operator. Particle exchange
+remains first order; the symmetric outer composition alone does not establish
+second-order accuracy. All fields, component masses and diagnostics publish
+together only after both particle halves and the gas step succeed. Returned
+ledgers separate exterior boundary exchange, combined gas/particle EB wall
+exchange, and gas chemistry; each uses the change-in-system sign convention.
+`particle_steps` counts both accepted particle halves and is zero on failure.
+The caller must select a stable gas timestep; this wrapper does not retry or
+adapt gas timesteps. It is a serial single-grid library composition, not yet
+an application with injection/restart or distributed EB particle ownership.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

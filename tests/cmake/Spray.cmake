@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_executable(test_spray_eb_reactive spray/test_spray_eb_reactive.F90)
+  target_link_libraries(test_spray_eb_reactive PRIVATE pelef_spray_tree_runtime)
+  add_test(NAME spray_eb_reactive COMMAND test_spray_eb_reactive)
+  set_tests_properties(spray_eb_reactive PROPERTIES LABELS "spray;eb" TIMEOUT 30)
   add_executable(test_spray_eb_step spray/test_spray_eb_step.F90)
   target_link_libraries(test_spray_eb_step PRIVATE pelef_spray_tree_runtime)
   add_test(NAME spray_eb_step COMMAND test_spray_eb_step)
