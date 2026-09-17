@@ -117,6 +117,19 @@ sampling, deposition, time integration or restart. The replicated geometry is
 bounded to one million finest cells; full-field agreement is not a scalable
 geometry distribution strategy.
 
+`spray_eb_tree_stencil_mod` now provides `eb_tree_spray_stencil` for composite
+AMR support. It takes topology, one geometry per node and the finest root-domain
+nodal field. Existing rectangular-cloud overlap supplies exposed coarse/fine
+cells; their weights and physical volumes are multiplied by fluid volume
+fraction. A segment query from the particle to each fluid centroid removes
+support hidden behind solid geometry. Remaining weights are normalized and
+zero-weight entries removed. Solid particles, inconsistent physical patch bounds
+or an empty visible support fail without changing caller arrays. This is a
+volume-fraction-weighted, centroid-visibility approximation, not exact cloud/EB
+intersection or a linear-exact coarse/fine interpolant. The field and node
+metrics must come from the same EB hierarchy. The stencil alone does not sample,
+deposit, redistribute small-cell sources or perform MPI field exchange.
+
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
 `locate_amr_tree_spray_cells` and `partition_amr_tree_spray_parcels` from

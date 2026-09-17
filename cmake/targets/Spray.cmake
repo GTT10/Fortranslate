@@ -50,7 +50,8 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_eb_reactive_mod.F90
       src/spray/spray_eb_application_mod.F90
       src/spray/spray_amr_tree_partition_mod.F90
-      src/spray/spray_amr_tree_coupling_mod.F90)
+      src/spray/spray_amr_tree_coupling_mod.F90
+      src/spray/spray_eb_tree_stencil_mod.F90)
     if(PELEF_ENABLE_MPI)
       target_sources(${target} PRIVATE src/spray/spray_mpi_amr_tree_mod.F90
         src/spray/spray_mpi_amr_film_mod.F90
