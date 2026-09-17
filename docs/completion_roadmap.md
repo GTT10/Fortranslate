@@ -124,7 +124,8 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-distributed level stepping, EOS recovery and coarse-time endpoints. Parent flux
+distributed level stepping and coarse-time endpoints. Owner-local EOS recovery
+and global minimum CFL selection are implemented. Parent flux
 averaging, conservative cell correction, physical boundary accounting and depth-limited
 distributed reflux are connected. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical

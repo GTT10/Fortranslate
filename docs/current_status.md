@@ -57,7 +57,9 @@ and prioritizes fine-replaced values ([evidence](validation/amr-tree-mpi-flux-pe
 Distributed reflux now connects parent face averaging, uncovered-cell correction,
 physical boundary accounting and bottom-up state restriction, including depth-limited
 intervals ([evidence](validation/amr-tree-mpi-reflux-20260917.md)).
-MPI coarse-time interpolation, EOS recovery and tree evolution remain open. A transactional tree
+Owner-local temperature recovery and global minimum CFL selection now reuse the
+serial thermodynamic kernels ([evidence](validation/amr-tree-mpi-thermo-20260917.md)).
+MPI coarse-time interpolation and tree evolution remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

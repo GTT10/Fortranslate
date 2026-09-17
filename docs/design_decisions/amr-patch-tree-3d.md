@@ -630,6 +630,29 @@ coarse-time endpoint exchange and application dispatch must still be integrated.
 Per-pair/per-child collective gates and whole-node ownership remain unqualified for
 production scaling; MPI runtime failures follow the communicator error handler.
 
+## MPI temperature recovery and common-step CFL
+
+`recover_mpi_amr_tree_temperatures_3d` delegates every owned patch to the serial
+reactive temperature-recovery kernel. An optional zero-based `depth` selects one
+level; absent or -1 selects all levels. All ranks must agree on the selection.
+Only selected owned temperature arrays are allocated as candidates, and successful
+collective completion replaces them. Conserved input and unselected temperatures
+are unchanged. Any owner recovery/allocation failure preserves all output guesses.
+
+`compute_mpi_amr_tree_cfl_3d` computes each owned patch's serial CFL bound with
+its recursively refined spacing and reduces the minimum across the communicator.
+Empty ranks contribute the largest finite value. Spacing and CFL controls must
+agree across ranks. Invalid inputs or EOS failure preserve the caller's dt.
+This is the synchronous common-step bound, not a subcycle-scaled coarse bound.
+
+Both APIs check replicated geometry/owners/component count, owner-only allocation,
+finite conserved values and positive finite temperature guesses. Species records
+must be identical on all ranks as a caller contract; component-count agreement
+does not verify every thermodynamic coefficient. Partial-depth recovery still
+validates structural and finite-value inputs at all depths. MPI runtime failures
+follow the communicator error handler. These helpers do not advance time or
+connect the MPI tree application.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
