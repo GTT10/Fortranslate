@@ -162,7 +162,20 @@ ledger. The full interval publishes gas, temperature, particles, component masse
 and ledger together. Exhaustion or late migration failure leaves them unchanged.
 EB mode rejects explicit exterior-face settings, wall-film arguments and KH
 child creation; trajectories must stay inside the root domain. This is a particle
-interval, not yet a distributed EB gas/spray split or executable lifecycle.
+interval; the distributed gas/spray wrapper below composes it with gas dynamics.
+
+`spray_mpi_eb_reactive_mod` exports `advance_mpi_eb_spray_reactive`: particle
+half-step, existing MPI EB reaction/transport/hydro step, particle half-step.
+It accepts the same owner-local gas/temperature tree and replicated geometry
+and original nodal field. Gas and particle state, component masses, all three
+global ledgers and the transport limiter publish only after all stages succeed;
+failure returns zero particle steps and preserves the caller state/diagnostics.
+The wall ledger includes both particle impulses; exterior and chemistry ledgers
+come from the gas operator. All use change-in-system signs. Optional gas
+integrator and subcycling settings pass through to the existing gas solver.
+The particle restrictions above remain. Distributed EB injection/restart and
+application integration remain open. See
+[coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
