@@ -7,30 +7,44 @@ module amr_patch_tree_ghost_3d_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
   implicit none
   private
-  public :: fill_amr_patch_tree_ghosts_3d
+  public :: fill_amr_patch_tree_ghosts_3d,sample_amr_patch_tree_ghosts_3d
+  public :: amr_tree_cell_source_3d
+  type, abstract :: amr_tree_cell_source_3d
+  contains
+    procedure(tree_cell_reader), deferred :: read
+  end type
+  type, extends(amr_tree_cell_source_3d) :: serial_tree_source
+    type(amr_tree_state_3d), pointer :: state=>null(),future=>null()
+  contains
+    procedure :: read=>read_serial_cell
+  end type
+  abstract interface
+    subroutine tree_cell_reader(self,node,index,future,value,ok)
+      import dp,amr_tree_cell_source_3d
+      class(amr_tree_cell_source_3d), intent(inout) :: self
+      integer, intent(in) :: node,index(3)
+      logical, intent(in) :: future
+      real(dp), intent(out) :: value(:)
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
 contains
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
       coarse_future,coarse_fractions,coarse_limiter,species_count)
     type(amr_patch_tree_3d), intent(in) :: tree
-    type(amr_tree_state_3d), intent(in) :: state
+    type(amr_tree_state_3d), target, intent(in) :: state
     integer, intent(in) :: node
     character(len=*), intent(in) :: faces(6)
     real(dp), allocatable, intent(inout) :: ghost(:,:,:,:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: viscous_wall
     real(dp), optional, intent(in) :: inflow_state(:,:),wall_velocity(:,:)
-    type(amr_tree_state_3d), optional, intent(in) :: coarse_future
+    type(amr_tree_state_3d), optional, target, intent(in) :: coarse_future
     real(dp), optional, intent(in) :: coarse_fractions(:)
     character(len=*), optional, intent(in) :: coarse_limiter
     integer, optional, intent(in) :: species_count
-    real(dp), allocatable :: candidate(:,:,:,:)
-    integer(int64), allocatable :: origin(:,:),domain(:,:)
-    integer, allocatable :: ratios(:)
-    integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
-    integer :: i,j,k,axis,face,inlet,level,source_level,source,other,nvar,local(3),dims(3)
-    real(dp) :: shift(3),old_momentum(3),rho,fraction
-    logical :: reflect(3),viscous,found,valid
-    integer :: nspecies
+    type(serial_tree_source) :: reader
+    integer :: nvar,other,nspecies
     ok=.false.
     if (.not.state%is_valid(tree)) return
     if (node<1.or.node>size(tree%nodes)) return
@@ -58,6 +72,68 @@ contains
         if (.not.all(ieee_is_finite(coarse_future%fields(other)%values))) return
       end do
     end if
+    reader%state=>state
+    if (present(coarse_future)) reader%future=>coarse_future
+    call sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall, &
+      inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count)
+  end subroutine fill_amr_patch_tree_ghosts_3d
+
+  subroutine read_serial_cell(self,node,index,future,value,ok)
+    class(serial_tree_source), intent(inout) :: self
+    integer, intent(in) :: node,index(3)
+    logical, intent(in) :: future
+    real(dp), intent(out) :: value(:)
+    logical, intent(out) :: ok
+    if (future) then
+      value=self%future%fields(node)%values(:,index(1),index(2),index(3))
+    else
+      value=self%state%fields(node)%values(:,index(1),index(2),index(3))
+    end if
+    ok=.true.
+  end subroutine
+
+  subroutine sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
+      coarse_fractions,coarse_limiter,species_count,planning,validate_only)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: nvar
+    class(amr_tree_cell_source_3d), intent(inout) :: reader
+    logical, optional, intent(in) :: planning,validate_only
+    integer, intent(in) :: node
+    character(len=*), intent(in) :: faces(6)
+    real(dp), allocatable, intent(inout) :: ghost(:,:,:,:)
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: viscous_wall
+    real(dp), optional, intent(in) :: inflow_state(:,:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: coarse_fractions(:)
+    character(len=*), optional, intent(in) :: coarse_limiter
+    integer, optional, intent(in) :: species_count
+    real(dp), allocatable :: candidate(:,:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
+    integer :: i,j,k,axis,face,inlet,level,source_level,source,local(3),dims(3),ios
+    real(dp) :: endpoint(nvar)
+    real(dp) :: shift(3),old_momentum(3),rho,fraction
+    logical :: reflect(3),viscous,found,valid,plan
+    integer :: nspecies
+    ok=.false.
+    plan=.false.
+    if (present(planning)) plan=planning
+    if (.not.tree%is_valid()) return
+    if (node<1.or.node>size(tree%nodes)) return
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-4)) return
+    nspecies=0
+    if (present(species_count)) nspecies=species_count
+    if (nspecies<0.or.nspecies>nvar-5) return
+    if (present(coarse_limiter)) then
+      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod') return
+    end if
+    if (present(coarse_fractions)) then
+      if (size(coarse_fractions)/=tree%nodes(node)%level) return
+      if (.not.all(ieee_is_finite(coarse_fractions))) return
+      if (any(coarse_fractions<0).or.any(coarse_fractions>1)) return
+    end if
     if (present(wall_velocity)) then
       if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
     end if
@@ -66,13 +142,19 @@ contains
       if (any(shape(inflow_state)/=[nvar,6])) return
       if (.not.all(ieee_is_finite(inflow_state))) return
     end if
+    if (present(validate_only)) then
+      if (validate_only) then
+        ok=.true.;return
+      end if
+    end if
     viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) return
     ok=.false.
     level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+4
-    allocate(candidate(nvar,dims(1),dims(2),dims(3)))
+    allocate(candidate(nvar,dims(1),dims(2),dims(3)),stat=ios)
+    if (ios/=0) return
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
@@ -111,14 +193,17 @@ contains
               if (any(point<origin(:,source))) cycle
               if (any(point-origin(:,source)>=int(tree%nodes(source)%shape,int64))) cycle
               local=int(point-origin(:,source))+1
-              candidate(:,i,j,k)=state%fields(source)%values(:,local(1),local(2),local(3))
-              if (present(coarse_future).and.source_level<level) then
+              call reader%read(source,local,.false.,candidate(:,i,j,k),valid)
+              if (.not.valid) return
+              if (present(coarse_fractions).and.source_level<level) then
                 fraction=coarse_fractions(source_level)
                 if (fraction==1.0_dp) then
-                  candidate(:,i,j,k)=coarse_future%fields(source)%values(:,local(1),local(2),local(3))
+                  call reader%read(source,local,.true.,candidate(:,i,j,k),valid)
+                  if (.not.valid) return
                 else if (fraction>0.0_dp) then
-                  candidate(:,i,j,k)=(1.0_dp-fraction)*candidate(:,i,j,k)+ &
-                    fraction*coarse_future%fields(source)%values(:,local(1),local(2),local(3))
+                  call reader%read(source,local,.true.,endpoint,valid)
+                  if (.not.valid) return
+                  candidate(:,i,j,k)=(1.0_dp-fraction)*candidate(:,i,j,k)+fraction*endpoint
                 end if
               end if
               found=.true.;exit
@@ -132,6 +217,7 @@ contains
             call interpolate_donor(point,source_level,mapped,candidate(:,i,j,k),valid)
             if (.not.valid) return
           end if
+          if (plan) cycle
           if (inlet>0) candidate(:,i,j,k)=inflow_state(:,inlet)
           old_momentum=candidate(2:4,i,j,k)
           do axis=1,3
@@ -183,6 +269,9 @@ contains
           end do
         end do
       end do
+      if (plan) then
+        success=.true.;return
+      end if
       do direction=1,3
         do component=1,nvar
           call limited_slope(center(component)-minus(component,direction), &
@@ -210,6 +299,7 @@ contains
       logical, intent(out) :: success
       integer(int64) :: position(3),bounds(3)
       integer :: direction,boundary,reservoir,depth,peer,index(3)
+      real(dp) :: future_value(nvar)
       real(dp) :: velocity_shift(3),momentum(3),blend,density
       logical :: flip(3)
       position=query;bounds=domain(:,requested_level);flip=.false.;velocity_shift=0;reservoir=0
@@ -242,13 +332,17 @@ contains
           if (any(position<origin(:,peer))) cycle
           if (any(position-origin(:,peer)>=int(tree%nodes(peer)%shape,int64))) cycle
           index=int(position-origin(:,peer))+1
-          value=state%fields(peer)%values(:,index(1),index(2),index(3))
-          if (present(coarse_future)) then
+          call reader%read(peer,index,.false.,value,success)
+          if (.not.success) return
+          if (present(coarse_fractions)) then
             blend=coarse_fractions(depth)
             if (blend==1) then
-              value=coarse_future%fields(peer)%values(:,index(1),index(2),index(3))
+              call reader%read(peer,index,.true.,value,success)
+              if (.not.success) return
             else if (blend>0) then
-              value=(1-blend)*value+blend*coarse_future%fields(peer)%values(:,index(1),index(2),index(3))
+              call reader%read(peer,index,.true.,future_value,success)
+              if (.not.success) return
+              value=(1-blend)*value+blend*future_value
             end if
           end if
           success=.true.;exit
@@ -257,6 +351,7 @@ contains
         position=position/int(ratios(depth),int64);depth=depth-1
       end do
       if (.not.success) return
+      if (plan) return
       if (reservoir>0) value=inflow_state(:,reservoir)
       momentum=value(2:4)
       do direction=1,3
@@ -272,5 +367,5 @@ contains
       end if
       success=all(ieee_is_finite(value))
     end subroutine
-  end subroutine fill_amr_patch_tree_ghosts_3d
+  end subroutine sample_amr_patch_tree_ghosts_3d
 end module amr_patch_tree_ghost_3d_mod

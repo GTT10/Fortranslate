@@ -479,8 +479,8 @@ The communicator is borrowed, and calls must follow collective ordering. Root an
 owner buffers must be distinct actual objects. MPI runtime/communicator failure
 is governed by the MPI error handler, not a recoverable application transaction.
 These transfers support initialization/output and verification; they are not a
-root-gather stepping algorithm. Ownership planning, distributed halos, evolution,
-restriction/reflux, rebalancing and application integration remain open. Whole-node
+root-gather stepping algorithm. Ownership planning, evolution, restriction/reflux, rebalancing and application
+integration remain open; synchronous distributed halos are described below. Whole-node
 ownership does not split a large root patch or establish scaling.
 
 ## Sparse MPI cell requests
@@ -500,9 +500,38 @@ requested payloads preserve existing outputs. Communicator ordering and runtime
 error handling follow the distribution API contract.
 
 This primitive does not choose ghost donors or implement boundary transforms,
-coarse spatial/time interpolation, restriction or reflux. Those operations must
-construct batched requests and consume the returned values before distributed
-evolution is available. Whole-node ownership and replicated metadata remain.
+coarse spatial/time interpolation, restriction or reflux. The synchronous halo wrapper below constructs batched requests and consumes
+the returned values; distributed evolution still requires further integration. Whole-node ownership and replicated metadata remain.
+
+## Synchronous MPI halos
+
+`fill_mpi_amr_tree_ghosts_3d` fills every owned node's padded `(nvar,nx+4,ny+4,nz+4)`
+array, including its interior. Only owned output slots allocate. The API accepts
+the same viscous-wall, inflow, wall-velocity, coarse-limiter and species-count
+options as the serial fill, but currently has no coarse-time endpoint arguments.
+Callers must supply consistent physical boundary options across ranks.
+
+The serial implementation now delegates to `sample_amr_patch_tree_ghosts_3d`
+with an `amr_tree_cell_source_3d` reader. This shares the actual geometry search,
+periodic mapping, ancestor fallback, 27-cell PLM stencil, species-slope closure
+and physical momentum/energy transforms. The serial wrapper retains full-state
+and endpoint validation; its reader borrows source pointers only during the call.
+
+The MPI reader first counts then records the donor sequence with planning enabled.
+Planning walks geometry/stencils using finite placeholder values, skips slope and
+wall arithmetic, and does not produce physical ghost values. A validation-only
+mode checks options without allocating a root field on empty ranks. After the
+sparse fetch, an evaluation walk consumes the cached sequence, verifying each
+coordinate before use. All ranks agree on success before replacing output fields.
+Both input rejection and post-exchange boundary-transform failure preserve outputs.
+
+Requests currently include owned interior cells and repeated stencil donors;
+there is no deduplication or persistent plan cache. Temporary storage scales with
+local padded cells and requested stencil entries, rather than all tree payloads.
+The planning walks and MPI self-requests are an optimization opportunity, not a
+scaling result. Existing MPI runtime error-handler limits apply. The shared
+sampler supports serial temporal endpoints, but this MPI wrapper is synchronous;
+level-specific endpoint exchange and distributed evolution/reflux remain open.
 
 ## Remaining integration
 

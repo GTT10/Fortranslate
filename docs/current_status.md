@@ -48,7 +48,9 @@ store payloads only on assigned patch owners, with collective metadata checks an
 root scatter/gather ([evidence](validation/amr-tree-mpi-distribution-20260917.md)).
 Sparse cell queries now fetch only requested owner payloads in caller order, including
 empty ranks and collective rollback ([evidence](validation/amr-tree-mpi-cells-20260917.md)).
-Distributed halo construction and tree evolution remain open. A transactional tree
+Synchronous MPI halos now share serial peer/ancestor lookup, PCM/limited PLM and
+physical boundary transforms ([evidence](validation/amr-tree-mpi-ghost-20260917.md)).
+MPI coarse-time interpolation, restriction/reflux and tree evolution remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous
