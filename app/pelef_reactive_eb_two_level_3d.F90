@@ -31,7 +31,7 @@ program pelef_reactive_eb_two_level_3d
   character(len=512) :: checkpoint_file='',restart_file=''
   integer :: checkpoint_interval_steps=0,maximum_step_retries=12
   logical :: stop_after_checkpoint=.false.
-  logical :: automatic_timestep=.false.
+  logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
   real(dp) :: rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,viscosity_enabled=.true.
@@ -41,7 +41,7 @@ program pelef_reactive_eb_two_level_3d
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
-    automatic_timestep,hydro_cfl,transport_cfl
+    automatic_timestep,hydro_cfl,transport_cfl,subcycling
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),uf(:,:,:,:),tf(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
@@ -149,7 +149,7 @@ program pelef_reactive_eb_two_level_3d
       ! per-step ledgers and the limiter untouched. Count only accepted steps.
       call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,fine_lower,refinement_ratio, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
-        species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator)
+        species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
       if (ok) exit
       rejected_steps=rejected_steps+1
       if (retry==maximum_step_retries) error stop 'Two-level EB step retry limit exhausted'
@@ -177,16 +177,20 @@ program pelef_reactive_eb_two_level_3d
 contains
   function checkpoint_magic() result(magic)
     character(len=32) :: magic
-    ! V1 retains fixed-step compatibility. V2 uses identical records, with
-    ! automatic selection and the CFL controls bound by each patch config.
+    ! V1/V2 retain common-step fixed/automatic compatibility. V3/V4 select
+    ! subcycling with the same layout; patch configs bind the CFL controls.
     magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V1'
     if (automatic_timestep) magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V2'
+    if (subcycling) then
+      magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V3'
+      if (automatic_timestep) magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V4'
+    end if
   end function checkpoint_magic
 
   subroutine limit_timestep(interval)
     real(dp), intent(inout) :: interval
     real(dp), allocatable :: parent(:,:,:,:),parent_t(:,:,:)
-    real(dp) :: coarse_speeds(4),fine_speeds(4),donors(4),coarse_dt,fine_dt,coarse_d,fine_d,donor_d,unused_d
+    real(dp) :: coarse_speeds(4),fine_speeds(4),donors(4),coarse_dt,fine_dt,coarse_d,fine_d,donor_d,unused_d,factor
     logical :: valid,fine_active
     ! Match the parent averaging used at the start of the coupled update;
     ! estimation must not publish state changes of its own.
@@ -211,7 +215,10 @@ contains
       call compute_reactive_eb_euler_cfl_timestep_3d(species,uf,tf,fine,hydro_cfl,fine_dt,valid,donors)
       if (.not.valid) error stop 'Cannot select fine hydro interval'
     end if
-    interval=min(interval,coarse_dt,fine_dt)
+    interval=min(interval,coarse_dt)
+    factor=1._dp
+    if (subcycling) factor=real(refinement_ratio,dp)
+    if (fine_dt<interval/factor) interval=fine_dt*factor
     if (.not.transport_enabled) return
     call reactive_eb_transport_patch_timestep_3d(species,transport,parent,parent_t,coarse,transport_cfl, &
       viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,coarse_dt,coarse_d,valid)
@@ -233,7 +240,10 @@ contains
       if (.not.valid) error stop 'Cannot select fine diffusion interval'
     end if
     ! Bound the full interval, conservatively also bounding each transport half.
-    interval=min(interval,coarse_dt,fine_dt)
+    interval=min(interval,coarse_dt)
+    factor=1._dp
+    if (subcycling) factor=real(refinement_ratio,dp)**2
+    if (fine_dt<interval/factor) interval=fine_dt*factor
   end subroutine limit_timestep
 
   subroutine check_balance()

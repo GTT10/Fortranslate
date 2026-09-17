@@ -23,7 +23,7 @@ contains
   ! order. Only exposed coarse cells and active fine cells own chemical solves.
   subroutine advance_reactive_eb_two_level_strang_3d(species,reactions,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,coarse_state,coarse_temperature,fine_state,fine_temperature, &
-      boundary_change,wall_change,chemistry_change,ok,chemistry_integrator)
+      boundary_change,wall_change,chemistry_change,ok,chemistry_integrator,subcycle)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
@@ -35,16 +35,17 @@ contains
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: subcycle
     character(len=*), optional, intent(in) :: chemistry_integrator
     call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-      ok,chemistry_integrator)
+      ok,chemistry_integrator,subcycle=subcycle)
   end subroutine advance_reactive_eb_two_level_strang_3d
 
   subroutine advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-      minimum_theta,ok,chemistry_integrator)
+      minimum_theta,ok,chemistry_integrator,subcycle)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -56,15 +57,16 @@ contains
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),fine_state(:,:,:,:),fine_temperature(:,:,:)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:),minimum_theta
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: subcycle
     character(len=*), optional, intent(in) :: chemistry_integrator
     if (transport_enabled) then
       call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
         coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-        ok,chemistry_integrator,transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+        ok,chemistry_integrator,transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
     else
       call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
         coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-        ok,chemistry_integrator)
+        ok,chemistry_integrator,subcycle=subcycle)
       if (ok) minimum_theta=1._dp
     end if
   end subroutine advance_reactive_eb_two_level_full_3d
@@ -72,7 +74,7 @@ contains
   subroutine advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,coarse_state,coarse_temperature,fine_state,fine_temperature, &
       boundary_change,wall_change,chemistry_change,ok,chemistry_integrator, &
-      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
@@ -84,6 +86,7 @@ contains
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: subcycle
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(gas_transport_species), optional, intent(in) :: transport(:)
     logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -95,10 +98,20 @@ contains
     logical, allocatable :: active_coarse(:,:,:),active_fine(:,:,:)
     integer :: nvar,n(3),nf(3),upper(3)
     logical :: valid
+    procedure(advance_reactive_eb_two_level_euler_3d), pointer :: hydro_step
+    procedure(advance_reactive_eb_two_level_transport_3d), pointer :: transport_step
+    hydro_step=>advance_reactive_eb_two_level_euler_3d
+    transport_step=>advance_reactive_eb_two_level_transport_3d
+    if (present(subcycle)) then
+      if (subcycle) then
+        hydro_step=>advance_reactive_eb_two_level_subcycled_euler_3d
+        transport_step=>advance_reactive_eb_two_level_subcycled_transport_3d
+      end if
+    end if
     ok=.false.;nvar=reactive_nvar(size(species))
     if (size(chemistry_change)/=nvar) return
     if (.not.chemistry_enabled.and..not.present(transport)) then
-      call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
+      call hydro_step(species,coarse,fine,lower,ratio,solver,dt, &
         coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
       if (ok) chemistry_change=0._dp
       return
@@ -132,7 +145,7 @@ contains
       call transport_half(valid)
       if (.not.valid) return
     end if
-    call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
+    call hydro_step(species,coarse,fine,lower,ratio,solver,dt, &
       candidate,temps,child,child_t,boundary,wall,valid)
     if (.not.valid) return
     if (present(transport)) then
@@ -152,7 +165,7 @@ contains
   contains
     subroutine transport_half(success)
       logical, intent(out) :: success
-      call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lower,ratio,.5_dp*dt, &
+      call transport_step(species,transport,coarse,fine,lower,ratio,.5_dp*dt, &
         viscosity,conduction,diffusion,barodiffusion,candidate,temps,child,child_t,transport_boundary,stage_theta,success)
       if (.not.success) return
       transport_sum=transport_sum+transport_boundary;theta=min(theta,stage_theta)

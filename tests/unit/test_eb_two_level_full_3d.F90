@@ -9,7 +9,8 @@ program test_eb_two_level_full_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_euler_3d, &
-    advance_reactive_eb_two_level_strang_3d,advance_reactive_eb_two_level_full_3d
+    advance_reactive_eb_two_level_strang_3d,advance_reactive_eb_two_level_full_3d, &
+    advance_reactive_eb_two_level_subcycled_euler_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -24,7 +25,9 @@ program test_eb_two_level_full_3d
   real(dp), allocatable :: initial_f(:,:,:,:),initial_tf(:,:,:),hydro_c(:,:,:,:),hydro_tc(:,:,:)
   real(dp), allocatable :: hydro_f(:,:,:,:),hydro_tf(:,:,:),b(:),w(:),chem(:),hb(:),hw(:),before(:),after(:)
   real(dp) :: atoms(3),element_change(3),element_scale(3)
-  integer :: nvar,c,mode,s,component
+  integer :: nvar,c,mode,s,component,scheme
+  procedure(advance_reactive_eb_two_level_euler_3d), pointer :: hydro_step
+  logical :: subcycled
   logical :: ok,refined(4,4,4)
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
   call load_h2o2_elementary_thermo(species,ok)
@@ -50,14 +53,19 @@ program test_eb_two_level_full_3d
   call require(ok,'fine initial')
   initial_c=uc;initial_tc=tc;initial_f=uf;initial_tf=tf
   refined=.false.;refined(2:3,2:3,2:3)=.true.
+  do scheme=1,2
+  subcycled=scheme==2
+  hydro_step=>advance_reactive_eb_two_level_euler_3d
+  if (subcycled) hydro_step=>advance_reactive_eb_two_level_subcycled_euler_3d
+  call reset()
   call inventory(before)
-  call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
+  call hydro_step(species,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
     uc,tc,uf,tf,hb,hw,ok)
   call require(ok,'hydro reference')
   hydro_c=uc;hydro_tc=tc;hydro_f=uf;hydro_tf=tf
   call reset()
   call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-    .false.,0._dp,0._dp,.false.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok)
+    .false.,0._dp,0._dp,.false.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,subcycle=subcycled)
   call require(ok.and.all(uc==hydro_c).and.all(tc==hydro_tc).and.all(uf==hydro_f).and.all(tf==hydro_tf).and. &
     all(b==hb).and.all(w==hw).and.all(chem==0._dp),'disabled chemistry exact hydro parity')
   do mode=1,2
@@ -66,7 +74,7 @@ program test_eb_two_level_full_3d
     ! validated restriction. An erroneous coarse solve here would fail on rho.
     uc(:,2:3,2:3,2:3)=-99._dp;tc(2:3,2:3,2:3)=-99._dp
     call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,integrators(mode))
+      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,integrators(mode),subcycled)
     call require(ok,'full reacting transport hierarchy')
     call require(theta>=0._dp.and.theta<=1._dp,'full composition limiter')
     call inventory(after)
@@ -99,12 +107,12 @@ program test_eb_two_level_full_3d
       'covered storage preserved')
     hydro_c=initial_c;hydro_tc=initial_tc;hydro_f=initial_f;hydro_tf=initial_tf
     call advance_reactive_eb_two_level_strang_3d(species,reactions,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-      .true.,2.e-7_dp,1.e-12_dp,hydro_c,hydro_tc,hydro_f,hydro_tf,hb,hw,reference_chem,ok,integrators(mode))
+      .true.,2.e-7_dp,1.e-12_dp,hydro_c,hydro_tc,hydro_f,hydro_tf,hb,hw,reference_chem,ok,integrators(mode),subcycled)
     call require(ok,'reaction hydro reference')
     call require(maxval(abs(uf-hydro_f))>1.e-12_dp,'full composition transport response')
     call reset()
     call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-      .true.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,integrators(mode))
+      .true.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,integrators(mode),subcycled)
     call require(ok.and.all(uc==hydro_c).and.all(tc==hydro_tc).and.all(uf==hydro_f).and.all(tf==hydro_tf).and. &
       all(b==hb).and.all(w==hw).and.all(chem==reference_chem).and.theta==1._dp, &
       'disabled transport exact reaction hydro parity')
@@ -112,7 +120,7 @@ program test_eb_two_level_full_3d
   end do
   call reset()
   call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-    .false.,0._dp,0._dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok)
+    .false.,0._dp,0._dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,subcycle=subcycled)
   call require(ok.and.all(chem==0._dp),'transport hydro with chemistry disabled')
   call inventory(after)
   do c=1,nvar
@@ -121,13 +129,14 @@ program test_eb_two_level_full_3d
   end do
   call reset()
   call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'rusanov',1.e-8_dp, &
-    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,'invalid')
+    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,'invalid',subcycled)
   call require(.not.ok,'bad chemistry integrator rejected')
   call unchanged()
   call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,[2,2,2],2,'invalid',1.e-8_dp, &
-    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,'explicit')
+    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,uf,tf,b,w,chem,theta,ok,'explicit',subcycled)
   call require(.not.ok,'hydro failure after first reaction rejected')
   call unchanged()
+  end do
   write(*,'(a)') 'test_eb_two_level_full_3d: PASS'
 contains
   subroutine reset()

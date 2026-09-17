@@ -182,7 +182,29 @@ def main():
     assert 'Rejected trials this invocation: 0' in log
     half_dt = float((work / 'diffusion.chk').read_text().splitlines()[3].split()[1])
     assert math.isclose(half_dt, diffusion_dt / 2, rel_tol=1e-12)
-    print('PASS: two-level EB application, budgets, restart, retries and automatic hydro/diffusion intervals')
+    coupled_subcycle = options(subcycling='.true.', automatic_timestep='.true.')
+    run('subcycle_coupled.nml', coupled_subcycle, True)
+    subcycle_saved = output.read_bytes(), budget_path.read_bytes()
+    stop_subcycle = coupled_subcycle.replace('\n/', "\n checkpoint_file='subcycle.chk', "
+                                            "checkpoint_interval_steps=1, stop_after_checkpoint=.true.,\n/")
+    run('subcycle_stop.nml', stop_subcycle, True)
+    assert (work / 'subcycle.chk').read_text().splitlines()[0].strip() == 'PELEF_EB_TWO_LEVEL_CHECKPOINT_V4'
+    resume_subcycle = coupled_subcycle.replace('\n/', "\n restart_file='subcycle.chk',\n/")
+    run('subcycle_resume.nml', resume_subcycle, True)
+    assert subcycle_saved == (output.read_bytes(), budget_path.read_bytes())
+    run('subcycle_wrong_mode.nml', resume_subcycle.replace('subcycling=.true.', 'subcycling=.false.'), False)
+    assert subcycle_saved == (output.read_bytes(), budget_path.read_bytes())
+    # Fine-grid hydro constraint converts to a coarse interval by ratio.
+    subcycle_hydro = auto_stop.replace('\n/', '\n subcycling=.true.,\n/')
+    run('subcycle_hydro_stop.nml', subcycle_hydro, True)
+    subcycle_dt = float((work / 'auto.chk').read_text().splitlines()[3].split()[1])
+    assert auto_dt < subcycle_dt <= 2 * auto_dt * (1 + 1e-12)
+    # Fine transport uses ratio squared, still bounded by the coarse estimate.
+    subcycle_diffusion = diffusion_case.replace('\n/', '\n subcycling=.true.,\n/')
+    run('subcycle_diffusion_stop.nml', subcycle_diffusion, True)
+    subcycle_diffusion_dt = float((work / 'diffusion.chk').read_text().splitlines()[3].split()[1])
+    assert diffusion_dt < subcycle_diffusion_dt <= 4 * diffusion_dt * (1 + 1e-12)
+    print('PASS: two-level EB application, budgets, restart, retries, automatic intervals and subcycled coupling')
 
 
 if __name__ == '__main__':
