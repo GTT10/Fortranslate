@@ -175,7 +175,9 @@ with independent per-level fractions while preserving current peer donors
 recursive hydro API now advances ratio-based fine substeps, reconciles peers,
 accumulates effective transfers and refluxes each parent interval
 ([subcycle hydro evidence](validation/eb-tree-subcycle-hydro-20260918.md));
-subcycled transport, coupled/application integration and MPI remain open.
+a matching transport API now uses ratio-squared substeps and limited-flux
+synchronization ([subcycle transport evidence](validation/eb-tree-subcycle-transport-20260918.md)).
+Coupled/application integration and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
