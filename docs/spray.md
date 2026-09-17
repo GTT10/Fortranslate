@@ -62,6 +62,24 @@ population insertion and remaining flight. This single-contact API is not yet
 connected to EB interval/application stepping or film evolution. See
 [focused impact evidence](validation/spray-eb-impact-20260918.md).
 
+`advance_mixture_level_set_impacts` advances an allocated mixed-parcel population
+through a force-free interval using this contact model. Inputs include common
+pressure, wall temperature, liquid viscosity/surface tension, the film population,
+an ID watermark and capacities for all intermediate parcels and films. Input
+parcel IDs must be strictly increasing and no greater than the watermark.
+Children receive consecutive IDs and advance for their parent's remaining time;
+consumed parents are removed at publication. The contact limit applies along
+each parent/child trajectory. Existing and newly deposited stationary films
+contribute thickness using the planar model's normal/proximity criterion.
+Processing follows parcel ID order with appended children; this is not a globally
+time-ordered event queue. Capacities include consumed intermediate parents.
+All population/component arrays, films, watermark, wall ledger and hit count
+publish together or remain unchanged. `wall` again means received by the wall.
+Pressure/properties are frozen; there is no gas feedback, film evolution, MPI
+reservation or application connection in this API. Proposed flight endpoints
+must remain inside the closed root domain. See
+[interval evidence](validation/spray-eb-impact-interval-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
