@@ -182,7 +182,11 @@ reaction splitting, with mode-bound scheduled restart
 ([subcycled application evidence](validation/eb-tree-subcycle-full-20260918.md)).
 Automatic root intervals now scale patch hydro bounds by cumulative refinement
 ratios and diffusion bounds by their squares
-([interval evidence](validation/eb-tree-subcycle-timestep-20260918.md)). MPI remains open.
+([interval evidence](validation/eb-tree-subcycle-timestep-20260918.md)).
+An MPI library now restricts EB state/temperature on child owners and transfers
+coarse payloads to parent owners, with replicated geometry validation and
+exposed-cell composite reductions ([MPI transfer evidence](validation/mpi-eb-tree-transfer-20260918.md)).
+EB tree MPI halo exchange, coupled stepping and application integration remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
