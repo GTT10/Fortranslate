@@ -134,8 +134,9 @@ ranges on their owners; optional indexed V2 eliminates the serial payload scan.
 Direct same-geometry owner migration now transfers U/T without interpolation or
 a root gather. A cost-driven rebalance API now accepts owner-reported patch costs
 and migrates only for a sufficient predicted peak-load reduction. Scheduled recursive full-split execution now has a focused combined regrid,
-rebalance and V2 changed-rank restart check. Next connect this qualification to
-temperature-triggered full-split adaptation and measure scaling. Owner-local kernel timing
+rebalance and V2 changed-rank restart check. Temperature-triggered full-split
+refinement also has this combined check. Large-tree scaling, general EB coupling
+and particle/AMR integration remain open. Owner-local kernel timing
 and opt-in application rebalance cadence are now connected. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive

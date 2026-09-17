@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise recursive chemistry/transport/hydro across regrid, rebalance and V2 restart."""
 import argparse
+import csv
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('fixed', 'selected', 'serial-fixed', 'serial-selected', 'case-dir', 'workdir'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--adaptive', action='store_true')
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--numproc-flag', default='-n')
     args = parser.parse_args()
@@ -28,6 +30,18 @@ def main():
     template = (args.case_dir / 'hotspot.nml').read_text()
     template = template.replace("reconstruction='pcm'", "reconstruction='characteristic_plm'")
     template += '\n&amr_tree_timestepping subcycling=.true. /\n'
+    if args.adaptive:
+        topology = root
+        template = template.replace('cfl=0.2', 'cfl=0.001')
+        template = template.replace('hotspot_center_x=0.002, hotspot_center_y=0.002, hotspot_center_z=0.002',
+                                    'hotspot_center_x=0.0005, hotspot_center_y=0.0005, hotspot_center_z=0.0005')
+        template += """
+&amr_tree_adaptation
+ regrid_interval_steps=1, refinement_levels=2, refinement_ratios=2,2
+ temperature_thresholds=1150,1150, tile_shape=1,1,1, tag_buffer=0, maximum_nodes=64
+/
+"""
+
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
     reference = None
     for kind in ('fixed', 'selected'):
@@ -51,7 +65,9 @@ def main():
                             'rebalance_interval_steps=1, rebalance_minimum_gain=0.0 /\n')
             inputs.write_text(content)
             binary = getattr(args, kind if ranks else 'serial_' + kind).resolve()
-            command = [str(binary), str(inputs), str(topology), str(schedule)]
+            command = [str(binary), str(inputs), str(topology)]
+            if not args.adaptive:
+                command.append(str(schedule))
             if ranks:
                 command = [args.mpiexec, args.numproc_flag, str(ranks), *command]
             result = subprocess.run(command, cwd=folder, env=env, capture_output=True, text=True, timeout=240)
@@ -61,8 +77,17 @@ def main():
             return log
 
         log = run('serial', config, 0)
-        assert re.search(r'Steps:\s+4\b', log), log
-        assert 'Regrids: 3' in log, log
+        steps = int(re.search(r'Steps:\s+(\d+)', log)[1])
+        expected_regrids = steps if args.adaptive else 3
+        assert steps >= 3 if args.adaptive else steps == 4, log
+        assert f'Regrids: {expected_regrids}' in log, log
+        if args.adaptive:
+            assert log.count('Automatic regrid check at step') == steps, log
+            with outputs[0].open() as stream:
+                cells = list(csv.DictReader(stream))
+            assert max(int(row['level']) for row in cells) == 2
+            assert abs(sum(float(row['dx']) * float(row['dy']) * float(row['dz'])
+                           for row in cells) - .004**3) < 1e-20
         baseline = [p.read_bytes() for p in outputs]
         if reference is None:
             reference = baseline
@@ -75,13 +100,18 @@ def main():
         saved = checkpoint.read_bytes()
         assert saved.startswith(b'PELEF_AMR_TREE_3D_CHECKPOINT_V2\n'), saved[:80]
         log = run('restart', config + "\n&amr_tree_checkpoint restart_file='tree.chk' /\n", 3)
-        assert re.search(r'Steps:\s+4\b', log) and 'Regrids: 3' in log, log
-        assert log.count('Rebalance step:') == 3, log
+        assert int(re.search(r'Steps:\s+(\d+)', log)[1]) == steps, log
+        assert f'Regrids: {expected_regrids}' in log, log
+        assert log.count('Rebalance step:') == steps - 1, log
+        if args.adaptive:
+            assert 'Automatic regrid check at step 1 ' not in log, log
+            assert log.count('Automatic regrid check at step') == steps - 1, log
         assert [p.read_bytes() for p in outputs] == baseline, f'{kind}: restarted output mismatch'
         run('serial_stop', config + save, 0)
         assert checkpoint.read_bytes() == saved, f'{kind}: indexed checkpoint byte mismatch'
         assert [p.read_bytes() for p in outputs] == baseline, 'Checkpoint stop overwrote final output'
-    print('PASS: fixed/selected dynamic recursive full split, rebalancing, V2 2-to-3 restart and exact serial bytes')
+    print('PASS: fixed/selected dynamic recursive full split, rebalancing, V2 2-to-3 restart and exact serial bytes;',
+          'adaptive=', args.adaptive)
 
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@ Older milestone prose remains historical detail, not a current global status.
 | Area | Implemented subset | Still open |
 | --- | --- | --- |
 | Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip boundaries with prescribed tangential wall motion | Characteristic inflow and moving geometry, general 3D boundary/coupling qualification |
-| 3D AMR | Two-level hierarchy, with serial/MPI boundary-touching physical patches; serial/MPI temperature-tagged patch movement/resizing with conservative remap, rank-neutral geometry-aware restart and sparse MPI stepping; serial and sparse MPI hydro, reaction and molecular-transport split APIs with physical coarse boundaries and application input/output/restart ([hydro](validation/amr-physical-hydro-20260917.md), [reaction](validation/amr-physical-split-20260917.md), [transport](validation/amr-physical-transport-20260917.md), [application](validation/amr-physical-app-20260917.md)) | Multiple general patches/levels and broader scaling/physical-boundary qualification |
+| 3D AMR | Serial/MPI two-level and multi-patch, multi-level trees; prescribed or temperature-tagged regridding, conservative remap, physical boundaries, common or recursive reaction/transport/hydro, measured-work rebalancing and rank-neutral restart ([tree design](design_decisions/amr-patch-tree-3d.md)) | General EB/particle coupling, large-tree scaling, convergence and broader physical qualification |
 | 3D embedded boundary | Bounded planar, single-level hydro/chemistry/transport/restart paths | General geometry and integrated 3D EB-AMR-MPI qualification |
 | Chemistry | Fixed H2/O2 and configure-time selected supported bundles, including Lindemann/Troe/SRI/Tsang falloff, chemically activated rates, PLOG and Chebyshev; official-Fortran CVODE for selected 0D and opt-in regular 3D spray cells; FFCM1_Red methanol, GRI-Mech and Lu n-dodecane fixtures; input/runtime capacity up to 128 species | Diesel ignition/physical validation across conditions and sparse/performance qualification |
 | Parallelism/output | Rank-parity and changed-rank restart for qualified subsets; distributed two-level MPI AMR CSV output | Production scaling, broader distributed I/O qualification and other output paths |
@@ -106,7 +106,10 @@ serial parity and changed-rank restart
 ([evidence](validation/amr-tree-mpi-subcycle-dynamic-20260917.md)). Scheduled recursive full-split
 execution now also combines chemistry, molecular transport, moving walls, PLM,
 measured-work rebalancing and V2 changed-rank continuation with exact serial bytes
-([evidence](validation/amr-tree-mpi-dynamic-split-20260917.md)). MPI transport now advances one depth with
+([evidence](validation/amr-tree-mpi-dynamic-split-20260917.md)). Temperature-triggered
+full-split refinement now has the same combined V2/rebalance/changed-rank check,
+including no repeated tag on restart
+([evidence](validation/amr-tree-mpi-adaptive-split-20260917.md)). MPI transport now advances one depth with
 coarse-time donors, moving/isothermal walls and integrated face fluxes
 ([evidence](validation/amr-tree-mpi-transport-level-20260917.md)). MPI hydro
 now advances one depth with coarse-time donors and returns integrated face fluxes
