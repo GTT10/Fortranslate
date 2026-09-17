@@ -26,8 +26,10 @@ components and recover EOS temperatures transactionally
 and interior coarse/fine reflux now have conservative transactional library APIs
 ([evidence](validation/eb-reflux-20260917.md)). EB Riemann fluxes now accept face
 halos, and plain Euler returns accepted flux integrals
-([evidence](validation/eb-face-halo-20260917.md)); coarse-donor construction and
-patch-tree/MPI stepping are not yet connected.
+([evidence](validation/eb-face-halo-20260917.md)). Geometry extraction and PCM
+coarse-donor/outflow face halos now feed fine-patch Euler updates
+([evidence](validation/eb-patch-halo-20260917.md)); synchronized hierarchy and MPI
+stepping are not yet connected.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
