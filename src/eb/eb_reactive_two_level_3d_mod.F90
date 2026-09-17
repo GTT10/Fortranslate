@@ -2,6 +2,8 @@ module eb_reactive_two_level_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use gas_transport_mod, only: gas_transport_species
+  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use reactive_1d_mod, only: reactive_nvar
@@ -13,6 +15,7 @@ module eb_reactive_two_level_3d_mod
   implicit none
   private
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
+  public :: advance_reactive_eb_two_level_transport_3d
 contains
   ! Symmetric reaction/hydro composition; the Euler hydro stage remains first
   ! order. Only exposed coarse cells and active fine cells own chemical solves.
@@ -109,6 +112,44 @@ contains
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:),boundary_change(:),wall_change(:)
     logical, intent(out) :: ok
+    call advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+  end subroutine advance_reactive_eb_two_level_euler_3d
+
+  subroutine advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lower,ratio,dt, &
+      viscosity,conduction,diffusion,barodiffusion,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+      boundary_change,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: coarse,fine
+    integer, intent(in) :: lower(3),ratio
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),fine_state(:,:,:,:),fine_temperature(:,:,:)
+    real(dp), intent(inout) :: boundary_change(:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp) :: wall(size(boundary_change))
+    call advance_two_level_euler(species,coarse,fine,lower,ratio,'rusanov',dt, &
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+  end subroutine advance_reactive_eb_two_level_transport_3d
+
+  subroutine advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: coarse,fine
+    integer, intent(in) :: lower(3),ratio
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:),boundary_change(:),wall_change(:)
+    logical, intent(out) :: ok
+    type(gas_transport_species), optional, intent(in) :: transport(:)
+    logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), optional, intent(inout) :: minimum_theta
+    real(dp) :: coarse_theta,fine_theta
+    logical :: faces(6)
     type(eb_geometry_3d) :: restricted,section
     type(eb_integrated_flux_3d) :: coarse_flux,fine_flux,patch_flux,effective
     real(dp), allocatable :: initial(:,:,:,:),initial_t(:,:,:),candidate(:,:,:,:),temps(:,:,:)
@@ -145,12 +186,22 @@ contains
     if (.not.valid) return
     allocate(candidate,source=initial);allocate(temps,source=initial_t)
     allocate(child,source=fine_state);allocate(child_t,source=fine_temperature)
+    if (present(transport)) then
+      faces=[lower(1)>1,upper(1)<n(1),lower(2)>1,upper(2)<n(2),lower(3)>1,upper(3)<n(3)]
+      call advance_reactive_eb_transport_patch_euler_3d(species,transport,coarse,dt,viscosity,conduction, &
+        diffusion,barodiffusion,candidate,temps,coarse_flux,coarse_theta,valid)
+      if (.not.valid) return
+      call advance_reactive_eb_transport_patch_euler_3d(species,transport,fine,dt,viscosity,conduction, &
+        diffusion,barodiffusion,child,child_t,fine_flux,fine_theta,valid,ghost,ghost_t,faces)
+      if (.not.valid) return
+    else
     call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
       integrated_flux=coarse_flux)
     if (.not.valid) return
     call advance_reactive_eb_euler_3d(species,fine_state,fine_temperature,fine,solver,dt,child,child_t,valid, &
       ghost,ghost_t,fine_flux)
     if (.not.valid) return
+    end if
     call restrict_eb_integrated_flux_3d(fine,ratio,fine_flux,patch_flux,valid)
     if (.not.valid) return
     effective=coarse_flux
@@ -166,10 +217,13 @@ contains
       temps(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)),valid)
     if (.not.valid) return
     allocate(coarse_wall(nvar,n(1),n(2),n(3)),fine_wall(nvar,nf(1),nf(2),nf(3)),boundary(nvar),wall(nvar))
+    coarse_wall=0._dp;fine_wall=0._dp
+    if (.not.present(transport)) then
     call reactive_eb_slip_wall_source_3d(species,initial,initial_t,coarse,coarse_wall,valid)
     if (.not.valid) return
     call reactive_eb_slip_wall_source_3d(species,fine_state,fine_temperature,fine,fine_wall,valid)
     if (.not.valid) return
+    end if
     volume=coarse%dx*coarse%dy*coarse%dz
     do c=1,nvar
       boundary(c)=coarse%dy*coarse%dz*sum( &
@@ -183,8 +237,10 @@ contains
     end do
     if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall))) return
     coarse_state=candidate;coarse_temperature=temps;fine_state=child;fine_temperature=child_t
-    boundary_change=boundary;wall_change=wall;ok=.true.
-  end subroutine advance_reactive_eb_two_level_euler_3d
+    boundary_change=boundary;wall_change=wall
+    if (present(minimum_theta)) minimum_theta=min(coarse_theta,fine_theta)
+    ok=.true.
+  end subroutine advance_two_level_euler
 
   logical function matching_metrics(a,b) result(valid)
     type(eb_geometry_3d), intent(in) :: a,b

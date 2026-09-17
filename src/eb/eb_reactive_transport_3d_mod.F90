@@ -11,6 +11,7 @@ module eb_reactive_transport_3d_mod
     reactive_transport_face_flux_3d, reactive_transport_timestep_3d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_state_redistributed_3d
   implicit none
@@ -22,9 +23,58 @@ module eb_reactive_transport_3d_mod
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
   public :: reactive_eb_transport_euler_update_3d
-  public :: advance_reactive_eb_transport_3d
+  public :: advance_reactive_eb_transport_3d,advance_reactive_eb_transport_patch_euler_3d
 
 contains
+  ! Conservative Euler update without redistribution, for flux-synchronized
+  ! patches. The caller supplies a small-cell-limited diffusion timestep.
+  subroutine advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,dt,viscosity,conduction, &
+      diffusion,barodiffusion,state,temperature,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),minimum_theta
+    type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, optional, intent(in) :: faces(6)
+    type(eb_integrated_flux_3d) :: flux
+    real(dp), allocatable :: rhs(:,:,:,:),candidate(:,:,:,:),temps(:,:,:),primitive(:)
+    real(dp) :: theta,speed
+    integer :: i,j,k,nvar
+    logical :: valid
+    ok=.false.
+    if (.not.ieee_is_finite(dt)) return
+    if (dt<=0._dp) return
+    if (.not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    nvar=size(state,1)
+    allocate(rhs(nvar,geometry%nx,geometry%ny,geometry%nz),primitive(reactive_nprim(size(species))))
+    allocate(flux%x(nvar,0:geometry%nx,geometry%ny,geometry%nz), &
+      flux%y(nvar,geometry%nx,0:geometry%ny,geometry%nz),flux%z(nvar,geometry%nx,geometry%ny,0:geometry%nz))
+    call reactive_eb_transport_fluxes_rhs_3d(species,transport,state,temperature,geometry,dt, &
+      viscosity,conduction,diffusion,barodiffusion,rhs,flux%x,flux%y,flux%z,theta,valid, &
+      ghost_state,ghost_temperature,faces)
+    if (.not.valid) return
+    allocate(candidate,source=state);allocate(temps,source=temperature)
+    do k=1,geometry%nz
+      do j=1,geometry%ny
+        do i=1,geometry%nx
+          if (geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+          candidate(:,i,j,k)=state(:,i,j,k)+dt*rhs(:,i,j,k)
+          call reactive_conserved_to_primitive(species,candidate(:,i,j,k),temperature(i,j,k), &
+            primitive,temps(i,j,k),speed,valid)
+          if (.not.valid) return
+        end do
+      end do
+    end do
+    flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+    if (.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+      .not.all(ieee_is_finite(flux%z))) return
+    state=candidate;temperature=temps;integrated_flux=flux;minimum_theta=theta;ok=.true.
+  end subroutine advance_reactive_eb_transport_patch_euler_3d
+
 
   pure logical function valid_transport_shapes( &
       species, transport, state, temperature, geometry) result(valid)
