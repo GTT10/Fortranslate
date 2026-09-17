@@ -15,10 +15,13 @@ program pelef_reactive_eb_tree_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
-    remap_reactive_eb_tree_3d
+    remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   implicit none
   integer :: root_shape(3)=[4,4,4],child_count=0,parent(32)=1,ratio(32)=2,lower(3,32)=1,upper(3,32)=2
+  logical :: temperature_adaptive=.false.
+  integer :: tag_depth=2,tag_ratios(8)=2,tag_tile_shape(3)=[2,2,2],tag_buffer=0,tag_maximum_nodes=33
+  real(dp) :: tag_thresholds(8)=1000._dp
   integer :: regrid_count=0,regrid_stage=0,regrid_child_count(16)=0
   integer :: regrid_parent(32,16)=1,regrid_ratio(32,16)=2,regrid_lower(3,32,16)=1,regrid_upper(3,32,16)=2
   real(dp) :: regrid_times(16)=0._dp,next_time
@@ -36,7 +39,8 @@ program pelef_reactive_eb_tree_3d
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
     automatic_timestep,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
-    regrid_parent,regrid_ratio,regrid_lower,regrid_upper
+    regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
+    tag_tile_shape,tag_buffer,tag_maximum_nodes,tag_thresholds
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -83,6 +87,18 @@ program pelef_reactive_eb_tree_3d
       error stop 'Checkpoint aliases another file'
   end if
   if (regrid_count<0.or.regrid_count>16) error stop 'Invalid regrid count'
+  if (temperature_adaptive) then
+    if (regrid_count==0.or.tag_depth<1.or.tag_depth>8) error stop 'Invalid adaptation depth or schedule'
+    if (any(regrid_child_count/=0).or.any(regrid_parent/=1).or.any(regrid_ratio/=2).or. &
+      any(regrid_lower/=1).or.any(regrid_upper/=2)) error stop 'Adaptive mode cannot prescribe event boxes'
+    if (any(tag_ratios(:tag_depth)<2).or.any(tag_tile_shape<1).or.tag_buffer<0.or. &
+      tag_maximum_nodes<1.or.tag_maximum_nodes>33) error stop 'Invalid tagging controls'
+    if (.not.all(ieee_is_finite(tag_thresholds(:tag_depth))).or.any(tag_thresholds(:tag_depth)<=0._dp)) &
+      error stop 'Invalid tagging thresholds'
+    do depth=2,tag_depth
+      if (tag_thresholds(depth)<tag_thresholds(depth-1)) error stop 'Tag thresholds must be nondecreasing'
+    end do
+  end if
   allocate(layouts(0:regrid_count))
   call make_layout(child_count,parent,ratio,lower,upper,layouts(0))
   do event=1,regrid_count
@@ -102,6 +118,11 @@ program pelef_reactive_eb_tree_3d
     if (any(shared_ratios(:common)/=ratios(:common))) error stop 'Schedule changes refinement lattice'
     if (size(ratios)>size(shared_ratios)) shared_ratios=ratios
   end do
+  if (temperature_adaptive) then
+    common=min(size(shared_ratios)-1,tag_depth)
+    if (any(shared_ratios(2:common+1)/=tag_ratios(:common))) error stop 'Tagging changes refinement lattice'
+    if (tag_depth+1>size(shared_ratios)) shared_ratios=[1,tag_ratios(:tag_depth)]
+  end if
   n=root_shape
   do depth=2,size(shared_ratios)
     if (any(n>huge(1)/shared_ratios(depth))) error stop 'Finest lattice too large'
@@ -173,6 +194,12 @@ program pelef_reactive_eb_tree_3d
     record%minimum_dt=min(record%minimum_dt,dt);record%minimum_theta=min(record%minimum_theta,theta)
     if (regrid_stage<regrid_count) then
       if (record%time>=regrid_times(regrid_stage+1)) then
+        if (temperature_adaptive) then
+          depth=max(topology%level_count(),tag_depth+1)
+          call tag_reactive_eb_tree_temperature_3d(tree,geometry_levels(depth),tag_thresholds(:tag_depth), &
+            tag_ratios(:tag_depth),tag_tile_shape,tag_buffer,tag_maximum_nodes,layouts(regrid_stage+1),ok)
+          if (.not.ok) error stop 'Temperature adaptation failed or exceeded capacity'
+        end if
         call activate(regrid_stage+1,.true.)
         write(*,'(a,i0,a,i0)') 'Regrid stage: ',regrid_stage,' nodes: ',size(tree%nodes)
       end if
@@ -229,6 +256,117 @@ contains
     end if
     if (.not.valid) error stop 'Cannot activate scheduled tree'
     topology=layouts(stage);regrid_stage=stage
+  end subroutine
+  function descriptor_for(layout,index) result(descriptor)
+    type(amr_patch_tree_3d), intent(in) :: layout
+    integer, intent(in) :: index
+    integer :: descriptor(12)
+    associate(n=>layout%nodes(index),p=>layout%nodes(index)%patch)
+      descriptor=[n%parent,n%level,n%shape,p%refinement_ratio,p%coarse_i_lower,p%coarse_i_upper, &
+        p%coarse_j_lower,p%coarse_j_upper,p%coarse_k_lower,p%coarse_k_upper]
+    end associate
+  end function
+  subroutine adaptive_record(stream,reading)
+    integer, intent(in) :: stream
+    logical, intent(in) :: reading
+    integer :: controls(6),got(6),saved_ratios(8),stored_stage,stored_count,event,node,node_count,axis,p,level
+    integer :: descriptors(12,33),parents(32),refinement(32),lo(3,32),hi(3,32),previous(3),dims(3)
+    real(dp) :: thresholds(8),event_time
+    controls=[tag_depth,tag_tile_shape,tag_buffer,tag_maximum_nodes]
+    if (reading) then
+      read(stream,*,iostat=ios) got
+      if (ios/=0) error stop 'Missing tagging policy'
+      if (any(got/=controls)) error stop 'Tagging policy mismatch'
+      read(stream,*,iostat=ios) saved_ratios(:tag_depth)
+      if (ios/=0) error stop 'Missing tagging ratios'
+      read(stream,*,iostat=ios) thresholds(:tag_depth)
+      if (ios/=0) error stop 'Missing tagging thresholds'
+      if (any(saved_ratios(:tag_depth)/=tag_ratios(:tag_depth)).or. &
+        any(thresholds(:tag_depth)/=tag_thresholds(:tag_depth))) error stop 'Tagging thresholds or ratios mismatch'
+      read(stream,*,iostat=ios) stored_count,stored_stage
+      if (ios/=0) error stop 'Missing adaptive schedule'
+      if (stored_count/=regrid_count.or.stored_stage<0.or.stored_stage>regrid_count) error stop 'Invalid adaptive stage'
+    else
+      stored_stage=regrid_stage
+      write(stream,*,iostat=ios) controls
+      if (ios/=0) error stop 'Cannot write tagging policy'
+      write(stream,*,iostat=ios) tag_ratios(:tag_depth)
+      if (ios/=0) error stop 'Cannot write tagging ratios'
+      write(stream,'(*(es27.18e3,1x))',iostat=ios) tag_thresholds(:tag_depth)
+      if (ios/=0) error stop 'Cannot write tagging thresholds'
+      write(stream,*,iostat=ios) regrid_count,regrid_stage
+      if (ios/=0) error stop 'Cannot write adaptive schedule'
+    end if
+    do event=0,regrid_count
+      if (event>0) then
+        if (reading) then
+          read(stream,*,iostat=ios) event_time
+          if (ios/=0) error stop 'Missing adaptive time'
+          if (event_time/=regrid_times(event)) error stop 'Adaptive event time mismatch'
+        else
+          write(stream,'(es27.18e3)',iostat=ios) regrid_times(event)
+          if (ios/=0) error stop 'Cannot write adaptive time'
+        end if
+      end if
+      node_count=0
+      if (event<=stored_stage) node_count=size(layouts(event)%nodes)
+      if (reading) then
+        read(stream,*,iostat=ios) node_count
+        if (ios/=0) error stop 'Missing adaptive topology'
+        if (event>stored_stage) then
+          if (node_count/=0) error stop 'Unexpected future adaptive topology'
+          cycle
+        end if
+        if (node_count<1.or.node_count>33) error stop 'Invalid adaptive node count'
+        if (event>0.and.node_count>tag_maximum_nodes) error stop 'Adaptive node capacity exceeded'
+        do node=1,node_count
+          read(stream,*,iostat=ios) descriptors(:,node)
+          if (ios/=0) error stop 'Missing adaptive node'
+        end do
+        if (event==0) then
+          if (node_count/=size(layouts(0)%nodes)) error stop 'Initial adaptive topology mismatch'
+          do node=1,node_count
+            if (any(descriptors(:,node)/=descriptor_for(layouts(0),node))) error stop 'Initial adaptive node mismatch'
+          end do
+          cycle
+        end if
+        if (any(descriptors(:,1)/=descriptor_for(layouts(0),1))) error stop 'Adaptive root mismatch'
+        do node=2,node_count
+          p=node-1;parents(p)=descriptors(1,node);refinement(p)=descriptors(6,node)
+          lo(:,p)=descriptors([7,9,11],node);hi(:,p)=descriptors([8,10,12],node)
+        end do
+        call make_layout(node_count-1,parents,refinement,lo,hi,layouts(event))
+        do node=2,node_count
+          if (any(descriptors(:,node)/=descriptor_for(layouts(event),node))) error stop 'Adaptive descriptor mismatch'
+          level=layouts(event)%nodes(node)%level;p=layouts(event)%nodes(node)%parent
+          if (level>tag_depth) error stop 'Adaptive depth exceeds policy'
+          if (refinement(node-1)/=tag_ratios(level)) error stop 'Adaptive ratio differs from policy'
+          dims=layouts(event)%nodes(p)%shape
+          if (any(mod(lo(:,node-1)-1,tag_tile_shape)/=0)) error stop 'Adaptive tile alignment mismatch'
+          if (any(hi(:,node-1)/=lo(:,node-1)+min(tag_tile_shape-1,dims-lo(:,node-1)))) &
+            error stop 'Adaptive tile extent mismatch'
+          if (node>2) then
+            if (p<layouts(event)%nodes(node-1)%parent) error stop 'Adaptive parent order mismatch'
+            if (p==layouts(event)%nodes(node-1)%parent) then
+              previous=lo(:,node-2)
+              do axis=3,1,-1
+                if (previous(axis)==lo(axis,node-1)) cycle
+                if (previous(axis)>lo(axis,node-1)) error stop 'Adaptive tile order mismatch'
+                exit
+              end do
+            end if
+          end if
+        end do
+      else
+        write(stream,*,iostat=ios) node_count
+        if (ios/=0) error stop 'Cannot write adaptive node count'
+        do node=1,node_count
+          write(stream,*,iostat=ios) descriptor_for(layouts(event),node)
+          if (ios/=0) error stop 'Cannot write adaptive node'
+        end do
+      end if
+    end do
+    if (reading) call activate(stored_stage,.false.)
   end subroutine
   subroutine schedule_record(stream,reading)
     integer, intent(in) :: stream
@@ -298,8 +436,9 @@ contains
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
       if (magic/='PELEF_EB_TREE_APPLICATION_V1'.and.magic/='PELEF_EB_TREE_APPLICATION_V2'.and. &
-        magic/='PELEF_EB_TREE_APPLICATION_V3') &
+        magic/='PELEF_EB_TREE_APPLICATION_V3'.and.magic/='PELEF_EB_TREE_APPLICATION_V4') &
         error stop 'Wrong tree application header'
+      if ((magic=='PELEF_EB_TREE_APPLICATION_V4').neqv.temperature_adaptive) error stop 'Adaptation mode mismatch'
       if (magic=='PELEF_EB_TREE_APPLICATION_V1'.and.automatic_timestep) error stop 'Restart policy mismatch'
       read(stream,*,iostat=ios) interval,integrator
       if (ios/=0) error stop 'Missing restart policy'
@@ -313,6 +452,7 @@ contains
     else
       magic='PELEF_EB_TREE_APPLICATION_V2'
       if (regrid_count>0) magic='PELEF_EB_TREE_APPLICATION_V3'
+      if (temperature_adaptive) magic='PELEF_EB_TREE_APPLICATION_V4'
       write(stream,'(a)',iostat=ios) trim(magic)
       if (ios/=0) error stop 'Cannot write application header'
       write(stream,'(es27.18e3,1x,a)',iostat=ios) time_step,trim(chemistry_integrator)
@@ -320,7 +460,9 @@ contains
       write(stream,'(l1,2(1x,es27.18e3))',iostat=ios) automatic_timestep,hydro_cfl,transport_cfl
       if (ios/=0) error stop 'Cannot write automatic interval policy'
     end if
-    if (magic=='PELEF_EB_TREE_APPLICATION_V3') then
+    if (temperature_adaptive) then
+      call adaptive_record(stream,reading)
+    else if (magic=='PELEF_EB_TREE_APPLICATION_V3') then
       call schedule_record(stream,reading)
     else if (regrid_count/=0) then
       error stop 'Restart schedule missing'

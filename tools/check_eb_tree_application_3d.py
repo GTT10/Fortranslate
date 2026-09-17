@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--scheduled', action='store_true')
+    parser.add_argument('--adaptive', action='store_true')
     args = parser.parse_args()
     exe, work = args.exe.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -43,17 +44,19 @@ def main():
     resumed = run('resumed', f"restart_file='{stopped / 'saved.chk'}',")
     for filename in ('result.csv', 'result.csv.budget.csv'):
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes(), filename
-    if args.scheduled:
+    if args.scheduled or args.adaptive:
         for step in (2, 3):
             stop = run(f'stopped_{step}', f"checkpoint_file='saved.chk', checkpoint_interval_steps={step}, stop_after_checkpoint=.true.,")
             resume = run(f'resumed_{step}', f"restart_file='{stop / 'saved.chk'}',")
             for filename in ('result.csv', 'result.csv.budget.csv'):
                 assert (full / filename).read_bytes() == (resume / filename).read_bytes(), (step, filename)
-        assert 'nodes: 1' in (work / 'stopped_2' / 'run.log').read_text()
-        assert 'nodes: 4' in (work / 'stopped_3' / 'run.log').read_text()
+        if args.scheduled:
+            assert 'nodes: 1' in (work / 'stopped_2' / 'run.log').read_text()
+            assert 'nodes: 4' in (work / 'stopped_3' / 'run.log').read_text()
     with (full / 'result.csv').open() as stream:
         cells = list(csv.DictReader(stream))
-    assert {int(row['level']) for row in cells} == {0, 1, 2}
+    levels = {int(row['level']) for row in cells}
+    assert levels == ({0, 1} if args.adaptive else {0, 1, 2}), levels
     assert all(float(row['fluid_volume']) > 0 and float(row['temperature']) > 0 for row in cells)
     fields = ['rho', 'rhou', 'rhov', 'rhow', 'rhoE'] + [key for key in cells[0] if key.startswith('rhoY_')]
     with (full / 'result.csv.budget.csv').open() as stream:
@@ -85,16 +88,26 @@ def main():
             source, success=False)
         for filename in ('result.csv', 'result.csv.budget.csv', 'protected.chk'):
             assert (directory / filename).read_text() == 'preserve\n'
-    if args.scheduled:
+    if args.scheduled or args.adaptive:
         wrong = template.replace('regrid_times=1.5e-9,2.5e-9', 'regrid_times=1.5e-9,2.6e-9')
         directory = run('bad_schedule', f"restart_file='{stopped / 'saved.chk'}',", wrong, success=False)
         assert not (directory / 'result.csv').exists()
         # Header: magic, interval/integrator, CFL policy, schedule count/stage.
         lines = (stopped / 'saved.chk').read_text().splitlines()
-        lines[3] = '2 1'
+        lines[6 if args.adaptive else 3] = '2 1'
         bad_stage = work / 'bad_stage.chk'
         bad_stage.write_text('\n'.join(lines) + '\n')
         directory = run('bad_stage', f"restart_file='{bad_stage}',", success=False)
+        assert not (directory / 'result.csv').exists()
+    if args.adaptive:
+        cold = run('cold', text=template.replace('tag_thresholds=1000,1.e9', 'tag_thresholds=1.e9,1.e9'))
+        with (cold / 'result.csv').open() as stream:
+            assert {row['level'] for row in csv.DictReader(stream)} == {'0'}
+        low_capacity = template.replace('tag_maximum_nodes=33', 'tag_maximum_nodes=1')
+        directory = run('capacity', text=low_capacity, success=False)
+        assert not (directory / 'result.csv').exists()
+        wrong_policy = template.replace('tag_buffer=0', 'tag_buffer=1')
+        directory = run('bad_tag_policy', f"restart_file='{stopped / 'saved.chk'}',", wrong_policy, success=False)
         assert not (directory / 'result.csv').exists()
     print(f'PASS: {len(cells)} exposed cells, exact restart CSV/budget, residual={worst:.17e}; rejection preserves files')
 
