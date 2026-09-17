@@ -161,7 +161,10 @@ and transactional geometry/EOS rejection
 ([remap evidence](validation/eb-tree-remap-20260918.md)). The application now
 connects prescribed topology changes, exact event landing and schedule-bound
 restart across coarsening/refinement ([schedule evidence](validation/eb-tree-scheduled-20260918.md));
-temperature-driven adaptation remains open.
+a temperature-tagging library now reuses deterministic AMR tiling while
+preserving exposed fine peaks and pruning solid-only nodes
+([tagging evidence](validation/eb-tree-tagging-20260918.md)). Adaptive
+application/restart integration remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
