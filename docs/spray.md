@@ -45,8 +45,22 @@ Dead zero-mass parcels are skipped. The population, change and total hit count
 publish together; failure preserves all three. Each proposed segment, including
 its unreflected endpoint, must stay in the closed root domain. This API does not
 combine outer-domain crossings with EB events. It remains a force-free serial
-drift API; liquid impact/film models and coupled MPI/AMR stepping are not yet
-connected.
+drift API; liquid impact/film models are not connected to this drift routine.
+
+`spray_eb_impact_mod` exports `impact_mixture_level_set` for one earliest
+mixed-liquid EB contact. Supply the previous position, a parent at its trial
+endpoint, component masses, molecular weights, local pressure, wall temperature,
+film thickness and contact angle. It uses the facet normal and the existing
+planar model's Weber/Reynolds conversion and impact correlations. Successful
+contacts publish the retained parent, splash children, deposited film and their
+component inventories together. `wall(1:5)` is received by the wall (opposite
+to the specular drift routine's system-change convention). A valid miss sets
+`fraction=1`, `regime=-1`, `wall=0` and preserves population/film buffers;
+invalid input preserves all state and diagnostics except `hit`/`ok`, which are
+false. The caller owns film-thickness sampling, global child-ID reservation,
+population insertion and remaining flight. This single-contact API is not yet
+connected to EB interval/application stepping or film evolution. See
+[focused impact evidence](validation/spray-eb-impact-20260918.md).
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
