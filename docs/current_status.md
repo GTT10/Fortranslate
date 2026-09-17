@@ -627,8 +627,12 @@ flight time and publishes particle/wall inventories transactionally
 ([evidence](validation/spray-eb-drift-20260918.md)). Serial single-grid EB field
 sampling and integrated gas deposition now use connected fluid-volume-weighted
 stencils and transactional EOS recovery
-([evidence](validation/spray-eb-field-20260918.md)). Coupled EB particle
-interaction, lateral film transport and physical qualification remain open.
+([evidence](validation/spray-eb-field-20260918.md)). A serial EB mixture interval
+now connects drag/heating/evaporation, representative-drop breakup, specular
+drift and conservative gas feedback with whole-interval rollback
+([evidence](validation/spray-eb-step-20260918.md)). Coupled EB gas evolution,
+distributed EB particles, liquid wall impacts, lateral film transport and
+physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
