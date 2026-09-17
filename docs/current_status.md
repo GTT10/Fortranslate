@@ -665,7 +665,10 @@ combined budgets and per-rank particle output
 ([evidence](validation/spray-mpi-eb-application-20260918.md)). Scheduled injection
 now supports tied, zero-scale and final-time events with an explicit injection
 budget ([evidence](validation/spray-mpi-eb-schedule-20260918.md)).
-Restart/regridding/rebalancing in this EB spray application, independent ports,
+A particle checkpoint payload now preserves complete parcel/component and
+injection metadata across MPI rank-count changes, with rollback on rejection
+([evidence](validation/spray-mpi-eb-particle-checkpoint-20260918.md)).
+Combined gas/particle restart integration, regridding/rebalancing in this EB spray application, independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant

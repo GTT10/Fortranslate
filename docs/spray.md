@@ -183,8 +183,16 @@ zero scales and final-time events are supported, with global live-population
 limits and monotonic IDs. The budget has a separate injected column and starts
 from gas before the first event. See
 [schedule evidence](validation/spray-mpi-eb-schedule-20260918.md).
-Checkpoint/restart, regridding and rebalancing remain open for this executable
-connection. See
+A rank-neutral particle payload API, `mpi_eb_particle_checkpoint` in
+`spray_mpi_eb_particle_checkpoint_mod`, now preserves parcels, liquid component
+masses, time/step, next event, ID watermark and injected inventory. It gathers
+private copies for immutable publication and restores onto the current finest
+fluid owners transactionally. The caller must bind its single-line context to
+the gas checkpoint generation, geometry, model and schedule; this payload does
+not itself contain or verify gas state. See
+[payload evidence](validation/spray-mpi-eb-particle-checkpoint-20260918.md).
+Checkpoint/restart integration, regridding and rebalancing remain open for this
+executable connection. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
