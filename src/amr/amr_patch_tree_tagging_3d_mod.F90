@@ -6,11 +6,11 @@ module amr_patch_tree_tagging_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   implicit none
   private
-  type :: hot_cell
+  type, public :: hot_cell
     integer(int64) :: lower(3),upper(3)
     real(dp) :: temperature
   end type
-  public :: tag_amr_patch_tree_temperature_3d
+  public :: tag_amr_patch_tree_temperature_3d,build_tagged_tree_3d
 contains
   subroutine tag_amr_patch_tree_temperature_3d(old_tree,temperature,thresholds,ratios,tile_shape,buffer, &
       maximum_nodes,periodic,new_tree,ok)
@@ -21,13 +21,12 @@ contains
     logical, intent(in) :: periodic(3)
     type(amr_patch_tree_3d), intent(inout) :: new_tree
     logical, intent(out) :: ok
-    type(amr_patch_tree_3d) :: candidate
     type(hot_cell), allocatable :: cells(:)
-    integer(int64), allocatable :: old_origin(:,:),old_domain(:,:),origin(:,:),width(:,:)
+    integer(int64), allocatable :: old_origin(:,:),old_domain(:,:)
     integer, allocatable :: old_ratios(:)
-    integer(int64) :: common(3),target(3),factor(3),a,b,g,total,lo(3),hi(3),pad(3)
-    integer :: axis,level,node,n(3),i,j,k,idx(3),used,parent,child,lower(3),upper(3),ratio,pass
-    logical :: valid,tagged
+    integer(int64) :: common(3),target(3),factor(3),a,b,g,total
+    integer :: axis,level,node,n(3),i,j,k,idx(3),used,pass
+    logical :: valid
     ok=.false.
     if (.not.temperature%is_valid(old_tree)) return
     if (size(temperature%fields(1)%values,1)/=1) return
@@ -88,8 +87,30 @@ contains
         if (i/=0) return
       end if
     end do
-    allocate(candidate%nodes(maximum_nodes),origin(3,maximum_nodes),width(3,maximum_nodes),stat=i)
-    if (i/=0) return
+    call build_tagged_tree_3d(old_tree,cells,common,thresholds,ratios,tile_shape,buffer, &
+      maximum_nodes,periodic,new_tree,ok)
+  end subroutine
+
+  ! Internal shared builder: callers validate controls and supply hot exposed-cell boxes
+  ! on the checked common lattice. No field payload is needed here.
+  subroutine build_tagged_tree_3d(old_tree,cells,common,thresholds,ratios,tile_shape,buffer, &
+      maximum_nodes,periodic,new_tree,ok)
+    type(amr_patch_tree_3d), intent(in) :: old_tree
+    type(hot_cell), intent(in) :: cells(:)
+    integer(int64), intent(in) :: common(3)
+    real(dp), intent(in) :: thresholds(:)
+    integer, intent(in) :: ratios(:),tile_shape(3),buffer,maximum_nodes
+    logical, intent(in) :: periodic(3)
+    type(amr_patch_tree_3d), intent(inout) :: new_tree
+    logical, intent(out) :: ok
+    type(amr_patch_tree_3d) :: candidate
+    integer(int64), allocatable :: origin(:,:),width(:,:)
+    integer(int64) :: pad(3),lo(3),hi(3)
+    integer :: used,parent,level,n(3),ratio,axis,i,j,k,lower(3),upper(3),child,ios
+    logical :: tagged,valid
+    ok=.false.
+    allocate(candidate%nodes(maximum_nodes),origin(3,maximum_nodes),width(3,maximum_nodes),stat=ios)
+    if (ios/=0) return
     candidate%nodes(1)=old_tree%nodes(1)
     origin(:,1)=0;width(:,1)=common/int(candidate%nodes(1)%shape,int64)
     used=1;parent=1

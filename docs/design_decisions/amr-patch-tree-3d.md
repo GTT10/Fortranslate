@@ -846,3 +846,25 @@ on every rank before scattering checkpoint state to current owners. It restores
 remap diagnostics and resumes at the next event without replay. Serial/MPI formats
 and mechanism identities remain shared. Temperature-driven event generation and
 recursive timestepping are still separate, unfinished MPI integration work.
+
+## Distributed temperature tagging
+
+`tag_mpi_amr_tree_temperature_3d` validates replicated geometry/owners and exact
+agreement of thresholds, ratios, tile extents, buffer, node limit and periodic
+axes. Each owner identifies hot exposed cells on the same checked integer lattice
+as serial. Only hot-cell boxes and temperatures are all-gathered; cold payload and
+covered parent cells do not vote. The extracted `build_tagged_tree_3d` helper
+constructs the same breadth-first k/j/i tile order for serial and MPI. It is an
+internal shared builder whose callers validate its controls/lattice.
+
+Source order in the gathered hot-cell list is irrelevant because each tile takes
+a Boolean intersection vote. Empty owners and zero requested refinement levels
+are supported. Input/coordinate/allocation/node-limit failures are collective;
+only an all-rank successful candidate replaces the destination tree. Temperature
+source payloads are read-only. MPI counts are bounded before packing six integer
+box coordinates per hot cell.
+
+Hot-cell geometry/temperature is replicated, so this is not a production scaling
+claim for nearly all-hot domains. Construction still scans tiles against hot
+cells. Automatic application invocation and restart adaptation counters remain a
+subsequent integration layer.

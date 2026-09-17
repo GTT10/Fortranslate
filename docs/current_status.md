@@ -70,7 +70,10 @@ MPI transport/wall timestep selection and the full common-step reaction/transpor
 composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
 The fixed-mechanism MPI tree executable now connects static topology, owner-local
 initialization/stepping, timestep retries and serial-format final CSV/budget output
-([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI temperature-adaptation dispatch and coarse-time interpolation/subcycling remain open.
+([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI temperature-adaptation application dispatch and coarse-time interpolation/subcycling remain open.
+A distributed temperature-tagging API now shares only hot exposed-cell boxes and
+uses the serial tile builder to produce identical geometry across ranks
+([evidence](validation/amr-tree-mpi-tagging-20260917.md)).
 Fixed/selected MPI tree applications now connect scheduled sparse remapping, event-time
 clipping, conservation checks and schedule-aware changed-rank restart
 ([evidence](validation/amr-tree-mpi-schedule-20260917.md)).
