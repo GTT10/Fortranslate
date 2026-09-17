@@ -9,15 +9,16 @@ module mpi_eb_tree_halo_3d_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use eb_reactive_transfer_3d_mod, only: face_metrics
   use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d
-  use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
   implicit none
   private
   public :: fill_mpi_eb_tree_halo_3d
 contains
-  ! Collective spatial PCM/outflow halos for all locally owned patches.
+  ! Collective PCM/outflow halos, optionally interpolating ancestor time endpoints.
   ! Only face donors are exchanged; interior, solid faces, edges and corners are zero.
   ! Geometry is replicated. Output fields have spatial lower bounds zero.
-  subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok)
+  subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -26,7 +27,14 @@ contains
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: snapshot,st,candidate,ct
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    ! One fraction per ancestor depth (root first), length max tree level.
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    type(amr_tree_state_3d) :: snapshot,st,candidate,ct,interpolated,it
+    real(dp), allocatable :: fraction_min(:),fraction_max(:),temporal_values(:,:),temporal_t(:,:)
+    integer, allocatable :: temporal_requests(:,:),temporal_index(:)
+    integer :: supplied,minimum_supplied,maximum_supplied,temporal_count
+    real(dp) :: fraction
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),requests(:,:),destination(:,:)
     real(dp), allocatable :: values(:,:),guesses(:,:)
@@ -46,6 +54,57 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid,ready)
     if (.not.ready) return
+    supplied=sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(temperature_start), &
+      present(temperature_end),present(ancestor_fraction)]))
+    call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(supplied,maximum_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    if (minimum_supplied/=maximum_supplied) return
+    if (supplied/=0.and.supplied/=5) return
+    if (supplied==5) then
+      call agree(size(ancestor_fraction)==size(ratios)-1,ready)
+      if (.not.ready) return
+      call agree(all(ieee_is_finite(ancestor_fraction)),ready)
+      if (.not.ready) return
+      call agree(all(ancestor_fraction>=0._dp).and.all(ancestor_fraction<=1._dp),ready)
+      if (.not.ready) return
+      allocate(fraction_min(size(ancestor_fraction)),fraction_max(size(ancestor_fraction)),stat=ios)
+      call agree(ios==0,ready)
+      if (.not.ready) return
+      call MPI_Allreduce(ancestor_fraction,fraction_min,size(ancestor_fraction),MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if (status/=MPI_SUCCESS) return
+      call MPI_Allreduce(ancestor_fraction,fraction_max,size(ancestor_fraction),MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if (status/=MPI_SUCCESS) return
+      if (any(fraction_min/=fraction_max)) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_start,nv,comm,ready)
+      if (.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_end,nv,comm,ready)
+      if (.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,temperature_start,1,comm,ready)
+      if (.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,temperature_end,1,comm,ready)
+      if (.not.ready) return
+      ! Endpoint fields share the supplied topology, owners and immutable geometry.
+      ! Provisional ancestor updates must not be averaged from their descendants.
+      interpolated=ancestor_start;it=temperature_start
+      do node=1,size(owners)
+        if (owners(node)/=rank) cycle
+        depth=tree%nodes(node)%level+1
+        if (depth>size(ancestor_fraction)) cycle
+        fraction=ancestor_fraction(depth)
+        if (fraction==0._dp) cycle
+        if (fraction==1._dp) then
+          interpolated%fields(node)%values=ancestor_end%fields(node)%values
+          it%fields(node)%values=temperature_end%fields(node)%values
+        else
+          interpolated%fields(node)%values=(1._dp-fraction)*ancestor_start%fields(node)%values+ &
+            fraction*ancestor_end%fields(node)%values
+          it%fields(node)%values=(1._dp-fraction)*temperature_start%fields(node)%values+ &
+            fraction*temperature_end%fields(node)%values
+        end if
+      end do
+    end if
     maximum=0_int64;valid=.true.
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
@@ -137,6 +196,28 @@ contains
     if (.not.ready) return
     call fetch_mpi_amr_tree_cells_3d(tree,owners,st,1,requests(:,:count),guesses,comm,ready)
     if (.not.ready) return
+    if (supplied==5) then
+      allocate(temporal_requests(4,count),temporal_index(count),stat=ios)
+      call agree(ios==0,ready)
+      if (.not.ready) return
+      temporal_count=0
+      do q=1,count
+        donor=requests(1,q);target=destination(1,q)
+        if (tree%nodes(donor)%level>=tree%nodes(target)%level) cycle
+        temporal_count=temporal_count+1
+        temporal_requests(:,temporal_count)=requests(:,q);temporal_index(temporal_count)=q
+      end do
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,interpolated,nv, &
+        temporal_requests(:,:temporal_count),temporal_values,comm,ready)
+      if (.not.ready) return
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,it,1, &
+        temporal_requests(:,:temporal_count),temporal_t,comm,ready)
+      if (.not.ready) return
+      do q=1,temporal_count
+        values(:,temporal_index(q))=temporal_values(:,q)
+        guesses(:,temporal_index(q))=temporal_t(:,q)
+      end do
+    end if
     do q=1,count
       if (.not.ieee_is_finite(guesses(1,q))) then
         valid=.false.;cycle
