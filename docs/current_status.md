@@ -194,7 +194,10 @@ transfers into parent peers, and refluxes exposed owner-local cells. A common
 Euler hydro API connects these operations with face exchange and separate
 boundary/wall ledgers, matching serial states exactly in focused cases
 ([MPI hydro evidence](validation/mpi-eb-tree-hydro-20260918.md)).
-EB tree MPI temporal halos, reaction/transport composition and application integration remain open.
+MPI common-interval molecular transport and exposed-cell reaction now wrap
+hydro in transactional R/2 T/2 H T/2 R/2 composition, with focused serial state
+parity for explicit/implicit chemistry ([MPI coupled evidence](validation/mpi-eb-tree-full-20260918.md)).
+EB tree MPI temporal halos/subcycling, selected-target wiring and application integration remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
