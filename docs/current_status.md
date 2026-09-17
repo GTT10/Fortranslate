@@ -99,6 +99,11 @@ methanol fixture passes exact state/budget restart
 ([application evidence](validation/eb-application-exchange-20260917.md),
 [API evidence](validation/eb-redistributed-exchange-20260917.md),
 [checkpoint evidence](validation/eb-exchange-checkpoint-20260917.md)).
+A serial fixed-geometry two-level EB remapper now conservatively moves, adds
+or removes fine patches, preserves same-resolution overlap, and supports
+ratio changes with coarse-donor initialization and transactional failure.
+Dynamic application/checkpoint integration remains open
+([remap evidence](validation/eb-remap-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
