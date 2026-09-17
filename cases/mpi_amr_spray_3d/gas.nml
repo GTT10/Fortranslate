@@ -1,0 +1,13 @@
+&reactive_3d
+ nx=4,ny=4,nz=4,maximum_steps=100
+ x_upper=.004,y_upper=.004,z_upper=.004
+ final_time=2.e-8,cfl=.2
+ problem='reactive_hotspot',thermo_model='full_h2o2'
+ initial_temperature=1000.,initial_pressure=101325.
+ hotspot_temperature_rise=0.
+ hotspot_center_x=.002,hotspot_center_y=.002,hotspot_center_z=.002,hotspot_width=.0006
+ reconstruction='pcm',limiter='mc',riemann_solver='hllc'
+ boundary_condition='periodic'
+ chemistry_enabled=.false.,transport_enabled=.false.
+ output_file='amr_spray.csv'
+/

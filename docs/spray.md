@@ -17,7 +17,9 @@ cells. MPI deposition now routes conservative contributions to those owners;
 MPI gas temperature recovery now commits with the feedback. A periodic MPI AMR
 mixed-particle interval now connects sampling, particle evolution, feedback and
 final migration. A reacting-step wrapper also connects the existing AMR gas
-solver; executable, injection/regrid and checkpoint orchestration remains open.
+solver. Fixed/selected [MPI AMR spray executables](../cases/mpi_amr_spray_3d/README.md)
+now connect initial injection, coupled steps, one scheduled regrid and gas/particle
+CSV output. Checkpoint orchestration remains open for these executables.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -138,8 +140,8 @@ gas timestep; particle halves select their own common substeps.
 The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
 The selected library links the selected MPI tree runtime; it does not acquire
-the fixed-mechanism core. This API still needs executable-level setup,
-injection, regridding and checkpoint orchestration.
+the fixed-mechanism core. The MPI AMR spray application below supplies setup,
+initial injection and a prescribed regrid; checkpoint orchestration remains open.
 
 `remap_mpi_amr_spray` in `spray_mpi_amr_remap_mod` connects conservative gas
 remapping and particle migration for a changed regular tree or owner map. It
@@ -151,7 +153,17 @@ domain must remain fixed; refinements may move, appear or disappear. Particle
 positions and breakup/lineage payloads remain unchanged. Periodic flags control
 lookup; nonperiodic exterior parcels reject. The caller retains the unchanged
 ID watermark and chooses the new topology/owners and per-rank receive capacity.
-This API does not perform tagging or schedule regrids in an executable.
+This API does not choose the new topology. The MPI AMR spray application can
+schedule one caller-prescribed topology file.
+
+`pelef_mpi_amr_spray_3d` and `pelef_mpi_amr_spray_3d_selected` share
+`spray_mpi_amr_application_mod`. They take gas, topology and spray input paths,
+initialize owner-local gas, inject a mixed-liquid cone with collective IDs,
+advance coupled steps with whole-step retries and optionally remap at one
+specified time. Gas CSV contains only exposed cells; separate per-rank particle
+CSVs are analysis outputs. See the [case guide](../cases/mpi_amr_spray_3d/README.md)
+for controls and limitations. Scheduled/multiport injection, automatic tagging,
+checkpoint/restart and AMR physical-boundary/EB particle handling remain open.
 
 ## Build and run
 

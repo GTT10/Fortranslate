@@ -1,0 +1,12 @@
+&amr_spray
+ component_count=2,vapor_names='H2O','H2O2'
+ fractions=.25,.75
+ liquid_density=1000.,800.,liquid_cp=4184.,2000.
+ reference_temperature=373.15,350.
+ reference_pressure=101325.,101325.,latent_heat=2.257e6,1.e6
+ parcel_count=4,total_mass=1.e-10
+ center=.00075,.00075,.00075,axis=1.,0.,0.
+ speed=20.,half_angle=.1,diameter=1.e-5,drop_temperature=350.
+ maximum_parcels=100
+ subcycling=.false.
+/
