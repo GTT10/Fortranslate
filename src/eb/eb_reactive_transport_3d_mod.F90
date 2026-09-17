@@ -19,7 +19,7 @@ module eb_reactive_transport_3d_mod
 
   real(dp), parameter :: species_safety = 0.90_dp
 
-  public :: reactive_eb_transport_timestep_3d
+  public :: reactive_eb_transport_timestep_3d,reactive_eb_transport_patch_timestep_3d
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
   public :: reactive_eb_transport_euler_update_3d
@@ -297,6 +297,68 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, dt, &
       maximum_diffusivity, ok)
   end subroutine reactive_eb_transport_timestep_3d
+
+  ! Small-cell estimate for a plain Euler patch. Unlike the redistributed
+  ! estimate, open-face conductances are divided by fluid volume. Physical
+  ! outer faces are included conservatively even when their transport flux is
+  ! disabled. Embedded walls have zero molecular flux and add no conductance.
+  subroutine reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,transport_cfl, &
+      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,dt,maximum_diffusivity,ok, &
+      donor_diffusivity)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),transport_cfl
+    type(eb_geometry_3d), intent(in) :: geometry
+    logical, intent(in) :: viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled
+    real(dp), intent(out) :: dt,maximum_diffusivity
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: donor_diffusivity
+    real(dp) :: base_dt,diffusivity,metric,maximum_metric,rate,candidate
+    integer :: i,j,k
+    logical :: valid
+    dt=0._dp;maximum_diffusivity=0._dp;ok=.false.
+    if (present(donor_diffusivity)) then
+      if (.not.ieee_is_finite(donor_diffusivity)) return
+      if (donor_diffusivity<0._dp) return
+    end if
+    call reactive_eb_transport_timestep_3d(species,transport,state,temperature,geometry,transport_cfl, &
+      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,base_dt,diffusivity,valid)
+    if (.not.valid) return
+    if (.not.(viscosity_enabled.or.thermal_conduction_enabled.or.species_diffusion_enabled)) then
+      dt=huge(1._dp);ok=.true.;return
+    end if
+    if (present(donor_diffusivity)) diffusivity=max(diffusivity,donor_diffusivity)
+    if (diffusivity==0._dp) then
+      dt=huge(1._dp);ok=.true.;return
+    end if
+    maximum_metric=0._dp
+    do k=1,geometry%nz
+      do j=1,geometry%ny
+        do i=1,geometry%nx
+          if (geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+          metric=0.5_dp*(geometry%x_face_fraction(i-1,j,k)+geometry%x_face_fraction(i,j,k))/geometry%dx**2 &
+            +0.5_dp*(geometry%y_face_fraction(i,j-1,k)+geometry%y_face_fraction(i,j,k))/geometry%dy**2 &
+            +0.5_dp*(geometry%z_face_fraction(i,j,k-1)+geometry%z_face_fraction(i,j,k))/geometry%dz**2
+          if (metric>huge(1._dp)*geometry%volume_fraction(i,j,k)) return
+          metric=metric/geometry%volume_fraction(i,j,k)
+          if (.not.ieee_is_finite(metric).or.metric<=0._dp) return
+          maximum_metric=max(maximum_metric,metric)
+        end do
+      end do
+    end do
+    if (maximum_metric<=0._dp) return
+    if (maximum_metric>1._dp) then
+      if (diffusivity>huge(1._dp)/maximum_metric) return
+    end if
+    rate=diffusivity*maximum_metric
+    if (rate<=0._dp) return
+    if (rate<1._dp) then
+      if (transport_cfl>huge(1._dp)*rate) return
+    end if
+    candidate=transport_cfl/rate
+    if (.not.ieee_is_finite(candidate).or.candidate<=0._dp) return
+    dt=candidate;maximum_diffusivity=diffusivity;ok=.true.
+  end subroutine reactive_eb_transport_patch_timestep_3d
 
   pure subroutine limit_species_face( &
       flux, species_energy, nspecies, theta)

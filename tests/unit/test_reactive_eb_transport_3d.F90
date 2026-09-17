@@ -23,7 +23,7 @@ program test_reactive_eb_transport_3d
     reactive_eb_element_integrals_3d, advance_reactive_eb_strang_3d, &
     advance_reactive_eb_full_3d
   use eb_reactive_transport_3d_mod, only: &
-    reactive_eb_transport_timestep_3d, reactive_eb_transport_rhs_3d, &
+    reactive_eb_transport_timestep_3d, reactive_eb_transport_rhs_3d, reactive_eb_transport_patch_timestep_3d, &
     reactive_eb_transport_fluxes_rhs_3d, reactive_eb_transport_euler_update_3d, &
     advance_reactive_eb_transport_3d
   implicit none
@@ -39,6 +39,7 @@ program test_reactive_eb_transport_3d
   call require(ok, "transport chemistry load")
   call load_h2o2_elementary_transport(transport, ok)
   call require(ok, "transport database load")
+  call check_regular_patch()
   call check_axis(species, transport, "x")
   call check_axis(species, transport, "y")
   call check_axis(species, transport, "z")
@@ -48,6 +49,31 @@ program test_reactive_eb_transport_3d
   write(*, '(a)') "test_reactive_eb_transport_3d: PASS"
 
 contains
+
+  subroutine check_regular_patch()
+    type(eb_geometry_3d) :: geometry
+    type(reactive_eb_3d_config) :: config
+    real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
+    real(dp) :: reference_dt,reference_d,patch_dt,patch_d
+    logical :: valid
+    config%nx=4;config%ny=4;config%nz=4
+    call build_axis_plane_eb_geometry_3d(4,4,4,0._dp,1._dp,0._dp,2._dp,0._dp,3._dp,'x',-1._dp,geometry,valid)
+    call require(valid,'regular transport patch geometry')
+    allocate(state(reactive_nvar(size(species)),4,4,4),temperature(4,4,4))
+    call initialize_reactive_eb_density_sheet_3d(species,config,geometry,state,temperature,valid)
+    call require(valid,'regular transport patch state')
+    call reactive_eb_transport_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,reference_dt,reference_d,valid)
+    call require(valid,'regular reference transport bound')
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,patch_dt,patch_d,valid)
+    call require(valid.and.patch_d==reference_d,'regular patch diffusivity matches existing calculation')
+    call require(abs(patch_dt-reference_dt)<2.e-14_dp*reference_dt,'anisotropic regular patch interval')
+    state(irho,1,1,1)=-1._dp
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,patch_dt,patch_d,valid)
+    call require(.not.valid.and.patch_dt==0._dp.and.patch_d==0._dp,'invalid active patch state resets outputs')
+  end subroutine check_regular_patch
 
   subroutine check_curved_driver(species,reactions,transport,cluster)
     type(nasa7_species), intent(in) :: species(:)
@@ -204,6 +230,24 @@ contains
       .true., .true., .true., timestep, maximum_diffusivity, local_ok)
     call require(local_ok .and. timestep > 0.0_dp .and. &
       maximum_diffusivity > 0.0_dp, "transport timestep")
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,modified_timestep,modified_diffusivity,local_ok)
+    call require(local_ok.and.modified_diffusivity==maximum_diffusivity,'plain patch transport estimate')
+    ! kappa=.05: one normal opening, four tangential openings with area .05;
+    ! no embedded-wall conductance. Half the open-face sum gives 12/h**2.
+    call require(abs(modified_timestep-timestep/4._dp)<1.e-12_dp*timestep,'thin slab diffusion analytical rate')
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,modified_timestep,modified_diffusivity,local_ok,2._dp*maximum_diffusivity)
+    call require(local_ok.and.modified_diffusivity==2._dp*maximum_diffusivity,'external diffusion bound')
+    call require(abs(modified_timestep-timestep/8._dp)<1.e-12_dp*timestep,'external diffusion bound halves interval')
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .false.,.false.,.false.,modified_timestep,modified_diffusivity,local_ok,maximum_diffusivity)
+    call require(local_ok.and.modified_timestep==huge(1._dp).and.modified_diffusivity==0._dp, &
+      'disabled transport imposes no bound')
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,modified_timestep,modified_diffusivity,local_ok,-1._dp)
+    call require(.not.local_ok.and.modified_timestep==0._dp.and.modified_diffusivity==0._dp, &
+      'invalid external diffusion bound fails with reset outputs')
     call overwrite_covered_storage(state, temperature, geometry)
     call reactive_eb_transport_timestep_3d( &
       species, transport, state, temperature, geometry, 0.35_dp, &
@@ -212,6 +256,10 @@ contains
     call require(local_ok .and. modified_timestep == timestep .and. &
       modified_diffusivity == maximum_diffusivity, &
       "covered storage excluded from transport timestep")
+    call reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,.35_dp, &
+      .true.,.true.,.true.,modified_timestep,modified_diffusivity,local_ok)
+    call require(local_ok.and.modified_diffusivity==maximum_diffusivity,'covered patch storage ignored')
+    call require(abs(modified_timestep-timestep/4._dp)<1.e-12_dp*timestep,'covered storage retains patch bound')
     state = saved_state
     temperature = saved_temperature
     interval = 0.2_dp * timestep
