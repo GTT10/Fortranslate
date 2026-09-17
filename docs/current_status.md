@@ -650,7 +650,10 @@ centroid visibility checks
 ([evidence](validation/spray-eb-tree-stencil-20260918.md)). MPI sampling now
 uses these stencils to fetch only requested owner-local field values, with
 collective geometry checks and transactional sample publication
-([evidence](validation/spray-mpi-eb-sample-20260918.md)). Independent ports,
+([evidence](validation/spray-mpi-eb-sample-20260918.md)). MPI EB deposition now
+routes integrated particle feedback by owner, restricts hidden parents with
+fluid-volume weights and recovers active-cell EOS temperatures transactionally
+([evidence](validation/spray-mpi-eb-deposit-20260918.md)). Independent ports,
 distributed EB particle evolution, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
