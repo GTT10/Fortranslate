@@ -41,6 +41,21 @@ uses viscosity, conduction, species diffusion and barodiffusion.
 `riemann_solver` accepts rusanov/hllc/pelec. Initial conditions use the existing
 fixed-mechanism density-sheet initializer and its defaults.
 
+## Scheduled topology changes
+
+`scheduled.nml` demonstrates 5 nodes -> root only -> 4 nodes at times
+1.5e-9 and 2.5e-9. `regrid_count` (0:16), increasing positive `regrid_times`,
+`regrid_child_count(event)`, `regrid_parent/ratio(:,event)` and
+`regrid_lower/upper(:,:,event)` describe complete replacement topologies.
+Zero children coarsens to the root. All layouts share root cells and refinement
+ratios on common levels. Geometry is built once on the deepest scheduled lattice.
+
+Steps land on event times before conservative remapping and checkpoint saving.
+A V3 checkpoint binds the original topology, every scheduled time/topology and
+completed stage. Restart reconstructs that stage's geometry before loading
+node records, then checks stage/time consistency. Future schedule edits reject
+restart. Events beyond the current final time may remain pending.
+
 ## Output and restart
 
 `output_file` contains exposed fluid cells only: node, level, local indices,
@@ -62,10 +77,10 @@ Replacement is not filesystem-atomic if an I/O error occurs during copying.
 
 ## Scope
 
-This is a serial static-tree, fixed-mechanism application using common-interval
+This is a serial static or scheduled-tree, fixed-mechanism application using common-interval
 Euler operators, spatial PCM donors, hydro outflow and closed diffusion
 boundaries. It is not a convergence or physical validation case. Selected
-mechanisms, regridding, recursive subcycling, MPI and
+mechanisms, temperature-driven adaptation, recursive subcycling, MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.
