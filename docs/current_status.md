@@ -674,7 +674,10 @@ rank count with pending injection events and cumulative ledgers preserved
 The application also redistributes whole patches using measured gas work and
 commits gas/particle ownership together
 ([evidence](validation/spray-mpi-eb-balance-20260918.md)).
-Regridding in this EB spray application, independent ports,
+A coupled remap library now moves refined patches, coarsens and refines with
+transactional gas/geometry/particle publication and retained original nodal
+geometry ([evidence](validation/spray-mpi-eb-remap-20260918.md)).
+Regrid scheduling/restart integration in this EB spray application, independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant

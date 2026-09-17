@@ -203,7 +203,16 @@ accepts optional `nodal_phi` for EB owner migration; this mode requires
 nonperiodic coordinates and rejects film arguments. A rejected particle move
 preserves the proposed gas/owner changes privately. See
 [rebalancing evidence](validation/spray-mpi-eb-balance-20260918.md).
-Regridding remains open for this executable connection. See
+`remap_mpi_eb_spray` in `spray_mpi_eb_remap_mod` now stages the existing
+conservative MPI EB gas remap and particle owner migration before publishing
+topology, owners, geometry, gas/temperature, parcels and liquid components.
+Movement of refined patches, coarsening and refinement share the same physical
+root domain and immutable geometry. The original nodal field may be a common
+integer refinement of the current finest tree lattice, allowing coarsening
+without replacing the original collision geometry. MPI sampling requires exact
+nodal dimensions and values across ranks. See
+[remap evidence](validation/spray-mpi-eb-remap-20260918.md).
+Application scheduling/restart integration of this remap remains open. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
