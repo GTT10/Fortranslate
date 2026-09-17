@@ -80,7 +80,10 @@ chemical inventories and a single state/diagnostic transaction
 application now connects static multiple patches, common-interval selection,
 composite CSV output and transactional checkpoint continuation
 ([evidence](validation/eb-multipatch-application-20260917.md)); multiple-patch
-subcycling, selected-mechanism application wiring and MPI EB remain open.
+subcycling and MPI EB remain open. A selected-mechanism executable now shares
+the application path and binds bundle/composition identity on restart, within
+the existing H/O/N species inventory support (plus inert AR)
+([evidence](validation/eb-selected-two-level-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

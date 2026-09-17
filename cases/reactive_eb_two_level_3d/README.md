@@ -84,7 +84,30 @@ not atomic against storage failure. Use distinct paths for inputs, outputs,
 restart source and checkpoint destination.
 [Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
 
-The current executable is fixed-mechanism and serial. Selected-mechanism CLI
-support, dynamic patches, multiple-patch subcycling and MPI are not yet connected.
+Both executables are serial. Dynamic patches, multiple-patch subcycling and
+MPI are not yet connected.
 [Multiple-patch application evidence](../../docs/validation/eb-multipatch-application-20260917.md).
 [Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
+
+## Selected mechanism
+
+Configuring `PELEF_MECHANISM_BUNDLE` also builds and installs
+`pelef_reactive_eb_two_level_3d_selected`. It shares the application source and
+supports the same single/multiple-patch paths. Supply `composition_count`,
+`composition_species` and `composition_mole_fractions`; species names resolve
+against the pinned bundle and fractions are normalized by the existing resolver.
+The default chemistry integrator comes from the bundle; explicit and implicit
+integrators can be selected in the namelist. Fixed-mechanism runs reject
+composition overrides.
+
+With `mechanisms/h2o2_full.json`, run
+[`selected_h2o2.nml`](selected_h2o2.nml). This example uses two fine patches,
+automatic interval selection, ten-species chemistry and molecular transport.
+Checkpoint patch records bind bundle SHA, resolved composition and integrator,
+so selected/fixed or changed-mechanism/composition restarts are rejected.
+The initial regular/cut temperatures must lie within the common species
+thermodynamic range. The inherited elemental inventory supports only
+H2, H, O, O2, OH, H2O, HO2, H2O2, N2 and AR; other species are rejected by this
+application, including when reaction is disabled. This is not a general
+carbon-fuel EB frontend or a CVODE connection.
+[Selected application evidence](../../docs/validation/eb-selected-two-level-20260917.md).
