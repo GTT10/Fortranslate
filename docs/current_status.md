@@ -33,8 +33,10 @@ Euler hydro API now connects both updates, reflux, averaging and separate compos
 boundary/wall inventories transactionally
 ([evidence](validation/eb-two-level-hydro-20260917.md)). Masked explicit/implicit
 reaction halves now wrap that update with composite chemical inventories
-([evidence](validation/eb-two-level-chemistry-20260917.md)). Multi-patch, molecular
-transport, subcycled and MPI EB hierarchy stepping remain open.
+([evidence](validation/eb-two-level-chemistry-20260917.md)). Molecular-transport
+fluxes now accept selectable face donors, including the species limiter
+([evidence](validation/eb-transport-halo-20260917.md)); hierarchy transport
+composition, multi-patch, subcycled and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
