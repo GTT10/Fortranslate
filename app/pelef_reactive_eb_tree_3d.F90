@@ -57,7 +57,7 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: regrid_times(16)=0._dp,next_time
   integer :: maximum_steps=100,maximum_step_retries=12,checkpoint_interval_steps=0
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
-  logical :: automatic_timestep=.false.
+  logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
@@ -72,7 +72,7 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
-    automatic_timestep,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
+    automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
     tag_tile_shape,tag_buffer,tag_maximum_nodes,tag_thresholds, &
@@ -256,7 +256,8 @@ program pelef_reactive_eb_tree_3d
     do retry=0,maximum_step_retries
       if (record%time+dt<=record%time) error stop 'Time increment underflow'
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
-        rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok,chemistry_integrator)
+        rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
+        chemistry_integrator,subcycling)
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
       dt=.5_dp*dt
@@ -541,6 +542,13 @@ contains
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if (magic=='PELEF_EB_TREE_SUBCYCLE_V1') then
+        if (.not.subcycling) error stop 'Restart subcycling mode mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if (ios/=0) error stop 'Missing subcycled application header'
+      else if (subcycling) then
+        error stop 'Restart subcycling mode mismatch'
+      end if
       if (magic/='PELEF_EB_TREE_APPLICATION_V1'.and.magic/='PELEF_EB_TREE_APPLICATION_V2'.and. &
         magic/='PELEF_EB_TREE_APPLICATION_V3'.and.magic/='PELEF_EB_TREE_APPLICATION_V4') &
         error stop 'Wrong tree application header'
@@ -556,6 +564,10 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if (subcycling) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_SUBCYCLE_V1'
+        if (ios/=0) error stop 'Cannot write subcycling mode'
+      end if
       magic='PELEF_EB_TREE_APPLICATION_V2'
       if (regrid_count>0) magic='PELEF_EB_TREE_APPLICATION_V3'
       if (temperature_adaptive) magic='PELEF_EB_TREE_APPLICATION_V4'

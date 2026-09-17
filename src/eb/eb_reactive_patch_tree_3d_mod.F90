@@ -421,7 +421,7 @@ contains
   ! until the complete step and its exchange vectors can be committed.
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
-      wall_change,chemical_change,minimum_theta,ok,integrator)
+      wall_change,chemical_change,minimum_theta,ok,integrator,subcycling)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -432,15 +432,18 @@ contains
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
+    logical, optional, intent(in) :: subcycling
     type(eb_reactive_tree_3d) :: candidate
     real(dp), allocatable :: boundary(:),wall(:),chemical(:),exchange(:),transport_sum(:)
     real(dp) :: theta,stage_theta
     integer :: nv,half
-    logical :: valid
+    logical :: valid,recursive_steps
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(chemical_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
+    recursive_steps=.false.
+    if (present(subcycling)) recursive_steps=subcycling
     candidate=tree
     allocate(boundary(nv),wall(nv),chemical(nv),exchange(nv),transport_sum(nv))
     chemical=0._dp;transport_sum=0._dp;theta=1._dp
@@ -450,13 +453,22 @@ contains
         if (.not.valid) return
       end if
       if (transport_enabled) then
-        call advance_reactive_eb_tree_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
-          diffusion,barodiffusion,candidate,exchange,stage_theta,valid)
+        if (recursive_steps) then
+          call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
+            diffusion,barodiffusion,candidate,exchange,stage_theta,valid)
+        else
+          call advance_reactive_eb_tree_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
+            diffusion,barodiffusion,candidate,exchange,stage_theta,valid)
+        end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
       end if
       if (half==1) then
-        call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid)
+        if (recursive_steps) then
+          call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,candidate,boundary,wall,valid)
+        else
+          call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid)
+        end if
         if (.not.valid) return
       else if (chemistry_enabled) then
         call reaction_half(valid)

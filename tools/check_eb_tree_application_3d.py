@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--adaptive', action='store_true')
+    parser.add_argument('--subcycling', action='store_true')
     args = parser.parse_args()
     exe, work = args.exe.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -23,6 +24,9 @@ def main():
 
     if args.automatic:
         template = template.replace('maximum_steps=20', 'maximum_steps=200, automatic_timestep=.true., hydro_cfl=1.e-5')
+
+    if args.subcycling:
+        template = template.replace('maximum_steps=20', 'maximum_steps=20, subcycling=.true.')
 
     def run(name, extra='', text=None, success=True):
         directory = work / name
@@ -94,7 +98,7 @@ def main():
         assert not (directory / 'result.csv').exists()
         # Header: magic, interval/integrator, CFL policy, schedule count/stage.
         lines = (stopped / 'saved.chk').read_text().splitlines()
-        lines[6 if args.adaptive else 3] = '2 1'
+        lines[(6 if args.adaptive else 3) + int(args.subcycling)] = '2 1'
         bad_stage = work / 'bad_stage.chk'
         bad_stage.write_text('\n'.join(lines) + '\n')
         directory = run('bad_stage', f"restart_file='{bad_stage}',", success=False)
@@ -124,6 +128,10 @@ def main():
         assert changed_composition != template
         directory = run('bad_composition', f"restart_file='{stopped / 'saved.chk'}',",
                         changed_composition, success=False)
+        assert not (directory / 'result.csv').exists()
+    if args.subcycling:
+        wrong_mode = template.replace('subcycling=.true.', 'subcycling=.false.')
+        directory = run('bad_subcycling', f"restart_file='{stopped / 'saved.chk'}',", wrong_mode, success=False)
         assert not (directory / 'result.csv').exists()
     print(f'PASS: {len(cells)} exposed cells, exact restart CSV/budget, residual={worst:.17e}; rejection preserves files')
 

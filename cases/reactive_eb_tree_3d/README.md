@@ -56,6 +56,22 @@ uses viscosity, conduction, species diffusion and barodiffusion.
 `riemann_solver` accepts rusanov/hllc/pelec. Initial conditions use the existing
 fixed-mechanism density-sheet initializer and its defaults.
 
+## Per-level time stepping
+
+`subcycling=.true.` selects recursive hydro and transport within the existing
+R/2 T/2 H T/2 R/2 composition. A hydro child takes `ratio` steps per parent
+interval; molecular transport takes `ratio**2`. Ancestor face values are
+interpolated at the appropriate level time, and accepted fine transfers are
+accumulated and reconciled after each parent interval. Reaction halves still
+operate on the exposed composite state around the transport/hydro operators.
+
+The default remains a common interval. `time_step` bounds the root interval;
+retries halve it transactionally. Automatic interval selection currently keeps
+the conservative all-node common bound even in subcycled mode, rather than
+scaling it upward by refinement ratios. Checkpoints mark subcycled execution
+and reject continuation with a different stepping mode. This composition
+retains Euler updates and does not claim second-order time accuracy.
+
 ## Scheduled topology changes
 
 `scheduled.nml` demonstrates 5 nodes -> root only -> 4 nodes at times
@@ -110,9 +126,9 @@ Replacement is not filesystem-atomic if an I/O error occurs during copying.
 
 ## Scope
 
-This is a serial static, scheduled or temperature-adapted, fixed/selected-mechanism application using common-interval
+This is a serial static, scheduled or temperature-adapted, fixed/selected-mechanism application using common or recursive
 Euler operators, spatial PCM donors, hydro outflow and closed diffusion
-boundaries. It is not a convergence or physical validation case. Recursive subcycling, MPI and
+boundaries. It is not a convergence or physical validation case. MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.

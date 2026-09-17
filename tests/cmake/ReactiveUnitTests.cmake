@@ -806,3 +806,13 @@ add_test(NAME unit_eb_tree_subcycle_hydro_3d COMMAND test_eb_tree_subcycle_hydro
 add_executable(test_eb_tree_subcycle_transport_3d unit/test_eb_tree_subcycle_transport_3d.F90)
 target_link_libraries(test_eb_tree_subcycle_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_subcycle_transport_3d COMMAND test_eb_tree_subcycle_transport_3d)
+
+add_executable(test_eb_tree_subcycle_full_3d unit/test_eb_tree_subcycle_full_3d.F90)
+target_link_libraries(test_eb_tree_subcycle_full_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_tree_subcycle_full_3d COMMAND test_eb_tree_subcycle_full_3d)
+add_test(NAME regression_eb_tree_subcycle_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_application_3d.py"
+    --exe "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+    --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/scheduled.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_subcycle_3d" --scheduled --subcycling)
+set_tests_properties(regression_eb_tree_subcycle_3d PROPERTIES TIMEOUT 180)
