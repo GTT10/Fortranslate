@@ -95,8 +95,9 @@ snapshots. New deposits begin film exchange on the next source substep.
 
 The inherited wet-impact correlations have a restricted valid range. For
 example, normal incidence at film thickness/drop diameter 0.1123 produces a
-negative child mass fraction and is rejected. Timestep reduction cannot repair
-an invalid correlation value; this remains an open model limitation, not
+negative child mass fraction and is rejected. The application now reports
+`EB impact correlation outside admissible mass/velocity range` immediately,
+without timestep retries for that model rejection. This remains an open model limitation, not
 qualified general wet-wall impact support. See
 [application evidence](../../docs/validation/spray-eb-impact-application-20260918.md).
 

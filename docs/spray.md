@@ -134,6 +134,13 @@ snapshots. See the [input guide](../cases/eb_spray_3d/README.md) and
 The checkpoint context is now V2; older V1 contexts are rejected. Existing wet
 correlations can reject normal-incidence thick-film states; this boundary is
 documented in the evidence and is not removed by the application connection.
+The contact, impact-interval, allocated source and allocated reactive APIs expose
+an optional `model_rejected` output for inadmissible classification, child-mass
+partition or outgoing normal velocity. They retain transactional state rollback.
+The source and application propagate this condition without timestep retry;
+other step failures retain their existing retry behavior. The flag is reset
+on entry and is separate from `ok`. See
+[rejection evidence](validation/spray-eb-impact-rejection-20260918.md).
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
