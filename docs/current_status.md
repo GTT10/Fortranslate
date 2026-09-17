@@ -576,8 +576,11 @@ one scheduled regrid and gas/particle CSV output
 ([evidence](validation/spray-amr-application-20260918.md)). Explicit single-cone
 injection schedules now land on event times and commit particle payloads, IDs and
 cumulative injection inventories after successful migration
-([evidence](validation/spray-amr-events-20260918.md)). AMR spray checkpoint/
-restart, multiport injection, automatic adaptation/rebalancing, physical
+([evidence](validation/spray-amr-events-20260918.md)). AMR spray checkpoints now
+bind gas/particle state, topology, IDs and event position, with immutable
+publication and changed-rank continuation in fixed/selected executables
+([evidence](validation/spray-amr-checkpoint-20260918.md)). Multiport injection,
+automatic adaptation/rebalancing, physical
 particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
