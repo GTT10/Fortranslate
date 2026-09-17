@@ -7,10 +7,19 @@ build/selected-tree-mpi-debug/pelef_reactive_eb_two_level_3d cases/reactive_eb_t
 
 The `eb_two_level` namelist describes a full-domain **finest geometry lattice**
 (`nx,ny,nz`). Coarsening by `refinement_ratio` constructs the coarse domain;
-`fine_lower` and `fine_upper` are inclusive coarse-cell indices of the one fine
-patch. Geometry metrics are extracted from the same finest construction.
+`fine_lower` and `fine_upper` are inclusive coarse-cell indices of the fine
+patch when `patch_count=1` (default). Geometry metrics are extracted from the same finest construction.
 The reference uses an 8-cubed lattice, a 4-cubed coarse domain and a 4-cubed
 fine patch, with fixed elementary H2/O2 chemistry, molecular transport and hydro.
+
+For multiple static, nonoverlapping fine patches, use
+[`multipatch.nml`](multipatch.nml). Set `patch_count` (2–16) and provide
+`patch_lower(:,p)` / `patch_upper(:,p)` as inclusive coarse-cell boxes.
+Namelist values run through the three coordinates of each patch in order.
+These boxes replace `fine_lower` / `fine_upper` in multiple-patch mode.
+All patches share the refinement ratio and advance with a common interval;
+`subcycling=.true.` is currently rejected for multiple patches. Automatic
+selection includes every patch's hydro and diffusion bounds and donors.
 
 `geometry_type` accepts `plane`, `extruded` or `level_set`, with the same geometry
 file formats as the existing [extruded](../reactive_eb_extruded_3d/README.md) and
@@ -47,6 +56,9 @@ are outflow for hydro and zero flux for molecular transport.
 
 `output_file` contains composite active cells only: unrefined coarse cells at
 level zero and fine cells at level one. Coordinates are fluid centroids.
+With multiple patches, an extra leading `patch` column identifies coarse cells
+as 0 and fine patches by input index (1 through `patch_count`). Cell indices
+remain local to each patch. Budgets include the complete composite domain.
 `<output_file>.budget.csv` stores initial/final conserved inventories and
 accumulated boundary, wall and chemical contributions. The application checks
 their balance before writing outputs, using a scale with an absolute floor of one.
@@ -61,14 +73,18 @@ chemical integrator, `time_step`, automatic-selection mode and CFL controls
 and `subcycling` must match the saved run. Common stepping uses V1/V2
 checkpoints for fixed/automatic selection; subcycling uses V3/V4 respectively.
 These share a record layout with mode-specific magic.
+Multiple-patch checkpoints use separate `PELEF_EB_MULTIPATCH_CHECKPOINT_V1`
+(fixed) or `V2` (automatic) headers, include all fine records, and require the
+same patch order and boxes on restart.
 
-A single file contains both grids and cumulative budgets. The reader validates
-the complete file before restoring either grid. A failed read leaves existing
+A single file contains all grids and cumulative budgets. The reader validates
+the complete file before restoring any grid. A failed read leaves existing
 CSV outputs untouched. Checkpoint replacement is staged for validation but is
 not atomic against storage failure. Use distinct paths for inputs, outputs,
 restart source and checkpoint destination.
 [Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
 
 The current executable is fixed-mechanism and serial. Selected-mechanism CLI
-support, dynamic/multiple patches and MPI are not yet connected.
+support, dynamic patches, multiple-patch subcycling and MPI are not yet connected.
+[Multiple-patch application evidence](../../docs/validation/eb-multipatch-application-20260917.md).
 [Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
