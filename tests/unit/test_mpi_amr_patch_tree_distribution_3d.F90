@@ -4,7 +4,7 @@ program test_mpi_amr_patch_tree_distribution_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
-    scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
+    scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d,redistribute_mpi_amr_tree_3d
   implicit none
   type(amr_patch_tree_3d) :: tree,different_tree
   type(amr_patch_3d) :: patches(2)
@@ -110,6 +110,57 @@ program test_mpi_amr_patch_tree_distribution_3d
         call require(all(result%fields(node)%values==global%fields(node)%values+10*owners(node)),'failed gather preserves output')
       end do
     end if
+    block
+      type(amr_tree_state_3d) :: moving,moving_t,backup,backup_t
+      integer :: destinations(3),invalid(3),peer
+      moving=local
+      allocate(moving_t%fields(3))
+      do peer=1,3
+        if (owners(peer)/=rank) cycle
+        n=tree%nodes(peer)%shape
+        allocate(moving_t%fields(peer)%values(1,n(1),n(2),n(3)))
+        moving_t%fields(peer)%values=800._dp+peer
+      end do
+      destinations=mod(owners+1,nranks)
+      call redistribute_mpi_amr_tree_3d(tree,owners,destinations,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(ok,'direct U/T owner migration')
+      do peer=1,3
+        call require(allocated(moving%fields(peer)%values).eqv.(destinations(peer)==rank),'new owner state only')
+        call require(allocated(moving_t%fields(peer)%values).eqv.(destinations(peer)==rank),'new owner T only')
+        if (destinations(peer)/=rank) cycle
+        n=tree%nodes(peer)%shape
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              call require(all(moving%fields(peer)%values(:,i,j,k)==values(peer,i,j,k)+10*owners(peer)), &
+                'exact migrated cell/component values')
+            end do
+          end do
+        end do
+        call require(all(moving_t%fields(peer)%values==800._dp+peer),'exact migrated temperatures')
+      end do
+      backup=moving;backup_t=moving_t;invalid=owners
+      if (rank==0) invalid(1)=mod(owners(1)+1,nranks)
+      call redistribute_mpi_amr_tree_3d(tree,destinations,invalid,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(.not.ok,'inconsistent new owner map rejected')
+      do peer=1,3
+        if (destinations(peer)/=rank) cycle
+        call require(all(moving%fields(peer)%values==backup%fields(peer)%values),'failed migration U rollback')
+        call require(all(moving_t%fields(peer)%values==backup_t%fields(peer)%values),'failed migration T rollback')
+      end do
+      if (rank==destinations(1)) moving_t%fields(1)%values(1,1,1,1)=-1
+      call redistribute_mpi_amr_tree_3d(tree,destinations,owners,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(.not.ok,'bad temperature rejects entire migration')
+      if (rank==destinations(1)) moving_t%fields(1)%values(1,1,1,1)=801._dp
+      call redistribute_mpi_amr_tree_3d(tree,destinations,owners,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(ok,'reverse migration')
+      do peer=1,3
+        if (owners(peer)/=rank) cycle
+        call require(all(moving%fields(peer)%values==local%fields(peer)%values),'roundtrip exact state')
+      end do
+      call redistribute_mpi_amr_tree_3d(tree,owners,owners,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(ok,'identity owner migration')
+    end block
     call MPI_Barrier(MPI_COMM_WORLD,ierr)
   end do
   if (rank==root) print *, 'PASS: distributed tree payloads, exact gather, empty ranks and collective rollback'

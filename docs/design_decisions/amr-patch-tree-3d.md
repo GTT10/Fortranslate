@@ -1140,3 +1140,21 @@ intervals. Wrong offsets, overflow, wrong footer/EOF and noncanonical V2 record
 lengths reject candidates. V1 keeps its existing list-directed compatibility and
 streamed indexing path. Index presence is not a physical restart-context change;
 new readers accept either format, but V1-only older executables cannot read V2.
+
+
+## Direct same-geometry owner migration
+
+`redistribute_mpi_amr_tree_3d` accepts immutable old/new owner maps and publishes
+both conserved fields and temperatures together. Collective metadata/layout,
+finite-state, positive-temperature and MPI count checks precede communication.
+All destination payloads are allocated before the first send; allocation failure
+is agreed collectively. Owners traverse nodes in the same order, copying unchanged
+owners and sending changed owners directly with separate U/T tags. The candidate
+replaces caller fields only after collective success. Nonowners retain empty
+payload slots. No interpolation, EOS solve, restriction or root gather changes
+values; the caller adopts the new owner map after success.
+
+This primitive supports future runtime rebalancing but does not schedule it or
+measure work. It temporarily holds old and candidate owner-local fields and uses
+blocking, ordered whole-patch transfers. MPI runtime failures follow the caller's
+error handler; process-loss recovery and production scalability are not claimed.

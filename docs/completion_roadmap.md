@@ -131,7 +131,8 @@ initial inventory and restart reference scales also avoid field gathers.
 Checkpoint saves now use owner-local MPI-IO.
 Checkpoint loading now streams an index with bounded root memory and reads node
 ranges on their owners; optional indexed V2 eliminates the serial payload scan.
-Next add measured-cost rebalancing
+Direct same-geometry owner migration now transfers U/T without interpolation or
+a root gather. Next connect measured-cost rebalancing
 and dynamic full-split qualification. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive

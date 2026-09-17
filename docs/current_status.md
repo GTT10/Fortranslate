@@ -46,6 +46,9 @@ bounds and mode-aware checkpoint continuation
 ([evidence](validation/amr-tree-subcycle-application-20260917.md)). MPI tree transfer APIs now
 store payloads only on assigned patch owners, with collective metadata checks and
 root scatter/gather ([evidence](validation/amr-tree-mpi-distribution-20260917.md)).
+Same-geometry ownership changes now move conserved state and temperature directly
+between owners with exact values and collective preflight rollback
+([evidence](validation/amr-tree-mpi-redistribution-20260917.md)).
 Sparse cell queries now fetch only requested owner payloads in caller order, including
 empty ranks and collective rollback ([evidence](validation/amr-tree-mpi-cells-20260917.md)).
 Synchronous MPI halos now share serial peer/ancestor lookup, PCM/limited PLM and

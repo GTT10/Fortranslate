@@ -4,10 +4,108 @@ module mpi_amr_patch_tree_distribution_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,validate_mpi_amr_tree_metadata_3d
   implicit none
   private
+  public :: redistribute_mpi_amr_tree_3d
   public :: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
 contains
+  ! Move U/T together between whole-patch owners, without interpolation or a root gather.
+  ! Geometry and both owner maps must agree across the borrowed communicator.
+  subroutine redistribute_mpi_amr_tree_3d(tree,old_owners,new_owners,nvar,state,temperature,comm,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: old_owners(:),new_owners(:),nvar
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: candidate,temps
+    integer :: rank,status,node,axis,n(3),ios,count,temperature_count
+    integer(int64) :: elements
+    logical :: valid
+    ok=.false.
+    call validate_mpi_amr_tree_local_3d(tree,old_owners,state,nvar,comm,valid)
+    if (.not.valid) return
+    call validate_mpi_amr_tree_local_3d(tree,old_owners,temperature,1,comm,valid)
+    if (.not.valid) return
+    call validate_mpi_amr_tree_metadata_3d(tree,new_owners,nvar,comm,valid)
+    if (.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    valid=.true.
+    do node=1,size(tree%nodes)
+      elements=int(nvar,int64)
+      do axis=1,3
+        if (elements>int(huge(1),int64)/int(tree%nodes(node)%shape(axis),int64)) then
+          valid=.false.;exit
+        end if
+        elements=elements*int(tree%nodes(node)%shape(axis),int64)
+      end do
+      if (old_owners(node)/=rank) cycle
+      if (.not.all(ieee_is_finite(state%fields(node)%values))) valid=.false.
+      if (.not.all(ieee_is_finite(temperature%fields(node)%values))) valid=.false.
+      if (any(temperature%fields(node)%values<=0)) valid=.false.
+    end do
+    call agree_move(valid)
+    if (.not.valid) return
+    allocate(candidate%fields(size(tree%nodes)),temps%fields(size(tree%nodes)),stat=ios)
+    valid=ios==0
+    if (valid) then
+      do node=1,size(tree%nodes)
+        if (new_owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        allocate(candidate%fields(node)%values(nvar,n(1),n(2),n(3)), &
+          temps%fields(node)%values(1,n(1),n(2),n(3)),stat=ios)
+        if (ios/=0) then
+          valid=.false.;exit
+        end if
+      end do
+    end if
+    call agree_move(valid)
+    if (.not.valid) return
+    do node=1,size(tree%nodes)
+      temperature_count=int(product(int(tree%nodes(node)%shape,int64)))
+      count=nvar*temperature_count
+      if (old_owners(node)==new_owners(node)) then
+        if (rank==old_owners(node)) then
+          candidate%fields(node)%values=state%fields(node)%values
+          temps%fields(node)%values=temperature%fields(node)%values
+        end if
+        cycle
+      end if
+      status=MPI_SUCCESS
+      if (rank==old_owners(node)) then
+        call MPI_Send(state%fields(node)%values,count,MPI_DOUBLE_PRECISION,new_owners(node),28407,comm,status)
+      else if (rank==new_owners(node)) then
+        call MPI_Recv(candidate%fields(node)%values,count,MPI_DOUBLE_PRECISION,old_owners(node),28407, &
+          comm,MPI_STATUS_IGNORE,status)
+      end if
+      valid=valid.and.status==MPI_SUCCESS
+      status=MPI_SUCCESS
+      if (rank==old_owners(node)) then
+        call MPI_Send(temperature%fields(node)%values,temperature_count,MPI_DOUBLE_PRECISION,new_owners(node), &
+          28408,comm,status)
+      else if (rank==new_owners(node)) then
+        call MPI_Recv(temps%fields(node)%values,temperature_count,MPI_DOUBLE_PRECISION,old_owners(node), &
+          28408,comm,MPI_STATUS_IGNORE,status)
+      end if
+      valid=valid.and.status==MPI_SUCCESS
+    end do
+    call agree_move(valid)
+    if (.not.valid) return
+    call move_alloc(candidate%fields,state%fields)
+    call move_alloc(temps%fields,temperature%fields)
+    ok=.true.
+  contains
+    subroutine agree_move(condition)
+      logical, intent(inout) :: condition
+      logical :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      condition=.false.
+      if (ierr==MPI_SUCCESS) condition=result
+    end subroutine
+  end subroutine
+
   ! Deterministic largest-work-first whole-patch assignment. Work is a cell-step
   ! proxy, not a measured runtime: exponent 0=common, 1=hydro, 2=transport subcycling.
   ! Replicated geometry/controls are a caller contract; no field payload is read.
