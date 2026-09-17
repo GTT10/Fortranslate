@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--adaptive', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
+    parser.add_argument('--selected', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -116,6 +117,19 @@ def main():
         ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
         ('wrong_subcycle', f"restart_file='{stopped / 'saved.chk'}',subcycling={'.false.' if args.subcycling else '.true.'},"),
     ]
+    if args.selected:
+        context = (stopped / 'saved.chk').read_text()
+        assert 'ELEMENT_CONTEXT' in context
+        match = re.search(r'SELECTED_CONTEXT\n([0-9a-f]{64})', context)
+        assert match, 'selected mechanism identity missing'
+        sha = match[1]
+        altered = ('0' if sha[0] != '0' else '1') + sha[1:]
+        bad_identity = work / 'bad_identity.chk'
+        bad_identity.write_text(context.replace(sha, altered))
+        failures.extend([
+            ('wrong_identity', f"restart_file='{bad_identity}',"),
+            ('wrong_composition', f"restart_file='{stopped / 'saved.chk'}',composition_mole_fractions=0.30,0.15,0.55,"),
+        ])
     if args.adaptive:
         failures.append(('wrong_tag', f"restart_file='{stopped / 'saved.chk'}',tag_buffer=1,"))
     for name, extra in failures:

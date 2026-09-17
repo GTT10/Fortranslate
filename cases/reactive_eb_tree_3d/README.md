@@ -39,19 +39,24 @@ loads the full tree on each rank, then scatters from rank zero and releases full
 state arrays. CSV/checkpoint writes gather to rank zero and share the serial
 format. Checkpoints can continue with a different rank count or the serial
 executable. State CSVs are deterministic in the focused fixture; budget ledgers
-can differ in roundoff when MPI reduction grouping changes. Parallel I/O,
-selected-mechanism MPI wiring and scaling qualification are future work.
+can differ in roundoff when MPI reduction grouping changes. Parallel I/O
+and scaling qualification are future work.
 
 ## Selected mechanisms
 
 When a supported selected bundle is configured, the build also provides
-`pelef_reactive_eb_tree_3d_selected`. `selected.nml` is an H2/O2/N2 example
+`pelef_reactive_eb_tree_3d_selected` and, with MPI enabled,
+`pelef_mpi_reactive_eb_tree_3d_selected`. `selected.nml` is an H2/O2/N2 example
 using implicit chemistry. Composition is supplied through `composition_count`,
 `composition_species` and `composition_mole_fractions`; fixed-mechanism builds
 reject these inputs. The shared source uses the existing mechanism validator,
 initial temperature range check and generic source element metadata. Checkpoints
 bind bundle SHA-256, composition and integrator, and cumulative chemical
 exchange is checked for elemental conservation.
+
+The MPI target links a separate selected runtime without the fixed mechanism
+library. It uses the same input and checkpoint identity as the selected serial
+target and supports changed-rank and serial/MPI continuation.
 
 The selected executable shares static/scheduled/adaptive controls with the
 fixed app. The current focused selected fixture covers a static H2/O2 tree;

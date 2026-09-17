@@ -665,6 +665,38 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     endif()
   endif()
 
+  if(PELEF_ENABLE_MPI)
+    add_library(pelef_selected_mpi_eb_tree_3d_runtime STATIC
+      src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
+      src/parallel/mpi_eb_tree_transfer_3d_mod.F90
+      src/parallel/mpi_eb_tree_halo_3d_mod.F90
+      src/parallel/mpi_eb_tree_flux_3d_mod.F90
+      src/parallel/mpi_eb_tree_hydro_3d_mod.F90
+      src/parallel/mpi_eb_tree_subcycle_hydro_3d_mod.F90
+      src/parallel/mpi_eb_tree_transport_3d_mod.F90
+      src/parallel/mpi_eb_tree_subcycle_transport_3d_mod.F90
+      src/parallel/mpi_eb_tree_full_3d_mod.F90
+      src/parallel/mpi_eb_tree_timestep_3d_mod.F90
+      src/parallel/mpi_eb_tree_remap_3d_mod.F90
+      src/parallel/mpi_eb_tree_tagging_3d_mod.F90
+    )
+    set_target_properties(pelef_selected_mpi_eb_tree_3d_runtime PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_eb_tree_3d_modules")
+    target_include_directories(pelef_selected_mpi_eb_tree_3d_runtime PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_eb_tree_3d_modules>")
+    target_link_libraries(pelef_selected_mpi_eb_tree_3d_runtime PUBLIC
+      pelef_selected_reactive_eb_3d_runtime MPI::MPI_Fortran)
+    if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(pelef_selected_mpi_eb_tree_3d_runtime PRIVATE
+        -Wall -Wextra -Wpedantic -Wimplicit-interface -Wconversion-extra)
+      if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(pelef_selected_mpi_eb_tree_3d_runtime PRIVATE
+          -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+      endif()
+    endif()
+  endif()
+
   if(PELEF_ENABLE_SUNDIALS)
     add_library(
       pelef_selected_cvode_runtime

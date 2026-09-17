@@ -11,6 +11,7 @@ if(PELEF_ENABLE_MPI)
   )
   list(
     APPEND PELEF_TEST_SELECTED_FULL_MPI_OPTION
+    MPI_REACTIVE_EB_TREE_3D_NAME test_selected_full_mpi_reactive_eb_tree_3d
     MPI_REACTIVE_1D_NAME test_selected_full_mpi_reactive_1d
     MPI_AMR_REACTIVE_1D_NAME test_selected_full_mpi_amr_reactive_1d
     MPI_AMR_REACTIVE_3D_NAME test_selected_full_mpi_amr_reactive_3d
@@ -220,3 +221,13 @@ add_test(NAME regression_selected_eb_tree_3d
     --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/selected.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_3d")
 set_tests_properties(regression_selected_eb_tree_3d PROPERTIES TIMEOUT 180)
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME regression_selected_mpi_eb_tree_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_eb_tree_application_3d.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/selected.nml"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_eb_tree_3d" --selected)
+  set_tests_properties(regression_selected_mpi_eb_tree_3d PROPERTIES TIMEOUT 180 PROCESSORS 3)
+endif()
