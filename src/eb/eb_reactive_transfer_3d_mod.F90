@@ -7,8 +7,93 @@ module eb_reactive_transfer_3d_mod
   implicit none
   private
   public :: restrict_reactive_eb_state_3d,prolong_reactive_eb_state_pcm_3d
-  public :: fill_reactive_eb_patch_halo_3d
+  public :: fill_reactive_eb_patch_halo_3d,overlay_reactive_eb_peer_halo_3d
 contains
+  ! Overlay one same-resolution peer on previously filled face halos.
+  ! peer_offset is the peer origin minus the target origin in cell indices.
+  ! Only their shared open face is replaced; edges/corners and other donors
+  ! remain untouched. The caller owns collection-wide overlap validation.
+  subroutine overlay_reactive_eb_peer_halo_3d(species,target,peer,peer_offset,peer_state,peer_temperature, &
+      ghost_state,ghost_temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: target,peer
+    integer, intent(in) :: peer_offset(3)
+    real(dp), intent(in) :: peer_state(:,:,:,:),peer_temperature(:,:,:)
+    real(dp), intent(inout) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
+    real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed,guess
+    real(dp) :: spacing(3),origin(3),expected(3),tolerance,left_metrics(3),right_metrics(3)
+    integer :: n(3),pn(3),nvar,axis,side,first(3),last(3),idx(3),source(3),face(3),peer_face(3),i,j,k
+    logical :: valid
+    ok=.false.
+    if (.not.target%is_valid().or..not.peer%is_valid()) return
+    n=[target%nx,target%ny,target%nz];pn=[peer%nx,peer%ny,peer%nz]
+    ! Only touching boxes are meaningful to this pair operation. Bound offsets
+    ! before doing integer index arithmetic, including for rejected inputs.
+    if (any(peer_offset < -pn).or.any(peer_offset>n)) return
+    if (all(peer_offset<n.and.peer_offset+pn>0)) return
+    spacing=[target%dx,target%dy,target%dz]
+    if (any(abs([peer%dx,peer%dy,peer%dz]-spacing)>512._dp*epsilon(1._dp)*spacing)) return
+    origin=[target%x_lower,target%y_lower,target%z_lower]
+    expected=origin+real(peer_offset,dp)*spacing
+    tolerance=512._dp*epsilon(1._dp)*max(1._dp,maxval(abs(origin)),maxval(abs(expected)))
+    if (any(abs([peer%x_lower,peer%y_lower,peer%z_lower]-expected)>tolerance)) return
+    nvar=reactive_nvar(size(species))
+    if (.not.fields_match(peer_state,peer_temperature,peer,nvar)) return
+    if (any(shape(ghost_state)/=[nvar,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
+    allocate(candidate(nvar,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+    candidate=ghost_state;temps=ghost_temperature
+    do axis=1,3
+      do side=0,1
+        if (side==0.and.peer_offset(axis)+pn(axis)/=0) cycle
+        if (side==1.and.peer_offset(axis)/=n(axis)) cycle
+        first=max(1,peer_offset+1);last=min(n,peer_offset+pn)
+        first(axis)=side*(n(axis)+1);last(axis)=first(axis)
+        if (any(first>last)) cycle
+        do k=first(3),last(3)
+          do j=first(2),last(2)
+            do i=first(1),last(1)
+              idx=[i,j,k];source=idx-peer_offset
+              face=idx;face(axis)=side*n(axis)
+              peer_face=source;peer_face(axis)=source(axis)-side
+              left_metrics=face_metrics(target,axis,face)
+              right_metrics=face_metrics(peer,axis,peer_face)
+              if (abs(left_metrics(1)-right_metrics(1))>512._dp*epsilon(1._dp)) return
+              if (left_metrics(1)<=0._dp) cycle
+              if (any(abs(left_metrics(2:3)-right_metrics(2:3))>512._dp*epsilon(1._dp))) return
+              if (peer%volume_fraction(source(1),source(2),source(3))<=0._dp) return
+              guess=peer_temperature(source(1),source(2),source(3))
+              if (.not.ieee_is_finite(guess)) return
+              if (guess<=0._dp) return
+              call reactive_conserved_to_primitive(species,peer_state(:,source(1),source(2),source(3)),guess, &
+                primitive,recovered,speed,valid)
+              if (.not.valid) return
+              candidate(:,i,j,k)=peer_state(:,source(1),source(2),source(3));temps(i,j,k)=recovered
+            end do
+          end do
+        end do
+      end do
+    end do
+    ghost_state=candidate;ghost_temperature=temps;ok=.true.
+  end subroutine overlay_reactive_eb_peer_halo_3d
+
+  pure function face_metrics(geometry,axis,index) result(values)
+    type(eb_geometry_3d), intent(in) :: geometry
+    integer, intent(in) :: axis,index(3)
+    real(dp) :: values(3)
+    integer :: i,j,k
+    i=index(1);j=index(2);k=index(3)
+    select case(axis)
+    case(1)
+      values=[geometry%x_face_fraction(i,j,k),geometry%x_face_centroid_y(i,j,k),geometry%x_face_centroid_z(i,j,k)]
+    case(2)
+      values=[geometry%y_face_fraction(i,j,k),geometry%y_face_centroid_x(i,j,k),geometry%y_face_centroid_z(i,j,k)]
+    case(3)
+      values=[geometry%z_face_fraction(i,j,k),geometry%z_face_centroid_x(i,j,k),geometry%z_face_centroid_y(i,j,k)]
+    end select
+  end function face_metrics
+
   ! PCM parent donors at internal patch faces, fine-state extrapolation at
   ! physical domain faces. Only open face slots are populated; all other halo
   ! storage is zero. This checks Cartesian alignment, not full metric parity.

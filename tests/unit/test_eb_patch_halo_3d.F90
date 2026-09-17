@@ -5,7 +5,7 @@ program test_eb_patch_halo_3d
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use eb_reactive_transfer_3d_mod, only: fill_reactive_eb_patch_halo_3d
+  use eb_reactive_transfer_3d_mod, only: fill_reactive_eb_patch_halo_3d,overlay_reactive_eb_peer_halo_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
@@ -101,8 +101,91 @@ program test_eb_patch_halo_3d
   parent_u(1,4,3,3)=-1._dp
   call fill_reactive_eb_patch_halo_3d(species,coarse,patch,lo,2,parent_u,parent_t,u,t,ghost,gt,ok)
   call require(.not.ok.and.all(ghost==saved).and.all(gt==saved_t),'bad parent donor halo rollback')
+  call check_peers()
   write(*,'(a)') 'test_eb_patch_halo_3d: PASS'
 contains
+  subroutine check_peers()
+    type(eb_geometry_3d) :: target,peer,bad_peer
+    real(dp), allocatable :: pu(:,:,:,:),pt(:,:,:),gh(:,:,:,:),ght(:,:,:),keep(:,:,:,:),keep_t(:,:,:)
+    integer :: a,s,tl(3),th(3),pl(3),ph(3),offset(3),pn(3),ii,jj,kk,q(3),source(3),bad_index(3),changed
+    real(dp) :: aperture
+    logical :: valid,replaced
+    allocate(gh(nvar,0:7,0:7,0:7),ght(0:7,0:7,0:7))
+    do a=1,3
+      do s=0,1
+        tl=1;th=6;pl=2;ph=5
+        if (s==1) then
+          pl(a)=7;ph(a)=12
+        else
+          tl(a)=7;th(a)=12;pl(a)=1;ph(a)=6
+        end if
+        offset=pl-tl;pn=ph-pl+1
+        call extract_eb_geometry_3d(full,tl,th,target,valid)
+        call require(valid,'peer target extraction')
+        call extract_eb_geometry_3d(full,pl,ph,peer,valid)
+        call require(valid,'partial-face peer extraction')
+        allocate(pu(nvar,pn(1),pn(2),pn(3)),pt(pn(1),pn(2),pn(3)))
+        config%nx=pn(1);config%ny=pn(2);config%nz=pn(3)
+        call initialize_reactive_eb_density_sheet_3d(species,config,peer,pu,pt,valid)
+        call require(valid,'peer state initialization')
+        do kk=1,pn(3)
+          do jj=1,pn(2)
+            do ii=1,pn(1)
+              pu(:,ii,jj,kk)=pu(:,ii,jj,kk)*(1._dp+.001_dp*(ii+10*jj+100*kk))
+            end do
+          end do
+        end do
+        gh=-77._dp;ght=-88._dp
+        call overlay_reactive_eb_peer_halo_3d(species,target,peer,offset,pu,pt,gh,ght,valid)
+        call require(valid,'same-level peer overlay')
+        changed=0
+        do kk=0,7
+          do jj=0,7
+            do ii=0,7
+              q=[ii,jj,kk];source=q-offset
+              replaced=q(a)==s*7.and.all(source>=1).and.all(source<=pn)
+              aperture=0._dp
+              if (replaced) then
+                select case(a)
+                case(1);aperture=target%x_face_fraction(s*6,jj,kk)
+                case(2);aperture=target%y_face_fraction(ii,s*6,kk)
+                case(3);aperture=target%z_face_fraction(ii,jj,s*6)
+                end select
+              end if
+              if (replaced.and.aperture>0._dp) then
+                changed=changed+1
+                call require(all(gh(:,ii,jj,kk)==pu(:,source(1),source(2),source(3))),'exact peer conserved donor')
+                call require(abs(ght(ii,jj,kk)-pt(source(1),source(2),source(3)))< &
+                  1.e-8_dp*pt(source(1),source(2),source(3)),'peer EOS temperature')
+              else
+                call require(all(gh(:,ii,jj,kk)==-77._dp).and.ght(ii,jj,kk)==-88._dp,'other halo slots preserved')
+              end if
+            end do
+          end do
+        end do
+        call require(changed>0,'peer face actually exercised')
+        keep=gh;keep_t=ght
+        bad_index=pn;bad_index(a)=pn(a)
+        if (s==1) bad_index(a)=1
+        pu(1,bad_index(1),bad_index(2),bad_index(3))=-1._dp
+        call overlay_reactive_eb_peer_halo_3d(species,target,peer,offset,pu,pt,gh,ght,valid)
+        call require(.not.valid.and.all(gh==keep).and.all(ght==keep_t),'invalid peer donor rolls back entire overlay')
+        call overlay_reactive_eb_peer_halo_3d(species,target,peer,[0,0,0],pu,pt,gh,ght,valid)
+        call require(.not.valid.and.all(gh==keep).and.all(ght==keep_t),'overlapping boxes rejected')
+        if (a/=1) then
+          call build_axis_plane_eb_geometry_3d(pn(1),pn(2),pn(3),peer%x_lower,peer%x_upper, &
+            peer%y_lower,peer%y_upper,peer%z_lower,peer%z_upper,'x',.171_dp,bad_peer,valid)
+          call require(valid,'individually valid mismatched interface geometry')
+          call initialize_reactive_eb_density_sheet_3d(species,config,bad_peer,pu,pt,valid)
+          call require(valid,'mismatched peer valid state')
+          call overlay_reactive_eb_peer_halo_3d(species,target,bad_peer,offset,pu,pt,gh,ght,valid)
+          call require(.not.valid.and.all(gh==keep).and.all(ght==keep_t),'shared aperture mismatch rejected')
+        end if
+        deallocate(pu,pt)
+      end do
+    end do
+  end subroutine check_peers
+
   subroutine require(condition,message)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: message
