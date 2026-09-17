@@ -564,7 +564,10 @@ collectively, with initial-state validation and failure rollback
 mixed-particle interval now connects drag/heating/evaporation, representative
 breakup and KH children, common substeps, transactional gas feedback and final
 finest-owner migration ([evidence](validation/spray-amr-step-20260918.md)).
-Application gas-step/regrid/injection/checkpoint orchestration, AMR physical
+An MPI reacting-spray step now composes particle half-intervals around the
+existing reaction/transport/hydro split, with common or recursive gas steps and
+whole-step rollback ([evidence](validation/spray-amr-reactive-20260918.md)).
+Executable setup, regrid/injection/checkpoint orchestration, AMR physical
 particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
