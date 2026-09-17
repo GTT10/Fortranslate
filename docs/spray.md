@@ -80,6 +80,23 @@ reservation or application connection in this API. Proposed flight endpoints
 must remain inside the closed root domain. See
 [interval evidence](validation/spray-eb-impact-interval-20260918.md).
 
+`advance_eb_mixture_coupling_allocated` now exposes the serial EB source interval
+with allocated parcel/component arrays. Supply `wall_options` (the
+`spray_eb_wall_options` type), allocated `films` and `film_mass`, and `last_id`
+together to enable impacts. The original fixed-population
+`advance_eb_mixture_coupling` remains the specular interface and calls the same
+source core. Each substep samples the gas, advances drag/heating/evaporation and
+representative breakup, then advances EB impacts at the updated velocity.
+Gas exchange is deposited at pre-step positions. Splash children enter gas
+sampling on the next substep. The optional `pressures` vector of the impact
+interval carries each sampled local pressure; descendants inherit that pressure
+for their remaining flight. Wall temperature and impact properties are common.
+The coupling ledger is system change, hence the negative of the impact kernel's
+wall receipt. Gas, particles, films, component inventories and ID watermark
+commit together after the whole interval succeeds. Film heat/evaporation,
+reactive composition, MPI and application wiring remain separate work. See
+[coupling evidence](validation/spray-eb-impact-coupling-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
