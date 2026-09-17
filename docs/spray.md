@@ -218,6 +218,15 @@ and globally empty films are supported. This is a library ownership operation;
 AMR film creation, application controls and film checkpoint integration remain
 open; the coupled remap API above can carry existing films.
 
+`rebalance_mpi_amr_spray` also accepts the optional group `wall_films`,
+`film_mass`, `maximum_films`. When gas-work costs select new owners, films
+migrate privately after gas and particles. All inventories and owners publish
+together; failed film migration preserves the original state and returns
+`changed=.false.`. Film arrays/settings presence agrees across ranks and film
+inventories are checked even when costs select no ownership change. A no-change
+result leaves film ordering and storage unchanged. Costs still represent gas
+work; this does not add film/particle-aware cost estimation.
+
 `advance_mpi_amr_film_coupling` in `spray_mpi_amr_film_step_mod` advances
 stationary planar mixed films with existing heating/evaporation kernels and
 conservative owner-local gas feedback. Film normals must select an enabled

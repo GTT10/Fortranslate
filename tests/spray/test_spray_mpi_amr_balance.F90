@@ -4,6 +4,7 @@ program test_spray_mpi_amr_balance
   use spray_mpi_amr_remap_mod, only: remap_mpi_amr_spray
   use amr_patch_tree_remap_3d_mod, only: remap_amr_patch_tree_reactive_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use gas_transport_mod, only: gas_transport_species
@@ -25,6 +26,8 @@ program test_spray_mpi_amr_balance
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
+  type(spray_wall_film), allocatable :: films(:),saved_films(:)
+  real(dp), allocatable :: film_mass(:,:),saved_film_mass(:,:)
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   real(dp), allocatable :: root(:,:,:,:),primitive(:),cell(:),y(:),before(:),after(:),scale(:)
@@ -180,12 +183,22 @@ program test_spray_mpi_amr_balance
   call remap()
   call require(ok,'concentrate gas and particles on rank zero')
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses;saved_owners=owners
+  allocate(films(merge(1,0,rank==0)),film_mass(2,merge(1,0,rank==0)))
+  if (rank==0) then
+    films(1)=spray_wall_film([0._dp,.00025_dp,.00025_dp],[1._dp,0._dp,0._dp], &
+      1e-9_dp,330._dp,.001_dp,1e-6_dp,2)
+    film_mass(:,1)=films(1)%mass*[.25_dp,.75_dp]
+  end if
+  saved_films=films;saved_film_mass=film_mass
   costs=[100._dp,80._dp,60._dp]
   call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,local,local_t,drops,masses, &
-    zero,spacing,[.true.,.true.,.true.],costs,0._dp,0,changed,ok)
+    zero,spacing,[.true.,.true.,.true.],costs,0._dp,0,changed,ok,films,film_mass,100)
   call require(.not.ok.and..not.changed,'late particle capacity failure rolls back balancing');call unchanged()
   call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,local,local_t,drops,masses, &
-    zero,spacing,[.true.,.true.,.true.],costs,0._dp,100,changed,ok)
+    zero,spacing,[.true.,.true.,.true.],costs,0._dp,100,changed,ok,films,film_mass,0)
+  call require(.not.ok.and..not.changed,'late film capacity failure rolls back balancing');call unchanged()
+  call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,local,local_t,drops,masses, &
+    zero,spacing,[.true.,.true.,.true.],costs,0._dp,100,changed,ok,films,film_mass,100)
   call require(ok.and.changed.and.any(owners/=saved_owners),'forced cost imbalance redistributes')
   do node=1,3
     if (owners(node)==rank) then
@@ -205,9 +218,18 @@ program test_spray_mpi_amr_balance
   do p=1,size(drops)
     call require(owners(locations(1,p))==rank,'balanced finest owner')
   end do
+  call require(size(films)==merge(1,0,rank==owners(3)),'film follows nested wall owner')
+  do p=1,size(films)
+    call require(all(films(p)%position==[0._dp,.00025_dp,.00025_dp]).and. &
+      all(films(p)%normal==[1._dp,0._dp,0._dp]),'exact film wall geometry')
+    call require(films(p)%mass==1e-9_dp.and.films(p)%temperature==330.and. &
+      films(p)%diameter==.001_dp.and.films(p)%height==1e-6_dp.and.films(p)%material_id==2,'film payload')
+    call require(all(film_mass(:,p)==1e-9_dp*[.25_dp,.75_dp]),'film components')
+  end do
+  saved_films=films;saved_film_mass=film_mass
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses;saved_owners=owners;costs=0
   call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,local,local_t,drops,masses, &
-    zero,spacing,[.true.,.true.,.true.],costs,0._dp,100,changed,ok)
+    zero,spacing,[.true.,.true.,.true.],costs,0._dp,100,changed,ok,films,film_mass,100)
   call require(ok.and..not.changed,'zero measured work leaves ownership unchanged');call unchanged()
   if (rank==0) print *, 'PASS: transactional MPI AMR gas and particle balancing'
   call MPI_Finalize(ierr)
@@ -218,6 +240,13 @@ contains
   end subroutine
   subroutine unchanged()
     integer :: a
+    if (allocated(films)) then
+      call require(size(films)==size(saved_films).and.all(film_mass==saved_film_mass),'film inventory rollback')
+      do a=1,size(films)
+        call require(all(films(a)%position==saved_films(a)%position).and. &
+          films(a)%mass==saved_films(a)%mass.and.films(a)%temperature==saved_films(a)%temperature,'film rollback')
+      end do
+    end if
     call require(size(tree%nodes)==size(original_tree%nodes).and.all(owners==saved_owners),'topology rollback')
     call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'particle count and components rollback')
     do a=1,size(drops)

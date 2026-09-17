@@ -4,6 +4,8 @@ module spray_mpi_amr_balance_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: rebalance_mpi_amr_tree_3d
   use spray_parcel_mod, only: spray_parcel
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mixture_mod, only: valid_component_inventory
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
   implicit none
@@ -11,7 +13,7 @@ module spray_mpi_amr_balance_mod
   public :: rebalance_mpi_amr_spray
 contains
   subroutine rebalance_mpi_amr_spray(comm,tree,owners,nvar,state,temperature,parcels,component_mass, &
-      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok)
+      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok,wall_films,film_mass,maximum_films)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(inout) :: owners(:)
@@ -22,6 +24,12 @@ contains
     real(dp), intent(in) :: lower(3),spacing(3),local_cost(:),minimum_gain
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: changed,ok
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    integer, optional, intent(in) :: maximum_films
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: film_flag,low_flag,high_flag
     type(amr_tree_state_3d) :: gas,temp
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
@@ -30,7 +38,25 @@ contains
     integer :: ierr,p
     ok=.false.;changed=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.maximum_parcels>=0.and.maximum_parcels<=1000000
+    valid=valid.and.(present(wall_films).eqv.present(film_mass))
+    valid=valid.and.(present(wall_films).eqv.present(maximum_films))
+    if (present(wall_films)) valid=valid.and.allocated(wall_films)
+    if (present(film_mass)) valid=valid.and.allocated(film_mass)
     call agree();if (.not.agreed) return
+    film_flag=merge(1,0,present(wall_films))
+    call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
+    if (present(wall_films)) then
+      valid=size(film_mass,2)==size(wall_films).and.size(film_mass,1)>=1.and.size(film_mass,1)<=16
+      valid=valid.and.maximum_films>=0.and.maximum_films<=1000000
+      call agree();if (.not.agreed) return
+      do p=1,size(wall_films)
+        valid=valid.and.valid_wall_component_inventory(wall_films(p),film_mass(:,p))
+      end do
+      call agree();if (.not.agreed) return
+    end if
     valid=size(component_mass,2)==size(parcels).and.size(component_mass,1)>=1.and.size(component_mass,1)<=16
     call agree();if (.not.agreed) return
     do p=1,size(parcels)
@@ -46,9 +72,17 @@ contains
     drops=parcels;masses=component_mass
     call migrate_amr_tree_spray_parcels(comm,tree,assigned,drops,lower,spacing,periodic,maximum_parcels,valid,masses)
     if (.not.valid) return
+    if (present(wall_films)) then
+      patches=wall_films;patch_mass=film_mass
+      call migrate_mpi_amr_wall_films(comm,tree,assigned,patches,patch_mass,lower,spacing,maximum_films,valid)
+      if (.not.valid) return
+    end if
     owners=assigned
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
+    if (present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     changed=.true.;ok=.true.
   contains
     subroutine agree()
