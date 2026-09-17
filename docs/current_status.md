@@ -207,7 +207,11 @@ Sparse MPI EB remapping now supports conservative patch movement, coarsening,
 refinement and changed owners on the shared immutable lattice. Prescribed
 application regrids and restart across their events are connected
 ([scheduled MPI evidence](validation/mpi-eb-tree-remap-20260918.md)).
-EB tree MPI temperature adaptation, temporal halos/subcycling, selected-target
+MPI temperature adaptation now gathers exposed fluid-cell votes, preserves fine
+hot spots and removes solid-only tiles. Adaptive application events and changed-rank
+restart match the focused serial case
+([adaptive MPI evidence](validation/mpi-eb-tree-adaptive-20260918.md)).
+EB tree MPI temporal halos/subcycling, selected-target
 wiring and distributed I/O remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
