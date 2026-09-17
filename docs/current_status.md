@@ -186,7 +186,10 @@ ratios and diffusion bounds by their squares
 An MPI library now restricts EB state/temperature on child owners and transfers
 coarse payloads to parent owners, with replicated geometry validation and
 exposed-cell composite reductions ([MPI transfer evidence](validation/mpi-eb-tree-transfer-20260918.md)).
-EB tree MPI halo exchange, coupled stepping and application integration remain open.
+MPI spatial face halos now fetch only requested owner-local U/T cells, using
+same-level peers, ancestor PCM donors and physical outflow, with exact focused
+serial parity ([halo evidence](validation/mpi-eb-tree-halo-20260918.md)).
+EB tree MPI temporal halos, coupled stepping and application integration remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
