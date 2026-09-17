@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--automatic', action='store_true')
+    parser.add_argument('--scheduled', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -60,9 +61,18 @@ def main():
     for filename in ('result.csv', 'result.csv.budget.csv'):
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes(), filename
 
+    scheduled_results = []
+    if args.scheduled:
+        for step, nodes in ((2, 1), (3, 4)):
+            stop = run(f'stop_event_{step}', 2, stop_policy.replace('steps=1', f'steps={step}'))
+            assert f'nodes: {nodes}' in (stop / 'run.log').read_text()
+            resume = run(f'resume_event_{step}', 3, f"restart_file='{stop / 'saved.chk'}',")
+            assert (resume / 'result.csv').read_bytes() == expected, step
+            scheduled_results.append(resume)
+
     reference_budget = list(csv.DictReader((serial / 'result.csv.budget.csv').open()))
     worst = 0.0
-    for directory in (serial, full, third, resumed, changed, to_serial, from_serial):
+    for directory in (serial, full, third, resumed, changed, to_serial, from_serial, *scheduled_results):
         with (directory / 'result.csv').open() as stream:
             cells = list(csv.DictReader(stream))
         with (directory / 'result.csv.budget.csv').open() as stream:

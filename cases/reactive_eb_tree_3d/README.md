@@ -22,10 +22,14 @@ cmake --build build/mpi-debug --target pelef_mpi_reactive_eb_tree_3d
 mpiexec -n 2 ./build/mpi-debug/pelef_mpi_reactive_eb_tree_3d cases/reactive_eb_tree_3d/input.nml
 ```
 
-This entry point currently accepts static topology, fixed or automatic common
-intervals and explicit/implicit chemistry. Automatic estimates use collective
+This entry point accepts static or prescribed scheduled topology, fixed or
+automatic common intervals and explicit/implicit chemistry. Automatic estimates use collective
 remote-donor maxima and the minimum patch hydro/diffusion bound, including hidden
-parent cells. Regridding/adaptation and subcycling are rejected before output. Each rank holds only its assigned patch
+parent cells. Scheduled regridding uses sparse requests to old owners, conservative
+coarsening/PCM refinement and new whole-patch ownership. It preserves the root
+lattice and immutable geometry, as in serial. `scheduled.nml` exercises full
+coarsening and renewed refinement. Temperature adaptation and subcycling are
+rejected before output. Each rank holds only its assigned patch
 U/T during stepping; geometry is replicated. Initialization/restart temporarily
 loads the full tree on each rank, then scatters from rank zero and releases full
 state arrays. CSV/checkpoint writes gather to rank zero and share the serial

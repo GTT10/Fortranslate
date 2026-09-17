@@ -3,6 +3,7 @@ program pelef_reactive_eb_tree_3d
   use mpi_f08
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
@@ -123,8 +124,8 @@ program pelef_reactive_eb_tree_3d
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
 #ifdef PELEF_MPI_EB_TREE
-  if (subcycling.or.regrid_count/=0.or.temperature_adaptive) &
-    error stop 'MPI EB tree currently requires static topology and common intervals'
+  if (subcycling.or.temperature_adaptive) &
+    error stop 'MPI EB tree currently requires prescribed topology and common intervals'
 #endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
@@ -318,7 +319,13 @@ program pelef_reactive_eb_tree_3d
           if (.not.ok) error stop 'Temperature adaptation failed or exceeded capacity'
         end if
         call activate(regrid_stage+1,.true.)
+#ifdef PELEF_MPI_EB_TREE
+        if (mpi_rank==0) then
+#endif
         write(*,'(a,i0,a,i0)') 'Regrid stage: ',regrid_stage,' nodes: ',size(tree%nodes)
+#ifdef PELEF_MPI_EB_TREE
+        end if
+#endif
       end if
     end if
     call balance()
@@ -422,6 +429,26 @@ contains
     logical, intent(in) :: remapping
     integer :: level
     logical :: valid
+#ifdef PELEF_MPI_EB_TREE
+    integer, allocatable :: next_owners(:)
+    integer :: p
+    if (distributed.and.remapping) then
+      level=max(topology%level_count(),layouts(stage)%level_count())
+      call partition_amr_tree_3d(layouts(stage),mpi_size,0,next_owners,valid)
+      if (.not.valid) error stop 'MPI regrid partition failed'
+      call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &
+        mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
+      if (.not.valid) error stop 'MPI conservative regrid failed'
+      mpi_owners=next_owners;topology=layouts(stage);regrid_stage=stage
+      tree%topology=topology
+      deallocate(tree%nodes)
+      allocate(tree%nodes(size(topology%nodes)))
+      do p=1,size(tree%nodes)
+        tree%nodes(p)%geometry=mpi_geometry(p)
+      end do
+      return
+    end if
+#endif
     if (remapping) then
       level=max(topology%level_count(),layouts(stage)%level_count())
       call remap_reactive_eb_tree_3d(species,layouts(stage),geometry_levels(level),tree,valid)
