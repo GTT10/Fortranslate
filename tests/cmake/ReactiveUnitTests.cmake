@@ -769,3 +769,10 @@ add_test(NAME regression_eb_tree_application_3d
     --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/input.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_application_3d")
 set_tests_properties(regression_eb_tree_application_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME regression_eb_tree_auto_interval_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_application_3d.py"
+    --exe "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+    --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/input.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_auto_interval_3d" --automatic)
+set_tests_properties(regression_eb_tree_auto_interval_3d PROPERTIES TIMEOUT 180)

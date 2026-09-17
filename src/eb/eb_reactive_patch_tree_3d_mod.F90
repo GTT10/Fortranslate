@@ -6,7 +6,9 @@ module eb_reactive_patch_tree_3d_mod
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use gas_transport_mod, only: gas_transport_species
-  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d
+  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
+    reactive_eb_transport_patch_timestep_3d
+  use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
@@ -23,6 +25,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
   public :: advance_reactive_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_hydro_3d
@@ -149,6 +152,63 @@ contains
     end do
     tree=candidate;ok=.true.
   end subroutine average_down_reactive_eb_tree_3d
+
+  ! Bound every patch update, including hidden parent cells which are advanced
+  ! before restriction. Global donor maxima cover peer and ancestor halos.
+  subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
+      transport_enabled,viscosity,conduction,diffusion,dt,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    real(dp), intent(in) :: hydro_cfl,transport_cfl
+    logical, intent(in) :: transport_enabled,viscosity,conduction,diffusion
+    real(dp), intent(inout) :: dt
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: snapshot
+    real(dp) :: speeds(4),donors(4),diffusivity,maximum_diffusivity,interval,candidate
+    integer :: node
+    logical :: valid,active
+    ok=.false.
+    if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) return
+    if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) return
+    if (.not.valid_tree(tree,reactive_nvar(size(species)))) return
+    snapshot=tree
+    call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+    if (.not.valid) return
+    donors=0._dp;maximum_diffusivity=0._dp;candidate=huge(1._dp);active=.false.
+    do node=1,size(tree%nodes)
+      associate(g=>snapshot%nodes(node)%geometry,u=>snapshot%nodes(node)%state,t=>snapshot%nodes(node)%temperature)
+      if (.not.any(g%volume_fraction>0._dp)) cycle
+      active=.true.
+      call reactive_eb_signal_speeds_3d(species,u,t,g,speeds,valid)
+      if (.not.valid) return
+      donors=max(donors,speeds)
+      if (transport_enabled) then
+        call reactive_eb_transport_patch_timestep_3d(species,transport,u,t,g,transport_cfl, &
+          viscosity,conduction,diffusion,interval,diffusivity,valid)
+        if (.not.valid) return
+        maximum_diffusivity=max(maximum_diffusivity,diffusivity)
+      end if
+      end associate
+    end do
+    if (.not.active) return
+    do node=1,size(tree%nodes)
+      associate(g=>snapshot%nodes(node)%geometry,u=>snapshot%nodes(node)%state,t=>snapshot%nodes(node)%temperature)
+      if (.not.any(g%volume_fraction>0._dp)) cycle
+      call compute_reactive_eb_euler_cfl_timestep_3d(species,u,t,g,hydro_cfl,interval,valid,donors)
+      if (.not.valid) return
+      candidate=min(candidate,interval)
+      if (transport_enabled) then
+        call reactive_eb_transport_patch_timestep_3d(species,transport,u,t,g,transport_cfl, &
+          viscosity,conduction,diffusion,interval,diffusivity,valid,maximum_diffusivity)
+        if (.not.valid) return
+        ! Conservatively use a full-interval diffusion bound for split halves.
+        candidate=min(candidate,interval)
+      end if
+      end associate
+    end do
+    dt=candidate;ok=.true.
+  end subroutine reactive_eb_tree_timestep_3d
 
   ! R/2 T/2 H T/2 R/2 composition. Each successful stage remains private
   ! until the complete step and its exchange vectors can be committed.

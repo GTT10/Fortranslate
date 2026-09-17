@@ -14,12 +14,14 @@ program pelef_reactive_eb_tree_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d
+    advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   implicit none
   integer :: root_shape(3)=[4,4,4],child_count=0,parent(32)=1,ratio(32)=2,lower(3,32)=1,upper(3,32)=2
   integer :: maximum_steps=100,maximum_step_retries=12,checkpoint_interval_steps=0
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
+  logical :: automatic_timestep=.false.
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'
@@ -28,7 +30,8 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
-    chemistry_integrator,output_file,checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    automatic_timestep,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
+    checkpoint_interval_steps,stop_after_checkpoint
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -41,7 +44,7 @@ program pelef_reactive_eb_tree_3d
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),current(:),boundary(:),wall(:),chemical(:)
-  real(dp) :: dt,theta,error
+  real(dp) :: dt,theta,error,estimated_dt
   integer :: unit,ios,status,node,p,n(3),nv,retry,depth
   logical :: ok,stopped=.false.
   character(len=1024) :: input_path,message,budget_path
@@ -54,9 +57,11 @@ program pelef_reactive_eb_tree_3d
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
-  if (.not.all(ieee_is_finite([domain_lower,domain_upper,plane_position,time_step,final_time,rtol,atol]))) &
+  if (.not.all(ieee_is_finite([domain_lower,domain_upper,plane_position,time_step,final_time,rtol,atol,hydro_cfl,transport_cfl]))) &
     error stop 'Nonfinite controls'
   if (any(domain_upper<=domain_lower).or.min(time_step,final_time,rtol,atol)<=0._dp) error stop 'Invalid controls'
+  if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) &
+    error stop 'Invalid CFL controls'
   if (chemistry_integrator/='explicit'.and.chemistry_integrator/='implicit') error stop 'Invalid chemistry integrator'
   if (riemann_solver/='rusanov'.and.riemann_solver/='hllc'.and.riemann_solver/='pelec') error stop 'Invalid solver'
   if (len_trim(output_file)==0.or.checkpoint_interval_steps<0) error stop 'Invalid output policy'
@@ -92,6 +97,7 @@ program pelef_reactive_eb_tree_3d
   config%x_upper=domain_upper(1);config%y_upper=domain_upper(2);config%z_upper=domain_upper(3)
   config%geometry_type=geometry_type;config%plane_axis=plane_axis;config%plane_position=plane_position
   config%extrusion_axis=extrusion_axis;config%section_file=section_file;config%level_set_file=level_set_file
+  config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
   config%redistribution='none';config%riemann_solver=riemann_solver
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol
@@ -126,6 +132,12 @@ program pelef_reactive_eb_tree_3d
   if (len_trim(restart_file)>0) call restore()
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
+    if (automatic_timestep) then
+      call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
+        .true.,.true.,.true.,estimated_dt,ok)
+      if (.not.ok) error stop 'Tree timestep estimate failed'
+      dt=min(dt,estimated_dt)
+    end if
     do retry=0,maximum_step_retries
       if (record%time+dt<=record%time) error stop 'Time increment underflow'
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
@@ -154,6 +166,7 @@ program pelef_reactive_eb_tree_3d
   call output()
   write(*,'(a,i0,a,es24.16)') 'Completed steps: ',record%steps,' time: ',record%time
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
+  write(*,'(a,es24.16)') 'Minimum accepted interval: ',record%minimum_dt
 contains
   subroutine balance()
     call integrate_reactive_eb_tree_3d(tree,current,ok)
@@ -166,19 +179,30 @@ contains
     integer, intent(in) :: stream
     logical, intent(in) :: reading
     character(len=64) :: magic,integrator
-    real(dp) :: interval
+    logical :: automatic
+    real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
-      if (magic/='PELEF_EB_TREE_APPLICATION_V1') error stop 'Wrong tree application header'
+      if (magic/='PELEF_EB_TREE_APPLICATION_V1'.and.magic/='PELEF_EB_TREE_APPLICATION_V2') &
+        error stop 'Wrong tree application header'
+      if (magic=='PELEF_EB_TREE_APPLICATION_V1'.and.automatic_timestep) error stop 'Restart policy mismatch'
       read(stream,*,iostat=ios) interval,integrator
       if (ios/=0) error stop 'Missing restart policy'
       if (interval/=time_step.or.integrator/=chemistry_integrator) error stop 'Restart policy mismatch'
+      if (magic=='PELEF_EB_TREE_APPLICATION_V2') then
+        read(stream,*,iostat=ios) automatic,stored_hydro_cfl,stored_transport_cfl
+        if (ios/=0) error stop 'Missing automatic interval policy'
+        if (automatic.neqv.automatic_timestep) error stop 'Restart interval mode mismatch'
+        if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
+      end if
     else
-      write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_APPLICATION_V1'
+      write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_APPLICATION_V2'
       if (ios/=0) error stop 'Cannot write application header'
       write(stream,'(es27.18e3,1x,a)',iostat=ios) time_step,trim(chemistry_integrator)
       if (ios/=0) error stop 'Cannot write policy'
+      write(stream,'(l1,2(1x,es27.18e3))',iostat=ios) automatic_timestep,hydro_cfl,transport_cfl
+      if (ios/=0) error stop 'Cannot write automatic interval policy'
     end if
     call reactive_eb_tree_checkpoint_record_3d(stream,reading,species,reactions,transport,config,tree,record,ok,message)
     if (.not.ok) then

@@ -3,6 +3,7 @@
 import argparse
 import csv
 import math
+import re
 from pathlib import Path
 import subprocess
 
@@ -12,10 +13,14 @@ def main():
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
+    parser.add_argument('--automatic', action='store_true')
     args = parser.parse_args()
     exe, work = args.exe.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     template = args.input.read_text().replace("output_file='eb_tree.csv'", "output_file='result.csv'")
+
+    if args.automatic:
+        template = template.replace('maximum_steps=20', 'maximum_steps=200, automatic_timestep=.true., hydro_cfl=1.e-5')
 
     def run(name, extra='', text=None, success=True):
         directory = work / name
@@ -30,6 +35,9 @@ def main():
         return directory
 
     full = run('full')
+    if args.automatic:
+        interval = float(re.search(r'Minimum accepted interval:\s+(\S+)', (full / 'run.log').read_text())[1])
+        assert 0 < interval < 1e-9, interval
     stopped = run('stopped', "checkpoint_file='saved.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true.,")
     resumed = run('resumed', f"restart_file='{stopped / 'saved.chk'}',")
     for filename in ('result.csv', 'result.csv.budget.csv'):
@@ -57,6 +65,8 @@ def main():
     for name, restart, source in (
         ('bad_policy', stopped / 'saved.chk', template.replace('time_step=1.e-9', 'time_step=2.e-9')),
         ('bad_record', corrupt, template),
+        ('bad_mode', stopped / 'saved.chk', template.replace('automatic_timestep=.true.', 'automatic_timestep=.false.')
+         if args.automatic else template.replace('maximum_steps=20', 'maximum_steps=20, automatic_timestep=.true.')),
     ):
         directory = work / name
         directory.mkdir(exist_ok=True)
