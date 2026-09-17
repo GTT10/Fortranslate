@@ -73,8 +73,11 @@ hydro library now advances multiple fine patches with deterministic face
 ownership, peer synchronization and coarse reflux
 ([evidence](validation/eb-multipatch-hydro-20260917.md)). Molecular transport
 now follows the same multiple-patch transaction with limited-flux reconciliation
-([evidence](validation/eb-multipatch-transport-20260917.md)); multiple-patch
-reacting composition, subcycling, application wiring and MPI EB remain open.
+([evidence](validation/eb-multipatch-transport-20260917.md)). Composite-masked
+reaction halves now wrap the multiple-patch hydro/transport operators with
+chemical inventories and a single state/diagnostic transaction
+([evidence](validation/eb-multipatch-full-20260917.md)); multiple-patch
+subcycling, application wiring and MPI EB remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
