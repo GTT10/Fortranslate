@@ -11,6 +11,21 @@ The supplied case has a 4-cubed root, two children, and grandchildren with
 separate parents (three levels, ratios two). A planar wall cuts z=0.31.
 Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
+## Selected mechanisms
+
+When a supported selected bundle is configured, the build also provides
+`pelef_reactive_eb_tree_3d_selected`. `selected.nml` is an H2/O2/N2 example
+using implicit chemistry. Composition is supplied through `composition_count`,
+`composition_species` and `composition_mole_fractions`; fixed-mechanism builds
+reject these inputs. The shared source uses the existing mechanism validator,
+initial temperature range check and generic source element metadata. Checkpoints
+bind bundle SHA-256, composition and integrator, and cumulative chemical
+exchange is checked for elemental conservation.
+
+The selected executable shares static/scheduled/adaptive controls with the
+fixed app. The current focused selected fixture covers a static H2/O2 tree;
+it does not qualify detailed-fuel ignition, selected adaptive runs or installation.
+
 ## Input
 
 The `eb_tree` namelist uses `root_shape(3)` and `child_count` (0:32).
@@ -95,10 +110,9 @@ Replacement is not filesystem-atomic if an I/O error occurs during copying.
 
 ## Scope
 
-This is a serial static, scheduled or temperature-adapted, fixed-mechanism application using common-interval
+This is a serial static, scheduled or temperature-adapted, fixed/selected-mechanism application using common-interval
 Euler operators, spatial PCM donors, hydro outflow and closed diffusion
-boundaries. It is not a convergence or physical validation case. Selected
-mechanisms, recursive subcycling, MPI and
+boundaries. It is not a convergence or physical validation case. Recursive subcycling, MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.
