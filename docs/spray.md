@@ -188,6 +188,20 @@ migration use the corresponding periodic axes. Reservoir CFL and transport
 bounds use the current finest spacing after adaptation. Wall films and EB
 particle handling remain open.
 
+`migrate_mpi_amr_wall_films` in `spray_mpi_amr_film_mod` assigns stationary
+mixed-liquid film patches to the owner of their finest containing AMR cell.
+The physical domain is closed for this lookup: exact upper-wall coordinates
+select the last cell at each level, while stored positions/normals remain exact.
+Exterior patches reject rather than wrapping. The API preserves mass,
+temperature, diameter, height, material and every component mass. Films have no
+global ID; receive order is source rank followed by original local order.
+It checks collective topology/owners/domain/component count/capacity and stages
+all output until validation and exchange succeed. The one-million-per-rank
+send/receive bound matches the existing Cartesian film migration. Empty ranks
+and globally empty films are supported. This is a library ownership operation;
+AMR film creation/evolution, whole gas/particle/film remap, application controls
+and film checkpoint integration remain open.
+
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
 completion marker with a POSIX hard link. Both payloads bind the same generation
