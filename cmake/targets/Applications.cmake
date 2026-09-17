@@ -22,6 +22,7 @@ if(PELEF_MECHANISM_BUNDLE)
       APPEND pelef_selected_mpi_option
       MPI_AMR_REACTIVE_1D_NAME pelef_mpi_amr_reactive_1d_selected
       MPI_AMR_REACTIVE_3D_NAME pelef_mpi_amr_reactive_3d_selected
+      MPI_AMR_TREE_REACTIVE_3D_NAME pelef_mpi_amr_tree_reactive_3d_selected
       MPI_REACTIVE_EB_PATCH_TREE_2D_NAME
         pelef_mpi_reactive_eb_patch_tree_2d_selected
     )

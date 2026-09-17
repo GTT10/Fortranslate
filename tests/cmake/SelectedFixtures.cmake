@@ -81,11 +81,17 @@ pelef_add_mechanism_bundle(
   ${PELEF_TEST_SELECTED_FULL_MPI_OPTION}
   ADD_TEST
 )
+set(PELEF_TEST_SELECTED_ELEMENTARY_TREE_MPI_OPTION)
+if(PELEF_ENABLE_MPI)
+  set(PELEF_TEST_SELECTED_ELEMENTARY_TREE_MPI_OPTION
+    MPI_AMR_TREE_REACTIVE_3D_NAME test_selected_elementary_mpi_amr_tree_3d)
+endif()
 pelef_add_mechanism_bundle(
   NAME selected_elementary_fixture
   BUNDLE "${PELEF_TEST_ELEMENTARY_SELECTED_BUNDLE}"
   PROBE_NAME test_selected_elementary_bundle
   AMR_TREE_REACTIVE_3D_NAME test_selected_elementary_amr_tree_3d
+  ${PELEF_TEST_SELECTED_ELEMENTARY_TREE_MPI_OPTION}
   REACTIVE_EB_3D_NAME test_selected_elementary_reactive_eb_3d
   ADD_TEST
 )

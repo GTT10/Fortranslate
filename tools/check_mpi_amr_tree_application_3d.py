@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare fixed-mechanism static MPI tree application output with serial."""
+"""Compare fixed/selected-mechanism static MPI tree application output with serial."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ import subprocess
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--selected', action='store_true')
     parser.add_argument('--serial', type=Path, required=True)
     parser.add_argument('--mpi', type=Path, required=True)
     parser.add_argument('--mpiexec', required=True)
@@ -19,6 +20,12 @@ def main() -> None:
     args = parser.parse_args()
     args.workdir.mkdir(parents=True, exist_ok=True)
     template = (args.case_dir / 'hotspot.nml').read_text()
+    if args.selected:
+        template = template.replace("thermo_model='elementary'", "thermo_model='selected'")
+        template = template.replace('  output_file=', "  composition_count=7\n"
+                                    "  composition_species='H2','H','O','O2','OH','H2O','N2'\n"
+                                    "  composition_mole_fractions=.29570,.00001,.00001,.14784,.00001,0.0,.55643\n"
+                                    '  output_file=')
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
 
     def run(name: str, topology: str, ranks: int = 0, extra: str = '', fail: str = '') -> Path:

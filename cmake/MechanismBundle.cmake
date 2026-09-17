@@ -99,7 +99,7 @@ function(pelef_add_mechanism_bundle)
     NAME BUNDLE SOURCE PROBE_NAME REACTOR_NAME REACTIVE_1D_NAME
     AMR_REACTIVE_1D_NAME REACTIVE_2D_NAME REACTIVE_EB_2D_NAME
     REACTIVE_EB_AMR_2D_NAME SPRAY_3D_NAME MPI_SPRAY_3D_NAME
-      REACTIVE_3D_NAME AMR_REACTIVE_3D_NAME AMR_TREE_REACTIVE_3D_NAME
+      REACTIVE_3D_NAME AMR_REACTIVE_3D_NAME AMR_TREE_REACTIVE_3D_NAME MPI_AMR_TREE_REACTIVE_3D_NAME
     REACTIVE_EB_3D_NAME
     MPI_REACTIVE_1D_NAME MPI_AMR_REACTIVE_1D_NAME
     MPI_AMR_REACTIVE_3D_NAME
@@ -161,6 +161,10 @@ function(pelef_add_mechanism_bundle)
   endif()
   if(PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME AND
       NOT PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+    message(FATAL_ERROR "mechanism AMR reactive 3D target name is invalid")
+  endif()
+  if(PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME AND
+      NOT PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
     message(FATAL_ERROR "mechanism AMR reactive 3D target name is invalid")
   endif()
   if(PELEF_BUNDLE_REACTIVE_EB_3D_NAME AND
@@ -298,11 +302,23 @@ function(pelef_add_mechanism_bundle)
       (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
     message(FATAL_ERROR "selected AMR reactive 3D requires 2--128 species")
   endif()
+  if(PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME AND
+      (bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128))
+    message(FATAL_ERROR "selected AMR reactive 3D requires 2--128 species")
+  endif()
   if(PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME AND
       NOT TARGET pelef_selected_amr_tree_reactive_3d_runtime)
     message(
       FATAL_ERROR
       "pelef_selected_amr_tree_reactive_3d_runtime must exist before adding a "
+      "selected AMR reactive 3D application"
+    )
+  endif()
+  if(PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME AND
+      NOT TARGET pelef_selected_mpi_amr_tree_reactive_3d_runtime)
+    message(
+      FATAL_ERROR
+      "pelef_selected_mpi_amr_tree_reactive_3d_runtime must exist before adding a "
       "selected AMR reactive 3D application"
     )
   endif()
@@ -928,6 +944,37 @@ function(pelef_add_mechanism_bundle)
         pelef_selected_amr_tree_reactive_3d_runtime
     )
     list(APPEND install_targets "${PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME}")
+  endif()
+
+  if(PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME)
+    if(TARGET "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}")
+      message(
+        FATAL_ERROR
+        "mechanism AMR reactive 3D target already exists: "
+        "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}"
+      )
+    endif()
+    set(
+      configured_mpi_amr_tree_reactive_3d
+      "${bundle_directory}/${PELEF_BUNDLE_NAME}_mpi_amr_tree_reactive_3d.F90"
+    )
+    configure_file(
+      "${PROJECT_SOURCE_DIR}/app/pelef_mpi_amr_tree_reactive_3d_selected.F90.in"
+      "${configured_mpi_amr_tree_reactive_3d}"
+      @ONLY
+    )
+    add_executable(
+      "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}"
+      "${configured_mpi_amr_tree_reactive_3d}"
+    )
+    target_link_libraries(
+      "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}"
+      PRIVATE
+        "${mechanism_target}"
+        pelef_selected_mpi_amr_tree_reactive_3d_runtime
+    )
+    pelef_require_coherent_mpi_runtime("${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}")
+    list(APPEND install_targets "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}")
   endif()
 
   if(PELEF_BUNDLE_REACTIVE_EB_3D_NAME)

@@ -529,6 +529,37 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
   endif()
 
   if(PELEF_ENABLE_MPI)
+    add_library(pelef_selected_mpi_amr_tree_reactive_3d_runtime STATIC
+      src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_split_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_transport_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_chemistry_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_hydro_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_thermo_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_flux_peers_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_reflux_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_ghost_3d_mod.F90
+      src/driver/mpi_amr_patch_tree_application_3d_mod.F90)
+    set_target_properties(pelef_selected_mpi_amr_tree_reactive_3d_runtime PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_amr_tree_reactive_3d_modules")
+    target_include_directories(pelef_selected_mpi_amr_tree_reactive_3d_runtime PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_amr_tree_reactive_3d_modules>")
+    target_link_libraries(pelef_selected_mpi_amr_tree_reactive_3d_runtime PUBLIC
+      pelef_selected_amr_tree_reactive_3d_runtime MPI::MPI_Fortran)
+    if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(pelef_selected_mpi_amr_tree_reactive_3d_runtime PRIVATE
+        -Wall -Wextra -Wpedantic -Wimplicit-interface -Wconversion-extra)
+      if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(pelef_selected_mpi_amr_tree_reactive_3d_runtime PRIVATE
+          -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+      endif()
+    endif()
+  endif()
+
+  if(PELEF_ENABLE_MPI)
     add_library(
       pelef_selected_mpi_amr_reactive_3d_runtime
       STATIC

@@ -241,3 +241,21 @@ and subcycling remain to be connected there. Characteristic-PLM hydro enables li
 linear coarse donors with the configured limiter for both hydro and transport.
 PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
 AMR convergence and large-tree scaling remain unqualified.
+
+### Selected-mechanism static MPI application
+
+With `PELEF_ENABLE_MPI=ON` and a schema-1 `PELEF_MECHANISM_BUNDLE`, build
+`pelef_mpi_amr_tree_reactive_3d_selected` and run:
+
+```sh
+mpiexec -n 3 ./build/selected/pelef_mpi_amr_tree_reactive_3d_selected input.nml topology.dat
+```
+
+Use `thermo_model='selected'` and the bundle's named mole-fraction composition.
+The frontend validates the mechanism and initial temperature range, logs its
+SHA-256/integrator on rank zero, and forwards that integrator to owner-local
+stepping. Its isolated MPI runtime links selected libraries without `pelef_core`
+or fixed mechanism databases. Custom bundle targets can use
+`MPI_AMR_TREE_REACTIVE_3D_NAME`; the target participates in bundle installation.
+The same static-only restrictions, output alias checks and root CSV gathers as
+the fixed MPI frontend apply. MPI checkpoint/regridding/subcycling remain open.
