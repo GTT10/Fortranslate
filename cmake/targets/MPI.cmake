@@ -2,6 +2,7 @@ if(PELEF_ENABLE_MPI)
   add_library(
     pelef_mpi_support
     src/parallel/mpi_domain_1d_mod.F90
+    src/parallel/mpi_eb_tree_checkpoint_read_3d_mod.F90
     src/parallel/mpi_eb_tree_checkpoint_3d_mod.F90
     src/parallel/mpi_eb_tree_csv_3d_mod.F90
     src/parallel/mpi_eb_tree_transfer_3d_mod.F90

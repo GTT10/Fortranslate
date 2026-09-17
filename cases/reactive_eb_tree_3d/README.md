@@ -34,15 +34,17 @@ Completed adaptive layouts are restored from the same V4 checkpoint envelope.
 `subcycling=.true.` selects recursive hydro/transport and scales automatic
 root intervals by cumulative refinement ratios (squared for diffusion).
 Checkpoint stepping mode must match on restart. Each rank holds only its assigned patch
-U/T during stepping; geometry is replicated. Initialization/restart temporarily
-loads the full tree on each rank, then scatters from rank zero and releases full
-state arrays. State CSV writes use owner-local MPI-IO chunks in serial row order;
+U/T during stepping; geometry is replicated. Initialization temporarily builds
+the initial tree on each rank, then scatters from rank zero and releases full
+state arrays. On restart, rank zero scans record offsets with bounded memory;
+owners seek directly to their patch records and restore only local U/T.
+State CSV writes use owner-local MPI-IO chunks in serial row order;
 the small budget CSV is written by rank zero. Checkpoint writes stage existing
 serial patch records on their owners and publish them directly with MPI-IO.
 Checkpoints can continue with a different rank count or the serial
 executable. State CSVs are deterministic in the focused fixture; budget ledgers
-can differ in roundoff when MPI reduction grouping changes. Distributed
-checkpoint loading and scaling qualification are future work.
+can differ in roundoff when MPI reduction grouping changes. Removing temporary
+initial-state replication and qualifying scaling remain future work.
 
 ## Selected mechanisms
 

@@ -1,6 +1,7 @@
 program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
   use mpi_f08
+  use mpi_eb_tree_checkpoint_read_3d_mod, only: read_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
@@ -270,7 +271,7 @@ program pelef_reactive_eb_tree_3d
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
 #ifdef PELEF_MPI_EB_TREE
-  call distribute_initial()
+  if (.not.distributed) call distribute_initial()
 #endif
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
@@ -710,7 +711,7 @@ contains
       error stop 'Restart schedule missing'
     end if
     if (present(header_only)) then
-      if (header_only.and..not.reading) return
+      if (header_only) return
     end if
     call reactive_eb_tree_checkpoint_record_3d(stream,reading,species,reactions,transport,config,tree,record,ok,message, &
       bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
@@ -724,11 +725,21 @@ contains
   end subroutine
   subroutine restore()
     character(len=1) :: extra
-    open(newunit=unit,file=trim(restart_file),status='old',action='read',iostat=ios)
+    open(newunit=unit,file=trim(restart_file),status='old',action='read',access='stream',form='formatted',iostat=ios)
     if (ios/=0) error stop 'Cannot open restart'
+#ifdef PELEF_MPI_EB_TREE
+    call envelope(unit,.true.,header_only=.true.)
+    call distribute_initial()
+    call read_mpi_eb_tree_checkpoint_3d(trim(restart_file),unit,species,reactions,transport,config,topology,mpi_owners, &
+      mpi_geometry,mpi_state,mpi_temperature,record,MPI_COMM_WORLD,ok, &
+      bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
+    if (.not.ok) error stop 'Invalid distributed tree checkpoint record'
+    if (regrid_stage/=count(regrid_times(:regrid_count)<=record%time)) error stop 'Restart stage/time mismatch'
+#else
     call envelope(unit,.true.)
     read(unit,'(a)',iostat=ios) extra
     if (ios/=iostat_end) error stop 'Trailing restart data'
+#endif
     close(unit,iostat=ios)
     if (ios/=0) error stop 'Restart close failed'
     if (record%time>final_time.or.record%steps>maximum_steps) error stop 'Restart beyond requested limits'

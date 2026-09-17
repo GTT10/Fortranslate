@@ -115,8 +115,17 @@ def main():
 
     broken = work / 'broken.chk'
     broken.write_text((stopped / 'saved.chk').read_text().replace('END_EB_TREE_CHECKPOINT', 'BROKEN_END'))
+    damaged = work / 'damaged_patch.chk'
+    prefix, suffix = (stopped / 'saved.chk').read_text().rsplit('\nEND_CHECKPOINT', 1)
+    rows = prefix.splitlines()
+    values = rows[-1].split()
+    assert len(values) > 6, 'missing final patch state row'
+    values[0] = '-1.0'
+    rows[-1] = ' '.join(values)
+    damaged.write_text('\n'.join(rows) + '\nEND_CHECKPOINT' + suffix)
     failures = [
         ('corrupt', f"restart_file='{broken}',"),
+        ('damaged_patch', f"restart_file='{damaged}',"),
         ('wrong_policy', f"restart_file='{stopped / 'saved.chk'}',time_step=2.e-9,"),
         ('wrong_auto', f"restart_file='{stopped / 'saved.chk'}',automatic_timestep={'.false.' if args.automatic else '.true.'},"),
         ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
