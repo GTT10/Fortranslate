@@ -93,9 +93,27 @@ interval carries each sampled local pressure; descendants inherit that pressure
 for their remaining flight. Wall temperature and impact properties are common.
 The coupling ledger is system change, hence the negative of the impact kernel's
 wall receipt. Gas, particles, films, component inventories and ID watermark
-commit together after the whole interval succeeds. Film heat/evaporation,
-reactive composition, MPI and application wiring remain separate work. See
+commit together after the whole interval succeeds. Reactive composition,
+MPI and application wiring remain separate work. See
 [coupling evidence](validation/spray-eb-impact-coupling-20260918.md).
+
+Set `spray_eb_wall_options%evolve` to enable stationary mixed-film heat and
+evaporation in that allocated source interval. `conductivity` is a common
+constant liquid conductivity (default 0.6 W/(m K)); `minimum_height` defaults to
+1e-7 m and follows the existing film model's depletion rule. The independent
+`spray_eb_film_step_mod` API `advance_eb_film_coupling` samples/deposits through
+the EB fluid stencil, adapts its own film substeps and removes depleted films.
+Film positions and normals must match the original nodal surface: a short
+normal segment must cross at the patch position with the same fluid-facing
+normal. Sampling is offset into fluid by the larger of 1e-8 times the minimum
+cell width and 128 machine epsilons times the maximum absolute domain coordinate.
+Both probe endpoints must stay inside the root domain.
+The whole film interval publishes gas, film components and the wall heat ledger
+together. In the combined source path, particle gas feedback precedes existing
+film exchange, followed by impacts; new deposits begin evolving on the next
+particle substep. Film temperature/conductivity are common settings, with no
+lateral film transport, surface mesh or variable-conductivity fit in this EB API.
+See [film coupling evidence](validation/spray-eb-film-coupling-20260918.md).
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
