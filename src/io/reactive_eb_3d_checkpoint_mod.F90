@@ -25,6 +25,7 @@ module reactive_eb_3d_checkpoint_mod
     "PELEF_REACTIVE_EB_3D_CHECKPOINT"
   integer, parameter :: checkpoint_schema_fixed = 1
   integer, parameter :: checkpoint_schema_selected = 2
+  integer, parameter :: checkpoint_schema_elements = 3
   integer, parameter :: bundle_sha256_length = 64
   integer, parameter :: n_config_reals = 19
   integer, parameter :: n_config_ints = 5
@@ -59,7 +60,7 @@ contains
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions, checkpoint_unit)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -81,7 +82,10 @@ contains
     ! Borrowed formatted unit: caller owns positioning and closing. Embedded
     ! reads stop at END_CHECKPOINT; only standalone reads require end-of-file.
     integer, intent(in), optional :: checkpoint_unit
+    character(len=*), optional, intent(in) :: element_names(:)
+    real(dp), optional, intent(in) :: element_atoms(:,:)
 
+    integer :: element_index
     integer :: unit, status, nvar, species_index, reaction_index,plog_index
     integer :: efficiency_size
     integer :: transport_index, i, j, k, schema
@@ -94,6 +98,15 @@ contains
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
+
+    if (.not.valid_element_context(size(species),size(initial_element_integrals),element_names,element_atoms)) then
+      message='Invalid checkpoint element context'
+      return
+    end if
+    if (present(element_names).and..not.selected_context) then
+      message='Element metadata requires selected checkpoint context'
+      return
+    end if
 
     if (len_trim(path) == 0.and..not.present(checkpoint_unit)) then
       message = "Reactive EB 3D checkpoint path is empty"
@@ -159,6 +172,7 @@ contains
         return
       end if
       schema = checkpoint_schema_selected
+      if (present(element_names)) schema=checkpoint_schema_elements
     else
       schema = checkpoint_schema_fixed
     end if
@@ -195,6 +209,19 @@ contains
       if (status /= 0) go to 900
       write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
       if (status /= 0) go to 900
+    end if
+
+    if (present(element_names)) then
+      write(unit,'(a)',iostat=status) 'ELEMENT_CONTEXT'
+      if (status/=0) go to 900
+      write(unit,'(i0)',iostat=status) size(element_names)
+      if (status/=0) go to 900
+      do element_index=1,size(element_names)
+        write(unit,'(a)',iostat=status) trim(element_names(element_index))
+        if (status/=0) go to 900
+        write(unit,'(*(es27.18e3,1x))',iostat=status) element_atoms(element_index,:)
+        if (status/=0) go to 900
+      end do
     end if
 
     write(unit, '(a)', iostat=status) "SPECIES"
@@ -448,7 +475,7 @@ contains
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions, checkpoint_unit)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -470,13 +497,17 @@ contains
     ! Borrowed formatted unit: caller owns positioning and closing. Embedded
     ! reads stop at END_CHECKPOINT; only standalone reads require end-of-file.
     integer, intent(in), optional :: checkpoint_unit
+    character(len=*), optional, intent(in) :: element_names(:)
+    real(dp), optional, intent(in) :: element_atoms(:,:)
 
     type(eb_geometry_3d) :: candidate_geometry
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
     real(dp), allocatable :: candidate_integrals(:)
     real(dp), allocatable :: candidate_l1_integrals(:)
-    real(dp) :: candidate_element_integrals(3)
+    real(dp) :: candidate_element_integrals(size(initial_element_integrals))
+    real(dp) :: stored_atoms(size(species))
+    integer :: element_index,stored_element_count
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
     real(dp) :: stored_chebyshev(chebyshev_capacity,chebyshev_capacity),stored_chebyshev_bounds(4)
@@ -519,6 +550,15 @@ contains
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
+
+    if (.not.valid_element_context(size(species),size(initial_element_integrals),element_names,element_atoms)) then
+      message='Invalid checkpoint element context'
+      return
+    end if
+    if (present(element_names).and..not.selected_context) then
+      message='Element metadata requires selected checkpoint context'
+      return
+    end if
 
     if (len_trim(path) == 0.and..not.present(checkpoint_unit)) then
       message = "Reactive EB 3D restart path is empty"
@@ -573,6 +613,7 @@ contains
         return
       end if
       expected_schema = checkpoint_schema_selected
+      if (present(element_names)) expected_schema=checkpoint_schema_elements
     else
       expected_schema = checkpoint_schema_fixed
     end if
@@ -658,6 +699,24 @@ contains
         message = "Reactive EB 3D selected checkpoint composition mismatch"
         go to 900
       end if
+    end if
+
+    if (present(element_names)) then
+      read(unit,'(a)',iostat=status) marker
+      if (status/=0) go to 900
+      if (marker/='ELEMENT_CONTEXT') go to 900
+      read(unit,*,iostat=status) stored_element_count
+      if (status/=0) go to 900
+      if (stored_element_count/=size(element_names)) go to 900
+      do element_index=1,size(element_names)
+        read(unit,'(a)',iostat=status) stored_name
+        if (status/=0) go to 900
+        if (stored_name/=element_names(element_index)) go to 900
+        read(unit,*,iostat=status) stored_atoms
+        if (status/=0) go to 900
+        if (.not.all(ieee_is_finite(stored_atoms))) go to 900
+        if (any(stored_atoms/=element_atoms(element_index,:))) go to 900
+      end do
     end if
 
     read(unit, '(a)', iostat=status) marker
@@ -1246,6 +1305,33 @@ contains
           config%z_lower, config%z_upper]))
   end function valid_checkpoint_geometry
 
+  logical function valid_element_context(nspecies,nelements,names,atoms) result(valid)
+    integer, intent(in) :: nspecies,nelements
+    character(len=*), optional, intent(in) :: names(:)
+    real(dp), optional, intent(in) :: atoms(:,:)
+    integer :: i,j
+    valid=.false.
+    if (present(names).neqv.present(atoms)) return
+    if (.not.present(names)) then
+      valid=nelements==3
+      return
+    end if
+    if (nelements<1.or.size(names)/=nelements) return
+    if (any(shape(atoms)/=[nelements,nspecies])) return
+    if (.not.all(ieee_is_finite(atoms)).or.any(atoms<0._dp)) return
+    if (any(maxval(atoms,dim=1)<=0._dp)) return
+    do i=1,nelements
+      if (len_trim(names(i))<1.or.len_trim(names(i))>1024) return
+      do j=1,len_trim(names(i))
+        if (iachar(names(i)(j:j))<32.or.iachar(names(i)(j:j))>126) return
+      end do
+      do j=1,i-1
+        if (names(i)==names(j)) return
+      end do
+    end do
+    valid=.true.
+  end function valid_element_context
+
   logical function valid_checkpoint_shapes( &
       species, geometry, state, temperature, initial_integrals, &
       initial_l1_integrals, initial_element_integrals) result(valid)
@@ -1263,7 +1349,7 @@ contains
         [geometry%nx, geometry%ny, geometry%nz]) .and. &
       size(initial_integrals) == nvar .and. &
       size(initial_l1_integrals) == nvar .and. &
-      size(initial_element_integrals) == 3
+      size(initial_element_integrals) >= 1
   end function valid_checkpoint_shapes
 
   logical function valid_checkpoint_state( &
@@ -1332,7 +1418,7 @@ contains
     time_tolerance = 64.0_dp * epsilon(1.0_dp) * &
       max(1.0_dp, abs(config%final_time))
     valid = size(initial_integrals) == size(initial_l1_integrals) .and. &
-      size(initial_element_integrals) == 3 .and. &
+      size(initial_element_integrals) >= 1 .and. &
       all(ieee_is_finite(initial_integrals)) .and. &
       all(ieee_is_finite(initial_l1_integrals)) .and. &
       all(ieee_is_finite(initial_element_integrals)) .and. &

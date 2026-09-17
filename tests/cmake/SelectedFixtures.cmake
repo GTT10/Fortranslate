@@ -158,3 +158,28 @@ add_test(
     --bundle "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json"
     --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_two_level_3d"
 )
+
+set(PELEF_TEST_EB_METHANOL_BUNDLE "" CACHE FILEPATH "Optional pinned FFCM1_Red bundle for EB regression")
+if(PELEF_TEST_EB_METHANOL_BUNDLE)
+  file(READ "${PELEF_TEST_EB_METHANOL_BUNDLE}" eb_methanol_json)
+  file(READ "${PROJECT_SOURCE_DIR}/references/spray_methanol.json" eb_methanol_reference)
+  string(JSON eb_methanol_sha GET "${eb_methanol_json}" source sha256)
+  string(JSON eb_methanol_expected_sha GET "${eb_methanol_reference}" files yaml sha256)
+  if(NOT eb_methanol_sha STREQUAL eb_methanol_expected_sha)
+    message(FATAL_ERROR "EB methanol test requires the pinned FFCM1_Red source")
+  endif()
+pelef_add_mechanism_bundle(
+  NAME selected_eb_methanol_fixture
+  BUNDLE "${PELEF_TEST_EB_METHANOL_BUNDLE}"
+  REACTIVE_EB_TWO_LEVEL_3D_NAME test_selected_methanol_eb_two_level_3d
+)
+add_test(
+  NAME regression_selected_methanol_eb_two_level_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_selected_eb_two_level_3d.py"
+    --exe $<TARGET_FILE:test_selected_methanol_eb_two_level_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/selected_methanol.nml"
+    --bundle "${PELEF_TEST_EB_METHANOL_BUNDLE}"
+    --species-count 21 --fuel CH3OH
+    --work "${CMAKE_CURRENT_BINARY_DIR}/selected_methanol_eb_two_level_3d"
+)
+endif()

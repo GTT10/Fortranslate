@@ -14,10 +14,13 @@ program pelef_reactive_eb_two_level_3d
     load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@, &
     selected_nspecies => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
     selected_nreactions => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
-    selected_integrator => @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@
+    selected_integrator => @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    element_count => @PELEF_BUNDLE_NELEMENTS_SYMBOL@, &
+    selected_element_names => @PELEF_BUNDLE_ELEMENT_NAMES_SYMBOL@, &
+    selected_element_atoms => @PELEF_BUNDLE_ELEMENT_ATOMS_SYMBOL@
   use selected_mechanism_runtime_mod, only: prepare_selected_mechanism,validate_selected_temperature_range
   use simulation_config_reactive_eb_3d_mod, only: resolve_reactive_eb_3d_selected_composition
-  use reactive_eb_3d_driver_mod, only: reactive_eb_element_species_supported_3d
+  use reactive_eb_3d_driver_mod, only: reactive_eb_composition_integrals_3d
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_specific_gas_constant
 #endif
   use elementary_kinetics_mod, only: elementary_reaction
@@ -35,6 +38,11 @@ program pelef_reactive_eb_two_level_3d
     eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
+#ifndef PELEF_SELECTED_EB_TWO_LEVEL
+  integer, parameter :: element_count=3
+#endif
+  character(len=:), allocatable :: element_names(:)
+  real(dp), allocatable :: element_atoms(:,:)
   real(dp), allocatable :: base_mole_fractions(:)
   character(len=:), allocatable :: bundle_identity,checkpoint_integrator
   integer :: composition_count=0
@@ -178,7 +186,7 @@ program pelef_reactive_eb_two_level_3d
     write(*,'(a)') trim(message)
     error stop 'Invalid selected mechanism'
   end if
-  if (.not.reactive_eb_element_species_supported_3d(species)) error stop 'EB budgets require supported H/O/N species'
+  element_names=selected_element_names; element_atoms=selected_element_atoms
   config%thermo_model='selected'
   config%composition_count=composition_count;config%composition_species=composition_species
   config%composition_mole_fractions=composition_mole_fractions
@@ -410,7 +418,35 @@ contains
     if (fine_dt<interval/factor) interval=fine_dt*factor
   end subroutine limit_timestep
 
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+  logical function chemical_elements_valid(initial_values,changes,accepted_steps) result(valid)
+    real(dp), intent(in) :: initial_values(:),changes(:)
+    integer, intent(in) :: accepted_steps
+    real(dp) :: element_scale(element_count),element_change(element_count),roundoff(element_count)
+    integer :: e
+    element_scale=matmul(element_atoms,abs(initial_values(6:))/species%molecular_weight)
+    element_change=matmul(element_atoms,changes(6:)/species%molecular_weight)
+    ! A zero initial element still sees floating-point species mass closure.
+    ! Bound that absolute error by total species mass and atoms per unit mass;
+    ! retain the relative tolerance for each populated elemental inventory.
+    do e=1,element_count
+      roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,accepted_steps),dp)*sum(abs(initial_values(6:)))* &
+        maxval(element_atoms(e,:)/species%molecular_weight)
+    end do
+    valid=all(ieee_is_finite(element_change)).and.all(ieee_is_finite(element_scale)).and.all(ieee_is_finite(roundoff))
+    if (valid) valid=all(abs(element_change)<=2.e-10_dp*element_scale+roundoff)
+    if (.not.valid) then
+      do e=1,element_count
+        write(*,'(a,1x,2(es24.16,1x))') trim(element_names(e)),element_change(e),element_scale(e)
+      end do
+    end if
+  end function chemical_elements_valid
+#endif
+
   subroutine check_balance()
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+    if (.not.chemical_elements_valid(initial,total_chemical,step)) error stop 'Chemical element conservation failed'
+#endif
     call inventory(current)
     ! Use initial L1, final and exchange scales with an absolute floor of one.
     error=maxval(abs(current-initial-total_boundary-total_wall-total_chemical)/ &
@@ -437,8 +473,8 @@ contains
     real(dp), intent(in) :: record_time,record_dt,record_theta
     integer, intent(in) :: record_step
     type(reactive_eb_3d_config) :: cfg
-    real(dp) :: integrals(nvar),l1(nvar),elements(3),got_time,got_dt,got_theta,diffusivity
-    real(dp) :: expected(nvar),expected_l1(nvar),expected_elements(3)
+    real(dp) :: integrals(nvar),l1(nvar),elements(element_count),got_time,got_dt,got_theta,diffusivity
+    real(dp) :: expected(nvar),expected_l1(nvar),expected_elements(element_count)
     integer :: got_step
     logical :: valid
     character(len=512) :: reason
@@ -446,7 +482,8 @@ contains
     if (reading) then
       call read_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,geometry,state,temperature, &
         got_time,got_step,integrals,l1,elements,got_dt,diffusivity,got_theta,valid,reason,bundle_sha256=bundle_identity, &
-        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream)
+        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream, &
+        element_names=element_names,element_atoms=element_atoms)
       if (.not.valid) then
         write(*,'(a)') trim(reason)
         error stop 'Invalid two-level patch record'
@@ -458,7 +495,11 @@ contains
     ! initial condition. The outer record owns initial and cumulative budgets.
     call reactive_eb_integrals_3d(state,geometry,expected,valid,expected_l1)
     if (.not.valid) error stop 'Cannot integrate checkpoint patch'
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+    call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,expected_elements,valid)
+#else
     call reactive_eb_element_integrals_3d(species,state,geometry,expected_elements,valid)
+#endif
     if (.not.valid) error stop 'Cannot integrate checkpoint elements'
     if (reading) then
       if (any(abs(integrals-expected)>2.e-12_dp*max(1._dp,abs(expected))).or. &
@@ -469,7 +510,8 @@ contains
       call write_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,geometry,state,temperature, &
         record_time,record_step,expected,expected_l1,expected_elements,record_dt,0._dp,record_theta, &
         valid,reason,bundle_sha256=bundle_identity, &
-        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream)
+        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream, &
+        element_names=element_names,element_atoms=element_atoms)
       if (.not.valid) then
         write(*,'(a)') trim(reason)
         error stop 'Cannot serialize two-level patch'
@@ -606,6 +648,9 @@ contains
       max(1._dp,saved_scale,abs(values),abs(saved_boundary)+abs(saved_wall)+abs(saved_chemical)))
     if (.not.ieee_is_finite(residual)) error stop 'Nonfinite checkpoint balance'
     if (residual>5.e-10_dp) error stop 'Checkpoint composite balance mismatch'
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+    if (.not.chemical_elements_valid(saved_initial,saved_chemical,saved_step)) error stop 'Checkpoint chemical element imbalance'
+#endif
     averaged=candidate_c(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3))
     averaged_t=candidate_tc(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3))
     call restrict_reactive_eb_state_3d(species,fine,refinement_ratio,candidate_f,candidate_tf,averaged,averaged_t,valid)
