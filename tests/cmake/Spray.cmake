@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_executable(test_spray_eb_intersection spray/test_spray_eb_intersection.F90)
+  target_link_libraries(test_spray_eb_intersection PRIVATE pelef_spray_tree_runtime)
+  add_test(NAME spray_eb_intersection COMMAND test_spray_eb_intersection)
+  set_tests_properties(spray_eb_intersection PROPERTIES LABELS "spray;eb" TIMEOUT 30)
   add_executable(test_spray_amr_tree_gas spray/test_spray_amr_tree_gas.F90)
   target_link_libraries(test_spray_amr_tree_gas PRIVATE pelef_spray_tree_runtime)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")

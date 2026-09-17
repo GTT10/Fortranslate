@@ -22,6 +22,19 @@ now connect initial or timed injection, coupled steps, prescribed or temperature
 CSV output. Checkpoint/restart now preserves the gas/particle state and event
 position across MPI rank-count changes.
 
+The tree runtime also exports `spray_eb_intersection_mod`'s
+`intersect_spray_level_set(phi,lower,upper,start,finish,hit,fraction,position,normal,cell,ok)`.
+It finds the earliest fluid-to-solid segment contact using the same six
+tetrahedra per Cartesian cell as `build_level_set_eb_geometry_3d`. Supply the
+original nodal level set (`phi>0` is fluid), not aggregated EB face moments.
+The returned unit normal points into fluid; cell indices are one-based.
+Both endpoints must lie inside the closed domain and the start must be fluid
+or on the surface. Surface-inward motion hits at fraction zero. A valid miss
+returns fraction one, the endpoint, and zero normal/cell. Invalid input preserves
+all result arguments. Geometry is bounded to one million cells, and the query
+scans the segment's cell bounding box. This serial geometry primitive does not
+yet connect EB impact response, gas sampling/deposition, MPI or AMR stepping.
+
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
 `locate_amr_tree_spray_cells` and `partition_amr_tree_spray_parcels` from
