@@ -137,9 +137,20 @@ Replicated nodal values, node bounds, fluid fractions and fluid centroids are
 checked for exact rank agreement, including ranks without queries. Gas fields
 remain owner-local; only requested cell values travel. All local sample arrays
 publish after collective success. Request-capacity, geometry and solid-point
-failures preserve existing samples. The deposition routines still implement
-regular AMR: EB source accumulation, restriction and masked EOS recovery remain
-to be connected separately.
+failures preserve existing samples.
+
+The field and gas deposition APIs now accept the same paired EB arguments.
+Owner-routed contributions divide by physical fluid volume. Parent restriction
+communicates averaged `volume_fraction * state` and volume fraction, then
+divides to obtain fluid-volume-weighted parent values. Only parent cells hidden
+by children are replaced; exposed and solid cells retain their deposited/original
+state. Restricted fractions must agree with parent EB metrics to roundoff.
+The gas wrapper recovers EOS temperatures only in positive-fluid-volume cells
+and commits gas and temperature together after all ranks succeed. Failed source
+updates, inconsistent coarse/fine fluid volumes or invalid EOS states preserve
+the whole incoming gas/temperature state. Small-cell source redistribution is
+not provided; timestep rejection remains the caller's responsibility. Particle
+time integration has not yet been connected to these distributed EB APIs.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
