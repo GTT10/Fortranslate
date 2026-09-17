@@ -32,3 +32,19 @@ contract. This increment exposes a library geometry builder and pressure-balance
 checks. Nodal-file application/restart wiring, coupled 3D curved hydro/transport,
 small-cell stabilization across larger neighborhoods and EB-AMR-MPI integration
 remain separate work.
+
+
+## Application and restart integration
+
+`geometry_type='level_set'` selects a three-dimensional nodal file through
+`level_set_file`. Dimensions must match the configured grid; missing values are
+initialized to quiet NaN before input so incomplete records cannot become geometry.
+The builder publishes validated metrics before initialization or checkpoint loading.
+Input geometry paths must differ lexically from output/checkpoint/restart paths.
+
+The existing geometry-selector checkpoint record stores `level_set`, distinct from
+plane axes and extruded selectors. Existing full metric comparison binds restart
+to the requested reconstructed geometry and retains its tolerances. The source file
+may move; raw file bytes are not identity. No new checkpoint layout is needed.
+The common fixed/selected driver then uses the already connected nonplanar
+StateRedist, molecular transport, reaction and wall-momentum diagnostics.

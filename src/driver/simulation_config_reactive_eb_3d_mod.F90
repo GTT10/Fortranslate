@@ -2,7 +2,8 @@ module simulation_config_reactive_eb_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
+    extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
   use nasa7_thermo_mod, only: nasa7_species
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
@@ -29,6 +30,7 @@ module simulation_config_reactive_eb_3d_mod
     character(len=16) :: geometry_type = "plane"
     character(len=8) :: extrusion_axis = "z"
     character(len=512) :: section_file = ""
+    character(len=512) :: level_set_file = ""
     character(len=8) :: plane_axis = "x"
     real(dp) :: plane_position = 0.395_dp
     character(len=32) :: riemann_solver = "rusanov"
@@ -73,6 +75,7 @@ contains
     type(reactive_eb_3d_config), intent(in) :: config
     character(len=:), allocatable :: identity
     identity=trim(config%plane_axis)
+    if (config%geometry_type=='level_set') identity='level_set'
     if (config%geometry_type=='extruded') identity='extruded:'//trim(config%extrusion_axis)
   end function
 
@@ -82,14 +85,48 @@ contains
     logical, intent(out) :: ok
     type(eb_geometry_3d) :: candidate
     type(eb_geometry_2d) :: section
-    real(dp), allocatable :: phi(:,:)
+    real(dp), allocatable :: phi(:,:),nodal(:,:,:)
     real(dp) :: lo(3),hi(3)
-    integer :: dims(3),axis,a,b,unit,status,header(2),close_status
+    integer :: dims(3),axis,a,b,unit,status,header(2),volume_header(3),close_status
     character(len=1024) :: trailing
     ok=.false.
     if (config%geometry_type=='plane') then
       call build_axis_plane_eb_geometry_3d(config%nx,config%ny,config%nz,config%x_lower,config%x_upper, &
         config%y_lower,config%y_upper,config%z_lower,config%z_upper,config%plane_axis,config%plane_position,candidate,ok)
+      if (ok) geometry=candidate
+      return
+    end if
+    if (config%geometry_type=='level_set') then
+      dims=[config%nx,config%ny,config%nz]
+      if (any(dims<2)) return
+      lo=[config%x_lower,config%y_lower,config%z_lower]
+      hi=[config%x_upper,config%y_upper,config%z_upper]
+      if (.not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi)).or.any(hi<=lo)) return
+      open(newunit=unit,file=trim(config%level_set_file),status='old',action='read',iostat=status)
+      if (status/=0) return
+      volume_header=-1
+      read(unit,*,iostat=status) volume_header
+      if (status==0) then
+        if (any(volume_header/=dims)) status=1
+      end if
+      if (status==0) allocate(nodal(0:dims(1),0:dims(2),0:dims(3)),stat=status)
+      if (status==0) then
+        nodal=ieee_value(0._dp,ieee_quiet_nan)
+        read(unit,*,iostat=status) nodal
+      end if
+      if (status==0) then
+        do
+          read(unit,'(a)',iostat=status) trailing
+          if (status/=0) exit
+          if (len_trim(trailing)/=0) then
+            status=1;exit
+          end if
+        end do
+        if (is_iostat_end(status)) status=0
+      end if
+      close(unit,iostat=close_status)
+      if (status/=0.or.close_status/=0) return
+      call build_level_set_eb_geometry_3d(nodal,lo,hi,candidate,ok)
       if (ok) geometry=candidate
       return
     end if
@@ -155,7 +192,7 @@ contains
     real(dp) :: initial_velocity_x, initial_velocity_y, initial_velocity_z
     character(len=8) :: plane_axis,extrusion_axis
     character(len=16) :: geometry_type
-    character(len=512) :: section_file
+    character(len=512) :: section_file,level_set_file
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
     integer :: composition_count
@@ -171,7 +208,7 @@ contains
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, &
-      geometry_type,extrusion_axis,section_file, &
+      geometry_type,extrusion_axis,section_file,level_set_file, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
@@ -198,6 +235,7 @@ contains
     final_time = config%final_time
     cfl = config%cfl
     geometry_type=config%geometry_type;extrusion_axis=config%extrusion_axis;section_file=config%section_file
+    level_set_file=config%level_set_file
     plane_axis = config%plane_axis
     plane_position = config%plane_position
     riemann_solver = config%riemann_solver
@@ -260,7 +298,7 @@ contains
     config%final_time = final_time
     config%cfl = cfl
     config%geometry_type=trim(geometry_type);config%extrusion_axis=trim(extrusion_axis)
-    config%section_file=trim(section_file)
+    config%section_file=trim(section_file);config%level_set_file=trim(level_set_file)
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
     config%riemann_solver = trim(riemann_solver)
@@ -426,6 +464,17 @@ contains
       return
     end if
 
+    if (config%geometry_type=='level_set') then
+      if (len_trim(config%level_set_file)==0) then
+        message='Reactive EB 3D level_set geometry requires level_set_file';return
+      end if
+      if (paths_alias_lexically(config%level_set_file,config%output_file).or. &
+          paths_alias_lexically(config%level_set_file,config%checkpoint_file).or. &
+          paths_alias_lexically(config%level_set_file,config%restart_file)) then
+        message='Reactive EB 3D level-set file must differ from output/checkpoint paths';return
+      end if
+      ok=.true.;return
+    end if
     if (config%geometry_type=='extruded') then
       if (config%extrusion_axis/='x'.and.config%extrusion_axis/='y'.and.config%extrusion_axis/='z') then
         message='Reactive EB 3D extrusion_axis must be x, y, or z';return
@@ -440,7 +489,7 @@ contains
       end if
       ok=.true.;return
     else if (config%geometry_type/='plane') then
-      message='Reactive EB 3D geometry_type must be plane or extruded';return
+      message='Reactive EB 3D geometry_type must be plane, extruded, or level_set';return
     end if
 
     select case (trim(config%plane_axis))

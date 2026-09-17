@@ -310,6 +310,8 @@ contains
     write(*,'(a,a)') 'Geometry: ',trim(config%geometry_type)
     if (config%geometry_type=='extruded') then
       write(*,'(a,a)') 'Extrusion axis: ',trim(config%extrusion_axis)
+    end if
+    if (config%geometry_type/='plane') then
       write(*,'(a,3es24.16)') 'Momentum changes: ',final_integrals(imx:imz)-initial_integrals(imx:imz)
     end if
     if (config%geometry_type=='plane') then

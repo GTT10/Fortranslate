@@ -1,0 +1,11 @@
+&reactive_eb_3d
+ nx=10, ny=8, nz=6, maximum_steps=100
+ x_upper=1.0, y_upper=1.0, z_upper=1.0
+ geometry_type='level_set', level_set_file='level_set.dat'
+ final_time=2.0e-8, cfl=0.0001
+ riemann_solver='rusanov', redistribution='state_redist'
+ thermo_model='elementary'
+ chemistry_enabled=.true., transport_enabled=.true.
+ regular_density=0.31, cut_density=0.93, initial_pressure=135000.0
+ output_file='level_set.csv'
+/

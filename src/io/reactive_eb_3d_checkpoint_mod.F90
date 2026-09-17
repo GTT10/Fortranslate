@@ -1140,6 +1140,9 @@ contains
       valid = .false.
       return
     end if
+    if (config%geometry_type=='level_set') then
+      valid=len_trim(config%level_set_file)>0;return
+    end if
     if (config%geometry_type=='extruded') then
       valid=(config%extrusion_axis=='x'.or.config%extrusion_axis=='y'.or.config%extrusion_axis=='z') &
         .and.len_trim(config%section_file)>0
