@@ -11,10 +11,14 @@ module spray_eb_step_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_field_mod, only: sample_eb_spray_field,deposit_eb_spray_gas
   use spray_eb_drift_mod, only: drift_spray_level_set
+  use, intrinsic :: iso_fortran_env, only: int64
+  use spray_eb_impact_mod, only: advance_mixture_level_set_impacts,spray_eb_wall_options
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
   implicit none
   private
-  public :: advance_eb_mixture_coupling
+  public :: advance_eb_mixture_coupling,advance_eb_mixture_coupling_allocated
 contains
+  ! Preserve the original fixed-population interface for specular callers.
   subroutine advance_eb_mixture_coupling(species,transport,components,options,g,phi,state,temperature, &
       parcels,component_mass,interval,substeps,boundary_change,ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -25,6 +29,36 @@ contains
     real(dp), intent(in) :: phi(0:,0:,0:),interval
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),component_mass(:,:),boundary_change(5)
     type(spray_parcel), intent(inout) :: parcels(:)
+    integer, intent(out) :: substeps
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: drops(:)
+    real(dp), allocatable :: masses(:,:)
+    drops=parcels;masses=component_mass
+    call advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
+      drops,masses,interval,substeps,boundary_change,ok)
+    if (.not.ok) return
+    parcels=drops;component_mass=masses
+  end subroutine
+  subroutine advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
+      parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(eb_geometry_3d), intent(in) :: g
+    real(dp), intent(in) :: phi(0:,0:,0:),interval
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),boundary_change(5)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    type(spray_eb_wall_options), optional, intent(in) :: wall_options
+    type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    integer(int64), optional, intent(inout) :: last_id
+    type(spray_wall_film), allocatable :: patches(:),next_patches(:)
+    real(dp), allocatable :: patch_mass(:,:),next_patch_mass(:,:)
+    real(dp) :: molecular_weights(size(components))
+    integer(int64) :: watermark,next_watermark
+    logical :: impacts
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     type(spray_parcel), allocatable :: drops(:),trial(:)
@@ -40,6 +74,32 @@ contains
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
     if (.not.ieee_is_finite(interval)) return
     if (interval<0.or.interval>1e6_dp.or.options%khrt_children) return
+    if (.not.allocated(parcels).or..not.allocated(component_mass)) return
+    impacts=present(wall_options)
+    if (present(films).neqv.impacts) return
+    if (present(film_mass).neqv.impacts) return
+    if (present(last_id).neqv.impacts) return
+    if (impacts) then
+      if (.not.all(ieee_is_finite([wall_options%temperature,wall_options%contact_angle]))) return
+      if (wall_options%temperature<1.or.wall_options%temperature>1e5_dp) return
+      if (wall_options%contact_angle<1e-6_dp.or.wall_options%contact_angle>acos(-1._dp)-1e-6_dp) return
+      if (wall_options%maximum_hits<0.or.wall_options%maximum_hits>1024) return
+      if (wall_options%maximum_films<0.or.wall_options%maximum_films>1000000) return
+      if (last_id<0.or.last_id>huge(last_id)-4_int64) return
+      do p=1,size(parcels)
+        if (parcels(p)%id>last_id) return
+        if (p>1) then
+          if (parcels(p)%id<=parcels(p-1)%id) return
+        end if
+      end do
+      if (.not.allocated(films).or..not.allocated(film_mass)) return
+      if (size(films)>wall_options%maximum_films) return
+      if (any(shape(film_mass)/=[size(components),size(films)])) return
+      do p=1,size(films)
+        if (.not.valid_wall_component_inventory(films(p),film_mass(:,p))) return
+      end do
+      patches=films;patch_mass=film_mass;watermark=last_id
+    end if
     np=size(parcels);nc=size(components);nvar=reactive_nvar(size(species))
     if (nc<1.or.nc>16.or.np>min(125000,options%maximum_parcels)) return
     if (size(transport)/=size(species).or.any(shape(component_mass)/=[nc,np])) return
@@ -51,6 +111,7 @@ contains
     do n=1,nc
       if (.not.valid_spray_liquid(components(n))) return
       if (components(n)%vapor_index>size(species)) return
+      molecular_weights(n)=species(components(n)%vapor_index)%molecular_weight
     end do
     lower=[g%x_lower,g%y_lower,g%z_lower];upper=[g%x_upper,g%y_upper,g%z_upper];h=[g%dx,g%dy,g%dz]
     gas=state;temp=temperature;drops=parcels;masses=component_mass;ledger=0
@@ -64,6 +125,12 @@ contains
     elapsed=0;count_steps=0
     do while(elapsed<interval)
       if (count_steps>=options%maximum_substeps) return
+      np=size(drops)
+      if (size(positions,2)/=np) then
+        deallocate(positions,change,primitive,tg)
+        allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np))
+      end if
+      primitive=0;primitive(5,:)=101325
       field(:nvar,:,:,:)=gas;field(nvar+1,:,:,:)=temp
       do p=1,np
         positions(:,p)=drops(p)%position
@@ -127,7 +194,18 @@ contains
           trial(p)%position=drops(p)%position
         end do
         exchange=0;hits=0
-        if (valid) call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
+        if (valid) then
+          if (impacts) then
+            next_patches=patches;next_patch_mass=patch_mass;next_watermark=watermark
+            call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
+              min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
+              101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
+              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,primitive(5,:))
+            exchange=-exchange
+          else
+            call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
+          end if
+        end if
         if (valid) then
           next_gas=gas;next_temp=temp
           call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
@@ -139,9 +217,15 @@ contains
       end do
       if (.not.accepted) return
       gas=next_gas;temp=next_temp;drops=trial;masses=next_mass;ledger=ledger+exchange
+      if (impacts) then
+        patches=next_patches;patch_mass=next_patch_mass;watermark=next_watermark
+      end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
     state=gas;temperature=temp;parcels=drops;component_mass=masses
+    if (impacts) then
+      films=patches;film_mass=patch_mass;last_id=watermark
+    end if
     boundary_change=ledger;substeps=count_steps;ok=.true.
   end subroutine
 end module

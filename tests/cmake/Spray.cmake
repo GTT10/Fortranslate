@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_executable(test_spray_eb_impact_coupling spray/test_spray_eb_impact_coupling.F90)
+  target_link_libraries(test_spray_eb_impact_coupling PRIVATE pelef_spray_tree_runtime)
+  add_test(NAME spray_eb_impact_coupling COMMAND test_spray_eb_impact_coupling)
+  set_tests_properties(spray_eb_impact_coupling PROPERTIES LABELS "spray;eb" TIMEOUT 30)
   add_executable(test_spray_eb_impact spray/test_spray_eb_impact.F90)
   target_link_libraries(test_spray_eb_impact PRIVATE pelef_spray_tree_runtime)
   add_test(NAME spray_eb_impact COMMAND test_spray_eb_impact)

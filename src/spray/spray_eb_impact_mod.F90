@@ -9,6 +9,10 @@ module spray_eb_impact_mod
   implicit none
   private
   public :: impact_mixture_level_set,advance_mixture_level_set_impacts
+  type, public :: spray_eb_wall_options
+    real(dp) :: temperature=300,contact_angle=1.0471975511965977_dp
+    integer :: maximum_hits=32,maximum_films=1000000
+  end type
 contains
   ! One earliest stationary EB contact; parent%position is the trial endpoint.
   ! Wall budget is received by the wall, as in resolve_mixture_wall_impact.
@@ -80,11 +84,12 @@ contains
   ! IDs must be sorted on input. Capacities bound all intermediate births/deposits.
   subroutine advance_mixture_level_set_impacts(phi,lower,upper,dt,maximum_hits,capacity,film_capacity, &
       components,properties,molecular_weights,pressure,wall_temperature,contact_angle, &
-      parcels,masses,films,film_masses,last_id,wall,hits,ok)
+      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures)
     use spray_eb_drift_mod, only: drift_spray_level_set
     use spray_wall_impact_mod, only: valid_wall_component_inventory
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt,molecular_weights(:)
     real(dp), intent(in) :: pressure,wall_temperature,contact_angle
+    real(dp), optional, intent(in) :: pressures(:)
     integer, intent(in) :: maximum_hits,capacity,film_capacity
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
@@ -98,7 +103,7 @@ contains
     type(spray_parcel), allocatable :: queue(:),children(:),empty(:),result(:)
     type(spray_wall_film), allocatable :: patches(:)
     type(spray_wall_film) :: patch
-    real(dp), allocatable :: inventory(:,:),deposits(:,:),child_mass(:,:),remaining(:),result_mass(:,:)
+    real(dp), allocatable :: inventory(:,:),deposits(:,:),child_mass(:,:),remaining(:),local_pressure(:),result_mass(:,:)
     integer, allocatable :: depth(:)
     real(dp) :: previous(3),location(3),normal(3),fraction,thickness,delta(3),budget(5),total(5)
     real(dp) :: film_mass(size(components)),check(5),time_left
@@ -112,6 +117,11 @@ contains
     if (nc<1.or.nc>16.or.capacity<n.or.capacity>1000000.or.capacity<0) return
     if (film_capacity<nf.or.film_capacity>1000000.or.film_capacity<0) return
     if (any(shape(masses)/=[nc,n]).or.any(shape(film_masses)/=[nc,nf])) return
+    if (present(pressures)) then
+      if (size(pressures)/=n) return
+      if (.not.all(ieee_is_finite(pressures))) return
+      if (any(pressures<1).or.any(pressures>1e10_dp)) return
+    end if
     if (last_id<0.or.last_id>huge(last_id)-4_int64) return
     if (.not.all(ieee_is_finite([pressure,wall_temperature,contact_angle]))) return
     if (pressure<1.or.pressure>1e10_dp.or.wall_temperature<1.or.wall_temperature>1e5_dp) return
@@ -130,9 +140,11 @@ contains
     do f=1,nf
       if (.not.valid_wall_component_inventory(films(f),film_masses(:,f))) return
     end do
-    allocate(queue(capacity),inventory(nc,capacity),remaining(capacity),depth(capacity), &
+    allocate(queue(capacity),inventory(nc,capacity),remaining(capacity),local_pressure(capacity),depth(capacity), &
       patches(film_capacity),deposits(nc,film_capacity),stat=stat)
     if (stat/=0) return
+    local_pressure(:n)=pressure
+    if (present(pressures)) local_pressure(:n)=pressures
     queue(:n)=parcels;inventory(:,:n)=masses;remaining(:n)=dt;depth(:n)=0
     patches(:nf)=films;deposits(:,:nf)=film_masses;watermark=last_id;total=0;count=0;p=1
     do while(p<=n)
@@ -154,7 +166,7 @@ contains
         end do
         if (watermark>huge(watermark)-4_int64) return
         call impact_mixture_level_set(phi,lower,upper,previous,queue(p),components,inventory(:,p),properties, &
-          molecular_weights,pressure,wall_temperature,thickness,contact_angle,watermark+1_int64, &
+          molecular_weights,local_pressure(p),wall_temperature,thickness,contact_angle,watermark+1_int64, &
           children,child_mass,patch,film_mass,budget,fraction,regime,hit,valid)
         if (.not.valid.or..not.hit) return
         if (size(children)>capacity-n) return
@@ -165,7 +177,7 @@ contains
         time_left=remaining(p)*(1-fraction);depth(p)=depth(p)+1
         do j=1,size(children)
           n=n+1;queue(n)=children(j);inventory(:,n)=child_mass(:,j)
-          remaining(n)=time_left;depth(n)=depth(p)
+          remaining(n)=time_left;depth(n)=depth(p);local_pressure(n)=local_pressure(p)
         end do
         watermark=watermark+int(size(children),int64)
         remaining(p)=time_left;total=total+budget;count=count+1
