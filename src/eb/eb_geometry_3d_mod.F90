@@ -59,7 +59,226 @@ module eb_geometry_3d_mod
 
   public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
 
+  public :: coarsen_eb_geometry_3d
+
 contains
+
+  ! Restrict physical moments rather than sampling a new coarse level set.
+  ! One connected fluid region and a nonzero representative wall normal are
+  ! required by the existing single-state geometry representation.
+  subroutine coarsen_eb_geometry_3d(fine,ratio,coarse,ok)
+    type(eb_geometry_3d), intent(in) :: fine
+    integer, intent(in) :: ratio
+    type(eb_geometry_3d), intent(inout) :: coarse
+    logical, intent(out) :: ok
+    type(eb_geometry_3d) :: candidate
+    integer :: dims(3),i,j,k,ii,jj,kk,lo(3),hi(3),nblock
+    integer, allocatable :: queue(:,:)
+    logical, allocatable :: seen(:,:,:)
+    real(dp) :: volume,area,normal(3),length,offset(3),moment(3),weight,face_volume
+    ok=.false.
+    if (.not.fine%is_valid().or.ratio<1) return
+    dims=[fine%nx,fine%ny,fine%nz]
+    if (any(mod(dims,ratio)/=0)) return
+    if (ratio==1) then
+      coarse=fine; ok=.true.; return
+    end if
+    if (ratio>huge(nblock)/ratio) return
+    nblock=ratio*ratio
+    if (nblock>huge(nblock)/ratio) return
+    nblock=nblock*ratio
+    allocate(queue(3,nblock),seen(ratio,ratio,ratio))
+    dims=dims/ratio
+    candidate%nx=dims(1); candidate%ny=dims(2); candidate%nz=dims(3)
+    candidate%x_lower=fine%x_lower; candidate%x_upper=fine%x_upper
+    candidate%dx=fine%dx*real(ratio,dp)
+    candidate%y_lower=fine%y_lower; candidate%y_upper=fine%y_upper
+    candidate%dy=fine%dy*real(ratio,dp)
+    candidate%z_lower=fine%z_lower; candidate%z_upper=fine%z_upper
+    candidate%dz=fine%dz*real(ratio,dp)
+    call allocate_geometry_arrays(candidate)
+    call clear_geometry_arrays(candidate)
+    do k=1,dims(3)
+      do j=1,dims(2)
+        do i=1,dims(1)
+          lo=([i,j,k]-1)*ratio+1; hi=[i,j,k]*ratio
+          if (.not.block_connected(lo,hi)) return
+          volume=sum(fine%volume_fraction(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)))
+          candidate%volume_fraction(i,j,k)=volume/real(nblock,dp)
+          if (all(fine%cell_type(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))==eb_covered_cell_3d)) cycle
+          if (all(fine%cell_type(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))==eb_regular_cell_3d)) then
+            candidate%cell_type(i,j,k)=eb_regular_cell_3d
+            cycle
+          end if
+          candidate%cell_type(i,j,k)=eb_cut_cell_3d
+          moment=0._dp; normal=0._dp; area=0._dp
+          do kk=lo(3),hi(3)
+            do jj=lo(2),hi(2)
+              do ii=lo(1),hi(1)
+                offset=(real([ii,jj,kk]-lo,dp)+.5_dp)/real(ratio,dp)-.5_dp
+                weight=fine%volume_fraction(ii,jj,kk)
+                moment(1)=moment(1)+weight*(offset(1)+fine%cell_centroid_x(ii,jj,kk)/ratio)
+                moment(2)=moment(2)+weight*(offset(2)+fine%cell_centroid_y(ii,jj,kk)/ratio)
+                moment(3)=moment(3)+weight*(offset(3)+fine%cell_centroid_z(ii,jj,kk)/ratio)
+                weight=fine%boundary_area(ii,jj,kk)
+                area=area+weight
+                normal(1)=normal(1)+fine%boundary_normal_integral_x(ii,jj,kk)
+                candidate%boundary_centroid_x(i,j,k)=candidate%boundary_centroid_x(i,j,k)+ &
+                  weight*fine%boundary_centroid_x(ii,jj,kk)
+                normal(2)=normal(2)+fine%boundary_normal_integral_y(ii,jj,kk)
+                candidate%boundary_centroid_y(i,j,k)=candidate%boundary_centroid_y(i,j,k)+ &
+                  weight*fine%boundary_centroid_y(ii,jj,kk)
+                normal(3)=normal(3)+fine%boundary_normal_integral_z(ii,jj,kk)
+                candidate%boundary_centroid_z(i,j,k)=candidate%boundary_centroid_z(i,j,k)+ &
+                  weight*fine%boundary_centroid_z(ii,jj,kk)
+              end do
+            end do
+          end do
+          length=norm2(normal)
+          if (area<=0._dp.or.length<=classification_tolerance*area.or.volume<=0._dp) return
+          candidate%boundary_area(i,j,k)=area
+          candidate%cell_centroid_x(i,j,k)=moment(1)/volume
+          candidate%boundary_centroid_x(i,j,k)=candidate%boundary_centroid_x(i,j,k)/area
+          candidate%boundary_normal_integral_x(i,j,k)=normal(1)
+          candidate%boundary_normal_x(i,j,k)=normal(1)/length
+          candidate%cell_centroid_y(i,j,k)=moment(2)/volume
+          candidate%boundary_centroid_y(i,j,k)=candidate%boundary_centroid_y(i,j,k)/area
+          candidate%boundary_normal_integral_y(i,j,k)=normal(2)
+          candidate%boundary_normal_y(i,j,k)=normal(2)/length
+          candidate%cell_centroid_z(i,j,k)=moment(3)/volume
+          candidate%boundary_centroid_z(i,j,k)=candidate%boundary_centroid_z(i,j,k)/area
+          candidate%boundary_normal_integral_z(i,j,k)=normal(3)
+          candidate%boundary_normal_z(i,j,k)=normal(3)/length
+        end do
+      end do
+    end do
+    do k=1,dims(3)
+      do j=1,dims(2)
+        do i=0,dims(1)
+          lo=([i,j,k]-1)*ratio+1; hi=[i,j,k]*ratio
+          lo(1)=hi(1)
+          face_volume=0._dp; moment=0._dp
+          do kk=lo(3),hi(3)
+            do jj=lo(2),hi(2)
+              do ii=lo(1),hi(1)
+                weight=fine%x_face_fraction(ii,jj,kk)
+                face_volume=face_volume+weight
+                moment(2)=moment(2)+weight*((real(jj-lo(2),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%x_face_centroid_y(ii,jj,kk)/ratio)
+                moment(3)=moment(3)+weight*((real(kk-lo(3),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%x_face_centroid_z(ii,jj,kk)/ratio)
+              end do
+            end do
+          end do
+          candidate%x_face_fraction(i,j,k)=face_volume/real(ratio,dp)**2
+          if (face_volume>0._dp) then
+            candidate%x_face_centroid_y(i,j,k)=moment(2)/face_volume
+            candidate%x_face_centroid_z(i,j,k)=moment(3)/face_volume
+          end if
+        end do
+      end do
+    end do
+    do k=1,dims(3)
+      do j=0,dims(2)
+        do i=1,dims(1)
+          lo=([i,j,k]-1)*ratio+1; hi=[i,j,k]*ratio
+          lo(2)=hi(2)
+          face_volume=0._dp; moment=0._dp
+          do kk=lo(3),hi(3)
+            do jj=lo(2),hi(2)
+              do ii=lo(1),hi(1)
+                weight=fine%y_face_fraction(ii,jj,kk)
+                face_volume=face_volume+weight
+                moment(1)=moment(1)+weight*((real(ii-lo(1),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%y_face_centroid_x(ii,jj,kk)/ratio)
+                moment(3)=moment(3)+weight*((real(kk-lo(3),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%y_face_centroid_z(ii,jj,kk)/ratio)
+              end do
+            end do
+          end do
+          candidate%y_face_fraction(i,j,k)=face_volume/real(ratio,dp)**2
+          if (face_volume>0._dp) then
+            candidate%y_face_centroid_x(i,j,k)=moment(1)/face_volume
+            candidate%y_face_centroid_z(i,j,k)=moment(3)/face_volume
+          end if
+        end do
+      end do
+    end do
+    do k=0,dims(3)
+      do j=1,dims(2)
+        do i=1,dims(1)
+          lo=([i,j,k]-1)*ratio+1; hi=[i,j,k]*ratio
+          lo(3)=hi(3)
+          face_volume=0._dp; moment=0._dp
+          do kk=lo(3),hi(3)
+            do jj=lo(2),hi(2)
+              do ii=lo(1),hi(1)
+                weight=fine%z_face_fraction(ii,jj,kk)
+                face_volume=face_volume+weight
+                moment(1)=moment(1)+weight*((real(ii-lo(1),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%z_face_centroid_x(ii,jj,kk)/ratio)
+                moment(2)=moment(2)+weight*((real(jj-lo(2),dp)+.5_dp)/ratio-.5_dp+ &
+                  fine%z_face_centroid_y(ii,jj,kk)/ratio)
+              end do
+            end do
+          end do
+          candidate%z_face_fraction(i,j,k)=face_volume/real(ratio,dp)**2
+          if (face_volume>0._dp) then
+            candidate%z_face_centroid_x(i,j,k)=moment(1)/face_volume
+            candidate%z_face_centroid_y(i,j,k)=moment(2)/face_volume
+          end if
+        end do
+      end do
+    end do
+    if (.not.candidate%is_valid()) return
+    coarse=candidate
+    ok=.true.
+  contains
+    logical function block_connected(lower,upper) result(connected)
+      integer, intent(in) :: lower(3),upper(3)
+      integer :: a,b,c,head,tail,cell(3),neighbor(3),local(3),axis,step,active
+      real(dp) :: aperture
+      seen=.false.; head=1; tail=0
+      active=count(fine%volume_fraction(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))>0._dp)
+      connected=.true.
+      if (active==0) return
+      search: do c=lower(3),upper(3)
+        do b=lower(2),upper(2)
+          do a=lower(1),upper(1)
+            if (fine%volume_fraction(a,b,c)<=0._dp) cycle
+            tail=1; queue(:,1)=[a,b,c]; local=[a,b,c]-lower+1
+            seen(local(1),local(2),local(3))=.true.
+            exit search
+          end do
+        end do
+      end do search
+      do while(head<=tail)
+        cell=queue(:,head)
+        do axis=1,3
+          do step=-1,1,2
+            neighbor=cell; neighbor(axis)=neighbor(axis)+step
+            if (any(neighbor<lower).or.any(neighbor>upper)) cycle
+            local=neighbor-lower+1
+            if (seen(local(1),local(2),local(3))) cycle
+            if (fine%volume_fraction(neighbor(1),neighbor(2),neighbor(3))<=0._dp) cycle
+            select case(axis)
+            case(1)
+              aperture=fine%x_face_fraction(cell(1)+min(step,0),cell(2),cell(3))
+            case(2)
+              aperture=fine%y_face_fraction(cell(1),cell(2)+min(step,0),cell(3))
+            case(3)
+              aperture=fine%z_face_fraction(cell(1),cell(2),cell(3)+min(step,0))
+            end select
+            if (aperture<=0._dp) cycle
+            tail=tail+1; queue(:,tail)=neighbor
+            seen(local(1),local(2),local(3))=.true.
+          end do
+        end do
+        head=head+1
+      end do
+      connected=tail==active
+    end function block_connected
+  end subroutine coarsen_eb_geometry_3d
 
   ! Six tetrahedra per Cartesian cell, using the common lower-to-upper diagonal.
   ! Positive nodal level set is fluid; facets use linear tetrahedral interpolation.

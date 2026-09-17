@@ -4,7 +4,7 @@ program test_eb_geometry_3d
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
+    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d
   implicit none
 
   integer, parameter :: nx = 10
@@ -267,9 +267,136 @@ program test_eb_geometry_3d
     call require(.not.ok.and.all(cut%volume_fraction==saved%volume_fraction),'disconnected cell rejected atomically')
   end block
 
+  call check_coarsening()
+
   write(*, '(a)') "test_eb_geometry_3d: PASS"
 
 contains
+
+  subroutine check_coarsening()
+    type(eb_geometry_3d) :: fine,coarse,direct,saved
+    real(dp) :: phi(0:12,0:12,0:12),lower(3),upper(3),vf,vc
+    real(dp), allocatable :: coarse_phi(:,:,:)
+    integer :: i,j,k,ratio,n
+    logical :: valid
+    lower=[-1._dp,2._dp,-3._dp]; upper=[2._dp,4._dp,1._dp]
+    do k=0,12
+      do j=0,12
+        do i=0,12
+          phi(i,j,k)=real(i+j+k,dp)/12._dp-1.731_dp
+        end do
+      end do
+    end do
+    call build_level_set_eb_geometry_3d(phi,lower,upper,fine,valid)
+    call require(valid,'fine oblique coarsening geometry')
+    do ratio=2,3
+      n=12/ratio
+      allocate(coarse_phi(0:n,0:n,0:n))
+      do k=0,n
+        do j=0,n
+          do i=0,n
+            coarse_phi(i,j,k)=real(i+j+k,dp)/n-1.731_dp
+          end do
+        end do
+      end do
+      call build_level_set_eb_geometry_3d(coarse_phi,lower,upper,direct,valid)
+      call require(valid,'independent coarse oblique geometry')
+      call coarsen_eb_geometry_3d(fine,ratio,coarse,valid)
+      call require(valid.and.coarse%is_valid(),'coarsened oblique geometry')
+      call require(all(coarse%cell_type==direct%cell_type),'coarse classification')
+      call assert_close(maxval(abs(coarse%volume_fraction-direct%volume_fraction)), &
+        0._dp,tolerance,'restricted volume_fraction')
+      call assert_close(maxval(abs(coarse%cell_centroid_x-direct%cell_centroid_x)), &
+        0._dp,tolerance,'restricted cell_centroid_x')
+      call assert_close(maxval(abs(coarse%cell_centroid_y-direct%cell_centroid_y)), &
+        0._dp,tolerance,'restricted cell_centroid_y')
+      call assert_close(maxval(abs(coarse%cell_centroid_z-direct%cell_centroid_z)), &
+        0._dp,tolerance,'restricted cell_centroid_z')
+      call assert_close(maxval(abs(coarse%x_face_fraction-direct%x_face_fraction)), &
+        0._dp,tolerance,'restricted x_face_fraction')
+      call assert_close(maxval(abs(coarse%y_face_fraction-direct%y_face_fraction)), &
+        0._dp,tolerance,'restricted y_face_fraction')
+      call assert_close(maxval(abs(coarse%z_face_fraction-direct%z_face_fraction)), &
+        0._dp,tolerance,'restricted z_face_fraction')
+      call assert_close(maxval(abs(coarse%x_face_centroid_y-direct%x_face_centroid_y)), &
+        0._dp,tolerance,'restricted x_face_centroid_y')
+      call assert_close(maxval(abs(coarse%x_face_centroid_z-direct%x_face_centroid_z)), &
+        0._dp,tolerance,'restricted x_face_centroid_z')
+      call assert_close(maxval(abs(coarse%y_face_centroid_x-direct%y_face_centroid_x)), &
+        0._dp,tolerance,'restricted y_face_centroid_x')
+      call assert_close(maxval(abs(coarse%y_face_centroid_z-direct%y_face_centroid_z)), &
+        0._dp,tolerance,'restricted y_face_centroid_z')
+      call assert_close(maxval(abs(coarse%z_face_centroid_x-direct%z_face_centroid_x)), &
+        0._dp,tolerance,'restricted z_face_centroid_x')
+      call assert_close(maxval(abs(coarse%z_face_centroid_y-direct%z_face_centroid_y)), &
+        0._dp,tolerance,'restricted z_face_centroid_y')
+      call assert_close(maxval(abs(coarse%boundary_area-direct%boundary_area)), &
+        0._dp,tolerance,'restricted boundary_area')
+      call assert_close(maxval(abs(coarse%boundary_centroid_x-direct%boundary_centroid_x)), &
+        0._dp,tolerance,'restricted boundary_centroid_x')
+      call assert_close(maxval(abs(coarse%boundary_centroid_y-direct%boundary_centroid_y)), &
+        0._dp,tolerance,'restricted boundary_centroid_y')
+      call assert_close(maxval(abs(coarse%boundary_centroid_z-direct%boundary_centroid_z)), &
+        0._dp,tolerance,'restricted boundary_centroid_z')
+      call assert_close(maxval(abs(coarse%boundary_normal_x-direct%boundary_normal_x)), &
+        0._dp,tolerance,'restricted boundary_normal_x')
+      call assert_close(maxval(abs(coarse%boundary_normal_y-direct%boundary_normal_y)), &
+        0._dp,tolerance,'restricted boundary_normal_y')
+      call assert_close(maxval(abs(coarse%boundary_normal_z-direct%boundary_normal_z)), &
+        0._dp,tolerance,'restricted boundary_normal_z')
+      call assert_close(maxval(abs(coarse%boundary_normal_integral_x-direct%boundary_normal_integral_x)), &
+        0._dp,tolerance,'restricted boundary_normal_integral_x')
+      call assert_close(maxval(abs(coarse%boundary_normal_integral_y-direct%boundary_normal_integral_y)), &
+        0._dp,tolerance,'restricted boundary_normal_integral_y')
+      call assert_close(maxval(abs(coarse%boundary_normal_integral_z-direct%boundary_normal_integral_z)), &
+        0._dp,tolerance,'restricted boundary_normal_integral_z')
+      deallocate(coarse_phi)
+    end do
+    saved=coarse
+    call coarsen_eb_geometry_3d(fine,0,coarse,valid)
+    call require(.not.valid.and.all(coarse%volume_fraction==saved%volume_fraction),'zero ratio rollback')
+    call coarsen_eb_geometry_3d(fine,5,coarse,valid)
+    call require(.not.valid.and.all(coarse%volume_fraction==saved%volume_fraction),'nondivisible ratio rollback')
+    call coarsen_eb_geometry_3d(fine,1,coarse,valid)
+    call require(valid.and.all(coarse%volume_fraction==fine%volume_fraction),'ratio one identity')
+    do k=0,12
+      do j=0,12
+        do i=0,12
+          phi(i,j,k)=(real(i,dp)/12-.5_dp)**2+(real(j,dp)/12-.5_dp)**2+ &
+            (real(k,dp)/12-.5_dp)**2-.29_dp**2
+        end do
+      end do
+    end do
+    call build_level_set_eb_geometry_3d(phi,lower,upper,fine,valid)
+    call require(valid,'curved fine coarsening geometry')
+    call coarsen_eb_geometry_3d(fine,2,coarse,valid)
+    call require(valid.and.coarse%is_valid(),'curved coarse validity and face closure')
+    vf=fine%dx*fine%dy*fine%dz; vc=coarse%dx*coarse%dy*coarse%dz
+    call assert_close(sum(fine%volume_fraction)*vf,sum(coarse%volume_fraction)*vc,tolerance, &
+      'curved volume conserved')
+    call assert_close(sum(fine%boundary_area),sum(coarse%boundary_area),tolerance,'curved wall area conserved')
+    call assert_close(sum(fine%boundary_area*fine%boundary_centroid_x), &
+      sum(coarse%boundary_area*coarse%boundary_centroid_x),tolerance,'curved wall x moment conserved')
+    call assert_close(sum(fine%boundary_area*fine%boundary_centroid_y), &
+      sum(coarse%boundary_area*coarse%boundary_centroid_y),tolerance,'curved wall y moment conserved')
+    call assert_close(sum(fine%boundary_area*fine%boundary_centroid_z), &
+      sum(coarse%boundary_area*coarse%boundary_centroid_z),tolerance,'curved wall z moment conserved')
+    saved=coarse
+    call coarsen_eb_geometry_3d(fine,12,coarse,valid)
+    call require(.not.valid.and.all(coarse%volume_fraction==saved%volume_fraction), &
+      'closed embedded surface without representative normal rejected')
+    do i=0,12
+      phi(i,:,:)=abs(real(i,dp)/12-.5_dp)-.4_dp
+    end do
+    call build_level_set_eb_geometry_3d(phi,lower,upper,fine,valid)
+    call require(valid,'disconnected coarse block fine geometry')
+    call coarsen_eb_geometry_3d(fine,12,coarse,valid)
+    call require(.not.valid.and.all(coarse%volume_fraction==saved%volume_fraction), &
+      'disconnected coarse fluid regions rejected')
+    fine%volume_fraction(1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+    call coarsen_eb_geometry_3d(fine,2,coarse,valid)
+    call require(.not.valid.and.all(coarse%volume_fraction==saved%volume_fraction),'invalid fine geometry rollback')
+  end subroutine check_coarsening
 
   subroutine verify_rotated_plane(axis, expected_cut_cells)
     character(len=*), intent(in) :: axis
