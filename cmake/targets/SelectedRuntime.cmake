@@ -626,6 +626,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/eb/eb_reactive_transfer_3d_mod.F90
     src/eb/eb_reactive_reflux_3d_mod.F90
     src/eb/eb_reactive_hydro_3d_mod.F90
+    src/eb/eb_reactive_two_level_3d_mod.F90
     src/eb/eb_reactive_transport_3d_mod.F90
     src/io/reactive_eb_3d_checkpoint_mod.F90
     src/driver/reactive_eb_3d_driver_mod.F90

@@ -55,6 +55,7 @@ add_library(
   src/driver/reactive_2d_application_mod.F90
   src/reactive/reactive_3d_mod.F90
   src/eb/eb_reactive_hydro_3d_mod.F90
+  src/eb/eb_reactive_two_level_3d_mod.F90
   src/amr/amr_hierarchy_3d_mod.F90
   src/amr/amr_patch_tree_3d_mod.F90
   src/amr/amr_patch_tree_ghost_3d_mod.F90
