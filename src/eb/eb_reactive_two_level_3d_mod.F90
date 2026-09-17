@@ -20,12 +20,162 @@ module eb_reactive_two_level_3d_mod
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
   end type eb_reactive_patch_3d
+  public :: advance_reactive_eb_multipatch_full_3d
   public :: advance_reactive_eb_multipatch_euler_3d,advance_reactive_eb_multipatch_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_euler_3d
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
   public :: advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_full_3d
 contains
+  subroutine advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,ratio,solver,dt, &
+      chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,chemistry_change,minimum_theta,ok, &
+      chemistry_integrator)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: coarse
+    integer, intent(in) :: lower(:,:),ratio
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt,rtol,atol
+    logical, intent(in) :: chemistry_enabled,transport_enabled,viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    type(eb_reactive_patch_3d), intent(inout) :: patches(:)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:),minimum_theta
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: chemistry_integrator
+    type(eb_reactive_patch_3d), allocatable :: children(:)
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),boundary(:),wall(:),chemical(:)
+    real(dp), allocatable :: exchange(:),transport_sum(:)
+    logical, allocatable :: active(:,:,:),refined(:,:,:)
+    integer, allocatable :: dims(:,:),upper(:,:),order(:)
+    integer :: n(3),np,nvar,p,a,b,idx
+    real(dp) :: theta,stage_theta
+    logical :: valid
+    ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
+    if (size(chemistry_change)/=nvar) return
+    if (.not.chemistry_enabled.and..not.transport_enabled) then
+      call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
+        coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok)
+      if (ok) then
+        chemistry_change=0._dp;minimum_theta=1._dp
+      end if
+      return
+    end if
+    if (np<1.or.ratio<1.or..not.ieee_is_finite(dt)) return
+    if (dt<=0._dp.or..not.coarse%is_valid()) return
+    if (chemistry_enabled) then
+      if (.not.all(ieee_is_finite([rtol,atol]))) return
+      if (min(rtol,atol)<=0._dp.or.size(reactions)<1) return
+    end if
+    n=[coarse%nx,coarse%ny,coarse%nz]
+    if (any(shape(lower)/=[3,np])) return
+    if (any(shape(coarse_state)/=[nvar,n]).or.any(shape(coarse_temperature)/=n)) return
+    if (size(boundary_change)/=nvar.or.size(wall_change)/=nvar) return
+    allocate(dims(3,np),upper(3,np),order(np),active(n(1),n(2),n(3)),refined(n(1),n(2),n(3)))
+    refined=.false.
+    do p=1,np
+      if (.not.patches(p)%geometry%is_valid()) return
+      if (.not.allocated(patches(p)%state).or..not.allocated(patches(p)%temperature)) return
+      dims(:,p)=[patches(p)%geometry%nx,patches(p)%geometry%ny,patches(p)%geometry%nz]
+      if (any(mod(dims(:,p),ratio)/=0).or.any(lower(:,p)<1).or.any(lower(:,p)>n)) return
+      if (any(dims(:,p)/ratio>n-lower(:,p)+1)) return
+      upper(:,p)=lower(:,p)+dims(:,p)/ratio-1
+      if (any(shape(patches(p)%state)/=[nvar,dims(:,p)]).or. &
+        any(shape(patches(p)%temperature)/=dims(:,p))) return
+      if (any(refined(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p)))) return
+      refined(lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p):upper(3,p))=.true.
+      order(p)=p
+    end do
+    do a=2,np
+      idx=order(a);b=a-1
+      do while(b>=1)
+        if (.not.box_precedes(lower(:,idx),lower(:,order(b)))) exit
+        order(b+1)=order(b);b=b-1
+      end do
+      order(b+1)=idx
+    end do
+    active=coarse%volume_fraction>0._dp.and..not.refined
+    candidate=coarse_state;temps=coarse_temperature;children=patches
+    allocate(boundary(nvar),wall(nvar),chemical(nvar),exchange(nvar),transport_sum(nvar))
+    chemical=0._dp;transport_sum=0._dp;theta=1._dp
+    if (chemistry_enabled) then
+      call reaction_half(valid)
+      if (.not.valid) return
+    end if
+    if (transport_enabled) then
+      call transport_half(valid)
+      if (.not.valid) return
+    end if
+    call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
+      candidate,temps,children,boundary,wall,valid)
+    if (.not.valid) return
+    if (transport_enabled) then
+      call transport_half(valid)
+      if (.not.valid) return
+    end if
+    if (chemistry_enabled) then
+      call reaction_half(valid)
+      if (.not.valid) return
+    end if
+    if (transport_enabled) boundary=boundary+transport_sum
+    if (.not.all(ieee_is_finite(chemical)).or..not.all(ieee_is_finite(boundary))) return
+    coarse_state=candidate;coarse_temperature=temps;patches=children
+    boundary_change=boundary;wall_change=wall;chemistry_change=chemical;minimum_theta=theta;ok=.true.
+  contains
+    subroutine transport_half(success)
+      logical, intent(out) :: success
+      call advance_reactive_eb_multipatch_transport_3d(species,transport,coarse,lower,ratio,.5_dp*dt, &
+        viscosity,conduction,diffusion,barodiffusion,candidate,temps,children,exchange,stage_theta,success)
+      if (.not.success) return
+      transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
+    end subroutine transport_half
+
+    subroutine reaction_half(success)
+      logical, intent(out) :: success
+      real(dp) :: before(nvar),after(nvar)
+      integer :: position,child_index
+      call inventory(before)
+      call advance_reactive_chemistry_3d(species,reactions,candidate,temps,n(1),n(2),n(3), &
+        .5_dp*dt,rtol,atol,success,active,chemistry_integrator)
+      if (.not.success) return
+      do position=1,np
+        child_index=order(position)
+        call advance_reactive_chemistry_3d(species,reactions,children(child_index)%state, &
+          children(child_index)%temperature,dims(1,child_index),dims(2,child_index),dims(3,child_index), &
+          .5_dp*dt,rtol,atol,success,children(child_index)%geometry%volume_fraction>0._dp,chemistry_integrator)
+        if (.not.success) return
+      end do
+      call inventory(after)
+      chemical=chemical+after-before
+      do position=1,np
+        child_index=order(position)
+        call restrict_reactive_eb_state_3d(species,children(child_index)%geometry,ratio, &
+          children(child_index)%state,children(child_index)%temperature, &
+          candidate(:,lower(1,child_index):upper(1,child_index),lower(2,child_index):upper(2,child_index), &
+            lower(3,child_index):upper(3,child_index)), &
+          temps(lower(1,child_index):upper(1,child_index),lower(2,child_index):upper(2,child_index), &
+            lower(3,child_index):upper(3,child_index)),success)
+        if (.not.success) return
+      end do
+    end subroutine reaction_half
+
+    subroutine inventory(values)
+      real(dp), intent(out) :: values(:)
+      integer :: component,position,child_index
+      do component=1,nvar
+        values(component)=coarse%dx*coarse%dy*coarse%dz* &
+          sum(candidate(component,:,:,:)*coarse%volume_fraction,mask=active)
+        do position=1,np
+          child_index=order(position)
+          values(component)=values(component)+children(child_index)%geometry%dx*children(child_index)%geometry%dy* &
+            children(child_index)%geometry%dz*sum(children(child_index)%state(component,:,:,:)* &
+            children(child_index)%geometry%volume_fraction,mask=children(child_index)%geometry%volume_fraction>0._dp)
+        end do
+      end do
+    end subroutine inventory
+  end subroutine advance_reactive_eb_multipatch_full_3d
+
   subroutine advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
       coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok)
     type(nasa7_species), intent(in) :: species(:)
