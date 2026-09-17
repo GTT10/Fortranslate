@@ -1,0 +1,50 @@
+# Experimental serial EB spray application
+
+Build with `PELEF_ENABLE_SPRAY=ON`, then run in a copy of this case directory:
+
+```sh
+/path/to/build/pelef_eb_spray_3d gas.nml spray.nml
+```
+
+The fixed executable uses the elementary H2/O2 mechanism and its existing default
+mole composition. For a configured mechanism, the selected EB executable's name
+has `_spray` appended (normally `pelef_reactive_eb_3d_selected_spray`). Set
+`thermo_model='selected'` and the existing named composition fields in `gas.nml`.
+Both frontends share the application driver.
+
+`gas.nml` uses the existing `reactive_eb_3d` schema. This application requires
+`geometry_type='level_set'`: the builder returns the original nodal field to the
+particle solver, binding gas and particle geometry. `level_set.dat` begins with
+cell counts and then nodal values in Fortran order (x fastest); positive is fluid.
+The supplied plane is x=1.25 mm in a 4 mm cube with 1 mm cells.
+
+`spray.nml` has one `eb_spray` group:
+
+- `nc` (1–16), `vapor_names`, `densities`, `heat_capacities`,
+  `reference_temperatures`, `reference_pressures`, `latent_heats` and `fractions`
+  define synthetic constant-property liquid components. Active fractions sum
+  to one; inactive fractions are zero. Vapor names must exist in the mechanism.
+- `number`, `total_mass`, `center`, `axis`, `speed`, `half_angle`, `diameter` and
+  `liquid_temperature` configure one cone injection at time zero. `number` is
+  limited to 125000. Mixture density sets per-droplet mass; multiplicity sets
+  represented injected mass.
+- `options` is the existing `spray_options` derived namelist object. The API
+  supports representative-drop breakup; KH child creation is rejected.
+- `maximum_dt` limits the gas step in addition to existing EB hydro and transport
+  bounds. Failed coupled steps retry at most 30 halvings. Particle source/drift
+  substeps follow their own limits.
+
+The sample injects two water parcels 1 nm from the wall, toward it at 20 m/s.
+The 20 ns run exercises reflection, heating and evaporation with gas chemistry
+and molecular transport. It writes the existing gas CSV to `output_file` and
+particle/component fields to `<output_file>.particles.csv`. Standard output
+reports accepted steps/time and cumulative exterior, wall and chemistry
+inventories. CSVs are analysis outputs, not restart files. Output paths must
+not alias the gas, spray or geometry inputs; checks normalize lexical absolute
+paths, not filesystem symlinks.
+
+Checkpoint/restart settings are explicitly rejected. Timed injection, physical
+outer-boundary particle events, wall-film formation and distributed EB/AMR
+particles remain open. Trial trajectories must stay in the root domain. The
+particle source/drift split is first order; this synthetic implementation case
+is not calibrated spray validation or a convergence study.

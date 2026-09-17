@@ -91,8 +91,12 @@ ledgers separate exterior boundary exchange, combined gas/particle EB wall
 exchange, and gas chemistry; each uses the change-in-system sign convention.
 `particle_steps` counts both accepted particle halves and is zero on failure.
 The caller must select a stable gas timestep; this wrapper does not retry or
-adapt gas timesteps. It is a serial single-grid library composition, not yet
-an application with injection/restart or distributed EB particle ownership.
+adapt gas timesteps. An experimental fixed/selected
+[serial EB spray application](../cases/eb_spray_3d/README.md) now connects nodal
+geometry, initial cone injection, coupled stepping with bounded retries, gas and
+particle CSVs and cumulative boundary/wall/chemistry ledgers. It explicitly
+rejects checkpoint/restart settings. Timed injection, restart and distributed
+EB particle ownership remain open.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

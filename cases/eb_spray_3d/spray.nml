@@ -1,0 +1,6 @@
+&eb_spray
+ nc=1, number=2, vapor_names(1)='H2O', fractions(1)=1
+ center=.001250001,.0015,.0015, axis=-1,0,0
+ speed=20, diameter=1e-5, liquid_temperature=350
+ total_mass=1e-10, maximum_dt=1e-8
+/

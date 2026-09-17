@@ -48,6 +48,7 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_eb_field_mod.F90
       src/spray/spray_eb_step_mod.F90
       src/spray/spray_eb_reactive_mod.F90
+      src/spray/spray_eb_application_mod.F90
       src/spray/spray_amr_tree_partition_mod.F90
       src/spray/spray_amr_tree_coupling_mod.F90)
     if(PELEF_ENABLE_MPI)
@@ -81,6 +82,9 @@ if(PELEF_ENABLE_SPRAY)
     endif()
   endfunction()
   pelef_add_spray_tree_runtime(pelef_spray_tree_runtime pelef_spray_runtime pelef_core)
+  add_executable(pelef_eb_spray_3d app/pelef_eb_spray_3d.F90)
+  target_link_libraries(pelef_eb_spray_3d PRIVATE pelef_spray_tree_runtime)
+  install(TARGETS pelef_eb_spray_3d RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   if(PELEF_MECHANISM_BUNDLE)
     pelef_add_spray_runtime(pelef_selected_spray_runtime pelef_selected_reactive_3d_runtime)
     pelef_add_spray_tree_runtime(pelef_selected_spray_tree_runtime

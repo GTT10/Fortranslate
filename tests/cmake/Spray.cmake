@@ -1,4 +1,9 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_eb_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_application")
+  set_tests_properties(spray_eb_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
   add_executable(test_spray_eb_reactive spray/test_spray_eb_reactive.F90)
   target_link_libraries(test_spray_eb_reactive PRIVATE pelef_spray_tree_runtime)
   add_test(NAME spray_eb_reactive COMMAND test_spray_eb_reactive)

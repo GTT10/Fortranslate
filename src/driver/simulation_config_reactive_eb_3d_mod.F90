@@ -79,10 +79,11 @@ contains
     if (config%geometry_type=='extruded') identity='extruded:'//trim(config%extrusion_axis)
   end function
 
-  subroutine build_configured_eb_geometry_3d(config,geometry,ok)
+  subroutine build_configured_eb_geometry_3d(config,geometry,ok,nodal_field)
     type(reactive_eb_3d_config), intent(in) :: config
     type(eb_geometry_3d), intent(inout) :: geometry
     logical, intent(out) :: ok
+    real(dp), allocatable, optional, intent(inout) :: nodal_field(:,:,:)
     type(eb_geometry_3d) :: candidate
     type(eb_geometry_2d) :: section
     real(dp), allocatable :: phi(:,:),nodal(:,:,:)
@@ -90,6 +91,7 @@ contains
     integer :: dims(3),axis,a,b,unit,status,header(2),volume_header(3),close_status
     character(len=1024) :: trailing
     ok=.false.
+    if (present(nodal_field).and.config%geometry_type/='level_set') return
     if (config%geometry_type=='plane') then
       call build_axis_plane_eb_geometry_3d(config%nx,config%ny,config%nz,config%x_lower,config%x_upper, &
         config%y_lower,config%y_upper,config%z_lower,config%z_upper,config%plane_axis,config%plane_position,candidate,ok)
@@ -127,7 +129,10 @@ contains
       close(unit,iostat=close_status)
       if (status/=0.or.close_status/=0) return
       call build_level_set_eb_geometry_3d(nodal,lo,hi,candidate,ok)
-      if (ok) geometry=candidate
+      if (ok) then
+        geometry=candidate
+        if (present(nodal_field)) call move_alloc(nodal,nodal_field)
+      end if
       return
     end if
     if (config%geometry_type/='extruded') return

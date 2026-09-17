@@ -1,0 +1,9 @@
+&reactive_eb_3d
+ nx=4, ny=4, nz=4, maximum_steps=100
+ x_upper=.004, y_upper=.004, z_upper=.004
+ geometry_type='level_set', level_set_file='level_set.dat'
+ final_time=2e-8, cfl=.1
+ thermo_model='elementary', regular_density=.31, cut_density=.31
+ initial_pressure=135000, chemistry_enabled=.true., transport_enabled=.true.
+ output_file='gas.csv'
+/

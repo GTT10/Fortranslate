@@ -1019,6 +1019,14 @@ function(pelef_add_mechanism_bundle)
         pelef_selected_reactive_eb_3d_runtime
     )
     list(APPEND install_targets "${PELEF_BUNDLE_REACTIVE_EB_3D_NAME}")
+    if(PELEF_ENABLE_SPRAY)
+      set(configured_eb_spray "${bundle_directory}/${PELEF_BUNDLE_NAME}_eb_spray_3d.F90")
+      configure_file("${PROJECT_SOURCE_DIR}/app/pelef_eb_spray_3d_selected.F90.in" "${configured_eb_spray}" @ONLY)
+      add_executable("${PELEF_BUNDLE_REACTIVE_EB_3D_NAME}_spray" "${configured_eb_spray}")
+      target_link_libraries("${PELEF_BUNDLE_REACTIVE_EB_3D_NAME}_spray" PRIVATE
+        "${mechanism_target}" pelef_selected_spray_tree_runtime)
+      list(APPEND install_targets "${PELEF_BUNDLE_REACTIVE_EB_3D_NAME}_spray")
+    endif()
   endif()
 
   if(PELEF_BUNDLE_REACTIVE_EB_TWO_LEVEL_3D_NAME)
