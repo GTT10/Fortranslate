@@ -1,0 +1,9 @@
+&eb_two_level
+ nx=8, ny=8, nz=8,
+ geometry_type='plane', plane_axis='z', plane_position=0.31,
+ refinement_ratio=2, fine_lower=2,2,2, fine_upper=3,3,3,
+ time_step=1.0e-8, final_time=3.0e-8, maximum_steps=10,
+ chemistry_enabled=.true., transport_enabled=.true.,
+ chemistry_integrator='explicit', riemann_solver='rusanov',
+ output_file='eb_two_level.csv'
+/

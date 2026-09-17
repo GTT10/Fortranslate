@@ -677,3 +677,11 @@ add_test(NAME unit_eb_two_level_transport_3d COMMAND test_eb_two_level_transport
 add_executable(test_eb_two_level_full_3d unit/test_eb_two_level_full_3d.F90)
 target_link_libraries(test_eb_two_level_full_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_two_level_full_3d COMMAND test_eb_two_level_full_3d)
+
+add_test(
+  NAME regression_reactive_eb_two_level_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_reactive_eb_two_level_3d.py"
+    --exe $<TARGET_FILE:pelef_reactive_eb_two_level_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/reference.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_two_level_3d"
+)
