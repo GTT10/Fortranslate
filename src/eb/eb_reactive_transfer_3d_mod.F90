@@ -7,7 +7,85 @@ module eb_reactive_transfer_3d_mod
   implicit none
   private
   public :: restrict_reactive_eb_state_3d,prolong_reactive_eb_state_pcm_3d
+  public :: fill_reactive_eb_patch_halo_3d
 contains
+  ! PCM parent donors at internal patch faces, fine-state extrapolation at
+  ! physical domain faces. Only open face slots are populated; all other halo
+  ! storage is zero. This checks Cartesian alignment, not full metric parity.
+  subroutine fill_reactive_eb_patch_halo_3d(species,coarse,fine,lower,ratio,coarse_state,coarse_temperature, &
+      fine_state,fine_temperature,ghost_state,ghost_temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: coarse,fine
+    integer, intent(in) :: lower(3),ratio
+    real(dp), intent(in) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    real(dp), intent(in) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
+    real(dp), intent(inout) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:),donor(:)
+    integer :: dims(3),parent_dims(3),upper(3),axis,side,i,j,k,start(3),finish(3),index(3),parent(3),inside(3),nvar
+    real(dp) :: spacing(3),origin(3),fine_origin(3),fine_end(3),expected_end(3),tolerance,area,guess,recovered,speed
+    logical :: valid
+    ok=.false.
+    if (.not.coarse%is_valid().or..not.fine%is_valid().or.ratio<1) return
+    dims=[fine%nx,fine%ny,fine%nz];parent_dims=[coarse%nx,coarse%ny,coarse%nz]
+    if (any(mod(dims,ratio)/=0).or.any(lower<1).or.any(lower>parent_dims)) return
+    if (any(dims/ratio>parent_dims-lower+1)) return
+    upper=lower+dims/ratio-1
+    spacing=[coarse%dx,coarse%dy,coarse%dz]
+    origin=[coarse%x_lower,coarse%y_lower,coarse%z_lower]+real(lower-1,dp)*spacing
+    expected_end=[coarse%x_lower,coarse%y_lower,coarse%z_lower]+real(upper,dp)*spacing
+    fine_origin=[fine%x_lower,fine%y_lower,fine%z_lower];fine_end=[fine%x_upper,fine%y_upper,fine%z_upper]
+    tolerance=512._dp*epsilon(1._dp)*max(1._dp,maxval(abs(origin)),maxval(abs(expected_end)))
+    if (any(abs(fine_origin-origin)>tolerance).or.any(abs(fine_end-expected_end)>tolerance)) return
+    if (any(abs([fine%dx,fine%dy,fine%dz]*ratio-spacing)> &
+      512._dp*epsilon(1._dp)*spacing)) return
+    nvar=reactive_nvar(size(species))
+    if (.not.fields_match(coarse_state,coarse_temperature,coarse,nvar)) return
+    if (.not.fields_match(fine_state,fine_temperature,fine,nvar)) return
+    if (any(shape(ghost_state)/=[nvar,dims+2]).or.any(shape(ghost_temperature)/=dims+2)) return
+    allocate(candidate(nvar,0:dims(1)+1,0:dims(2)+1,0:dims(3)+1), &
+      temps(0:dims(1)+1,0:dims(2)+1,0:dims(3)+1),primitive(reactive_nprim(size(species))),donor(nvar))
+    candidate=0._dp;temps=0._dp
+    do axis=1,3
+      do side=0,1
+        start=1;finish=dims;start(axis)=side*(dims(axis)+1);finish(axis)=start(axis)
+        do k=start(3),finish(3)
+          do j=start(2),finish(2)
+            do i=start(1),finish(1)
+              index=[i,j,k];inside=max(1,min(dims,index))
+              select case(axis)
+              case(1)
+                area=fine%x_face_fraction(side*dims(1),j,k)
+              case(2)
+                area=fine%y_face_fraction(i,side*dims(2),k)
+              case(3)
+                area=fine%z_face_fraction(i,j,side*dims(3))
+              end select
+              if (area<=0._dp) cycle
+              parent=lower+(inside-1)/ratio
+              parent(axis)=lower(axis)-1
+              if (side==1) parent(axis)=upper(axis)+1
+              if (parent(axis)<1.or.parent(axis)>parent_dims(axis)) then
+                donor=fine_state(:,inside(1),inside(2),inside(3))
+                guess=fine_temperature(inside(1),inside(2),inside(3))
+              else
+                if (coarse%volume_fraction(parent(1),parent(2),parent(3))<=0._dp) return
+                donor=coarse_state(:,parent(1),parent(2),parent(3))
+                guess=coarse_temperature(parent(1),parent(2),parent(3))
+              end if
+              if (.not.ieee_is_finite(guess)) return
+              if (guess<=0._dp) return
+              call reactive_conserved_to_primitive(species,donor,guess,primitive,recovered,speed,valid)
+              if (.not.valid) return
+              candidate(:,i,j,k)=donor;temps(i,j,k)=recovered
+            end do
+          end do
+        end do
+      end do
+    end do
+    ghost_state=candidate;ghost_temperature=temps;ok=.true.
+  end subroutine fill_reactive_eb_patch_halo_3d
+
   ! Full-domain restriction onto the geometry implied by fine and ratio.
   ! Covered destination storage is retained. Publish U and T together only
   ! after all active donor and destination states pass the existing EOS checks.

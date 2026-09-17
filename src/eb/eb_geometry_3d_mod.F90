@@ -59,9 +59,59 @@ module eb_geometry_3d_mod
 
   public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
 
-  public :: coarsen_eb_geometry_3d
+  public :: coarsen_eb_geometry_3d,extract_eb_geometry_3d
 
 contains
+
+  subroutine extract_eb_geometry_3d(source,lower,upper,patch,ok)
+    type(eb_geometry_3d), intent(in) :: source
+    integer, intent(in) :: lower(3),upper(3)
+    type(eb_geometry_3d), intent(inout) :: patch
+    logical, intent(out) :: ok
+    type(eb_geometry_3d) :: candidate
+    integer :: dims(3)
+    ok=.false.
+    if (.not.source%is_valid()) return
+    if (any(lower<1).or.any(upper<lower).or.any(upper>[source%nx,source%ny,source%nz])) return
+    dims=upper-lower+1
+    candidate%nx=dims(1);candidate%ny=dims(2);candidate%nz=dims(3)
+    candidate%dx=source%dx
+    candidate%x_lower=source%x_lower+real(lower(1)-1,dp)*source%dx
+    candidate%x_upper=source%x_lower+real(upper(1),dp)*source%dx
+    candidate%dy=source%dy
+    candidate%y_lower=source%y_lower+real(lower(2)-1,dp)*source%dy
+    candidate%y_upper=source%y_lower+real(upper(2),dp)*source%dy
+    candidate%dz=source%dz
+    candidate%z_lower=source%z_lower+real(lower(3)-1,dp)*source%dz
+    candidate%z_upper=source%z_lower+real(upper(3),dp)*source%dz
+    call allocate_geometry_arrays(candidate)
+    candidate%volume_fraction=source%volume_fraction(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%cell_centroid_x=source%cell_centroid_x(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%cell_centroid_y=source%cell_centroid_y(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%cell_centroid_z=source%cell_centroid_z(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%x_face_fraction=source%x_face_fraction(lower(1)-1:upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%y_face_fraction=source%y_face_fraction(lower(1):upper(1),lower(2)-1:upper(2),lower(3):upper(3))
+    candidate%z_face_fraction=source%z_face_fraction(lower(1):upper(1),lower(2):upper(2),lower(3)-1:upper(3))
+    candidate%x_face_centroid_y=source%x_face_centroid_y(lower(1)-1:upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%x_face_centroid_z=source%x_face_centroid_z(lower(1)-1:upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%y_face_centroid_x=source%y_face_centroid_x(lower(1):upper(1),lower(2)-1:upper(2),lower(3):upper(3))
+    candidate%y_face_centroid_z=source%y_face_centroid_z(lower(1):upper(1),lower(2)-1:upper(2),lower(3):upper(3))
+    candidate%z_face_centroid_x=source%z_face_centroid_x(lower(1):upper(1),lower(2):upper(2),lower(3)-1:upper(3))
+    candidate%z_face_centroid_y=source%z_face_centroid_y(lower(1):upper(1),lower(2):upper(2),lower(3)-1:upper(3))
+    candidate%boundary_area=source%boundary_area(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_centroid_x=source%boundary_centroid_x(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_centroid_y=source%boundary_centroid_y(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_centroid_z=source%boundary_centroid_z(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_x=source%boundary_normal_x(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_y=source%boundary_normal_y(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_z=source%boundary_normal_z(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_integral_x=source%boundary_normal_integral_x(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_integral_y=source%boundary_normal_integral_y(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%boundary_normal_integral_z=source%boundary_normal_integral_z(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    candidate%cell_type=source%cell_type(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    if (.not.candidate%is_valid()) return
+    patch=candidate;ok=.true.
+  end subroutine extract_eb_geometry_3d
 
   ! Restrict physical moments rather than sampling a new coarse level set.
   ! One connected fluid region and a nonzero representative wall normal are

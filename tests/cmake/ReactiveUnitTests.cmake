@@ -653,3 +653,7 @@ add_test(NAME unit_eb_reactive_reflux_3d COMMAND test_eb_reactive_reflux_3d)
 add_executable(test_eb_reactive_ghost_3d unit/test_eb_reactive_ghost_3d.F90)
 target_link_libraries(test_eb_reactive_ghost_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_reactive_ghost_3d COMMAND test_eb_reactive_ghost_3d)
+
+add_executable(test_eb_patch_halo_3d unit/test_eb_patch_halo_3d.F90)
+target_link_libraries(test_eb_patch_halo_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_patch_halo_3d COMMAND test_eb_patch_halo_3d)
