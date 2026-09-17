@@ -12,8 +12,8 @@ caller-supplied owner map. It handles periodic lookup and reassignment after
 regridding while preserving parcel/component state. An MPI migration API now
 uses this ownership and the shared parcel exchange to transfer particles to
 their gas patch owners. A serial composite-field sampler/depositor is now
-available; owner-local MPI field exchange and coupled AMR particle stepping
-remain to be connected.
+available, and owner-local MPI sampling now queries only the required composite
+cells. MPI deposition and coupled AMR particle stepping remain to be connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -66,6 +66,18 @@ Invalid density, species composition or internal energy reject the entire
 feedback. Empty gas feedback validates inputs and preserves both fields. This
 is a serial tree API; owner-local MPI feedback and the particle time integrator
 remain to be connected. No AMR convergence or physical spray validation is claimed.
+
+`sample_mpi_amr_tree_spray_field` in `spray_mpi_amr_field_mod` applies the same
+stencil to owner-local fields. The caller supplies the common component count,
+tree, owner map, physical bounds/spacing and periodic flags. Particle positions
+are local to each rank and can be empty even on ranks serving gas queries.
+Only requested cell values are fetched from owners, with no full-field gather;
+covered/unrequested payloads are not scanned. Nonfinite requested values,
+invalid local positions, field-shape/metadata disagreement or request-capacity
+failure reject collectively and preserve every rank's previous sample array.
+The optional `maximum_requests` bounds each rank's total cloud-cell requests
+(default one million, range zero to one million); ranks may choose different
+capacities. Received values are accumulated in the serial stencil order.
 
 ## Build and run
 
