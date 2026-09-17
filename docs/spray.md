@@ -106,7 +106,7 @@ when every owner accepts every cell. A failure on any rank preserves all ranks'
 original U/T, and globally empty feedback validates without changing either
 field. The caller supplies an identical ordered species table on every rank;
 the wrapper retains the request/receive-capacity controls of field deposition.
-`advance_mpi_amr_mixture_coupling` in `spray_mpi_amr_step_mod` connects periodic
+`advance_mpi_amr_mixture_coupling` in `spray_mpi_amr_step_mod` connects
 mixed-liquid particle intervals. It samples conserved fields and temperature
 guesses together, then uses the existing drag/heating/evaporation and breakup
 kernels. Every rank takes a common minimum substep; the finest spacing anywhere
@@ -114,8 +114,8 @@ in the tree bounds particle CFL, including approaches to refined regions.
 Failed particle updates or thermodynamic feedback halve the trial interval, up
 to 30 attempts. ETAB/KH-RT representative breakup and optional KH children use
 the existing component inventories, collective IDs and gas-energy debit.
-Feedback is deposited at the pre-step particle positions. Accepted trajectories
-wrap periodically and final survivors migrate to their finest-patch owners.
+Feedback is deposited at the pre-step particle positions. By default accepted
+trajectories wrap periodically; final survivors migrate to their finest-patch owners.
 Gas, temperatures, parcels, component masses and optional ID watermark publish
 only after the entire interval and final migration succeed. Substep exhaustion
 or receive-capacity failure therefore rolls back the whole interval.
@@ -126,6 +126,19 @@ component count are checked collectively; local particle populations may be
 empty. This API advances particle exchange against the gas, without gas
 hydrodynamics/chemistry, regridding, injection or checkpoint orchestration.
 AMR physical-boundary/wall-film coupling and EB collisions remain open.
+
+The particle-interval API also accepts optional `boundary_faces` and
+`boundary_change`. Periodic faces wrap; inflow/outflow faces remove exiting
+parcels, and slip/no-slip/isothermal wall faces use the existing specular parcel
+reflection model. Gas wall names here do not imply liquid deposition, thermal
+wall exchange or film formation. Face types must agree across ranks. The global
+integrated boundary ledger contains gas-plus-particle inventory changes in
+mass, momentum, total energy and species order. It includes represented liquid
+mass/momentum/energy carried out of the domain and wall impulse. The ledger
+publishes only with whole-interval success and otherwise retains its incoming
+value. This particle API is connected; the reacting wrapper/application and
+checkpoint path still use periodic boundaries pending full physical-boundary
+integration.
 
 `advance_mpi_amr_spray_reactive` in `spray_mpi_amr_reactive_mod` composes a
 particle half-interval, the existing AMR reaction/transport/hydro split, and a

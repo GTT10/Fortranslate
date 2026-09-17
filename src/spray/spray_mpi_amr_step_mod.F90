@@ -10,6 +10,7 @@ module spray_mpi_amr_step_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
   use spray_breakup_mod, only: advance_spray_breakup
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces,apply_parcel_boundaries
   use spray_mpi_mod, only: advance_mpi_khrt_shedding
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
@@ -18,10 +19,10 @@ module spray_mpi_amr_step_mod
   private
   public :: advance_mpi_amr_mixture_coupling
 contains
-  ! Periodic regular AMR: common particle substeps and whole-interval rollback.
+  ! Regular AMR: common particle substeps and whole-interval rollback.
   ! Species, transport, liquids and options must be identical on every rank.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
-      tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id)
+      tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -36,6 +37,11 @@ contains
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     integer(int64), optional, intent(inout) :: last_id
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    real(dp) :: ledger(reactive_nvar(size(species))),trial_ledger(reactive_nvar(size(species)))
+    real(dp) :: global_ledger(reactive_nvar(size(species))),exchange(5)
+    character(len=32) :: faces(6),reference_faces(6)
     integer(int64) :: accepted_id,trial_id
     real(dp), allocatable :: reynolds(:),child_energy(:)
     integer :: child_flag,low_flag,high_flag
@@ -52,16 +58,30 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp) :: minimum_spacing
-    logical, parameter :: periodic(3)=[.true.,.true.,.true.]
+    logical :: periodic(3)
     logical :: valid,agreed,accepted
-    ok=.false.;substeps=0
+    ok=.false.;substeps=0;faces='periodic';ledger=0
+    if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
-    valid=valid.and.size(components)>=1.and.size(components)<=16
+    valid=valid.and.size(components)>=1.and.size(components)<=16.and.valid_spray_boundary_faces(faces)
+    if (present(boundary_faces)) then
+      do n=1,6
+        valid=valid.and.len_trim(boundary_faces(n))<=len(faces(n))
+      end do
+    end if
+    if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(ledger)
     call agree()
     if (.not.agreed) return
+    reference_faces=faces
+    call MPI_Bcast(reference_faces,32*6,MPI_CHARACTER,0,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=all(faces==reference_faces)
+    call agree()
+    if (.not.agreed) return
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
     child_flag=merge(1,0,options%khrt_children)
     call MPI_Allreduce(child_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -163,7 +183,7 @@ contains
       accepted=.false.
       do attempt=1,30
         if (dt<=0.or.elapsed+dt<=elapsed) exit
-        trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0
+        trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0;trial_ledger=0
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
@@ -192,7 +212,7 @@ contains
               next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
             end if
           end if
-          trial(p)%position=lower+modulo(trial(p)%position-lower,length)
+          if (.not.present(boundary_faces)) trial(p)%position=lower+modulo(trial(p)%position-lower,length)
         end do
         call agree()
         if (agreed.and.options%khrt_children) then
@@ -201,6 +221,10 @@ contains
           if (valid) valid=size(trial)<=125000
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
+        end if
+        if (agreed) then
+          if (present(boundary_faces)) call apply_boundaries()
+          call agree()
         end if
         if (agreed) then
           next_gas=gas;next_temp=temp
@@ -214,6 +238,7 @@ contains
       end do
       if (.not.accepted) return
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
+      ledger=ledger+trial_ledger
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
     np=size(drops)
@@ -225,11 +250,39 @@ contains
     call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
       options%maximum_parcels,valid,kept_mass)
     if (.not.valid) return
+    call MPI_Allreduce(ledger,global_ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.all(ieee_is_finite(global_ledger))) return
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
     if (present(last_id)) last_id=accepted_id
+    if (present(boundary_change)) boundary_change=global_ledger
     substeps=count_steps;ok=.true.
   contains
+    subroutine apply_boundaries()
+      integer :: q,c
+      valid=.true.
+      do q=1,size(trial)
+        if (trial(q)%mass<=0) cycle
+        y=next_mass(:,q)/trial(q)%mass
+        call liquid_mixture_properties(components,y,trial(q)%temperature,rho,cp,e,valid)
+        if (.not.valid) return
+        effective=components(1);effective%density=rho;effective%density_model='constant'
+        effective%density_coefficients=0;effective%density_temperature_range=0
+        effective%heat_capacity=cp;effective%heat_capacity_model='constant'
+        effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+        effective%reference_temperature=trial(q)%temperature;effective%reference_energy=e
+        effective%boiling_model='reject';effective%critical_temperature=0
+        call apply_parcel_boundaries(trial(q),effective,lower,lower+length,faces,exchange,valid)
+        if (.not.valid) return
+        trial_ledger(:5)=trial_ledger(:5)+exchange
+        do c=1,nc
+          trial_ledger(5+components(c)%vapor_index)=trial_ledger(5+components(c)%vapor_index)+exchange(1)*y(c)
+        end do
+        if (trial(q)%mass<=0) next_mass(:,q)=0
+      end do
+      valid=all(ieee_is_finite(trial_ledger))
+    end subroutine
     subroutine agree()
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if (ierr/=MPI_SUCCESS) agreed=.false.
