@@ -27,7 +27,7 @@ contains
   ! the prefix itself is published last with POSIX link. Reads publish atomically.
   ! Shared path/context/model tables are required; at most one million total parcels.
   subroutine mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature, &
-      parcels,component_mass,time,steps,event,regridded,last_id,injected,lower,spacing,maximum_parcels,ok)
+      parcels,component_mass,time,steps,event,regridded,last_id,injected,lower,spacing,maximum_parcels,ok,periodic,boundary)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
     character(len=*), intent(in) :: path,context
@@ -44,6 +44,11 @@ contains
     real(dp), intent(in) :: lower(3),spacing(3)
     integer, intent(in) :: maximum_parcels
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
+    real(dp), optional, intent(inout) :: boundary(:)
+    logical :: wraps(3)
+    real(dp), allocatable :: boundary_ledger(:),reference_boundary(:)
+    character(len=3) :: boundary_key
     type(amr_tree_checkpoint_3d) :: snapshot
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:),ledger(:)
@@ -64,7 +69,12 @@ contains
     call agree();if (.not.agreed) return
     nc=size(component_mass,1);nvar=5+size(species)
     valid=nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,size(parcels)]).and.size(injected)==nvar
+    if (present(boundary)) valid=valid.and.size(boundary)==nvar
     call agree();if (.not.agreed) return
+    wraps=.true.
+    if (present(periodic)) wraps=periodic
+    write(boundary_key,'(3l1)') wraps
+    call same_string(boundary_key,valid);if (.not.valid) return
     header=[nc,nvar,merge(1,0,writing)]
     call MPI_Allreduce(header,low,3,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -73,9 +83,11 @@ contains
     ! Verify shared strings before root performs any I/O.
     call same_string(path,valid);if (.not.valid) return
     call same_string(context,valid);if (.not.valid) return
-    allocate(ledger(nvar));token=''
+    allocate(ledger(nvar),boundary_ledger(nvar),reference_boundary(nvar));token=''
+    boundary_ledger=0
+    if (present(boundary)) boundary_ledger=boundary
     if (writing) then
-      valid=ieee_is_finite(time).and.all(ieee_is_finite(injected))
+      valid=ieee_is_finite(time).and.all(ieee_is_finite(injected)).and.all(ieee_is_finite(boundary_ledger))
       valid=valid.and.time>=0.and.steps>=0.and.event>=0.and.last_id>=0
       call agree();if (.not.agreed) return
       info=[steps,event,merge(1,0,regridded)];at_time=time;mark=last_id;ledger=injected
@@ -88,6 +100,11 @@ contains
       call MPI_Bcast(ledger,nvar,MPI_DOUBLE_PRECISION,0,comm,ierr)
       if (ierr/=MPI_SUCCESS) return
       valid=all(info==[steps,event,merge(1,0,regridded)]).and.at_time==time.and.mark==last_id.and.all(ledger==injected)
+      call agree();if (.not.agreed) return
+      reference_boundary=boundary_ledger
+      call MPI_Bcast(reference_boundary,nvar,MPI_DOUBLE_PRECISION,0,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      valid=all(reference_boundary==boundary_ledger)
       call agree();if (.not.agreed) return
       drops=parcels;masses=component_mass
       allocate(counts(nranks),offsets(nranks));counts=0;counts(1)=size(drops);offsets=counts(1);offsets(1)=0
@@ -117,8 +134,9 @@ contains
       call MPI_Bcast(token,len(token),MPI_CHARACTER,0,comm,ierr)
       if (ierr/=MPI_SUCCESS) return
       bound_context=context//'SPRAY_GENERATION '//trim(token)//achar(10)
+      if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
       snapshot%tree=tree;snapshot%time=time;snapshot%steps=steps;snapshot%regrids=info(3)
-      snapshot%initial=injected;allocate(snapshot%boundary(nvar));snapshot%boundary=0
+      snapshot%initial=injected;snapshot%boundary=boundary_ledger
       call write_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,snapshot,owners,state,temperature, &
         comm,valid,indexed=.true.)
       if (.not.valid) return
@@ -163,9 +181,12 @@ contains
     call MPI_Bcast(token,len(token),MPI_CHARACTER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     bound_context=context//'SPRAY_GENERATION '//trim(token)//achar(10)
+    if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
     call read_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,tree%nodes(1)%shape, &
       'round_robin',0,snapshot,assigned,comm,valid)
     if (.not.valid) return
+    valid=present(boundary).or.all(snapshot%boundary==0)
+    call agree();if (.not.agreed) return
     allocate(drops(0),masses(nc,0));info=0;mark=0
     if (rank==0) then
       open(newunit=unit,file=path//'.particles',status='old',action='read',iostat=ios)
@@ -182,13 +203,14 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Bcast(ledger,nvar,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call migrate_amr_tree_spray_parcels(comm,snapshot%tree,assigned,drops,lower,spacing,[.true.,.true.,.true.], &
+    call migrate_amr_tree_spray_parcels(comm,snapshot%tree,assigned,drops,lower,spacing,wraps, &
       maximum_parcels,valid,masses)
     if (.not.valid) return
     tree=snapshot%tree;call move_alloc(assigned,owners)
     call move_alloc(snapshot%state%fields,state%fields);call move_alloc(snapshot%temperature%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     time=snapshot%time;steps=info(1);event=info(2);regridded=info(3)==1;last_id=mark;injected=ledger
+    if (present(boundary)) boundary=snapshot%boundary
     ok=.true.
   contains
     subroutine read_particles()

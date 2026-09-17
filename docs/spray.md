@@ -136,8 +136,8 @@ integrated boundary ledger contains gas-plus-particle inventory changes in
 mass, momentum, total energy and species order. It includes represented liquid
 mass/momentum/energy carried out of the domain and wall impulse. The ledger
 publishes only with whole-interval success and otherwise retains its incoming
-value. The reacting wrapper accepts the same faces and ledger. The application
-and checkpoint path still use periodic boundaries pending full integration.
+value. The reacting wrapper and application accept the same faces and ledger;
+checkpoint continuation preserves the cumulative inventory.
 
 `advance_mpi_amr_spray_reactive` in `spray_mpi_amr_reactive_mod` composes a
 particle half-interval, the existing AMR reaction/transport/hydro split, and a
@@ -181,8 +181,12 @@ advance coupled steps with whole-step retries and remap at a prescribed time
 or at step-based temperature-adaptation checks. Gas CSV contains only exposed cells; separate per-rank particle
 CSVs are analysis outputs. See the [case guide](../cases/mpi_amr_spray_3d/README.md)
 for controls and limitations. Gas-work-based rebalancing moves owner-local gas
-and particles together after accepted steps. AMR
-physical-boundary/EB particle handling remain open.
+and particles together after accepted steps. Gas per-face reservoir inflow,
+outflow and adiabatic/isothermal tangentially moving walls now connect to the
+particle removal/specular model. Regridding, tagging, balancing and injection
+migration use the corresponding periodic axes. Reservoir CFL and transport
+bounds use the current finest spacing after adaptation. Wall films and EB
+particle handling remain open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
@@ -190,7 +194,11 @@ completion marker with a POSIX hard link. Both payloads bind the same generation
 and numerical/model context. Reads validate both before publishing topology,
 owner-local gas and redistributed particles. The archive includes composition,
 lineage and breakup fields, ID watermark, time/steps, next injection event,
-regrid status and injected inventory. Rank-zero particle collection is bounded
+regrid status, injected inventory and cumulative boundary inventory. The latter
+uses the existing gas checkpoint budget field without changing particle records.
+Optional checkpoint `periodic` axes bind nonperiodic lookup to the context;
+optional `boundary` publishes only after successful read. Omitting this output
+rejects a saved nonzero budget instead of silently losing it. Rank-zero particle collection is bounded
 to one million global parcels. The application exposes one checkpoint time,
 optional stop and changed-rank continuation; see the case guide for file handling.
 

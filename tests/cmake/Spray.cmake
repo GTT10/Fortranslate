@@ -21,6 +21,17 @@ if(PELEF_ENABLE_SPRAY)
   add_test(NAME spray_amr_tree_partition COMMAND test_spray_amr_tree_partition)
   set_tests_properties(spray_amr_tree_partition PROPERTIES LABELS "spray;amr" TIMEOUT 30)
   if(PELEF_ENABLE_MPI)
+    add_test(NAME spray_mpi_amr_inflow_application
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_inflow_application"
+        --multiport --physical --inflow)
+    set_tests_properties(spray_mpi_amr_inflow_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
+    add_test(NAME spray_mpi_amr_physical_application
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_physical_application" --multiport --physical)
+    set_tests_properties(spray_mpi_amr_physical_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_rebalance_application
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe $<TARGET_FILE:pelef_mpi_amr_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"

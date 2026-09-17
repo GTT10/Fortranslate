@@ -7,7 +7,10 @@ module spray_mpi_amr_application_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use mixture_thermo_mod, only: mixture_density,mass_fractions_from_mole_fractions
+  use selected_composition_mod, only: resolve_selected_composition
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
   use reactive_entropy_wave_3d_problem_mod, only: initialize_reactive_problem_3d
@@ -67,7 +70,11 @@ contains
     integer :: last_adaptation_step,rebalance_interval
     real(dp) :: rebalance_minimum_gain
     real(dp), allocatable :: measured_cost(:)
-    logical :: sample_work,redistributed
+    logical :: sample_work,redistributed,periodic(3)
+    real(dp), allocatable :: boundary(:),change(:),inlet(:,:),inlet_x(:),q(:),inlet_cube(:,:,:,:)
+    real(dp) :: inlet_t(6),sound,min_h(3),inlet_dt,face_dt,inlet_temperature(2,2,2)
+    integer :: face,j,k
+    character(len=512) :: message
     real(dp) :: temperature_thresholds(16)
     integer, parameter :: maximum_events=1024
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
@@ -98,7 +105,7 @@ contains
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
-    if (any(faces/='periodic')) call fatal('AMR spray requires periodic gas boundaries')
+    periodic=faces([1,3,5])=='periodic'
     ! Inputs are shared files, as for the existing MPI tree applications.
     component_count=1;vapor_names='';vapor_names(1)='H2O';fractions=0;fractions(1)=1
     liquid_density=1000;liquid_cp=4184;reference_temperature=373.15_dp
@@ -220,7 +227,26 @@ contains
     spacing=([config%x_upper,config%y_upper,config%z_upper]-lower)/real(tree%nodes(1)%shape,dp)
     nv=reactive_nvar(size(species))
     allocate(state%fields(size(tree%nodes)),temperature%fields(size(tree%nodes)),mf(size(species)))
-    allocate(ledger(nv),global_ledger(nv))
+    allocate(ledger(nv),global_ledger(nv),boundary(nv),change(nv),inlet(nv,6),inlet_x(size(species)), &
+      q(nv),inlet_cube(nv,2,2,2))
+    inlet=0;inlet_t=0
+    call mass_fractions_from_mole_fractions(species,mole_fractions,mf,ok)
+    if (.not.ok) call fatal('Invalid default inlet composition')
+    if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
+      call resolve_selected_composition('Inflow',config%inflow_composition_count,config%inflow_composition_species, &
+        config%inflow_composition_mole_fractions,species,inlet_x,ok,message)
+      if (.not.ok) call fatal('Invalid inflow composition')
+      call mass_fractions_from_mole_fractions(species,inlet_x,mf,ok)
+      if (.not.ok) call fatal('Invalid inflow mass fractions')
+    end if
+    do face=1,6
+      if (faces(face)/='inflow') cycle
+      q=0;q(1)=mixture_density(species,mf,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      if (.not.ok) call fatal('Invalid inflow density')
+      q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mf
+      call reactive_primitive_to_conserved(species,q,inlet(:,face),inlet_t(face),sound,ok)
+      if (.not.ok) call fatal('Invalid inflow state')
+    end do
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
@@ -238,7 +264,7 @@ contains
     if (.not.ok) call fatal('Initial parent synchronization failed')
     call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok)
     if (.not.ok) call fatal('Initial gas recovery failed')
-    time=0;step=0;event=1;last_id=0;global_ledger=0
+    time=0;step=0;event=1;last_id=0;global_ledger=0;boundary=0
     expected_tree=tree_key(tree)
     if (len_trim(restart_file)>0) then
       call checkpoint(.false.,trim(restart_file))
@@ -265,7 +291,7 @@ contains
         if (time==regrid_time) then
           assigned=[(modulo(node-1,nranks),node=1,size(target%nodes))]
           call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
-            lower,spacing,[.true.,.true.,.true.],maximum_parcels,ok)
+            lower,spacing,periodic,maximum_parcels,ok)
           if (.not.ok) call fatal('Coupled regrid failed')
           regridded=.true.
         end if
@@ -274,12 +300,12 @@ contains
         if (step>last_adaptation_step) then
           if (mod(step,adaptation_interval)==0) then
             call tag_mpi_amr_tree_temperature_3d(tree,owners,temperature,temperature_thresholds(:refinement_levels), &
-              refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,[.true.,.true.,.true.],tagged,comm,ok)
+              refinement_ratios(:refinement_levels),tile_shape,tag_buffer,maximum_nodes,periodic,tagged,comm,ok)
             if (.not.ok) call fatal('Automatic temperature tagging failed')
             if (tree_key(tagged)/=tree_key(tree)) then
               assigned=[(modulo(node-1,nranks),node=1,size(tagged%nodes))]
               call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
-                lower,spacing,[.true.,.true.,.true.],maximum_parcels,ok)
+                lower,spacing,periodic,maximum_parcels,ok)
               if (.not.ok) call fatal('Adaptive gas/particle remap failed')
             end if
             last_adaptation_step=step
@@ -311,11 +337,12 @@ contains
       ! Finest-level bounds also safely bound recursive gas stepping.
       call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,spacing,config%cfl,dt,comm,ok)
       if (.not.ok) call fatal('Gas CFL calculation failed')
-      dt=min(dt,stop_time-time)
+      call inlet_timestep()
+      dt=min(dt,inlet_dt,stop_time-time)
       if (config%transport_enabled) then
         call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature,spacing, &
           config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
-          transport_dt,diffusivity,comm,ok)
+          transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
         if (.not.ok) call fatal('Transport timestep failed')
         dt=min(dt,transport_dt)
       end if
@@ -335,12 +362,15 @@ contains
           config%transport_enabled.and.config%species_diffusion_enabled, &
           config%transport_enabled.and.config%barodiffusion_enabled, &
           config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
-          ok,last_id,chemistry_integrator,subcycling)
+          ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
+          config%wall_temperature,config%wall_velocity)
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
       end do
       if (.not.ok) call fatal('Coupled step failed after retries')
+      if (any(abs(boundary)>huge(1._dp)-abs(change))) call fatal('Boundary ledger overflow')
+      boundary=boundary+change
       if (dt==stop_time-time) then
         time=stop_time
       else
@@ -349,7 +379,7 @@ contains
       step=step+1
       if (sample_work) then
         call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
-          [.true.,.true.,.true.],measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
+          periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
         if (.not.ok) call fatal('Coupled gas/particle rebalance failed')
         if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' Migrated: ',redistributed
       end if
@@ -380,13 +410,45 @@ contains
       write(*,'(a,l1)') 'Regridded: ',regridded
       write(*,'(a,i0)') 'Injection events applied: ',event-1
       write(*,'(a,*(es24.16,1x))') 'Injected inventory: ',global_ledger
+      write(*,'(a,*(es24.16,1x))') 'Boundary inventory: ',boundary
     end if
   contains
+    subroutine inlet_timestep()
+      ! Recompute on the current tree: adaptation may change the finest spacing.
+      inlet_dt=huge(1._dp)
+      if (.not.any(faces=='inflow')) return
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+      if (.not.ok) call fatal('Invalid inlet timestep layout')
+      min_h=spacing*real(domain(:,1),dp)/real(domain(:,size(ratios)),dp)
+      do face=1,6
+        if (faces(face)/='inflow') cycle
+        ! Recover sound speed from the already resolved reservoir composition.
+        q=0;q(1)=inlet(1,face);q(2:4)=config%inflow_velocity(:,face)
+        q(5)=config%inflow_pressure(face);q(6:)=inlet(6:,face)/inlet(1,face)
+        call reactive_primitive_to_conserved(species,q,change,inlet_t(face),sound,ok)
+        if (.not.ok) call fatal('Invalid inlet CFL state')
+        inlet_dt=min(inlet_dt,config%cfl/sum((abs(q(2:4))+sound)/min_h))
+        if (.not.config%transport_enabled) cycle
+        do k=1,2
+          do j=1,2
+            do i=1,2
+              inlet_cube(:,i,j,k)=inlet(:,face)
+            end do
+          end do
+        end do
+        inlet_temperature=inlet_t(face)
+        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2, &
+          min_h(1),min_h(2),min_h(3),config%transport_cfl,config%viscosity_enabled, &
+          config%thermal_conduction_enabled,config%species_diffusion_enabled,face_dt,diffusivity,ok)
+        if (.not.ok) call fatal('Invalid inlet transport bound')
+        inlet_dt=min(inlet_dt,face_dt)
+      end do
+    end subroutine
     subroutine checkpoint(writing,path)
       logical, intent(in) :: writing
       character(len=*), intent(in) :: path
       call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
-        time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok)
+        time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary)
       if (.not.ok) call fatal('AMR spray checkpoint operation failed')
     end subroutine
     function tree_key(geometry) result(key)
@@ -424,7 +486,7 @@ contains
       do born=old_count+1,size(candidate)
         candidate(born)%material_id=outlet
       end do
-      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,[.true.,.true.,.true.], &
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,periodic, &
         maximum_parcels,ok,candidate_mass)
       if (.not.ok) call fatal('Scheduled particle migration failed')
       call MPI_Allreduce(ledger,added,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)

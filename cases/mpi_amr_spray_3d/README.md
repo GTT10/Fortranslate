@@ -11,7 +11,7 @@ mpiexec -n 2 /path/to/build/pelef_mpi_amr_spray_3d \
 ```
 
 The standard `reactive_3d` gas namelist controls the gas initial condition,
-periodic domain, chemistry/transport, numerical scheme, CFL and final time.
+domain and per-face gas boundaries, chemistry/transport, numerical scheme, CFL and final time.
 The topology file uses the existing tree format: child count followed by
 `parent ilo ihi jlo jhi klo khi ratio` records, with parents before children.
 Patch owners are assigned round-robin; ranks without gas patches are supported.
@@ -130,7 +130,7 @@ liquid vapor species must exist in that bundle. Bundle SHA and chemistry
 integrator are printed by the selected frontend.
 
 The fixture uses synthetic water/peroxide properties to exercise implementation.
-It is not physical spray validation. This initial executable supports periodic
+It is not physical spray validation. This executable supports periodic, reservoir inflow/outflow and wall
 boundaries, initial or scheduled multiport injection and one optional prescribed
 regrid or temperature-driven adaptation, and gas-work-based rebalancing. Wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
@@ -179,3 +179,27 @@ limits and gas output path may change; checkpoint controls are excluded from the
 context. `maximum_parcels` remains per-rank capacity, and checkpoint gathering
 currently limits the global population to one million parcels on rank zero.
 Gas payload I/O remains distributed. CSV analysis files are not restart files.
+
+### Physical boundaries and budgets
+
+Set `boundary_faces` in the gas namelist in x-low/x-high/y-low/y-high/z-low/z-high
+order; unset entries inherit `boundary_condition`. For example:
+
+```fortran
+ boundary_condition='periodic'
+ boundary_faces='slip_wall','outflow','periodic','periodic','periodic','periodic'
+```
+
+Particles reflect specularly at gas wall types and leave at inflow/outflow
+faces. Gas reservoir state uses `inflow_temperature`, `inflow_pressure`,
+`inflow_velocity` and optional named inflow composition. Without that composition,
+it uses the initial gas composition. Gas `wall_temperature` and `wall_velocity`
+retain their existing thermal/tangential wall meanings. These controls do not
+add droplet thermal-wall exchange, wall films or EB impact physics.
+
+`Boundary inventory:` reports cumulative gas-plus-particle mass, three momenta,
+total energy and species exchanges in conserved-variable order. Positive values
+add inventory to the domain. It is separate from `Injected inventory:` and is
+saved/restored with the gas checkpoint. Faces and reservoir/wall data bind the
+checkpoint context. Place injection outlets inside the physical domain;
+injection migration rejects exterior points on nonperiodic axes.

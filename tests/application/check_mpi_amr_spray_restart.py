@@ -16,10 +16,12 @@ p.add_argument('--selected', action='store_true')
 p.add_argument('--multiport', action='store_true')
 p.add_argument('--adaptive', action='store_true')
 p.add_argument('--rebalance', action='store_true')
+p.add_argument('--physical', action='store_true')
+p.add_argument('--inflow', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
-case = a.source / 'cases/mpi_amr_spray_3d'
+case = a.source.resolve() / 'cases/mpi_amr_spray_3d'
 gas = (case / 'gas.nml').read_text()
 if a.selected:
     gas = gas.replace("thermo_model='full_h2o2'", "thermo_model='selected'")
@@ -48,14 +50,32 @@ if a.adaptive:
 if a.rebalance:
     spray = spray.replace('\n/\n', '\n rebalance_interval=1,rebalance_minimum_gain=0.\n/\n')
 
+if a.physical:
+    assert a.multiport, 'physical boundary fixture uses both ports'
+    gas = gas.replace("boundary_condition='periodic'",
+        "boundary_condition='periodic',boundary_faces='slip_wall','outflow','periodic','periodic','periodic','periodic'")
+    spray = spray.replace('port_centers(:,1)=.00075,.00075,.00075,port_centers(:,2)=.00325,.00325,.00325',
+        'port_centers(:,1)=.000001,.00075,.00075,port_centers(:,2)=.003999,.00325,.00325')
+    spray = spray.replace('port_axes(:,1)=1.,0.,0.,port_axes(:,2)=-1.,0.,0.,port_speeds=20.,30.',
+        'port_axes(:,1)=-1.,0.,0.,port_axes(:,2)=1.,0.,0.,port_speeds=1000.,1000.')
+    spray = spray.replace('port_half_angles=.1,.2', 'port_half_angles=0.,0.')
 
-def run(name, ranks, controls, good=True, changed=False):
+if a.inflow:
+    assert a.physical
+    gas = gas.replace("'slip_wall','outflow'", "'inflow','outflow'")
+    gas = gas.replace(" output_file=", " inflow_temperature=1000.,inflow_pressure=101325.,inflow_velocity(:,1)=25.,0.,0.\n output_file=")
+    spray = spray.replace('port_centers(:,1)=.000001', 'port_centers(:,1)=.00075')
+    spray = spray.replace('port_axes(:,1)=-1.', 'port_axes(:,1)=1.')
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False):
     folder = work / name
     folder.mkdir()
-    (folder / 'gas.nml').write_text(gas)
+    local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
+    (folder / 'gas.nml').write_text(local_gas)
     local_spray = spray
     if changed:
-        local_spray = (spray.replace('port_speeds=20.', 'port_speeds=21.') if a.multiport
+        local_spray = (spray.replace('port_temperatures=350.', 'port_temperatures=351.') if a.multiport
                        else spray.replace('speed=20.', 'speed=21.'))
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
@@ -92,11 +112,24 @@ for expected, actual in zip(read(full, 2), read(continued, 4)):
             assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
 assert f'Injection events applied: {4 if a.multiport else 3}' in (continued / 'run.log').read_text()
 particles = read(continued, 4)[1]
-assert len(particles) == (16 if a.multiport else 12)
+assert len(particles) == (8 if a.physical else 16 if a.multiport else 12)
 if a.multiport:
-    assert [row[2] for row in particles] == [1.]*8 + [2.]*8
+    assert [row[2] for row in particles] == [1.]*8 + ([] if a.physical else [2.]*8)
     assert all(row[3] < .001 if row[2] == 1 else row[3] > .003 for row in particles)
     assert all(row[12] < row[13] if row[2] == 1 else row[12] > row[13] for row in particles)
+if a.physical:
+    def boundary_inventory(folder):
+        line = next(line for line in (folder / 'run.log').read_text().splitlines()
+                    if line.startswith('Boundary inventory:'))
+        return [float(x) for x in line.split(':', 1)[1].split()]
+    expected_boundary = boundary_inventory(full)
+    actual_boundary = boundary_inventory(continued)
+    assert expected_boundary[0] < 0
+    if not a.inflow:
+        assert expected_boundary[1] > 0
+    for left, right in zip(expected_boundary, actual_boundary):
+        assert math.isclose(left, right, rel_tol=2e-12, abs_tol=1e-25), (left, right)
+    assert all(row[6] > 0 for row in particles), 'low-wall parcels must reflect'
 if a.adaptive:
     fields = read(continued, 4)[0]
     assert {row[1] for row in fields} == {0., 1.}
@@ -109,6 +142,8 @@ if a.adaptive:
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
+if a.physical:
+    run('changed_boundary', 2, f"restart_file='{checkpoint}'", good=False, changed_boundary=True)
 # A complete marker with a truncated particle payload must fail before CSV output.
 for suffix in ('', '.gas', '.particles'):
     shutil.copyfile(str(checkpoint) + suffix, work / ('broken' + suffix))
