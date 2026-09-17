@@ -742,3 +742,7 @@ add_test(NAME unit_eb_patch_tree_3d COMMAND test_eb_patch_tree_3d)
 add_executable(test_eb_tree_halo_3d unit/test_eb_tree_halo_3d.F90)
 target_link_libraries(test_eb_tree_halo_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_halo_3d COMMAND test_eb_tree_halo_3d)
+
+add_executable(test_eb_tree_flux_3d unit/test_eb_tree_flux_3d.F90)
+target_link_libraries(test_eb_tree_flux_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_tree_flux_3d COMMAND test_eb_tree_flux_3d)

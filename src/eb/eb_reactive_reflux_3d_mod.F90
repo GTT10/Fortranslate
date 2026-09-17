@@ -12,6 +12,7 @@ module eb_reactive_reflux_3d_mod
     real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
   end type eb_integrated_flux_3d
   public :: restrict_eb_integrated_flux_3d,reflux_reactive_eb_state_3d
+  public :: valid_eb_integrated_flux_3d
   public :: reconcile_reactive_eb_peer_flux_3d
 contains
   ! The caller selects a deterministic owner for a shared same-level face.
@@ -25,7 +26,7 @@ contains
     integer, intent(in) :: receiver_offset(3)
     type(eb_integrated_flux_3d), intent(in) :: owner_flux
     type(eb_integrated_flux_3d), intent(inout) :: receiver_flux
-    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), optional, intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     logical, intent(out) :: ok
     type(eb_integrated_flux_3d) :: candidate_flux
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
@@ -46,9 +47,16 @@ contains
     if (any(abs([receiver%x_lower,receiver%y_lower,receiver%z_lower]-expected)> &
       tol*max(1._dp,maxval(abs(origin)),maxval(abs(expected))))) return
     nvar=reactive_nvar(size(species))
-    if (any(shape(state)/=[nvar,rn]).or.any(shape(temperature)/=rn)) return
-    if (.not.valid_flux(owner_flux,owner,nvar).or..not.valid_flux(receiver_flux,receiver,nvar)) return
-    candidate_flux=receiver_flux;candidate=state;temps=temperature
+    if (present(state).neqv.present(temperature)) return
+    if (present(state)) then
+      if (any(shape(state)/=[nvar,rn]).or.any(shape(temperature)/=rn)) return
+    end if
+    if (.not.valid_eb_integrated_flux_3d(owner_flux,owner,nvar).or. &
+      .not.valid_eb_integrated_flux_3d(receiver_flux,receiver,nvar)) return
+    candidate_flux=receiver_flux
+    if (present(state)) then
+      candidate=state;temps=temperature
+    end if
     do axis=1,3
       do side=0,1
         if (side==0.and.receiver_offset(axis)+rn(axis)/=0) cycle
@@ -71,13 +79,15 @@ contains
               receiver_area=ra*product(rspacing)/rspacing(axis)
               volume=receiver%volume_fraction(cell(1),cell(2),cell(3))*product(rspacing)
               replacement=(owner_area/receiver_area)*face(owner_flux,axis,oface)
-              candidate(:,cell(1),cell(2),cell(3))=state(:,cell(1),cell(2),cell(3))+ &
-                real(2*side-1,dp)*(receiver_area/volume)*(replacement-face(receiver_flux,axis,rface))
-              if (.not.ieee_is_finite(temperature(cell(1),cell(2),cell(3)))) return
-              if (temperature(cell(1),cell(2),cell(3))<=0._dp) return
-              call reactive_conserved_to_primitive(species,candidate(:,cell(1),cell(2),cell(3)), &
-                temperature(cell(1),cell(2),cell(3)),primitive,temps(cell(1),cell(2),cell(3)),sound_speed,valid)
-              if (.not.valid) return
+              if (present(state)) then
+                candidate(:,cell(1),cell(2),cell(3))=state(:,cell(1),cell(2),cell(3))+ &
+                  real(2*side-1,dp)*(receiver_area/volume)*(replacement-face(receiver_flux,axis,rface))
+                if (.not.ieee_is_finite(temperature(cell(1),cell(2),cell(3)))) return
+                if (temperature(cell(1),cell(2),cell(3))<=0._dp) return
+                call reactive_conserved_to_primitive(species,candidate(:,cell(1),cell(2),cell(3)), &
+                  temperature(cell(1),cell(2),cell(3)),primitive,temps(cell(1),cell(2),cell(3)),sound_speed,valid)
+                if (.not.valid) return
+              end if
               select case(axis)
               case(1);candidate_flux%x(:,rface(1),rface(2),rface(3))=replacement
               case(2);candidate_flux%y(:,rface(1),rface(2),rface(3))=replacement
@@ -88,7 +98,11 @@ contains
         end do
       end do
     end do
-    receiver_flux=candidate_flux;state=candidate;temperature=temps;ok=.true.
+    receiver_flux=candidate_flux
+    if (present(state)) then
+      state=candidate;temperature=temps
+    end if
+    ok=.true.
   end subroutine reconcile_reactive_eb_peer_flux_3d
 
   subroutine restrict_eb_integrated_flux_3d(fine,ratio,fine_flux,coarse_flux,ok)
@@ -108,7 +122,7 @@ contains
     if (.not.valid) return
     if (.not.allocated(fine_flux%x)) return
     nvar=size(fine_flux%x,1)
-    if (.not.valid_flux(fine_flux,fine,nvar)) return
+    if (.not.valid_eb_integrated_flux_3d(fine_flux,fine,nvar)) return
     dims=[coarse%nx,coarse%ny,coarse%nz]
     allocate(candidate%x(nvar,0:dims(1),dims(2),dims(3)), &
       candidate%y(nvar,dims(1),0:dims(2),dims(3)),candidate%z(nvar,dims(1),dims(2),0:dims(3)),average(nvar))
@@ -141,29 +155,33 @@ contains
         end do
       end do
     end do
-    if (.not.valid_flux(candidate,coarse,nvar)) return
+    if (.not.valid_eb_integrated_flux_3d(candidate,coarse,nvar)) return
     coarse_flux=candidate;ok=.true.
   end subroutine restrict_eb_integrated_flux_3d
 
   ! Apply fine-minus-coarse integrated flux only at interior interfaces between
   ! refined and unrefined coarse cells. Fine states are updated/averaged separately.
-  ! Outer-boundary budgets and periodic seam synchronization belong to the caller.
-  subroutine reflux_reactive_eb_state_3d(species,geometry,refined,coarse_flux,fine_flux,state,temperature,ok)
+  ! With all_faces, apply the full flux difference on exposed cells, including
+  ! outer faces. The caller then owns the synchronized outer-boundary budget.
+  subroutine reflux_reactive_eb_state_3d(species,geometry,refined,coarse_flux,fine_flux,state,temperature,ok,all_faces)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     logical, intent(in) :: refined(:,:,:)
     type(eb_integrated_flux_3d), intent(in) :: coarse_flux,fine_flux
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: all_faces
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:),correction(:)
     real(dp) :: spacing(3),volume,scale,sound_speed
     integer :: i,j,k,axis,step,idx(3),neighbor(3),face_idx(3),dims(3),nvar
-    logical :: valid,touched
-    ok=.false.
+    logical :: valid,touched,complete
+    ok=.false.;complete=.false.
+    if (present(all_faces)) complete=all_faces
     if (.not.geometry%is_valid()) return
     dims=[geometry%nx,geometry%ny,geometry%nz];nvar=reactive_nvar(size(species))
     if (any(shape(state)/=[nvar,dims]).or.any(shape(temperature)/=dims).or.any(shape(refined)/=dims)) return
-    if (.not.valid_flux(coarse_flux,geometry,nvar).or..not.valid_flux(fine_flux,geometry,nvar)) return
+    if (.not.valid_eb_integrated_flux_3d(coarse_flux,geometry,nvar).or. &
+      .not.valid_eb_integrated_flux_3d(fine_flux,geometry,nvar)) return
     allocate(candidate,source=state);allocate(temps,source=temperature)
     allocate(primitive(reactive_nprim(size(species))),correction(nvar))
     spacing=[geometry%dx,geometry%dy,geometry%dz]
@@ -176,9 +194,14 @@ contains
           do axis=1,3
             do step=-1,1,2
               neighbor=idx;neighbor(axis)=neighbor(axis)+step
-              if (any(neighbor<1).or.any(neighbor>dims)) cycle
-              if (.not.refined(neighbor(1),neighbor(2),neighbor(3))) cycle
+              if (.not.complete) then
+                if (any(neighbor<1).or.any(neighbor>dims)) cycle
+                if (.not.refined(neighbor(1),neighbor(2),neighbor(3))) cycle
+              end if
               face_idx=idx;face_idx(axis)=face_idx(axis)+min(step,0)
+              if (complete) then
+                if (all(face(fine_flux,axis,face_idx)==face(coarse_flux,axis,face_idx))) cycle
+              end if
               scale=aperture(geometry,axis,face_idx)
               if (scale<=0._dp) cycle
               scale=-real(step,dp)*scale*(product(spacing)/spacing(axis))/volume
@@ -199,7 +222,7 @@ contains
     state=candidate;temperature=temps;ok=.true.
   end subroutine reflux_reactive_eb_state_3d
 
-  logical function valid_flux(flux,geometry,nvar) result(valid)
+  logical function valid_eb_integrated_flux_3d(flux,geometry,nvar) result(valid)
     type(eb_integrated_flux_3d), intent(in) :: flux
     type(eb_geometry_3d), intent(in) :: geometry
     integer, intent(in) :: nvar
@@ -211,7 +234,7 @@ contains
     if (any(lbound(flux%x)/=[1,0,1,1]).or.any(lbound(flux%y)/=[1,1,0,1]).or. &
       any(lbound(flux%z)/=[1,1,1,0])) return
     valid=all(ieee_is_finite(flux%x)).and.all(ieee_is_finite(flux%y)).and.all(ieee_is_finite(flux%z))
-  end function valid_flux
+  end function valid_eb_integrated_flux_3d
 
   function face(flux,axis,index) result(value)
     type(eb_integrated_flux_3d), intent(in) :: flux

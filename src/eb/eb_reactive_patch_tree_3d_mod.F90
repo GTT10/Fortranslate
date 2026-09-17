@@ -9,6 +9,8 @@ module eb_reactive_patch_tree_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d, &
+    restrict_eb_integrated_flux_3d,reconcile_reactive_eb_peer_flux_3d,reflux_reactive_eb_state_3d
   use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d, &
     overlay_reactive_eb_peer_halo_3d
   implicit none
@@ -17,6 +19,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d
   public :: react_reactive_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
@@ -139,6 +142,95 @@ contains
     end do
     tree=candidate;ok=.true.
   end subroutine average_down_reactive_eb_tree_3d
+
+  ! Input states have already accepted each node's raw time-integrated flux.
+  ! Replace shared transfers from finest to coarsest on exposed cells only,
+  ! then average down. Publish corrected states and effective fluxes together.
+  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    type(eb_integrated_flux_3d), intent(inout) :: flux(:)
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: candidate
+    type(eb_integrated_flux_3d), allocatable :: effective(:)
+    type(eb_integrated_flux_3d) :: restricted
+    type(eb_geometry_3d) :: section
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer(int64) :: offset(3),section_origin(3)
+    integer :: nv,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),d(3),ratio
+    logical, allocatable :: refined(:,:,:)
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.valid_tree(tree,nv)) return
+    if (size(flux)/=size(tree%nodes)) return
+    do node=1,size(flux)
+      if (.not.valid_eb_integrated_flux_3d(flux(node),tree%nodes(node)%geometry,nv)) return
+    end do
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if (.not.valid) return
+    candidate=tree;effective=flux
+    ! Reconcile raw peer faces first at every depth. Descendant replacements
+    ! below are mirrored into both incident parent patches and must not be
+    ! overwritten later by a coarser owner decision.
+    do node=1,size(flux)
+    do peer=node+1,size(flux)
+      if (tree%topology%nodes(peer)%level/=tree%topology%nodes(node)%level) cycle
+      owner=node;receiver=peer
+      do axis=1,3
+        if (origin(axis,node)==origin(axis,peer)) cycle
+        if (origin(axis,node)>origin(axis,peer)) then
+          owner=peer;receiver=node
+        end if
+        exit
+      end do
+      offset=origin(:,receiver)-origin(:,owner)
+      if (any(offset < -int(tree%topology%nodes(receiver)%shape,int64)).or. &
+        any(offset>int(tree%topology%nodes(owner)%shape,int64))) cycle
+      call reconcile_reactive_eb_peer_flux_3d(species,tree%nodes(owner)%geometry,tree%nodes(receiver)%geometry, &
+        int(offset),effective(owner),effective(receiver),ok=valid)
+      if (.not.valid) return
+    end do
+    end do
+    do depth=tree%topology%level_count()-1,0,-1
+    do node=1,size(flux)
+      if (tree%topology%nodes(node)%level/=depth) cycle
+      d=tree%topology%nodes(node)%shape
+      allocate(refined(d(1),d(2),d(3)));refined=.false.
+      do child=node+1,size(flux)
+        if (tree%topology%nodes(child)%parent/=node) cycle
+        call bounds(tree%topology,child,lo,hi)
+        refined(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.true.
+      end do
+      call reflux_reactive_eb_state_3d(species,tree%nodes(node)%geometry,refined,flux(node),effective(node), &
+        candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid,all_faces=.true.)
+      if (.not.valid) return
+      deallocate(refined)
+      if (node==1) cycle
+      parent=tree%topology%nodes(node)%parent;ratio=tree%topology%nodes(node)%patch%refinement_ratio
+      call bounds(tree%topology,node,lo,hi)
+      call restrict_eb_integrated_flux_3d(tree%nodes(node)%geometry,ratio,effective(node),restricted,valid)
+      if (.not.valid) return
+      effective(parent)%x(:,lo(1)-1:hi(1),lo(2):hi(2),lo(3):hi(3))=restricted%x
+      effective(parent)%y(:,lo(1):hi(1),lo(2)-1:hi(2),lo(3):hi(3))=restricted%y
+      effective(parent)%z(:,lo(1):hi(1),lo(2):hi(2),lo(3)-1:hi(3))=restricted%z
+      call coarsen_eb_geometry_3d(tree%nodes(node)%geometry,ratio,section,valid)
+      if (.not.valid) return
+      section_origin=origin(:,node)/int(ratio,int64)
+      do peer=1,size(flux)
+        if (peer==parent.or.tree%topology%nodes(peer)%level/=depth-1) cycle
+        offset=origin(:,peer)-section_origin
+        if (any(offset < -int(tree%topology%nodes(peer)%shape,int64)).or.any(offset>int(hi-lo+1,int64))) cycle
+        call reconcile_reactive_eb_peer_flux_3d(species,section,tree%nodes(peer)%geometry,int(offset), &
+          restricted,effective(peer),ok=valid)
+        if (.not.valid) return
+      end do
+    end do
+    end do
+    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    if (.not.valid) return
+    tree=candidate;flux=effective;ok=.true.
+  end subroutine synchronize_reactive_eb_tree_flux_3d
 
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok)
     type(nasa7_species), intent(in) :: species(:)
