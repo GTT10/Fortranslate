@@ -61,7 +61,11 @@ program pelef_reactive_eb_tree_3d
   character(len=:), allocatable :: element_names(:),bundle_identity,checkpoint_integrator
   real(dp), allocatable :: element_atoms(:,:),base_mole_fractions(:)
 #ifdef PELEF_MPI_EB_SPRAY
-  type(spray_parcel), allocatable :: drops(:)
+  type(spray_parcel), allocatable :: drops(:),injection_template(:)
+  real(dp), allocatable :: injection_fractions(:)
+  integer :: injection_events=1,next_injection=1
+  integer(int64) :: last_particle_id=0
+  real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
@@ -120,7 +124,7 @@ program pelef_reactive_eb_tree_3d
   type(reactive_eb_3d_config) :: config,root_config
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:),shared_ratios(:)
-  real(dp), allocatable :: u(:,:,:,:),t(:,:,:),current(:),boundary(:),wall(:),chemical(:)
+  real(dp), allocatable :: u(:,:,:,:),t(:,:,:),current(:),boundary(:),wall(:),chemical(:),injected(:)
   real(dp) :: dt,theta,error,estimated_dt
   integer :: unit,ios,status,node,n(3),nv,retry,depth,event,common
   logical :: ok,stopped=.false.
@@ -302,7 +306,8 @@ program pelef_reactive_eb_tree_3d
   if (.not.ok) error stop 'Transport load failed'
 #endif
   nv=reactive_nvar(size(species));n=root_shape
-  allocate(current(nv),boundary(nv),wall(nv),chemical(nv))
+  allocate(current(nv),boundary(nv),wall(nv),chemical(nv),injected(nv))
+  injected=0
   root_config=config;root_config%nx=n(1);root_config%ny=n(2);root_config%nz=n(3)
 #ifdef PELEF_MPI_EB_TREE
   call initialize_owned()
@@ -323,8 +328,15 @@ program pelef_reactive_eb_tree_3d
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
-  do while(record%time<final_time.and.record%steps<maximum_steps)
+  do
+#ifdef PELEF_MPI_EB_SPRAY
+    call inject_due_events()
+#endif
+    if(record%time>=final_time.or.record%steps>=maximum_steps) exit
     dt=min(time_step,final_time-record%time)
+#ifdef PELEF_MPI_EB_SPRAY
+    if(next_injection<=injection_events) dt=min(dt,injection_times(next_injection)-record%time)
+#endif
     if (automatic_timestep) then
 #ifdef PELEF_MPI_EB_TREE
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
@@ -449,7 +461,7 @@ contains
     type(spray_liquid) :: effective
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,particle_options
+      liquid_temperature,particle_options,injection_events,injection_times,injection_scales
     nc=1;number=1;vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
     reference_pressures=101325;latent_heats=2.257e6_dp;fractions=0;fractions(1)=1
     total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0
@@ -465,6 +477,14 @@ contains
     if(.not.valid_spray_options(particle_options).or.particle_options%khrt_children) &
       error stop 'Unsupported particle options'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
+    if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection event count'
+    if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
+      error stop 'Nonfinite injection schedule'
+    if(any(injection_times<0).or.any(injection_times>1e6_dp).or.any(injection_scales<0).or. &
+      any(injection_scales>1e6_dp)) error stop 'Invalid injection schedule'
+    do q=2,injection_events
+      if(injection_times(q)<injection_times(q-1)) error stop 'Injection times must be nondecreasing'
+    end do
     allocate(liquids(nc))
     do c=1,nc
       call initialize_spray_liquid(species,vapor_names(c),densities(c),heat_capacities(c),reference_temperatures(c), &
@@ -475,22 +495,62 @@ contains
     if(.not.ok) error stop 'Invalid liquid mixture'
     effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
     effective%reference_temperature=liquid_temperature;effective%reference_energy=e
-    ! Generate deterministically on every rank to validate identical input semantics;
-    ! rank zero retains the initial population for the collective owner migration.
     call inject_cone_parcels(effective,total_mass,number,1_int64,center,axis,speed,half_angle, &
-      diameter,liquid_temperature,drops,ok)
-    if(.not.ok) error stop 'Invalid initial injection'
-    if(mpi_rank/=0) then
-      deallocate(drops)
-      allocate(drops(0))
-    end if
-    allocate(component_mass(nc,size(drops)))
-    do q=1,size(drops)
-      component_mass(:,q)=fractions(:nc)*drops(q)%mass
+      diameter,liquid_temperature,injection_template,ok)
+    if(.not.ok) error stop 'Invalid injection template'
+    injection_fractions=fractions(:nc)
+    allocate(drops(0),component_mass(nc,0))
+  end subroutine
+
+  subroutine inject_due_events()
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: masses(:,:)
+    real(dp) :: change(nv),totals(5),rho,cp,e,scale
+    type(spray_liquid) :: effective
+    integer :: q,c,number,old_count,local_count,global_count
+    do while(next_injection<=injection_events)
+      if(injection_times(next_injection)>record%time) exit
+      scale=injection_scales(next_injection)
+      if(scale>0) then
+        number=size(injection_template);local_count=size(drops)
+        call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
+        if(mpi_ierr/=MPI_SUCCESS) error stop 'Injection population reduction failed'
+        if(global_count>min(125000,particle_options%maximum_parcels)-number) error stop 'Injection capacity exceeded'
+        if(last_particle_id>huge(last_particle_id)-number) error stop 'Particle ID overflow'
+        candidate=drops;masses=component_mass;change=0
+        ! The replicated template defines the same injected inventory on every rank.
+        do q=1,number
+          call liquid_mixture_properties(liquids,injection_fractions,injection_template(q)%temperature,rho,cp,e,ok)
+          if(.not.ok) error stop 'Invalid injection properties'
+          effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
+          effective%reference_temperature=injection_template(q)%temperature;effective%reference_energy=e
+          totals=scale*parcel_totals(injection_template(q),effective)
+          change(:5)=change(:5)+totals
+          do c=1,size(liquids)
+            change(5+liquids(c)%vapor_index)=change(5+liquids(c)%vapor_index)+totals(1)*injection_fractions(c)
+          end do
+        end do
+        if(mpi_rank==0) then
+          old_count=size(drops)
+          deallocate(candidate,masses)
+          allocate(candidate(old_count+number),masses(size(liquids),old_count+number))
+          candidate(:old_count)=drops;masses(:,:old_count)=component_mass
+          do q=1,number
+            candidate(old_count+q)=injection_template(q)
+            candidate(old_count+q)%id=last_particle_id+q
+            candidate(old_count+q)%multiplicity=scale*injection_template(q)%multiplicity
+            masses(:,old_count+q)=injection_fractions*candidate(old_count+q)%mass
+          end do
+        end if
+        call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,topology,mpi_owners,nodal_phi,candidate, &
+          domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,ok,masses)
+        if(.not.ok) error stop 'Scheduled EB injection failed'
+        call move_alloc(candidate,drops)
+        call move_alloc(masses,component_mass)
+        last_particle_id=last_particle_id+number;injected=injected+change
+      end if
+      next_injection=next_injection+1
     end do
-    call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,topology,mpi_owners,nodal_phi,drops, &
-      domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,ok,component_mass)
-    if(.not.ok) error stop 'Initial EB particle ownership failed'
   end subroutine
 
   subroutine add_particle_inventory(inventory)
@@ -835,8 +895,8 @@ contains
 #ifdef PELEF_MPI_EB_SPRAY
     call add_particle_inventory(current)
 #endif
-    error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical)/ &
-      max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)))
+    error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical-injected)/ &
+      max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)+abs(injected)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
   end subroutine
   subroutine envelope(stream,reading,header_only)
@@ -1006,11 +1066,21 @@ contains
 #endif
     open(newunit=unit,file=trim(budget_path),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open budget CSV'
+#ifdef PELEF_MPI_EB_SPRAY
+    write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,injected,residual'
+    do c=1,nv
+      write(unit,'(i0,7(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
+        record%wall(c),record%chemical(c),injected(c), &
+        current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)-injected(c)
+    end do
+    write(*,'(a,i0)') 'Processed injection events: ',next_injection-1
+#else
     write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,residual'
     do c=1,nv
       write(unit,'(i0,6(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
         record%wall(c),record%chemical(c),current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)
     end do
+#endif
     close(unit,iostat=ios)
     if (ios/=0) error stop 'Budget close failed'
   end subroutine
