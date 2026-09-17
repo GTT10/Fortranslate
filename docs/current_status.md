@@ -677,7 +677,10 @@ commits gas/particle ownership together
 A coupled remap library now moves refined patches, coarsens and refines with
 transactional gas/geometry/particle publication and retained original nodal
 geometry ([evidence](validation/spray-mpi-eb-remap-20260918.md)).
-Regrid scheduling/restart integration in this EB spray application, independent ports,
+Prescribed EB spray regrids now connect to the application and changed-rank
+checkpoint continuation across stored hierarchy stages
+([evidence](validation/spray-mpi-eb-regrid-application-20260918.md)).
+Independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant

@@ -212,7 +212,13 @@ integer refinement of the current finest tree lattice, allowing coarsening
 without replacing the original collision geometry. MPI sampling requires exact
 nodal dimensions and values across ranks. See
 [remap evidence](validation/spray-mpi-eb-remap-20260918.md).
-Application scheduling/restart integration of this remap remains open. See
+The fixed/selected MPI EB spray applications now route prescribed and
+existing temperature-tagged regrids through this coupled remap. Checkpoint
+restore prepares the stored hierarchy privately, checks the saved stage/time,
+then publishes hierarchy, gas and particles together. Original nodal values
+remain fixed across coarsening/refinement. See
+[application regrid evidence](validation/spray-mpi-eb-regrid-application-20260918.md)
+for prescribed schedules; adaptive tagging is not newly qualified there. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
