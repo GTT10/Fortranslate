@@ -155,6 +155,17 @@ and the gas step succeed. Failure returns zero particle substeps and leaves
 caller state and diagnostics unchanged. The caller chooses/retries the overall
 gas timestep; particle halves select their own common substeps.
 
+Optional `wall_films`, `film_mass` and `film_settings` must be supplied together
+and consistently on all ranks. They wrap the composition in film half-intervals:
+F/2–S/2–gas–S/2–F/2. Film gas exchange and wall heat use the existing AMR film
+interval, with private film state until the full step succeeds. The boundary
+ledger includes both film wall-energy contributions. Optional `film_steps`
+reports only accepted film substeps; `particle_steps` retains its particle-only
+meaning. Failure returns zero counts and preserves films along with the other
+state and diagnostics. Existing calls without films retain the original split.
+This evolves supplied stationary films; particle wall-impact creation and
+application/checkpoint film state are still separate unfinished integration.
+
 The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
 The selected library links the selected MPI tree runtime; it does not acquire
@@ -214,7 +225,8 @@ component depletion and temperature change, with bounded halving on failure.
 Gas, film/component arrays and the integrated wall-energy ledger publish only
 on whole-interval success. Failed intervals preserve the incoming ledger and
 state. This advances exchange against gas, not gas transport/chemistry or impact
-creation; coupled splitting and application/restart integration remain open.
+creation; the reacting wrapper supplies coupled splitting while application/restart
+integration remains open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
