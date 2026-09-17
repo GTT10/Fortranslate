@@ -705,6 +705,34 @@ These are common-step operators without molecular transport, subcycling or MPI
 tree application dispatch. MPI runtime failures retain the communicator's error
 handler semantics; no full field gather or global chemistry raster is introduced.
 
+## Synchronous MPI molecular transport
+
+`advance_mpi_amr_tree_transport_3d` mirrors the serial transport SSPRK2 operator
+on owner-local state and temperature fields. It supports viscosity, heat conduction,
+species diffusion and pressure diffusion, with optional limited coarse donors.
+Packed distributed ghosts use viscous reflection and moving-wall shifts. The
+existing physical transport kernel sees only the physical faces touched by each
+patch, derived from the integer tree layout. Other patch faces remain internal.
+
+Each Euler stage updates owned cells, applies distributed reflux and recovers
+temperature. The final convex combination is restricted; temperature recovery uses
+half the initial plus half the second-Euler guess, matching serial transport.
+Boundary/reflux budgets use the existing owner reductions, and minimum transport
+limiter theta is reduced over every owner and both stages. Empty ranks contribute
+one to this minimum.
+
+Ranks must agree on geometry, dt/spacing, boundary faces, enabled terms, optional
+wall/limiter presence, wall values and active inflow arrays. Transport and species
+record identity remains the caller's responsibility; local kernel validation rejects
+invalid records collectively. Only private candidates are changed until the entire
+step succeeds, including final EOS recovery. State, temperature and all diagnostics
+are preserved on rejection. There is no full-field gather.
+
+This API advances transport alone with caller-supplied dt. A distributed transport
+stability bound, full reaction/transport/hydro composition, temporal coarse donors
+and application dispatch remain to be connected. Whole-node ownership, repeated
+ghost planning and per-interface collective gates retain existing scaling limits.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
