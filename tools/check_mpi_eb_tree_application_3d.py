@@ -62,6 +62,11 @@ def main():
     to_serial = run('mpi_to_serial', 0, f"restart_file='{stopped / 'saved.chk'}',")
     serial_stop = run('serial_stop', 0, stop_policy)
     from_serial = run('serial_to_mpi', 3, f"restart_file='{serial_stop / 'saved.chk'}',")
+    patch_marker = b'PELEF_REACTIVE_EB_3D_CHECKPOINT\n'
+    mpi_saved = (stopped / 'saved.chk').read_bytes().split(patch_marker, 1)
+    serial_saved = (serial_stop / 'saved.chk').read_bytes().split(patch_marker, 1)
+    assert len(mpi_saved) == len(serial_saved) == 2
+    assert mpi_saved[1] == serial_saved[1], 'checkpoint patch records differ from serial'
     expected = (serial / 'result.csv').read_bytes()
     for directory in (full, third, resumed, changed, to_serial, from_serial):
         assert (directory / 'result.csv').read_bytes() == expected, directory

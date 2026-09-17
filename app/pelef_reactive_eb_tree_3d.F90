@@ -1,9 +1,10 @@
 program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
   use mpi_f08
+  use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
@@ -386,20 +387,6 @@ contains
     deallocate(u,t)
     distributed=.true.
   end subroutine
-  subroutine collect_root()
-    type(amr_tree_state_3d) :: global,gt
-    integer :: p
-    logical :: valid
-    call gather_mpi_amr_tree_3d(topology,mpi_owners,mpi_state,global,MPI_COMM_WORLD,0,valid)
-    if (.not.valid) error stop 'MPI state gather failed'
-    call gather_mpi_amr_tree_3d(topology,mpi_owners,mpi_temperature,gt,MPI_COMM_WORLD,0,valid)
-    if (.not.valid) error stop 'MPI temperature gather failed'
-    if (mpi_rank/=0) return
-    do p=1,size(tree%nodes)
-      call move_alloc(global%fields(p)%values,tree%nodes(p)%state)
-      tree%nodes(p)%temperature=gt%fields(p)%values(1,:,:,:)
-    end do
-  end subroutine
   subroutine release_tree_values()
     integer :: p
     do p=1,size(tree%nodes)
@@ -669,9 +656,10 @@ contains
       max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
   end subroutine
-  subroutine envelope(stream,reading)
+  subroutine envelope(stream,reading,header_only)
     integer, intent(in) :: stream
     logical, intent(in) :: reading
+    logical, optional, intent(in) :: header_only
     character(len=64) :: magic,integrator
     logical :: automatic
     real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl
@@ -721,6 +709,9 @@ contains
     else if (regrid_count/=0) then
       error stop 'Restart schedule missing'
     end if
+    if (present(header_only)) then
+      if (header_only.and..not.reading) return
+    end if
     call reactive_eb_tree_checkpoint_record_3d(stream,reading,species,reactions,transport,config,tree,record,ok,message, &
       bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
     if (.not.ok) then
@@ -746,12 +737,16 @@ contains
   subroutine save()
     integer :: scratch,destination,amount
     character(len=4096) :: chunk
-#ifdef PELEF_MPI_EB_TREE
-    call collect_root()
-    if (mpi_rank/=0) return
-#endif
     open(newunit=scratch,status='scratch',form='formatted',action='readwrite',iostat=ios)
     if (ios/=0) error stop 'Cannot stage checkpoint'
+#ifdef PELEF_MPI_EB_TREE
+    call envelope(scratch,.false.,header_only=.true.)
+    call write_mpi_eb_tree_checkpoint_3d(trim(checkpoint_file),scratch,species,reactions,transport,config,topology, &
+      mpi_owners,mpi_geometry,mpi_state,mpi_temperature,record,MPI_COMM_WORLD,ok, &
+      bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
+    close(scratch,iostat=ios)
+    if (.not.ok.or.ios/=0) error stop 'MPI checkpoint save failed'
+#else
     call envelope(scratch,.false.)
     rewind(scratch,iostat=ios)
     if (ios/=0) error stop 'Checkpoint rewind failed'
@@ -772,8 +767,6 @@ contains
     if (ios/=0) error stop 'Checkpoint close failed'
     close(scratch,iostat=ios)
     if (ios/=0) error stop 'Checkpoint staging close failed'
-#ifdef PELEF_MPI_EB_TREE
-    call release_tree_values()
 #endif
   end subroutine
   subroutine output()

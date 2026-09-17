@@ -37,11 +37,12 @@ Checkpoint stepping mode must match on restart. Each rank holds only its assigne
 U/T during stepping; geometry is replicated. Initialization/restart temporarily
 loads the full tree on each rank, then scatters from rank zero and releases full
 state arrays. State CSV writes use owner-local MPI-IO chunks in serial row order;
-the small budget CSV is written by rank zero. Checkpoint writes still gather
-to rank zero and share the serial format. Checkpoints can continue with a different rank count or the serial
+the small budget CSV is written by rank zero. Checkpoint writes stage existing
+serial patch records on their owners and publish them directly with MPI-IO.
+Checkpoints can continue with a different rank count or the serial
 executable. State CSVs are deterministic in the focused fixture; budget ledgers
 can differ in roundoff when MPI reduction grouping changes. Distributed
-checkpoint I/O and scaling qualification are future work.
+checkpoint loading and scaling qualification are future work.
 
 ## Selected mechanisms
 
