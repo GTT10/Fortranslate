@@ -1098,3 +1098,25 @@ Temporary validation copies stay on their owners. Actual I/O failure can leave a
 partial destination; this is not an atomic rename transaction. Loading still uses
 the validated serial root reader and owner scatter. Checkpoint bytes and physical
 identity do not depend on ranks or assignment policy.
+
+
+## Indexed owner-local checkpoint loading
+
+The serial metadata parser is shared through `read_amr_tree_checkpoint_header_3d`.
+The MPI reader opens formatted streams and reads metadata on each rank. V1 stores
+no byte index, so rank zero reads one list-directed cell record into a scratch
+vector at a time, records each node's stream position and checks footer/EOF.
+Only node positions are broadcast. This preserves the existing text/list-directed
+record parsing rather than assuming every externally supplied record has the
+writer's fixed byte width. It requires a serial scan and a second read of payloads,
+but never retains a complete root state.
+
+Each owner seeks to its node offsets and allocates/reads only its assigned U/T.
+The same collective snapshot preflight as saving checks metadata/context, EOS
+and parent averages. Owner arrays and snapshot outputs publish only after success.
+The application then checks expected geometry, counters and initial/boundary
+ledgers using distributed compensated inventories before replacing active fields.
+The old root snapshot scatter and separate adaptive-geometry broadcast are removed.
+Current partition policy determines restored owners; rank and policy changes remain
+compatible with serial V1 checkpoints. Removing the index scan requires additional
+indexed-format work and is not claimed by this memory-bounded reader.

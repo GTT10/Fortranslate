@@ -5,14 +5,148 @@ module mpi_amr_patch_tree_checkpoint_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d
+  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d
   use amr_reactive_3d_checkpoint_mod, only: checkpoint_temperature_is_consistent
   use mpi_amr_patch_tree_chemistry_3d_mod, only: clone_mpi_amr_tree_inputs_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_metadata_3d
   implicit none
   private
-  public :: write_mpi_amr_tree_checkpoint_3d
+  public :: write_mpi_amr_tree_checkpoint_3d,read_mpi_amr_tree_checkpoint_3d
 contains
+  subroutine read_mpi_amr_tree_checkpoint_3d(path,species,context,root_shape,partitioning,exponent, &
+      snapshot,owners,comm,ok)
+    character(len=*), intent(in) :: path,context,partitioning
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: root_shape(3),exponent
+    type(amr_tree_checkpoint_3d), intent(inout) :: snapshot
+    integer, allocatable, intent(inout) :: owners(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    type(amr_tree_checkpoint_3d) :: candidate
+    integer, allocatable :: assigned(:)
+    integer(MPI_OFFSET_KIND), allocatable :: offsets(:)
+    real(dp) :: scratch(reactive_nvar(size(species))+1)
+    character(len=65536) :: line
+    character(len=:), allocatable :: header
+    integer :: rank,nranks,status,ios,unit,node,nvar,n(3),i,j,k,low,high
+    logical :: valid,opened
+    ok=.false.;nvar=reactive_nvar(size(species))
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,status)
+    if (status/=MPI_SUCCESS) return
+    call same_checkpoint_string(comm,trim(path),valid)
+    if (.not.valid) return
+    call same_checkpoint_string(comm,context,valid)
+    if (.not.valid) return
+    call same_checkpoint_string(comm,partitioning,valid)
+    if (.not.valid) return
+    if (partitioning/='weighted'.and.partitioning/='round_robin') return
+    call MPI_Allreduce(exponent,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(exponent,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS.or.low/=high.or.low<0.or.low>2) return
+    open(newunit=unit,file=path,status='old',action='read',access='stream',form='formatted',iostat=ios)
+    opened=ios==0;valid=opened;call agree_checkpoint(comm,valid)
+    if (.not.valid) then
+      if (opened) close(unit)
+      return
+    end if
+    call read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,candidate,valid)
+    call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    if (partitioning=='weighted') then
+      call partition_amr_tree_3d(candidate%tree,nranks,exponent,assigned,valid)
+    else
+      allocate(assigned(size(candidate%tree%nodes)),stat=ios)
+      valid=ios==0
+      if (valid) assigned=[(mod(node-1,nranks),node=1,size(assigned))]
+    end if
+    call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    call validate_mpi_amr_tree_metadata_3d(candidate%tree,assigned,nvar,comm,valid)
+    if (.not.valid) go to 900
+    allocate(offsets(size(assigned)),stat=ios)
+    valid=ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    offsets=0
+    ! V1 has no on-disk index. Stream through one cell record at a time on rank
+    ! zero to index node positions, preserving the serial list-directed syntax.
+    ! Only offsets are broadcast; no complete state is retained on rank zero.
+    if (rank==0) then
+      scan_nodes: do node=1,size(assigned)
+        inquire(unit=unit,pos=offsets(node),iostat=ios)
+        if (ios/=0) then
+          valid=.false.;exit
+        end if
+        n=candidate%tree%nodes(node)%shape
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              read(unit,*,iostat=ios) scratch
+              if (ios/=0) then
+                valid=.false.;exit scan_nodes
+              end if
+            end do
+          end do
+        end do
+      end do scan_nodes
+      if (valid) then
+        read(unit,'(a)',iostat=ios) line
+        valid=ios==0.and.trim(line)=='END_AMR_TREE_CHECKPOINT'
+        if (valid) then
+          read(unit,'(a)',iostat=ios) line
+          valid=ios<0
+        end if
+      end if
+    end if
+    call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    call MPI_Bcast(offsets,size(offsets),MPI_OFFSET,0,comm,status)
+    valid=status==MPI_SUCCESS;call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    allocate(candidate%state%fields(size(assigned)),candidate%temperature%fields(size(assigned)),stat=ios)
+    valid=ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) go to 900
+    nodes: do node=1,size(assigned)
+      if (assigned(node)/=rank) cycle
+      n=candidate%tree%nodes(node)%shape
+      allocate(candidate%state%fields(node)%values(nvar,n(1),n(2),n(3)), &
+        candidate%temperature%fields(node)%values(1,n(1),n(2),n(3)),stat=ios)
+      if (ios/=0) then
+        valid=.false.;exit
+      end if
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            if (i==1.and.j==1.and.k==1) then
+              read(unit,*,pos=offsets(node),iostat=ios) candidate%state%fields(node)%values(:,i,j,k), &
+                candidate%temperature%fields(node)%values(1,i,j,k)
+            else
+              read(unit,*,iostat=ios) candidate%state%fields(node)%values(:,i,j,k), &
+                candidate%temperature%fields(node)%values(1,i,j,k)
+            end if
+            if (ios/=0) then
+              valid=.false.;exit nodes
+            end if
+          end do
+        end do
+      end do
+    end do nodes
+    call agree_checkpoint(comm,valid)
+900 close(unit,iostat=ios)
+    valid=valid.and.ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) return
+    call prepare_checkpoint(path,species,context,candidate,assigned,candidate%state,candidate%temperature, &
+      comm,header,rank,valid)
+    if (.not.valid) return
+    snapshot=candidate
+    call move_alloc(assigned,owners)
+    ok=.true.
+  end subroutine
+
   ! Metadata carries tree/ledger/counters; its state/temperature components are unused.
   subroutine write_mpi_amr_tree_checkpoint_3d(path,species,context,metadata,owners,state,temperature,comm,ok)
     character(len=*), intent(in) :: path,context
@@ -22,15 +156,109 @@ contains
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: synchronized,temps
     type(MPI_File) :: file
     type(MPI_Status) :: io_status
     integer(MPI_OFFSET_KIND), allocatable :: offsets(:)
     integer(MPI_OFFSET_KIND) :: total,cells,position
     character(len=:), allocatable :: header,row,buffer
-    character(len=65536) :: line
     character(len=*), parameter :: footer='END_AMR_TREE_CHECKPOINT'//achar(10)
-    integer :: rank,status,node,nvar,i,j,k,n(3),axis,ios,used,written,start,finish
+    integer :: rank,status,node,nvar,i,j,k,n(3),axis,ios,used,written
+    logical :: valid
+    ok=.false.;nvar=reactive_nvar(size(species))
+    call prepare_checkpoint(path,species,context,metadata,owners,state,temperature,comm,header,rank,valid)
+    if (.not.valid) return
+    allocate(offsets(size(owners)),stat=ios)
+    valid=ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) return
+    allocate(character(len=28*(nvar+1)-1)::row,stat=ios)
+    valid=ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) return
+    allocate(character(len=32*(len(row)+1))::buffer,stat=ios)
+    valid=ios==0;call agree_checkpoint(comm,valid)
+    if (.not.valid) return
+    total=int(len(header),MPI_OFFSET_KIND)
+    do node=1,size(owners)
+      cells=1
+      do axis=1,3
+        if (cells>huge(total)/int(metadata%tree%nodes(node)%shape(axis),MPI_OFFSET_KIND)) return
+        cells=cells*int(metadata%tree%nodes(node)%shape(axis),MPI_OFFSET_KIND)
+      end do
+      if (cells>(huge(total)-total)/int(len(row)+1,MPI_OFFSET_KIND)) return
+      offsets(node)=total;total=total+cells*int(len(row)+1,MPI_OFFSET_KIND)
+    end do
+    if (total>huge(total)-int(len(footer),MPI_OFFSET_KIND)) return
+    call MPI_File_open(comm,trim(path),ior(MPI_MODE_WRONLY,MPI_MODE_CREATE),MPI_INFO_NULL,file,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_File_set_errhandler(file,MPI_ERRORS_RETURN,status)
+    valid=status==MPI_SUCCESS;call agree_checkpoint(comm,valid)
+    if (valid) then
+      call MPI_File_set_size(file,total+int(len(footer),MPI_OFFSET_KIND),status)
+      valid=status==MPI_SUCCESS;call agree_checkpoint(comm,valid)
+    end if
+    if (valid.and.rank==0) then
+      call write_text(0_MPI_OFFSET_KIND,header,valid)
+      if (valid) call write_text(total,footer,valid)
+    end if
+    call agree_checkpoint(comm,valid)
+    if (valid) then
+      nodes: do node=1,size(owners)
+        if (owners(node)/=rank) cycle
+        n=metadata%tree%nodes(node)%shape;position=offsets(node);used=0
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              write(row,'(*(es27.18e3,1x))',iostat=ios) state%fields(node)%values(:,i,j,k), &
+                temperature%fields(node)%values(1,i,j,k)
+              if (ios/=0) then
+                valid=.false.;exit nodes
+              end if
+              if (used+len(row)+1>len(buffer)) then
+                call flush_chunk()
+                if (.not.valid) exit nodes
+              end if
+              buffer(used+1:used+len(row)+1)=row//achar(10);used=used+len(row)+1
+            end do
+          end do
+        end do
+        call flush_chunk()
+        if (.not.valid) exit
+      end do nodes
+    end if
+    call agree_checkpoint(comm,valid)
+    call MPI_File_close(file,status)
+    ok=valid.and.status==MPI_SUCCESS;call agree_checkpoint(comm,ok)
+  contains
+    subroutine write_text(at,text,success)
+      integer(MPI_OFFSET_KIND), intent(in) :: at
+      character(len=*), intent(in) :: text
+      logical, intent(out) :: success
+      call MPI_File_write_at(file,at,text,len(text),MPI_CHARACTER,io_status,status)
+      success=status==MPI_SUCCESS
+      if (.not.success) return
+      call MPI_Get_count(io_status,MPI_CHARACTER,written,status)
+      success=status==MPI_SUCCESS.and.written==len(text)
+    end subroutine
+    subroutine flush_chunk()
+      if (used==0) return
+      call write_text(position,buffer(:used),valid)
+      if (.not.valid) return
+      position=position+int(used,MPI_OFFSET_KIND);used=0
+    end subroutine
+
+  end subroutine
+  subroutine prepare_checkpoint(path,species,context,metadata,owners,state,temperature,comm,header,rank,ok)
+    character(len=*), intent(in) :: path,context
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_checkpoint_3d), intent(in) :: metadata
+    integer, intent(in) :: owners(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    type(MPI_Comm), intent(in) :: comm
+    character(len=:), allocatable, intent(out) :: header
+    integer, intent(out) :: rank
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: synchronized,temps
+    character(len=65536) :: line
+    integer :: nvar,node,start,finish,ios
     logical :: valid,consistent
     ok=.false.;nvar=reactive_nvar(size(species))
     call clone_mpi_amr_tree_inputs_3d(metadata%tree,owners,size(species),state,temperature, &
@@ -57,7 +285,7 @@ contains
         start=finish+2
       end do
     end if
-    call agree(valid)
+    call agree_checkpoint(comm,valid)
     if (.not.valid) return
     call average_down_mpi_amr_tree_3d(metadata%tree,owners,synchronized,nvar,comm,valid)
     if (.not.valid) return
@@ -69,7 +297,7 @@ contains
         temperature%fields(node)%values(1,:,:,:),consistent)
       valid=valid.and.consistent
     end do
-    call agree(valid)
+    call agree_checkpoint(comm,valid)
     if (.not.valid) return
     deallocate(synchronized%fields,temps%fields)
     header='PELEF_AMR_TREE_3D_CHECKPOINT_V1'//achar(10)
@@ -81,7 +309,7 @@ contains
       metadata%minimum_theta,metadata%maximum_remap_error,metadata%steps,metadata%regrids
     header=header//trim(line)//achar(10)
     write(line,'(*(es27.18e3,1x))',iostat=ios) metadata%initial,metadata%boundary
-    valid=ios==0;call agree(valid)
+    valid=ios==0;call agree_checkpoint(comm,valid)
     if (.not.valid) return
     header=header//trim(line)//achar(10)
     do node=2,size(owners)
@@ -91,88 +319,14 @@ contains
       end associate
       header=header//trim(line)//achar(10)
     end do
-    call same_string(trim(path),valid)
+    call same_checkpoint_string(comm,trim(path),valid)
     if (.not.valid) return
-    call same_string(header,valid)
+    call same_checkpoint_string(comm,header,valid)
     if (.not.valid) return
-    allocate(offsets(size(owners)),stat=ios)
-    valid=ios==0;call agree(valid)
-    if (.not.valid) return
-    allocate(character(len=28*(nvar+1)-1)::row,stat=ios)
-    valid=ios==0;call agree(valid)
-    if (.not.valid) return
-    allocate(character(len=32*(len(row)+1))::buffer,stat=ios)
-    valid=ios==0;call agree(valid)
-    if (.not.valid) return
-    total=int(len(header),MPI_OFFSET_KIND)
-    do node=1,size(owners)
-      cells=1
-      do axis=1,3
-        if (cells>huge(total)/int(metadata%tree%nodes(node)%shape(axis),MPI_OFFSET_KIND)) return
-        cells=cells*int(metadata%tree%nodes(node)%shape(axis),MPI_OFFSET_KIND)
-      end do
-      if (cells>(huge(total)-total)/int(len(row)+1,MPI_OFFSET_KIND)) return
-      offsets(node)=total;total=total+cells*int(len(row)+1,MPI_OFFSET_KIND)
-    end do
-    if (total>huge(total)-int(len(footer),MPI_OFFSET_KIND)) return
-    call MPI_File_open(comm,trim(path),ior(MPI_MODE_WRONLY,MPI_MODE_CREATE),MPI_INFO_NULL,file,status)
-    if (status/=MPI_SUCCESS) return
-    call MPI_File_set_errhandler(file,MPI_ERRORS_RETURN,status)
-    valid=status==MPI_SUCCESS;call agree(valid)
-    if (valid) then
-      call MPI_File_set_size(file,total+int(len(footer),MPI_OFFSET_KIND),status)
-      valid=status==MPI_SUCCESS;call agree(valid)
-    end if
-    if (valid.and.rank==0) then
-      call write_text(0_MPI_OFFSET_KIND,header,valid)
-      if (valid) call write_text(total,footer,valid)
-    end if
-    call agree(valid)
-    if (valid) then
-      nodes: do node=1,size(owners)
-        if (owners(node)/=rank) cycle
-        n=metadata%tree%nodes(node)%shape;position=offsets(node);used=0
-        do k=1,n(3)
-          do j=1,n(2)
-            do i=1,n(1)
-              write(row,'(*(es27.18e3,1x))',iostat=ios) state%fields(node)%values(:,i,j,k), &
-                temperature%fields(node)%values(1,i,j,k)
-              if (ios/=0) then
-                valid=.false.;exit nodes
-              end if
-              if (used+len(row)+1>len(buffer)) then
-                call flush_chunk()
-                if (.not.valid) exit nodes
-              end if
-              buffer(used+1:used+len(row)+1)=row//achar(10);used=used+len(row)+1
-            end do
-          end do
-        end do
-        call flush_chunk()
-        if (.not.valid) exit
-      end do nodes
-    end if
-    call agree(valid)
-    call MPI_File_close(file,status)
-    ok=valid.and.status==MPI_SUCCESS;call agree(ok)
-  contains
-    subroutine write_text(at,text,success)
-      integer(MPI_OFFSET_KIND), intent(in) :: at
-      character(len=*), intent(in) :: text
-      logical, intent(out) :: success
-      call MPI_File_write_at(file,at,text,len(text),MPI_CHARACTER,io_status,status)
-      success=status==MPI_SUCCESS
-      if (.not.success) return
-      call MPI_Get_count(io_status,MPI_CHARACTER,written,status)
-      success=status==MPI_SUCCESS.and.written==len(text)
-    end subroutine
-    subroutine flush_chunk()
-      if (used==0) return
-      call write_text(position,buffer(:used),valid)
-      if (.not.valid) return
-      position=position+int(used,MPI_OFFSET_KIND);used=0
-    end subroutine
-    subroutine agree(condition)
+    ok=.true.
+  end subroutine
+    subroutine agree_checkpoint(comm,condition)
+      type(MPI_Comm), intent(in) :: comm
       logical, intent(inout) :: condition
       logical :: result
       integer :: ierr
@@ -180,7 +334,8 @@ contains
       condition=.false.
       if (ierr==MPI_SUCCESS) condition=result
     end subroutine
-    subroutine same_string(value,success)
+    subroutine same_checkpoint_string(comm,value,success)
+      type(MPI_Comm), intent(in) :: comm
       character(len=*), intent(in) :: value
       logical, intent(out) :: success
       character(len=:), allocatable :: reference
@@ -191,11 +346,10 @@ contains
       call MPI_Allreduce(len(value),maximum,1,MPI_INTEGER,MPI_MAX,comm,ierr)
       if (ierr/=MPI_SUCCESS.or.minimum/=maximum) return
       allocate(character(len=minimum)::reference,stat=allocation_status)
-      success=allocation_status==0;call agree(success)
+      success=allocation_status==0;call agree_checkpoint(comm,success)
       if (.not.success) return
       reference=value
       call MPI_Bcast(reference,minimum,MPI_CHARACTER,0,comm,ierr)
-      success=ierr==MPI_SUCCESS.and.reference==value;call agree(success)
+      success=ierr==MPI_SUCCESS.and.reference==value;call agree_checkpoint(comm,success)
     end subroutine
-  end subroutine
 end module mpi_amr_patch_tree_checkpoint_3d_mod

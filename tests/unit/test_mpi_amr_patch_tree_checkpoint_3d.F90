@@ -6,18 +6,23 @@ program test_mpi_amr_patch_tree_checkpoint_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d,initialize_amr_patch_tree_3d
-  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d
-  use mpi_amr_patch_tree_checkpoint_3d_mod, only: write_mpi_amr_tree_checkpoint_3d
+  use amr_patch_tree_checkpoint_3d_mod, only: &
+    amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d
+  use mpi_amr_patch_tree_checkpoint_3d_mod, only: &
+    write_mpi_amr_tree_checkpoint_3d,read_mpi_amr_tree_checkpoint_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
-  type(amr_tree_checkpoint_3d) :: metadata,restored
+  type(amr_tree_checkpoint_3d) :: metadata,restored,saved,header_only
   type(amr_patch_3d) :: patches(1)
   type(amr_tree_state_3d) :: state,temp
   real(dp) :: q(12),u(12),t,sound
   character(len=128) :: path
   character(len=8) :: context
   character(len=16) :: line
+  character(len=28*13-1) :: corrupt_row
   integer :: rank,nranks,ierr,unit,owners(2),mode,node
+  integer, allocatable :: read_owners(:),saved_owners(:)
+  integer(MPI_OFFSET_KIND) :: cell_position,before_size,after_size
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -82,6 +87,42 @@ program test_mpi_amr_patch_tree_checkpoint_3d
     end do
     print *, 'PASS: MPI checkpoint preflight rollback, EOS/averages/context, serial interchange and empty owners'
   end if
+  call read_mpi_amr_tree_checkpoint_3d(trim(path),species,context,[2,2,2],'weighted',2, &
+    restored,read_owners,MPI_COMM_WORLD,ok)
+  call require(ok,'distributed indexed read')
+  call require(all(read_owners==[1,0]),'changed read ownership')
+  do node=1,2
+    call require(allocated(restored%state%fields(node)%values).eqv.(read_owners(node)==rank),'owned read payload only')
+    if (read_owners(node)/=rank) cycle
+    call require(all(restored%state%fields(node)%values==spread(spread(spread(u,2,2),3,2),4,2)),'read state')
+    call require(all(restored%temperature%fields(node)%values==t),'read temperature')
+  end do
+  saved=restored;saved_owners=read_owners
+  if (rank==0) then
+    inquire(file=trim(path),size=before_size)
+    open(newunit=unit,file=trim(path),status='old',access='stream',form='formatted',action='read')
+    call read_amr_tree_checkpoint_header_3d(unit,species,context,[2,2,2],header_only,ok)
+    call require(ok,'corruption header position')
+    inquire(unit=unit,pos=cell_position)
+    close(unit)
+    write(corrupt_row,'(*(es27.18e3,1x))') u,1.1_dp*t
+    open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted',action='write')
+    write(unit,pos=cell_position) corrupt_row//achar(10)
+    close(unit)
+    inquire(file=trim(path),size=after_size)
+    call require(before_size==after_size,'corrupt only temperature without truncation')
+  end if
+  call MPI_Barrier(MPI_COMM_WORLD,ierr)
+  call read_mpi_amr_tree_checkpoint_3d(trim(path),species,context,[2,2,2],'round_robin',0, &
+    restored,read_owners,MPI_COMM_WORLD,ok)
+  call require(.not.ok,'late EOS failure rejects read candidate')
+  call require(all(read_owners==saved_owners),'read owner rollback')
+  do node=1,2
+    if (read_owners(node)/=rank) cycle
+    call require(all(restored%state%fields(node)%values==saved%state%fields(node)%values),'read state rollback')
+    call require(all(restored%temperature%fields(node)%values==saved%temperature%fields(node)%values),'read T rollback')
+  end do
+  if (rank==0) print *, 'PASS: distributed checkpoint read, changed ownership and late validation rollback'
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,label)

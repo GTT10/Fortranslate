@@ -57,7 +57,10 @@ restart initial absolute-inventory scale now use the same distributed traversal
 ([evidence](validation/amr-tree-mpi-initial-inventory-20260917.md)). Checkpoint
 saves now validate EOS/parent averages collectively and write owner-local payloads
 with serial-byte compatibility
-([evidence](validation/amr-tree-mpi-checkpoint-write-20260917.md)).
+([evidence](validation/amr-tree-mpi-checkpoint-write-20260917.md)). Restart now
+reads indexed node ranges on their assigned owners and validates candidates
+without constructing or scattering full root fields
+([evidence](validation/amr-tree-mpi-checkpoint-read-20260917.md)).
 MPI applications now optionally assign whole patches by estimated cell-step work
 at initialization, regridding and restart
 ([evidence](validation/amr-tree-mpi-partition-20260917.md)).

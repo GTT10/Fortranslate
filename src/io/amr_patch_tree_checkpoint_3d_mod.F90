@@ -20,6 +20,7 @@ module amr_patch_tree_checkpoint_3d_mod
     real(dp) :: time=0,maximum_reflux=0,minimum_theta=1,maximum_remap_error=0
     integer :: steps=0,regrids=0
   end type
+  public :: read_amr_tree_checkpoint_header_3d
   public :: build_amr_tree_checkpoint_context_3d,write_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d
 contains
   subroutine build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions,identity,integrator, &
@@ -143,56 +144,19 @@ contains
     type(amr_tree_checkpoint_3d), intent(inout) :: snapshot
     logical, intent(out) :: ok
     type(amr_tree_checkpoint_3d) :: candidate
-    type(amr_patch_3d), allocatable :: patches(:)
-    integer, allocatable :: parents(:),shapes(:,:)
     character(len=65536) :: line
-    integer :: unit,status,count,nvar,n(3),node,i,j,k,start,finish,context_length,lo(3),hi(3),ratio,parent
+    integer :: unit,status,count,nvar,n(3),node,i,j,k
     logical :: valid
     ok=.false.
     if (.not.valid_context(context)) return
     open(newunit=unit,file=path,status='old',action='read',iostat=status)
     if (status/=0) return
-    read(unit,'(a)',iostat=status) line
-    if (status/=0) go to 900
-    if (trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') go to 900
-    read(unit,*,iostat=status) context_length
-    if (status/=0) go to 900
-    if (context_length/=len(context)) go to 900
-    start=1
-    do while(start<=len(context))
-      finish=start+index(context(start:),achar(10))-2
-      read(unit,'(a)',iostat=status) line
-      if (status/=0) go to 900
-      if (trim(line)/=context(start:finish)) go to 900
-      start=finish+2
-    end do
-    read(unit,*,iostat=status) count,nvar,n
-    if (status/=0) go to 900
-    if (count<1.or.nvar/=reactive_nvar(size(species)).or.any(n/=root_shape)) go to 900
-    allocate(patches(count-1),parents(count-1),shapes(3,count),stat=status)
-    if (status/=0) go to 900
-    shapes(:,1)=n
-    read(unit,*,iostat=status) candidate%time,candidate%maximum_reflux,candidate%minimum_theta, &
-      candidate%maximum_remap_error,candidate%steps,candidate%regrids
-    if (status/=0) go to 900
-    allocate(candidate%initial(nvar),candidate%boundary(nvar))
-    read(unit,*,iostat=status) candidate%initial,candidate%boundary
-    if (status/=0) go to 900
-    do node=2,count
-      read(unit,*,iostat=status) parent,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),ratio
-      if (status/=0) go to 900
-      if (parent<1.or.parent>=node) go to 900
-      n=shapes(:,parent);parents(node-1)=parent
-      call initialize_amr_patch_3d(n(1),n(2),n(3),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),ratio,patches(node-1),valid)
-      if (.not.valid) go to 900
-      if (any(int(hi-lo+1,int64)*int(ratio,int64)>int(huge(1),int64))) go to 900
-      shapes(:,node)=int(int(hi-lo+1,int64)*int(ratio,int64))
-    end do
-    call initialize_amr_patch_tree_3d(root_shape,parents,patches,candidate%tree,valid)
+    call read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,candidate,valid)
     if (.not.valid) go to 900
+    count=size(candidate%tree%nodes);nvar=size(candidate%initial)
     allocate(candidate%state%fields(count),candidate%temperature%fields(count))
     do node=1,count
-      n=shapes(:,node)
+      n=candidate%tree%nodes(node)%shape
       allocate(candidate%state%fields(node)%values(nvar,n(1),n(2),n(3)), &
         candidate%temperature%fields(node)%values(1,n(1),n(2),n(3)),stat=status)
       if (status/=0) go to 900
@@ -214,6 +178,62 @@ contains
     if (.not.valid_snapshot(candidate,species)) go to 900
     snapshot=candidate;ok=.true.
 900 close(unit)
+  end subroutine
+
+  ! Read only the V1 metadata from an already-open formatted unit.
+  subroutine read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,snapshot,ok)
+    integer, intent(in) :: unit,root_shape(3)
+    type(nasa7_species), intent(in) :: species(:)
+    character(len=*), intent(in) :: context
+    type(amr_tree_checkpoint_3d), intent(inout) :: snapshot
+    logical, intent(out) :: ok
+    type(amr_tree_checkpoint_3d) :: candidate
+    type(amr_patch_3d), allocatable :: patches(:)
+    integer, allocatable :: parents(:),shapes(:,:)
+    character(len=65536) :: line
+    integer :: status,count,nvar,n(3),node,start,finish,context_length,lo(3),hi(3),ratio,parent
+    logical :: valid
+    ok=.false.
+    if (.not.valid_context(context)) return
+    read(unit,'(a)',iostat=status) line
+    if (status/=0) return
+    if (trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') return
+    read(unit,*,iostat=status) context_length
+    if (status/=0) return
+    if (context_length/=len(context)) return
+    start=1
+    do while(start<=len(context))
+      finish=start+index(context(start:),achar(10))-2
+      read(unit,'(a)',iostat=status) line
+      if (status/=0) return
+      if (trim(line)/=context(start:finish)) return
+      start=finish+2
+    end do
+    read(unit,*,iostat=status) count,nvar,n
+    if (status/=0) return
+    if (count<1.or.nvar/=reactive_nvar(size(species)).or.any(n/=root_shape)) return
+    allocate(patches(count-1),parents(count-1),shapes(3,count),stat=status)
+    if (status/=0) return
+    shapes(:,1)=n
+    read(unit,*,iostat=status) candidate%time,candidate%maximum_reflux,candidate%minimum_theta, &
+      candidate%maximum_remap_error,candidate%steps,candidate%regrids
+    if (status/=0) return
+    allocate(candidate%initial(nvar),candidate%boundary(nvar))
+    read(unit,*,iostat=status) candidate%initial,candidate%boundary
+    if (status/=0) return
+    do node=2,count
+      read(unit,*,iostat=status) parent,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),ratio
+      if (status/=0) return
+      if (parent<1.or.parent>=node) return
+      n=shapes(:,parent);parents(node-1)=parent
+      call initialize_amr_patch_3d(n(1),n(2),n(3),lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),ratio,patches(node-1),valid)
+      if (.not.valid) return
+      if (any(int(hi-lo+1,int64)*int(ratio,int64)>int(huge(1),int64))) return
+      shapes(:,node)=int(int(hi-lo+1,int64)*int(ratio,int64))
+    end do
+    call initialize_amr_patch_tree_3d(root_shape,parents,patches,candidate%tree,valid)
+    if (.not.valid) return
+    snapshot=candidate;ok=.true.
   end subroutine
 
   logical function valid_context(context) result(valid)

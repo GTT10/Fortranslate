@@ -231,7 +231,9 @@ accumulators with only small-vector broadcasts, and rank zero writes its CSV.
 Initialization, numerical stepping, final CSV output and checkpoint saves do not
 gather full fields. Checkpoint saves use owner-local MPI-IO after distributed
 EOS/parent-average validation; the bytes remain compatible with serial. Checkpoint
-loading still uses root field payloads. I/O errors after opening may leave a
+loading indexes V1 cell records on rank zero with one-cell scratch space, then
+each owner reads only its assigned node ranges. The index scan remains serial;
+no complete root state is constructed. I/O errors after opening may leave a
 partial output; this is not an atomic filesystem transaction.
 The bounded regression checks byte equality for the elementary hotspot case.
 
@@ -246,10 +248,11 @@ hot exposed cells and generate the same tile geometry on every rank. Geometry
 changes use sparse conservative remapping before checkpoint/output. The requested
 finest spacing bounds common-step reservoir timesteps; recursive mode uses root
 spacing. The `amr_tree_timestepping` group selects the recursive mode described above. The `amr_tree_checkpoint` group uses the same controls and
-format as serial. Owners write their checkpoint rows directly. On restart, rank
-zero reads the checkpoint and validates its context,
-scheduled/adaptive geometry, consumed event or adaptation-check count, EOS, averages and ledger, then redistributes payloads according
-to the current rank count. Fixed/selected checkpoints can be exchanged with the
+format as serial. Owners write their checkpoint rows directly. On restart, all
+ranks read the shared header; rank zero streams through the records to build a
+node-position index and check the footer. Owners seek to their assigned ranges.
+Context, scheduled/adaptive geometry, consumed event or adaptation-check count,
+EOS, averages and ledger are validated before replacing the current fields. Fixed/selected checkpoints can be exchanged with the
 corresponding serial frontend for static, scheduled or automatic runs in either timestep mode. The selected bundle
 SHA-256 remains part of checkpoint identity. A requested checkpoint stop returns
 before final CSV output; a restart resumes step counters without resaving the

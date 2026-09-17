@@ -1,6 +1,5 @@
 module mpi_amr_patch_tree_application_3d_mod
-  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
-    read_amr_tree_checkpoint_3d
+  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,build_amr_tree_checkpoint_context_3d
   use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d
   use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
   use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
@@ -23,7 +22,7 @@ module mpi_amr_patch_tree_application_3d_mod
   use reactive_entropy_wave_3d_problem_mod, only: initialize_reactive_problem_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
-    amr_tree_integer_layout_3d,composite_integrals_amr_patch_tree_3d
+    amr_tree_integer_layout_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: compute_mpi_amr_tree_cfl_3d,recover_mpi_amr_tree_temperatures_3d
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_cfl_3d
@@ -31,8 +30,9 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
-    scatter_mpi_amr_tree_3d,partition_amr_tree_3d
-  use mpi_amr_patch_tree_checkpoint_3d_mod, only: write_mpi_amr_tree_checkpoint_3d
+    partition_amr_tree_3d
+  use mpi_amr_patch_tree_checkpoint_3d_mod, only: &
+    write_mpi_amr_tree_checkpoint_3d,read_mpi_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
   implicit none
   private
@@ -444,74 +444,56 @@ contains
     end subroutine
     subroutine restore_checkpoint()
       type(amr_tree_checkpoint_3d) :: snapshot
-      type(amr_tree_state_3d) :: absolute_state
-      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(4)
-      integer :: peer,nconserved,applied
+      integer, allocatable :: restored_owners(:)
+      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q))
+      integer :: nconserved,applied,exponent
       ! The initialized owner fields supply the cancellation-safe ledger scale.
       call distributed_inventory(tree,owners,state,original_scale,.true.)
-      if (rank==0) then
-        call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
-          [config%nx,config%ny,config%nz],snapshot,ok)
-        if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
-        if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
-          call fatal('MPI tree restart exceeds run limits')
-        applied=count_events(snapshot%time)
-        if (regrid_interval_steps>0) applied=snapshot%steps/regrid_interval_steps
-        if (snapshot%regrids/=applied) call fatal('MPI tree restart adaptation/schedule position mismatch')
-        if (regrid_interval_steps>0.and.applied>0) then
-          call validate_adaptive_geometry(snapshot%tree)
-        else
-          expected_tree=tree_key(tree)
-          if (applied>0) expected_tree=tree_key(events(applied))
-          if (tree_key(snapshot%tree)/=expected_tree) call fatal('MPI tree restart geometry mismatch')
-        end if
-        if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
-          call fatal('Tree restart initial inventory mismatch')
-        ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
-        absolute_state=snapshot%state
-        do peer=1,size(snapshot%tree%nodes)
-          absolute_state%fields(peer)%values=abs(snapshot%state%fields(peer)%values)
-        end do
-        call composite_integrals_amr_patch_tree_3d(snapshot%tree,absolute_state,root_h,restart_scale,ok)
-        if (.not.ok) call fatal('Invalid restart inventory scale')
-        call composite_integrals_amr_patch_tree_3d(snapshot%tree,snapshot%state,root_h,inventory,ok)
-        if (.not.ok) call fatal('Invalid restart inventory')
-        ! Momentum is a vector: a nearly zero transverse component must use
-        ! the full momentum magnitude as its roundoff scale.
-        original_scale(2:4)=maxval(original_scale(2:4))
-        restart_scale(2:4)=maxval(restart_scale(2:4))
-        nconserved=size(q)
-        if (config%chemistry_enabled) nconserved=5
-        if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
-            2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
-            abs(snapshot%boundary(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
-        initial=snapshot%initial;budget=snapshot%boundary;step=snapshot%steps
-        scalars=[snapshot%time,snapshot%maximum_reflux,snapshot%minimum_theta,snapshot%maximum_remap_error]
+      exponent=0
+      if (subcycling) then
+        exponent=1
+        if (config%transport_enabled) exponent=2
       end if
-      call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
-      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart initial inventory')
-      call MPI_Bcast(budget,size(budget),MPI_DOUBLE_PRECISION,0,comm,status)
-      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart ledger')
-      call MPI_Bcast(step,1,MPI_INTEGER,0,comm,status)
-      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart step')
-      call MPI_Bcast(scalars,4,MPI_DOUBLE_PRECISION,0,comm,status)
-      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart diagnostics')
-      time=scalars(1);max_correction=scalars(2);min_theta=scalars(3);max_remap_error=scalars(4)
+      call read_mpi_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
+        [config%nx,config%ny,config%nz],partitioning,exponent,snapshot,restored_owners,comm,ok)
+      if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
+      if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
+        call fatal('MPI tree restart exceeds run limits')
+      applied=count_events(snapshot%time)
+      if (regrid_interval_steps>0) applied=snapshot%steps/regrid_interval_steps
+      if (snapshot%regrids/=applied) call fatal('MPI tree restart adaptation/schedule position mismatch')
+      if (regrid_interval_steps>0.and.applied>0) then
+        call validate_adaptive_geometry(snapshot%tree)
+      else
+        expected_tree=tree_key(tree)
+        if (applied>0) expected_tree=tree_key(events(applied))
+        if (tree_key(snapshot%tree)/=expected_tree) call fatal('MPI tree restart geometry mismatch')
+      end if
+      if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
+        call fatal('Tree restart initial inventory mismatch')
+      ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
+      call distributed_inventory(snapshot%tree,restored_owners,snapshot%state,restart_scale,.true.)
+      call distributed_inventory(snapshot%tree,restored_owners,snapshot%state,inventory,.false.)
+      ! Momentum is a vector: a nearly zero transverse component must use
+      ! the full momentum magnitude as its roundoff scale.
+      original_scale(2:4)=maxval(original_scale(2:4))
+      restart_scale(2:4)=maxval(restart_scale(2:4))
+      nconserved=size(q)
+      if (config%chemistry_enabled) nconserved=5
+      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
+          2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
+          abs(snapshot%boundary(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
+      initial=snapshot%initial;budget=snapshot%boundary;step=snapshot%steps
+      time=snapshot%time;max_correction=snapshot%maximum_reflux
+      min_theta=snapshot%minimum_theta;max_remap_error=snapshot%maximum_remap_error
       regrids=count_events(time);event=regrids+1;last_checkpoint_step=step;last_tag_step=step
-      if (regrid_interval_steps>0) then
-        regrids=step/regrid_interval_steps
-        if (rank==0) tree=snapshot%tree
-        call distribute_restart_geometry()
-      else if (regrids>0) then
-        tree=events(regrids)
-      end if
+      if (regrid_interval_steps>0) regrids=step/regrid_interval_steps
+      tree=snapshot%tree
       call reset_layout()
-      ! The reader validates context, EOS, averages and ledger before any owned payload changes.
-      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%state,state,comm,0,ok)
-      if (.not.ok) call fatal('Cannot distribute MPI restart state')
-      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%temperature,temperature,comm,0,ok)
-      if (.not.ok) call fatal('Cannot distribute MPI restart temperature')
-
+      if (any(owners/=restored_owners)) call fatal('Restart owner assignment mismatch')
+      ! All context, EOS, average and ledger checks completed before publication.
+      call move_alloc(snapshot%state%fields,state%fields)
+      call move_alloc(snapshot%temperature%fields,temperature%fields)
     end subroutine
     subroutine check_paths(path)
       character(len=*), intent(in) :: path
@@ -589,41 +571,6 @@ contains
         if (any(int(upper,int64)/=min(int(dims,int64),int(lower,int64)+int(tile_shape,int64)-1))) &
           call fatal('Tree restart tile extent mismatch')
       end do
-    end subroutine
-    subroutine distribute_restart_geometry()
-      type(amr_patch_3d), allocatable :: patches(:)
-      integer, allocatable :: records(:,:),parents(:),shapes(:,:)
-      integer :: nchild,peer,parent,dims(3),lower(3),upper(3),ratio,ios,ierr
-      logical :: valid
-      nchild=0
-      if (rank==0) nchild=size(tree%nodes)-1
-      call MPI_Bcast(nchild,1,MPI_INTEGER,0,comm,ierr)
-      if (ierr/=MPI_SUCCESS) call fatal('Cannot distribute adaptive tree size')
-      if (nchild<0.or.nchild>huge(1)/8) call fatal('Adaptive tree metadata exceeds MPI count')
-      allocate(records(8,nchild),parents(nchild),patches(nchild),shapes(3,nchild+1),stat=ios)
-      if (ios/=0) call fatal('Cannot allocate adaptive restart geometry')
-      if (rank==0) then
-        do peer=1,nchild
-          associate(item=>tree%nodes(peer+1),box=>tree%nodes(peer+1)%patch)
-            records(:,peer)=[item%parent,box%coarse_i_lower,box%coarse_i_upper, &
-              box%coarse_j_lower,box%coarse_j_upper,box%coarse_k_lower,box%coarse_k_upper,box%refinement_ratio]
-          end associate
-        end do
-      end if
-      call MPI_Bcast(records,8*nchild,MPI_INTEGER,0,comm,ierr)
-      if (ierr/=MPI_SUCCESS) call fatal('Cannot distribute adaptive restart geometry')
-      shapes(:,1)=[config%nx,config%ny,config%nz]
-      do peer=1,nchild
-        parent=records(1,peer);parents(peer)=parent
-        if (parent<1.or.parent>peer) call fatal('Invalid adaptive restart parent')
-        dims=shapes(:,parent);lower=records([2,4,6],peer);upper=records([3,5,7],peer);ratio=records(8,peer)
-        call initialize_amr_patch_3d(dims(1),dims(2),dims(3),lower(1),upper(1),lower(2),upper(2), &
-          lower(3),upper(3),ratio,patches(peer),valid)
-        if (.not.valid) call fatal('Invalid distributed adaptive restart patch')
-        shapes(:,peer+1)=[patches(peer)%fine_nx(),patches(peer)%fine_ny(),patches(peer)%fine_nz()]
-      end do
-      call initialize_amr_patch_tree_3d(shapes(:,1),parents,patches,tree,valid)
-      if (.not.valid) call fatal('Invalid distributed adaptive restart tree')
     end subroutine
     integer function count_events(at_time) result(applied)
       real(dp), intent(in) :: at_time

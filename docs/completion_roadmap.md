@@ -129,7 +129,9 @@ are checked. Optional deterministic cell-step-weighted whole-patch partitioning 
 connected at initialization/regrid/restart. Final CSV now uses owner-local MPI-IO;
 initial inventory and restart reference scales also avoid field gathers.
 Checkpoint saves now use owner-local MPI-IO.
-Next extend distributed checkpoint loading, measured-cost rebalancing
+Checkpoint loading now streams an index with bounded root memory and reads node
+ranges on their owners. Next remove the serial index scan with an indexed format,
+add measured-cost rebalancing
 and dynamic full-split qualification. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive
