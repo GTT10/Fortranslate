@@ -585,8 +585,9 @@ equal-time injection events with preserved port IDs across restart
 ([evidence](validation/spray-amr-ports-20260918.md)). Temperature-driven AMR
 adaptation now updates gas/particle topology on completed-step intervals and
 continues after changed-rank restart without repeating the saved step's check
-([evidence](validation/spray-amr-adaptation-20260918.md)). Measured-work
-rebalancing, physical
+([evidence](validation/spray-amr-adaptation-20260918.md)). Gas-work sampling now
+drives owner reassignment with transactional gas/particle migration and
+rank-neutral continuation ([evidence](validation/spray-amr-balance-20260918.md)). Physical
 particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
