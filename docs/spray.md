@@ -191,8 +191,13 @@ fluid owners transactionally. The caller must bind its single-line context to
 the gas checkpoint generation, geometry, model and schedule; this payload does
 not itself contain or verify gas state. See
 [payload evidence](validation/spray-mpi-eb-particle-checkpoint-20260918.md).
-Checkpoint/restart integration, regridding and rebalancing remain open for this
-executable connection. See
+The fixed/selected MPI EB spray applications now connect this payload with the
+existing gas snapshot using a generation-bound manifest. Restore stages both
+states and verifies the complete coupled budget and injection position before
+publication. Immutable step-suffixed checkpoints support changed-rank continuation;
+see the [case guide](../cases/mpi_eb_spray_3d/README.md) and
+[restart evidence](validation/spray-mpi-eb-restart-20260918.md).
+Regridding and rebalancing remain open for this executable connection. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or

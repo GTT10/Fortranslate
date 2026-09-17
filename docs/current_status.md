@@ -668,7 +668,10 @@ budget ([evidence](validation/spray-mpi-eb-schedule-20260918.md)).
 A particle checkpoint payload now preserves complete parcel/component and
 injection metadata across MPI rank-count changes, with rollback on rejection
 ([evidence](validation/spray-mpi-eb-particle-checkpoint-20260918.md)).
-Combined gas/particle restart integration, regridding/rebalancing in this EB spray application, independent ports,
+Combined gas/particle application checkpoints now restore on a changed MPI
+rank count with pending injection events and cumulative ledgers preserved
+([evidence](validation/spray-mpi-eb-restart-20260918.md)).
+Regridding/rebalancing in this EB spray application, independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
