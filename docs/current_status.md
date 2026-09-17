@@ -618,7 +618,10 @@ records now restore gas/particles/films and cumulative budgets together across
 rank-count changes ([evidence](validation/spray-amr-film-checkpoint-20260918.md)).
 Fixed/selected applications now expose opt-in wall impact/film settings,
 film CSVs, coupled adaptation/balancing and changed-rank continuation
-([evidence](validation/spray-amr-film-application-20260918.md)). EB particle
+([evidence](validation/spray-amr-film-application-20260918.md)). A serial particle
+segment query now finds first contact with the original nodal level set using
+the gas EB builder's tetrahedral subdivision
+([evidence](validation/spray-eb-intersection-20260918.md)). Coupled EB particle
 interaction, lateral film transport and physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
