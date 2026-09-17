@@ -61,7 +61,9 @@ Owner-local temperature recovery and global minimum CFL selection now reuse the
 serial thermodynamic kernels ([evidence](validation/amr-tree-mpi-thermo-20260917.md)).
 Synchronous MPI SSPRK2 hydro now connects these operations for owned patches,
 with PCM/PLM and physical inflow/walls ([evidence](validation/amr-tree-mpi-hydro-20260917.md)).
-MPI transport/chemistry composition, coarse-time interpolation and tree application integration remain open. A transactional tree
+Owner-local exposed-cell chemistry and reaction/hydro Strang splitting now support
+explicit/implicit integration ([evidence](validation/amr-tree-mpi-chemistry-20260917.md)).
+MPI molecular transport composition, coarse-time interpolation and tree application integration remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

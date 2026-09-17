@@ -682,6 +682,29 @@ retry or CFL enforcement. This API is hydro only, without chemistry, molecular
 transport, level subcycling or application dispatch. Replicated metadata, duplicate
 ghost requests and whole-node ownership retain the existing scaling limitations.
 
+## MPI exposed-cell chemistry and Strang composition
+
+`advance_mpi_amr_tree_chemistry_3d` invokes the serial reactive chemistry kernel
+only on each owner's exposed cells. Direct-child boxes mask covered parent cells;
+after every owner succeeds, distributed averaging and temperature recovery update
+covered parents. Explicit/implicit selection is forwarded unchanged, including
+the existing behavior when the optional integrator is absent.
+
+Ranks agree on interval, tolerances, integrator selection and species/reaction
+counts before calculation. Complete thermodynamic/reaction record identity remains
+a caller contract. Owner-only shapes, finite conserved/temperature arrays and
+positive temperature guesses are validated. Invalid input, allocation, ODE or EOS
+failure is collective and leaves caller state/temperature unchanged.
+
+`advance_mpi_amr_tree_strang_3d` holds private owner-local candidates across reaction
+half-step, synchronous hydro step and reaction half-step. Hydro contributes the
+boundary budget and maximum correction; chemistry preserves the existing total
+energy/source convention. Outputs commit only after the final reaction succeeds,
+so failure in hydro also discards the preceding successful chemistry half-step.
+These are common-step operators without molecular transport, subcycling or MPI
+tree application dispatch. MPI runtime failures retain the communicator's error
+handler semantics; no full field gather or global chemistry raster is introduced.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
