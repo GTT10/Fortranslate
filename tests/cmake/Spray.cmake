@@ -21,6 +21,11 @@ if(PELEF_ENABLE_SPRAY)
   add_test(NAME spray_amr_tree_partition COMMAND test_spray_amr_tree_partition)
   set_tests_properties(spray_amr_tree_partition PROPERTIES LABELS "spray;amr" TIMEOUT 30)
   if(PELEF_ENABLE_MPI)
+    add_executable(test_spray_mpi_amr_deposition spray/test_spray_mpi_amr_deposition.F90)
+    target_link_libraries(test_spray_mpi_amr_deposition PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
+    if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(test_spray_mpi_amr_deposition PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+    endif()
     add_executable(test_spray_mpi_amr_sampling spray/test_spray_mpi_amr_sampling.F90)
     target_link_libraries(test_spray_mpi_amr_sampling PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
@@ -34,6 +39,10 @@ if(PELEF_ENABLE_SPRAY)
     add_executable(test_spray_mpi spray/test_spray_mpi.F90)
     target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
     foreach(ranks 2 4)
+      add_test(NAME spray_mpi_amr_deposition_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_amr_deposition> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(spray_mpi_amr_deposition_${ranks} PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 60 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_amr_sampling_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_amr_sampling> ${MPIEXEC_POSTFLAGS})

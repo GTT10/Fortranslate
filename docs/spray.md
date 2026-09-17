@@ -13,7 +13,8 @@ regridding while preserving parcel/component state. An MPI migration API now
 uses this ownership and the shared parcel exchange to transfer particles to
 their gas patch owners. A serial composite-field sampler/depositor is now
 available, and owner-local MPI sampling now queries only the required composite
-cells. MPI deposition and coupled AMR particle stepping remain to be connected.
+cells. MPI deposition now routes conservative contributions to those owners;
+MPI gas temperature recovery and coupled AMR particle stepping remain to be connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -78,6 +79,20 @@ failure reject collectively and preserve every rank's previous sample array.
 The optional `maximum_requests` bounds each rank's total cloud-cell requests
 (default one million, range zero to one million); ranks may choose different
 capacities. Received values are accumulated in the serial stencil order.
+
+`deposit_mpi_amr_tree_spray_field` uses the same distributed stencil preparation
+and routes weighted, volume-scaled contributions directly to cell owners.
+Each owner applies source ranks in increasing order, retaining each source's
+particle/stencil order, then the existing MPI restriction refreshes covered
+parents. No full-field gather is used. All owned field values must be finite.
+The optional `maximum_requests` bounds outgoing cloud-cell entries and
+`maximum_received` independently bounds incoming entries on each rank (both
+default to one million, with range zero to one million). Invalid contributions,
+capacity or arithmetic failure preserve the original distributed field.
+Globally empty deposition validates inputs and leaves the field unchanged.
+For a fixed source ordering, deposition matches serial accumulation; changing
+particle ownership can change summation roundoff. This is a generic density-field
+operation and does not yet enforce gas thermodynamics or recover MPI temperatures.
 
 ## Build and run
 
