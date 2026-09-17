@@ -1,5 +1,6 @@
 module mpi_eb_tree_transport_3d_mod
   use mpi_f08
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
@@ -35,6 +36,7 @@ contains
     type(eb_integrated_flux_3d), allocatable :: flux(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
+    real(dp) :: work_stamp
     real(dp) :: boundary(size(boundary_change)),theta,local_theta,stage_theta,low,high
     integer :: nv,rank,status,node,n(3),c,ios,depth,flags(4),minflags(4),maxflags(4)
     logical :: faces(6)
@@ -76,9 +78,11 @@ contains
       faces=[origin(1,node)>0,origin(1,node)+n(1)<domain(1,depth), &
         origin(2,node)>0,origin(2,node)+n(2)<domain(2,depth), &
         origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
+      work_stamp=tree_work_start()
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry(node),dt, &
         viscosity,conduction,diffusion,barodiffusion,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
         flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces)
+      call tree_work_stop(node,work_stamp)
       if (.not.valid) exit
       local_theta=min(local_theta,stage_theta)
     end do

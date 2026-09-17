@@ -1,5 +1,6 @@
 module mpi_eb_tree_hydro_3d_mod
   use mpi_f08
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -32,6 +33,7 @@ contains
     type(amr_tree_state_3d) :: snapshot,st,candidate,ct,ghost,gt
     type(eb_integrated_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: source(:,:,:,:)
+    real(dp) :: work_stamp
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),local_wall(size(wall_change)),low,high
     logical, allocatable :: exposed(:,:,:)
     integer :: nv,rank,status,node,child,n(3),lo(3),hi(3),c,ios
@@ -67,9 +69,11 @@ contains
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
+      work_stamp=tree_work_start()
       call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
         geometry(node),solver,dt,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
         valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),flux(node))
+      call tree_work_stop(node,work_stamp)
       if (.not.valid) exit
       allocate(source(nv,n(1),n(2),n(3)),exposed(n(1),n(2),n(3)),stat=ios)
       valid=ios==0

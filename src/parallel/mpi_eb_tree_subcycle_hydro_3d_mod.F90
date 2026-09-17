@@ -1,5 +1,6 @@
 module mpi_eb_tree_subcycle_hydro_3d_mod
   use mpi_f08
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
@@ -101,6 +102,7 @@ contains
       type(eb_integrated_flux_3d), allocatable :: fine(:)
       real(dp), allocatable :: source(:,:,:,:)
       logical, allocatable :: exposed(:,:,:)
+      real(dp) :: work_stamp
       real(dp) :: fractions(levels-1),elapsed,sub_dt
       integer :: node,child,d(3),lo(3),hi(3),component,substep,ios
       logical :: valid,ready
@@ -132,9 +134,11 @@ contains
       do node=1,size(owners)
         if (owners(node)/=rank.or.tree%nodes(node)%level/=level) cycle
         d=tree%nodes(node)%shape
+        work_stamp=tree_work_start()
         call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
           geometry(node),solver,interval,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
           valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node))
+        call tree_work_stop(node,work_stamp)
         if (.not.valid) exit
         allocate(source(nv,d(1),d(2),d(3)),exposed(d(1),d(2),d(3)),stat=ios)
         valid=ios==0

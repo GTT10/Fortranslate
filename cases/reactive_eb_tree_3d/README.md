@@ -56,6 +56,20 @@ the complete patch record through its `END_CHECKPOINT` newline. Readers validate
 the file bounds, patch boundaries and final tree marker before publishing state;
 editing record widths or newline encoding requires regenerating the index.
 
+MPI runs can set `rebalance_interval_steps` (default 0, disabled) and
+`rebalance_minimum_gain` (default 0.1, range [0,1)). On each sampled accepted
+step, owner-local reaction, hydro and transport kernel times are summed per
+patch, including recursive substeps. Failed retry timings are discarded.
+The existing largest-work-first partitioner migrates U/T together only if the
+estimated maximum rank load improves by the requested fraction. Geometry stays
+replicated; migration uses no interpolation or root gather. Timings exclude
+halo exchange, synchronization and migration overhead, so this is not a promise
+of wall-clock speedup. Regridding subsequently establishes a fresh cell-weighted
+partition; later accepted samples can rebalance it again. These performance
+controls are not checkpoint identity: restart obtains fresh timings and may
+choose different owners, introducing reduction-order roundoff in budget ledgers.
+The serial executable rejects a nonzero rebalance interval.
+
 ## Selected mechanisms
 
 When a supported selected bundle is configured, the build also provides

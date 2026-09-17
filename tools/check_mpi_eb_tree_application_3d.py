@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--adaptive', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--selected', action='store_true')
+    parser.add_argument('--rebalance', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,8 @@ def main():
         directory = work / name
         directory.mkdir(exist_ok=True)
         source = template if text is None else text
+        if ranks and args.rebalance:
+            extra += 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,'
         (directory / 'input.nml').write_text(source.rsplit('/', 1)[0] + extra + '\n/\n')
         command = [str(args.serial.resolve()), 'input.nml']
         if ranks:
@@ -71,6 +74,8 @@ def main():
     for directory in (full, third, resumed, changed, to_serial, from_serial):
         assert (directory / 'result.csv').read_bytes() == expected, directory
     for filename in ('result.csv', 'result.csv.budget.csv'):
+        if args.rebalance and filename.endswith('.budget.csv'):
+            continue  # Timings can change owners and MPI reduction grouping.
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes(), filename
 
     scheduled_results = []

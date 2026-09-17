@@ -681,6 +681,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_eb_tree_transport_3d_mod.F90
       src/parallel/mpi_eb_tree_subcycle_transport_3d_mod.F90
       src/parallel/mpi_eb_tree_full_3d_mod.F90
+      src/parallel/mpi_amr_tree_work_mod.F90
       src/parallel/mpi_eb_tree_timestep_3d_mod.F90
       src/parallel/mpi_eb_tree_remap_3d_mod.F90
       src/parallel/mpi_eb_tree_tagging_3d_mod.F90

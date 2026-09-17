@@ -1,5 +1,6 @@
 module mpi_eb_tree_full_3d_mod
   use mpi_f08
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -42,6 +43,7 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     type(amr_tree_state_3d) :: candidate,ct
+    real(dp) :: work_stamp
     real(dp) :: before(size(chemical_change)),after(size(chemical_change)),parameters(3),low(3),high(3)
     logical, allocatable :: active(:,:,:)
     integer :: nv,rank,status,node,child,n(3),lo(3),hi(3),ios
@@ -88,8 +90,10 @@ contains
         end associate
         active(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
       end do
+      work_stamp=tree_work_start()
       if (any(active)) call advance_reactive_chemistry_3d(species,reactions,candidate%fields(node)%values, &
         ct%fields(node)%values(1,:,:,:),n(1),n(2),n(3),dt,rtol,atol,valid,active,integrator)
+      call tree_work_stop(node,work_stamp)
       deallocate(active)
       if (.not.valid) exit
     end do

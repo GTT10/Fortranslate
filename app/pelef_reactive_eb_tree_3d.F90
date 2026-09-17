@@ -6,7 +6,8 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,rebalance_mpi_amr_tree_3d
+  use mpi_amr_tree_work_mod, only: begin_tree_work,end_tree_work
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
@@ -83,6 +84,8 @@ program pelef_reactive_eb_tree_3d
   character(len=16) :: chemistry_integrator='explicit'
 #endif
   character(len=512) :: level_set_file='',section_file='',output_file='eb_tree.csv',checkpoint_file='',restart_file=''
+  integer :: rebalance_interval_steps=0
+  real(dp) :: rebalance_minimum_gain=0.1_dp
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
@@ -90,7 +93,7 @@ program pelef_reactive_eb_tree_3d
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
     tag_tile_shape,tag_buffer,tag_maximum_nodes,tag_thresholds, &
-    composition_count,composition_species,composition_mole_fractions
+    composition_count,composition_species,composition_mole_fractions,rebalance_interval_steps,rebalance_minimum_gain
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -114,6 +117,8 @@ program pelef_reactive_eb_tree_3d
   integer, allocatable :: mpi_owners(:)
   integer :: mpi_rank,mpi_size,mpi_ierr
   logical :: distributed=.false.
+  logical :: sample_work,redistributed,work_ready
+  real(dp), allocatable :: measured_cost(:)
   call MPI_Init(mpi_ierr)
   if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI initialization failed'
   call MPI_Comm_rank(MPI_COMM_WORLD,mpi_rank,mpi_ierr)
@@ -128,6 +133,12 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+  if (rebalance_interval_steps<0) error stop 'Invalid rebalance interval'
+  if (.not.ieee_is_finite(rebalance_minimum_gain)) error stop 'Invalid rebalance gain'
+  if (rebalance_minimum_gain<0._dp.or.rebalance_minimum_gain>=1._dp) error stop 'Invalid rebalance gain'
+#ifndef PELEF_MPI_EB_TREE
+  if (rebalance_interval_steps/=0) error stop 'Rebalancing requires MPI executable'
+#endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
   if (.not.all(ieee_is_finite([domain_lower,domain_upper,plane_position,time_step,final_time,rtol,atol,hydro_cfl,transport_cfl]))) &
@@ -291,12 +302,22 @@ program pelef_reactive_eb_tree_3d
       dt=min(dt,estimated_dt)
     end if
     if (regrid_stage<regrid_count) dt=min(dt,regrid_times(regrid_stage+1)-record%time)
+#ifdef PELEF_MPI_EB_TREE
+    sample_work=.false.
+    if (rebalance_interval_steps>0) sample_work=mod(record%steps+1,rebalance_interval_steps)==0
+#endif
     do retry=0,maximum_step_retries
       if (record%time+dt<=record%time) error stop 'Time increment underflow'
 #ifdef PELEF_MPI_EB_TREE
+      if (sample_work) then
+        call begin_tree_work(size(topology%nodes),ok)
+        call MPI_Allreduce(ok,work_ready,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
+        if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
+      end if
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling)
+      if (sample_work) call end_tree_work(measured_cost)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
@@ -314,6 +335,14 @@ program pelef_reactive_eb_tree_3d
     record%time=next_time;record%steps=record%steps+1
     if (record%steps==1) record%minimum_dt=dt
     record%minimum_dt=min(record%minimum_dt,dt);record%minimum_theta=min(record%minimum_theta,theta)
+#ifdef PELEF_MPI_EB_TREE
+    if (sample_work) then
+      call rebalance_mpi_amr_tree_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature, &
+        measured_cost,rebalance_minimum_gain,MPI_COMM_WORLD,redistributed,ok)
+      if (.not.ok) error stop 'Cannot rebalance MPI EB tree'
+      if (redistributed.and.mpi_rank==0) write(*,'(a,i0)') 'Rebalanced at step: ',record%steps
+    end if
+#endif
     if (regrid_stage<regrid_count) then
       if (record%time>=regrid_times(regrid_stage+1)) then
         if (temperature_adaptive) then
