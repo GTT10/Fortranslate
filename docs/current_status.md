@@ -39,8 +39,11 @@ fluxes now accept selectable face donors, including the species limiter
 transport step now connects limited fluxes, reflux and averaging
 ([evidence](validation/eb-two-level-transport-20260917.md)). A combined
 reaction/transport/hydro step now accumulates all inventories transactionally
-([evidence](validation/eb-two-level-full-20260917.md)); multi-patch, subcycled,
-application/checkpoint and MPI EB stepping remain open.
+([evidence](validation/eb-two-level-full-20260917.md)). A fixed-mechanism serial
+[application case](../cases/reactive_eb_two_level_3d/README.md) now runs this path
+and writes composite state/inventory CSVs
+([evidence](validation/eb-two-level-application-20260917.md)); checkpoint,
+multi-patch, subcycled and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

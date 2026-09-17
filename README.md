@@ -29,6 +29,8 @@ with owner-local stepping, rank-neutral checkpoint/restart and the same final CS
 Experimental [extruded](cases/reactive_eb_extruded_3d/README.md) and
 [3D nodal level-set](cases/reactive_eb_level_set_3d/README.md) EB cases connect
 faceted geometry to fixed/selected reaction, transport and restart.
+A [two-level EB case](cases/reactive_eb_two_level_3d/README.md) also connects
+serial reaction/transport/hydro, coarse/fine synchronization and composite CSV output.
 
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,
