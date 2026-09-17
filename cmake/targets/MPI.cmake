@@ -5,6 +5,8 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_flux_peers_3d_mod.F90
+    src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
+    src/parallel/mpi_amr_patch_tree_reflux_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_ghost_3d_mod.F90
     src/parallel/mpi_amr_reactive_3d_mod.F90

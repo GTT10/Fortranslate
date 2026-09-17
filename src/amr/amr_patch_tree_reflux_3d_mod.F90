@@ -16,6 +16,7 @@ module amr_patch_tree_reflux_3d_mod
     logical, allocatable :: x(:,:,:),y(:,:,:),z(:,:,:)
   end type
   public :: reflux_amr_patch_tree_3d
+  public :: get_face,set_face,marked,set_mark,matches
 contains
   subroutine reflux_amr_patch_tree_3d(tree,state,flux,root_spacing,faces,boundary_correction,maximum_correction,ok, &
       minimum_depth,synchronized_flux)

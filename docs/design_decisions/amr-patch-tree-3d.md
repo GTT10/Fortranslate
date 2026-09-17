@@ -479,7 +479,7 @@ The communicator is borrowed, and calls must follow collective ordering. Root an
 owner buffers must be distinct actual objects. MPI runtime/communicator failure
 is governed by the MPI error handler, not a recoverable application transaction.
 These transfers support initialization/output and verification; they are not a
-root-gather stepping algorithm. Ownership planning, evolution, reflux, rebalancing and application integration
+root-gather stepping algorithm. Ownership planning, evolution, rebalancing and application integration
 remain open; distributed halos and restriction are described below. Whole-node
 ownership does not split a large root patch or establish scaling.
 
@@ -589,9 +589,46 @@ completion moves active candidates back without touching other depths. MPI runti
 failures remain governed by the communicator error handler. Pair traversal and
 collective gates are deliberately simple and have no scaling qualification.
 
-This supplies the peer stage of distributed reflux. Parent area averaging,
-uncovered-cell divergence correction, the physical boundary ledger and EOS recovery
-still need connection; this API alone does not update conserved state.
+This supplies the peer stage of distributed reflux. The composed API below connects
+parent area averaging, uncovered-cell divergence correction and the boundary ledger.
+The peer API alone does not update conserved state; EOS recovery remains separate.
+
+## Distributed reflux composition
+
+`restrict_mpi_amr_tree_flux_level_3d` transfers area-averaged child faces at one
+positive child depth to parent owners. The child owner uses the serial transverse
+summation order, dividing each contribution by the ratio twice. Each directional
+averaged box travels directly to the parent (tag 28406). Parent candidates retain
+existing fine-replaced marks; a second contribution must match the serial tolerance.
+Only parent-depth fields commit, after every child/direction succeeds. Other depths,
+including child source fluxes, are untouched.
+
+`reflux_mpi_amr_tree_3d` composes peer synchronization and flux restriction deepest
+first, applies effective-minus-original flux divergence to uncovered owned cells,
+computes the root physical-boundary replacement ledger and calls distributed state
+restriction. Its state input is the candidate already updated with the original
+fluxes, just as for serial reflux. Input fluxes are time-integrated per face area.
+
+The optional `minimum_depth` defaults to zero. Only that depth and deeper are
+corrected/restricted; inactive input fluxes may be absent. Coarser state endpoints
+remain unchanged and partial-interval boundary correction is zero. Optional
+`synchronized_flux` returns owned active effective fluxes, with other slots absent.
+The global boundary vector and maximum absolute cell correction are returned on
+every rank using sum/max reductions. All ranks must agree on geometry, owners,
+component count, floor depth, spacing and periodic geometry.
+
+Only local owned states and active fluxes are copied. The wrapper keeps its own
+candidates across all nested collective calls and commits state, effective fluxes
+and diagnostics only when the entire correction succeeds. Thus a later-level peer
+mismatch also rolls back earlier candidate work. Empty ranks participate in the
+same collective sequence. No root gather is used for evolution or correction.
+
+The public serial face access/match helpers and exported mark type avoid changing
+serial tolerance or arithmetic semantics. Reflux checks finite states/fluxes but
+does not recover temperature or prove EOS admissibility. Distributed RK stages,
+coarse-time endpoint exchange and application dispatch must still be integrated.
+Per-pair/per-child collective gates and whole-node ownership remain unqualified for
+production scaling; MPI runtime failures follow the communicator error handler.
 
 ## Remaining integration
 

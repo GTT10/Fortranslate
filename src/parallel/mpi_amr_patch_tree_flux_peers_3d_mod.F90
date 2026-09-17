@@ -9,7 +9,7 @@ module mpi_amr_patch_tree_flux_peers_3d_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
   private
-  public :: synchronize_mpi_amr_tree_flux_peers_3d
+  public :: synchronize_mpi_amr_tree_flux_peers_3d,valid_local_tree_flux_level_3d
 contains
   subroutine synchronize_mpi_amr_tree_flux_peers_3d(tree,owners,nvar,depth,faces,flux,refined,comm,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -48,31 +48,7 @@ contains
     call MPI_Allreduce(periodic,maximum,3,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
-    valid=.true.
-    do node=1,size(flux)
-      if (tree%nodes(node)%level/=depth) cycle
-      if (owners(node)/=rank) then
-        if (allocated(flux(node)%x).or.allocated(flux(node)%y).or.allocated(flux(node)%z)) valid=.false.
-        if (allocated(refined(node)%x).or.allocated(refined(node)%y).or.allocated(refined(node)%z)) valid=.false.
-        cycle
-      end if
-      n=tree%nodes(node)%shape
-      if (any(n==huge(1))) then
-        valid=.false.;cycle
-      end if
-      if (.not.allocated(flux(node)%x).or..not.allocated(flux(node)%y).or..not.allocated(flux(node)%z).or. &
-          .not.allocated(refined(node)%x).or..not.allocated(refined(node)%y).or..not.allocated(refined(node)%z)) then
-        valid=.false.;cycle
-      end if
-      if (any(shape(flux(node)%x)/=[nvar,n(1)+1,n(2),n(3)]).or. &
-          any(shape(flux(node)%y)/=[nvar,n(1),n(2)+1,n(3)]).or. &
-          any(shape(flux(node)%z)/=[nvar,n(1),n(2),n(3)+1])) valid=.false.
-      if (any(shape(refined(node)%x)/=[n(1)+1,n(2),n(3)]).or. &
-          any(shape(refined(node)%y)/=[n(1),n(2)+1,n(3)]).or. &
-          any(shape(refined(node)%z)/=[n(1),n(2),n(3)+1])) valid=.false.
-      if (.not.all(ieee_is_finite(flux(node)%x)).or..not.all(ieee_is_finite(flux(node)%y)).or. &
-          .not.all(ieee_is_finite(flux(node)%z))) valid=.false.
-    end do
+    valid=valid_local_tree_flux_level_3d(tree,owners,rank,nvar,depth,flux,refined)
     call agree(valid,ready)
     if (.not.ready) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -252,4 +228,39 @@ contains
       field%z(:,p(1),p(2),p(3))=value(:n);mark%z(p(1),p(2),p(3))=value(n+1)==1
     end select
   end subroutine
+  ! Caller must first validate replicated tree/owner metadata collectively.
+  logical function valid_local_tree_flux_level_3d(tree,owners,rank,nvar,depth,flux,refined) result(valid)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),rank,nvar,depth
+    type(amr_tree_flux_3d), intent(in) :: flux(:)
+    type(face_marks), intent(in) :: refined(:)
+    integer :: node,n(3)
+    valid=size(flux)==size(tree%nodes).and.size(refined)==size(tree%nodes)
+    if (.not.valid) return
+    valid=.true.
+    do node=1,size(flux)
+      if (tree%nodes(node)%level/=depth) cycle
+      if (owners(node)/=rank) then
+        if (allocated(flux(node)%x).or.allocated(flux(node)%y).or.allocated(flux(node)%z)) valid=.false.
+        if (allocated(refined(node)%x).or.allocated(refined(node)%y).or.allocated(refined(node)%z)) valid=.false.
+        cycle
+      end if
+      n=tree%nodes(node)%shape
+      if (any(n==huge(1))) then
+        valid=.false.;cycle
+      end if
+      if (.not.allocated(flux(node)%x).or..not.allocated(flux(node)%y).or..not.allocated(flux(node)%z).or. &
+          .not.allocated(refined(node)%x).or..not.allocated(refined(node)%y).or..not.allocated(refined(node)%z)) then
+        valid=.false.;cycle
+      end if
+      if (any(shape(flux(node)%x)/=[nvar,n(1)+1,n(2),n(3)]).or. &
+          any(shape(flux(node)%y)/=[nvar,n(1),n(2)+1,n(3)]).or. &
+          any(shape(flux(node)%z)/=[nvar,n(1),n(2),n(3)+1])) valid=.false.
+      if (any(shape(refined(node)%x)/=[n(1)+1,n(2),n(3)]).or. &
+          any(shape(refined(node)%y)/=[n(1),n(2)+1,n(3)]).or. &
+          any(shape(refined(node)%z)/=[n(1),n(2),n(3)+1])) valid=.false.
+      if (.not.all(ieee_is_finite(flux(node)%x)).or..not.all(ieee_is_finite(flux(node)%y)).or. &
+          .not.all(ieee_is_finite(flux(node)%z))) valid=.false.
+    end do
+  end function
 end module
