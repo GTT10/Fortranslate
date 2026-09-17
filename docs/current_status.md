@@ -85,7 +85,10 @@ fluxes for final coarse reflux, with mode-bound restart
 ([evidence](validation/eb-multipatch-subcycle-20260917.md)); MPI EB remains open. A selected-mechanism executable now shares
 the application path and binds bundle/composition identity on restart, within
 the existing H/O/N species inventory support (plus inert AR)
-([evidence](validation/eb-selected-two-level-20260917.md)).
+([evidence](validation/eb-selected-two-level-20260917.md)). Generated bundles
+now expose source element composition and a generic EB inventory API consumes
+it; carbon-fuel application/checkpoint wiring remains open
+([evidence](validation/eb-element-metadata-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
