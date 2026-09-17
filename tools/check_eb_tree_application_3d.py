@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--automatic', action='store_true')
+    parser.add_argument('--scheduled', action='store_true')
     args = parser.parse_args()
     exe, work = args.exe.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,14 @@ def main():
     resumed = run('resumed', f"restart_file='{stopped / 'saved.chk'}',")
     for filename in ('result.csv', 'result.csv.budget.csv'):
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes(), filename
+    if args.scheduled:
+        for step in (2, 3):
+            stop = run(f'stopped_{step}', f"checkpoint_file='saved.chk', checkpoint_interval_steps={step}, stop_after_checkpoint=.true.,")
+            resume = run(f'resumed_{step}', f"restart_file='{stop / 'saved.chk'}',")
+            for filename in ('result.csv', 'result.csv.budget.csv'):
+                assert (full / filename).read_bytes() == (resume / filename).read_bytes(), (step, filename)
+        assert 'nodes: 1' in (work / 'stopped_2' / 'run.log').read_text()
+        assert 'nodes: 4' in (work / 'stopped_3' / 'run.log').read_text()
     with (full / 'result.csv').open() as stream:
         cells = list(csv.DictReader(stream))
     assert {int(row['level']) for row in cells} == {0, 1, 2}
@@ -76,6 +85,17 @@ def main():
             source, success=False)
         for filename in ('result.csv', 'result.csv.budget.csv', 'protected.chk'):
             assert (directory / filename).read_text() == 'preserve\n'
+    if args.scheduled:
+        wrong = template.replace('regrid_times=1.5e-9,2.5e-9', 'regrid_times=1.5e-9,2.6e-9')
+        directory = run('bad_schedule', f"restart_file='{stopped / 'saved.chk'}',", wrong, success=False)
+        assert not (directory / 'result.csv').exists()
+        # Header: magic, interval/integrator, CFL policy, schedule count/stage.
+        lines = (stopped / 'saved.chk').read_text().splitlines()
+        lines[3] = '2 1'
+        bad_stage = work / 'bad_stage.chk'
+        bad_stage.write_text('\n'.join(lines) + '\n')
+        directory = run('bad_stage', f"restart_file='{bad_stage}',", success=False)
+        assert not (directory / 'result.csv').exists()
     print(f'PASS: {len(cells)} exposed cells, exact restart CSV/budget, residual={worst:.17e}; rejection preserves files')
 
 
