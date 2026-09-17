@@ -123,8 +123,17 @@ the gas update operate on private state; only a successful whole step publishes
 gas, particles, films, IDs, limiter and exterior/wall/chemistry ledgers.
 The existing fixed-population API delegates to this core in specular mode.
 New first-half deposits participate in film exchange in the second half.
-MPI and application support for these impact/film arguments is still open.
+MPI support for these impact/film arguments is still open.
 See [reactive impact evidence](validation/spray-eb-impact-reactive-20260918.md).
+
+The fixed/selected serial EB spray applications now expose `wall_impacts` and
+the `walls` options in `&eb_spray`, output stationary film CSVs and retain films,
+component inventories, retired-parent ancestry and ID watermarks in coupled
+snapshots. See the [input guide](../cases/eb_spray_3d/README.md) and
+[application/restart evidence](validation/spray-eb-impact-application-20260918.md).
+The checkpoint context is now V2; older V1 contexts are rejected. Existing wet
+correlations can reject normal-incidence thick-film states; this boundary is
+documented in the evidence and is not removed by the application connection.
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level

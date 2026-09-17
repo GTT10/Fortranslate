@@ -73,8 +73,34 @@ publication inherited from the spray checkpoint API, not a power-loss durability
 or cross-compiler restart guarantee. Covered cells retain valid EOS states from
 the initializer and are checked by the existing checkpoint reader.
 
-Independent nozzle ports, physical
-outer-boundary particle events, wall-film formation and distributed EB/AMR
-particles remain open. Trial trajectories must stay in the root domain. The
+### Optional EB wall impacts
+
+Add these settings to `&eb_spray` to replace specular reflection with the
+existing mixture impact model:
+
+```fortran
+ wall_impacts=.true.
+ options%surface_tension=.072, options%liquid_viscosity=.001
+ walls%temperature=300, walls%maximum_films=1000
+ walls%evolve=.true., walls%conductivity=.6, walls%minimum_height=1e-7
+```
+
+These are illustrative water-like constants, not calibrated properties.
+`walls%maximum_hits` defaults to 32 per trajectory. Films are written to
+`<output_file>.films.csv` (header only when empty). Its component masses are
+total kg; parcel component masses remain kg per represented drop. Snapshots
+now also retain films and their components, plus retired-parent ancestry for
+splashed children. Context V2 binds the impact settings and rejects older V1
+snapshots. New deposits begin film exchange on the next source substep.
+
+The inherited wet-impact correlations have a restricted valid range. For
+example, normal incidence at film thickness/drop diameter 0.1123 produces a
+negative child mass fraction and is rejected. Timestep reduction cannot repair
+an invalid correlation value; this remains an open model limitation, not
+qualified general wet-wall impact support. See
+[application evidence](../../docs/validation/spray-eb-impact-application-20260918.md).
+
+Independent nozzle ports, physical outer-boundary particle events and distributed
+EB impact/film ownership remain open. Trial trajectories must stay in the root domain. The
 particle source/drift split is first order; this synthetic implementation case
 is not calibrated spray validation or a convergence study.
