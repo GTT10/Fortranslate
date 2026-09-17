@@ -35,12 +35,31 @@ module reactive_eb_3d_checkpoint_mod
 
 contains
 
+  logical function valid_borrowed_checkpoint_unit(unit,writing) result(valid)
+    integer, intent(in) :: unit
+    logical, intent(in) :: writing
+    logical :: opened
+    integer :: status
+    character(len=16) :: form,action
+    valid=.false.
+    inquire(unit=unit,opened=opened,form=form,action=action,iostat=status)
+    if (status/=0) return
+    if (.not.opened) return
+    if (trim(form)/='FORMATTED') return
+    if (writing) then
+      valid=trim(action)=='WRITE'.or.trim(action)=='READWRITE'
+    else
+      valid=trim(action)=='READ'.or.trim(action)=='READWRITE'
+    end if
+  end function valid_borrowed_checkpoint_unit
+
+
   subroutine write_reactive_eb_3d_checkpoint( &
       path, species, reactions, transport, config, geometry, state, &
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -59,6 +78,9 @@ contains
     character(len=*), intent(in), optional :: bundle_sha256
     character(len=*), intent(in), optional :: chemistry_integrator
     real(dp), intent(in), optional :: base_mole_fractions(:)
+    ! Borrowed formatted unit: caller owns positioning and closing. Embedded
+    ! reads stop at END_CHECKPOINT; only standalone reads require end-of-file.
+    integer, intent(in), optional :: checkpoint_unit
 
     integer :: unit, status, nvar, species_index, reaction_index,plog_index
     integer :: efficiency_size
@@ -73,7 +95,7 @@ contains
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
-    if (len_trim(path) == 0) then
+    if (len_trim(path) == 0.and..not.present(checkpoint_unit)) then
       message = "Reactive EB 3D checkpoint path is empty"
       return
     end if
@@ -141,12 +163,20 @@ contains
       schema = checkpoint_schema_fixed
     end if
 
+    if (present(checkpoint_unit)) then
+      if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.true.)) then
+        message="Checkpoint unit is not open for the requested formatted operation"
+        return
+      end if
+      unit=checkpoint_unit
+    else
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) then
       write(message, '(a,1x,a)') &
         "Could not create Reactive EB 3D checkpoint:", trim(path)
       return
+    end if
     end if
 
     write(unit, '(a)', iostat=status) checkpoint_magic
@@ -398,16 +428,18 @@ contains
 
     write(unit, '(a)', iostat=status) "END_CHECKPOINT"
     if (status /= 0) go to 900
+    if (.not.present(checkpoint_unit)) then
     close(unit, iostat=status)
     if (status /= 0) then
       message = "Failed to close Reactive EB 3D checkpoint"
       return
     end if
+    end if
     ok = .true.
     return
 
 900 continue
-    close(unit, iostat=status)
+    if (.not.present(checkpoint_unit)) close(unit, iostat=status)
     message = "Failed while writing Reactive EB 3D checkpoint"
   end subroutine write_reactive_eb_3d_checkpoint
 
@@ -416,7 +448,7 @@ contains
       temperature, time, steps, initial_integrals, initial_l1_integrals, &
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
-      chemistry_integrator, base_mole_fractions)
+      chemistry_integrator, base_mole_fractions, checkpoint_unit)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -435,6 +467,9 @@ contains
     character(len=*), intent(in), optional :: bundle_sha256
     character(len=*), intent(in), optional :: chemistry_integrator
     real(dp), intent(in), optional :: base_mole_fractions(:)
+    ! Borrowed formatted unit: caller owns positioning and closing. Embedded
+    ! reads stop at END_CHECKPOINT; only standalone reads require end-of-file.
+    integer, intent(in), optional :: checkpoint_unit
 
     type(eb_geometry_3d) :: candidate_geometry
     real(dp), allocatable :: candidate_state(:, :, :, :)
@@ -485,7 +520,7 @@ contains
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
-    if (len_trim(path) == 0) then
+    if (len_trim(path) == 0.and..not.present(checkpoint_unit)) then
       message = "Reactive EB 3D restart path is empty"
       return
     end if
@@ -542,12 +577,20 @@ contains
       expected_schema = checkpoint_schema_fixed
     end if
 
+    if (present(checkpoint_unit)) then
+      if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.false.)) then
+        message="Checkpoint unit is not open for the requested formatted operation"
+        return
+      end if
+      unit=checkpoint_unit
+    else
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) then
       write(message, '(a,1x,a)') &
         "Could not open Reactive EB 3D checkpoint:", trim(path)
       return
+    end if
     end if
 
     read(unit, '(a)', iostat=status) magic
@@ -928,12 +971,14 @@ contains
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
     if (trim(marker) /= "END_CHECKPOINT") go to 900
+    if (.not.present(checkpoint_unit)) then
     read(unit, '(a)', iostat=status) trailer
     if (.not. is_iostat_end(status)) go to 900
     close(unit, iostat=status)
     if (status /= 0) then
       message = "Failed to close Reactive EB 3D checkpoint"
       return
+    end if
     end if
 
     ! Nothing above this point aliases a public restart target.  Publish the
@@ -953,7 +998,7 @@ contains
     return
 
 900 continue
-    close(unit, iostat=l)
+    if (.not.present(checkpoint_unit)) close(unit, iostat=l)
     if (len_trim(message) == 0) then
       message = &
         "Reactive EB 3D checkpoint is truncated, invalid, or incompatible"

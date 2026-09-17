@@ -447,9 +447,68 @@ program test_reactive_eb_3d_checkpoint
   call remove_file(selected_bad_context_path)
   call remove_file(selected_truncated_path)
   call remove_file(selected_invalid_write_path)
+  call check_embedded_records()
   write(*, '(a)') "test_reactive_eb_3d_checkpoint: PASS"
 
 contains
+
+  subroutine check_embedded_records()
+    integer :: stream,record,ios
+    logical :: opened
+    character(len=64) :: marker
+    open(newunit=stream,status='scratch',form='formatted',action='readwrite',iostat=ios)
+    call require(ios==0,'open composite scratch stream')
+    write(stream,'(a)') 'COMPOSITE_START'
+    do record=1,2
+      call write_reactive_eb_3d_checkpoint('',species,reactions,transport,write_config,geometry,state,temperature, &
+        time*record,steps*record,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+        maximum_diffusivity,minimum_theta,ok,message,checkpoint_unit=stream)
+      call require(ok,'write embedded checkpoint')
+      inquire(unit=stream,opened=opened)
+      call require(opened,'writer retains caller-owned unit')
+    end do
+    write(stream,'(a)') 'COMPOSITE_END'
+    rewind(stream)
+    read(stream,'(a)') marker
+    call require(marker=='COMPOSITE_START','embedded prefix retained')
+    do record=1,2
+      read_geometry=geometry
+      call read_reactive_eb_3d_checkpoint('',species,reactions,transport,restart_config,read_geometry, &
+        read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+        read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,checkpoint_unit=stream)
+      call require(ok,'read embedded checkpoint without consuming successor')
+      call require(all(read_state==state).and.all(read_temperature==temperature).and. &
+        read_time==time*record.and.read_steps==steps*record,'embedded state and metadata round trip')
+      inquire(unit=stream,opened=opened)
+      call require(opened,'reader retains caller-owned unit')
+    end do
+    call save_targets()
+    call read_reactive_eb_3d_checkpoint('',species,reactions,transport,restart_config,read_geometry, &
+      read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+      read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,checkpoint_unit=stream)
+    call require(.not.ok,'non-checkpoint successor rejected')
+    call require_targets_unchanged('embedded failure preserves targets')
+    inquire(unit=stream,opened=opened)
+    call require(opened,'failed reader retains caller-owned unit')
+    backspace(stream)
+    read(stream,'(a)') marker
+    call require(marker=='COMPOSITE_END','caller can recover failure position')
+    close(stream)
+    call write_reactive_eb_3d_checkpoint('',species,reactions,transport,write_config,geometry,state,temperature, &
+      time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt,maximum_diffusivity, &
+      minimum_theta,ok,message,checkpoint_unit=stream)
+    call require(.not.ok,'closed checkpoint unit rejected')
+    open(newunit=stream,status='scratch',form='unformatted',action='readwrite',iostat=ios)
+    call require(ios==0,'open unformatted scratch')
+    call write_reactive_eb_3d_checkpoint('',species,reactions,transport,write_config,geometry,state,temperature, &
+      time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt,maximum_diffusivity, &
+      minimum_theta,ok,message,checkpoint_unit=stream)
+    call require(.not.ok,'unformatted borrowed unit rejected')
+    inquire(unit=stream,opened=opened)
+    call require(opened,'rejected writer retains caller unit')
+    close(stream)
+  end subroutine check_embedded_records
+
 
   subroutine read_checkpoint(config, active_reactions, active_transport, path)
     type(reactive_eb_3d_config), intent(in) :: config
