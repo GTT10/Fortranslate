@@ -1,6 +1,7 @@
 program test_eb_reactive_wall_flux_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -9,7 +10,7 @@ program test_eb_reactive_wall_flux_3d
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d
+    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_slip_wall_flux_3d, reactive_eb_slip_wall_source_3d, &
     reactive_eb_flux_divergence_3d
@@ -103,6 +104,34 @@ program test_eb_reactive_wall_flux_3d
   call verify_plane_balance("x", imx)
   call verify_plane_balance("y", imy)
   call verify_plane_balance("z", imz)
+  block
+    type(eb_geometry_2d) :: section
+    real(dp) :: phi(0:nx,0:ny),weighted_residual
+    do j=0,ny
+      do i=0,nx
+        phi(i,j)=(real(i,dp)/nx-.5_dp)**2+(real(j,dp)/ny-.5_dp)**2-.29_dp**2
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,ok)
+    call require(ok,'curved wall section')
+    call extrude_eb_geometry_3d(section,3,nz,0._dp,1._dp,geometry,ok)
+    call require(ok,'curved wall extrusion')
+    ! Reuse the uniform-pressure Cartesian face fluxes from the plane check.
+    call reactive_eb_flux_divergence_3d(species,state,temperature_field,geometry,x_flux,y_flux,z_flux,rhs,ok)
+    call require(ok,'curved wall pressure divergence')
+    weighted_residual=0._dp
+    do k=1,nz
+      do j=1,ny
+        do i=1,nx
+          weighted_residual=max(weighted_residual,maxval(abs(rhs(:,i,j,k)))*geometry%volume_fraction(i,j,k) &
+            *geometry%dx*geometry%dy*geometry%dz)
+        end do
+      end do
+    end do
+    call require(weighted_residual<=2.e-10_dp*pressure*max(geometry%dx*geometry%dy, &
+      geometry%dx*geometry%dz,geometry%dy*geometry%dz),'curved wall uniform-pressure balance')
+  end block
+
 
   call reactive_eb_slip_wall_flux_3d( &
     species, state_cell, temperature, [2.0_dp, 0.0_dp, 0.0_dp], &

@@ -1,6 +1,7 @@
 module eb_geometry_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d
   implicit none
   private
 
@@ -55,9 +56,127 @@ module eb_geometry_3d_mod
     procedure :: is_valid => eb_geometry_3d_is_valid
   end type eb_geometry_3d
 
-  public :: build_axis_plane_eb_geometry_3d
+  public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
 
 contains
+
+  ! Extrude an already validated piecewise-linear 2D section. Cyclic coordinates:
+  ! axis 1 -> section(y,z), axis 2 -> section(z,x), axis 3 -> section(x,y).
+  ! Positive level-set fluid convention is inherited from the section builder.
+  subroutine extrude_eb_geometry_3d(section,axis,layers,lower,upper,geometry,ok)
+    type(eb_geometry_2d), intent(in) :: section
+    integer, intent(in) :: axis,layers
+    real(dp), intent(in) :: lower,upper
+    type(eb_geometry_3d), intent(inout) :: geometry
+    logical, intent(out) :: ok
+    type(eb_geometry_3d) :: candidate
+    integer :: a,b,dims(3),idx(3),i,j,k
+    real(dp) :: lo(3),hi(3),width,offset(3),centroid(3),normal(3),integral(3)
+    ok=.false.
+    if (axis<1.or.axis>3.or.layers<1) return
+    if (.not.all(ieee_is_finite([lower,upper])).or.upper<=lower) return
+    if (.not.section%is_valid()) return
+    a=mod(axis,3)+1;b=mod(axis+1,3)+1
+    dims(axis)=layers;dims(a)=section%nx;dims(b)=section%ny
+    lo(axis)=lower;hi(axis)=upper
+    lo(a)=section%x_lower;hi(a)=section%x_upper
+    lo(b)=section%y_lower;hi(b)=section%y_upper
+    width=(upper-lower)/real(layers,dp)
+    if (.not.ieee_is_finite(width).or.width<=0._dp) return
+    candidate%nx=dims(1);candidate%ny=dims(2);candidate%nz=dims(3)
+    candidate%x_lower=lo(1);candidate%x_upper=hi(1)
+    candidate%y_lower=lo(2);candidate%y_upper=hi(2)
+    candidate%z_lower=lo(3);candidate%z_upper=hi(3)
+    candidate%dx=(hi(1)-lo(1))/real(dims(1),dp)
+    candidate%dy=(hi(2)-lo(2))/real(dims(2),dp)
+    candidate%dz=(hi(3)-lo(3))/real(dims(3),dp)
+    call allocate_geometry_arrays(candidate)
+    call clear_geometry_arrays(candidate)
+    do k=1,layers
+      idx(axis)=k
+      do j=1,section%ny
+        idx(b)=j
+        do i=1,section%nx
+          idx(a)=i
+          associate(x=>idx(1),y=>idx(2),z=>idx(3))
+            candidate%volume_fraction(x,y,z)=section%volume_fraction(i,j)
+            candidate%cell_type(x,y,z)=section%cell_type(i,j)
+            offset=0._dp
+            offset(a)=section%cell_centroid_x(i,j);offset(b)=section%cell_centroid_y(i,j)
+            candidate%cell_centroid_x(x,y,z)=offset(1)
+            candidate%cell_centroid_y(x,y,z)=offset(2)
+            candidate%cell_centroid_z(x,y,z)=offset(3)
+            if (section%cell_type(i,j)/=eb_cut_cell_3d) cycle
+            centroid(axis)=lower+(real(k,dp)-.5_dp)*width
+            centroid(a)=section%boundary_centroid_x(i,j);centroid(b)=section%boundary_centroid_y(i,j)
+            normal=0._dp;integral=0._dp
+            normal(a)=section%boundary_normal_x(i,j);normal(b)=section%boundary_normal_y(i,j)
+            integral(a)=section%boundary_normal_integral_x(i,j)*width
+            integral(b)=section%boundary_normal_integral_y(i,j)*width
+            candidate%boundary_area(x,y,z)=section%boundary_length(i,j)*width
+            candidate%boundary_centroid_x(x,y,z)=centroid(1)
+            candidate%boundary_centroid_y(x,y,z)=centroid(2)
+            candidate%boundary_centroid_z(x,y,z)=centroid(3)
+            candidate%boundary_normal_x(x,y,z)=normal(1)
+            candidate%boundary_normal_y(x,y,z)=normal(2)
+            candidate%boundary_normal_z(x,y,z)=normal(3)
+            candidate%boundary_normal_integral_x(x,y,z)=integral(1)
+            candidate%boundary_normal_integral_y(x,y,z)=integral(2)
+            candidate%boundary_normal_integral_z(x,y,z)=integral(3)
+          end associate
+        end do
+      end do
+      do j=1,section%ny
+        idx(b)=j
+        do i=0,section%nx
+          idx(a)=i;offset=0._dp;offset(b)=section%x_face_centroid_y(i,j)
+          call set_face(a,idx,section%x_face_fraction(i,j),offset)
+        end do
+      end do
+      do j=0,section%ny
+        idx(b)=j
+        do i=1,section%nx
+          idx(a)=i;offset=0._dp;offset(a)=section%y_face_centroid_x(i,j)
+          call set_face(b,idx,section%y_face_fraction(i,j),offset)
+        end do
+      end do
+    end do
+    do k=0,layers
+      idx(axis)=k
+      do j=1,section%ny
+        idx(b)=j
+        do i=1,section%nx
+          idx(a)=i;offset=0._dp
+          offset(a)=section%cell_centroid_x(i,j);offset(b)=section%cell_centroid_y(i,j)
+          call set_face(axis,idx,section%volume_fraction(i,j),offset)
+        end do
+      end do
+    end do
+    if (.not.candidate%is_valid()) return
+    geometry=candidate;ok=.true.
+  contains
+    subroutine set_face(direction,index,fraction,center)
+      integer, intent(in) :: direction,index(3)
+      real(dp), intent(in) :: fraction,center(3)
+      associate(x=>index(1),y=>index(2),z=>index(3))
+        select case(direction)
+        case(1)
+          candidate%x_face_fraction(x,y,z)=fraction
+          candidate%x_face_centroid_y(x,y,z)=center(2)
+          candidate%x_face_centroid_z(x,y,z)=center(3)
+        case(2)
+          candidate%y_face_fraction(x,y,z)=fraction
+          candidate%y_face_centroid_x(x,y,z)=center(1)
+          candidate%y_face_centroid_z(x,y,z)=center(3)
+        case(3)
+          candidate%z_face_fraction(x,y,z)=fraction
+          candidate%z_face_centroid_x(x,y,z)=center(1)
+          candidate%z_face_centroid_y(x,y,z)=center(2)
+        end select
+      end associate
+    end subroutine
+  end subroutine extrude_eb_geometry_3d
+
 
   subroutine build_axis_plane_eb_geometry_3d( &
       nx, ny, nz, x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
@@ -563,7 +682,7 @@ contains
     class(eb_geometry_3d), intent(in) :: self
     real(dp), intent(in) :: tolerance
 
-    real(dp) :: area_tolerance, coordinate_tolerance, normal_norm
+    real(dp) :: area_tolerance, coordinate_tolerance, normal_norm, integral_norm
     real(dp) :: x0, x1, y0, y1, z0, z1
     integer :: i, j, k
 
@@ -614,15 +733,22 @@ contains
             self%boundary_normal_z(i, j, k)**2)
           area_tolerance = 32.0_dp * tolerance * max( &
             self%dx * self%dy, self%dx * self%dz, self%dy * self%dz)
+          ! A faceted interface's integrated normal can be shorter than its
+          ! total area; retain its direction and the discrete closure identity.
+          integral_norm=sqrt(self%boundary_normal_integral_x(i,j,k)**2 + &
+            self%boundary_normal_integral_y(i,j,k)**2+self%boundary_normal_integral_z(i,j,k)**2)
+          if (integral_norm<=0._dp.or.integral_norm>self%boundary_area(i,j,k)+area_tolerance) then
+            valid=.false.;return
+          end if
           if (abs(normal_norm - 1.0_dp) > 8.0_dp * tolerance .or. &
               abs(self%boundary_normal_integral_x(i, j, k) - &
-                self%boundary_area(i, j, k) * &
+                integral_norm * &
                   self%boundary_normal_x(i, j, k)) > area_tolerance .or. &
               abs(self%boundary_normal_integral_y(i, j, k) - &
-                self%boundary_area(i, j, k) * &
+                integral_norm * &
                   self%boundary_normal_y(i, j, k)) > area_tolerance .or. &
               abs(self%boundary_normal_integral_z(i, j, k) - &
-                self%boundary_area(i, j, k) * &
+                integral_norm * &
                   self%boundary_normal_z(i, j, k)) > area_tolerance) then
             valid = .false.
             return

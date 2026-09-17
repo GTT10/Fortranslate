@@ -96,7 +96,11 @@ reimplemented. Their restrictions remain explicit in current status.
 Regular 3D hydro/chemistry/molecular transport now accepts per-face prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip conditions with prescribed tangential wall velocity
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
 Characteristic inflow and moving geometry, general EB and AMR-particle boundary coupling
-remain part of the completion work.
+remain part of the completion work. A three-axis extrusion API now maps
+validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
+normal integrals and uniform-pressure balance. Next connect nonplanar geometry
+to application inputs and supported redistribution/transport paths; arbitrary
+fully 3D surfaces and EB-AMR-MPI coupling remain open.
 
 Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with conservative
 remapping, overlap reuse and geometry-aware changed-rank restart, including

@@ -616,6 +616,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
   add_library(
     pelef_selected_reactive_eb_3d_runtime
     STATIC
+    src/eb/eb_geometry_2d_mod.F90
     src/eb/eb_geometry_3d_mod.F90
     src/driver/simulation_config_reactive_eb_3d_mod.F90
     src/eb/reactive_eb_cfl_3d_mod.F90

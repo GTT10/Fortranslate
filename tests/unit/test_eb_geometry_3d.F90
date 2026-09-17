@@ -1,9 +1,10 @@
 program test_eb_geometry_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d
+    eb_regular_cell_3d, build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   implicit none
 
   integer, parameter :: nx = 10
@@ -137,6 +138,72 @@ program test_eb_geometry_3d
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
     "x", nan_value, geometry, ok)
   call require(.not. ok, "nonfinite plane rejection")
+
+  block
+    type(eb_geometry_2d) :: section
+    type(eb_geometry_3d) :: prism,prior
+    real(dp) :: phi(0:10,0:8),expected_volume,expected_area,moment(3),center(3),expected_center(3)
+    real(dp) :: cell_volume
+    integer :: ii,jj,kk,direction
+    do jj=0,8
+      do ii=0,10
+        phi(ii,jj)=real(ii,dp)/10+real(jj,dp)/8-1.13_dp
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,ok)
+    call require(ok,'oblique section')
+    expected_volume=.5_dp*.87_dp**2*2.5_dp
+    expected_area=sqrt(2._dp)*.87_dp*2.5_dp
+    do direction=1,3
+      call extrude_eb_geometry_3d(section,direction,3,2._dp,4.5_dp,prism,ok)
+      call require(ok.and.prism%is_valid(),'three-axis oblique extrusion')
+      call assert_close(sum(prism%volume_fraction)*prism%dx*prism%dy*prism%dz, &
+        expected_volume,tolerance,'analytic triangular-prism volume')
+      call assert_close(sum(prism%boundary_area),expected_area,tolerance,'analytic oblique wall area')
+      moment=0._dp;cell_volume=prism%dx*prism%dy*prism%dz
+      do kk=1,prism%nz
+        do jj=1,prism%ny
+          do ii=1,prism%nx
+            center=[prism%x_lower+(real(ii,dp)-.5_dp+prism%cell_centroid_x(ii,jj,kk))*prism%dx, &
+              prism%y_lower+(real(jj,dp)-.5_dp+prism%cell_centroid_y(ii,jj,kk))*prism%dy, &
+              prism%z_lower+(real(kk,dp)-.5_dp+prism%cell_centroid_z(ii,jj,kk))*prism%dz]
+            moment=moment+center*prism%volume_fraction(ii,jj,kk)*cell_volume
+          end do
+        end do
+      end do
+      expected_center=.71_dp;expected_center(direction)=3.25_dp
+      call assert_close(maxval(abs(moment/expected_volume-expected_center)),0._dp,tolerance, &
+        'analytic triangular-prism centroid')
+      call assert_close(maximum_geometric_residual(prism),0._dp,tolerance,'extruded closure')
+    end do
+    do jj=0,8
+      do ii=0,10
+        phi(ii,jj)=(real(ii,dp)/10-.5_dp)**2+(real(jj,dp)/8-.5_dp)**2-.29_dp**2
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,ok)
+    call require(ok,'faceted cylindrical section')
+    do direction=1,3
+      call extrude_eb_geometry_3d(section,direction,3,2._dp,4.5_dp,prism,ok)
+      call require(ok.and.prism%is_valid(),'faceted extrusion')
+      call assert_close(sum(prism%volume_fraction)*prism%dx*prism%dy*prism%dz, &
+        sum(section%volume_fraction)*section%dx*section%dy*2.5_dp,tolerance,'section volume extrusion')
+      call assert_close(sum(prism%boundary_area),sum(section%boundary_length)*2.5_dp,tolerance,'faceted area')
+      call assert_close(maximum_geometric_residual(prism),0._dp,tolerance,'faceted closure')
+    end do
+    prior=prism
+    call extrude_eb_geometry_3d(section,0,3,2._dp,4.5_dp,prism,ok)
+    call require(.not.ok.and.all(prism%volume_fraction==prior%volume_fraction),'invalid axis preserves geometry')
+    call extrude_eb_geometry_3d(section,3,0,2._dp,4.5_dp,prism,ok)
+    call require(.not.ok.and.prism%is_valid(),'invalid layers preserves geometry')
+    call extrude_eb_geometry_3d(section,3,3,4.5_dp,2._dp,prism,ok)
+    call require(.not.ok.and.prism%is_valid(),'invalid bounds preserves geometry')
+    prism%boundary_area=.5_dp*prism%boundary_area
+    call require(.not.prism%is_valid(),'area below integrated normal rejected')
+    section%volume_fraction(1,1)=-1._dp
+    call extrude_eb_geometry_3d(section,3,3,2._dp,4.5_dp,prior,ok)
+    call require(.not.ok.and.prior%is_valid(),'invalid section preserves geometry')
+  end block
 
   write(*, '(a)') "test_eb_geometry_3d: PASS"
 
