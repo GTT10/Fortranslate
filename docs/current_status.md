@@ -111,6 +111,10 @@ An EB temperature-tagging API now selects deterministic coarse-index tiles
 from exposed coarse/fine fluid temperatures, with buffered tagging and
 transactional capacity rejection. Adaptive application and restart dispatch
 remain open ([tagging evidence](validation/eb-temperature-tagging-20260917.md)).
+Multipatch update APIs now accept zero fine patches and retain exact
+single-grid split behavior and exchange budgets, enabling the numerical
+endpoint for full derefinement; zero-patch application/restart wiring remains
+open ([coarse-only evidence](validation/eb-coarse-only-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
