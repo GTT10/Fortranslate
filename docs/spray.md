@@ -142,6 +142,21 @@ other step failures retain their existing retry behavior. The flag is reset
 on entry and is separate from `ok`. See
 [rejection evidence](validation/spray-eb-impact-rejection-20260918.md).
 
+`migrate_mpi_amr_wall_films` now accepts optional `nodal_phi` for stationary
+EB films. It validates each film against the nodal surface and assigns it to
+the finest cell containing a short fluid-side normal probe; the transmitted
+film retains its exact surface position. This resolves ownership at EB surfaces
+coincident with refinement boundaries without assigning a film to the solid side.
+The original nodal lattice may be an integer isotropic refinement of the current
+finest tree, so it can be retained after coarsening. EB option presence, lattice
+dimensions and every nodal value must agree across ranks; empty ranks participate.
+Owner/capacity checks and all payload exchanges remain collective and transactional.
+Probe endpoints must stay inside the root domain, with the same offset and
+normal/location tolerances as serial EB film exchange. Films have no global ID;
+receive ordering remains source rank then local order. This adds migration only;
+distributed EB impact, film exchange and checkpoint integration remain open.
+See [MPI film ownership evidence](validation/spray-mpi-eb-film-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
