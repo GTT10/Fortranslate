@@ -198,7 +198,7 @@ MPI common-interval molecular transport and exposed-cell reaction now wrap
 hydro in transactional R/2 T/2 H T/2 R/2 composition, with focused serial state
 parity for explicit/implicit chemistry ([MPI coupled evidence](validation/mpi-eb-tree-full-20260918.md)).
 The fixed-mechanism `pelef_mpi_reactive_eb_tree_3d` application now connects
-static or scheduled common-interval stepping, root-gathered CSV/checkpoints and
+static or scheduled common-interval stepping, CSV/checkpoints and
 changed-rank/serial restart ([MPI application evidence](validation/mpi-eb-tree-application-20260918.md)).
 MPI automatic intervals now combine collective remote-donor maxima and owner-local
 patch bounds, with exact focused serial timestep/state parity and changed-rank
@@ -229,7 +229,10 @@ stepping controls and identity-bound checkpoints with serial. Its dedicated
 runtime excludes fixed mechanism libraries, with focused H2/O2 implicit
 changed-rank/serial restart parity
 ([selected MPI evidence](validation/mpi-eb-tree-selected-20260918.md)).
-EB tree distributed I/O remains open.
+EB tree state CSV now uses owner-local MPI-IO chunks in serial row order,
+with fixed/selected byte parity and preflight output protection
+([distributed CSV evidence](validation/mpi-eb-tree-csv-20260918.md)).
+Distributed checkpoint I/O remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
