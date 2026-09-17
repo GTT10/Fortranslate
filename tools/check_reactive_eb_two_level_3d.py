@@ -76,7 +76,43 @@ def main():
     alias = source.replace("output_file='eb_two_level.csv'", "output_file='alias.nml'")
     run('alias.nml', alias, False)
     assert (work / 'alias.nml').read_text() == alias
-    print('PASS: two-level EB application, composite output, inventories and rejected-input preservation')
+    def options(**values):
+        extra = ''.join(f"  {key}={value},\n" for key, value in values.items())
+        return source.replace("\n/", "\n" + extra + "/")
+
+    stopped = options(checkpoint_file="'two_level.chk'", checkpoint_interval_steps=1, stop_after_checkpoint='.true.')
+    stopped = stopped.replace('final_time=3.0e-8', 'final_time=1.0e-8').replace('maximum_steps=10', 'maximum_steps=1')
+    log = run('stopped.nml', stopped, True)
+    assert 'Completed steps: 1' in log
+    checkpoint = work / 'two_level.chk'
+    original_checkpoint = checkpoint.read_bytes()
+    log = run('resumed.nml', options(restart_file="'two_level.chk'"), True)
+    assert 'Completed steps: 3' in log
+    assert saved == (output.read_bytes(), budget_path.read_bytes()), 'restart differs from uninterrupted output'
+    assert checkpoint.read_bytes() == original_checkpoint
+    # Reject corruption in the second patch, trailing data and incompatible
+    # numerical controls before writing either application output.
+    records = original_checkpoint.decode()
+    second = records.index('PELEF_REACTIVE_EB_3D_CHECKPOINT', records.index('PELEF_REACTIVE_EB_3D_CHECKPOINT') + 1)
+    damaged_budget = records.splitlines()
+    values = damaged_budget[4].split()
+    values[2 * len(fields)] = '1.0e10'
+    damaged_budget[4] = ' '.join(values)
+    for name, content in [('truncated', records[:second + 100]),
+                          ('budget', '\n'.join(damaged_budget) + '\n'),
+                          ('trailing', records + 'garbage\n'),
+                          ('terminator', records.replace('END_TWO_LEVEL_CHECKPOINT', 'BAD_END'))]:
+        (work / (name + '.chk')).write_text(content)
+        run(name + '.nml', options(restart_file=f"'{name}.chk'"), False)
+        assert saved == (output.read_bytes(), budget_path.read_bytes())
+    run('changed_dt.nml', options(restart_file="'two_level.chk'").replace('time_step=1.0e-8', 'time_step=2.0e-8'), False)
+    run('changed_physics.nml', options(restart_file="'two_level.chk'").replace('transport_enabled=.true.',
+                                                                            'transport_enabled=.false.'), False)
+    assert saved == (output.read_bytes(), budget_path.read_bytes())
+    alias = options(checkpoint_file="'checkpoint_alias.nml'", checkpoint_interval_steps=1)
+    run('checkpoint_alias.nml', alias, False)
+    assert (work / 'checkpoint_alias.nml').read_text() == alias
+    print('PASS: two-level EB application, inventories, exact restart and rejected-input preservation')
 
 
 if __name__ == '__main__':

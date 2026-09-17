@@ -1130,7 +1130,7 @@ contains
     real(dp) :: axis_lower, axis_upper, spacing, coordinate, tolerance
     real(dp) :: cut_fraction
 
-    valid = min(config%nx, config%ny, config%nz) >= 2 .and. &
+    valid = min(config%nx, config%ny, config%nz) >= merge(1,2,trim(config%redistribution)=="none") .and. &
       config%maximum_steps > 0 .and. &
       all(ieee_is_finite([config%x_lower, config%x_upper, &
         config%y_lower, config%y_upper, config%z_lower, config%z_upper, &
@@ -1154,11 +1154,11 @@ contains
       config%initial_pressure > 0.0_dp .and. config%checkpoint_interval_steps >= 0
     if (.not. valid) return
     if (config%transport_enabled .and. &
-        trim(config%redistribution) /= "state_redist") then
+        trim(config%redistribution) /= "state_redist" .and. trim(config%redistribution) /= "none") then
       valid = .false.
       return
     end if
-    if (config%transport_enabled .and. &
+    if (config%transport_enabled .and. trim(config%redistribution) /= "none" .and. &
         .not. (config%viscosity_enabled .or. &
           config%thermal_conduction_enabled .or. &
           config%species_diffusion_enabled)) then
@@ -1181,7 +1181,7 @@ contains
       return
     end if
     if (trim(config%redistribution) /= "flux_redist" .and. &
-        trim(config%redistribution) /= "state_redist") then
+        trim(config%redistribution) /= "state_redist" .and. trim(config%redistribution) /= "none") then
       valid = .false.
       return
     end if
@@ -1212,6 +1212,10 @@ contains
       valid = .false.
       return
     end select
+    ! Plain Euler patches may contain a grid-aligned plane or lie entirely on
+    ! one side of it. Their stored metrics remain independently validated.
+    ! The single-level application parser still requires redistribution.
+    if (trim(config%redistribution) == "none") return
     if (config%plane_position <= axis_lower .or. &
         config%plane_position >= axis_upper - spacing) then
       valid = .false.
