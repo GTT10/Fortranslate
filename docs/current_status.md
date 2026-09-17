@@ -613,8 +613,10 @@ rebalancing also carries film state atomically with gas and particles
 ([evidence](validation/spray-amr-film-balance-20260918.md)). AMR particle intervals
 now connect the existing planar impact model to film creation, wall impulse/energy
 and optional splash children, and the reacting wrapper carries those films
-([evidence](validation/spray-amr-impact-20260918.md)). Application/restart film
-integration and EB solid handling remain open.
+([evidence](validation/spray-amr-impact-20260918.md)). Film-aware checkpoint
+records now restore gas/particles/films and cumulative budgets together across
+rank-count changes ([evidence](validation/spray-amr-film-checkpoint-20260918.md)).
+Application film controls/integration and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
