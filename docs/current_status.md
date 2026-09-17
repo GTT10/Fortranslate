@@ -560,8 +560,12 @@ owners and refreshes covered parents without a full-field gather
 ([evidence](validation/spray-amr-deposition-20260918.md)). MPI gas feedback now
 recovers owner-local temperatures after parent averaging and commits U/T
 collectively, with initial-state validation and failure rollback
-([evidence](validation/spray-amr-mpi-gas-20260918.md)). Coupled particle stepping
-and EB solid handling remain open.
+([evidence](validation/spray-amr-mpi-gas-20260918.md)). A periodic MPI AMR
+mixed-particle interval now connects drag/heating/evaporation, representative
+breakup and KH children, common substeps, transactional gas feedback and final
+finest-owner migration ([evidence](validation/spray-amr-step-20260918.md)).
+Application gas-step/regrid/injection/checkpoint orchestration, AMR physical
+particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
