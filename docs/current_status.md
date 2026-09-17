@@ -20,8 +20,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 A library API now coarsens 3D EB geometry while preserving physical moments and
 face closure; it rejects disconnected or unrepresentable coarse cells
-([evidence](validation/eb-geometry-coarsening-20260917.md)). EB state transfer,
-reflux and patch-tree/MPI stepping are not yet connected.
+([evidence](validation/eb-geometry-coarsening-20260917.md)). Reactive volume-weighted restriction and PCM prolongation now preserve conserved
+components and recover EOS temperatures transactionally
+([evidence](validation/eb-state-transfer-20260917.md)). EB reflux and
+patch-tree/MPI stepping are not yet connected.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
