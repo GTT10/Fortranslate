@@ -12,7 +12,85 @@ module eb_reactive_reflux_3d_mod
     real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
   end type eb_integrated_flux_3d
   public :: restrict_eb_integrated_flux_3d,reflux_reactive_eb_state_3d
+  public :: reconcile_reactive_eb_peer_flux_3d
 contains
+  ! The caller selects a deterministic owner for a shared same-level face.
+  ! Replace the receiver's integrated face flux with the owner's physical
+  ! transfer and correct the already advanced receiver state by the difference.
+  ! Owner data is read-only; receiver flux, conserved state and T commit together.
+  subroutine reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,receiver_offset,owner_flux, &
+      receiver_flux,state,temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: owner,receiver
+    integer, intent(in) :: receiver_offset(3)
+    type(eb_integrated_flux_3d), intent(in) :: owner_flux
+    type(eb_integrated_flux_3d), intent(inout) :: receiver_flux
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    logical, intent(out) :: ok
+    type(eb_integrated_flux_3d) :: candidate_flux
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
+    real(dp) :: spacing(3),rspacing(3),origin(3),expected(3),tol,oa,ra,owner_area,receiver_area,volume,sound_speed
+    real(dp) :: primitive(reactive_nprim(size(species))),replacement(reactive_nvar(size(species)))
+    integer :: n(3),rn(3),nvar,axis,side,first(3),last(3),index(3),cell(3),oface(3),rface(3),i,j,k
+    logical :: valid
+    ok=.false.
+    if (.not.owner%is_valid().or..not.receiver%is_valid()) return
+    n=[owner%nx,owner%ny,owner%nz];rn=[receiver%nx,receiver%ny,receiver%nz]
+    if (any(receiver_offset < -rn).or.any(receiver_offset>n)) return
+    if (all(receiver_offset<n.and.receiver_offset+rn>0)) return
+    spacing=[owner%dx,owner%dy,owner%dz];rspacing=[receiver%dx,receiver%dy,receiver%dz]
+    tol=512._dp*epsilon(1._dp)
+    if (any(abs(rspacing-spacing)>tol*spacing)) return
+    origin=[owner%x_lower,owner%y_lower,owner%z_lower]
+    expected=origin+real(receiver_offset,dp)*spacing
+    if (any(abs([receiver%x_lower,receiver%y_lower,receiver%z_lower]-expected)> &
+      tol*max(1._dp,maxval(abs(origin)),maxval(abs(expected))))) return
+    nvar=reactive_nvar(size(species))
+    if (any(shape(state)/=[nvar,rn]).or.any(shape(temperature)/=rn)) return
+    if (.not.valid_flux(owner_flux,owner,nvar).or..not.valid_flux(receiver_flux,receiver,nvar)) return
+    candidate_flux=receiver_flux;candidate=state;temps=temperature
+    do axis=1,3
+      do side=0,1
+        if (side==0.and.receiver_offset(axis)+rn(axis)/=0) cycle
+        if (side==1.and.receiver_offset(axis)/=n(axis)) cycle
+        first=max(1,receiver_offset+1);last=min(n,receiver_offset+rn)
+        first(axis)=side*(n(axis)+1);last(axis)=first(axis)
+        if (any(first>last)) cycle
+        do k=first(3),last(3)
+          do j=first(2),last(2)
+            do i=first(1),last(1)
+              index=[i,j,k];cell=index-receiver_offset
+              oface=index;oface(axis)=side*n(axis)
+              rface=cell;rface(axis)=cell(axis)-side
+              oa=aperture(owner,axis,oface);ra=aperture(receiver,axis,rface)
+              if (abs(oa-ra)>tol) return
+              if ((oa>0._dp).neqv.(ra>0._dp)) return
+              if (oa<=0._dp) cycle
+              if (receiver%volume_fraction(cell(1),cell(2),cell(3))<=0._dp) return
+              owner_area=oa*product(spacing)/spacing(axis)
+              receiver_area=ra*product(rspacing)/rspacing(axis)
+              volume=receiver%volume_fraction(cell(1),cell(2),cell(3))*product(rspacing)
+              replacement=(owner_area/receiver_area)*face(owner_flux,axis,oface)
+              candidate(:,cell(1),cell(2),cell(3))=state(:,cell(1),cell(2),cell(3))+ &
+                real(2*side-1,dp)*(receiver_area/volume)*(replacement-face(receiver_flux,axis,rface))
+              if (.not.ieee_is_finite(temperature(cell(1),cell(2),cell(3)))) return
+              if (temperature(cell(1),cell(2),cell(3))<=0._dp) return
+              call reactive_conserved_to_primitive(species,candidate(:,cell(1),cell(2),cell(3)), &
+                temperature(cell(1),cell(2),cell(3)),primitive,temps(cell(1),cell(2),cell(3)),sound_speed,valid)
+              if (.not.valid) return
+              select case(axis)
+              case(1);candidate_flux%x(:,rface(1),rface(2),rface(3))=replacement
+              case(2);candidate_flux%y(:,rface(1),rface(2),rface(3))=replacement
+              case(3);candidate_flux%z(:,rface(1),rface(2),rface(3))=replacement
+              end select
+            end do
+          end do
+        end do
+      end do
+    end do
+    receiver_flux=candidate_flux;state=candidate;temperature=temps;ok=.true.
+  end subroutine reconcile_reactive_eb_peer_flux_3d
+
   subroutine restrict_eb_integrated_flux_3d(fine,ratio,fine_flux,coarse_flux,ok)
     type(eb_geometry_3d), intent(in) :: fine
     integer, intent(in) :: ratio
