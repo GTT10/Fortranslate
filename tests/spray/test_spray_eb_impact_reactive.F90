@@ -36,7 +36,7 @@ program test_spray_eb_impact_reactive
   real(dp) :: ledger(5),interval=1e-8_dp
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
-  logical :: ok
+  logical :: ok,rejected
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
   end do
@@ -121,13 +121,24 @@ program test_spray_eb_impact_reactive
   call require(any(chemical(6:)/=0),'active chemistry ledger')
   deallocate(drops,masses,films,film_mass)
   end do
-  print *, 'PASS: reactive EB deposition, splash and films with atomic ledgers'
+  state=saved;temperature=saved_t
+  allocate(drops(1),masses(2,1),films(1),film_mass(2,1));last_id=1
+  drops(1)=saved_drop;masses=saved_mass
+  films(1)%position=[.00125_dp,.0015_dp,.0015_dp];films(1)%normal=[1._dp,0._dp,0._dp]
+  films(1)%mass=1e-10_dp;films(1)%temperature=350;films(1)%height=2e-6_dp;films(1)%diameter=1e-4_dp
+  film_mass(:,1)=films(1)%mass*[.25_dp,.75_dp]
+  walls%evolve=.false.;wall=42;theta=42
+  call advance()
+  call require(.not.ok.and.rejected.and.steps==0,'inadmissible wet correlation is terminal')
+  call require(all(state==saved).and.all(temperature==saved_t).and.all(masses==saved_mass),'model gas rollback')
+  call require(films(1)%mass==1e-10_dp.and.last_id==1.and.all(wall==42).and.theta==42,'model film ID rollback')
+  print *, 'PASS: reactive EB impacts, films, rollback and terminal model rejection'
 contains
   subroutine advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
-      wall_options=walls,films=films,film_mass=film_mass,last_id=last_id)
+      wall_options=walls,films=films,film_mass=film_mass,last_id=last_id,model_rejected=rejected)
   end subroutine
   subroutine inventory(total)
     real(dp), intent(out) :: total(:)

@@ -147,6 +147,13 @@ if a.restart:
     run = subprocess.run([exe, 'truncated.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
     (work / 'truncated.log').write_text(run.stdout + run.stderr)
     assert run.returncode != 0 and checkpoint.read_bytes() == payload
+if a.impacts == 'splash':
+    wet = (work / 'spray.nml').read_text().replace('total_mass=1e-16', 'total_mass=1e-10')
+    (work / 'invalid_wet.nml').write_text(wet)
+    run = subprocess.run([exe, 'gas.nml', 'invalid_wet.nml'], cwd=work,
+                         capture_output=True, text=True, timeout=10)
+    (work / 'wet_rejection.log').write_text(run.stdout + run.stderr)
+    assert run.returncode != 0 and 'EB impact correlation outside admissible' in run.stderr
 # An output alias must fail before overwriting the spray input (absolute/relative mix).
 original = (work / 'spray.nml').read_bytes()
 gas = (work / 'gas.nml').read_text().replace("output_file='gas.csv'", f"output_file='{work / 'spray.nml'}'")

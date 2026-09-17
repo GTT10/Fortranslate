@@ -51,7 +51,7 @@ contains
   subroutine advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id)
+      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -71,7 +71,8 @@ contains
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: patch_mass(:,:)
     integer(int64) :: watermark
-    logical :: impacts
+    logical :: impacts,rejected
+    logical, optional, intent(out) :: model_rejected
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemistry_change(:)
     integer, intent(out) :: particle_steps
     logical, intent(out) :: ok
@@ -83,6 +84,7 @@ contains
     real(dp) :: chemical(reactive_nvar(size(species))),first_wall(5),second_wall(5),theta
     integer :: first_steps,second_steps,nv
     logical :: valid
+    if (present(model_rejected)) model_rejected=.false.
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0.or.dt>1e6_dp) return
@@ -100,7 +102,11 @@ contains
     first_wall=0;second_wall=0;boundary=0;wall=0;chemical=0
     if (impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-        .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark)
+        .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      if (rejected) then
+        if (present(model_rejected)) model_rejected=.true.
+        return
+      end if
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
         .5_dp*dt,first_steps,first_wall,valid)
@@ -113,7 +119,11 @@ contains
     if (.not.valid) return
     if (impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-        .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark)
+        .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      if (rejected) then
+        if (present(model_rejected)) model_rejected=.true.
+        return
+      end if
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
         .5_dp*dt,second_steps,second_wall,valid)

@@ -69,7 +69,7 @@ contains
     real(dp) :: time,dt,hydro_dt,transport_dt,diffusivity,theta,rho,cp,e
     integer :: unit,status,close_status,nv,n,p,step,attempt,particle_steps,next_event
     integer(int64) :: last_id
-    logical :: ok
+    logical :: ok,model_rejected
     integer :: last_checkpoint_step
     character(len=:), allocatable :: context,checkpoint_path
     character(len=1024) :: message
@@ -197,7 +197,8 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id)
+          walls,films,film_mass,last_id,model_rejected)
+          if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
           drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &

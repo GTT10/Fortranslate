@@ -5,6 +5,7 @@ module spray_eb_impact_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_wall_impact_mod, only: spray_wall_film,resolve_mixture_wall_impact,mixture_impact_boiling_temperature
+  use spray_wall_impact_mod, only: classify_wall_impact,splash_mass_fractions,splash_velocity_components
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   implicit none
   private
@@ -21,7 +22,7 @@ contains
   ! Caller supplies local wall temperature/thickness and advances remaining flight.
   subroutine impact_mixture_level_set(phi,lower,upper,previous,parent,components,component_mass,properties, &
       molecular_weights,pressure,wall_temperature,film_thickness,contact_angle,first_id, &
-      children,child_mass,deposit,film_mass,wall,fraction,regime,hit,ok)
+      children,child_mass,deposit,film_mass,wall,fraction,regime,hit,ok,model_rejected)
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),previous(3),molecular_weights(:)
     real(dp), intent(in) :: pressure,wall_temperature,film_thickness,contact_angle
     type(spray_parcel), intent(inout) :: parent
@@ -34,6 +35,7 @@ contains
     type(spray_wall_film), intent(inout) :: deposit
     integer, intent(inout) :: regime
     logical, intent(out) :: hit,ok
+    logical, optional, intent(out) :: model_rejected
     type(spray_parcel) :: trial
     type(spray_parcel), allocatable :: spawned(:)
     type(spray_wall_film) :: deposited
@@ -41,9 +43,11 @@ contains
     real(dp), allocatable :: spawned_mass(:,:)
     real(dp) :: y(size(components)),masses(size(components)),film(size(components)),budget(5)
     real(dp) :: location(3),normal(3),at,rho,cp,e,boil,d,mu,un,we,re,kv,kcrit
+    real(dp) :: alpha,ms,dm,parts(4),velocities(5),tangent
     integer :: cell(3),kind
     logical :: crossed,valid
     ok=.false.;hit=.false.
+    if (present(model_rejected)) model_rejected=.false.
     if(size(components)<1.or.size(components)>16) return
     if(size(component_mass)/=size(components).or.size(film_mass)/=size(components)) return
     if(.not.valid_spray_parcel(parent).or..not.valid_component_inventory(parent,component_mass)) return
@@ -74,6 +78,21 @@ contains
     kv=sqrt(we*sqrt(re))
     kcrit=(26.788_dp*log(pressure*1e-5_dp)+33.546_dp)*exp(-.006_dp*(wall_temperature-260))+36
     if(kcrit<0) return
+    ! Identify inadmissible empirical output separately from step-size failures.
+    alpha=max(acos(-1._dp)/6,asin(min(1._dp,un/norm2(parent%velocity))))
+    call classify_wall_impact(kv,wall_temperature/boil,alpha,kcrit,film_thickness/d,kind,ms,dm,valid)
+    if (valid.and.ms>0) then
+      call splash_mass_fractions(alpha,ms,film_thickness/d,parts,valid)
+      if (valid) then
+        tangent=norm2(parent%velocity+un*normal)
+        call splash_velocity_components(-un,tangent,kv,film_thickness/d,velocities,valid)
+        valid=valid.and.velocities(5)>=0
+      end if
+    end if
+    if (.not.valid) then
+      if (present(model_rejected)) model_rejected=.true.
+      return
+    end if
     trial=parent;masses=component_mass;film=0
     call resolve_mixture_wall_impact(trial,components,masses,location,normal,kv,wall_temperature/boil,kcrit, &
       film_thickness/d,we,re,contact_angle,first_id,spawned,spawned_mass,deposited,film,budget,kind,valid)
@@ -86,7 +105,7 @@ contains
   ! IDs must be sorted on input. Capacities bound all intermediate births/deposits.
   subroutine advance_mixture_level_set_impacts(phi,lower,upper,dt,maximum_hits,capacity,film_capacity, &
       components,properties,molecular_weights,pressure,wall_temperature,contact_angle, &
-      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures)
+      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures,model_rejected)
     use spray_eb_drift_mod, only: drift_spray_level_set
     use spray_wall_impact_mod, only: valid_wall_component_inventory
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt,molecular_weights(:)
@@ -102,6 +121,7 @@ contains
     real(dp), intent(inout) :: wall(5)
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
+    logical, optional, intent(out) :: model_rejected
     type(spray_parcel), allocatable :: queue(:),children(:),empty(:),result(:)
     type(spray_wall_film), allocatable :: patches(:)
     type(spray_wall_film) :: patch
@@ -111,8 +131,9 @@ contains
     real(dp) :: film_mass(size(components)),check(5),time_left
     integer :: n,nf,p,f,j,nc,count,cell(3),regime,stat,live
     integer(int64) :: watermark
-    logical :: valid,hit
+    logical :: valid,hit,rejected
     ok=.false.
+    if (present(model_rejected)) model_rejected=.false.
     if (.not.allocated(parcels).or..not.allocated(masses)) return
     if (.not.allocated(films).or..not.allocated(film_masses)) return
     n=size(parcels);nf=size(films);nc=size(components)
@@ -169,7 +190,11 @@ contains
         if (watermark>huge(watermark)-4_int64) return
         call impact_mixture_level_set(phi,lower,upper,previous,queue(p),components,inventory(:,p),properties, &
           molecular_weights,local_pressure(p),wall_temperature,thickness,contact_angle,watermark+1_int64, &
-          children,child_mass,patch,film_mass,budget,fraction,regime,hit,valid)
+          children,child_mass,patch,film_mass,budget,fraction,regime,hit,valid,rejected)
+        if (rejected) then
+          if (present(model_rejected)) model_rejected=.true.
+          return
+        end if
         if (.not.valid.or..not.hit) return
         if (size(children)>capacity-n) return
         if (patch%mass>0) then

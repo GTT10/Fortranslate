@@ -41,7 +41,7 @@ contains
     parcels=drops;component_mass=masses
   end subroutine
   subroutine advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
-      parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id)
+      parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id,model_rejected)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -59,7 +59,8 @@ contains
     real(dp), allocatable :: patch_mass(:,:),next_patch_mass(:,:)
     real(dp) :: molecular_weights(size(components))
     integer(int64) :: watermark,next_watermark
-    logical :: impacts
+    logical :: impacts,rejected
+    logical, optional, intent(out) :: model_rejected
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
     type(spray_parcel), allocatable :: drops(:),trial(:)
@@ -73,6 +74,7 @@ contains
     real(dp) :: film_change(5)
     logical :: valid,accepted
     ok=.false.;substeps=0
+    if (present(model_rejected)) model_rejected=.false.
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
     if (.not.ieee_is_finite(interval)) return
     if (interval<0.or.interval>1e6_dp.or.options%khrt_children) return
@@ -212,10 +214,15 @@ contains
               call advance_eb_film_coupling(species,transport,components,options,wall_options,g,phi, &
                 next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid)
             end if
+            rejected=.false.
             if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
-              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,primitive(5,:))
+              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,primitive(5,:),rejected)
+            if (rejected) then
+              if (present(model_rejected)) model_rejected=.true.
+              return
+            end if
             exchange=-exchange
           else
             call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
