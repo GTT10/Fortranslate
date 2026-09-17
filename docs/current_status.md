@@ -593,9 +593,12 @@ a transactional global mass/momentum/energy/species boundary ledger
 ([evidence](validation/spray-amr-boundaries-20260918.md)). The reacting wrapper
 now combines gas and particle physical-boundary inventories transactionally
 for common or recursive gas steps
-([evidence](validation/spray-amr-reactive-boundaries-20260918.md)). Application
-and checkpoint physical-boundary integration, wall-film coupling and EB solid
-handling remain open.
+([evidence](validation/spray-amr-reactive-boundaries-20260918.md)). Fixed/selected
+applications now connect physical gas/particle boundaries, reservoir timestep
+bounds, boundary-aware migration/regridding and cumulative boundary inventory
+through changed-rank checkpoint continuation
+([evidence](validation/spray-amr-open-application-20260918.md)). Wall-film coupling
+and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
