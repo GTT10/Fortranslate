@@ -74,8 +74,13 @@ program pelef_reactive_eb_tree_3d
   character(len=:), allocatable :: element_names(:),bundle_identity,checkpoint_integrator
   real(dp), allocatable :: element_atoms(:,:),base_mole_fractions(:)
 #ifdef PELEF_MPI_EB_SPRAY
-  type(spray_parcel), allocatable :: drops(:),injection_template(:)
-  real(dp), allocatable :: injection_fractions(:)
+  type eb_injection_port
+    type(spray_parcel), allocatable :: parcels(:)
+    real(dp), allocatable :: fractions(:)
+  end type
+  type(eb_injection_port), allocatable :: injection_ports(:)
+  type(spray_parcel), allocatable :: drops(:)
+  integer :: port_count=1,event_ports(1024)=1
   integer :: injection_events=1,next_injection=1
   integer(int64) :: last_particle_id=0
   real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
@@ -479,7 +484,9 @@ program pelef_reactive_eb_tree_3d
 contains
 #ifdef PELEF_MPI_EB_SPRAY
   subroutine initialize_particles()
-    integer :: nc,number,q,c,stream,code,closed
+    integer :: nc,number,q,c,stream,code,closed,port,port_numbers(16)
+    real(dp) :: port_centers(3,16),port_axes(3,16),port_masses(16),port_speeds(16)
+    real(dp) :: port_angles(16),port_diameters(16),port_temperatures(16),port_fractions(16,16)
     character(len=4096) :: context_line
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
@@ -488,7 +495,11 @@ contains
     type(spray_liquid) :: effective
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,particle_options,injection_events,injection_times,injection_scales
+      liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
+      port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions
+    port_count=1;event_ports=1;port_numbers=-1
+    port_centers=huge(1._dp);port_axes=huge(1._dp)
+    port_masses=-1;port_speeds=-1;port_angles=-1;port_diameters=-1;port_temperatures=-1;port_fractions=-1
     nc=1;number=1;vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
     reference_pressures=101325;latent_heats=2.257e6_dp;fractions=0;fractions(1)=1
     total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0
@@ -518,14 +529,37 @@ contains
         reference_pressures(c),latent_heats(c),liquids(c),ok)
       if(.not.ok) error stop 'Invalid liquid properties'
     end do
-    call liquid_mixture_properties(liquids,fractions(:nc),liquid_temperature,rho,cp,e,ok)
-    if(.not.ok) error stop 'Invalid liquid mixture'
-    effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
-    effective%reference_temperature=liquid_temperature;effective%reference_energy=e
-    call inject_cone_parcels(effective,total_mass,number,1_int64,center,axis,speed,half_angle, &
-      diameter,liquid_temperature,injection_template,ok)
-    if(.not.ok) error stop 'Invalid injection template'
-    injection_fractions=fractions(:nc)
+    if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'
+    if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
+      error stop 'Invalid injection event port'
+    allocate(injection_ports(port_count))
+    do port=1,port_count
+      if(port_numbers(port)==-1) port_numbers(port)=number
+      if(all(port_centers(:,port)==huge(1._dp))) port_centers(:,port)=center
+      if(all(port_axes(:,port)==huge(1._dp))) port_axes(:,port)=axis
+      if(port_masses(port)==-1) port_masses(port)=total_mass
+      if(port_speeds(port)==-1) port_speeds(port)=speed
+      if(port_angles(port)==-1) port_angles(port)=half_angle
+      if(port_diameters(port)==-1) port_diameters(port)=diameter
+      if(port_temperatures(port)==-1) port_temperatures(port)=liquid_temperature
+      if(all(port_fractions(:,port)==-1)) port_fractions(:,port)=fractions
+      if(port_numbers(port)<1.or.port_numbers(port)>min(125000,particle_options%maximum_parcels)) &
+        error stop 'Invalid port population'
+      if(.not.all(ieee_is_finite(port_fractions(:,port))).or.any(port_fractions(:,port)<0)) &
+        error stop 'Invalid port fractions'
+      if(abs(sum(port_fractions(:nc,port))-1)>1e-12_dp.or.any(port_fractions(nc+1:,port)/=0)) &
+        error stop 'Invalid port fraction sum'
+      call liquid_mixture_properties(liquids,port_fractions(:nc,port),port_temperatures(port),rho,cp,e,ok)
+      if(.not.ok) error stop 'Invalid injected port mixture'
+      effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
+      effective%reference_temperature=port_temperatures(port);effective%reference_energy=e
+      call inject_cone_parcels(effective,port_masses(port),port_numbers(port),1_int64, &
+        port_centers(:,port),port_axes(:,port),port_speeds(port),port_angles(port),port_diameters(port), &
+        port_temperatures(port),injection_ports(port)%parcels,ok)
+      if(.not.ok) error stop 'Invalid injection port template'
+      injection_ports(port)%fractions=port_fractions(:nc,port)
+      injection_ports(port)%parcels%material_id=port
+    end do
     allocate(drops(0),component_mass(nc,0))
     if(checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       open(newunit=stream,status='scratch',form='formatted',iostat=code)
@@ -556,6 +590,8 @@ contains
       if(injection_times(next_injection)>record%time) exit
       scale=injection_scales(next_injection)
       if(scale>0) then
+        associate(injection_template=>injection_ports(event_ports(next_injection))%parcels, &
+          injection_fractions=>injection_ports(event_ports(next_injection))%fractions)
         number=size(injection_template);local_count=size(drops)
         call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
         if(mpi_ierr/=MPI_SUCCESS) error stop 'Injection population reduction failed'
@@ -592,6 +628,7 @@ contains
         call move_alloc(candidate,drops)
         call move_alloc(masses,component_mass)
         last_particle_id=last_particle_id+number;injected=injected+change
+        end associate
       end if
       next_injection=next_injection+1
     end do
@@ -632,7 +669,7 @@ contains
     real(dp), allocatable :: components(:,:)
     real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time
     integer :: stream,code,closed,saved_steps,saved_event,expected_event,date(8)
-    integer(int64) :: watermark,expected_mark,tick
+    integer(int64) :: watermark,expected_mark,tick,expected_ids
     character(len=256) :: token,step_label
     character(len=:), allocatable :: path,bound_context,line
     logical :: valid,agreed,exists
@@ -745,8 +782,14 @@ contains
       if(saved_event<=injection_events) then
         if(injection_times(saved_event)<saved_time) error stop 'Missed restart injection'
       end if
-      if(watermark/=int(count(injection_scales(:saved_event-1)>0),int64)*size(injection_template)) &
-        error stop 'Invalid restart ID watermark'
+      expected_ids=0
+      do p=1,saved_event-1
+        if(injection_scales(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
+      end do
+      if(watermark/=expected_ids) error stop 'Invalid restart ID watermark'
+      do p=1,size(particles)
+        if(particles(p)%material_id>port_count) error stop 'Invalid restart particle port'
+      end do
       coupled%time=saved_time;coupled%steps=saved_steps
       coupled%minimum_dt=gas_record%minimum_dt;coupled%minimum_theta=gas_record%minimum_theta
       call integrate_mpi_eb_tree_3d(checkpoint_tree,checkpoint_owners,checkpoint_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
@@ -776,14 +819,15 @@ contains
     path=trim(output_file)//'.particles.rank'//trim(rank_label)//'.csv'
     open(newunit=stream,file=path,status='new',action='write',iostat=code)
     if(code/=0) error stop 'Cannot create particle CSV (existing files are protected)'
-    write(stream,'(a)',advance='no') 'id,x,y,z,u,v,w,mass,temperature,multiplicity'
+    write(stream,'(a)',advance='no') 'id,material_id,x,y,z,u,v,w,mass,temperature,multiplicity'
     do c=1,size(liquids)
       write(label,'(i0)') c
       write(stream,'(a)',advance='no') ',component_mass_'//trim(label)
     end do
     write(stream,*)
     do q=1,size(drops)
-      write(stream,'(i0,",",*(es25.16,:,","))',iostat=code) drops(q)%id,drops(q)%position,drops(q)%velocity, &
+      write(stream,'(i0,",",i0,",",*(es25.16,:,","))',iostat=code) &
+        drops(q)%id,drops(q)%material_id,drops(q)%position,drops(q)%velocity, &
         drops(q)%mass,drops(q)%temperature,drops(q)%multiplicity,component_mass(:,q)
       if(code/=0) error stop 'Cannot write particle CSV'
     end do

@@ -39,7 +39,7 @@ Output:
 - `result.csv.budget.csv`: combined gas-plus-particle initial/final inventories
   and exterior, wall, chemistry and injected exchanges, all with change-in-system signs.
   Initial inventory is gas before injection, including for a zero-time event.
-- `result.csv.particles.rank<R>.csv`: local parcel IDs, position, velocity,
+- `result.csv.particles.rank<R>.csv`: local parcel IDs, `material_id` (injection port), position, velocity,
   mass, temperature, multiplicity and per-drop component masses. Empty ranks
   write a header. IDs are global; concatenate and sort by ID for comparison.
   Existing particle CSV files are protected and cause the run to fail.
@@ -103,3 +103,36 @@ the next iteration. Restart validates the saved regrid schedule/stage and builds
 a private target hierarchy before restoring gas and particles. The remaining
 regrid and injection events then continue. The focused application evidence
 covers prescribed schedules; adaptive tagging is not newly qualified by it.
+
+## Independent injection ports
+
+`port_count` selects 1--16 ports; it defaults to one. `event_ports(e)` selects
+the port for each entry in the existing globally ordered injection schedule
+(default one). Equal times may select different ports; each event's scale
+multiplies that port's base injected mass. Ports may have different particle
+counts. Positive events reserve only their own count of consecutive global IDs;
+zero-scale events reserve none.
+
+Per-port arrays are `port_numbers`, `port_centers(3,16)`, `port_axes(3,16)`,
+`port_masses`, `port_speeds`, `port_angles`, `port_diameters`,
+`port_temperatures`, and `port_fractions(16,16)` (component, port). Unspecified
+entries inherit the corresponding legacy single-port input. The internal unset
+marker is -1 for scalar/fraction arrays and `huge(real64)` for complete vector
+columns. A supplied fraction column must specify all active fractions, zero
+unused entries, and sum to one. All ports share the component property table;
+their compositions, cone geometry and injection state can differ.
+
+For example, add a second port and select it at the second event:
+
+```fortran
+port_count=2,event_ports=1,2,
+port_numbers(2)=3,port_centers(:,2)=.003,.001250001,.0015,
+port_masses(2)=2.e-10,port_speeds(2)=30.,
+port_diameters(2)=2.e-5,port_temperatures(2)=360.,
+```
+
+The full normalized port configuration and event selections are bound into the
+checkpoint context. CSV `material_id` records the port number. The old single
+port input remains valid; checkpoints produced before this input/context extension
+are rejected by the strict context comparison. Events are specified in one
+ordered table; separate per-port rate-curve files are not connected here.

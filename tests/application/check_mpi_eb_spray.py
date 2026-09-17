@@ -20,6 +20,7 @@ def main():
     p.add_argument('--restart', action='store_true')
     p.add_argument('--rebalance', action='store_true')
     p.add_argument('--regrid', action='store_true')
+    p.add_argument('--ports', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -53,6 +54,14 @@ def main():
         if a.selected:
             extra += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
         (directory / 'tree.nml').write_text(text.replace('&eb_tree', '&eb_tree\n' + extra, 1))
+        if a.ports:
+            spray = directory / 'spray.nml'
+            values = spray.read_text().replace('nc=1,', "nc=2,vapor_names(2)='H2',")
+            values = values.replace('&eb_spray', '&eb_spray\n port_count=2,event_ports=1,2,2,1,2,1,'
+                'port_numbers(2)=3,port_centers(:,2)=.003,.001250001,.0015,'
+                'port_masses(2)=2.e-10,port_speeds(2)=30.,port_diameters(2)=2.e-5,'
+                'port_temperatures(2)=360.,port_fractions(:,2)=.25,.75,14*0.,', 1)
+            spray.write_text(values)
         if altered:
             spray = directory / 'spray.nml'
             spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
@@ -81,25 +90,33 @@ def main():
         files = sorted(directory.glob('result.csv.particles.rank*.csv'))
         assert len(files) == ranks
         drops = sorted((row for file in files for row in rows(file)), key=lambda row: int(row['id']))
-        assert [int(row['id']) for row in drops] == list(range(1, 9) if a.scheduled else range(1, 3))
+        assert [int(row['id']) for row in drops] == list(range(1, 11) if a.ports else range(1, 9) if a.scheduled else range(1, 3))
         if a.scheduled:
             assert 'Processed injection events: 5' in (directory / 'run.log').read_text()
             budget = rows(directory / 'result.csv.budget.csv')
-            assert abs(float(budget[0]['injected']) - 4.5e-10) < 4.5e-24
-            for first, second in zip(drops[:2], drops[2:4]):
+            expected_mass = 7.5e-10 if a.ports else 4.5e-10
+            assert abs(float(budget[0]['injected']) - expected_mass) < expected_mass * 1e-14
+            for first, second in ([] if a.ports else zip(drops[:2], drops[2:4])):
                 assert {k: v for k, v in first.items() if k != 'id'} == {
                     k: v for k, v in second.items() if k != 'id'}
 
         for row in drops:
             assert all(math.isfinite(float(v)) for v in row.values())
             assert float(row['mass']) > 0
-            if a.scheduled and int(row['id']) >= 7:
-                assert float(row['temperature']) == 350 and float(row['v']) == -20, row
+            port = 2 if a.ports and int(row['id']) in (3, 4, 5, 8, 9, 10) else 1
+            assert int(row['material_id']) == port
+            initial_t = 360 if port == 2 else 350
+            if a.scheduled and int(row['id']) >= (8 if a.ports else 7):
+                assert float(row['temperature']) == initial_t and float(row['v']) == (-30 if port == 2 else -20), row
                 assert float(row['y']) == .001250001, row
+                if a.ports:
+                    assert float(row['x']) == .003
+                    assert abs(float(row['component_mass_1']) / float(row['mass']) - .25) < 1e-14
             else:
                 assert float(row['y']) > .00125 and float(row['v']) > 0, row
-                assert float(row['temperature']) != 350, row
-            assert float(row['mass']) == float(row['component_mass_1'])
+                assert float(row['temperature']) != initial_t, row
+            component_sum = sum(float(v) for k, v in row.items() if k.startswith('component_mass_'))
+            assert abs(float(row['mass']) - component_sum) <= 1e-14 * float(row['mass'])
         particles.append(drops)
     for left, right in ((gas[0], gas[1]), (particles[0], particles[1])):
         assert len(left) == len(right) and len(left) > 0
