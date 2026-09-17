@@ -805,3 +805,27 @@ The selected frontend passes its bundle SHA-256. Static serial/MPI interchange
 therefore retains mechanism identity and exact temperature guesses. Scheduled or
 automatic regridding and recursive modes remain outside this MPI entry point.
 The existing writer's partial-file-on-I/O-error limitation also applies here.
+
+## Sparse MPI tree remapping
+
+`remap_mpi_amr_tree_3d` accepts old/new replicated tree metadata, independent
+owner maps, an explicit field count and a borrowed communicator. It stores only
+owned input/output payloads. Each rank builds the old exposed-cell geometry in
+exact integer least-common-multiple coordinates, marks cells intersecting its
+new exposed cells and requests each needed old cell once through the sparse
+cell-query API. No full-state gather or replicated field payload is used.
+
+Destination integration follows the serial source-cell order, overlap weights,
+compensated accumulation and coverage normalization. Distributed bottom-up
+restriction fills covered parent cells. A private candidate is published only
+after all ranks pass planning, allocation, finite-value and restriction checks.
+The reactive wrapper remaps conserved state and temperature guesses separately,
+then recovers temperatures from the remapped mixture before committing either.
+Source states remain unchanged. Species coefficient identity is a caller contract.
+
+The serial `covered` and `gcd` geometry helpers are shared without changing serial
+arithmetic. Integer-coordinate overflow is rejected. This initial implementation
+replicates exposed-cell geometry and scans old/new cell intersections quadratically;
+it does not claim production scaling or cache remap plans. Application event/tag
+selection, geometry replacement, owner-map policy and checkpoint event metadata
+are a subsequent integration layer.

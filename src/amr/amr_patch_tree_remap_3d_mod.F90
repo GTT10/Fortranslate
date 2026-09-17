@@ -14,6 +14,8 @@ module amr_patch_tree_remap_3d_mod
     integer :: node,index(3)
   end type
   public :: remap_amr_patch_tree_3d,remap_amr_patch_tree_reactive_3d
+  ! Shared geometry predicates for distributed conservative remapping.
+  public :: covered,gcd
 contains
   subroutine remap_amr_patch_tree_3d(old_tree,old_state,new_tree,new_state,ok)
     type(amr_patch_tree_3d), intent(in) :: old_tree,new_tree

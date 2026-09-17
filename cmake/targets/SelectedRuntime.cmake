@@ -541,6 +541,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_reflux_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
+      src/parallel/mpi_amr_patch_tree_remap_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_ghost_3d_mod.F90
       src/driver/mpi_amr_patch_tree_application_3d_mod.F90)
     set_target_properties(pelef_selected_mpi_amr_tree_reactive_3d_runtime PROPERTIES
