@@ -2,13 +2,58 @@ module spray_amr_tree_coupling_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d, &
     average_down_amr_patch_tree_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   implicit none
   private
   public :: amr_tree_spray_stencil,sample_amr_tree_spray_field,deposit_amr_tree_spray_field
+  public :: deposit_amr_tree_spray_gas
 contains
+  ! Keep conserved fields and EOS temperatures private until every patch accepts
+  ! the feedback, including parents refreshed by composite deposition.
+  subroutine deposit_amr_tree_spray_gas(species,tree,state,temperature,positions,contributions, &
+      lower,spacing,periodic,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: candidate,recovered
+    integer :: node,n(3)
+    logical :: valid
+    ok=.false.
+    if (.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
+    if (size(state%fields(1)%values,1)/=reactive_nvar(size(species))) return
+    if (size(temperature%fields(1)%values,1)/=1) return
+    recovered=temperature
+    do node=1,size(tree%nodes)
+      n=tree%nodes(node)%shape
+      call recover_reactive_temperatures_3d(species,state%fields(node)%values, &
+        temperature%fields(node)%values(1,:,:,:),n(1),n(2),n(3),recovered%fields(node)%values(1,:,:,:),valid)
+      if (.not.valid) return
+    end do
+    candidate=state
+    call deposit_amr_tree_spray_field(tree,candidate,positions,contributions,lower,spacing,periodic,valid)
+    if (.not.valid) return
+    if (size(positions,2)==0) then
+      ok=.true.;return
+    end if
+    do node=1,size(tree%nodes)
+      n=tree%nodes(node)%shape
+      call recover_reactive_temperatures_3d(species,candidate%fields(node)%values, &
+        temperature%fields(node)%values(1,:,:,:),n(1),n(2),n(3),recovered%fields(node)%values(1,:,:,:),valid)
+      if (.not.valid) return
+    end do
+    call move_alloc(candidate%fields,state%fields)
+    call move_alloc(recovered%fields,temperature%fields)
+    ok=.true.
+  end subroutine
+
   ! A rectangular cloud one containing-cell wide overlaps only exposed cells.
   ! On a uniform mesh this is the usual trilinear cloud-in-cell stencil.
   subroutine amr_tree_spray_stencil(tree,position,lower,spacing,periodic,cells,weights,volumes,ok,maximum_cells)

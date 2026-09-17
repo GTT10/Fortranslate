@@ -57,9 +57,15 @@ overlap entries are accepted (the stencil API permits a smaller capacity).
 Sampling and deposition use the same weights. Deposition accepts integrated
 amounts, divides by each receiver's physical cell volume, and averages covered
 parents after all leaf updates succeed. Outputs commit only after success;
-empty deposits preserve the entire input field. This is a generic field API:
-the coupled gas caller must still enforce thermodynamic admissibility and
-recover temperatures. No AMR convergence or physical spray validation is claimed.
+empty deposits preserve the entire input field. The generic field API does not
+enforce gas thermodynamics. Its `deposit_amr_tree_spray_gas` wrapper validates the
+initial gas, applies the same conservative field update, then recovers EOS
+temperatures on every patch, including averaged parents. Conserved fields and
+temperature fields commit together only if every cell accepts the update.
+Invalid density, species composition or internal energy reject the entire
+feedback. Empty gas feedback validates inputs and preserves both fields. This
+is a serial tree API; owner-local MPI feedback and the particle time integrator
+remain to be connected. No AMR convergence or physical spray validation is claimed.
 
 ## Build and run
 
