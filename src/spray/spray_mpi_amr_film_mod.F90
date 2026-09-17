@@ -5,6 +5,8 @@ module spray_mpi_amr_film_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
+  use spray_eb_intersection_mod, only: intersect_spray_level_set
+  use spray_eb_tree_stencil_mod, only: compatible_eb_nodal_lattice
   implicit none
   private
   public :: migrate_mpi_amr_wall_films
@@ -12,8 +14,9 @@ contains
   ! Stationary films use the finest containing cell, with closed physical bounds.
   ! Preserve exact wall coordinates and every film/component field. Films have
   ! no global ID; receive order is source rank followed by original local order.
-  subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok)
+  subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok,nodal_phi)
     type(MPI_Comm), intent(in) :: comm
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_wall_film), allocatable, intent(inout) :: films(:)
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
     real(dp), intent(in) :: lower(3),spacing(3)
@@ -27,8 +30,11 @@ contains
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(2),lowconfig(2),highconfig(2),nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(3),lowconfig(3),highconfig(3),nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
+    integer :: dims(3),reference_dims(3)
+    real(dp), allocatable :: reference_phi(:,:,:)
+    real(dp) :: probe_offset
     ok=.false.;nc=0
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -46,10 +52,10 @@ contains
     if (valid) valid=all(abs(lower)<=1.e9_dp).and.all(spacing>=1.e-12_dp).and.all(spacing<=1.e9_dp)
     call agree()
     if (.not.agreed) return
-    config=[nc,maximum_films];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,2,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[nc,maximum_films,merge(1,0,present(nodal_phi))];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,3,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,2,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,3,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -76,16 +82,40 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (valid) valid=all(domain<=2_int64**52)
     call agree();if (.not.agreed) return
+    if (present(nodal_phi)) then
+      dims=shape(nodal_phi)-1
+      valid=compatible_eb_nodal_lattice(dims,domain(:,size(ratios)))
+      valid=valid.and.all(ieee_is_finite(nodal_phi))
+      if (valid) valid=maxval(abs(nodal_phi))<=1e100_dp
+      call agree();if (.not.agreed) return
+      reference_dims=dims
+      call MPI_Bcast(reference_dims,3,MPI_INTEGER,0,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      valid=all(dims==reference_dims)
+      call agree();if (.not.agreed) return
+      allocate(reference_phi(0:dims(1),0:dims(2),0:dims(3)),stat=allocation_status)
+      valid=allocation_status==0;call agree();if (.not.agreed) return
+      reference_phi=nodal_phi
+      call MPI_Bcast(reference_phi,size(reference_phi),MPI_DOUBLE_PRECISION,0,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      valid=all(reference_phi==nodal_phi)
+      call agree();if (.not.agreed) return
+      deallocate(reference_phi)
+    end if
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)
     valid=all(upper>lower)
     call agree();if (.not.agreed) return
+    if (present(nodal_phi)) then
+      probe_offset=max(1e-8_dp*minval((upper-lower)/real(dims,dp)), &
+        128*epsilon(1._dp)*maxval(abs([lower,upper])))
+    end if
     allocate(counts(nranks),offsets(nranks),incoming(nranks),starts(nranks),cursor(nranks),owners(np),stat=allocation_status)
     valid=allocation_status==0;call agree();if (.not.agreed) return
     counts=0
     do p=1,np
       valid=valid_wall_component_inventory(films(p),component_mass(:,p))
       if (.not.valid) exit
-      r=owner(films(p)%position);valid=r>=0
+      r=film_owner(films(p));valid=r>=0
       if (.not.valid) exit
       owners(p)=r+1;counts(r+1)=counts(r+1)+1
     end do
@@ -122,13 +152,32 @@ contains
       candidate(p)=spray_wall_film(received(1:3,p),received(4:6,p),received(7,p),received(8,p), &
         received(9,p),received(10,p),got_material(p))
       masses(:,p)=received(11:,p)
-      valid=valid_wall_component_inventory(candidate(p),masses(:,p)).and.owner(candidate(p)%position)==r
+      valid=valid_wall_component_inventory(candidate(p),masses(:,p)).and.film_owner(candidate(p))==r
       if (.not.valid) exit
     end do
     call agree()
     if (.not.agreed) return
     call move_alloc(candidate,films);call move_alloc(masses,component_mass);ok=.true.
   contains
+    integer function film_owner(film) result(owner_rank)
+      type(spray_wall_film), intent(in) :: film
+      real(dp) :: probe(3),point(3),normal(3),fraction
+      integer :: cell(3)
+      logical :: hit,good
+      owner_rank=-1
+      if (present(nodal_phi)) then
+        probe=film%position+probe_offset*film%normal
+        point=0;normal=0;fraction=0;cell=0;hit=.false.
+        call intersect_spray_level_set(nodal_phi,lower,upper,probe,film%position-probe_offset*film%normal, &
+          hit,fraction,point,normal,cell,good)
+        if (.not.good.or..not.hit) return
+        if (norm2(point-film%position)>.01_dp*probe_offset) return
+        if (dot_product(normal,film%normal)<1-1e-10_dp) return
+        owner_rank=owner(probe)
+      else
+        owner_rank=owner(film%position)
+      end if
+    end function
     integer function owner(position) result(owner_rank)
       real(dp), intent(in) :: position(3)
       real(dp) :: fraction(3)
