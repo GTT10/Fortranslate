@@ -10,6 +10,7 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--fixed', type=Path, required=True)
     parser.add_argument('--selected', type=Path, required=True)
     parser.add_argument('--serial-fixed', type=Path, required=True)
@@ -27,6 +28,9 @@ def main():
     source = source.replace('hotspot_center_x=0.002, hotspot_center_y=0.002, hotspot_center_z=0.002',
                             'hotspot_center_x=0.0005, hotspot_center_y=0.0005, hotspot_center_z=0.0005')
     source = source.replace('wall_velocity(1,3)=2.0, wall_velocity(1,4)=2.0', 'wall_velocity=0.0')
+    if args.subcycling:
+        source = source.replace("reconstruction='pcm'", "reconstruction='characteristic_plm'")
+        source += '\n&amr_tree_timestepping subcycling=.true. /\n'
     adaptation = """
 &amr_tree_adaptation
  regrid_interval_steps=1, refinement_levels=2, refinement_ratios=2,2
@@ -68,7 +72,8 @@ def main():
         assert max(int(row['level']) for row in data) == 2
         assert abs(sum(float(row['dx']) * float(row['dy']) * float(row['dz']) for row in data) - .004**3) < 1e-20
         baseline = [output.read_bytes(), budget.read_bytes()]
-        run('serial_continuous', config + adaptation, ranks=0)
+        serial_log = run('serial_continuous', config + adaptation, ranks=0)
+        assert int(re.search(r'Steps:\s+(\d+)', serial_log)[1]) == steps
         assert [output.read_bytes(), budget.read_bytes()] == baseline
         stop = "\n&amr_tree_checkpoint checkpoint_file='auto.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true. /\n"
         # Exercise both optional-group orders.
@@ -95,6 +100,9 @@ def main():
         (directory / 'auto.chk').write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
         run('wrong_adaptation_counter', config + adaptation + restart, False, ranks=3)
         (directory / 'auto.chk').write_bytes(saved)
+        if args.subcycling:
+            run('changed_subcycling', config.replace('subcycling=.true.', 'subcycling=.false.') + adaptation + restart,
+                False, ranks=3)
         run('changed_threshold', config + adaptation.replace('1150,1150', '1160,1160') + restart, False)
         run('changed_cadence', config + adaptation.replace('regrid_interval_steps=1', 'regrid_interval_steps=2') + restart, False)
         run('node_budget', config + adaptation.replace('maximum_nodes=64', 'maximum_nodes=2'), False)

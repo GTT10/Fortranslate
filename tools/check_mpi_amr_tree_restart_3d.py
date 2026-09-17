@@ -23,10 +23,14 @@ def main():
     topology = case / 'branched.dat'
     if args.subcycling:
         if args.scheduled:
-            parser.error('The bounded subcycle fixture does not use a schedule')
-        args.workdir.mkdir(parents=True, exist_ok=True)
-        topology = (args.workdir / 'subcycle_tree.dat').resolve()
-        topology.write_text('1\n1 1 1 1 1 1 1 2\n')
+            # Isolate recursive geometry/event/restart integration; full split is checked separately.
+            template = template.replace('chemistry_enabled=.true., transport_enabled=.true.',
+                                        'chemistry_enabled=.false., transport_enabled=.false.')
+            template = template.replace('wall_velocity(1,3)=2.0, wall_velocity(1,4)=2.0', 'wall_velocity=0.0')
+        else:
+            args.workdir.mkdir(parents=True, exist_ok=True)
+            topology = (args.workdir / 'subcycle_tree.dat').resolve()
+            topology.write_text('1\n1 1 1 1 1 1 1 2\n')
         template += '\n&amr_tree_timestepping subcycling=.true. /\n'
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
     for kind in ('fixed', 'selected'):
