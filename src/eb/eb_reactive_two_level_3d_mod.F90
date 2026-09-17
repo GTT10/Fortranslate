@@ -9,7 +9,7 @@ module eb_reactive_two_level_3d_mod
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d,fill_reactive_eb_patch_halo_3d, &
-    overlay_reactive_eb_peer_halo_3d
+    overlay_reactive_eb_peer_halo_3d,prolong_reactive_eb_state_pcm_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,restrict_eb_integrated_flux_3d,reflux_reactive_eb_state_3d, &
     reconcile_reactive_eb_peer_flux_3d
@@ -20,6 +20,7 @@ module eb_reactive_two_level_3d_mod
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
   end type eb_reactive_patch_3d
+  public :: remap_reactive_eb_multipatch_3d
   public :: advance_reactive_eb_multipatch_full_3d
   public :: advance_reactive_eb_multipatch_euler_3d,advance_reactive_eb_multipatch_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_transport_3d
@@ -27,6 +28,108 @@ module eb_reactive_two_level_3d_mod
   public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
   public :: advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_full_3d
 contains
+  ! Fixed-geometry conservative regridding. New patch geometries are supplied
+  ! by the caller. Old/new arrays must be distinct; all output publishes once.
+  subroutine remap_reactive_eb_multipatch_3d(species,coarse,old_lower,old_ratio,old_patches, &
+      new_lower,new_ratio,new_patches,coarse_state,coarse_temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: coarse
+    integer, intent(in) :: old_lower(:,:),new_lower(:,:),old_ratio,new_ratio
+    type(eb_reactive_patch_3d), intent(in) :: old_patches(:)
+    type(eb_reactive_patch_3d), intent(inout) :: new_patches(:)
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    logical, intent(out) :: ok
+    type(eb_reactive_patch_3d), allocatable :: candidate(:)
+    type(eb_geometry_3d) :: old_overlap,new_overlap
+    real(dp), allocatable :: u(:,:,:,:),t(:,:,:),checked(:,:,:,:),checked_t(:,:,:)
+    integer :: n(3),nv,p,q,lo(3),hi(3),ol(3),oh(3),nl(3),nh(3),dims(3)
+    integer :: old_upper(3,size(old_patches)),new_upper(3,size(new_patches))
+    logical :: valid
+    ok=.false.
+    if (.not.coarse%is_valid()) return
+    n=[coarse%nx,coarse%ny,coarse%nz];nv=reactive_nvar(size(species))
+    if (any(shape(coarse_state)/=[nv,n]).or.any(shape(coarse_temperature)/=n)) return
+    call validate_layout(old_patches,old_lower,old_ratio,old_upper,valid)
+    if (.not.valid) return
+    call validate_layout(new_patches,new_lower,new_ratio,new_upper,valid)
+    if (.not.valid) return
+    u=coarse_state;t=coarse_temperature
+    do p=1,size(old_patches)
+      if (.not.allocated(old_patches(p)%state).or..not.allocated(old_patches(p)%temperature)) return
+      lo=old_lower(:,p);hi=old_upper(:,p)
+      call restrict_reactive_eb_state_3d(species,old_patches(p)%geometry,old_ratio, &
+        old_patches(p)%state,old_patches(p)%temperature,u(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        t(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),valid)
+      if (.not.valid) return
+    end do
+    ! Validate exposed parent cells as well as restricted fine cells, and
+    ! recover temperatures from the conserved donor state without aliasing.
+    checked=u;checked_t=t
+    call prolong_reactive_eb_state_pcm_3d(species,coarse,1,u,t,checked,checked_t,valid)
+    if (.not.valid) return
+    u=checked;t=checked_t
+    candidate=new_patches
+    do p=1,size(candidate)
+      dims=[candidate(p)%geometry%nx,candidate(p)%geometry%ny,candidate(p)%geometry%nz]
+      if (allocated(candidate(p)%state)) deallocate(candidate(p)%state)
+      if (allocated(candidate(p)%temperature)) deallocate(candidate(p)%temperature)
+      allocate(candidate(p)%state(nv,dims(1),dims(2),dims(3)), &
+        candidate(p)%temperature(dims(1),dims(2),dims(3)))
+      candidate(p)%state=0._dp;candidate(p)%temperature=0._dp
+      lo=new_lower(:,p);hi=new_upper(:,p)
+      call prolong_reactive_eb_state_pcm_3d(species,candidate(p)%geometry,new_ratio, &
+        u(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),t(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        candidate(p)%state,candidate(p)%temperature,valid)
+      if (.not.valid) return
+      if (old_ratio/=new_ratio) cycle
+      do q=1,size(old_patches)
+        lo=max(new_lower(:,p),old_lower(:,q));hi=min(new_upper(:,p),old_upper(:,q))
+        if (any(lo>hi)) cycle
+        nl=(lo-new_lower(:,p))*new_ratio+1;nh=(hi-new_lower(:,p)+1)*new_ratio
+        ol=(lo-old_lower(:,q))*old_ratio+1;oh=(hi-old_lower(:,q)+1)*old_ratio
+        call extract_eb_geometry_3d(candidate(p)%geometry,nl,nh,new_overlap,valid)
+        if (.not.valid) return
+        call extract_eb_geometry_3d(old_patches(q)%geometry,ol,oh,old_overlap,valid)
+        if (.not.valid) return
+        if (.not.matching_metrics(old_overlap,new_overlap)) return
+        candidate(p)%state(:,nl(1):nh(1),nl(2):nh(2),nl(3):nh(3))= &
+          old_patches(q)%state(:,ol(1):oh(1),ol(2):oh(2),ol(3):oh(3))
+        candidate(p)%temperature(nl(1):nh(1),nl(2):nh(2),nl(3):nh(3))= &
+          old_patches(q)%temperature(ol(1):oh(1),ol(2):oh(2),ol(3):oh(3))
+      end do
+    end do
+    coarse_state=u;coarse_temperature=t;new_patches=candidate
+    ok=.true.
+  contains
+    subroutine validate_layout(patches,lower,ratio,upper,valid)
+      type(eb_reactive_patch_3d), intent(in) :: patches(:)
+      integer, intent(in) :: lower(:,:),ratio
+      integer, intent(out) :: upper(:,:)
+      logical, intent(out) :: valid
+      type(eb_geometry_3d) :: section,restricted
+      logical :: good
+      integer :: a,b,d(3)
+      valid=.false.
+      if (ratio<1.or.any(shape(lower)/=[3,size(patches)])) return
+      do a=1,size(patches)
+        if (.not.patches(a)%geometry%is_valid()) return
+        d=[patches(a)%geometry%nx,patches(a)%geometry%ny,patches(a)%geometry%nz]
+        if (any(mod(d,ratio)/=0).or.any(lower(:,a)<1).or.any(lower(:,a)>n)) return
+        if (any(d/ratio>n-lower(:,a)+1)) return
+        upper(:,a)=lower(:,a)+d/ratio-1
+        do b=1,a-1
+          if (all(lower(:,a)<=upper(:,b)).and.all(lower(:,b)<=upper(:,a))) return
+        end do
+        call coarsen_eb_geometry_3d(patches(a)%geometry,ratio,restricted,good)
+        if (.not.good) return
+        call extract_eb_geometry_3d(coarse,lower(:,a),upper(:,a),section,good)
+        if (.not.good) return
+        if (.not.matching_metrics(section,restricted)) return
+      end do
+      valid=.true.
+    end subroutine validate_layout
+  end subroutine remap_reactive_eb_multipatch_3d
+
   subroutine advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       coarse_state,coarse_temperature,patches,boundary_change,wall_change,chemistry_change,minimum_theta,ok, &

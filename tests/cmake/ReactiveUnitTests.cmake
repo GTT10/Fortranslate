@@ -701,3 +701,7 @@ add_test(NAME unit_eb_composition_integrals_3d COMMAND test_eb_composition_integ
 add_executable(test_eb_redistributed_exchange_3d unit/test_eb_redistributed_exchange_3d.F90)
 target_link_libraries(test_eb_redistributed_exchange_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_redistributed_exchange_3d COMMAND test_eb_redistributed_exchange_3d)
+
+add_executable(test_eb_remap_3d unit/test_eb_remap_3d.F90)
+target_link_libraries(test_eb_remap_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_remap_3d COMMAND test_eb_remap_3d)
