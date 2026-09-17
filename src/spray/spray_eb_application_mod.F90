@@ -16,6 +16,7 @@ module spray_eb_application_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive
+  use spray_eb_field_mod, only: eb_spray_stencil
   implicit none
   private
   public :: run_eb_spray_application
@@ -36,7 +37,8 @@ contains
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), optional, intent(in) :: mole_fractions(:)
     character(len=*), optional, intent(in) :: integrator
-    integer :: nc=1,number=1
+    integer :: nc=1,number=1,injection_events=1
+    real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
     character(len=24) :: vapor_names(16)='H2O'
     real(dp) :: densities(16)=1000,heat_capacities(16)=4184,reference_temperatures(16)=373.15_dp
     real(dp) :: reference_pressures(16)=101325,latent_heats(16)=2.257e6_dp,fractions(16)=0
@@ -45,15 +47,16 @@ contains
     type(spray_options) :: options
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,maximum_dt,options
+      liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales
     type(eb_geometry_3d) :: g
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_liquid) :: effective
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: phi(:,:,:),state(:,:,:,:),temperature(:,:,:),masses(:,:)
-    real(dp), allocatable :: boundary(:),wall(:),chemical(:),sb(:),sw(:),sc(:)
+    real(dp), allocatable :: boundary(:),wall(:),chemical(:),sb(:),sw(:),sc(:),injected(:)
     real(dp) :: time,dt,hydro_dt,transport_dt,diffusivity,theta,rho,cp,e
-    integer :: unit,status,close_status,nv,n,p,step,attempt,particle_steps
+    integer :: unit,status,close_status,nv,n,p,step,attempt,particle_steps,next_event
+    integer(int64) :: last_id
     logical :: ok
     character(len=1024) :: message
     character(len=24) :: component_label
@@ -64,6 +67,7 @@ contains
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
     axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0;diameter=1e-5_dp;liquid_temperature=350
     maximum_dt=1e-8_dp;options=spray_options()
+    injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
     if (config%geometry_type/='level_set') error stop 'EB spray requires nodal level-set geometry'
@@ -80,6 +84,14 @@ contains
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
     if(.not.valid_spray_options(options).or.options%khrt_children) error stop 'Unsupported EB spray options'
+    if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection_events'
+    if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
+      error stop 'Nonfinite injection schedule'
+    if(any(injection_times<0).or.any(injection_times>1e6_dp).or.any(injection_scales<0).or. &
+       any(injection_scales>1e6_dp)) error stop 'Invalid injection times or scales'
+    do n=2,injection_events
+      if(injection_times(n)<injection_times(n-1)) error stop 'Injection times must be nondecreasing'
+    end do
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
     allocate(liquids(nc))
@@ -92,24 +104,25 @@ contains
     if(.not.ok) error stop 'Invalid injected liquid mixture'
     effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
     effective%reference_temperature=liquid_temperature;effective%reference_energy=e
-    call inject_cone_parcels(effective,total_mass,number,1_int64,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,drops,ok)
-    if(.not.ok) error stop 'Invalid EB injection'
-    allocate(masses(nc,number))
-    do p=1,number
-      masses(:,p)=drops(p)%mass*fractions(:nc)
-    end do
+    allocate(drops(0),masses(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
-    allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv))
+    allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv))
     call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
-    time=0;step=0;boundary=0;wall=0;chemical=0
-    do while(time<config%final_time)
+    time=0;step=0;boundary=0;wall=0;chemical=0;injected=0
+    do
+      do while(next_event<=injection_events)
+        if(injection_times(next_event)>time) exit
+        call inject_event()
+        next_event=next_event+1
+      end do
+      if(time>=config%final_time) exit
       if(step>=config%maximum_steps) error stop 'EB spray maximum_steps exhausted'
       call compute_reactive_eb_cfl_timestep_3d(species,state,temperature,g,config%cfl,hydro_dt,ok)
       if(.not.ok) error stop 'Invalid EB gas CFL bound'
       dt=min(hydro_dt,maximum_dt,config%final_time-time)
+      if(next_event<=injection_events) dt=min(dt,injection_times(next_event)-time)
       if(config%transport_enabled) then
         call reactive_eb_transport_timestep_3d(species,transport,state,temperature,g,config%transport_cfl, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
@@ -150,10 +163,43 @@ contains
     close(unit,iostat=close_status)
     if(status/=0.or.close_status/=0) error stop 'EB particle CSV write failed'
     write(*,'(a,i0,a,es25.16)') 'EB spray steps: ',step,' time: ',time
+    write(*,'(a,i0)') 'Injection events processed: ',next_event-1
+    write(*,'(a,*(es25.16,1x))') 'Injected inventory: ',injected
     write(*,'(a,*(es25.16,1x))') 'Boundary inventory: ',boundary
     write(*,'(a,*(es25.16,1x))') 'Wall inventory: ',wall
     write(*,'(a,*(es25.16,1x))') 'Chemistry inventory: ',chemical
   contains
+    subroutine inject_event()
+      type(spray_parcel), allocatable :: added(:),candidate(:)
+      real(dp), allocatable :: candidate_mass(:,:)
+      real(dp) :: change(nv),totals(5),weights(8),volumes(8)
+      integer :: cells(3,8),q,j,old_count,ios
+      logical :: valid
+      if(injection_scales(next_event)==0) return
+      old_count=size(drops)
+      if(old_count>min(125000,options%maximum_parcels)-number) error stop 'EB injection capacity exceeded'
+      call inject_cone_parcels(effective,total_mass*injection_scales(next_event),number,last_id+1_int64, &
+        center,axis,speed,half_angle,diameter,liquid_temperature,added,valid)
+      if(.not.valid) error stop 'Invalid scheduled EB injection'
+      change=0;cells=0;weights=0;volumes=0
+      allocate(candidate(old_count+number),candidate_mass(nc,old_count+number),stat=ios)
+      if(ios/=0) error stop 'Cannot allocate scheduled injection'
+      candidate(:old_count)=drops;candidate_mass(:,:old_count)=masses
+      do q=1,number
+        call eb_spray_stencil(g,phi,added(q)%position,cells,weights,volumes,valid)
+        if(.not.valid) error stop 'EB injection point is not in fluid'
+        candidate(old_count+q)=added(q)
+        candidate_mass(:,old_count+q)=added(q)%mass*fractions(:nc)
+        totals=parcel_totals(added(q),effective);change(1:5)=change(1:5)+totals
+        do j=1,nc
+          change(5+liquids(j)%vapor_index)=change(5+liquids(j)%vapor_index)+ &
+            candidate_mass(j,old_count+q)*added(q)%multiplicity
+        end do
+      end do
+      if(.not.all(ieee_is_finite(change))) error stop 'Invalid injection inventory'
+      call move_alloc(candidate,drops);call move_alloc(candidate_mass,masses)
+      last_id=last_id+int(number,int64);injected=injected+change
+    end subroutine
     function absolute_path(path) result(value)
       character(len=*), intent(in) :: path
       character(len=:), allocatable :: value

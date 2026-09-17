@@ -93,10 +93,13 @@ exchange, and gas chemistry; each uses the change-in-system sign convention.
 The caller must select a stable gas timestep; this wrapper does not retry or
 adapt gas timesteps. An experimental fixed/selected
 [serial EB spray application](../cases/eb_spray_3d/README.md) now connects nodal
-geometry, initial cone injection, coupled stepping with bounded retries, gas and
+geometry, scheduled cone injection, coupled stepping with bounded retries, gas and
 particle CSVs and cumulative boundary/wall/chemistry ledgers. It explicitly
-rejects checkpoint/restart settings. Timed injection, restart and distributed
-EB particle ownership remain open.
+rejects checkpoint/restart settings. Up to 1024 ordered injection events share
+one cone definition, with per-event mass scaling and zero-dose support. Steps
+end at event times; tied and final-time events are included. Fluid-location
+validation precedes population/ID/injected-inventory publication. Independent
+ports, restart and distributed EB particle ownership remain open.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
